@@ -294,17 +294,20 @@ class DAGRunner:
             state.update(status="pending", started_at=None)
             await self._persist()
             return
-        self._emit(
-            {
-                "type": "message",
-                "direction": "sent",
-                "member_id": member["member_id"],
-                "session_id": member["session_id"],
-                "text": task_text,
-            }
-        )
-        message_id = await self.ports.deliver(member["session_id"], task_text, None)
         try:
+            # deliver stays inside the try so a delivery failure fails the
+            # node instead of escaping gather while sibling wave coroutines
+            # keep persisting transitions after the run went terminal.
+            message_id = await self.ports.deliver(member["session_id"], task_text, None)
+            self._emit(
+                {
+                    "type": "message",
+                    "direction": "sent",
+                    "member_id": member["member_id"],
+                    "session_id": member["session_id"],
+                    "text": task_text,
+                }
+            )
             reply, _parts = await asyncio.wait_for(
                 self.ports.collect(member["session_id"], message_id),
                 timeout=float(self.config["reply_timeout"]),
@@ -401,10 +404,13 @@ class DAGRunner:
             if not ready:
                 break
             if self.status == "paused":
-                await self._persist()
-                self._emit({"type": "paused", "reason": "user pause"})
                 self._resume_wake.clear()
-                await self._resume_wake.wait()
+                if self.status == "paused":
+                    # resume() may have fired between the check and the clear
+                    # above; re-check so the wake signal is never erased.
+                    await self._persist()
+                    self._emit({"type": "paused", "reason": "user pause"})
+                    await self._resume_wake.wait()
                 continue
             wave = [nodes_by_id[n] for n in ready[: int(self.config["max_parallel"])]]
             await asyncio.gather(*(self._execute_node(n) for n in wave))
@@ -423,6 +429,11 @@ class DAGRunner:
                 result_summary="\n\n".join(done)[:2000],
             )
         else:
+            if self.status == "running":
+                # A bare resume() re-entered the loop but blocked nodes
+                # remain; re-park on paused instead of persisting a zombie
+                # "running" row with no live task behind it.
+                self.status = "paused"
             await self._persist()
 
     async def _apply_failure_policy(self) -> None:
@@ -590,13 +601,15 @@ class AgentTeamRunService:
             raise AgentTeamsServiceError(f"团队 '{team_id}' 不存在")
         return _team_to_dict(team)
 
-    def get_event_bus(self, run_id: str) -> RunEventBus:
+    async def get_event_bus(self, username: str, run_id: str) -> RunEventBus:
+        await self._require_run(username, run_id)
         bus = self._buses.get(run_id)
         if bus is None:
             raise AgentTeamsServiceError(f"运行 '{run_id}' 不存在或已不在内存中")
         return bus
 
-    def get_run_snapshot(self, username: str, run_id: str) -> dict:
+    async def get_run_snapshot(self, username: str, run_id: str) -> dict:
+        await self._require_run(username, run_id)
         runner = self._runners.get(run_id)
         if runner is None:
             raise AgentTeamsServiceError(f"运行 '{run_id}' 不存在或已结束")
@@ -622,12 +635,14 @@ class AgentTeamRunService:
         rows = await self.db.get_agent_team_runs_by_team(team_id)
         return {"runs": [_run_to_dict(r) for r in rows]}
 
-    def pause_run(self, run_id: str) -> dict:
+    async def pause_run(self, username: str, run_id: str) -> dict:
+        await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
         runner.pause()
         return {"message": "已暂停"}
 
-    async def request_stop_run(self, run_id: str) -> dict:
+    async def request_stop_run(self, username: str, run_id: str) -> dict:
+        await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
         runner.request_stop()
         if self.on_member_stop is not None:
@@ -639,14 +654,16 @@ class AgentTeamRunService:
                     self.on_member_stop(member["session_id"])
         return {"message": "停止中"}
 
-    async def retry_node(self, run_id: str, node_id: str) -> dict:
+    async def retry_node(self, username: str, run_id: str, node_id: str) -> dict:
+        await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
         await runner.retry_node(node_id)
         if runner.task is None or runner.task.done():
             self._start_runner_task(runner)
         return {"message": "已重试"}
 
-    async def skip_node(self, run_id: str, node_id: str) -> dict:
+    async def skip_node(self, username: str, run_id: str, node_id: str) -> dict:
+        await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
         await runner.skip_node(node_id)
         if runner.task is None or runner.task.done():

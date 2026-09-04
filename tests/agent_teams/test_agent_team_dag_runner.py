@@ -231,7 +231,7 @@ async def test_start_run_full_lifecycle(tmp_path):
     )
     runner = run_svc._runners[snapshot["run_id"]]
     await wait_terminal(runner)
-    snap = run_svc.get_run_snapshot("alice", snapshot["run_id"])
+    snap = await run_svc.get_run_snapshot("alice", snapshot["run_id"])
     assert snap["status"] == "completed"
 
     # a second run is rejected while an active row exists (API maps to 409)
@@ -252,3 +252,209 @@ async def test_start_run_full_lifecycle(tmp_path):
             team["team_id"],
             {"mode": "dag", "input": "y", "workflow_id": wf["workflow_id"]},
         )
+
+
+LINEAR_GRAPH = {
+    "nodes": [
+        {"id": "n1", "member_id": "mA", "task": "a {{input}}"},
+        {"id": "n2", "member_id": "mB", "task": "b {{n1}}"},
+        {"id": "n3", "member_id": "mC", "task": "c {{n2}}"},
+    ],
+    "edges": [{"from": "n1", "to": "n2"}, {"from": "n2", "to": "n3"}],
+}
+
+
+@pytest.mark.asyncio
+async def test_resume_during_pause_persist_does_not_deadlock(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    ports = scripted_ports(
+        {"主管": "一", "写手": "二", "审校": "三"}, events, delivered
+    )
+    bus = RunEventBus()
+    runner = DAGRunner(
+        run_id="rr1",
+        team_id="t1",
+        graph=LINEAR_GRAPH,
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=bus,
+        username="alice",
+        run_input="x",
+    )
+    # Pause from inside the wave so the next loop iteration enters the pause
+    # branch while ready nodes are still queued.
+    original_deliver = ports.deliver
+    paused = {"fired": False}
+
+    async def pausing_deliver(session_id, text, context=None):
+        message_id = await original_deliver(session_id, text, context)
+        if not paused["fired"]:
+            paused["fired"] = True
+            runner.pause()
+        return message_id
+
+    ports.deliver = pausing_deliver
+    # Fire resume() inside the pause branch's persist window: the first
+    # paused persist is n1's done-transition, the second is the pause
+    # branch's own persist. With the old clear-after-persist order the wake
+    # signal was erased there and run() deadlocked.
+    original_persist = runner._persist
+    paused_persists = {"n": 0}
+    resumed = {"fired": False}
+
+    async def resuming_persist():
+        if runner.status == "paused":
+            paused_persists["n"] += 1
+            if paused_persists["n"] == 2 and not resumed["fired"]:
+                resumed["fired"] = True
+                runner.resume()
+        await original_persist()
+
+    runner._persist = resuming_persist
+
+    await asyncio.wait_for(runner.run(), timeout=5.0)
+    assert resumed["fired"]  # resume raced the pause-branch persist
+    assert runner.status == "completed"
+    assert all(s["status"] == "done" for s in runner.node_states.values())
+
+
+@pytest.mark.asyncio
+async def test_bare_resume_on_failure_pause_lands_paused(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    responses = {"主管": RuntimeError("boom"), "写手": "x", "审校": "y"}
+    ports = scripted_ports(responses, events, delivered)
+    runner = DAGRunner(
+        run_id="rz",
+        team_id="t1",
+        graph=GRAPH,
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="主题",
+    )
+    await runner.run()
+    assert runner.status == "paused"
+
+    # Bare resume + re-run: n1 failed so nothing is runnable; the run must
+    # re-park on paused instead of persisting a zombie "running" row.
+    runner.resume()
+    assert runner.status == "running"
+    runner.task = asyncio.create_task(runner.run())
+    await wait_terminal(runner)
+    assert runner.status == "paused"
+    row = await db.get_agent_team_run("rz")
+    assert row.status == "paused"
+
+
+@pytest.mark.asyncio
+async def test_deliver_failure_fails_node_without_escaping(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    ports = scripted_ports(
+        {"主管": "ok", "写手": "fine", "审校": "z"}, events, delivered
+    )
+    bus = RunEventBus()
+    runner = DAGRunner(
+        run_id="rd",
+        team_id="t1",
+        graph=GRAPH,  # n1 + n2 roots in one wave, n3 joins them
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=bus,
+        username="alice",
+        run_input="主题",
+    )
+    # n2's member session is conv-1; make its delivery blow up.
+    original_deliver = ports.deliver
+
+    async def failing_deliver(session_id, text, context=None):
+        if session_id == "conv-1":
+            raise RuntimeError("deliver exploded")
+        return await original_deliver(session_id, text, context)
+
+    ports.deliver = failing_deliver
+
+    # The exception must stay contained: run() settles instead of raising.
+    await asyncio.wait_for(runner.run(), timeout=5.0)
+    # failure_policy=pause parked the run on the failed node
+    assert runner.status == "paused"
+    assert runner.node_states["n2"]["status"] == "failed"
+    assert "deliver exploded" in runner.node_states["n2"]["error"]
+    # the sibling wave coroutine settled before the terminal transition
+    assert runner.node_states["n1"]["status"] == "done"
+    assert runner.node_states["n3"]["status"] == "pending"
+    assert all(d[0] != "conv-2" for d in delivered)  # n3 never executed
+    # "sent" is only emitted after a successful deliver
+    sent_sessions = [
+        e.get("session_id") for e in bus.history() if e.get("direction") == "sent"
+    ]
+    assert sent_sessions == ["conv-0"]
+
+
+@pytest.mark.asyncio
+async def test_run_service_enforces_ownership(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    chat = FakeChatService()
+    team_svc = AgentTeamService(
+        db=db, core_lifecycle=FakeCoreLifecycle(), chat_service=chat
+    )
+    team = await team_svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    MEMBER_BY_SESSION.clear()
+    for m in team["members"]:
+        MEMBER_BY_SESSION[m["session_id"]] = m
+    ids = [m["member_id"] for m in team["members"]]
+    graph = {"nodes": [{"id": "n1", "member_id": ids[0], "task": "做 {{input}}"}]}
+    wf = await team_svc.create_workflow(
+        "alice", team["team_id"], {"name": "w", "graph": graph}
+    )
+    run_svc = AgentTeamRunService(db=db, chat_service=chat)
+    responses = {m["name"]: f"{m['name']}-done" for m in team["members"]}
+    run_svc.ports_factory = lambda username, emit: scripted_ports(responses, [], [])
+    snapshot = await run_svc.start_run(
+        "alice",
+        team["team_id"],
+        {"mode": "dag", "input": "主题", "workflow_id": wf["workflow_id"]},
+    )
+    run_id = snapshot["run_id"]
+    runner = run_svc._runners[run_id]
+    await wait_terminal(runner)
+    assert runner.status == "completed"
+
+    for call in (
+        run_svc.get_run_snapshot("bob", run_id),
+        run_svc.pause_run("bob", run_id),
+        run_svc.request_stop_run("bob", run_id),
+        run_svc.retry_node("bob", run_id, "n1"),
+        run_svc.skip_node("bob", run_id, "n1"),
+        run_svc.get_event_bus("bob", run_id),
+    ):
+        with pytest.raises(AgentTeamsServiceError, match="不存在"):
+            await call
+
+    # the owner gets through on the same calls
+    assert (await run_svc.pause_run("alice", run_id))["message"] == "已暂停"
+    snap = await run_svc.get_run_snapshot("alice", run_id)
+    assert snap["run_id"] == run_id
+    bus = await run_svc.get_event_bus("alice", run_id)
+    assert bus is run_svc._buses[run_id]

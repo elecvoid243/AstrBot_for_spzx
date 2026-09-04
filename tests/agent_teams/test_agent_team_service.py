@@ -152,3 +152,37 @@ async def test_delete_team_guard_and_ownership(tmp_path):
     )
     with pytest.raises(AgentTeamsServiceError, match="active run"):
         await svc.delete_team("alice", team["team_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_team_validates_before_sessions(tmp_path):
+    _, svc = await make_service(tmp_path)
+    with pytest.raises(AgentTeamsServiceError, match="coordinator"):
+        await svc.create_team(
+            "alice", {"name": "t", "members": MEMBERS, "coordinator": "不存在"}
+        )
+    assert svc.chat_service.counter == 0
+    with pytest.raises(AgentTeamsServiceError, match="unique"):
+        await svc.create_team(
+            "alice",
+            {
+                "name": "t",
+                "members": MEMBERS + [dict(MEMBERS[0])],
+                "coordinator": "主管",
+            },
+        )
+    assert svc.chat_service.counter == 0
+
+
+@pytest.mark.asyncio
+async def test_add_member_rejects_duplicate_before_session(tmp_path):
+    _, svc = await make_service(tmp_path)
+    team = await svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    before = svc.chat_service.counter
+    with pytest.raises(AgentTeamsServiceError, match="unique"):
+        await svc.add_member(
+            "alice", team["team_id"], {"name": "主管", "persona_id": "p9"}
+        )
+    assert svc.chat_service.counter == before

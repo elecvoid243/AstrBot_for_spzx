@@ -110,3 +110,14 @@ async def test_update_revalidates_against_current_members(tmp_path):
         await svc.update_workflow(
             "alice", team["team_id"], wf["workflow_id"], {"name": "v2"}
         )
+
+
+@pytest.mark.asyncio
+async def test_delete_team_purges_workflows(tmp_path):
+    db, svc = await make_service(tmp_path)
+    team = await make_team(svc)
+    wf = await svc.create_workflow(
+        "alice", team["team_id"], {"name": "w", "graph": bind_graph(GRAPH, team)}
+    )
+    await svc.delete_team("alice", team["team_id"])
+    assert await db.get_agent_team_workflow(wf["workflow_id"]) is None

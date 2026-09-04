@@ -150,23 +150,30 @@ class AgentTeamService:
             raise AgentTeamsServiceError(f"成员数不能超过 {MAX_MEMBERS}")
         coordinator_name = str(payload.get("coordinator") or "").strip()
 
-        members: list[dict] = []
-        seen_names: set[str] = set()
-        seen_sessions: set[str] = set()
+        # Validate member names and the coordinator up front so a bad payload
+        # never leaks already-created WebChat sessions.
+        raw_names: list[str] = []
         for raw in raw_members:
-            member = await self._create_member(username, raw)
-            if member["name"].lower() in seen_names:
-                raise AgentTeamsServiceError(f"成员名必须 unique: {member['name']}")
-            if member["session_id"] in seen_sessions:
-                raise AgentTeamsServiceError("成员会话冲突，请重试")
-            seen_names.add(member["name"].lower())
-            seen_sessions.add(member["session_id"])
-            members.append(member)
-
-        if coordinator_name not in {m["name"] for m in members}:
+            raw_name = str(raw.get("name") or "").strip()
+            if not raw_name or len(raw_name) > MAX_NAME_LEN:
+                raise AgentTeamsServiceError(f"成员名必填且 ≤{MAX_NAME_LEN} 字符")
+            if raw_name.lower() in {n.lower() for n in raw_names}:
+                raise AgentTeamsServiceError(f"成员名必须 unique: {raw_name}")
+            raw_names.append(raw_name)
+        if coordinator_name not in raw_names:
             raise AgentTeamsServiceError(
                 f"coordinator 必须是成员之一: {coordinator_name!r}"
             )
+
+        members: list[dict] = []
+        seen_sessions: set[str] = set()
+        for raw in raw_members:
+            member = await self._create_member(username, raw)
+            if member["session_id"] in seen_sessions:
+                raise AgentTeamsServiceError("成员会话冲突，请重试")
+            seen_sessions.add(member["session_id"])
+            members.append(member)
+
         team_id = _new_id()
         await self.db.create_agent_team(
             team_id=team_id,
@@ -216,6 +223,11 @@ class AgentTeamService:
             raise AgentTeamsServiceError("团队有 active run，无法删除")
         # Member sessions are preserved by design (spec §6.1): users manage
         # them from the chat page.
+        # Workflows have no FK cascade; purge them explicitly so they do not
+        # outlive the team.
+        workflows = await self.db.get_agent_team_workflows_by_team(team_id)
+        for workflow in workflows:
+            await self.db.delete_agent_team_workflow(workflow.workflow_id)
         await self.db.delete_agent_team(team_id)
         return {"message": "团队已删除"}
 
@@ -225,9 +237,12 @@ class AgentTeamService:
         team = await self._get_owned(username, team_id)
         if len(team.members) >= MAX_MEMBERS:
             raise AgentTeamsServiceError(f"成员数不能超过 {MAX_MEMBERS}")
+        # Check the name before creating the session so a duplicate never
+        # leaves an orphan session behind.
+        new_name = str(payload.get("name") or "").strip()
+        if any(m["name"].lower() == new_name.lower() for m in team.members):
+            raise AgentTeamsServiceError(f"成员名必须 unique: {new_name}")
         member = await self._create_member(username, payload)
-        if any(m["name"].lower() == member["name"].lower() for m in team.members):
-            raise AgentTeamsServiceError(f"成员名必须 unique: {member['name']}")
         await self.db.update_agent_team(team_id, members=[*team.members, member])
         return member
 

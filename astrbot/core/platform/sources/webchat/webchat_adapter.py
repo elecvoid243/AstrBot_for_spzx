@@ -305,6 +305,9 @@ class WebChatAdapter(Platform):
                 collab_context = payload.get("collab_context")
                 if isinstance(collab_context, str) and collab_context.strip():
                     message_event.set_extra("collab_context", collab_context)
+                team_context = payload.get("team_context")
+                if isinstance(team_context, str) and team_context.strip():
+                    message_event.set_extra("team_context", team_context)
 
         return message_event
 

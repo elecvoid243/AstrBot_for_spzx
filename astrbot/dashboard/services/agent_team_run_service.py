@@ -357,18 +357,31 @@ class DAGRunner:
         never sticks on a running state.
         """
         try:
-            await self._ensure_row()
-            await self._run_loop()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("agent team run %s crashed", self.run_id)
-            self.status = "failed"
-            await self._persist()
-            self._emit({"type": "stopped", "reason": f"runner error: {exc}"})
-            return
-        if self.status == "completed":
-            self._emit({"type": "stopped", "reason": "done"})
-        elif self.status == "stopped":
-            self._emit({"type": "stopped", "reason": "user stop"})
+            try:
+                await self._ensure_row()
+                await self._run_loop()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("agent team run %s crashed", self.run_id)
+                self.status = "failed"
+                await self._persist()
+                self._emit({"type": "stopped", "reason": f"runner error: {exc}"})
+                return
+            if self.status == "completed":
+                self._emit({"type": "stopped", "reason": "done"})
+            elif self.status == "stopped":
+                self._emit({"type": "stopped", "reason": "user stop"})
+        finally:
+            # Terminal runs release the ports' resources (e.g. per-conversation
+            # system-event subscriptions). A paused run keeps them: run() is
+            # re-callable after retry/skip/resume and still needs the ports.
+            if self.status in TERMINAL_RUN_STATUSES and self.ports.close is not None:
+                try:
+                    await self.ports.close()
+                except Exception:  # noqa: BLE001
+                    # Cleanup must never mask the run outcome.
+                    logger.exception(
+                        "agent team run %s: ports close failed", self.run_id
+                    )
 
     async def _ensure_row(self) -> None:
         """Create the run row if it does not exist yet.
@@ -526,6 +539,11 @@ class AgentTeamRunService:
             if runner.status != "paused":
                 raise AgentTeamsServiceError("运行未处于暂停状态")
             runner.resume()
+            # A failure-paused run's loop already returned, so its task is
+            # done: resume() alone would flip a flag nothing will ever
+            # observe. Spawn a fresh task, mirroring retry/skip.
+            if runner.task is None or runner.task.done():
+                self._start_runner_task(runner)
             return runner.snapshot()
 
         if row.status not in ("interrupted", "paused"):
@@ -715,15 +733,24 @@ class AgentTeamRunService:
     async def request_stop_run(self, username: str, run_id: str) -> dict:
         await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
-        runner.request_stop()
-        if self.on_member_stop is not None:
-            for state in runner.node_states.values():
-                if state["status"] != "running":
-                    continue
-                member = runner._member_by_id(state["member_id"])
-                if member is not None:
-                    self.on_member_stop(member["session_id"])
-        return {"message": "停止中"}
+        if runner.task is not None and not runner.task.done():
+            runner.request_stop()
+            if self.on_member_stop is not None:
+                for state in runner.node_states.values():
+                    if state["status"] != "running":
+                        continue
+                    member = runner._member_by_id(state["member_id"])
+                    if member is not None:
+                        self.on_member_stop(member["session_id"])
+            return {"message": "停止中"}
+        # Dead task (e.g. a failure-paused run whose loop already returned):
+        # the stop flag would never be observed, so land the terminal state
+        # directly instead of silently doing nothing.
+        if runner.status not in TERMINAL_RUN_STATUSES:
+            runner.status = "stopped"
+            await self.db.update_agent_team_run(run_id, status="stopped")
+            runner._emit({"type": "stopped", "reason": "user stop"})
+        return {"message": "已停止"}
 
     async def retry_node(self, username: str, run_id: str, node_id: str) -> dict:
         await self._require_run(username, run_id)

@@ -93,3 +93,22 @@ async def test_build_ports_registrar_passes_username_and_checkpoint():
     assert mid == message_id == payload["message_id"]
     assert checkpoint == payload["llm_checkpoint_id"]
     webchat_queue_mgr.remove_queues(cid)
+
+
+@pytest.mark.asyncio
+async def test_ports_close_releases_system_subscriptions():
+    """close() must unsubscribe every system-event subscription deliver()
+    registered, otherwise each run leaks one subscriber queue per member
+    conversation on the (global) queue manager."""
+    mgr = WebChatQueueMgr()
+    cid = "conv-close-1"
+    ports = build_ports_for_test(mgr, "alice", emit=lambda e: None)
+    before = len(mgr.system_subscribers.get(cid, set()))
+
+    await ports.deliver(cid, "任务", None)
+    assert len(mgr.system_subscribers[cid]) == before + 1
+
+    await ports.close()
+    assert len(mgr.system_subscribers.get(cid, set())) == before
+    # Closing twice is harmless (dict already cleared).
+    await ports.close()

@@ -42,6 +42,9 @@ class TeamPorts:
     emit: Callable[[dict], None]
     reply_timeout: float = 600.0
     busy_poll_interval: float = 2.0
+    # Optional resource cleanup (e.g. release system-event subscriptions);
+    # invoked by DAGRunner.run() once the run reaches a terminal status.
+    close: Callable[[], Awaitable[None]] | None = None
 
 
 def build_ports_for_test(
@@ -152,6 +155,17 @@ def build_ports_for_test(
                     )
                 return acc.plain_text(), acc.build_message_parts()
 
+    async def close() -> None:
+        """Release every system-event subscription deliver() registered.
+
+        Without this, each run permanently leaks one subscriber queue per
+        member conversation on the queue manager (fan-out cost plus up to
+        SYSTEM_SUBSCRIBER_QUEUE_SIZE buffered payloads each).
+        """
+        for cid, queue in list(subscriptions.items()):
+            mgr.unsubscribe_system(cid, queue)
+        subscriptions.clear()
+
     return TeamPorts(
         deliver=deliver,
         collect=collect,
@@ -159,6 +173,7 @@ def build_ports_for_test(
         emit=emit,
         reply_timeout=reply_timeout,
         busy_poll_interval=busy_poll_interval,
+        close=close,
     )
 
 

@@ -186,3 +186,24 @@ async def test_add_member_rejects_duplicate_before_session(tmp_path):
             "alice", team["team_id"], {"name": "主管", "persona_id": "p9"}
         )
     assert svc.chat_service.counter == before
+
+
+@pytest.mark.asyncio
+async def test_create_team_hardens_config_and_member_types(tmp_path):
+    """Bad config/member payloads raise AgentTeamsServiceError (400-grade),
+    never TypeError/AttributeError; no sessions leak on rejection."""
+    _, svc = await make_service(tmp_path)
+    base = {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.create_team("alice", {**base, "config": {"max_parallel": "nine"}})
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.create_team("alice", {**base, "config": {"inject_max_length": 0}})
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.create_team("alice", {**base, "config": {"reply_timeout": "soon"}})
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.create_team("alice", {**base, "config": {"max_rounds": 21}})
+    with pytest.raises(AgentTeamsServiceError, match="成员配置格式错误"):
+        await svc.create_team("alice", {**base, "members": ["x", "y"]})
+
+    assert svc.chat_service.counter == 0

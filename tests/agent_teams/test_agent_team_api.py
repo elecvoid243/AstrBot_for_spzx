@@ -20,12 +20,23 @@ _BUS.emit({"type": "dag_progress", "done": 0, "total": 2})
 
 
 class FakeTeamSvc:
+    # Class-level call recorder shared by the per-test service instances.
+    calls: list[tuple] = []
+
     async def create_team(self, username, payload):
         assert username == "alice"
         return {"team_id": "t1", "name": payload.get("name")}
 
     async def list_teams(self, username):
         return {"teams": []}
+
+    async def update_workflow(self, username, team_id, workflow_id, payload):
+        FakeTeamSvc.calls.append(("update", username, team_id, workflow_id, payload))
+        return {"workflow_id": workflow_id, "team_id": team_id}
+
+    async def delete_workflow(self, username, team_id, workflow_id):
+        FakeTeamSvc.calls.append(("delete", username, team_id, workflow_id))
+        return {"message": "工作流已删除"}
 
 
 class FakeRunSvc:
@@ -78,6 +89,38 @@ def test_pause_run_forwards_username_first_on_legacy_route(client):
     resp = client.post("/api/agent_teams/runs/r1/pause")
     assert resp.status_code == 200
     assert resp.json()["data"] == {"message": "已暂停"}
+
+
+def test_workflow_update_delete_routes_nest_team_id_in_path(client):
+    """PUT/DELETE workflow routes must take team_id from the PATH on both
+    routers (the v1 contract freezes when the API client is generated)."""
+    FakeTeamSvc.calls.clear()
+
+    resp = client.put(
+        "/api/v1/agent_teams/t1/workflows/w1", json={"team_id": "ignored", "name": "v2"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["workflow_id"] == "w1"
+
+    resp = client.delete("/api/v1/agent_teams/t1/workflows/w1")
+    assert resp.status_code == 200
+
+    resp = client.put("/api/agent_teams/t1/workflows/w1", json={"name": "v2"})
+    assert resp.status_code == 200
+
+    resp = client.delete("/api/agent_teams/t1/workflows/w1")
+    assert resp.status_code == 200
+
+    assert FakeTeamSvc.calls[0] == (
+        "update",
+        "alice",
+        "t1",
+        "w1",
+        {"team_id": "ignored", "name": "v2"},
+    )
+    assert ("delete", "alice", "t1", "w1") in FakeTeamSvc.calls
+    # team_id always comes from the path, never from the request body
+    assert all(call[2] == "t1" for call in FakeTeamSvc.calls)
 
 
 @pytest.mark.asyncio

@@ -178,40 +178,35 @@ async def list_workflows(
         return _handle(e)
 
 
-@router.put("/agent_teams/workflows/{workflow_id}")
-@legacy_router.put("/workflows/{workflow_id}")
+@router.put("/agent_teams/{team_id}/workflows/{workflow_id}")
+@legacy_router.put("/{team_id}/workflows/{workflow_id}")
 async def update_workflow(
+    team_id: str,
     workflow_id: str,
     request: Request,
     username: str = Depends(_auth_dep),
     service: AgentTeamService = Depends(get_team_service),
 ):
     try:
-        body = await _json_body(request)
         return ok(
             await service.update_workflow(
-                username, str(body.get("team_id") or ""), workflow_id, body
+                username, team_id, workflow_id, await _json_body(request)
             )
         )
     except AgentTeamsServiceError as e:
         return _handle(e)
 
 
-@router.delete("/agent_teams/workflows/{workflow_id}")
-@legacy_router.delete("/workflows/{workflow_id}")
+@router.delete("/agent_teams/{team_id}/workflows/{workflow_id}")
+@legacy_router.delete("/{team_id}/workflows/{workflow_id}")
 async def delete_workflow(
+    team_id: str,
     workflow_id: str,
-    request: Request,
     username: str = Depends(_auth_dep),
     service: AgentTeamService = Depends(get_team_service),
 ):
     try:
-        body = await _json_body(request)
-        return ok(
-            await service.delete_workflow(
-                username, str(body.get("team_id") or ""), workflow_id
-            )
-        )
+        return ok(await service.delete_workflow(username, team_id, workflow_id))
     except AgentTeamsServiceError as e:
         return _handle(e)
 

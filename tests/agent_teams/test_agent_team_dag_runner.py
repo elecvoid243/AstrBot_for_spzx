@@ -360,6 +360,55 @@ async def test_bare_resume_on_failure_pause_lands_paused(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_terminal_run_closes_ports_paused_keeps_them(tmp_path):
+    """Ports cleanup: terminal runs release resources, paused runs keep them
+    (run() is re-callable after retry/skip and still needs the ports)."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    closed = {"n": 0}
+    responses = {"主管": "ok", "写手": RuntimeError("session gone"), "审校": "x"}
+    ports = scripted_ports(responses, events, delivered)
+
+    async def close() -> None:
+        closed["n"] += 1
+
+    ports.close = close
+    runner = DAGRunner(
+        run_id="rc1",
+        team_id="t1",
+        graph=GRAPH,
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="主题",
+    )
+    await runner.run()
+    assert runner.status == "paused"
+    assert closed["n"] == 0  # paused: subscriptions must survive
+
+    # n2 (写手) is the failed node; after retry the run goes terminal
+    responses["写手"] = "修好了"
+    await runner.retry_node("n2")
+    runner.task = asyncio.create_task(runner.run())
+    for _ in range(250):
+        if runner.status == "completed":
+            break
+        await asyncio.sleep(0.02)
+    assert runner.status == "completed"
+    if runner.task is not None:
+        # status flips before run()'s finally cleanup runs; await the task
+        # so the close is guaranteed to have happened.
+        await runner.task
+    assert closed["n"] == 1  # terminal: released exactly once
+
+
+@pytest.mark.asyncio
 async def test_deliver_failure_fails_node_without_escaping(tmp_path):
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()

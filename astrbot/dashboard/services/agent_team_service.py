@@ -84,10 +84,31 @@ class AgentTeamService:
             raise AgentTeamsServiceError(
                 f"failure_policy 必须是 {VALID_FAILURE_POLICIES} 之一"
             )
-        if not 0 < merged["max_parallel"] <= 5:
-            raise AgentTeamsServiceError("max_parallel 必须在 1..5 之间")
-        if not 0 < merged["max_rounds"] <= 20:
-            raise AgentTeamsServiceError("max_rounds 必须在 1..20 之间")
+        # Validate numeric settings here so bad payloads surface as 400-grade
+        # service errors instead of TypeError inside the runner. reply_timeout
+        # / inject_max_length must be positive (render_task truncation needs a
+        # limit >= 1); max_parallel / max_rounds keep their UI ranges.
+        for key, cast, message in (
+            ("reply_timeout", float, "reply_timeout 必须为大于 0 的数字"),
+            ("inject_max_length", int, "inject_max_length 必须为正整数"),
+        ):
+            value = merged[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0
+            ):
+                raise AgentTeamsServiceError(message)
+            merged[key] = cast(value)
+        for key, high in (("max_parallel", 5), ("max_rounds", 20)):
+            value = merged[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 < value <= high
+            ):
+                raise AgentTeamsServiceError(f"{key} 必须在 1..{high} 之间")
+            merged[key] = int(value)
         return merged
 
     async def _create_member(self, username: str, payload: dict) -> dict:
@@ -149,11 +170,16 @@ class AgentTeamService:
         if len(raw_members) > MAX_MEMBERS:
             raise AgentTeamsServiceError(f"成员数不能超过 {MAX_MEMBERS}")
         coordinator_name = str(payload.get("coordinator") or "").strip()
+        # Validate the config up front too, so a bad payload never leaks
+        # already-created WebChat sessions.
+        config = self._merged_config(payload.get("config"))
 
         # Validate member names and the coordinator up front so a bad payload
         # never leaks already-created WebChat sessions.
         raw_names: list[str] = []
         for raw in raw_members:
+            if not isinstance(raw, dict):
+                raise AgentTeamsServiceError("成员配置格式错误")
             raw_name = str(raw.get("name") or "").strip()
             if not raw_name or len(raw_name) > MAX_NAME_LEN:
                 raise AgentTeamsServiceError(f"成员名必填且 ≤{MAX_NAME_LEN} 字符")
@@ -183,7 +209,7 @@ class AgentTeamService:
                 m["member_id"] for m in members if m["name"] == coordinator_name
             ),
             members=members,
-            config=self._merged_config(payload.get("config")),
+            config=config,
         )
         return await self.get_team(username, team_id)
 

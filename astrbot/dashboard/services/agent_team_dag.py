@@ -1,0 +1,146 @@
+"""Pure DAG helpers for Agent Teams manual orchestration (spec §6.3).
+
+No IO here: everything operates on plain dicts so scheduling rules are
+unit-testable without ports or database.
+"""
+
+import re
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+
+class TeamDAGError(ValueError):
+    """Raised for invalid workflow graphs or task template render failures."""
+
+
+def _node_ids(nodes: list[dict]) -> list[str]:
+    ids = [str(n.get("id", "")) for n in nodes]
+    if any(not i for i in ids):
+        raise TeamDAGError("node missing id")
+    if len(set(ids)) != len(ids):
+        raise TeamDAGError("duplicate node id")
+    return ids
+
+
+def validate_dag(nodes: list[dict], edges: list[dict]) -> dict[str, list[str]]:
+    """Validate a workflow graph and return the successor adjacency.
+
+    Args:
+        nodes: [{id, ...}] node list.
+        edges: [{from, to}] directed edges.
+
+    Returns:
+        Adjacency dict mapping node id -> list of direct successor ids.
+
+    Raises:
+        TeamDAGError: On duplicate ids, edges referencing unknown nodes,
+            or a cycle.
+    """
+    ids = _node_ids(nodes)
+    id_set = set(ids)
+    adjacency: dict[str, list[str]] = {i: [] for i in ids}
+    for edge in edges:
+        src, dst = str(edge.get("from", "")), str(edge.get("to", ""))
+        if src not in id_set or dst not in id_set:
+            raise TeamDAGError(f"edge references unknown node: {src!r}->{dst!r}")
+        adjacency[src].append(dst)
+
+    # Kahn's algorithm; leftover nodes mean a cycle.
+    indegree = dict.fromkeys(ids, 0)
+    for successors in adjacency.values():
+        for dst in successors:
+            indegree[dst] += 1
+    queue = [i for i in ids if indegree[i] == 0]
+    visited = 0
+    while queue:
+        node = queue.pop()
+        visited += 1
+        for dst in adjacency[node]:
+            indegree[dst] -= 1
+            if indegree[dst] == 0:
+                queue.append(dst)
+    if visited != len(ids):
+        raise TeamDAGError("cycle detected in workflow graph")
+    return adjacency
+
+
+def topological_layers(nodes: list[dict], edges: list[dict]) -> list[list[str]]:
+    """Layer nodes so every node appears after all its predecessors.
+
+    Args:
+        nodes: [{id, ...}] node list (must validate).
+        edges: [{from, to}] directed edges.
+
+    Returns:
+        List of layers, each a list of mutually independent node ids.
+    """
+    adjacency = validate_dag(nodes, edges)
+    indegree = dict.fromkeys(adjacency, 0)
+    for successors in adjacency.values():
+        for dst in successors:
+            indegree[dst] += 1
+    layer = [i for i, degree in indegree.items() if degree == 0]
+    layers: list[list[str]] = []
+    while layer:
+        layers.append(layer)
+        next_layer: list[str] = []
+        for node in layer:
+            for dst in adjacency[node]:
+                indegree[dst] -= 1
+                if indegree[dst] == 0:
+                    next_layer.append(dst)
+        layer = next_layer
+    return layers
+
+
+def downstream_of(node_id: str, edges: list[dict]) -> list[str]:
+    """Return every transitive successor of node_id (cascade-skip set)."""
+    successors: dict[str, list[str]] = {}
+    for edge in edges:
+        successors.setdefault(str(edge.get("from", "")), []).append(
+            str(edge.get("to", ""))
+        )
+    seen: list[str] = []
+    stack = list(successors.get(node_id, []))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.append(current)
+        stack.extend(successors.get(current, []))
+    return seen
+
+
+def render_task(
+    template: str, run_input: str, results: dict[str, str], max_length: int
+) -> str:
+    """Render a node task template.
+
+    Args:
+        template: Template text containing {{input}} / {{<node_id>}}.
+        run_input: The run-level input substituted for {{input}}.
+        results: node_id -> full reply text for referenced predecessors.
+        max_length: Tail-truncation limit for each substitution.
+
+    Returns:
+        The rendered task text.
+
+    Raises:
+        TeamDAGError: If a placeholder references an unknown node.
+    """
+
+    def _substitute(match: re.Match) -> str:
+        key = match.group(1)
+        if key == "input":
+            value = run_input
+        elif key in results:
+            value = results[key]
+        else:
+            raise TeamDAGError(
+                f"unknown placeholder {{{{{key}}}}}; known: input, {sorted(results)}"
+            )
+        if len(value) > max_length:
+            value = f"…[已截断，仅保留尾部]\n{value[-max_length:]}"
+        return value
+
+    return _PLACEHOLDER_RE.sub(_substitute, template)

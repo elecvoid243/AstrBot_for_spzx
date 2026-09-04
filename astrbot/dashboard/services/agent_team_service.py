@@ -246,3 +246,137 @@ class AgentTeamService:
             team_id, members=[m for m in team.members if m["member_id"] != member_id]
         )
         return {"message": "成员已移除"}
+
+    # ---------- workflows ----------
+
+    MAX_NODES = 20
+
+    @staticmethod
+    def _workflow_to_dict(row) -> dict:
+        return {
+            "workflow_id": row.workflow_id,
+            "team_id": row.team_id,
+            "name": row.name,
+            "graph": row.graph,
+            "layout": row.layout,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def validate_member_bindings(graph: dict, members: list[dict]) -> None:
+        """Raise when any node references a member not on the team roster.
+
+        Args:
+            graph: {nodes, edges} graph dict.
+            members: Current team members.
+
+        Raises:
+            AgentTeamsServiceError: Listing every missing member id.
+        """
+        known = {m["member_id"] for m in members}
+        missing = sorted(
+            {
+                str(n.get("member_id"))
+                for n in graph.get("nodes") or []
+                if n.get("member_id") not in known
+            }
+        )
+        if missing:
+            raise AgentTeamsServiceError(f"节点绑定的成员不存在: {', '.join(missing)}")
+
+    def _validate_workflow_payload(self, team: AgentTeam, graph: dict) -> dict:
+        """Validate a workflow graph against DAG rules and the team roster.
+
+        Args:
+            team: The owning team row.
+            graph: {nodes, edges} raw payload.
+
+        Returns:
+            The normalized graph dict.
+
+        Raises:
+            AgentTeamsServiceError: On any validation failure.
+        """
+        from astrbot.dashboard.services.agent_team_dag import (
+            TeamDAGError,
+            validate_dag,
+        )
+
+        nodes = graph.get("nodes") or []
+        edges = graph.get("edges") or []
+        if not isinstance(nodes, list) or len(nodes) < 1:
+            raise AgentTeamsServiceError("工作流至少需要 1 个节点")
+        if len(nodes) > self.MAX_NODES:
+            raise AgentTeamsServiceError(f"节点数不能超过 {self.MAX_NODES}")
+        for node in nodes:
+            if not str(node.get("task") or "").strip():
+                raise AgentTeamsServiceError(f"节点 {node.get('id')!r} 缺少任务模板")
+        try:
+            validate_dag(nodes, edges)
+        except TeamDAGError as e:
+            raise AgentTeamsServiceError(str(e)) from e
+        self.validate_member_bindings(graph, team.members)
+        return {"nodes": nodes, "edges": edges}
+
+    async def create_workflow(self, username: str, team_id: str, payload: dict) -> dict:
+        team = await self._get_owned(username, team_id)
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise AgentTeamsServiceError("工作流名不能为空")
+        graph = self._validate_workflow_payload(team, payload.get("graph") or {})
+        workflow_id = _new_id()
+        await self.db.create_agent_team_workflow(
+            workflow_id=workflow_id,
+            team_id=team_id,
+            name=name,
+            graph=graph,
+            layout=payload.get("layout") or {},
+        )
+        return self._workflow_to_dict(
+            await self.db.get_agent_team_workflow(workflow_id)
+        )
+
+    async def get_workflows(self, username: str, team_id: str) -> dict:
+        await self._get_owned(username, team_id)
+        rows = await self.db.get_agent_team_workflows_by_team(team_id)
+        return {"workflows": [self._workflow_to_dict(w) for w in rows]}
+
+    async def update_workflow(
+        self, username: str, team_id: str, workflow_id: str, payload: dict
+    ) -> dict:
+        team = await self._get_owned(username, team_id)
+        row = await self.db.get_agent_team_workflow(workflow_id)
+        if row is None or row.team_id != team_id:
+            raise AgentTeamsServiceError(f"工作流 '{workflow_id}' 不存在")
+        updates: dict = {}
+        if "name" in payload:
+            name = str(payload["name"] or "").strip()
+            if not name:
+                raise AgentTeamsServiceError("工作流名不能为空")
+            updates["name"] = name
+        if "graph" in payload:
+            updates["graph"] = self._validate_workflow_payload(
+                team, payload.get("graph") or {}
+            )
+        else:
+            # Re-validate the stored graph against the CURRENT roster so a
+            # removed member invalidates dependent workflows immediately.
+            self.validate_member_bindings(row.graph, team.members)
+        if "layout" in payload:
+            updates["layout"] = payload.get("layout") or {}
+        if updates:
+            await self.db.update_agent_team_workflow(workflow_id, **updates)
+        return self._workflow_to_dict(
+            await self.db.get_agent_team_workflow(workflow_id)
+        )
+
+    async def delete_workflow(
+        self, username: str, team_id: str, workflow_id: str
+    ) -> dict:
+        await self._get_owned(username, team_id)
+        row = await self.db.get_agent_team_workflow(workflow_id)
+        if row is None or row.team_id != team_id:
+            raise AgentTeamsServiceError(f"工作流 '{workflow_id}' 不存在")
+        await self.db.delete_agent_team_workflow(workflow_id)
+        return {"message": "工作流已删除"}

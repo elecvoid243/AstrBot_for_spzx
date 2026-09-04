@@ -16,6 +16,9 @@ from sqlmodel import col, delete, desc, func, or_, select, text, update
 
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentTeam,
+    AgentTeamRun,
+    AgentTeamWorkflow,
     ApiKey,
     Attachment,
     ChatUIProject,
@@ -2792,3 +2795,338 @@ class SQLiteDatabase(BaseDatabase):
             query = query.order_by(desc(CronJob.created_at))
             result = await session.execute(query)
             return list(result.scalars().all())
+
+    # ====
+    # Agent Teams
+    # ====
+
+    async def create_agent_team(
+        self,
+        *,
+        team_id: str,
+        owner_username: str,
+        name: str,
+        coordinator_member_id: str,
+        members: list,
+        config: dict,
+    ) -> AgentTeam:
+        """Create one agent team row.
+
+        Args:
+            team_id: Unique team identifier.
+            owner_username: Dashboard username owning the team.
+            name: Team display name.
+            coordinator_member_id: Member id acting as coordinator.
+            members: List of member dicts.
+            config: Team-level run configuration.
+
+        Returns:
+            The persisted AgentTeam.
+        """
+        team = AgentTeam(
+            team_id=team_id,
+            owner_username=owner_username,
+            name=name,
+            coordinator_member_id=coordinator_member_id,
+            members=members,
+            config=config,
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeam:
+            session.add(team)
+            return team
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team(self, team_id: str) -> AgentTeam | None:
+        """Get an agent team by its ID."""
+        statement = select(AgentTeam).where(AgentTeam.team_id == team_id)
+
+        async def _op(session: AsyncSession) -> AgentTeam | None:
+            return (await session.execute(statement)).scalars().first()
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_teams_by_owner(self, owner_username: str) -> list[AgentTeam]:
+        """Get all agent teams owned by a dashboard user, latest first."""
+        statement = (
+            select(AgentTeam)
+            .where(AgentTeam.owner_username == owner_username)
+            .order_by(AgentTeam.id.desc())
+        )
+
+        async def _op(session: AsyncSession) -> list[AgentTeam]:
+            return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)
+
+    async def update_agent_team(self, team_id: str, **updates) -> None:
+        """Update an agent team; ``None`` values are skipped."""
+
+        async def _op(session: AsyncSession) -> None:
+            team = (
+                (
+                    await session.execute(
+                        select(AgentTeam).where(AgentTeam.team_id == team_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if team is None:
+                return None
+            self._apply_updates(team, **updates)
+            team.updated_at = datetime.now()
+            session.add(team)
+            return None
+
+        await self._run_in_tx(_op)
+
+    async def delete_agent_team(self, team_id: str) -> None:
+        """Delete an agent team by its ID."""
+
+        async def _op(session: AsyncSession) -> None:
+            team = (
+                (
+                    await session.execute(
+                        select(AgentTeam).where(AgentTeam.team_id == team_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if team is not None:
+                await session.delete(team)
+            return None
+
+        await self._run_in_tx(_op)
+
+    async def create_agent_team_workflow(
+        self,
+        *,
+        workflow_id: str,
+        team_id: str,
+        name: str,
+        graph: dict,
+        layout: dict,
+    ) -> AgentTeamWorkflow:
+        """Create one agent team workflow row.
+
+        Args:
+            workflow_id: Unique workflow identifier.
+            team_id: Owning team identifier.
+            name: Workflow display name.
+            graph: DAG graph dict ({nodes, edges}).
+            layout: Editor canvas positions ({node_id: {x, y}}).
+
+        Returns:
+            The persisted AgentTeamWorkflow.
+        """
+        workflow = AgentTeamWorkflow(
+            workflow_id=workflow_id,
+            team_id=team_id,
+            name=name,
+            graph=graph,
+            layout=layout,
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeamWorkflow:
+            session.add(workflow)
+            return workflow
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team_workflow(
+        self, workflow_id: str
+    ) -> AgentTeamWorkflow | None:
+        """Get an agent team workflow by its ID."""
+        statement = select(AgentTeamWorkflow).where(
+            AgentTeamWorkflow.workflow_id == workflow_id
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeamWorkflow | None:
+            return (await session.execute(statement)).scalars().first()
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team_workflows_by_team(
+        self, team_id: str
+    ) -> list[AgentTeamWorkflow]:
+        """Get all workflows saved for a team, latest first."""
+        statement = (
+            select(AgentTeamWorkflow)
+            .where(AgentTeamWorkflow.team_id == team_id)
+            .order_by(AgentTeamWorkflow.id.desc())
+        )
+
+        async def _op(session: AsyncSession) -> list[AgentTeamWorkflow]:
+            return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)
+
+    async def update_agent_team_workflow(self, workflow_id: str, **updates) -> None:
+        """Update an agent team workflow; ``None`` values are skipped."""
+
+        async def _op(session: AsyncSession) -> None:
+            workflow = (
+                (
+                    await session.execute(
+                        select(AgentTeamWorkflow).where(
+                            AgentTeamWorkflow.workflow_id == workflow_id
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if workflow is None:
+                return None
+            self._apply_updates(workflow, **updates)
+            workflow.updated_at = datetime.now()
+            session.add(workflow)
+            return None
+
+        await self._run_in_tx(_op)
+
+    async def delete_agent_team_workflow(self, workflow_id: str) -> None:
+        """Delete an agent team workflow by its ID."""
+
+        async def _op(session: AsyncSession) -> None:
+            workflow = (
+                (
+                    await session.execute(
+                        select(AgentTeamWorkflow).where(
+                            AgentTeamWorkflow.workflow_id == workflow_id
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if workflow is not None:
+                await session.delete(workflow)
+            return None
+
+        await self._run_in_tx(_op)
+
+    async def create_agent_team_run(
+        self,
+        *,
+        run_id: str,
+        team_id: str,
+        workflow_id: str | None,
+        mode: str,
+        input: str,
+        status: str,
+        graph_snapshot: dict,
+        node_states: dict,
+        rounds: list,
+    ) -> AgentTeamRun:
+        """Create one agent team run row.
+
+        Args:
+            run_id: Unique run identifier.
+            team_id: Executing team identifier.
+            workflow_id: Saved workflow used in DAG mode, else None.
+            mode: Run mode, ``auto`` or ``dag``.
+            input: User input that started the run.
+            status: Initial run status.
+            graph_snapshot: DAG snapshot dict ({nodes, edges}).
+            node_states: Per-node state dict.
+            rounds: Auto-mode round records.
+
+        Returns:
+            The persisted AgentTeamRun.
+        """
+        run = AgentTeamRun(
+            run_id=run_id,
+            team_id=team_id,
+            workflow_id=workflow_id,
+            mode=mode,
+            input=input,
+            status=status,
+            graph_snapshot=graph_snapshot,
+            node_states=node_states,
+            rounds=rounds,
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeamRun:
+            session.add(run)
+            return run
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team_run(self, run_id: str) -> AgentTeamRun | None:
+        """Get an agent team run by its ID."""
+        statement = select(AgentTeamRun).where(AgentTeamRun.run_id == run_id)
+
+        async def _op(session: AsyncSession) -> AgentTeamRun | None:
+            return (await session.execute(statement)).scalars().first()
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team_runs_by_team(self, team_id: str) -> list[AgentTeamRun]:
+        """Get all runs of a team, latest first."""
+        statement = (
+            select(AgentTeamRun)
+            .where(AgentTeamRun.team_id == team_id)
+            .order_by(AgentTeamRun.id.desc())
+        )
+
+        async def _op(session: AsyncSession) -> list[AgentTeamRun]:
+            return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)
+
+    async def get_active_agent_team_run(self, team_id: str) -> AgentTeamRun | None:
+        """Get the latest active (running/paused) run of a team, if any."""
+        statement = (
+            select(AgentTeamRun)
+            .where(
+                AgentTeamRun.team_id == team_id,
+                AgentTeamRun.status.in_(["running", "paused"]),
+            )
+            .order_by(AgentTeamRun.id.desc())
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeamRun | None:
+            return (await session.execute(statement)).scalars().first()
+
+        return await self._run_in_tx(_op)
+
+    async def update_agent_team_run(self, run_id: str, **updates) -> None:
+        """Update an agent team run; ``None`` values are skipped."""
+
+        async def _op(session: AsyncSession) -> None:
+            run = (
+                (
+                    await session.execute(
+                        select(AgentTeamRun).where(AgentTeamRun.run_id == run_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if run is None:
+                return None
+            self._apply_updates(run, **updates)
+            run.updated_at = datetime.now()
+            session.add(run)
+            return None
+
+        await self._run_in_tx(_op)
+
+    async def get_agent_team_runs_by_status(
+        self, statuses: list[str]
+    ) -> list[AgentTeamRun]:
+        """Get all runs whose status is in the given list, latest first."""
+        statement = (
+            select(AgentTeamRun)
+            .where(AgentTeamRun.status.in_(statuses))
+            .order_by(AgentTeamRun.id.desc())
+        )
+
+        async def _op(session: AsyncSession) -> list[AgentTeamRun]:
+            return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)

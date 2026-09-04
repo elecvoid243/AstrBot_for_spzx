@@ -8,6 +8,9 @@ from deprecated import deprecated
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from astrbot.core.db.po import (
+    AgentTeam,
+    AgentTeamRun,
+    AgentTeamWorkflow,
     ApiKey,
     Attachment,
     ChatUIProject,
@@ -1043,4 +1046,123 @@ class BaseDatabase(abc.ABC):
         self, session_id: str, creator: str
     ) -> ChatUIProject | None:
         """Get the project that a session belongs to."""
+        ...
+
+    # ====
+    # Agent Teams
+    # ====
+
+    @abc.abstractmethod
+    async def create_agent_team(
+        self,
+        *,
+        team_id: str,
+        owner_username: str,
+        name: str,
+        coordinator_member_id: str,
+        members: list,
+        config: dict,
+    ) -> AgentTeam:
+        """Create one agent team row."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team(self, team_id: str) -> AgentTeam | None:
+        """Get an agent team by its ID."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_teams_by_owner(self, owner_username: str) -> list[AgentTeam]:
+        """Get all agent teams owned by a dashboard user."""
+        ...
+
+    @abc.abstractmethod
+    async def update_agent_team(self, team_id: str, **updates) -> None:
+        """Update an agent team; ``None`` values are skipped."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_agent_team(self, team_id: str) -> None:
+        """Delete an agent team by its ID."""
+        ...
+
+    @abc.abstractmethod
+    async def create_agent_team_workflow(
+        self,
+        *,
+        workflow_id: str,
+        team_id: str,
+        name: str,
+        graph: dict,
+        layout: dict,
+    ) -> AgentTeamWorkflow:
+        """Create one agent team workflow row."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_workflow(
+        self, workflow_id: str
+    ) -> AgentTeamWorkflow | None:
+        """Get an agent team workflow by its ID."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_workflows_by_team(
+        self, team_id: str
+    ) -> list[AgentTeamWorkflow]:
+        """Get all workflows saved for a team."""
+        ...
+
+    @abc.abstractmethod
+    async def update_agent_team_workflow(self, workflow_id: str, **updates) -> None:
+        """Update an agent team workflow; ``None`` values are skipped."""
+        ...
+
+    @abc.abstractmethod
+    async def delete_agent_team_workflow(self, workflow_id: str) -> None:
+        """Delete an agent team workflow by its ID."""
+        ...
+
+    @abc.abstractmethod
+    async def create_agent_team_run(
+        self,
+        *,
+        run_id: str,
+        team_id: str,
+        workflow_id: str | None,
+        mode: str,
+        input: str,
+        status: str,
+        graph_snapshot: dict,
+        node_states: dict,
+        rounds: list,
+    ) -> AgentTeamRun:
+        """Create one agent team run row."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_run(self, run_id: str) -> AgentTeamRun | None:
+        """Get an agent team run by its ID."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_runs_by_team(self, team_id: str) -> list[AgentTeamRun]:
+        """Get all runs of a team, latest first."""
+        ...
+
+    @abc.abstractmethod
+    async def get_active_agent_team_run(self, team_id: str) -> AgentTeamRun | None:
+        """Get the latest active (running/paused) run of a team, if any."""
+        ...
+
+    @abc.abstractmethod
+    async def update_agent_team_run(self, run_id: str, **updates) -> None:
+        """Update an agent team run; ``None`` values are skipped."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_runs_by_status(
+        self, statuses: list[str]
+    ) -> list[AgentTeamRun]:
+        """Get all runs whose status is in the given list, latest first."""
         ...

@@ -133,6 +133,12 @@ class DAGRunner:
         self._resume_wake = asyncio.Event()
         self._stop_requested = asyncio.Event()
         self._results: dict[str, str] = {}
+        # Resumed runs: results preserved from persisted done nodes feed
+        # placeholder rendering without re-executing those nodes (spec §6.5
+        # redo semantics). A no-op for fresh runs (all states pending).
+        for node_id, state in self.node_states.items():
+            if state["status"] == "done" and state.get("result"):
+                self._results[node_id] = state["result"]
         self._preds: dict[str, list[str]] = {}
         for edge in graph.get("edges", []):
             src, dst = str(edge["from"]), str(edge["to"])
@@ -484,6 +490,71 @@ class AgentTeamRunService:
         )
         self._runners: dict[str, DAGRunner] = {}
         self._buses: dict[str, RunEventBus] = {}
+
+    async def boot_sweep(self) -> int:
+        """Mark stale runs interrupted at startup (spec §6.5).
+
+        In-memory runners do not survive a restart; rows still marked
+        running/paused cannot make progress and must surface as
+        `interrupted` so the panel offers resume.
+
+        Returns:
+            Number of rows transitioned to `interrupted`.
+        """
+        stale = await self.db.get_agent_team_runs_by_status(["running", "paused"])
+        for row in stale:
+            await self.db.update_agent_team_run(row.run_id, status="interrupted")
+        return len(stale)
+
+    async def resume_run(self, username: str, run_id: str) -> dict:
+        """Resume a paused (in-memory) or interrupted (post-restart) run.
+
+        Args:
+            username: Requesting dashboard user.
+            run_id: Persisted run id.
+
+        Returns:
+            The snapshot of the resumed (or rebuilt) runner.
+
+        Raises:
+            AgentTeamsServiceError: On ownership errors or a status that
+                cannot be resumed.
+        """
+        row, team = await self._require_run(username, run_id)
+        runner = self._runners.get(run_id)
+        if runner is not None:
+            if runner.status != "paused":
+                raise AgentTeamsServiceError("运行未处于暂停状态")
+            runner.resume()
+            return runner.snapshot()
+
+        if row.status not in ("interrupted", "paused"):
+            raise AgentTeamsServiceError(f"运行 '{run_id}' 当前状态不可恢复")
+        # Redo semantics: in-flight nodes at interruption are re-dispatched
+        # from scratch; done/skipped nodes and their results are preserved.
+        node_states = {
+            node_id: (
+                {**state, "status": "pending"}
+                if state["status"] == "running"
+                else state
+            )
+            for node_id, state in (row.node_states or {}).items()
+        }
+        config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
+        await self.db.update_agent_team_run(
+            run_id, status="running", node_states=node_states
+        )
+        runner = self._build_runner(
+            run_id=run_id,
+            team=team,
+            graph=row.graph_snapshot,
+            config=config,
+            run_input=row.input,
+            node_states=node_states,
+            username=username,
+        )
+        self._start_runner_task(runner)
+        return runner.snapshot()
 
     async def start_run(self, username: str, team_id: str, payload: dict) -> dict:
         """Start a DAG run for a team.

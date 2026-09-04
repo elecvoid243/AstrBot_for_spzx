@@ -175,11 +175,17 @@ def build_ports(chat_service, username: str, emit: Callable[[dict], None]) -> Te
     Returns:
         TeamPorts wired to the global webchat queue manager.
     """
+
+    # register_synthetic_chat_run(session_id, message_id, username,
+    # llm_checkpoint_id) takes the run owner as a separate argument, so wrap
+    # it in the 3-arg registrar contract deliver() uses.
+    async def _registrar(cid: str, message_id: str, llm_checkpoint_id: str) -> None:
+        await chat_service.register_synthetic_chat_run(
+            cid, message_id, username, llm_checkpoint_id
+        )
+
     ports = build_ports_for_test(
-        webchat_queue_mgr,
-        username,
-        emit,
-        run_registrar=chat_service.register_synthetic_chat_run,
+        webchat_queue_mgr, username, emit, run_registrar=_registrar
     )
     ports.is_busy = lambda sid: bool(
         chat_service.chat_runs_by_session.get(_conversation_id(sid))

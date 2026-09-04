@@ -53,7 +53,8 @@
       "showAllTitle": "Also list skills not mounted by the persona (gray, still loadable)",
       "searchPlaceholder": "Search skills by name or description",
       "searchClear": "Clear search",
-      "noMatch": "No matching skills"
+      "noMatch": "No matching skills",
+      "close": "Close"
     }
   },
   "message": {

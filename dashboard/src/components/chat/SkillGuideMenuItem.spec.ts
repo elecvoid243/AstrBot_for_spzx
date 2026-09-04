@@ -6,10 +6,11 @@
 //
 // The skill list is a COMPLETELY SEPARATE v-menu (content teleported to
 // <body>, positioned next to the item via location="end") — it never
-// participates in the "+" menu's DOM/layout. The card is a plain div so
-// hover close binds directly to it. Open/close is self-managed: the menu
-// ALWAYS closes when the pointer leaves, even after a skill was selected.
-// Un-selecting one skill keeps the others.
+// participates in the "+" menu's DOM/layout. The card is a plain div the
+// tests bind directly to. Open/close is self-managed: hover opens the
+// menu and it STAYS open when the pointer leaves — dismissal is explicit
+// only (outside click / Escape / re-click on the activator / the card's
+// corner close button). Un-selecting one skill keeps the others.
 //
 // Show-all mode (toggle off by default): flipping the switch lists every
 // skill from the core GET /skills API (skillApi.list); skills the persona
@@ -205,7 +206,22 @@ describe("SkillGuideMenuItem — rendering & hover", () => {
     expect(wrapper.text()).toContain("brainstorming");
   });
 
-  it("closes when the pointer leaves, even after a skill was selected", async () => {
+  it("closes via the corner close button", async () => {
+    await primeSession();
+    const wrapper = mountItem();
+    await openByHover(wrapper);
+    expect(
+      wrapper.find('[data-test="skill-guide-menu-card"]').exists(),
+    ).toBe(true);
+
+    await wrapper.find('[data-test="skill-guide-close"]').trigger("click");
+    await flushPromises();
+    expect(
+      wrapper.find('[data-test="skill-guide-menu-card"]').exists(),
+    ).toBe(false);
+  });
+
+  it("stays open when the pointer leaves, even after a skill was selected", async () => {
     await primeSession();
     const wrapper = mountItem();
     await openByHover(wrapper);
@@ -221,15 +237,20 @@ describe("SkillGuideMenuItem — rendering & hover", () => {
       wrapper.find('[data-test="skill-guide-item-brainstorming"]').exists(),
     ).toBe(true);
 
-    // Leaving the card still closes the menu (uniform rule).
+    // Leaving the card or the item never closes the menu — not even
+    // after a delayed wait (no hidden close timer). Dismissal is
+    // explicit only (outside click / Escape / re-click on the activator).
     vi.useFakeTimers();
     await wrapper
       .find('[data-test="skill-guide-menu-card"]')
       .trigger("mouseleave");
+    await wrapper
+      .find('[data-test="skill-guide-menu-item"]')
+      .trigger("mouseleave");
     await vi.advanceTimersByTimeAsync(200);
     expect(
       wrapper.find('[data-test="skill-guide-item-brainstorming"]').exists(),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -454,12 +475,14 @@ describe("SkillGuideMenuItem — per-open refresh & search", () => {
     await openByHover(wrapper);
     expect(getMock).toHaveBeenCalledTimes(2);
 
-    // Close (pointer leaves the card, 150ms delayed) and hover again:
-    // a second open triggers a third fetch.
-    await wrapper
-      .find('[data-test="skill-guide-menu-card"]')
-      .trigger("mouseleave");
-    await new Promise((resolve) => window.setTimeout(resolve, 200));
+    // Explicitly dismiss the menu (the update:modelValue=false that
+    // Vuetify emits on outside click / Escape — pointer leave no longer
+    // closes it) and hover again: a second open triggers a third fetch.
+    await wrapper.findComponent(menuStub).vm.$emit("update:modelValue", false);
+    await flushPromises();
+    expect(
+      wrapper.find('[data-test="skill-guide-menu-card"]').exists(),
+    ).toBe(false);
     await wrapper
       .find('[data-test="skill-guide-menu-item"]')
       .trigger("mouseenter");

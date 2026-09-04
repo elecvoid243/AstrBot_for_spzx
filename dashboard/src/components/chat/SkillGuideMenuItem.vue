@@ -12,9 +12,11 @@
   Interaction:
     - The activator is a regular "+" menu item (v-list-item).
     - Hovering it opens the skill menu. Open/close is self-managed via
-      v-model: the menu closes whenever the pointer leaves the item or
-      the card (with a short delay for a flicker-free hover path) —
-      always, whether or not a skill was selected.
+      v-model: opening happens on hover, but the menu does NOT close
+      when the pointer leaves — it stays open until an explicit dismiss
+      (outside click, Escape, clicking the activator again, or the
+      card's corner close button), so the list remains readable while
+      the pointer is elsewhere.
     - Un-selecting ONE skill keeps the others (clear + re-queue).
     - The card has hard caps: max-height + scroll for many skills,
       max-width with ellipsis-truncated lines so it never grows with the
@@ -48,7 +50,6 @@
         :disabled="disabled || !sessionId"
         data-test="skill-guide-menu-item"
         @mouseenter="handleEnter"
-        @mouseleave="scheduleClose"
       >
         <template v-slot:prepend>
           <v-icon icon="mdi-lightbulb-on-outline" size="small"></v-icon>
@@ -59,23 +60,30 @@
       </v-list-item>
     </template>
 
-    <div
-      class="skill-guide-menu-card"
-      data-test="skill-guide-menu-card"
-      @mouseenter="cancelClose"
-      @mouseleave="scheduleClose"
-    >
+    <div class="skill-guide-menu-card" data-test="skill-guide-menu-card">
       <div class="skill-guide-menu-card__header">
         <v-icon icon="mdi-lightbulb-on-outline" size="14"></v-icon>
         <span class="skill-guide-menu-card__title">{{
           tm("input.skillGuide.menuTitle")
         }}</span>
-        <span
-          v-if="queued.length > 0"
-          class="skill-guide-menu-card__count"
-          data-test="skill-guide-pop-count"
-          >{{ queued.length }}</span
-        >
+        <div class="skill-guide-menu-card__header-right">
+          <span
+            v-if="queued.length > 0"
+            class="skill-guide-menu-card__count"
+            data-test="skill-guide-pop-count"
+            >{{ queued.length }}</span
+          >
+          <button
+            type="button"
+            class="skill-guide-menu-card__close"
+            :aria-label="tm('input.skillGuide.close')"
+            :title="tm('input.skillGuide.close')"
+            data-test="skill-guide-close"
+            @click="open = false"
+          >
+            <v-icon icon="mdi-close" size="14" />
+          </button>
+        </div>
       </div>
 
       <!--
@@ -222,7 +230,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import {
   useSkillGuide,
@@ -269,18 +277,14 @@ const listFailed = computed(
     (loadFailed.value || (showAll.value && allSkillsFailed.value)),
 );
 
-// Open/close is fully self-managed (v-model on the v-menu): hovering the
-// item opens it; the menu closes whenever the pointer leaves the item OR
-// the card — with a short delay so moving between them never flickers.
-// This is deliberate: Vuetify's open-on-hover stops closing once content
-// has been clicked, which would break the "closes on leave" expectation
-// after selecting a skill. A delayed leave is the single, consistent rule.
+// Open/close is self-managed (v-model on the v-menu): hovering the item
+// opens it, and it STAYS open when the pointer leaves — dismissal is
+// explicit only (outside click / Escape via Vuetify's overlay defaults,
+// clicking the activator again, or the card's corner close button), so
+// the list remains readable while the pointer is elsewhere.
 const open = ref(false);
-const CLOSE_DELAY_MS = 150;
-let closeTimer: number | null = null;
 
 function handleEnter(): void {
-  cancelClose();
   if (!open.value) {
     open.value = true;
     // 2026-09-01 (elecvoid243): re-fetch the session's skill list every
@@ -290,23 +294,6 @@ function handleEnter(): void {
     void guide.refresh();
   }
 }
-
-function scheduleClose(): void {
-  if (closeTimer !== null) return;
-  closeTimer = window.setTimeout(() => {
-    open.value = false;
-    closeTimer = null;
-  }, CLOSE_DELAY_MS);
-}
-
-function cancelClose(): void {
-  if (closeTimer !== null) {
-    window.clearTimeout(closeTimer);
-    closeTimer = null;
-  }
-}
-
-onBeforeUnmount(cancelClose);
 
 // 2026-09-01 (elecvoid243): search filter over the rendered skill rows —
 // matches skill name or description, case-insensitive.
@@ -340,7 +327,7 @@ async function handleClearAll(): Promise<void> {
   prefixed (skill-guide-*) to stay collision-free, mirroring the
   global style block of StyledMenu.vue.
 
-  The card is a plain self-drawn div (no v-card): hover close + tests
+  The card is a plain self-drawn div (no v-card): tests
   bind directly to it. Size caps (spec): the list scrolls beyond
   max-height, and every text line is single-line ellipsis so the menu
   width never grows with the description length.
@@ -379,8 +366,16 @@ async function handleClearAll(): Promise<void> {
   color: rgba(var(--v-theme-on-surface), 0.9);
 }
 
-.skill-guide-menu-card__count {
+/* Right side of the header: queued-count badge + corner close button,
+   kept flush against the card's top-right edge. */
+.skill-guide-menu-card__header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
+}
+
+.skill-guide-menu-card__count {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -390,6 +385,26 @@ async function handleClearAll(): Promise<void> {
   font-size: 10px;
   line-height: 16px;
   text-align: center;
+}
+
+.skill-guide-menu-card__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+
+.skill-guide-menu-card__close:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 /* Show-all toggle row: slim, sits between the header and the list. */

@@ -1,0 +1,123 @@
+"""API smoke tests over a minimal FastAPI app with dependency overrides."""
+
+import asyncio
+import json
+
+import pytest
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from fastapi.testclient import TestClient
+from starlette.requests import Request
+
+import astrbot.dashboard.api.agent_teams as mod
+from astrbot.dashboard.services.agent_team_run_service import RunEventBus
+from astrbot.dashboard.services.agent_team_service import AgentTeamsServiceError
+
+# Event history replayed to every new SSE subscriber (Task 7 bus, shared).
+_BUS = RunEventBus()
+_BUS.emit({"type": "run_started", "run_id": "r1"})
+_BUS.emit({"type": "dag_progress", "done": 0, "total": 2})
+
+
+class FakeTeamSvc:
+    async def create_team(self, username, payload):
+        assert username == "alice"
+        return {"team_id": "t1", "name": payload.get("name")}
+
+    async def list_teams(self, username):
+        return {"teams": []}
+
+
+class FakeRunSvc:
+    async def start_run(self, username, team_id, payload):
+        if payload.get("input") == "conflict":
+            raise AgentTeamsServiceError("该团队已有 active run，无法重复启动")
+        return {"run_id": "r1", "status": "running"}
+
+    async def pause_run(self, username, run_id):
+        assert username == "alice" and run_id == "r1"
+        return {"message": "已暂停"}
+
+    async def get_event_bus(self, username, run_id):
+        assert username == "alice" and run_id == "r1"
+        return _BUS
+
+
+@pytest.fixture()
+def client():
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/v1")
+    app.include_router(mod.legacy_router)
+
+    async def _fake_auth():
+        return "alice"
+
+    app.dependency_overrides[mod.get_team_service] = lambda: FakeTeamSvc()
+    app.dependency_overrides[mod.get_run_service] = lambda: FakeRunSvc()
+    app.dependency_overrides[mod._auth_dep] = _fake_auth
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_create_team_route(client):
+    resp = client.post(
+        "/api/v1/agent_teams", json={"name": "t", "members": [], "coordinator": ""}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["team_id"] == "t1"
+
+
+def test_start_run_maps_active_conflict_to_409(client):
+    resp = client.post(
+        "/api/v1/agent_teams/t1/runs",
+        json={"mode": "dag", "input": "conflict", "workflow_id": "w1"},
+    )
+    assert resp.status_code == 409
+
+
+def test_pause_run_forwards_username_first_on_legacy_route(client):
+    resp = client.post("/api/agent_teams/runs/r1/pause")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"message": "已暂停"}
+
+
+@pytest.mark.asyncio
+async def test_stream_replays_history_then_heartbeats(monkeypatch):
+    # TestClient buffers the whole response body, so an endless SSE stream
+    # must be driven through the handler + body iterator directly.
+    monkeypatch.setattr(mod, "_SSE_HEARTBEAT_SECONDS", 0.01)
+
+    async def _never_receive():
+        # Keeps is_disconnected() pending until its cancel scope fires.
+        await asyncio.sleep(3600)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/agent_teams/runs/r1/stream",
+            "headers": [],
+            "query_string": b"",
+        },
+        receive=_never_receive,
+    )
+    resp = await mod.stream_run(
+        run_id="r1", request=request, username="alice", service=FakeRunSvc()
+    )
+    assert isinstance(resp, StreamingResponse)
+
+    chunks = []
+    async for chunk in resp.body_iterator:
+        chunks.append(chunk)
+        if chunk == ": heartbeat\n\n":
+            break
+    events = [
+        json.loads(chunk.removeprefix("data: "))
+        for chunk in chunks
+        if chunk.startswith("data: ")
+    ]
+    assert [e["type"] for e in events] == ["run_started", "dag_progress"]
+    assert chunks[-1] == ": heartbeat\n\n"
+
+    # Closing the stream unsubscribes from the shared bus.
+    await resp.body_iterator.aclose()
+    assert _BUS._subscribers == []

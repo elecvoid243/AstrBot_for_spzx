@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.log import LogManager
 from astrbot.dashboard.responses import ApiError, error
 from astrbot.dashboard.services.agent_collab_service import AgentCollabService
+from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
+from astrbot.dashboard.services.agent_team_service import AgentTeamService
 from astrbot.dashboard.services.api_key_service import ApiKeyService
 from astrbot.dashboard.services.auth_service import AuthService
 from astrbot.dashboard.services.backup_service import BackupService
@@ -52,6 +56,7 @@ from astrbot.dashboard.services.update_service import (
 )
 
 from .agent_collab import legacy_router as legacy_agent_collab_router
+from .agent_teams import legacy_router as legacy_agent_teams_router
 from .api_keys import legacy_router as legacy_api_keys_router
 from .auth import legacy_router as legacy_auth_router
 from .backups import legacy_router as legacy_backups_router
@@ -95,19 +100,33 @@ def create_dashboard_asgi_app(
     jwt_secret: str,
     static_folder: str | None = None,
 ) -> FastAPI:
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        """Run startup maintenance before the dashboard serves requests."""
+        # Agent Teams: mark stale runs interrupted after a restart so the
+        # panel can offer resume (spec §6.5). Guarded so startup never
+        # fails on it.
+        try:
+            await services.agent_team_runs.boot_sweep()
+        except Exception:  # noqa: BLE001
+            logger.warning("agent team boot sweep failed", exc_info=True)
+        yield
+
     app = FastAPI(
         title="AstrBot OpenAPI",
         version="1.0.0",
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
         docs_url=f"{API_V1_PREFIX}/docs",
         redoc_url=f"{API_V1_PREFIX}/redoc",
+        lifespan=_lifespan,
     )
     app.state.core_lifecycle = core_lifecycle
     app.state.db = db
     app.state.jwt_secret = jwt_secret
     app.state.dashboard_static_folder = static_folder
     log_broker = getattr(core_lifecycle, "log_broker", None) or LogBroker()
-    app.state.services = SimpleNamespace(
+    chat = ChatService(db, core_lifecycle)
+    services = SimpleNamespace(
         config_profiles=ConfigProfileService(core_lifecycle, db),
         config_display=ConfigDisplayService(core_lifecycle),
         config_files=ConfigFileService(core_lifecycle),
@@ -116,7 +135,7 @@ def create_dashboard_asgi_app(
         api_keys=ApiKeyService(db),
         auth=AuthService(db, core_lifecycle.astrbot_config),
         backups=BackupService(db, core_lifecycle),
-        chat=ChatService(db, core_lifecycle),
+        chat=chat,
         chat_projects=ChatUIProjectService(db),
         commands=CommandService(core_lifecycle.astrbot_config, core_lifecycle),
         conversations=ConversationService(db, core_lifecycle),
@@ -149,6 +168,20 @@ def create_dashboard_asgi_app(
             demo_mode=DEMO_MODE,
             clear_site_data_headers=CLEAR_SITE_DATA_HEADERS,
         ),
+    )
+    app.state.services = services
+
+    services.agent_teams = AgentTeamService(
+        db=db,
+        core_lifecycle=core_lifecycle,
+        chat_service=chat,
+        busy_checker=lambda session_id: bool(chat.chat_runs_by_session.get(session_id)),
+    )
+    services.agent_team_runs = AgentTeamRunService(
+        db=db,
+        chat_service=chat,
+        busy_checker=services.agent_teams.busy_checker,
+        on_member_stop=None,  # wired to the chat stop API in the follow-up plan
     )
 
     # Kernel goal loop: injected goal turns on webchat sessions register as
@@ -213,6 +246,7 @@ def create_dashboard_asgi_app(
     # Legacy dashboard routes keep old /api/* callers working without entering OpenAPI.
     app.include_router(legacy_api_keys_router)
     app.include_router(legacy_agent_collab_router)
+    app.include_router(legacy_agent_teams_router)
     app.include_router(legacy_auth_router)
     app.include_router(legacy_backups_router)
     app.include_router(legacy_config_profiles_router)

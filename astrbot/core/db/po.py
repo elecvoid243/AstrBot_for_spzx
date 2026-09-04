@@ -209,6 +209,70 @@ class CronJob(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, sa_type=Text)
 
 
+class AgentTeam(TimestampMixin, SQLModel, table=True):
+    """An Agent Teams team: named members bound to WebChat sessions."""
+
+    __tablename__: str = "agent_teams"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    team_id: str = Field(max_length=32, nullable=False, unique=True)
+    owner_username: str = Field(max_length=64, nullable=False)
+    name: str = Field(max_length=64, nullable=False)
+    coordinator_member_id: str = Field(max_length=32, nullable=False)
+    # [{member_id, name, session_id, umo, persona_id, provider_id, system_prompt}]
+    members: list = Field(default_factory=list, sa_type=JSON)
+    # {failure_policy, reply_timeout, max_rounds, max_parallel, inject_max_length}
+    config: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentTeamWorkflow(TimestampMixin, SQLModel, table=True):
+    """A saved manual-orchestration DAG template bound to one team."""
+
+    __tablename__: str = "agent_team_workflows"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    workflow_id: str = Field(max_length=32, nullable=False, unique=True)
+    team_id: str = Field(max_length=32, nullable=False, index=True)
+    name: str = Field(max_length=64, nullable=False)
+    # {nodes: [{id, member_id, task, title?}], edges: [{from, to}]}
+    graph: dict = Field(default_factory=dict, sa_type=JSON)
+    # {node_id: {x, y}} editor canvas positions
+    layout: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentTeamRun(TimestampMixin, SQLModel, table=True):
+    """One execution of a team (auto or DAG mode), persisted per transition."""
+
+    __tablename__: str = "agent_team_runs"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    run_id: str = Field(max_length=32, nullable=False, unique=True)
+    team_id: str = Field(max_length=32, nullable=False, index=True)
+    workflow_id: str | None = Field(default=None, max_length=32)
+    mode: str = Field(max_length=8, nullable=False)  # auto | dag
+    input: str = Field(sa_type=Text, nullable=False, default="")
+    status: str = Field(max_length=16, nullable=False, default="running", index=True)
+    result_summary: str = Field(sa_type=Text, nullable=False, default="")
+    graph_snapshot: dict = Field(default_factory=dict, sa_type=JSON)
+    # {node_id: {status, member_id, task_rendered, result, error, started_at,
+    #            finished_at}}; node status: pending|running|done|failed|skipped
+    node_states: dict = Field(default_factory=dict, sa_type=JSON)
+    # auto mode only (Plan 3): [{n, assignments, results_digest}]
+    rounds: list = Field(default_factory=list, sa_type=JSON)
+
+
 class Preference(TimestampMixin, SQLModel, table=True):
     """This class represents preferences for bots."""
 

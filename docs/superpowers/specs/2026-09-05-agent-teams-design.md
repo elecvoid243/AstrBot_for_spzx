@@ -43,6 +43,9 @@ Subagent 体系（`astrbot/core/subagent_*.py`）与本功能**完全解耦且�
 | 协调者协议 | **注册 LLM 工具**（非文本指令协议），当且仅当 Teams 运行活跃时才分配给协调者会话 |
 | 重启恢复 | 做 Tier 1 热恢复（见 §6.5） |
 | 成员来源 | v1 只能新建会话，不允许绑定已有会话（结构上杜绝跨团队会话引用）；存储层加 session_id 唯一性校验兜底 |
+| API 认证（实施偏差） | v1 路由使用 `require_dashboard_user`（JWT）而非 scope 依赖：`require_chat_scope` 在 auth.py 中不存在，且与被替换的 collab 模块先例一致；比 scope 模型更严格（不接受 API key）。Plan 2 前端按此生成 API client |
+| 停止语义（实施偏差） | Plan 1 为"排空后停止"：在途回合自然结束后落 `stopped`（等待上限 reply_timeout）；"放弃收集 + 成员取消传播"（`on_member_stop` → `/chat/sessions/{id}/stop` + collect 弃收检查）由 Plan 3 落地 |
+| 失败策略补充（实施） | 团队 config 校验覆盖类型与范围（reply_timeout/inject_max_length > 0、max_parallel 1..5、max_rounds 1..20），从配置层面消除 `render_task` max_length≤0 的退化路径 |
 
 ## 3. 非目标（Non-goals）
 

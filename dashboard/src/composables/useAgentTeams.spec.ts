@@ -204,4 +204,47 @@ describe("useAgentTeams", () => {
     expect(await api.deleteWorkflow("t1", "w1")).toBeNull();
     expect(toastMocks.error).toHaveBeenCalledWith("workflow in use");
   });
+
+  it("captures structured field errors from HTTP rejections and clears on success", async () => {
+    const api = useAgentTeams();
+    apiMocks.createWorkflow.mockRejectedValueOnce({
+      message: "Request failed with status code 400",
+      response: {
+        status: 400,
+        data: {
+          status: "error",
+          message: "工作流校验失败",
+          data: {
+            fields: [
+              {
+                path: "nodes.n2.execution.config_id",
+                message: "节点 n2 的配置档案不存在: xxx",
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(await api.saveWorkflow("t1", { name: "x" })).toBeNull();
+    expect(toastMocks.error).toHaveBeenCalledWith("工作流校验失败");
+    expect(api.lastErrorFields.value).toEqual([
+      {
+        path: "nodes.n2.execution.config_id",
+        message: "节点 n2 的配置档案不存在: xxx",
+      },
+    ]);
+
+    // The next (successful) call resets the fields.
+    apiMocks.createWorkflow.mockResolvedValueOnce(ok(WORKFLOW));
+    apiMocks.listWorkflows.mockResolvedValueOnce(ok({ workflows: [WORKFLOW] }));
+    await api.saveWorkflow("t1", { name: "x" });
+    expect(api.lastErrorFields.value).toEqual([]);
+  });
+
+  it("keeps lastErrorFields empty for plain failures without field data", async () => {
+    const api = useAgentTeams();
+    apiMocks.listTeams.mockRejectedValueOnce(new Error("network down"));
+    expect(await api.loadTeams()).toBeNull();
+    expect(api.lastErrorFields.value).toEqual([]);
+  });
 });

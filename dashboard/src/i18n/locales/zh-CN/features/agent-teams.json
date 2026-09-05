@@ -58,7 +58,19 @@
     "missingMember": "有节点绑定的成员已被移除",
     "cycleDetected": "检测到环：{path}",
     "tooManyNodes": "节点数超限：{count}（上限 {max}）",
-    "monitorMode": "运行视图"
+    "monitorMode": "运行视图",
+    "executionConfig": "执行配置",
+    "configProfile": "配置档案",
+    "configProfileDefault": "跟随默认配置",
+    "personaOverride": "覆盖人格",
+    "personaFollowProfile": "跟随档案默认",
+    "toolsOverride": "工具覆盖",
+    "toolsInherit": "继承",
+    "toolsDisableAll": "全部禁用",
+    "toolsAllowlist": "仅允许",
+    "skillsOverride": "Skill 覆盖",
+    "skillsInherit": "继承",
+    "skillsAllowlist": "仅允许"
   },
   "monitor": {
     "input": "任务目标",

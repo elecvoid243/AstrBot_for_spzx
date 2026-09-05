@@ -9,6 +9,7 @@ import type { AxiosResponse } from 'axios';
 import { agentTeamsApi } from '@/api/v1';
 import type { ApiEnvelope } from '@/api/v1';
 import { extractApiError } from '@/utils/extractApiError';
+import type { ApiErrorField } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 
 export interface AgentTeamMember {
@@ -37,6 +38,10 @@ export interface AgentTeamWorkflow {
 const teams = ref<AgentTeam[]>([]);
 const selectedTeamId = ref<string | null>(null);
 const workflows = ref<AgentTeamWorkflow[]>([]);
+// Structured validation fields from the most recent failed call (empty after
+// any success). Lets views render field-level backend reasons (e.g. the
+// workflow editor's validation banner) without re-running the request.
+const lastErrorFields = ref<ApiErrorField[]>([]);
 
 const selectedTeam = computed<AgentTeam | null>(
   () => teams.value.find((t) => t.team_id === selectedTeamId.value) ?? null,
@@ -58,6 +63,7 @@ async function unwrapEnvelope(
   call: () => Promise<AxiosResponse<ApiEnvelope<any>>>,
 ): Promise<any | null> {
   const { error } = useToast();
+  lastErrorFields.value = [];
   try {
     const res = await call();
     if (res.data.status === 'error') {
@@ -69,8 +75,11 @@ async function unwrapEnvelope(
     // Non-2xx responses arrive as axios rejections carrying the backend's
     // error envelope body; extractApiError prefers its message over axios's
     // generic "Request failed with status code N" (and handles the 429
-    // plain-string rejection).
-    error(extractApiError(err, 'Agent teams request failed').message);
+    // plain-string rejection). Structured validation fields, when present,
+    // are published for views that render field-level errors.
+    const extracted = extractApiError(err, 'Agent teams request failed');
+    lastErrorFields.value = extracted.fields;
+    error(extracted.message);
     return null;
   }
 }
@@ -186,6 +195,7 @@ export function useAgentTeams() {
     selectedTeamId,
     selectedTeam,
     workflows,
+    lastErrorFields,
     loadTeams,
     selectTeam,
     createTeam,

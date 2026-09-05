@@ -58,7 +58,19 @@
     "missingMember": "A member bound to a node has been removed",
     "cycleDetected": "Cycle detected: {path}",
     "tooManyNodes": "Too many nodes: {count} (max {max})",
-    "monitorMode": "Run View"
+    "monitorMode": "Run View",
+    "executionConfig": "Execution Config",
+    "configProfile": "Config Profile",
+    "configProfileDefault": "Follow Default Config",
+    "personaOverride": "Override Persona",
+    "personaFollowProfile": "Follow Profile Default",
+    "toolsOverride": "Tool Overrides",
+    "toolsInherit": "Inherit",
+    "toolsDisableAll": "Disable All",
+    "toolsAllowlist": "Allowlist",
+    "skillsOverride": "Skill Overrides",
+    "skillsInherit": "Inherit",
+    "skillsAllowlist": "Allowlist"
   },
   "monitor": {
     "input": "Task Goal",

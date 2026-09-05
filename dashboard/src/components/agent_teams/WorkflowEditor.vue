@@ -41,9 +41,16 @@
       </v-btn>
     </div>
 
-    <div v-if="bannerMessage" class="editor-banner">
+    <div v-if="bannerMessage || lastErrorFields.length" class="editor-banner">
       <strong>{{ tm('editor.validation') }}</strong>
-      <span>{{ bannerMessage }}</span>
+      <span v-if="bannerMessage">{{ bannerMessage }}</span>
+      <!-- Structured backend validation errors (e.g. execution block issues)
+           published by useAgentTeams; the plain message is toasted there. -->
+      <ul v-if="lastErrorFields.length" class="editor-banner-fields">
+        <li v-for="(field, index) in lastErrorFields" :key="`${field.path}-${index}`">
+          {{ field.path }}: {{ field.message }}
+        </li>
+      </ul>
     </div>
 
     <div class="editor-body">
@@ -68,6 +75,84 @@
           density="compact"
           hide-details
         />
+        <div class="editor-exec mt-3">
+          <v-btn size="small" variant="text" block class="exec-toggle" @click="toggleExecGroup">
+            <v-icon size="small">{{ execOpen ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
+            {{ tm('editor.executionConfig') }}
+          </v-btn>
+          <template v-if="execOpen && selectedExec">
+            <v-select
+              v-model="selectedExec.config_id"
+              :items="configProfileSelectItems"
+              item-title="title"
+              item-value="value"
+              :label="tm('editor.configProfile')"
+              density="compact"
+              hide-details
+              class="mt-2"
+            />
+            <v-checkbox-btn
+              v-model="personaOverride"
+              :label="tm('editor.personaOverride')"
+              density="compact"
+              hide-details
+              class="mt-2"
+            />
+            <div v-if="personaOverride" class="mt-2">
+              <PersonaSelector v-model="selectedExec.persona_id" />
+              <p v-if="!selectedExec.persona_id" class="editor-exec-hint">
+                {{ tm('editor.personaFollowProfile') }}
+              </p>
+            </div>
+            <v-radio-group
+              v-model="selectedToolsMode"
+              :label="tm('editor.toolsOverride')"
+              density="compact"
+              hide-details
+              class="mt-2"
+            >
+              <v-radio :label="tm('editor.toolsInherit')" value="inherit" density="compact" />
+              <v-radio
+                :label="tm('editor.toolsDisableAll')"
+                value="disable_all"
+                density="compact"
+              />
+              <v-radio :label="tm('editor.toolsAllowlist')" value="allowlist" density="compact" />
+            </v-radio-group>
+            <v-select
+              v-if="selectedExec.toolsMode === 'allowlist'"
+              v-model="selectedExec.tools"
+              :items="toolOptions"
+              multiple
+              density="compact"
+              hide-details
+              class="mt-2"
+            />
+            <v-radio-group
+              v-model="selectedSkillsMode"
+              :label="tm('editor.skillsOverride')"
+              density="compact"
+              hide-details
+              class="mt-2"
+            >
+              <v-radio :label="tm('editor.skillsInherit')" value="inherit" density="compact" />
+              <v-radio
+                :label="tm('editor.skillsAllowlist')"
+                value="allowlist"
+                density="compact"
+              />
+            </v-radio-group>
+            <v-select
+              v-if="selectedExec.skillsMode === 'allowlist'"
+              v-model="selectedExec.skills"
+              :items="skillOptions"
+              multiple
+              density="compact"
+              hide-details
+              class="mt-2"
+            />
+          </template>
+        </div>
         <v-textarea
           ref="taskAreaRef"
           v-model="selectedTask"
@@ -91,22 +176,48 @@
 // ComfyUI-style DAG editor for one team's workflows (Task 7). Owns the
 // workflow name, the node/edge graph and a nodeId -> position layout map that
 // round-trips through the backend payload:
-//   { name, graph: { nodes: [{id, member_id, task}], edges: [{from, to}] }, layout }
+//   { name, graph: { nodes: [{id, member_id, task, execution?}], edges: [{from, to}] }, layout }
 // Validation is mirrored client-side (cycle / duplicate / dangling / missing
 // member / >20 nodes) and rendered as a live banner; saving goes through the
 // useAgentTeams().saveWorkflow composable, which also toasts error envelopes
-// and refreshes the workflows list.
+// and refreshes the workflows list. Structured backend validation fields are
+// rendered in the same banner via the composable's lastErrorFields.
+// Each node also carries an optional per-node `execution` override block
+// (config profile / persona / tool+skill allowlists) edited in the inspector's
+// collapsible "执行配置" group; the block is omitted from the payload when
+// every field stays inherit.
 import { computed, nextTick, ref, watch } from 'vue';
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import type { FlowNode } from './TeamsFlowCanvas.vue';
+import PersonaSelector from '@/components/shared/PersonaSelector.vue';
+import { configProfileApi, skillApi, toolApi } from '@/api/v1';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useModuleI18n } from '@/i18n/composables';
 import { useToast } from '@/utils/toast';
+import { extractApiError } from '@/utils/extractApiError';
 import { findCycle, renderableError } from '@/utils/dagCheck';
+import type { DagCheckNode } from '@/utils/dagCheck';
 
 // Mirrors AgentTeamService.MAX_NODES on the backend.
 const MAX_NODES = 20;
 const INPUT_TOKEN = '{{input}}';
+
+/** Tool override modes; `inherit` keeps the backend field unset. */
+type ExecToolsMode = 'inherit' | 'disable_all' | 'allowlist';
+/** Skills have no disable-all mode (spec §2.3): inherit or allowlist only. */
+type ExecSkillsMode = 'inherit' | 'allowlist';
+
+/** Editable per-node execution override state (inspector binding target). */
+interface NodeExecState {
+  config_id: string;
+  persona_id: string;
+  /** UI toggle state; serialization keys off `persona_id` alone. */
+  personaOn: boolean;
+  tools: string[] | null;
+  skills: string[] | null;
+  toolsMode: ExecToolsMode;
+  skillsMode: ExecSkillsMode;
+}
 
 const props = defineProps<{
   /** Currently selected team; drives the member pickers and save target. */
@@ -117,7 +228,7 @@ const props = defineProps<{
 
 const { tm } = useModuleI18n('features/agent-teams');
 const toast = useToast();
-const { saveWorkflow } = useAgentTeams();
+const { saveWorkflow, lastErrorFields } = useAgentTeams();
 
 const selectedWorkflowId = ref('');
 const workflowName = ref('');
@@ -128,6 +239,171 @@ const selectedNodeId = ref<string | null>(null);
 const addMemberId = ref('');
 const saving = ref(false);
 const taskAreaRef = ref<any>(null);
+
+// --- Per-node execution override state ---------------------------------
+
+const execOpen = ref(false);
+const execOptionsLoaded = ref(false);
+const configProfileOptions = ref<{ title: string; value: string }[]>([]);
+const toolOptions = ref<{ title: string; value: string }[]>([]);
+const skillOptions = ref<{ title: string; value: string }[]>([]);
+const executionByNode = ref<Record<string, NodeExecState>>({});
+
+/** Blank override state: everything follows the team defaults. */
+function defaultExecState(): NodeExecState {
+  return {
+    config_id: '',
+    persona_id: '',
+    personaOn: false,
+    tools: null,
+    skills: null,
+    toolsMode: 'inherit',
+    skillsMode: 'inherit',
+  };
+}
+
+/**
+ * Parse a stored execution block into editable state.
+ *
+ * Args:
+ *   raw: The `execution` value from a loaded graph node (may be undefined).
+ *
+ * Returns:
+ *   The editable state; an empty/absent list maps to `inherit`.
+ */
+function parseExecState(raw: unknown): NodeExecState {
+  const exec = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const list = (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) return null;
+    return value.map((item) => String(item)).filter((item) => item.trim());
+  };
+  const tools = list(exec.tools);
+  const skills = list(exec.skills);
+  return {
+    config_id: typeof exec.config_id === 'string' ? exec.config_id : '',
+    persona_id: typeof exec.persona_id === 'string' ? exec.persona_id : '',
+    personaOn: typeof exec.persona_id === 'string' && exec.persona_id !== '',
+    tools,
+    skills,
+    // `[]` is the backend's disable-all marker; any non-empty list is a filter.
+    toolsMode: tools === null ? 'inherit' : tools.length === 0 ? 'disable_all' : 'allowlist',
+    skillsMode: skills === null ? 'inherit' : 'allowlist',
+  };
+}
+
+/**
+ * Serialize editable state into the payload's `execution` block.
+ *
+ * Args:
+ *   state: The node's editable execution state.
+ *
+ * Returns:
+ *   The block with only overridden fields set, or null when every field
+ *   stays inherit (keeps default payloads byte-identical to pre-execution).
+ */
+function serializeExecState(state: NodeExecState): Record<string, unknown> | null {
+  const block: Record<string, unknown> = {};
+  if (state.config_id.trim()) block.config_id = state.config_id;
+  if (state.persona_id.trim()) block.persona_id = state.persona_id;
+  if (state.toolsMode === 'disable_all') block.tools = [];
+  else if (state.toolsMode === 'allowlist') block.tools = [...(state.tools ?? [])];
+  if (state.skillsMode === 'allowlist') block.skills = [...(state.skills ?? [])];
+  return Object.keys(block).length > 0 ? block : null;
+}
+
+/** Selected node's execution state (created lazily so bindings always resolve). */
+const selectedExec = computed<NodeExecState | null>(() =>
+  selectedNodeId.value ? (executionByNode.value[selectedNodeId.value] ?? null) : null,
+);
+
+/** Persona override toggle; off clears the persona so it follows the profile default. */
+const personaOverride = computed<boolean>({
+  get: () => !!selectedExec.value?.personaOn,
+  set: (on) => {
+    const exec = selectedExec.value;
+    if (!exec) return;
+    exec.personaOn = on;
+    if (!on) exec.persona_id = '';
+  },
+});
+
+/** Tools mode switch that guarantees an array exists in allowlist mode. */
+const selectedToolsMode = computed<ExecToolsMode>({
+  get: () => selectedExec.value?.toolsMode ?? 'inherit',
+  set: (mode) => {
+    const exec = selectedExec.value;
+    if (!exec) return;
+    exec.toolsMode = mode;
+    if (mode === 'allowlist' && exec.tools === null) exec.tools = [];
+  },
+});
+
+/** Skills mode switch that guarantees an array exists in allowlist mode. */
+const selectedSkillsMode = computed<ExecSkillsMode>({
+  get: () => selectedExec.value?.skillsMode ?? 'inherit',
+  set: (mode) => {
+    const exec = selectedExec.value;
+    if (!exec) return;
+    exec.skillsMode = mode;
+    if (mode === 'allowlist' && exec.skills === null) exec.skills = [];
+  },
+});
+
+/** Profile dropdown items: the "follow default" empty option plus profiles. */
+const configProfileSelectItems = computed(() => [
+  { title: tm('editor.configProfileDefault'), value: '' },
+  ...configProfileOptions.value,
+]);
+
+/** Expand/collapse the execution group, loading option lists once. */
+function toggleExecGroup() {
+  execOpen.value = !execOpen.value;
+  if (execOpen.value) void loadExecutionOptions();
+}
+
+/**
+ * Lazily load config profile / tool / skill options on first expansion.
+ *
+ * Each list fails independently: a failure is toasted (non-fatal) and simply
+ * leaves that list empty.
+ */
+async function loadExecutionOptions() {
+  if (execOptionsLoaded.value) return;
+  execOptionsLoaded.value = true;
+  try {
+    const res = await configProfileApi.list();
+    if (res.data?.status === 'ok') {
+      configProfileOptions.value = ((res.data.data?.info_list ?? []) as any[]).map((p) => ({
+        title: String(p.name || p.id || ''),
+        value: String(p.id || ''),
+      }));
+    }
+  } catch (err) {
+    toast.error(extractApiError(err, tm('errors.loadFailed')).message);
+  }
+  try {
+    const res = await toolApi.list();
+    if (res.data?.status === 'ok') {
+      toolOptions.value = ((res.data.data ?? []) as any[])
+        .filter((t) => t && t.name && t.active !== false)
+        .map((t) => ({ title: String(t.name), value: String(t.name) }));
+    }
+  } catch (err) {
+    toast.error(extractApiError(err, tm('errors.loadFailed')).message);
+  }
+  try {
+    const res = await skillApi.list();
+    if (res.data?.status === 'ok') {
+      const payload = res.data.data ?? [];
+      const skills = Array.isArray(payload) ? payload : (payload.skills ?? []);
+      skillOptions.value = (skills as any[])
+        .filter((s) => s && s.name && s.active !== false)
+        .map((s) => ({ title: String(s.name), value: String(s.name) }));
+    }
+  } catch (err) {
+    toast.error(extractApiError(err, tm('errors.loadFailed')).message);
+  }
+}
 
 const memberItems = computed(() =>
   (props.team?.members ?? []).map((m: any) => ({
@@ -223,6 +499,7 @@ function addNode() {
     data: { label: `${memberName} (${id})`, memberName, memberId: addMemberId.value, task: '' },
   });
   layout.value[id] = position;
+  executionByNode.value[id] = defaultExecState();
   selectedNodeId.value = id;
 }
 
@@ -233,6 +510,7 @@ function deleteNode() {
   graphNodes.value = graphNodes.value.filter((n) => n.id !== id);
   graphEdges.value = graphEdges.value.filter((e) => e.source !== id && e.target !== id);
   delete layout.value[id];
+  delete executionByNode.value[id];
   selectedNodeId.value = null;
 }
 
@@ -258,6 +536,13 @@ function onSelectNode(nodeId: string | null) {
   selectedNodeId.value = nodeId;
 }
 
+// Ensure the selected node always has an execution state entry so inspector
+// bindings resolve even for nodes created outside addNode (e.g. loaded graphs
+// missing the block).
+watch(selectedNodeId, (id) => {
+  if (id && !executionByNode.value[id]) executionByNode.value[id] = defaultExecState();
+});
+
 /** Insert the `{{input}}` token at the textarea cursor (or at the end). */
 function insertInputToken() {
   const root = taskAreaRef.value?.$el as HTMLElement | undefined;
@@ -281,11 +566,21 @@ function insertInputToken() {
 /** Current editor content as the backend graph payload. */
 function buildGraphPayload() {
   return {
-    nodes: graphNodes.value.map((n) => ({
-      id: n.id,
-      member_id: (n.data.memberId as string) ?? '',
-      task: ((n.data.task as string) ?? '').trim(),
-    })),
+    nodes: graphNodes.value.map((n) => {
+      const node: DagCheckNode = {
+        id: n.id,
+        member_id: (n.data.memberId as string) ?? '',
+        task: ((n.data.task as string) ?? '').trim(),
+      };
+      const exec = executionByNode.value[n.id];
+      if (exec) {
+        const execution = serializeExecState(exec);
+        // Omitted entirely when every field stays inherit, so payloads for
+        // default-state graphs stay byte-identical to the pre-execution format.
+        if (execution) node.execution = execution;
+      }
+      return node;
+    }),
     edges: graphEdges.value.map((e) => ({ from: e.source, to: e.target })),
   };
 }
@@ -320,7 +615,10 @@ function resetBlank() {
   graphNodes.value = [];
   graphEdges.value = [];
   layout.value = {};
+  executionByNode.value = {};
   selectedNodeId.value = null;
+  // Stale save-error fields belong to the discarded graph.
+  lastErrorFields.value = [];
 }
 
 // Switching teams blanks the editor: workflow ids and member bindings are
@@ -347,8 +645,11 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
   graphNodes.value = [];
   graphEdges.value = [];
   layout.value = {};
+  executionByNode.value = {};
+  // Stale save-error fields belong to the previous graph.
+  lastErrorFields.value = [];
   const graph = (wf.graph ?? {}) as {
-    nodes?: { id?: string; member_id?: string; task?: string }[];
+    nodes?: { id?: string; member_id?: string; task?: string; execution?: unknown }[];
     edges?: { from?: string; to?: string }[];
   };
   const wfLayout = (wf.layout ?? {}) as Record<string, { x?: number; y?: number }>;
@@ -364,6 +665,7 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
       position,
       data: { label: `${memberName} (${id})`, memberName, memberId, task: String(gn.task ?? '') },
     });
+    executionByNode.value[id] = parseExecState(gn.execution);
   }
   for (const ge of graph.edges ?? []) {
     if (!ge?.from || !ge?.to) continue;
@@ -396,6 +698,18 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
   background: rgba(239, 68, 68, 0.12);
   color: inherit;
   font-size: 13px;
+}
+
+.editor-banner-fields {
+  margin: 0;
+  padding-left: 16px;
+  word-break: break-word;
+}
+
+.editor-exec-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
 }
 
 .editor-body {

@@ -58,7 +58,19 @@
     "missingMember": "Участник, привязанный к узлу, был удалён",
     "cycleDetected": "Обнаружен цикл: {path}",
     "tooManyNodes": "Слишком много узлов: {count} (макс. {max})",
-    "monitorMode": "Режим выполнения"
+    "monitorMode": "Режим выполнения",
+    "executionConfig": "Конфигурация выполнения",
+    "configProfile": "Профиль конфигурации",
+    "configProfileDefault": "Как в профиле по умолчанию",
+    "personaOverride": "Переопределить персонажа",
+    "personaFollowProfile": "Как в профиле по умолчанию",
+    "toolsOverride": "Инструменты",
+    "toolsInherit": "Унаследовать",
+    "toolsDisableAll": "Запретить все",
+    "toolsAllowlist": "Только выбранные",
+    "skillsOverride": "Навыки",
+    "skillsInherit": "Унаследовать",
+    "skillsAllowlist": "Только выбранные"
   },
   "monitor": {
     "input": "Цель задачи",

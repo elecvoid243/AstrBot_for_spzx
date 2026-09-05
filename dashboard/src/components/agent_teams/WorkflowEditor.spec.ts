@@ -11,7 +11,8 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import type { VueWrapper } from '@vue/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { nextTick } from 'vue';
+import { nextTick, ref } from 'vue';
+import type { Ref } from 'vue';
 import zh from '@/i18n/locales/zh-CN/features/agent-teams.json';
 
 const toastMock = vi.hoisted(() => ({
@@ -21,6 +22,15 @@ const toastMock = vi.hoisted(() => ({
 
 const composableMocks = vi.hoisted(() => ({
   saveWorkflow: vi.fn(),
+  // Assigned a real ref right after imports; the mock factory only captures
+  // the holder object, so the property is resolved at useAgentTeams() call time.
+  lastErrorFields: null as unknown as Ref<{ path: string; message: string }[]>,
+}));
+
+const apiMocks = vi.hoisted(() => ({
+  configProfileList: vi.fn(),
+  toolList: vi.fn(),
+  skillList: vi.fn(),
 }));
 
 vi.mock('@/utils/toast', () => ({
@@ -30,6 +40,27 @@ vi.mock('@/utils/toast', () => ({
 vi.mock('@/composables/useAgentTeams', () => ({
   useAgentTeams: () => composableMocks,
 }));
+
+vi.mock('@/api/v1', () => ({
+  configProfileApi: { list: apiMocks.configProfileList },
+  toolApi: { list: apiMocks.toolList },
+  skillApi: { list: apiMocks.skillList },
+}));
+
+// PersonaSelector pulls in the whole persona folder tree + PersonaForm; the
+// execution specs only need the modelValue contract (no defineModel upstream).
+vi.mock('@/components/shared/PersonaSelector.vue', async () => {
+  const { defineComponent } = await import('vue');
+  return {
+    default: defineComponent({
+      name: 'PersonaSelector',
+      props: { modelValue: { type: String, default: '' } },
+      emits: ['update:modelValue'],
+      template:
+        '<input class="persona-stub" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    }),
+  };
+});
 
 vi.mock('@vue-flow/core', async () => {
   const { defineComponent } = await import('vue');
@@ -58,6 +89,9 @@ vi.mock('@vue-flow/core', async () => {
 
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import WorkflowEditor from './WorkflowEditor.vue';
+
+// The mock factory captured only the holder; give it a reactive ref now.
+composableMocks.lastErrorFields = ref([]);
 
 const TEAM = {
   team_id: 't1',
@@ -88,14 +122,68 @@ const GHOST_WORKFLOW = {
   layout: { n1: { x: 0, y: 0 } },
 };
 
+const WORKFLOW_WITH_EXEC = {
+  workflow_id: 'wf3',
+  name: 'Exec',
+  graph: {
+    nodes: [
+      {
+        id: 'n1',
+        member_id: 'm1',
+        task: 'Do A',
+        execution: {
+          config_id: 'cfg1',
+          persona_id: 'p1',
+          tools: ['tool_a'],
+          skills: ['skill_x'],
+        },
+      },
+      { id: 'n2', member_id: 'm2', task: 'Do B' },
+    ],
+    edges: [],
+  },
+  layout: { n1: { x: 0, y: 0 }, n2: { x: 1, y: 1 } },
+};
+
+const okEnvelope = (data: unknown) =>
+  Promise.resolve({ data: { status: 'ok', message: null, data } });
+
+/** Envelope mocks for the lazily loaded execution option lists. */
+function stubExecutionOptions() {
+  apiMocks.configProfileList.mockResolvedValue(
+    okEnvelope({
+      info_list: [
+        { id: 'cfg1', name: 'Profile One' },
+        { id: 'cfg2', name: 'Profile Two' },
+      ],
+    }),
+  );
+  apiMocks.toolList.mockResolvedValue(
+    okEnvelope([
+      { name: 'tool_a', active: true },
+      { name: 'tool_b', active: false },
+      { name: 'tool_c' },
+    ]),
+  );
+  apiMocks.skillList.mockResolvedValue(
+    okEnvelope({
+      skills: [
+        { name: 'skill_x', active: true },
+        { name: 'skill_y', active: false },
+      ],
+    }),
+  );
+}
+
 const stubs = {
   'v-select': {
     props: {
-      modelValue: { type: [String, Number], default: '' },
+      modelValue: { type: [String, Number, Array], default: '' },
       label: { type: String, default: '' },
       items: { type: Array, default: () => [] },
       itemTitle: { type: String, default: 'title' },
       itemValue: { type: String, default: 'value' },
+      multiple: { type: Boolean, default: false },
     },
     emits: ['update:modelValue'],
     methods: {
@@ -105,10 +193,61 @@ const stubs = {
       optionValue(this: any, it: any): string {
         return typeof it === 'object' && it !== null ? it[this.itemValue] : it;
       },
+      onChange(this: any, e: Event) {
+        const el = e.target as HTMLSelectElement;
+        if (this.multiple) {
+          // happy-dom has no `selectedOptions`; derive from option state.
+          this.$emit(
+            'update:modelValue',
+            Array.from(el.options)
+              .filter((o) => o.selected)
+              .map((o) => o.value),
+          );
+        } else {
+          this.$emit('update:modelValue', el.value);
+        }
+      },
     },
-    template: `<select class="select-stub" :data-label="label" :data-value="modelValue ?? ''" @change="$emit('update:modelValue', $event.target.value)">
-      <option v-for="(it, i) in items" :key="i" :value="optionValue(it)">{{ optionTitle(it) }}</option>
+    template: `<select class="select-stub" :data-label="label" :data-value="multiple ? JSON.stringify(modelValue ?? []) : (modelValue ?? '')" :multiple="multiple" @change="onChange">
+      <option v-for="(it, i) in items" :key="i" :value="optionValue(it)" :selected="multiple && Array.isArray(modelValue) && modelValue.includes(optionValue(it))">{{ optionTitle(it) }}</option>
     </select>`,
+  },
+  'v-radio-group': {
+    name: 'v-radio-group',
+    props: {
+      modelValue: { type: [String, Number], default: '' },
+      label: { type: String, default: '' },
+    },
+    emits: ['update:modelValue'],
+    provide() {
+      return {
+        radioGroupChange: (value: string) => {
+          (this as any).$emit('update:modelValue', value);
+        },
+      };
+    },
+    template:
+      '<div class="radio-group-stub" :data-label="label" :data-value="modelValue"><slot /></div>',
+  },
+  'v-radio': {
+    name: 'v-radio',
+    props: {
+      label: { type: String, default: '' },
+      value: { type: [String, Number], default: '' },
+    },
+    inject: ['radioGroupChange'],
+    template:
+      '<label class="radio-stub" :data-value="value"><input type="radio" :value="value" @change="radioGroupChange(value)" />{{ label }}</label>',
+  },
+  'v-checkbox-btn': {
+    name: 'v-checkbox-btn',
+    props: {
+      modelValue: { type: Boolean, default: false },
+      label: { type: String, default: '' },
+    },
+    emits: ['update:modelValue'],
+    template:
+      '<label class="checkbox-stub" :data-label="label"><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', !modelValue)" />{{ label }}</label>',
   },
   'v-text-field': {
     props: {
@@ -204,6 +343,7 @@ describe('WorkflowEditor', () => {
       workflow_id: 'wf9',
       name: 'saved',
     });
+    composableMocks.lastErrorFields.value = [];
   });
 
   it('adds nodes with auto ids, member binding and staggered positions', async () => {
@@ -412,6 +552,256 @@ describe('WorkflowEditor', () => {
     await insertBtn.trigger('click');
 
     expect(taskArea.element).toHaveProperty('value', 'Fix{{input}} bug');
+  });
+});
+
+describe('WorkflowEditor execution config', () => {
+  /** Expand the inspector's execution config group for the selected node. */
+  async function expandExecGroup(wrapper: VueWrapper<any>) {
+    await findButton(wrapper, zh.editor.executionConfig)!.trigger('click');
+    await flushPromises();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({
+      workflow_id: 'wf9',
+      name: 'saved',
+    });
+    composableMocks.lastErrorFields.value = [];
+    stubExecutionOptions();
+  });
+
+  it('loads profile/tool/skill options lazily on first group expansion', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+
+    expect(apiMocks.configProfileList).not.toHaveBeenCalled();
+    expect(apiMocks.toolList).not.toHaveBeenCalled();
+    expect(apiMocks.skillList).not.toHaveBeenCalled();
+
+    await expandExecGroup(wrapper);
+
+    expect(apiMocks.configProfileList).toHaveBeenCalledTimes(1);
+    expect(apiMocks.toolList).toHaveBeenCalledTimes(1);
+    expect(apiMocks.skillList).toHaveBeenCalledTimes(1);
+
+    // Collapsing and re-expanding must not reload the lists.
+    await findButton(wrapper, zh.editor.executionConfig)!.trigger('click');
+    await expandExecGroup(wrapper);
+    expect(apiMocks.configProfileList).toHaveBeenCalledTimes(1);
+    expect(apiMocks.toolList).toHaveBeenCalledTimes(1);
+    expect(apiMocks.skillList).toHaveBeenCalledTimes(1);
+
+    // Options come from the facades; inactive entries are filtered out.
+    const profileSelect = wrapper.find(
+      `select[data-label="${zh.editor.configProfile}"]`,
+    );
+    const profileTitles = profileSelect
+      .findAll('option')
+      .map((o: any) => o.text());
+    expect(profileTitles).toEqual([
+      zh.editor.configProfileDefault,
+      'Profile One',
+      'Profile Two',
+    ]);
+    // The tool multi-select only renders in allowlist mode.
+    await wrapper
+      .find('.radio-stub[data-value="allowlist"] input[type="radio"]')
+      .trigger('change');
+    const toolTitles = wrapper
+      .find('select[multiple]')
+      .findAll('option')
+      .map((o: any) => o.text());
+    expect(toolTitles).toEqual(['tool_a', 'tool_c']);
+  });
+
+  it('renders profile default option, persona toggle and mode radios', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    const groups = wrapper.findAll('.radio-group-stub');
+    expect(groups).toHaveLength(2);
+    expect(groups[0].attributes('data-label')).toBe(zh.editor.toolsOverride);
+    expect(groups[0].attributes('data-value')).toBe('inherit');
+    expect(
+      groups[0].findAll('.radio-stub').map((r: any) => r.attributes('data-value')),
+    ).toEqual(['inherit', 'disable_all', 'allowlist']);
+    expect(groups[0].text()).toContain(zh.editor.toolsInherit);
+    expect(groups[0].text()).toContain(zh.editor.toolsDisableAll);
+    expect(groups[0].text()).toContain(zh.editor.toolsAllowlist);
+
+    expect(groups[1].attributes('data-label')).toBe(zh.editor.skillsOverride);
+    expect(
+      groups[1].findAll('.radio-stub').map((r: any) => r.attributes('data-value')),
+    ).toEqual(['inherit', 'allowlist']);
+
+    expect(wrapper.find(`.checkbox-stub[data-label="${zh.editor.personaOverride}"]`).exists()).toBe(
+      true,
+    );
+    // The PersonaSelector only appears after the override toggle is on.
+    expect(wrapper.find('.persona-stub').exists()).toBe(false);
+    await wrapper.find('input[type="checkbox"]').setValue(true);
+    expect(wrapper.find('.persona-stub').exists()).toBe(true);
+    expect(wrapper.text()).toContain(zh.editor.personaFollowProfile);
+  });
+
+  it('omits the execution block entirely when every field stays inherit', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Pipe');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    expect(composableMocks.saveWorkflow).toHaveBeenCalledTimes(1);
+    const payload = composableMocks.saveWorkflow.mock.calls[0][1];
+    expect(payload.graph.nodes[0]).toEqual({ id: 'n1', member_id: 'm1', task: '' });
+    expect('execution' in payload.graph.nodes[0]).toBe(false);
+  });
+
+  it('serializes the selected node execution block on save', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await selectNode(wrapper, 'n2');
+    await expandExecGroup(wrapper);
+
+    await wrapper
+      .find(`select[data-label="${zh.editor.configProfile}"]`)
+      .setValue('cfg1');
+    await wrapper.find('input[type="checkbox"]').setValue(true);
+    await wrapper.find('.persona-stub').setValue('p1');
+    // First radio group is tools; switch it to allowlist and pick tools.
+    await wrapper
+      .find('.radio-stub[data-value="allowlist"] input[type="radio"]')
+      .trigger('change');
+    await wrapper.find('select[multiple]').setValue(['tool_a']);
+    // Second radio group is skills; its multi-select is the second one.
+    const groups = wrapper.findAll('.radio-group-stub');
+    await groups[1].find('.radio-stub[data-value="allowlist"] input[type="radio"]').trigger('change');
+    await wrapper.findAll('select[multiple]')[1].setValue(['skill_x']);
+
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Pipe');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    const payload = composableMocks.saveWorkflow.mock.calls[0][1];
+    // Only the node edited in the inspector carries an execution block.
+    expect('execution' in payload.graph.nodes[0]).toBe(false);
+    expect(payload.graph.nodes[1].execution).toEqual({
+      config_id: 'cfg1',
+      persona_id: 'p1',
+      tools: ['tool_a'],
+      skills: ['skill_x'],
+    });
+  });
+
+  it('serializes tools disable_all as an empty list and inherit omits the key', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    await wrapper
+      .find('.radio-stub[data-value="disable_all"] input[type="radio"]')
+      .trigger('change');
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Pipe');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    expect(composableMocks.saveWorkflow.mock.calls[0][1].graph.nodes[0].execution).toEqual({
+      tools: [],
+    });
+
+    // The successful save re-points the workflow picker, which clears the
+    // canvas selection; select the node again before editing further.
+    await selectNode(wrapper, 'n1');
+    // Back to inherit: the block disappears again.
+    await wrapper
+      .find('.radio-stub[data-value="inherit"] input[type="radio"]')
+      .trigger('change');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    expect(composableMocks.saveWorkflow.mock.calls[1][1].graph.nodes[0].execution).toBeUndefined();
+  });
+
+  it('loads execution state from a workflow and round-trips it on save', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_WITH_EXEC] });
+    await wrapper.find('select.workflow-picker').setValue('wf3');
+    await flushPromises();
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    expect(
+      wrapper.find(`select[data-label="${zh.editor.configProfile}"]`).attributes('data-value'),
+    ).toBe('cfg1');
+    expect(
+      (wrapper.find('input[type="checkbox"]').element as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(wrapper.find('.persona-stub').element).toHaveProperty('value', 'p1');
+    const groups = wrapper.findAll('.radio-group-stub');
+    expect(groups[0].attributes('data-value')).toBe('allowlist');
+    expect(groups[1].attributes('data-value')).toBe('allowlist');
+    expect(
+      JSON.parse(wrapper.find('select[multiple]').attributes('data-value')!),
+    ).toEqual(['tool_a']);
+
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    const payload = composableMocks.saveWorkflow.mock.calls[0][1];
+    expect(payload.graph.nodes[0].execution).toEqual({
+      config_id: 'cfg1',
+      persona_id: 'p1',
+      tools: ['tool_a'],
+      skills: ['skill_x'],
+    });
+    expect('execution' in payload.graph.nodes[1]).toBe(false);
+  });
+
+  it('toasts option load failures and keeps the lists usable', async () => {
+    apiMocks.configProfileList.mockRejectedValue(new Error('boom'));
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    expect(toastMock.error).toHaveBeenCalledWith('boom');
+    const profileOptions = wrapper
+      .find(`select[data-label="${zh.editor.configProfile}"]`)
+      .findAll('option')
+      .map((o: any) => o.text());
+    expect(profileOptions).toEqual([zh.editor.configProfileDefault]);
+  });
+
+  it('renders backend field errors in the banner after a failed save', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    composableMocks.saveWorkflow.mockResolvedValueOnce(null);
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Pipe');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    // The composable captures the structured fields from the error envelope
+    // while the editor only renders them.
+    composableMocks.lastErrorFields.value = [
+      { path: 'nodes.n1.execution.config_id', message: '节点 n1 的配置档案不存在: xxx' },
+    ];
+    await flushPromises();
+
+    const banner = wrapper.find('.editor-banner');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain(zh.editor.validation);
+    expect(banner.text()).toContain('nodes.n1.execution.config_id');
+    expect(banner.text()).toContain('节点 n1 的配置档案不存在: xxx');
+
+    // Fields clear with the next successful save.
+    composableMocks.lastErrorFields.value = [];
+    await flushPromises();
+    expect(wrapper.find('.editor-banner').exists()).toBe(false);
   });
 });
 

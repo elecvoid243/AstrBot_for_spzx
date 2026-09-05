@@ -39,11 +39,43 @@ class EventBus:
     async def dispatch(self) -> None:
         while True:
             event: AstrMessageEvent = await self.event_queue.get()
+            # Agent team node turns (spec §2.3) carry a per-turn execution
+            # token. Resolve it BEFORE the usual umo-based routing so the turn
+            # runs on the binding's own config profile scheduler. Unknown or
+            # foreign tokens fall back to default routing; the runner owns
+            # token unregistration, so resolution never consumes the token.
+            scheduler = None
+            token = event.get_extra("execution_token")
+            if token:
+                from astrbot.core.agent_team_execution import (
+                    AgentTeamExecutionRegistry,
+                )
+
+                binding = AgentTeamExecutionRegistry.resolve(
+                    token, umo=event.unified_msg_origin
+                )
+                if binding is None:
+                    logger.warning(
+                        "agent team execution token invalid or foreign (umo=%s); ignoring",
+                        event.unified_msg_origin,
+                    )
+                else:
+                    event.set_extra("agent_team_execution", binding)
+                    if binding.config_id:
+                        scheduler = self.pipeline_scheduler_mapping.get(
+                            binding.config_id
+                        )
+                        if scheduler is None:
+                            logger.warning(
+                                "agent team execution config %r not found; falling back to umo routing",
+                                binding.config_id,
+                            )
             conf_info = self.astrbot_config_mgr.get_conf_info(event.unified_msg_origin)
             conf_id = conf_info["id"]
             conf_name = conf_info.get("name") or conf_id
             self._print_event(event, conf_name)
-            scheduler = self.pipeline_scheduler_mapping.get(conf_id)
+            if scheduler is None:
+                scheduler = self.pipeline_scheduler_mapping.get(conf_id)
             if not scheduler:
                 logger.error(
                     f"PipelineScheduler not found for id: {conf_id}, event ignored."

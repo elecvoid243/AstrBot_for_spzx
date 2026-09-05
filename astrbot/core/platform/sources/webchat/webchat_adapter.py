@@ -308,6 +308,9 @@ class WebChatAdapter(Platform):
                 team_context = payload.get("team_context")
                 if isinstance(team_context, str) and team_context.strip():
                     message_event.set_extra("team_context", team_context)
+                execution_token = payload.get("execution_token")
+                if isinstance(execution_token, str) and execution_token.strip():
+                    message_event.set_extra("execution_token", execution_token)
 
         return message_event
 

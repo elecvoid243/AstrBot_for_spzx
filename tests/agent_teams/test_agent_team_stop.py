@@ -285,7 +285,11 @@ async def test_auto_stop_propagates_coordinator_and_members(tmp_path):
     spy_a: list = []
     gate_a = asyncio.Event()
     events_a: list = []
-    ports_a, _ = auto_ports_with_gate({}, gate_a, events_a)
+    ports_a, blocking_a = auto_ports_with_gate({}, gate_a, events_a)
+    # Gate the coordinator's collect so the turn is guaranteed to be in
+    # flight when the stop lands: ungated, both no-tool turns can complete
+    # before the first poll and the run reaches paused, not stopped.
+    blocking_a.add(coordinator["session_id"])
     orch_a = AutoOrchestrator(
         run_id="rastop",
         team_id="t1",

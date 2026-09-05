@@ -284,6 +284,75 @@ async def test_auto_run_member_wave(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_auto_run_member_wave_waits_if_busy(tmp_path):
+    """Per-member busy-wait (spec §6.4 每人独立忙等): a wave member that
+    reports busy is polled and its turn deferred until it frees up, before
+    deliver starts."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = make_team_members()
+    coordinator = members[0]
+    events: list = []
+    delivered: list = []
+    registry_log: list = []
+
+    async def turn1(tools):
+        await next(t for t in tools if t.name == "team_dispatch").call(
+            None, assignments=[{"member": "写手", "task": "写初稿"}]
+        )
+
+    async def turn2(tools):
+        await next(t for t in tools if t.name == "team_finish").call(
+            None, summary="完成"
+        )
+
+    ports = auto_ports(
+        members,
+        coordinator,
+        {1: turn1, 2: turn2},
+        {"主管": "已派发", "写手": "写手成果", "审校": "未分配"},
+        events,
+        delivered,
+        registry_log,
+    )
+    # The writer (conv-1) reports busy exactly once: the wave must poll
+    # is_busy, observe the busy state, and wait it out before delivering.
+    polls = {"n": 0}
+
+    def is_busy(session_id: str) -> bool:
+        if session_id != "conv-1":
+            return False
+        polls["n"] += 1
+        return polls["n"] == 1
+
+    ports.is_busy = is_busy
+    ports.busy_poll_interval = 0.01
+    bus = RunEventBus()
+    orchestrator = make_orchestrator("rabusy", members, ports, db, bus)
+    await orchestrator.run()
+
+    assert orchestrator.status == "completed"
+    # The busy poll is emitted strictly before the writer's turn is delivered
+    # (only the wave's busy-wait can emit a busy event for conv-1).
+    history = bus.history()
+    busy_idx = next(
+        i
+        for i, e in enumerate(history)
+        if e.get("type") == "busy" and e.get("session_id") == "conv-1"
+    )
+    sent_idx = next(
+        i
+        for i, e in enumerate(history)
+        if e.get("type") == "message"
+        and e.get("direction") == "sent"
+        and e.get("session_id") == "conv-1"
+    )
+    assert busy_idx < sent_idx
+    row = await db.get_agent_team_run("rabusy")
+    assert row.rounds[0]["results"] == [{"member": "写手", "result": "写手成果"}]
+
+
+@pytest.mark.asyncio
 async def test_auto_run_two_no_tool_rounds_pause(tmp_path):
     """Two consecutive text-only turns pause the run; resume_run restarts it
     with a clean no-tool counter."""

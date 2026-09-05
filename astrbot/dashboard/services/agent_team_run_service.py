@@ -830,6 +830,10 @@ class AutoOrchestrator:
                 # Cap concurrent member turns; unknown members skip the I/O and
                 # never need a slot.
                 async with semaphore:
+                    # Per-member busy-wait (spec §6.4): the member may still be
+                    # finishing an earlier turn; wait it out before starting a
+                    # new one, then honor a stop that landed during the wait.
+                    await self._wait_if_busy(member["session_id"])
                     if self._stop_requested.is_set():
                         # Stop landed while queued for a slot: never start a
                         # new turn after the user asked to stop.

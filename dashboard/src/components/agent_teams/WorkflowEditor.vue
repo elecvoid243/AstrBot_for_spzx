@@ -137,10 +137,11 @@
             >
               <v-radio :label="tm('editor.skillsInherit')" value="inherit" density="compact" />
               <v-radio
-                :label="tm('editor.skillsAllowlist')"
-                value="allowlist"
+                :label="tm('editor.skillsDisableAll')"
+                value="disable_all"
                 density="compact"
               />
+              <v-radio :label="tm('editor.skillsAllowlist')" value="allowlist" density="compact" />
             </v-radio-group>
             <v-select
               v-if="selectedExec.skillsMode === 'allowlist'"
@@ -204,8 +205,8 @@ const INPUT_TOKEN = '{{input}}';
 
 /** Tool override modes; `inherit` keeps the backend field unset. */
 type ExecToolsMode = 'inherit' | 'disable_all' | 'allowlist';
-/** Skills have no disable-all mode (spec §2.3): inherit or allowlist only. */
-type ExecSkillsMode = 'inherit' | 'allowlist';
+/** Skills use the same three-state override as tools (spec §2.2/§2.6). */
+type ExecSkillsMode = 'inherit' | 'disable_all' | 'allowlist';
 
 /** Editable per-node execution override state (inspector binding target). */
 interface NodeExecState {
@@ -287,7 +288,7 @@ function parseExecState(raw: unknown): NodeExecState {
     skills,
     // `[]` is the backend's disable-all marker; any non-empty list is a filter.
     toolsMode: tools === null ? 'inherit' : tools.length === 0 ? 'disable_all' : 'allowlist',
-    skillsMode: skills === null ? 'inherit' : 'allowlist',
+    skillsMode: skills === null ? 'inherit' : skills.length === 0 ? 'disable_all' : 'allowlist',
   };
 }
 
@@ -307,7 +308,8 @@ function serializeExecState(state: NodeExecState): Record<string, unknown> | nul
   if (state.persona_id.trim()) block.persona_id = state.persona_id;
   if (state.toolsMode === 'disable_all') block.tools = [];
   else if (state.toolsMode === 'allowlist') block.tools = [...(state.tools ?? [])];
-  if (state.skillsMode === 'allowlist') block.skills = [...(state.skills ?? [])];
+  if (state.skillsMode === 'disable_all') block.skills = [];
+  else if (state.skillsMode === 'allowlist') block.skills = [...(state.skills ?? [])];
   return Object.keys(block).length > 0 ? block : null;
 }
 

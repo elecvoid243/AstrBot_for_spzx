@@ -70,6 +70,7 @@
     "toolsAllowlist": "仅允许",
     "skillsOverride": "Skill 覆盖",
     "skillsInherit": "继承",
+    "skillsDisableAll": "全部禁用",
     "skillsAllowlist": "仅允许"
   },
   "monitor": {

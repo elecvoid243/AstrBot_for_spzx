@@ -70,6 +70,7 @@
     "toolsAllowlist": "Allowlist",
     "skillsOverride": "Skill Overrides",
     "skillsInherit": "Inherit",
+    "skillsDisableAll": "Disable All",
     "skillsAllowlist": "Allowlist"
   },
   "monitor": {

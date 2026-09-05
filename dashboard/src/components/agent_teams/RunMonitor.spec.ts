@@ -769,6 +769,8 @@ describe('AgentWindow rendering (through the grid)', () => {
     expect(errBlock.exists()).toBe(true);
     expect(errBlock.text()).toContain(zh.monitor.nodeError);
     expect(errBlock.text()).toContain('模型返回 500');
+    // The status chip carries the error as a native tooltip.
+    expect(wrapper.find('.agent-window-node-chip').attributes('title')).toBe('模型返回 500');
   });
 
   it('shows no node error block without a folded node error', async () => {
@@ -786,6 +788,8 @@ describe('AgentWindow rendering (through the grid)', () => {
 
     expect(wrapper.findAllComponents({ name: 'AgentWindow' })[0].props('nodeError')).toBeNull();
     expect(wrapper.find('.agent-window-error').exists()).toBe(false);
+    // No folded error -> no tooltip on the status chip either.
+    expect(wrapper.find('.agent-window-node-chip').attributes('title')).toBeUndefined();
   });
 
   it('omits node errors for auto runs (v1: no per-member nodes)', () => {

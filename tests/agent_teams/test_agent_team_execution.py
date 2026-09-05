@@ -27,6 +27,7 @@ from astrbot.core.astr_main_agent import (
 )
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
+from astrbot.core.pipeline.process_stage.method.agent_sub_stages import third_party
 from astrbot.core.platform import (
     AstrBotMessage,
     MessageMember,
@@ -711,6 +712,92 @@ async def test_resolve_selected_persona_unknown_config_id_falls_back(monkeypatch
         platform_name="webchat",
     )
     assert get_conf_calls == [UMO]
+
+
+# ---------------------------------------------------------------------------
+# Third-party runner persona error reply (spec §2.3)
+# ---------------------------------------------------------------------------
+
+
+def third_party_stage(
+    pm: RecordingPersonaManager,
+) -> "third_party.ThirdPartyAgentSubStage":
+    """Build the third-party sub stage over the given persona manager.
+
+    Args:
+        pm: The persona manager stand-in the stage must consult.
+
+    Returns:
+        An initialized-enough stage (only `ctx` is needed by the persona
+        error-reply resolution).
+    """
+    stage = third_party.ThirdPartyAgentSubStage()
+    stage.ctx = SimpleNamespace(
+        plugin_manager=SimpleNamespace(
+            context=SimpleNamespace(
+                conversation_manager=SimpleNamespace(
+                    get_curr_conversation_id=AsyncMock(return_value=None)
+                ),
+                persona_manager=pm,
+            )
+        )
+    )
+    return stage
+
+
+@pytest.mark.asyncio
+async def test_third_party_persona_error_reply_uses_node_persona():
+    """A bound node persona supplies the custom error reply directly."""
+    node_persona = {"name": "node-persona", "custom_error_message": "NODE ERROR REPLY"}
+    pm = RecordingPersonaManager(v3_by_id={"node-persona": node_persona})
+    stage = third_party_stage(pm)
+    event = binding_event(make_binding(persona_id="node-persona", config_id="cfg-team"))
+
+    message = await stage._resolve_persona_custom_error_message(event)
+
+    assert message == "NODE ERROR REPLY"
+    assert pm.resolve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_third_party_persona_error_reply_unknown_node_persona_falls_back():
+    """An unknown node persona falls back to resolution with the config_id."""
+    resolved_persona = {
+        "name": "cfg-persona",
+        "custom_error_message": "CFG ERROR REPLY",
+    }
+    pm = RecordingPersonaManager(
+        resolved=("cfg-persona", resolved_persona, None, False)
+    )
+    stage = third_party_stage(pm)
+    event = binding_event(
+        make_binding(persona_id="ghost-persona", config_id="cfg-team")
+    )
+
+    message = await stage._resolve_persona_custom_error_message(event)
+
+    assert message == "CFG ERROR REPLY"
+    assert pm.resolve_calls[0]["config_id"] == "cfg-team"
+
+
+@pytest.mark.asyncio
+async def test_third_party_persona_error_reply_threads_node_config_id():
+    """A binding config_id (no persona override) reaches persona resolution."""
+    resolved_persona = {
+        "name": "cfg-persona",
+        "custom_error_message": "CFG ERROR REPLY",
+    }
+    pm = RecordingPersonaManager(
+        resolved=("cfg-persona", resolved_persona, None, False)
+    )
+    stage = third_party_stage(pm)
+    event = binding_event(make_binding(config_id="cfg-team"))
+
+    message = await stage._resolve_persona_custom_error_message(event)
+
+    assert message == "CFG ERROR REPLY"
+    assert len(pm.resolve_calls) == 1
+    assert pm.resolve_calls[0]["config_id"] == "cfg-team"
 
 
 # ---------------------------------------------------------------------------

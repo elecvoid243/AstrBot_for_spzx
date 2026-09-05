@@ -55,7 +55,8 @@ export default {};
 // - edit: draggable / connectable / selectable, emits normalized connects,
 //   position maps after drags and node selection.
 // - monitor: interaction locked, each node gets an `at-node-<status>` class
-//   driven by the `nodeStates` prop (styled below, dark-theme friendly).
+//   driven by the `nodeStates` prop (styled below, dark-theme friendly) and a
+//   native error tooltip on failed/interrupted nodes.
 import { computed } from 'vue';
 import { VueFlow } from '@vue-flow/core';
 import type { Connection, NodeChange } from '@vue-flow/core';
@@ -67,8 +68,11 @@ const props = withDefaults(
     nodes: FlowNode[];
     edges: FlowEdgePayload[];
     mode?: 'edit' | 'monitor';
-    /** Per-node run states; only read in monitor mode. */
-    nodeStates?: Record<string, { status: string }> | null;
+    /**
+     * Per-node run states; only read in monitor mode. `error` carries the
+     * backend failure text of failed/interrupted nodes (spec §3.1).
+     */
+    nodeStates?: Record<string, { status: string; error?: string | null }> | null;
   }>(),
   { mode: 'edit', nodeStates: null },
 );
@@ -83,13 +87,21 @@ const isEdit = computed(() => props.mode === 'edit');
 
 /**
  * Node list handed to VueFlow: passthrough in edit mode; in monitor mode the
- * node class is bound to the node's run status (`at-node-<status>`).
+ * node class is bound to the node's run status (`at-node-<status>`) and
+ * failed/interrupted nodes expose their error as a native `title` tooltip on
+ * the node container via VueFlow's `domAttributes` escape hatch (spec §3.1).
  */
 const displayNodes = computed(() =>
   props.nodes.map((node) => {
     if (!isEdit.value) {
-      const status = props.nodeStates?.[node.id]?.status;
-      if (status) return { ...node, class: `at-node-${status}` };
+      const state = props.nodeStates?.[node.id];
+      if (state?.status) {
+        return {
+          ...node,
+          class: `at-node-${state.status}`,
+          ...(state.error ? { domAttributes: { title: state.error } } : {}),
+        };
+      }
     }
     return node;
   }),

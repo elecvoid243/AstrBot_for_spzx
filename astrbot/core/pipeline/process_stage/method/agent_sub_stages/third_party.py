@@ -21,6 +21,7 @@ from astrbot.core.message.message_event_result import (
     ResultContentType,
 )
 from astrbot.core.persona_error_reply import (
+    extract_persona_custom_error_message_from_persona,
     resolve_event_conversation_persona_id,
     resolve_persona_custom_error_message,
     set_persona_custom_error_message_on_event,
@@ -179,15 +180,32 @@ class ThirdPartyAgentSubStage(Stage):
         self, event: AstrMessageEvent
     ) -> str | None:
         try:
+            # Agent team node execution binding (None for ordinary turns): the
+            # node's persona/config profile decides the custom error reply,
+            # mirroring the local-runner persona resolution in astr_main_agent.
+            execution = event.get_extra("agent_team_execution")
+            node_persona_id = getattr(execution, "persona_id", None)
+            node_config_id = getattr(execution, "config_id", None)
+            persona_manager = self.ctx.plugin_manager.context.persona_manager
+            if node_persona_id:
+                persona = persona_manager.get_persona_v3_by_id(node_persona_id)
+                if persona is not None:
+                    return extract_persona_custom_error_message_from_persona(persona)
+                logger.warning(
+                    "Agent team node persona `%s` not found; "
+                    "falling back to conversation persona resolution.",
+                    node_persona_id,
+                )
             conversation_persona_id = await resolve_event_conversation_persona_id(
                 event,
                 self.ctx.plugin_manager.context.conversation_manager,
             )
             return await resolve_persona_custom_error_message(
                 event=event,
-                persona_manager=self.ctx.plugin_manager.context.persona_manager,
+                persona_manager=persona_manager,
                 provider_settings={"default_personality": "default"},
                 conversation_persona_id=conversation_persona_id,
+                config_id=node_config_id,
             )
         except Exception as e:
             logger.debug("Failed to resolve persona custom error message: %s", e)

@@ -81,6 +81,7 @@ vi.mock('@vue-flow/core', async () => {
         class="vue-flow-stub-node"
         :class="n.class"
         :data-id="n.id"
+        :title="n.domAttributes ? n.domAttributes.title : undefined"
       >{{ n.data ? n.data.label : n.label }}</div>
     </div>`,
   });
@@ -138,6 +139,19 @@ const WORKFLOW_WITH_EXEC = {
           skills: ['skill_x'],
         },
       },
+      { id: 'n2', member_id: 'm2', task: 'Do B' },
+    ],
+    edges: [],
+  },
+  layout: { n1: { x: 0, y: 0 }, n2: { x: 1, y: 1 } },
+};
+
+const WORKFLOW_WITH_SKILLS_DISABLED = {
+  workflow_id: 'wf4',
+  name: 'No Skills',
+  graph: {
+    nodes: [
+      { id: 'n1', member_id: 'm1', task: 'Do A', execution: { skills: [] } },
       { id: 'n2', member_id: 'm2', task: 'Do B' },
     ],
     edges: [],
@@ -637,7 +651,8 @@ describe('WorkflowEditor execution config', () => {
     expect(groups[1].attributes('data-label')).toBe(zh.editor.skillsOverride);
     expect(
       groups[1].findAll('.radio-stub').map((r: any) => r.attributes('data-value')),
-    ).toEqual(['inherit', 'allowlist']);
+    ).toEqual(['inherit', 'disable_all', 'allowlist']);
+    expect(groups[1].text()).toContain(zh.editor.skillsDisableAll);
 
     expect(wrapper.find(`.checkbox-stub[data-label="${zh.editor.personaOverride}"]`).exists()).toBe(
       true,
@@ -728,6 +743,56 @@ describe('WorkflowEditor execution config', () => {
     await findButton(wrapper, zh.editor.save)!.trigger('click');
     await flushPromises();
     expect(composableMocks.saveWorkflow.mock.calls[1][1].graph.nodes[0].execution).toBeUndefined();
+  });
+
+  it('serializes skills disable_all as an empty list and inherit omits the key', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    // Second radio group is skills; switch it to disable_all.
+    const groups = wrapper.findAll('.radio-group-stub');
+    await groups[1].find('.radio-stub[data-value="disable_all"] input[type="radio"]').trigger('change');
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Pipe');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    expect(composableMocks.saveWorkflow.mock.calls[0][1].graph.nodes[0].execution).toEqual({
+      skills: [],
+    });
+
+    // The successful save re-points the workflow picker, which clears the
+    // canvas selection; select the node again before editing further.
+    await selectNode(wrapper, 'n1');
+    // Back to inherit: the block disappears again (re-query: the inspector
+    // re-rendered after the save).
+    const regroups = wrapper.findAll('.radio-group-stub');
+    await regroups[1].find('.radio-stub[data-value="inherit"] input[type="radio"]').trigger('change');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    expect(composableMocks.saveWorkflow.mock.calls[1][1].graph.nodes[0].execution).toBeUndefined();
+  });
+
+  it('loads a workflow with skills: [] as disable-all and round-trips it', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_WITH_SKILLS_DISABLED] });
+    await wrapper.find('select.workflow-picker').setValue('wf4');
+    await flushPromises();
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    // `[]` parses as the disable-all state, not an empty allowlist.
+    const groups = wrapper.findAll('.radio-group-stub');
+    expect(groups[1].attributes('data-value')).toBe('disable_all');
+    // The skills multi-select only renders in allowlist mode.
+    expect(wrapper.findAll('select[multiple]')).toHaveLength(0);
+
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+
+    expect(composableMocks.saveWorkflow.mock.calls[0][1].graph.nodes[0].execution).toEqual({
+      skills: [],
+    });
   });
 
   it('loads execution state from a workflow and round-trips it on save', async () => {
@@ -854,7 +919,10 @@ describe('TeamsFlowCanvas', () => {
         nodes: NODES,
         edges: [],
         mode: 'monitor',
-        nodeStates: { n1: { status: 'running' }, n2: { status: 'failed' } },
+        nodeStates: {
+          n1: { status: 'running' },
+          n2: { status: 'failed', error: '模型返回 500' },
+        },
       },
       global: { stubs },
     }) as VueWrapper<any>;
@@ -865,5 +933,12 @@ describe('TeamsFlowCanvas', () => {
     const nodes = flow.props('nodes') as any[];
     expect(nodes[0].class).toBe('at-node-running');
     expect(nodes[1].class).toBe('at-node-failed');
+    // Failed/interrupted nodes carry their error as a native tooltip on the
+    // node container (VueFlow domAttributes escape hatch); clean nodes none.
+    expect(nodes[1].domAttributes).toEqual({ title: '模型返回 500' });
+    expect(nodes[0].domAttributes).toBeUndefined();
+    const rendered = wrapper.findAll('.vue-flow-stub-node');
+    expect(rendered[1].attributes('title')).toBe('模型返回 500');
+    expect(rendered[0].attributes('title')).toBeUndefined();
   });
 });

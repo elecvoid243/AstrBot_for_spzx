@@ -9,6 +9,7 @@
         variant="tonal"
         class="agent-window-node-chip"
         :style="{ color: nodeChipColor }"
+        :title="nodeError || undefined"
       >
         {{ tm('monitor.node.' + nodeStatus) }}
       </v-chip>
@@ -72,8 +73,9 @@ const props = defineProps<{
   /** Status of the member's active node (`monitor.node.*` key suffix). */
   nodeStatus?: string;
   /**
-   * Backend error text of the member's most recent failed node; null/absent
-   * hides the inline error block (auto mode v1 has no per-member nodes).
+   * Backend error text of the member's most recent failed node; shown in the
+   * inline error block and as the status chip tooltip. null/absent hides both
+   * (auto mode v1 has no per-member nodes).
    */
   nodeError?: string | null;
   /** True while the member's session is waiting for its reply. */

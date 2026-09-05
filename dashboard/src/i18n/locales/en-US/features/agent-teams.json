@@ -75,6 +75,8 @@
     "retryNode": "Retry This Node",
     "skipNode": "Skip and Cascade-Skip",
     "dagProgress": "DAG Progress",
+    "viewWindow": "Windows",
+    "viewDag": "DAG View",
     "busy": "Session busy, waiting…",
     "empty": "Enter a goal and click \"Start Run\""
   },

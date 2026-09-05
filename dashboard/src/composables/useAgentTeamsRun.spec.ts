@@ -269,6 +269,24 @@ describe("useAgentTeamsRun lifecycle", () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
+  it("startRun toasts the backend envelope message when axios throws (409)", async () => {
+    // Axios rejects non-2xx with the response still attached; the envelope
+    // message must win over axios's generic error message.
+    apiMocks.startRun.mockRejectedValue({
+      message: "Request failed with status code 409",
+      response: {
+        status: 409,
+        data: { status: "error", message: "团队已有运行中的任务" },
+      },
+    });
+    const run = useAgentTeamsRun();
+
+    expect(
+      await run.startRun("team-1", { mode: "dag", input: "x" }),
+    ).toBeNull();
+    expect(toastMocks.error).toHaveBeenCalledWith("团队已有运行中的任务");
+  });
+
   it("closeRun aborts the SSE fetch signal and clears the state", async () => {
     apiMocks.listActiveRuns.mockResolvedValue(ok({ runs: [] }));
     fetchWithAuthMock.mockImplementation(() => hangingResponse());

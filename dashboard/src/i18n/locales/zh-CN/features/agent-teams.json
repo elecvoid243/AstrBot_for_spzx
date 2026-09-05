@@ -75,6 +75,8 @@
     "retryNode": "重试该节点",
     "skipNode": "跳过并级联跳过",
     "dagProgress": "DAG 进度",
+    "viewWindow": "窗口",
+    "viewDag": "DAG 视图",
     "busy": "会话忙，等待中…",
     "empty": "输入目标并点击“开始运行”"
   },

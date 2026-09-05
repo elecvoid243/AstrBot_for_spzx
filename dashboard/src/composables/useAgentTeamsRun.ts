@@ -175,7 +175,11 @@ async function unwrapEnvelope(
     }
     return res.data.data ?? null;
   } catch (err) {
-    error(err instanceof Error ? err.message : String(err));
+    // Non-2xx responses (e.g. HTTP 409 team-already-running) carry the
+    // backend's error envelope in err.response.data — prefer its message
+    // over axios's generic "Request failed with status code N".
+    const envelopeMessage = (err as any)?.response?.data?.message;
+    error(envelopeMessage || (err instanceof Error ? err.message : String(err)));
     return null;
   }
 }

@@ -42,8 +42,10 @@
     "providerDefault": "使用会话默认模型"
   },
   "editor": {
+    "newWorkflow": "新建工作流",
     "workflowName": "工作流名称",
     "save": "保存工作流",
+    "saveSuccess": "工作流已保存",
     "addNode": "添加节点",
     "deleteNode": "删除选中",
     "nodeMember": "执行成员",

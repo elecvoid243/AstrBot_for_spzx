@@ -42,8 +42,10 @@
     "providerDefault": "Use session default model"
   },
   "editor": {
+    "newWorkflow": "New Workflow",
     "workflowName": "Workflow Name",
     "save": "Save Workflow",
+    "saveSuccess": "Workflow saved",
     "addNode": "Add Node",
     "deleteNode": "Delete Selected",
     "nodeMember": "Executor",

@@ -42,8 +42,10 @@
     "providerDefault": "Использовать модель по умолчанию для сессии"
   },
   "editor": {
+    "newWorkflow": "Новый workflow",
     "workflowName": "Название workflow",
     "save": "Сохранить workflow",
+    "saveSuccess": "Workflow сохранён",
     "addNode": "Добавить узел",
     "deleteNode": "Удалить выбранный",
     "nodeMember": "Исполнитель",

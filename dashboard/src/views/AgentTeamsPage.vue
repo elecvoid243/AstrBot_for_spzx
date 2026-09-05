@@ -38,9 +38,8 @@
 
           <v-window v-model="tab" class="mt-4">
             <v-window-item value="editor">
-              <!-- Task 7 replaces this -->
-              <section v-if="tab === 'editor'" class="agent-teams-panel agent-teams-panel-editor">
-                {{ tm('tabs.editor') }}
+              <section v-if="tab === 'editor'" class="agent-teams-panel-editor">
+                <WorkflowEditor :team="selectedTeam" :workflows="workflows" />
               </section>
             </v-window-item>
             <v-window-item value="monitor">
@@ -63,9 +62,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
+import WorkflowEditor from '@/components/agent_teams/WorkflowEditor.vue';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useModuleI18n } from '@/i18n/composables';
 import { useToast } from '@/utils/toast';
@@ -75,6 +75,7 @@ const {
   teams,
   selectedTeamId,
   selectedTeam,
+  workflows,
   loadTeams,
   loadWorkflows,
   selectTeam,
@@ -109,6 +110,14 @@ async function onRemoveMember(memberId: string) {
     error(err instanceof Error ? err.message : String(err));
   }
 }
+
+// Reload the workflows whenever the selected team changes so the editor's
+// workflow picker always reflects the active team.
+watch(selectedTeamId, (teamId) => {
+  if (teamId) {
+    void loadWorkflows(teamId);
+  }
+});
 
 onMounted(() => {
   refresh();

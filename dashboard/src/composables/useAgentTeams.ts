@@ -1,6 +1,6 @@
 // Module-singleton composable for the agent-teams directory (teams +
-// workflows), following the useAgentCollab pattern: all state lives at module
-// level so the panel, dialogs and pages share one list and one selection.
+// workflows): all state lives at module level so the panel, dialogs and pages
+// share one list and one selection.
 // Every action normalizes the API envelope: error envelopes and network
 // failures are toasted and mapped to null — nothing is ever re-thrown to the
 // caller.

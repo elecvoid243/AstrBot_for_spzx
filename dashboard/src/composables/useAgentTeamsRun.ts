@@ -45,7 +45,7 @@ let attachAbort: AbortController | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Buffered SSE reader (copied from useAgentCollab.readCollabStream): splits
+ * Buffered SSE reader: splits
  * the byte stream on blank lines, joins each event's `data:` lines and
  * JSON-parses the payload. Events with empty data are skipped, so the
  * backend's `: heartbeat` comment lines are ignored.

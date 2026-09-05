@@ -1,6 +1,5 @@
 import { setCustomComponents } from "markstream-vue";
 import "markstream-vue/index.css";
-import CollabAwareCodeBlock from "@/components/chat/message_list_comps/CollabAwareCodeBlock.vue";
 import HtmlGenUiNode from "@/components/chat/message_list_comps/HtmlGenUiNode.vue";
 import RefNode from "@/components/chat/message_list_comps/RefNode.vue";
 import ThreadNode from "@/components/chat/message_list_comps/ThreadNode.vue";
@@ -18,7 +17,7 @@ export function registerChatMarkdownComponents() {
     // (icon/header/collapse/font-size/expand + built-in shiki render) —
     // it was never broken here; ShikiCodeBlock only fixes the
     // document-view path, which has no registration of its own.
-    code_block: CollabAwareCodeBlock,
+    code_block: ThemeAwareMarkdownCodeBlock,
   });
 }
 

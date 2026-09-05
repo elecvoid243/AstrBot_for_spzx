@@ -130,16 +130,6 @@
           <button
             type="button"
             class="sidebar-top-action-btn"
-            :class="{ active: collabBindMode }"
-            title="绑定协作会话：选择若干会话组建协作分组"
-            @click="startCollabBinding"
-          >
-            <Link2 :size="16" />
-            <span>绑定协作</span>
-          </button>
-          <button
-            type="button"
-            class="sidebar-top-action-btn"
             :title="tm('search.title')"
             @click="searchDialogOpen = true"
           >
@@ -167,17 +157,6 @@
             {{ tm("batch.selected", { count: checkedSessionIds.size }) }}
           </span>
           <v-btn
-            v-if="collabBindMode"
-            size="x-small"
-            variant="tonal"
-            class="batch-select-archive"
-            :disabled="checkedSessionIds.size < 2"
-            @click="openCollabBindFromSelection"
-          >
-            绑定协作（{{ checkedSessionIds.size }}）
-          </v-btn>
-          <v-btn
-            v-else
             size="x-small"
             variant="text"
             class="batch-select-archive"
@@ -188,7 +167,6 @@
             {{ tm("batch.archive") }}
           </v-btn>
           <v-btn
-            v-if="!collabBindMode"
             size="x-small"
             variant="text"
             color="error"
@@ -316,22 +294,6 @@
               aria-hidden="true"
             />
             <span class="session-title">{{ sessionTitle(session) }}</span>
-            <button
-              v-for="badge in collabBadges(session.session_id)"
-              :key="badge.groupId"
-              type="button"
-              class="collab-chain-badge"
-              :class="{
-                moderator: badge.isModerator,
-                active: activeCollabGroupId === badge.groupId,
-                running: badge.running,
-              }"
-              :style="{ color: badge.color, backgroundColor: badge.bgColor }"
-              :title="badge.title"
-              @click.stop="toggleActiveCollabGroup(badge.groupId)"
-            >
-              <Link2 :size="12" />
-            </button>
             <div
               v-if="
                 !selectionMode &&
@@ -428,44 +390,6 @@
               indeterminate
               size="16"
               width="2"
-            />
-          </div>
-        </section>
-
-        <!-- Agent collab groups: manage bindings / dissolve a group. -->
-        <section
-          v-if="collabGroups.length"
-          class="sidebar-section collab-group-list"
-        >
-          <div class="sidebar-section-header">
-            <Link2 :size="13" />
-            <span>协作分组</span>
-          </div>
-          <div
-            v-for="g in collabGroups"
-            :key="g.id"
-            class="collab-group-item"
-            :class="{ active: activeCollabGroupId === g.id }"
-            role="button"
-            tabindex="0"
-            :title="`点击查看 ${g.name} 的协作面板`"
-            @click="toggleActiveCollabGroup(g.id)"
-            @keydown.enter="toggleActiveCollabGroup(g.id)"
-          >
-            <span
-              class="collab-group-dot"
-              :style="{ backgroundColor: collabGroupColor(g.id) }"
-            />
-            <span class="collab-group-name">{{ g.name }}</span>
-            <span class="collab-group-members"
-              >{{ g.members.length }} 会话</span
-            >
-            <v-btn
-              icon="mdi-delete-outline"
-              size="x-small"
-              variant="text"
-              :title="`解散分组「${g.name}」（取消绑定）`"
-              @click.stop="dissolveCollabGroup(g)"
             />
           </div>
         </section>
@@ -839,20 +763,6 @@
           />
         </div>
 
-        <CollabPanel
-          v-if="activeCollabGroup"
-          :group="activeCollabGroup"
-          @close="activeCollabGroupId = null"
-          @open-transcript="showCollabTranscript = true"
-        />
-
-        <CollabTranscriptPanel
-          v-if="showCollabTranscript && activeCollabGroup"
-          :group="activeCollabGroup"
-          :is-dark="isDark"
-          @close="showCollabTranscript = false"
-        />
-
         <section ref="composerShell" class="composer-shell">
           <template v-if="!isReadonlySession">
             <ChatInput
@@ -1027,12 +937,6 @@
   </div>
 
   <ChatMessageSearchDialog v-model="searchDialogOpen" />
-  <CollabBindDialog
-    v-model="collabDialogOpen"
-    :sessions="sessions"
-    :initial-members="collabBindPrefill"
-    @saved="onCollabSaved"
-  />
   <ArchivedSessionsDialog
     v-model="archivedDialogOpen"
     @restore="onArchivedRestored"
@@ -1065,7 +969,6 @@ import {
   CornerUpLeft,
   GitBranch,
   Languages,
-  Link2,
   ListChecks,
   Moon,
   PanelLeft,
@@ -1076,7 +979,7 @@ import {
   Sun,
   Trash2,
 } from "@lucide/vue";
-import { agentCollabApi, chatApi, providerApi } from "@/api/v1";
+import { chatApi, providerApi } from "@/api/v1";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import {
   useSpcodeProjectAutoLoad,
@@ -1109,16 +1012,7 @@ import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import TodoSidebar from "@/components/chat/message_list_comps/TodoSidebar.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
-import CollabBindDialog from "@/components/chat/CollabBindDialog.vue";
-import CollabPanel from "@/components/chat/CollabPanel.vue";
-import CollabTranscriptPanel from "@/components/chat/CollabTranscriptPanel.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
-import {
-  useAgentCollab,
-  collabGroupColor,
-  collabWithAlpha,
-  type CollabGroup,
-} from "@/composables/useAgentCollab";
 import {
   useSessions,
   type ArchivedSession,
@@ -1222,94 +1116,6 @@ const {
   setSessionArchived,
   updateSessionTitle,
 } = useSessions(props.chatboxMode);
-// Agent collab: binding groups + moderated discussions across webchat sessions.
-const {
-  groups: collabGroups,
-  loadGroups: loadCollabGroups,
-  recoverActiveDiscussion,
-  status: collabStatus,
-  activeDiscussionSessionIds,
-} = useAgentCollab();
-const collabDialogOpen = ref(false);
-const showCollabTranscript = ref(false);
-const activeCollabGroupId = ref<string | null>(null);
-const activeCollabGroup = computed(
-  () =>
-    collabGroups.value.find((g) => g.id === activeCollabGroupId.value) ?? null,
-);
-// Sidebar "bind collab" flow: selection mode variant that feeds the checked
-// sessions into CollabBindDialog as initial members.
-const collabBindMode = ref(false);
-const collabBindPrefill = ref<string[]>([]);
-
-function startCollabBinding() {
-  collabBindMode.value = true;
-  if (!selectionMode.value) selectionMode.value = true;
-}
-
-function openCollabBindFromSelection() {
-  collabBindPrefill.value = [...checkedSessionIds.value];
-  collabDialogOpen.value = true;
-}
-
-async function onCollabSaved() {
-  await loadCollabGroups();
-  const latest = collabGroups.value[collabGroups.value.length - 1];
-  if (latest) activeCollabGroupId.value = latest.id;
-  if (selectionMode.value) toggleSelectionMode();
-}
-
-// Chain badge colors now live in useAgentCollab (collabGroupColor /
-// collabWithAlpha) so the transcript panel can reuse the same palette.
-function collabBadges(sessionId: string) {
-  const discussionActive =
-    collabStatus.value !== "idle" && collabStatus.value !== "stopped";
-  return collabGroups.value
-    .filter((g) => g.members.some((m) => m.session_id === sessionId))
-    .map((g) => {
-      const color = collabGroupColor(g.id);
-      const isModerator = g.moderator_session_id === sessionId;
-      return {
-        groupId: g.id,
-        color,
-        isModerator,
-        // Member of the group hosting the running discussion → animated border.
-        running:
-          discussionActive && activeDiscussionSessionIds.value.has(sessionId),
-        // Moderator sessions get a visibly deeper badge background.
-        bgColor: collabWithAlpha(color, isModerator ? 0.45 : 0.14),
-        title: `${g.name}${isModerator ? " · 主持人" : ""}（点击切换协作面板）`,
-      };
-    });
-}
-
-function toggleActiveCollabGroup(groupId: string) {
-  activeCollabGroupId.value =
-    activeCollabGroupId.value === groupId ? null : groupId;
-}
-
-async function dissolveCollabGroup(group: CollabGroup) {
-  const ok = await askForConfirmation(
-    `解散协作分组「${group.name}」？所有会话将解除绑定。`,
-    confirmDialog,
-  );
-  if (!ok) return;
-  try {
-    const res = await agentCollabApi.deleteGroup(group.id);
-    if (res.data.status === "error") {
-      // e.g. a discussion is still running on this group
-      toast.error(res.data.message || "解散失败");
-      return;
-    }
-    await loadCollabGroups();
-    if (activeCollabGroupId.value === group.id) {
-      activeCollabGroupId.value = null;
-    }
-    toast.success(`协作分组「${group.name}」已解散`);
-  } catch {
-    toast.error("解散失败，请检查网络或后台日志");
-  }
-}
 const {
   projects,
   selectedProjectId,
@@ -2089,15 +1895,7 @@ onMounted(async () => {
       getArchivedSessions(),
       getProjects(),
       loadTokenProviders(),
-      loadCollabGroups(),
     ]);
-    // Re-attach to a discussion that kept running across the page reload:
-    // restores the panel controls (stop/resume) and rebuilds the timeline
-    // and transcript from the server-side event replay.
-    const recoveredGroupId = await recoverActiveDiscussion();
-    if (recoveredGroupId && !activeCollabGroupId.value) {
-      activeCollabGroupId.value = recoveredGroupId;
-    }
     const routeSessionId = getRouteSessionId();
     if (routeSessionId === "models") {
       activeWorkspace.value = "providers";
@@ -2900,11 +2698,6 @@ function toggleSelectionMode() {
   }
 }
 
-// Leaving selection mode also leaves the collab-bind variant of it.
-watch(selectionMode, (active) => {
-  if (!active) collabBindMode.value = false;
-});
-
 function toggleSessionChecked(sessionId: string) {
   const next = new Set(checkedSessionIds.value);
   if (next.has(sessionId)) {
@@ -3297,8 +3090,8 @@ async function selectSession(sessionId: string, pushRoute = true) {
     await router.push(`${basePath()}/${sessionId}`);
   }
   // 2026-08-27: always refresh, even for already-loaded sessions. The
-  // loadedSessions skip left stale content when background turns (goal-loop /
-  // collab orphans, primary runs from another device) advanced or finished
+  // loadedSessions skip left stale content when background turns (goal-loop,
+  // primary runs from another device) advanced or finished
   // while the user was in another session — switching back showed a frozen
   // bubble plus everything from the switch moment onward. The merge inside
   // loadSessionMessages reconciles live records with the persisted snapshot.
@@ -5363,89 +5156,6 @@ function toggleTheme() {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-}
-
-.collab-group-list {
-  border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  padding-top: 4px;
-}
-
-.collab-group-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  margin: 2px 0;
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--chat-muted);
-}
-
-.collab-group-item:hover {
-  background: var(--chat-session-active-bg);
-}
-
-.collab-group-item.active {
-  background: var(--chat-session-active-bg);
-  color: var(--chat-text);
-}
-
-.collab-group-dot {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.collab-group-name {
-  flex-grow: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.collab-group-members {
-  flex: none;
-  font-size: 11px;
-  color: var(--chat-muted);
-}
-
-.collab-chain-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  margin-left: 4px;
-  padding: 1px 3px;
-  border-radius: 4px;
-  line-height: 1;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-
-.collab-chain-badge.moderator {
-  border-color: currentColor;
-}
-
-.collab-chain-badge.active {
-  outline: 1.5px solid currentColor;
-  outline-offset: 1px;
-}
-
-/* Running discussion: animated breathing border on member sessions. */
-.collab-chain-badge.running {
-  animation: collab-badge-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes collab-badge-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 currentColor;
-  }
-  50% {
-    box-shadow: 0 0 4px 1.5px currentColor;
-  }
 }
 
 .composer-shell {

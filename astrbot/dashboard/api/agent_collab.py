@@ -1,4 +1,8 @@
-"""Agent collab dashboard routes (legacy /api/agent_collab/*)."""
+"""Agent collab dashboard routes (legacy /api/agent_collab/*).
+
+Superseded by Agent Teams (spec §2.2); kept for the transition period —
+do not extend.
+"""
 
 import asyncio
 import json

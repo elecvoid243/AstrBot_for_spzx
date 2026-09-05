@@ -47,15 +47,15 @@
 
 <script setup lang="ts">
 // Per-member live window for the run monitor (Task 8): the task sent to the
-// member, its streaming reply and the final structured parts. Rendering
-// mirrors CollabTranscriptPanel (messageBlocks grouping over ReasoningBlock /
-// MarkdownMessagePart) and reuses the member-color CSS-var theming.
+// member, its streaming reply and the final structured parts. Rendering uses
+// messageBlocks grouping over ReasoningBlock / MarkdownMessagePart and the
+// member-color CSS-var theming.
 import { computed, nextTick, ref, watch } from 'vue';
 import ReasoningBlock from '@/components/chat/message_list_comps/ReasoningBlock.vue';
 import MarkdownMessagePart from '@/components/chat/message_list_comps/MarkdownMessagePart.vue';
 import { CHAT_MARKDOWN_CUSTOM_TAGS } from '@/components/chat/chatMarkdownComponents';
 import { messageBlocks, type ChatContent } from '@/composables/useMessages';
-import { collabMemberColor, collabWithAlpha } from '@/composables/useAgentCollab';
+import { collabMemberColor, collabWithAlpha } from '@/utils/memberColors';
 import type { MemberWindowState } from '@/composables/agentTeamsRunReducer';
 import { useModuleI18n } from '@/i18n/composables';
 import { useCustomizerStore } from '@/stores/customizer';
@@ -80,8 +80,8 @@ const isDark = computed(() => customizer.isDark);
 const memberName = computed(() => String(props.member.name || props.member.member_id));
 const memberColor = computed(() => collabMemberColor(memberName.value));
 
-// Same member-color CSS-var approach as CollabTranscriptPanel.turnVars: the
-// header band and the quoted inbound block take tints of the member color.
+// Member-color CSS vars: the header band and the quoted inbound block take
+// tints of the member color.
 const windowVars = computed(() => ({
   '--member-color': memberColor.value,
   '--member-header-bg': collabWithAlpha(memberColor.value, 0.12),

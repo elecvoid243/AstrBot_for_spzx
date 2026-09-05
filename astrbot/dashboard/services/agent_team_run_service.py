@@ -102,7 +102,7 @@ class DAGRunner:
         username: str,
         run_input: str = "",
         node_states: dict[str, dict] | None = None,
-        on_member_stop: Callable[[str], object] | None = None,
+        on_member_stop: Callable[[dict], None] | None = None,
         workflow_id: str | None = None,
     ) -> None:
         self.run_id = run_id
@@ -204,6 +204,14 @@ class DAGRunner:
     def request_stop(self) -> None:
         self._stop_requested.set()
         self._resume_wake.set()
+        if self.on_member_stop is not None:
+            # In-flight members are the ones with a node stuck on "running".
+            for state in self.node_states.values():
+                if state["status"] != "running":
+                    continue
+                member = self._member_by_id(state["member_id"])
+                if member is not None:
+                    self.on_member_stop(member)
 
     async def retry_node(self, node_id: str) -> None:
         """Re-queue a failed node and resume the run (spec §6.3).
@@ -255,7 +263,12 @@ class DAGRunner:
             await asyncio.sleep(self.ports.busy_poll_interval)
 
     async def _execute_node(self, node: dict) -> None:
-        """Deliver one node's task to its member and collect the reply."""
+        """Deliver one node's task to its member and collect the reply.
+
+        Returns early without touching the node state when a stop lands
+        mid-collection: the collection is abandoned (not awaited out to its
+        timeout) and the loop's stop branch lands the terminal state.
+        """
         node_id = node["id"]
         member = self._member_by_id(node["member_id"])
         state = self.node_states[node_id]
@@ -323,12 +336,31 @@ class DAGRunner:
                     "text": task_text,
                 }
             )
-            reply, _parts = await asyncio.wait_for(
-                self.ports.collect(
-                    member["session_id"], message_id, member["member_id"]
-                ),
-                timeout=float(self.config["reply_timeout"]),
+            # Race the reply collection against the stop request: a stop
+            # mid-turn abandons the collection right away instead of waiting
+            # out the remaining reply_timeout (spec §6.3/§10).
+            collect_task = asyncio.ensure_future(
+                asyncio.wait_for(
+                    self.ports.collect(
+                        member["session_id"], message_id, member["member_id"]
+                    ),
+                    timeout=float(self.config["reply_timeout"]),
+                )
             )
+            stop_task = asyncio.ensure_future(self._stop_requested.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {collect_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_task in done:
+                    return
+                reply, _parts = collect_task.result()
+            finally:
+                for pending in (collect_task, stop_task):
+                    if not pending.done():
+                        pending.cancel()
+                await asyncio.gather(collect_task, stop_task, return_exceptions=True)
         except asyncio.TimeoutError:
             state.update(
                 status="failed", error="reply timeout", finished_at=time.time()
@@ -516,7 +548,7 @@ class AutoOrchestrator:
         bus: RunEventBus,
         username: str,
         rounds: list[dict] | None = None,
-        on_member_stop: Callable[[str], object] | None = None,
+        on_member_stop: Callable[[dict], None] | None = None,
     ) -> None:
         self.run_id = run_id
         self.team_id = team_id
@@ -547,6 +579,12 @@ class AutoOrchestrator:
         self._resume_reminder = False
         self._resume_wake = asyncio.Event()
         self._stop_requested = asyncio.Event()
+        # Members whose turn I/O is in flight right now: the coordinator
+        # alone during a coordinator turn, the wave's assigned roster during
+        # a member wave. The wave sets the roster before gather and both
+        # phases clear it in their finally, so the list is empty between
+        # phases — request_stop() snapshots it to propagate cancellation.
+        self._in_flight_members: list[dict] = []
 
     def _emit(self, event: dict) -> None:
         self.bus.emit({"ts": time.time(), **event})
@@ -587,6 +625,11 @@ class AutoOrchestrator:
     def request_stop(self) -> None:
         self._stop_requested.set()
         self._resume_wake.set()
+        if self.on_member_stop is not None:
+            # In-flight members (coordinator turn or wave) are snapshotted by
+            # the turn/wave phases themselves.
+            for member in self._in_flight_members:
+                self.on_member_stop(member)
 
     # ---------- coordinator tool callbacks ----------
 
@@ -673,8 +716,10 @@ class AutoOrchestrator:
 
         Returns:
             "ok" when the turn completed, "timeout" when the reply timed out
-            (the run was paused and persisted here), or "skipped" when the run
-            was paused/stopped before the turn's I/O started.
+            (the run was paused and persisted here), "skipped" when the run
+            was paused/stopped before the turn's I/O started, or "stopped"
+            when a stop landed mid-turn (the collection was abandoned; the
+            loop's stop branch lands the terminal stopped state).
 
         The registry entry lives exactly for this turn: registered before the
         round event, unregistered in `finally` after collect returns.
@@ -699,6 +744,7 @@ class AutoOrchestrator:
                 return "skipped"
             session_id = self.coordinator["session_id"]
             member_id = self.coordinator["member_id"]
+            self._in_flight_members = [self.coordinator]
 
             async def _turn_io() -> None:
                 message_id = await self.ports.deliver(session_id, body, None)
@@ -724,10 +770,32 @@ class AutoOrchestrator:
                     }
                 )
 
+            # Race the turn I/O against the stop request: a stop mid-turn
+            # abandons the turn right away instead of waiting out the
+            # remaining reply_timeout, and must NOT fall into the paused
+            # "coordinator timeout" branch below (spec §6.3/§10).
             try:
-                await asyncio.wait_for(
-                    _turn_io(), timeout=float(self.config["reply_timeout"])
+                collect_task = asyncio.ensure_future(
+                    asyncio.wait_for(
+                        _turn_io(), timeout=float(self.config["reply_timeout"])
+                    )
                 )
+                stop_task = asyncio.ensure_future(self._stop_requested.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {collect_task, stop_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_task in done:
+                        return "stopped"
+                    collect_task.result()
+                finally:
+                    for pending in (collect_task, stop_task):
+                        if not pending.done():
+                            pending.cancel()
+                    await asyncio.gather(
+                        collect_task, stop_task, return_exceptions=True
+                    )
             except asyncio.TimeoutError:
                 self.status = "paused"
                 await self._persist()
@@ -735,6 +803,7 @@ class AutoOrchestrator:
                 return "timeout"
             return "ok"
         finally:
+            self._in_flight_members = []
             AgentTeamToolRegistry.unregister(umo)
 
     async def _member_wave(self, n: int, assignments: list[dict]) -> None:
@@ -742,52 +811,91 @@ class AutoOrchestrator:
         semaphore = asyncio.Semaphore(int(self.config["max_parallel"]))
         by_name = {m["name"].strip().casefold(): m for m in self.members}
         context = f"[团队任务] 来自协调者（第 {n} 轮）"
+        # Snapshot the wave's roster as in-flight before gather so a stop
+        # during the wave reaches every assigned member, including turns
+        # still queued behind the concurrency semaphore.
+        roster: list[dict] = []
+        for assignment in assignments:
+            member = by_name.get(str(assignment.get("member") or "").strip().casefold())
+            if member is not None and member not in roster:
+                roster.append(member)
+        self._in_flight_members = roster
+        try:
 
-        async def run_one(assignment: dict) -> dict:
-            name = str(assignment.get("member") or "").strip()
-            member = by_name.get(name.casefold())
-            if member is None:
-                return {"member": name, "error": "unknown member"}
-            # Cap concurrent member turns; unknown members skip the I/O and
-            # never need a slot.
-            async with semaphore:
-                try:
-                    task = str(assignment.get("task") or "")
-                    message_id = await self.ports.deliver(
-                        member["session_id"], task, context
-                    )
+            async def run_one(assignment: dict) -> dict:
+                name = str(assignment.get("member") or "").strip()
+                member = by_name.get(name.casefold())
+                if member is None:
+                    return {"member": name, "error": "unknown member"}
+                # Cap concurrent member turns; unknown members skip the I/O and
+                # never need a slot.
+                async with semaphore:
+                    if self._stop_requested.is_set():
+                        # Stop landed while queued for a slot: never start a
+                        # new turn after the user asked to stop.
+                        return {"member": name, "error": "stopped"}
+                    try:
+                        task = str(assignment.get("task") or "")
+                        message_id = await self.ports.deliver(
+                            member["session_id"], task, context
+                        )
+                        self._emit(
+                            {
+                                "type": "message",
+                                "direction": "sent",
+                                "member_id": member["member_id"],
+                                "session_id": member["session_id"],
+                                "text": task,
+                            }
+                        )
+                        # Same stop race as the DAG runner: abandon the
+                        # collection promptly on stop instead of waiting out
+                        # the remaining reply_timeout (spec §6.3/§10).
+                        collect_task = asyncio.ensure_future(
+                            asyncio.wait_for(
+                                self.ports.collect(
+                                    member["session_id"],
+                                    message_id,
+                                    member["member_id"],
+                                ),
+                                timeout=float(self.config["reply_timeout"]),
+                            )
+                        )
+                        stop_task = asyncio.ensure_future(self._stop_requested.wait())
+                        try:
+                            done, _ = await asyncio.wait(
+                                {collect_task, stop_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if stop_task in done:
+                                return {"member": name, "error": "stopped"}
+                            reply, _parts = collect_task.result()
+                        finally:
+                            for pending in (collect_task, stop_task):
+                                if not pending.done():
+                                    pending.cancel()
+                            await asyncio.gather(
+                                collect_task, stop_task, return_exceptions=True
+                            )
+                    except asyncio.TimeoutError:
+                        return {"member": name, "error": "reply timeout"}
+                    except Exception as e:  # noqa: BLE001
+                        return {"member": name, "error": str(e)}
                     self._emit(
                         {
                             "type": "message",
-                            "direction": "sent",
+                            "direction": "reply",
                             "member_id": member["member_id"],
                             "session_id": member["session_id"],
-                            "text": task,
+                            "text": reply,
                         }
                     )
-                    reply, _parts = await asyncio.wait_for(
-                        self.ports.collect(
-                            member["session_id"], message_id, member["member_id"]
-                        ),
-                        timeout=float(self.config["reply_timeout"]),
-                    )
-                except asyncio.TimeoutError:
-                    return {"member": name, "error": "reply timeout"}
-                except Exception as e:  # noqa: BLE001
-                    return {"member": name, "error": str(e)}
-                self._emit(
-                    {
-                        "type": "message",
-                        "direction": "reply",
-                        "member_id": member["member_id"],
-                        "session_id": member["session_id"],
-                        "text": reply,
-                    }
-                )
-                return {"member": name, "result": reply}
+                    return {"member": name, "result": reply}
 
-        results = await asyncio.gather(*(run_one(a) for a in assignments))
-        self.rounds[-1]["results"] = list(results)
+            results = await asyncio.gather(*(run_one(a) for a in assignments))
+            self.rounds[-1]["results"] = list(results)
+        finally:
+            self._in_flight_members = []
 
     # ---------- main loop ----------
 
@@ -936,9 +1044,9 @@ class AgentTeamRunService:
         db: Database helper.
         chat_service: Dashboard ChatService (ports wiring + busy detection).
         busy_checker: Optional session_id -> bool override (tests).
-        on_member_stop: Optional sync (session_id) hook invoked on run stop
-            to cancel in-flight member turns; wired to the chat stop API in
-            the follow-up plan.
+        on_member_stop: Optional sync hook receiving the full member dict,
+            invoked on run stop once per in-flight member turn; app.py wires
+            it to active_event_registry.request_agent_stop_all(member umo).
         """
         self.db = db
         self.chat_service = chat_service
@@ -1266,17 +1374,10 @@ class AgentTeamRunService:
         await self._require_run(username, run_id)
         runner = self._require_runner(run_id)
         if runner.task is not None and not runner.task.done():
+            # request_stop() itself propagates cancellation to every in-flight
+            # member turn via on_member_stop (DAG: nodes stuck on "running";
+            # auto: the coordinator turn / wave roster).
             runner.request_stop()
-            if self.on_member_stop is not None:
-                # DAG runs track in-flight members via node_states; auto runs
-                # carry no node states (cancel propagation for both lands in
-                # the stop-semantics task).
-                for state in getattr(runner, "node_states", {}).values():
-                    if state["status"] != "running":
-                        continue
-                    member = runner._member_by_id(state["member_id"])
-                    if member is not None:
-                        self.on_member_stop(member["session_id"])
             return {"message": "停止中"}
         # Dead task (e.g. a failure-paused run whose loop already returned):
         # the stop flag would never be observed, so land the terminal state

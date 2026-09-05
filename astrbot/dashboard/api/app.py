@@ -93,6 +93,17 @@ from .updates import (
 CLEAR_SITE_DATA_HEADERS = {"Clear-Site-Data": '"cache"'}
 
 
+def _stop_member_turn(member: dict) -> None:
+    """Agent Teams run-stop hook: request the in-flight agent turn of a team
+    member's webchat session to stop (best-effort; the member row carries
+    its umo)."""
+    from astrbot.core.utils.active_event_registry import active_event_registry
+
+    umo = member.get("umo") or ""
+    if umo:
+        active_event_registry.request_agent_stop_all(umo)
+
+
 def create_dashboard_asgi_app(
     *,
     core_lifecycle: AstrBotCoreLifecycle,
@@ -181,7 +192,7 @@ def create_dashboard_asgi_app(
         db=db,
         chat_service=chat,
         busy_checker=services.agent_teams.busy_checker,
-        on_member_stop=None,  # wired to the chat stop API in the follow-up plan
+        on_member_stop=_stop_member_turn,
     )
 
     # Kernel goal loop: injected goal turns on webchat sessions register as

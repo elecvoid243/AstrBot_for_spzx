@@ -196,6 +196,10 @@ async def test_auto_run_single_round_finish(tmp_path):
     assert AgentTeamToolRegistry.get_tools(coordinator["umo"]) == []
     stopped = [e for e in bus.history() if e.get("type") == "stopped"]
     assert stopped and stopped[-1]["reason"] == "finished"
+    # The dispatch event carries notes: None when the coordinator sent none.
+    dispatches = [e for e in bus.history() if e.get("type") == "dispatch"]
+    assert len(dispatches) == 1
+    assert dispatches[0]["notes"] is None
 
 
 @pytest.mark.asyncio
@@ -276,6 +280,7 @@ async def test_auto_run_member_wave(tmp_path):
         {"member": "写手", "task": "写初稿"},
         {"member": "审校", "task": "校对初稿"},
     ]
+    assert dispatches[0]["notes"] == "注意语气"
 
 
 @pytest.mark.asyncio
@@ -357,6 +362,10 @@ async def test_auto_run_two_no_tool_rounds_pause(tmp_path):
     row2 = await db.get_agent_team_run(run_id)
     assert row2.result_summary == "这次成功了"
     assert len(row2.rounds) == 1
+    # The rebuilt turn's prompt carries the stronger one-shot resume reminder
+    # (the plain counter-based reminder cannot fire after the reset).
+    assert delivered2[0][0] == coordinator["session_id"]
+    assert "without dispatching any tasks" in delivered2[0][1]
 
 
 @pytest.mark.asyncio
@@ -692,3 +701,80 @@ async def test_auto_run_resume_after_pause_recalls_run(tmp_path):
     assert row.status == "completed"
     assert row.result_summary == "续上了"
     assert len(row.rounds) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_run_terminal_guard_prevents_rerun(tmp_path):
+    """run() on an already-terminal orchestrator returns immediately instead
+    of live-looping coordinator turns."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = make_team_members()
+    coordinator = members[0]
+    events: list = []
+    delivered: list = []
+    registry_log: list = []
+    ports = auto_ports(
+        members,
+        coordinator,
+        {},
+        {"主管": "x", "写手": "x", "审校": "x"},
+        events,
+        delivered,
+        registry_log,
+    )
+    orchestrator = make_orchestrator("rg1", members, ports, db, RunEventBus())
+    orchestrator.status = "failed"
+    # Without the loop-top terminal guard the round engine re-enters forever
+    # with a terminal status (skipped turns never await, so the live loop is
+    # synchronous and uninterruptible). Count the turns and force-break so
+    # the pre-fix RED is a clean assertion failure instead of a hang.
+    calls = {"n": 0}
+    original_turn = orchestrator._coordinator_turn
+
+    async def counting_turn(n):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise RuntimeError("terminal guard missing: live loop")
+        return await original_turn(n)
+
+    orchestrator._coordinator_turn = counting_turn
+    await asyncio.wait_for(orchestrator.run(), timeout=5.0)
+
+    assert calls["n"] == 0  # the guard must return before any turn
+    assert orchestrator.status == "failed"
+    assert delivered == []  # no coordinator turn ever ran
+    assert AgentTeamToolRegistry.get_tools(coordinator["umo"]) == []
+
+
+@pytest.mark.asyncio
+async def test_auto_run_finish_truncates_summary(tmp_path):
+    """result_summary is capped at 2000 chars, matching DAGRunner."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = make_team_members()
+    coordinator = members[0]
+    events: list = []
+    delivered: list = []
+    registry_log: list = []
+
+    async def turn1(tools):
+        await next(t for t in tools if t.name == "team_finish").call(
+            None, summary="长" * 2500
+        )
+
+    ports = auto_ports(
+        members,
+        coordinator,
+        {1: turn1},
+        {"主管": "ok", "写手": "x", "审校": "x"},
+        events,
+        delivered,
+        registry_log,
+    )
+    orchestrator = make_orchestrator("rc1", members, ports, db, RunEventBus())
+    await orchestrator.run()
+
+    assert orchestrator.status == "completed"
+    row = await db.get_agent_team_run("rc1")
+    assert row.result_summary == "长" * 2000

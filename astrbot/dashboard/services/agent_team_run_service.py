@@ -541,6 +541,10 @@ class AutoOrchestrator:
         self._pending_notes: str | None = None
         self._finish: dict | None = None
         self._no_tool_rounds = 0
+        # One-shot: set by resume_run's rebuild so the first resumed turn
+        # carries the stronger no-dispatch reminder (the counter itself
+        # starts clean, so the regular reminder cannot fire).
+        self._resume_reminder = False
         self._resume_wake = asyncio.Event()
         self._stop_requested = asyncio.Event()
 
@@ -636,6 +640,17 @@ class AutoOrchestrator:
                 "or team_finish. Act now: either dispatch this round's tasks "
                 "with team_dispatch, or end the run with team_finish."
             )
+        # One-shot stronger reminder for a resumed no-dispatch pause (the
+        # counter-based reminder above cannot fire right after the rebuild).
+        resume_reminder = ""
+        if self._resume_reminder:
+            self._resume_reminder = False
+            resume_reminder = (
+                "\n\nYou have previously completed two rounds without "
+                "dispatching any tasks. You MUST call team_dispatch with "
+                "concrete assignments this round, or the run will be paused "
+                "again."
+            )
         return (
             f"你是团队「{self.team_name}」的协调者（第 {n}/{max_rounds} 轮）。\n"
             f"团队成员：\n{roster}\n\n{task_block}\n\n"
@@ -643,7 +658,7 @@ class AutoOrchestrator:
             "assignments (one {member, task} pair per member task, using exact "
             "member names). When the overall goal is fully achieved and all "
             "member results are in, call team_finish with a final summary to "
-            "end the run." + reminder
+            "end the run." + reminder + resume_reminder
         )
 
     async def _wait_if_busy(self, session_id: str) -> None:
@@ -830,6 +845,10 @@ class AutoOrchestrator:
 
     async def _run_loop(self) -> None:
         while True:
+            if self.status not in ("running", "paused", "stopping"):
+                # Terminal runs must never re-enter the round engine: a
+                # direct re-run() would live-loop skipped coordinator turns.
+                return
             if self._stop_requested.is_set():
                 # Defensive: the turn's finally already unregisters, this
                 # covers exits between phases.
@@ -864,7 +883,7 @@ class AutoOrchestrator:
                 await self.db.update_agent_team_run(
                     self.run_id,
                     status=self.status,
-                    result_summary=self._finish["summary"],
+                    result_summary=self._finish["summary"][:2000],
                     rounds=self.rounds,
                 )
                 self._emit({"type": "stopped", "reason": "finished"})
@@ -886,7 +905,14 @@ class AutoOrchestrator:
                     return
                 continue
             self._no_tool_rounds = 0
-            self._emit({"type": "dispatch", "round": n, "assignments": assignments})
+            self._emit(
+                {
+                    "type": "dispatch",
+                    "round": n,
+                    "assignments": assignments,
+                    "notes": self._pending_notes or None,
+                }
+            )
             self.rounds.append(
                 {
                     "n": n,
@@ -974,7 +1000,8 @@ class AgentTeamRunService:
         if row.mode == "auto":
             # Rebuild from the persisted rounds (next round = len+1). A fresh
             # orchestrator starts with the no-tool counter at 0, so a
-            # no-dispatch pause gets a fresh chance with a stronger reminder.
+            # no-dispatch pause gets a fresh chance — flagged so its first
+            # turn injects the stronger no-dispatch reminder.
             await self.db.update_agent_team_run(run_id, status="running")
             runner = self._build_orchestrator(
                 run_id=run_id,
@@ -984,6 +1011,7 @@ class AgentTeamRunService:
                 username=username,
                 rounds=list(row.rounds or []),
             )
+            runner._resume_reminder = True
             self._start_runner_task(runner)
             return runner.snapshot()
         # Redo semantics: in-flight nodes at interruption are re-dispatched

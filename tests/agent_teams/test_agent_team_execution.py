@@ -35,8 +35,9 @@ from astrbot.core.platform import (
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_adapter import WebChatAdapter
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
 from astrbot.core.provider.entities import ProviderRequest
-from astrbot.dashboard.services.agent_team_ports import TeamPorts
+from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
 from astrbot.dashboard.services.agent_team_run_service import (
     AgentTeamRunService,
     DAGRunner,
@@ -1078,3 +1079,181 @@ async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
     row = await db.get_agent_team_run("rres")
     assert row.node_states["n2"]["status"] == "failed"
     assert row.node_states["n2"]["error"] == "配置档案已删除"
+
+
+# ---------------------------------------------------------------------------
+# Runner execution-token wiring (spec §2.3)
+# ---------------------------------------------------------------------------
+
+
+def token_runner(tmp_path, run_id: str, deliver, collect):
+    """Build (db, runner) over a single node carrying an execution block."""
+    db = SQLiteDatabase(str(tmp_path / f"{run_id}.db"))
+    runner = DAGRunner(
+        run_id=run_id,
+        team_id="team-1",
+        graph={
+            "nodes": [
+                {
+                    "id": "n1",
+                    "member_id": "mA",
+                    "task": "t",
+                    "execution": {"config_id": "cfg-1"},
+                }
+            ],
+            "edges": [],
+        },
+        config=RUNNER_CONFIG,
+        members=runner_members()[:1],
+        ports=scripted_ports_of(deliver, collect, []),
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="x",
+    )
+    return db, runner
+
+
+@pytest.mark.asyncio
+async def test_runner_delivers_node_turn_with_execution_token(tmp_path):
+    """A node with an execution block dispatches under a registered token:
+    the scripted deliver resolves the binding mid-turn, and the registry is
+    empty again once the node settles."""
+    captured: dict = {}
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        captured["token"] = execution_token
+        captured["binding"] = AgentTeamExecutionRegistry.resolve(
+            execution_token, umo="webchat:FriendMessage:conv-0"
+        )
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        return "回复", []
+
+    db, runner = token_runner(tmp_path, "rtok", deliver, collect)
+    await db.initialize()
+    await runner.run()
+
+    assert runner.status == "completed"
+    token = captured.get("token")
+    assert token, "deliver must receive an execution token"
+    binding = captured["binding"]
+    assert binding is not None
+    assert binding.config_id == "cfg-1"
+    assert binding.node_id == "n1"
+    assert binding.member_id == "mA"
+    assert binding.umo == "webchat:FriendMessage:conv-0"
+    assert binding.owner_username == "alice"
+    assert binding.run_id == "rtok"
+    assert binding.team_id == "team-1"
+    # The token lives exactly for the turn: gone once the node settles.
+    assert AgentTeamExecutionRegistry.resolve(token) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_deliver_failure_still_unregisters_token(tmp_path):
+    """A delivery failure fails the node AND releases the token."""
+    captured: dict = {}
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        captured["token"] = execution_token
+        raise RuntimeError("deliver exploded")
+
+    async def collect(session_id, message_id, member_id=None):
+        return "", []
+
+    db, runner = token_runner(tmp_path, "rtokfail", deliver, collect)
+    await db.initialize()
+    await runner.run()
+
+    assert runner.status == "paused"
+    assert runner.node_states["n1"]["status"] == "failed"
+    assert "deliver exploded" in runner.node_states["n1"]["error"]
+    token = captured.get("token")
+    assert token, "deliver must receive an execution token"
+    # The failure path must not leak the token.
+    assert AgentTeamExecutionRegistry.resolve(token) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
+    """Nodes without an execution block deliver with execution_token=None;
+    auto-mode member turns behave the same by design (spec §2.2)."""
+    db = SQLiteDatabase(str(tmp_path / "rnotok.db"))
+    await db.initialize()
+    captured: dict = {}
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        captured["token"] = execution_token
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        return "回复", []
+
+    runner = DAGRunner(
+        run_id="rnotok",
+        team_id="t1",
+        graph={"nodes": [{"id": "n1", "member_id": "mA", "task": "t"}], "edges": []},
+        config=RUNNER_CONFIG,
+        members=runner_members()[:1],
+        ports=scripted_ports_of(deliver, collect, []),
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="x",
+    )
+    await runner.run()
+
+    assert runner.status == "completed"
+    assert captured["token"] is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_puts_execution_token_into_payload():
+    """The real deliver stamps the internal-only execution_token into the
+    queued payload; the webchat adapter lifts it into the event extra."""
+    mgr = WebChatQueueMgr()
+    ports = build_ports_for_test(mgr, "alice", emit=lambda e: None)
+    try:
+        await ports.deliver("conv-tok", "hi", None, execution_token="tok-1")
+        payload = mgr.queues["conv-tok"].get_nowait()[2]
+        await ports.deliver("conv-tok", "hi", None)
+        default_payload = mgr.queues["conv-tok"].get_nowait()[2]
+    finally:
+        await ports.close()
+
+    assert payload.get("execution_token") == "tok-1"
+    assert default_payload.get("execution_token") is None
+
+
+@pytest.mark.asyncio
+async def test_runner_stop_mid_turn_still_unregisters_token(tmp_path):
+    """A stop landing mid-collection abandons the turn AND releases the
+    token — the unregister finally spans the whole delivery try."""
+    gate = asyncio.Event()  # the reply never arrives
+    captured: dict = {}
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        captured["token"] = execution_token
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        await gate.wait()
+        return "", []
+
+    db, runner = token_runner(tmp_path, "rstoptok", deliver, collect)
+    await db.initialize()
+    runner.config["reply_timeout"] = 60.0  # prove abandonment, not timeout
+    task = asyncio.create_task(runner.run())
+    for _ in range(250):
+        if runner.node_states["n1"]["status"] == "running":
+            break
+        await asyncio.sleep(0.02)
+    runner.request_stop()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert runner.status == "stopped"
+    token = captured.get("token")
+    assert token
+    assert AgentTeamExecutionRegistry.resolve(token) is None

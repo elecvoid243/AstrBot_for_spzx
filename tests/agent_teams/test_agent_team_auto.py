@@ -82,7 +82,9 @@ def auto_ports(
     def _live() -> bool:
         return bool(AgentTeamToolRegistry.get_tools(coordinator["umo"]))
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         delivered.append((session_id, text, context))
         member = by_session[session_id]
         if member["member_id"] == coordinator["member_id"]:
@@ -559,7 +561,9 @@ async def test_auto_run_coordinator_timeout_pauses(tmp_path):
     delivered: list = []
     gate = asyncio.Event()  # the coordinator's reply never arrives
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         delivered.append((session_id, text, context))
         return f"mid-{len(delivered)}"
 
@@ -645,7 +649,9 @@ async def test_auto_run_crash_lands_failed(tmp_path):
     coordinator = members[0]
     events: list = []
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         raise RuntimeError("deliver exploded")
 
     async def collect(

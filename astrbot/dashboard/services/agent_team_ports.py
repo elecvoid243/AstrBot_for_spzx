@@ -36,7 +36,11 @@ def _conversation_id(session_id: str) -> str:
 class TeamPorts:
     """I/O ports for team runners; injected for testability."""
 
-    deliver: Callable[[str, str, str | None], Awaitable[str]]
+    deliver: Callable[[str, str, str | None, str | None], Awaitable[str]]
+    # Signature: (session_id, text, context=None, execution_token=None).
+    # execution_token is internal-only (spec §2.3): the runner-issued token
+    # bound to the node's execution binding; the webchat adapter lifts it
+    # into the event extra for EventBus profile routing.
     # Signature: (session_id, message_id, member_id). The runner tags every
     # collect call with the executing member; implementations stamp that tag
     # onto the emitted stream message events (spec §6.6 message events carry
@@ -81,7 +85,12 @@ def build_ports_for_test(
     # register-then-inject ordering.
     subscriptions: dict[str, asyncio.Queue] = {}
 
-    async def deliver(session_id: str, text: str, context: str | None = None) -> str:
+    async def deliver(
+        session_id: str,
+        text: str,
+        context: str | None = None,
+        execution_token: str | None = None,
+    ) -> str:
         cid = _conversation_id(session_id)
         message_id = uuid.uuid4().hex
         llm_checkpoint_id = uuid.uuid4().hex
@@ -105,6 +114,10 @@ def build_ports_for_test(
                     # Per-turn team framing, injected by build_main_agent as
                     # a temp extra (provider-facing, not persisted).
                     "team_context": context,
+                    # Internal-only execution token (spec §2.3): lifted into
+                    # the event extra by the webchat adapter so the EventBus
+                    # can route this turn to the binding's scheduler.
+                    "execution_token": execution_token,
                     "persist_user_history": True,
                 },
             )

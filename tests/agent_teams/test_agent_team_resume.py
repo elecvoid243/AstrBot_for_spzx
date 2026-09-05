@@ -48,7 +48,7 @@ async def test_resume_preserves_done_and_redoes_running(tmp_path):
     events: list = []
     delivered: list = []
 
-    async def deliver(session_id, text, context=None):
+    async def deliver(session_id, text, context=None, execution_token=None):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
@@ -211,7 +211,7 @@ async def make_failure_paused_run(tmp_path):
     by_session = {m["session_id"]: m for m in team["members"]}
     delivered: list = []
 
-    async def deliver(session_id, text, context=None):
+    async def deliver(session_id, text, context=None, execution_token=None):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 

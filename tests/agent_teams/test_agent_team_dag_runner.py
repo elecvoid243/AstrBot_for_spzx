@@ -60,7 +60,9 @@ def make_members():
 def scripted_ports(responses: dict, events: list, delivered: list) -> TeamPorts:
     """Ports whose collect() returns scripted per-member replies."""
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
@@ -355,8 +357,8 @@ async def test_resume_during_pause_persist_does_not_deadlock(tmp_path):
     original_deliver = ports.deliver
     paused = {"fired": False}
 
-    async def pausing_deliver(session_id, text, context=None):
-        message_id = await original_deliver(session_id, text, context)
+    async def pausing_deliver(session_id, text, context=None, execution_token=None):
+        message_id = await original_deliver(session_id, text, context, execution_token)
         if not paused["fired"]:
             paused["fired"] = True
             runner.pause()
@@ -497,10 +499,10 @@ async def test_deliver_failure_fails_node_without_escaping(tmp_path):
     # n2's member session is conv-1; make its delivery blow up.
     original_deliver = ports.deliver
 
-    async def failing_deliver(session_id, text, context=None):
+    async def failing_deliver(session_id, text, context=None, execution_token=None):
         if session_id == "conv-1":
             raise RuntimeError("deliver exploded")
-        return await original_deliver(session_id, text, context)
+        return await original_deliver(session_id, text, context, execution_token)
 
     ports.deliver = failing_deliver
 

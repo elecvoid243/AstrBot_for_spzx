@@ -66,7 +66,9 @@ def make_members() -> list[dict]:
 def blocking_ports(members: list[dict], events: list, gate: asyncio.Event) -> TeamPorts:
     """Ports whose collect() blocks on `gate` (never set by the stop tests)."""
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         events.append({"type": "sent", "session_id": session_id})
         return f"mid-{len(events)}"
 
@@ -205,7 +207,9 @@ async def test_stop_propagates_member_dict(tmp_path):
     run_svc = AgentTeamRunService(db=db, chat_service=chat, on_member_stop=spy.append)
     gate = asyncio.Event()
 
-    async def deliver(session_id: str, text: str, context=None) -> str:
+    async def deliver(
+        session_id: str, text: str, context=None, execution_token=None
+    ) -> str:
         return "mid-1"
 
     async def collect(
@@ -256,7 +260,9 @@ async def test_auto_stop_propagates_coordinator_and_members(tmp_path):
         turns = {"n": 0}
         blocking: set[str] = set()
 
-        async def deliver(session_id: str, text: str, context=None) -> str:
+        async def deliver(
+            session_id: str, text: str, context=None, execution_token=None
+        ) -> str:
             events.append({"type": "sent", "session_id": session_id})
             member = next(m for m in members if m["session_id"] == session_id)
             if member["member_id"] == coordinator["member_id"]:

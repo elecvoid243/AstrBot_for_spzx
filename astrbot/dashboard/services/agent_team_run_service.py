@@ -6,6 +6,10 @@ import uuid
 from collections.abc import Callable
 
 from astrbot import logger
+from astrbot.core.agent_team_execution import (
+    AgentTeamExecutionRegistry,
+    NodeExecutionBinding,
+)
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
@@ -347,11 +351,34 @@ class DAGRunner:
             state.update(status="pending", started_at=None)
             await self._persist()
             return
+        # Per-turn execution binding (spec §2.3): a node carrying an
+        # execution block dispatches under a token the EventBus resolves to
+        # the binding's own PipelineScheduler. Registered here, unregistered
+        # in the delivery try's finally below — the token lives exactly for
+        # this turn.
+        token = None
+        if execution:
+            token = AgentTeamExecutionRegistry.register(
+                NodeExecutionBinding(
+                    run_id=self.run_id,
+                    team_id=self.team_id,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    umo=member["umo"],
+                    owner_username=self.username,
+                    config_id=execution.get("config_id"),
+                    persona_id=execution.get("persona_id"),
+                    tools=execution.get("tools"),
+                    skills=execution.get("skills"),
+                )
+            )
         try:
             # deliver stays inside the try so a delivery failure fails the
             # node instead of escaping gather while sibling wave coroutines
             # keep persisting transitions after the run went terminal.
-            message_id = await self.ports.deliver(member["session_id"], task_text, None)
+            message_id = await self.ports.deliver(
+                member["session_id"], task_text, None, execution_token=token
+            )
             self._emit(
                 {
                     "type": "message",
@@ -404,6 +431,12 @@ class DAGRunner:
                     "text": reply,
                 }
             )
+        finally:
+            # Every exit path (stop abandonment, timeout, delivery failure)
+            # releases the token; late foreign events fall back to default
+            # routing once it is gone.
+            if token:
+                AgentTeamExecutionRegistry.unregister(token)
         await self._persist()
         self._emit(
             {
@@ -772,7 +805,11 @@ class AutoOrchestrator:
             self._in_flight_members = [self.coordinator]
 
             async def _turn_io() -> None:
-                message_id = await self.ports.deliver(session_id, body, None)
+                # Auto mode has no per-node execution blocks: turns run under
+                # member defaults by design (spec §2.2).
+                message_id = await self.ports.deliver(
+                    session_id, body, None, execution_token=None
+                )
                 self._emit(
                     {
                         "type": "message",
@@ -865,8 +902,10 @@ class AutoOrchestrator:
                         return {"member": name, "error": "stopped"}
                     try:
                         task = str(assignment.get("task") or "")
+                        # Auto mode has no per-node execution blocks: turns
+                        # run under member defaults by design (spec §2.2).
                         message_id = await self.ports.deliver(
-                            member["session_id"], task, context
+                            member["session_id"], task, context, execution_token=None
                         )
                         self._emit(
                             {

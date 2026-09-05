@@ -21,13 +21,14 @@
         hide-details
         class="monitor-workflow"
       />
+      <!-- No `hide-details` on this select: Vuetify gates the whole
+           details/messages block on it, which would suppress the hint. -->
       <v-select
         v-model="mode"
         :items="modeItems"
         item-title="title"
         item-value="value"
         density="compact"
-        hide-details
         persistent-hint
         :hint="tm('monitor.autoModeDisabled')"
         class="monitor-mode"

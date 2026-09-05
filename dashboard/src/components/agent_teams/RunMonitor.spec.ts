@@ -214,6 +214,9 @@ const stubs = {
       itemValue: { type: String, default: 'value' },
       label: { type: String, default: '' },
       hint: { type: String, default: '' },
+      // Declared so specs can pin whether the component suppresses the
+      // details block (boolean `hide-details` hides Vuetify's hint too).
+      hideDetails: { type: [Boolean, String], default: false },
     },
     emits: ['update:modelValue'],
     methods: {
@@ -396,7 +399,13 @@ describe('RunMonitor start payload', () => {
     const modeSelect = wrapper.find('select.monitor-mode');
     expect(modeSelect.find('option[value="dag"]').attributes('disabled')).toBeUndefined();
     expect(modeSelect.find('option[value="auto"]').attributes('disabled')).toBeDefined();
-    expect(modeSelect.attributes('data-hint')).toBe(zh.monitor.autoModeDisabled);
+
+    // The hint must actually render: Vuetify gates the whole details/messages
+    // block on `hideDetails`, so boolean `hide-details` + `hint` is dead
+    // markup. Pin the prop pair the stub receives.
+    const modeSelectComponent = wrapper.findComponent('.monitor-mode') as VueWrapper<any>;
+    expect(modeSelectComponent.props('hint')).toBe(zh.monitor.autoModeDisabled);
+    expect(modeSelectComponent.props('hideDetails')).toBeFalsy();
   });
 });
 

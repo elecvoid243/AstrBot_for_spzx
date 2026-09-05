@@ -555,17 +555,38 @@ async def _ensure_persona_and_skills(
     if not req.conversation:
         return
 
-    (
-        persona_id,
-        persona,
-        _,
-        use_webchat_special_default,
-    ) = await plugin_context.persona_manager.resolve_selected_persona(
-        umo=event.unified_msg_origin,
-        conversation_persona_id=req.conversation.persona_id,
-        platform_name=event.get_platform_name(),
-        provider_settings=cfg,
-    )
+    # Agent team node execution binding (None for ordinary conversation turns).
+    execution = event.get_extra("agent_team_execution")
+    node_persona_id = getattr(execution, "persona_id", None)
+    node_config_id = getattr(execution, "config_id", None)
+
+    persona_id = None
+    persona = None
+    use_webchat_special_default = False
+    if node_persona_id:
+        # Node-level persona override: resolve the persona directly instead of
+        # going through the conversation/umo resolution.
+        persona = plugin_context.persona_manager.get_persona_v3_by_id(node_persona_id)
+        persona_id = node_persona_id
+        if persona is None:
+            logger.warning(
+                "Agent team node persona `%s` not found; "
+                "falling back to conversation persona resolution.",
+                node_persona_id,
+            )
+    if persona is None:
+        (
+            persona_id,
+            persona,
+            _,
+            use_webchat_special_default,
+        ) = await plugin_context.persona_manager.resolve_selected_persona(
+            umo=event.unified_msg_origin,
+            conversation_persona_id=req.conversation.persona_id,
+            platform_name=event.get_platform_name(),
+            provider_settings=cfg,
+            config_id=node_config_id,
+        )
 
     set_persona_custom_error_message_on_event(
         event, extract_persona_custom_error_message_from_persona(persona)
@@ -608,6 +629,16 @@ async def _ensure_persona_and_skills(
             for skill in workspace_skills:
                 skills_by_name[skill.name] = skill
             skills = [skills_by_name[name] for name in sorted(skills_by_name)]
+        node_skills = getattr(execution, "skills", None)
+        if node_skills is not None:
+            # Node-level skills override (three-state) applied to the final
+            # merged list: [] disables all skills (including workspace-merged
+            # ones), a non-empty list is an allowlist.
+            if not node_skills:
+                skills = []
+            else:
+                allowed = set(node_skills)
+                skills = [skill for skill in skills if skill.name in allowed]
         if skills:
             req.system_prompt += f"\n{build_skills_prompt(skills)}\n"
             if runtime == "none":
@@ -709,6 +740,17 @@ async def _ensure_persona_and_skills(
     # add agent team tools registered for this conversation (no-op when no
     # team run is active on this umo)
     await _apply_agent_team_tools(req, event)
+
+    # Node-level tools override, applied last so the whitelist binds ALL
+    # injected tools (persona, subagent, and team tools). When req.func_tool
+    # is None no tools were effectively injected, so an empty override leaves
+    # None as-is instead of churning an empty ToolSet.
+    node_tools = getattr(execution, "tools", None)
+    if node_tools is not None and req.func_tool is not None:
+        allowed = set(node_tools)
+        req.func_tool = ToolSet(
+            tools=[tool for tool in list(req.func_tool) if tool.name in allowed]
+        )
 
     try:
         event.trace.record(

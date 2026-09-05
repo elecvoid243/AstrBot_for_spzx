@@ -87,8 +87,19 @@ class PersonaManager:
         conversation_persona_id: str | None,
         platform_name: str,
         provider_settings: dict | None = None,
+        config_id: str | None = None,
     ) -> tuple[str | None, Personality | None, str | None, bool]:
         """解析当前会话最终生效的人格。
+
+        Args:
+            umo: The unified message origin (or session) requesting the persona.
+            conversation_persona_id: The persona id pinned on the conversation.
+            platform_name: The platform name, used for the webchat special default.
+            provider_settings: The provider settings dict (unused for resolution).
+            config_id: Optional config profile id. When given and present in
+                `acm.confs`, the profile's agent_runner config decides the
+                default persona instead of the umo's config; unknown ids fall
+                back to the umo config.
 
         Returns:
             tuple:
@@ -115,7 +126,7 @@ class PersonaManager:
             if persona_id == "[%None]":
                 pass
             elif persona_id is None:
-                cfg = self.acm.get_conf(umo)
+                cfg = self.acm.confs.get(config_id) or self.acm.get_conf(umo)
                 agent_runner = cfg.get("agent_runner", {})
                 runner_config = agent_runner.get("config", {})
                 persona_id = (

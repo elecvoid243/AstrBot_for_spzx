@@ -10,12 +10,20 @@ umo-based routing) and the webchat adapter `execution_token` passthrough.
 import asyncio
 import contextlib
 import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent_team_execution import (
     AgentTeamExecutionRegistry,
     NodeExecutionBinding,
+)
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
+from astrbot.core.astr_main_agent import (
+    _ensure_persona_and_skills,
+    normalize_umo_for_workspace,
 )
 from astrbot.core.event_bus import EventBus
 from astrbot.core.platform import (
@@ -26,6 +34,7 @@ from astrbot.core.platform import (
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_adapter import WebChatAdapter
+from astrbot.core.provider.entities import ProviderRequest
 
 UMO = "webchat:FriendMessage:conv-1"
 
@@ -319,3 +328,369 @@ async def test_webchat_adapter_passthrough_execution_token():
     event = adapter.create_event(abm)
 
     assert event.get_extra("execution_token") == "tok-123"
+
+
+# ---------------------------------------------------------------------------
+# Node execution overrides in _ensure_persona_and_skills (spec §2.3)
+# ---------------------------------------------------------------------------
+
+
+class RecordingPersonaManager:
+    """Persona manager stand-in recording resolve_selected_persona kwargs."""
+
+    def __init__(self, resolved=None, v3_by_id=None) -> None:
+        self.personas_v3 = []
+        self.resolve_calls: list[dict] = []
+        self._resolved = resolved or (None, None, None, False)
+        self._v3_by_id = v3_by_id or {}
+
+    async def resolve_selected_persona(self, **kwargs):
+        self.resolve_calls.append(kwargs)
+        return self._resolved
+
+    def get_persona_v3_by_id(self, persona_id):
+        return self._v3_by_id.get(persona_id)
+
+
+class FakeToolManager:
+    """Minimal LLM tool manager over a fixed tool list."""
+
+    def __init__(self, tools) -> None:
+        self.func_list = list(tools)
+
+    def get_full_tool_set(self) -> ToolSet:
+        return ToolSet(tools=list(self.func_list))
+
+    def get_func(self, name: str):
+        return next((t for t in self.func_list if t.name == name), None)
+
+
+class FakePluginContext:
+    """Minimal Context stand-in for _ensure_persona_and_skills."""
+
+    def __init__(self, persona_manager, tool_manager) -> None:
+        self.persona_manager = persona_manager
+        self.subagent_orchestrator = None
+        self._tool_manager = tool_manager
+
+    def get_llm_tool_manager(self):
+        return self._tool_manager
+
+    def get_config(self) -> dict:
+        # No subagent_orchestrator section: the subagent block short-circuits.
+        return {}
+
+
+def make_two_tools() -> list[FunctionTool]:
+    """Two distinguishable persona-default tools."""
+    return [
+        FunctionTool(
+            name="tool_a",
+            description="tool a",
+            parameters={"type": "object", "properties": {}},
+        ),
+        FunctionTool(
+            name="tool_b",
+            description="tool b",
+            parameters={"type": "object", "properties": {}},
+        ),
+    ]
+
+
+def make_override_req(persona_id=None) -> ProviderRequest:
+    """Build a ProviderRequest whose conversation carries a persona id."""
+    req = ProviderRequest(prompt="hi")
+    req.conversation = SimpleNamespace(persona_id=persona_id)
+    return req
+
+
+def binding_event(binding: NodeExecutionBinding | None) -> "TeamNodeEvent":
+    """Build a TeamNodeEvent carrying the binding as the execution extra."""
+    extras = {"agent_team_execution": binding} if binding else {}
+    return TeamNodeEvent(UMO, extras=extras)
+
+
+@pytest.fixture
+def skills_env(tmp_path, monkeypatch):
+    """Isolate skill discovery paths; create global skills alpha and beta.
+
+    Returns:
+        The workspaces root directory (empty; tests may add workspace skills).
+    """
+    data_dir = tmp_path / "data"
+    global_skills_dir = tmp_path / "global_skills"
+    plugins_dir = tmp_path / "plugins"
+    workspaces_dir = tmp_path / "workspaces"
+    for path in (data_dir, global_skills_dir, plugins_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    for name, desc in (
+        ("skill-alpha", "Alpha skill description."),
+        ("skill-beta", "Beta skill description."),
+    ):
+        skill_dir = global_skills_dir / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\ndescription: {desc}\n---\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_data_path",
+        lambda: str(data_dir),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_skills_path",
+        lambda: str(global_skills_dir),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.skills.skill_manager.get_astrbot_plugin_path",
+        lambda: str(plugins_dir),
+    )
+    import astrbot.core.astr_main_agent as ama
+
+    monkeypatch.setattr(ama, "get_astrbot_workspaces_path", lambda: str(workspaces_dir))
+    return workspaces_dir
+
+
+@pytest.mark.asyncio
+async def test_node_persona_override_skips_resolution():
+    """A node persona id resolves directly; conversation resolution is skipped."""
+    node_persona = {"name": "node-persona", "prompt": "NODE PERSONA PROMPT"}
+    pm = RecordingPersonaManager(v3_by_id={"node-persona": node_persona})
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding(persona_id="node-persona", config_id="cfg-team")
+    req = make_override_req(persona_id="conv-persona")
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert "NODE PERSONA PROMPT" in req.system_prompt
+    assert pm.resolve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_node_persona_not_found_falls_back_to_resolution():
+    """An unknown node persona falls back to resolution with config_id."""
+    resolved_persona = {"name": "conv-persona", "prompt": "CONV PERSONA PROMPT"}
+    pm = RecordingPersonaManager(
+        resolved=("conv-persona", resolved_persona, None, False)
+    )
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding(persona_id="ghost-persona", config_id="cfg-team")
+    req = make_override_req(persona_id="conv-persona")
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert "CONV PERSONA PROMPT" in req.system_prompt
+    assert len(pm.resolve_calls) == 1
+    assert pm.resolve_calls[0]["config_id"] == "cfg-team"
+
+
+@pytest.mark.asyncio
+async def test_node_config_id_threaded_to_resolution():
+    """A binding config_id reaches resolve_selected_persona as a kwarg."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding(config_id="cfg-team")
+    req = make_override_req()
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert len(pm.resolve_calls) == 1
+    assert pm.resolve_calls[0]["config_id"] == "cfg-team"
+
+
+@pytest.mark.asyncio
+async def test_node_tools_allowlist_filters_all_injected_tools():
+    """The whitelist binds after persona AND team tools were merged."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager(make_two_tools()))
+    AgentTeamToolRegistry.register(UMO, build_team_tools(["a", "b"], None, None))
+    try:
+        binding = make_binding(tools=["tool_a", "team_dispatch"])
+        req = make_override_req()
+
+        await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+        assert req.func_tool.names() == ["tool_a", "team_dispatch"]
+    finally:
+        AgentTeamToolRegistry.unregister(UMO)
+
+
+@pytest.mark.asyncio
+async def test_node_tools_empty_list_empties_toolset():
+    """An empty node tools list removes every injected tool."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager(make_two_tools()))
+    AgentTeamToolRegistry.register(UMO, build_team_tools(["a"], None, None))
+    try:
+        binding = make_binding(tools=[])
+        req = make_override_req()
+
+        await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+        assert len(req.func_tool) == 0
+    finally:
+        AgentTeamToolRegistry.unregister(UMO)
+
+
+@pytest.mark.asyncio
+async def test_node_tools_none_keeps_default_toolset():
+    """tools=None inherits the persona default plus team tools untouched."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager(make_two_tools()))
+    AgentTeamToolRegistry.register(UMO, build_team_tools(["a", "b"], None, None))
+    try:
+        binding = make_binding()
+        req = make_override_req()
+
+        await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+        assert set(req.func_tool.names()) == {
+            "tool_a",
+            "tool_b",
+            "team_dispatch",
+            "team_finish",
+        }
+    finally:
+        AgentTeamToolRegistry.unregister(UMO)
+
+
+@pytest.mark.asyncio
+async def test_node_skills_empty_empties_merged_skills(skills_env):
+    """An empty node skills list empties persona AND workspace-merged skills."""
+    workspaces_dir = skills_env
+    workspace_root = workspaces_dir / normalize_umo_for_workspace(UMO)
+    ws_skill_dir = workspace_root / "skills" / "skill-ws"
+    ws_skill_dir.mkdir(parents=True)
+    (ws_skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Workspace skill description.\n---\n",
+        encoding="utf-8",
+    )
+
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding(skills=[])
+    req = make_override_req()
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert "## Skills" not in req.system_prompt
+    assert "skill-alpha" not in req.system_prompt
+    assert "skill-ws" not in req.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_node_skills_allowlist_filters(skills_env):
+    """A non-empty node skills list is an allowlist over discovered skills."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding(skills=["skill-beta"])
+    req = make_override_req()
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert "**skill-alpha**" not in req.system_prompt
+    assert "**skill-beta**" in req.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_node_skills_none_keeps_defaults(skills_env):
+    """skills=None inherits all discovered skills untouched."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager([]))
+    binding = make_binding()
+    req = make_override_req()
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(binding))
+
+    assert "**skill-alpha**" in req.system_prompt
+    assert "**skill-beta**" in req.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_no_binding_keeps_default_behavior(skills_env):
+    """Without the execution extra, resolution/persona/tools/skills are default."""
+    pm = RecordingPersonaManager()
+    ctx = FakePluginContext(pm, FakeToolManager(make_two_tools()))
+    req = make_override_req()
+
+    await _ensure_persona_and_skills(req, {}, ctx, binding_event(None))
+
+    assert len(pm.resolve_calls) == 1
+    assert pm.resolve_calls[0].get("config_id") is None
+    assert set(req.func_tool.names()) == {"tool_a", "tool_b"}
+    assert "**skill-alpha**" in req.system_prompt
+    assert "**skill-beta**" in req.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_resolve_selected_persona_prefers_config_profile(monkeypatch):
+    """resolve_selected_persona resolves the default persona from the profile."""
+    from astrbot.core import persona_mgr as persona_mgr_module
+    from astrbot.core.persona_mgr import PersonaManager
+
+    mgr = PersonaManager.__new__(PersonaManager)
+    mgr.personas_v3 = [{"name": "cfg-persona", "prompt": "P"}]
+    profile_conf = {
+        "agent_runner": {
+            "runner_type": "remote",
+            "config": {"persona_id": "cfg-persona"},
+        }
+    }
+    get_conf_calls: list[str] = []
+    mgr.acm = SimpleNamespace(
+        confs={"cfg-team": profile_conf},
+        get_conf=lambda umo: get_conf_calls.append(umo) or {"agent_runner": {}},
+    )
+    monkeypatch.setattr(persona_mgr_module.sp, "get_async", AsyncMock(return_value={}))
+
+    persona_id, persona, _, _ = await mgr.resolve_selected_persona(
+        umo=UMO,
+        conversation_persona_id=None,
+        platform_name="webchat",
+        config_id="cfg-team",
+    )
+
+    assert persona_id == "cfg-persona"
+    assert persona is mgr.personas_v3[0]
+    assert get_conf_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_selected_persona_unknown_config_id_falls_back(monkeypatch):
+    """An unknown config_id falls back to the umo config; None never hits confs."""
+    from astrbot.core import persona_mgr as persona_mgr_module
+    from astrbot.core.persona_mgr import PersonaManager
+
+    mgr = PersonaManager.__new__(PersonaManager)
+    mgr.personas_v3 = []
+    umo_conf = {
+        "agent_runner": {
+            "runner_type": "remote",
+            "config": {"persona_id": "umo-persona"},
+        }
+    }
+    get_conf_calls: list[str] = []
+    mgr.acm = SimpleNamespace(
+        confs={"cfg-team": {"agent_runner": {}}},
+        get_conf=lambda umo: get_conf_calls.append(umo) or umo_conf,
+    )
+    monkeypatch.setattr(persona_mgr_module.sp, "get_async", AsyncMock(return_value={}))
+
+    _, persona, _, _ = await mgr.resolve_selected_persona(
+        umo=UMO,
+        conversation_persona_id=None,
+        platform_name="webchat",
+        config_id="cfg-gone",
+    )
+    assert get_conf_calls == [UMO]
+    assert persona is None  # "umo-persona" not in empty personas_v3
+
+    get_conf_calls.clear()
+    await mgr.resolve_selected_persona(
+        umo=UMO,
+        conversation_persona_id=None,
+        platform_name="webchat",
+    )
+    assert get_conf_calls == [UMO]

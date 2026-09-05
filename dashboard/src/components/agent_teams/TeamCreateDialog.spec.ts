@@ -271,6 +271,33 @@ describe('TeamCreateDialog', () => {
     expect(wrapper.emitted('update:modelValue')).toBeUndefined();
   });
 
+  it('toasts the backend reason exactly once when createTeam rejects (HTTP 400)', async () => {
+    // Non-2xx responses arrive as axios rejections carrying the error envelope
+    // body: the composable surfaces response.data.message and the dialog's
+    // null guard must keep it at exactly one toast (no double-toast).
+    apiMocks.createTeam.mockRejectedValue({
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: { status: 'error', message: '后端具体原因' },
+      },
+    });
+    const wrapper = await openCreateDialog();
+
+    await byLabel(wrapper, zh.teams.name).setValue('Dream');
+    const rows = memberRows(wrapper);
+    await fillMemberRow(rows[0], { name: 'Alice', persona: 'persona-a' });
+    await fillMemberRow(rows[1], { name: 'Bob', persona: 'persona-b' });
+
+    await findButton(wrapper, '保存')!.trigger('click');
+    await flushPromises();
+
+    expect(toastMock.error).toHaveBeenCalledTimes(1);
+    expect(toastMock.error).toHaveBeenCalledWith('后端具体原因');
+    expect(wrapper.emitted('saved')).toBeUndefined();
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+  });
+
   it('blocks save when the team name is missing', async () => {
     const wrapper = await openCreateDialog();
     const rows = memberRows(wrapper);
@@ -413,6 +440,51 @@ describe('MemberAddDialog', () => {
     expect(toastMock.error).toHaveBeenCalledWith('成员名必须 unique: Carol');
     expect(wrapper.emitted('saved')).toBeUndefined();
     expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+  });
+
+  it('toasts the backend reason when addMember rejects (HTTP 400)', async () => {
+    // Validation errors arrive as HTTP 400/409 with an error envelope body —
+    // axios rejects and the catch must surface response.data.message instead
+    // of the generic errors.saveFailed fallback.
+    apiMocks.addMember.mockRejectedValue({
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: { status: 'error', message: '后端具体原因' },
+      },
+    });
+    const wrapper = await openMemberDialog();
+
+    await byLabel(wrapper, zh.members.name).setValue('Carol');
+    await findButton(wrapper, '保存')!.trigger('click');
+    await flushPromises();
+
+    expect(toastMock.error).toHaveBeenCalledWith('后端具体原因');
+    expect(wrapper.emitted('saved')).toBeUndefined();
+  });
+
+  it('toasts option-loading failures non-fatally and keeps the dialog usable', async () => {
+    apiMocks.personaList.mockRejectedValue({
+      message: 'Request failed with status code 500',
+      response: {
+        status: 500,
+        data: { status: 'error', message: '后端具体原因' },
+      },
+    });
+    apiMocks.providerList.mockResolvedValue({
+      data: { status: 'ok', data: PROVIDERS },
+    });
+    const wrapper = await openMemberDialog();
+
+    expect(toastMock.error).toHaveBeenCalledWith('后端具体原因');
+    // The persona picker stays empty but the provider list still loaded, so
+    // the dialog remains usable (the load failure is not fatal).
+    expect(
+      wrapper.find(`select[data-label="${zh.members.persona}"]`).findAll('option'),
+    ).toHaveLength(0);
+    expect(
+      wrapper.find(`select[data-label="${zh.members.provider}"]`).findAll('option'),
+    ).toHaveLength(PROVIDERS.filter((p) => p.enable !== false).length + 1);
   });
 
   it('blocks save when the member name is missing', async () => {

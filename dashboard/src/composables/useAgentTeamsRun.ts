@@ -8,6 +8,7 @@ import type { AxiosResponse } from 'axios';
 import { fetchWithAuth } from '@/api/http';
 import { agentTeamsApi } from '@/api/v1';
 import type { ApiEnvelope } from '@/api/v1';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 import {
   applyTeamsEvent,
@@ -179,10 +180,9 @@ async function unwrapEnvelope(
     return res.data.data ?? null;
   } catch (err) {
     // Non-2xx responses (e.g. HTTP 409 team-already-running) carry the
-    // backend's error envelope in err.response.data — prefer its message
-    // over axios's generic "Request failed with status code N".
-    const envelopeMessage = (err as any)?.response?.data?.message;
-    error(envelopeMessage || (err instanceof Error ? err.message : String(err)));
+    // backend's error envelope in err.response.data — extractApiError prefers
+    // its message over axios's generic "Request failed with status code N".
+    error(extractApiError(err, 'Agent teams request failed').message);
     return null;
   }
 }

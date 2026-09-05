@@ -47,6 +47,7 @@
 import { ref, watch } from 'vue';
 import { agentTeamsApi } from '@/api/v1';
 import { useModuleI18n } from '@/i18n/composables';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 
 const props = defineProps<{
@@ -124,7 +125,9 @@ async function loadHistory() {
     }
     runs.value = res.data.data?.runs ?? [];
   } catch (err) {
-    toastError(err instanceof Error ? err.message : String(err));
+    // Non-2xx rejections carry the backend's error envelope; surface its
+    // message instead of axios's generic "Request failed with status code N".
+    toastError(extractApiError(err, tm('errors.loadFailed')).message);
     runs.value = [];
   } finally {
     loading.value = false;

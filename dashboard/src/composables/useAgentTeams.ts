@@ -8,6 +8,7 @@ import { computed, ref } from 'vue';
 import type { AxiosResponse } from 'axios';
 import { agentTeamsApi } from '@/api/v1';
 import type { ApiEnvelope } from '@/api/v1';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 
 export interface AgentTeamMember {
@@ -65,7 +66,11 @@ async function unwrapEnvelope(
     }
     return res.data.data ?? null;
   } catch (err) {
-    error(err instanceof Error ? err.message : String(err));
+    // Non-2xx responses arrive as axios rejections carrying the backend's
+    // error envelope body; extractApiError prefers its message over axios's
+    // generic "Request failed with status code N" (and handles the 429
+    // plain-string rejection).
+    error(extractApiError(err, 'Agent teams request failed').message);
     return null;
   }
 }

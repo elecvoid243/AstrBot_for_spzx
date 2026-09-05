@@ -191,6 +191,23 @@ describe('RunsHistory', () => {
     expect(toastMocks.error).toHaveBeenCalledWith('network down');
   });
 
+  it('toasts the backend reason when the request rejects (HTTP 400)', async () => {
+    // Non-2xx responses arrive as axios rejections carrying the error envelope
+    // body; its message must reach the toast, not axios's generic text.
+    apiMocks.listTeamRuns.mockRejectedValue({
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: { status: 'error', message: '后端具体原因' },
+      },
+    });
+    const wrapper = mountHistory();
+    await flushPromises();
+
+    expect(toastMocks.error).toHaveBeenCalledWith('后端具体原因');
+    expect(wrapper.find('.history-empty').exists()).toBe(true);
+  });
+
   it('emits open with the run id and the full row', async () => {
     apiMocks.listTeamRuns.mockResolvedValue(okEnvelope(ROWS));
     const wrapper = mountHistory();

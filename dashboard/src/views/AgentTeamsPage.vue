@@ -81,6 +81,7 @@ import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
 import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 
 const { tm } = useModuleI18n('features/agent-teams');
@@ -168,7 +169,9 @@ async function onRemoveMember(memberId: string) {
     }
     await loadTeams();
   } catch (err) {
-    error(err instanceof Error ? err.message : String(err));
+    // Non-2xx rejections carry the backend's error envelope; surface its
+    // message instead of axios's generic "Request failed with status code N".
+    error(extractApiError(err, tm('errors.operationFailed')).message);
   }
 }
 

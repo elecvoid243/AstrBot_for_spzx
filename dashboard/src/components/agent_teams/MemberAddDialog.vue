@@ -70,6 +70,7 @@
 import { computed, ref, watch } from 'vue';
 import { agentTeamsApi, personaApi, providerApi } from '@/api/v1';
 import { useModuleI18n } from '@/i18n/composables';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 
 // NOTE: do not use `defineModel` here — the project's Vue 3.3 SFC compiler
@@ -116,8 +117,10 @@ async function loadOptions() {
   try {
     const res = await personaApi.list();
     personas.value = res.data?.status === 'ok' ? res.data.data ?? [] : [];
-  } catch {
+  } catch (err) {
+    // Non-fatal: the picker stays empty but the dialog remains usable.
     personas.value = [];
+    toast.error(extractApiError(err, tm('errors.loadFailed')).message);
   }
   try {
     const res = await providerApi.listByProviderType('chat_completion');
@@ -125,8 +128,10 @@ async function loadOptions() {
       res.data?.status === 'ok'
         ? ((res.data.data ?? []) as any[]).filter((p) => p.enable !== false)
         : [];
-  } catch {
+  } catch (err) {
+    // Non-fatal: the picker falls back to the session default model.
     providers.value = [];
+    toast.error(extractApiError(err, tm('errors.loadFailed')).message);
   }
 }
 
@@ -156,7 +161,10 @@ async function save() {
   }
   saving.value = true;
   try {
-    // Server-side validation arrives as an error envelope with HTTP 200.
+    // Backend validation errors arrive as HTTP 400/409 with an error envelope
+    // body; axios rejects and the catch below surfaces response.data.message
+    // via extractApiError. The envelope branch stays as defense for any
+    // future HTTP-200 error envelopes.
     const res = await agentTeamsApi.addMember(props.teamId, memberPayload());
     if (res.data.status === 'error') {
       toast.error(res.data.message || tm('errors.saveFailed'));
@@ -165,8 +173,8 @@ async function save() {
     toast.success(tm('members.addSuccess', { name: memberName }));
     dialog.value = false;
     emit('saved', res.data.data ?? null);
-  } catch {
-    toast.error(tm('errors.saveFailed'));
+  } catch (err) {
+    toast.error(extractApiError(err, tm('errors.saveFailed')).message);
   } finally {
     saving.value = false;
   }

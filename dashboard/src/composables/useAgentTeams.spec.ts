@@ -109,6 +109,29 @@ describe("useAgentTeams", () => {
     expect(api.teams.value).toEqual([]);
   });
 
+  it("HTTP error rejections toast the backend envelope message", async () => {
+    // Non-2xx responses reach callers as axios rejections carrying the error
+    // envelope body; its message must win over axios's generic
+    // "Request failed with status code 400".
+    apiMocks.createTeam.mockRejectedValueOnce({
+      message: "Request failed with status code 400",
+      response: {
+        status: 400,
+        data: { status: "error", message: "后端具体原因" },
+      },
+    });
+    const api = useAgentTeams();
+    expect(await api.createTeam({ name: "x", members: [] })).toBeNull();
+    expect(toastMocks.error).toHaveBeenCalledWith("后端具体原因");
+  });
+
+  it("plain-string rejections (the 429 case) toast the string itself", async () => {
+    apiMocks.listTeams.mockRejectedValueOnce("请求过于频繁");
+    const api = useAgentTeams();
+    expect(await api.loadTeams()).toBeNull();
+    expect(toastMocks.error).toHaveBeenCalledWith("请求过于频繁");
+  });
+
   it("updateTeam replaces the row in place", async () => {
     const api = useAgentTeams();
     apiMocks.listTeams.mockResolvedValueOnce(ok({ teams: [TEAM_A] }));

@@ -377,6 +377,30 @@ describe('AgentTeamsPage integration (Task 9)', () => {
     expect(removeMemberApiMock).not.toHaveBeenCalled();
   });
 
+  it('removeMember toasts the backend reason when the API rejects (HTTP 400)', async () => {
+    // Non-2xx responses arrive as axios rejections carrying the error envelope
+    // body; its message must reach the toast, not axios's generic text.
+    removeMemberApiMock.mockRejectedValue({
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: { status: 'error', message: '后端具体原因' },
+      },
+    });
+    const confirmMock = vi.fn().mockResolvedValue(true);
+    const wrapper = mountPage({ $confirm: confirmMock });
+    await flushPromises();
+    composableMocks.loadTeams.mockClear();
+
+    const sidebar = wrapper.findComponent(AgentTeamsSidebar);
+    sidebar.vm.$emit('removeMember', 'm2');
+    await flushPromises();
+
+    expect(toastMocks.error).toHaveBeenCalledWith('后端具体原因');
+    // The failure must not refresh the list (the member was not removed).
+    expect(composableMocks.loadTeams).not.toHaveBeenCalled();
+  });
+
   it('history open switches to the monitor tab and opens the run with the row', async () => {
     const wrapper = mountPage();
     await flushPromises();

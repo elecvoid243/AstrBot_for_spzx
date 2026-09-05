@@ -111,6 +111,7 @@ Agent Teams 主体功能已落地。本设计解决使用中暴露的四类问�
 
 - 运行启动时把每个节点的 `execution`（含 config_id）冻结进 `graph_snapshot`（既有快照机制，零新表）；恢复时按保存的 execution 重建 binding。
 - 恢复时校验 `config_id` 仍存在：不存在 → 该节点标记 `failed`（原因"配置档案已删除"），**不静默回退 default**；已完成节点不重执行（Tier-1 语义不变）。
+- **实施裁决（三层防线中"档案中途被删"的竞态窗口）**：deliver 前检查（config_checker）与保存校验覆盖绝大多数路径；若档案恰好在 deliver 检查之后、EventBus 路由之前被删除，EventBus 记录警告并回退到 umo 默认调度器（binding extra 仍生效）——该亚秒级竞态窗口接受回退而非丢弃事件，后续节点会被 deliver 检查拦住。已确认为有意行为。
 - 不把 Provider 密钥或档案全文写入 `AgentTeamRun`——节点只存 ID 引用。
 - 同一成员被同波次多个节点引用：既有忙等 + 会话锁保证串行；UI 显示"等待该成员上一个节点完成"（busy 事件已有）。
 

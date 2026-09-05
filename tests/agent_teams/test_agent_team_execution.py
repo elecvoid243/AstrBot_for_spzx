@@ -25,6 +25,7 @@ from astrbot.core.astr_main_agent import (
     _ensure_persona_and_skills,
     normalize_umo_for_workspace,
 )
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
 from astrbot.core.platform import (
     AstrBotMessage,
@@ -35,6 +36,21 @@ from astrbot.core.platform import (
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_adapter import WebChatAdapter
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.dashboard.services.agent_team_ports import TeamPorts
+from astrbot.dashboard.services.agent_team_run_service import (
+    AgentTeamRunService,
+    DAGRunner,
+    RunEventBus,
+)
+from astrbot.dashboard.services.agent_team_service import (
+    AgentTeamService,
+    AgentTeamsServiceError,
+)
+from tests.agent_teams.test_agent_team_service import (
+    MEMBERS,
+    FakeChatService,
+    FakeCoreLifecycle,
+)
 
 UMO = "webchat:FriendMessage:conv-1"
 
@@ -694,3 +710,371 @@ async def test_resolve_selected_persona_unknown_config_id_falls_back(monkeypatch
         platform_name="webchat",
     )
     assert get_conf_calls == [UMO]
+
+
+# ---------------------------------------------------------------------------
+# Workflow execution validation + runner config checks (spec §2.3)
+# ---------------------------------------------------------------------------
+
+
+async def make_validation_service(tmp_path, confs=None, personas=None):
+    """Build an AgentTeamService whose lifecycle knows the given profiles."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    return db, AgentTeamService(
+        db=db,
+        core_lifecycle=FakeCoreLifecycle(confs=confs, personas=personas),
+        chat_service=FakeChatService(),
+    )
+
+
+async def make_validation_team(svc):
+    return await svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+
+
+def exec_graph(team: dict, n2_execution) -> dict:
+    """Two-node linear graph; only n2 carries an execution block."""
+    ids = [m["member_id"] for m in team["members"]]
+    nodes = [
+        {"id": "n1", "member_id": ids[0], "task": "调研"},
+        {"id": "n2", "member_id": ids[1], "task": "写作 {{n1}}"},
+    ]
+    if n2_execution is not None:
+        nodes[1]["execution"] = n2_execution
+    return {"nodes": nodes, "edges": [{"from": "n1", "to": "n2"}]}
+
+
+@pytest.mark.asyncio
+async def test_workflow_save_rejects_unknown_config_id(tmp_path):
+    _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
+    team = await make_validation_team(svc)
+
+    with pytest.raises(
+        AgentTeamsServiceError, match="节点 n2 的配置档案不存在: cfg-gone"
+    ):
+        await svc.create_workflow(
+            "alice",
+            team["team_id"],
+            {"name": "w", "graph": exec_graph(team, {"config_id": "cfg-gone"})},
+        )
+
+
+@pytest.mark.asyncio
+async def test_workflow_save_rejects_unknown_persona_id(tmp_path):
+    _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
+    team = await make_validation_team(svc)
+
+    with pytest.raises(AgentTeamsServiceError, match="节点 n2"):
+        await svc.create_workflow(
+            "alice",
+            team["team_id"],
+            {"name": "w", "graph": exec_graph(team, {"persona_id": "ghost"})},
+        )
+
+
+@pytest.mark.asyncio
+async def test_workflow_save_accepts_valid_execution(tmp_path):
+    """A resolvable execution block saves verbatim; unknown tool/skill names
+    are NOT rejected at save time (availability is dynamic)."""
+    _, svc = await make_validation_service(
+        tmp_path, confs={"cfg-live": {}}, personas=[{"name": "p1", "prompt": "x"}]
+    )
+    team = await make_validation_team(svc)
+    graph = exec_graph(
+        team,
+        {
+            "config_id": "cfg-live",
+            "persona_id": "p1",
+            "tools": ["ghost_tool"],
+            "skills": [],
+        },
+    )
+
+    wf = await svc.create_workflow(
+        "alice", team["team_id"], {"name": "w", "graph": graph}
+    )
+
+    assert wf["graph"]["nodes"][1]["execution"]["tools"] == ["ghost_tool"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_save_accepts_empty_execution(tmp_path):
+    """The whole block and every field within it are optional."""
+    _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
+    team = await make_validation_team(svc)
+
+    wf = await svc.create_workflow(
+        "alice", team["team_id"], {"name": "w", "graph": exec_graph(team, {})}
+    )
+
+    assert wf["graph"]["nodes"][1]["execution"] == {}
+
+
+@pytest.mark.asyncio
+async def test_workflow_save_rejects_malformed_execution(tmp_path):
+    """Non-dict blocks and malformed tools/skills lists surface as 400-grade
+    service errors naming the node, never TypeError."""
+    _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
+    team = await make_validation_team(svc)
+
+    for bad in (
+        "cfg-gone",
+        {"tools": "web_search"},
+        {"tools": [""]},
+        {"tools": [1]},
+        {"skills": {"a": 1}},
+    ):
+        with pytest.raises(AgentTeamsServiceError, match="节点 n2"):
+            await svc.create_workflow(
+                "alice",
+                team["team_id"],
+                {"name": "w", "graph": exec_graph(team, bad)},
+            )
+
+
+# Runner-level config checks.
+
+
+RUNNER_CONFIG = {
+    "failure_policy": "pause",
+    "reply_timeout": 5.0,
+    "max_parallel": 5,
+    "inject_max_length": 4000,
+}
+
+
+def runner_members() -> list[dict]:
+    """Two single-session members for linear runner graphs."""
+    return [
+        {
+            "member_id": "mA",
+            "name": "甲",
+            "session_id": "conv-0",
+            "umo": "webchat:FriendMessage:conv-0",
+            "persona_id": None,
+            "provider_id": None,
+            "system_prompt": None,
+        },
+        {
+            "member_id": "mB",
+            "name": "乙",
+            "session_id": "conv-1",
+            "umo": "webchat:FriendMessage:conv-1",
+            "persona_id": None,
+            "provider_id": None,
+            "system_prompt": None,
+        },
+    ]
+
+
+def scripted_ports_of(deliver, collect, events: list) -> TeamPorts:
+    return TeamPorts(
+        deliver=deliver,
+        collect=collect,
+        is_busy=lambda sid: False,
+        emit=events.append,
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_fails_node_with_deleted_config_profile(tmp_path):
+    """A node bound to a config profile that fails the checker fails before
+    the busy-wait with 配置档案已删除 — persisted, emitted, never delivered."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = runner_members()
+    delivered: list = []
+    events: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append(session_id)
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        return "回复", []
+
+    graph = {
+        "nodes": [
+            {
+                "id": "n1",
+                "member_id": "mA",
+                "task": "t",
+                "execution": {"config_id": "cfg-gone"},
+            }
+        ],
+        "edges": [],
+    }
+    bus = RunEventBus()
+    runner = DAGRunner(
+        run_id="rcfg",
+        team_id="t1",
+        graph=graph,
+        config=RUNNER_CONFIG,
+        members=members,
+        ports=scripted_ports_of(deliver, collect, events),
+        db=db,
+        bus=bus,
+        username="alice",
+        run_input="x",
+        config_checker=lambda cid: False,
+    )
+    await runner.run()
+
+    state = runner.node_states["n1"]
+    assert state["status"] == "failed"
+    assert state["error"] == "配置档案已删除"
+    assert delivered == []  # failed before the busy-wait, never delivered
+    row = await db.get_agent_team_run("rcfg")
+    assert row.node_states["n1"]["status"] == "failed"
+    failed = [
+        e
+        for e in bus.history()
+        if e.get("type") == "node_status" and e.get("status") == "failed"
+    ]
+    assert failed and failed[0]["error"] == "配置档案已删除"
+
+
+@pytest.mark.asyncio
+async def test_runner_config_checker_pass_runs_normally(tmp_path):
+    """A config_id the checker accepts does not alter node execution."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = runner_members()
+    delivered: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append(session_id)
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        return "回复", []
+
+    graph = {
+        "nodes": [
+            {
+                "id": "n1",
+                "member_id": "mA",
+                "task": "t",
+                "execution": {"config_id": "cfg-live"},
+            }
+        ],
+        "edges": [],
+    }
+    runner = DAGRunner(
+        run_id="rcfgok",
+        team_id="t1",
+        graph=graph,
+        config=RUNNER_CONFIG,
+        members=members,
+        ports=scripted_ports_of(deliver, collect, []),
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="x",
+        config_checker=lambda cid: cid == "cfg-live",
+    )
+    await runner.run()
+
+    assert runner.status == "completed"
+    assert delivered == ["conv-0"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
+    """Resuming an interrupted run whose pending node's config profile was
+    deleted surfaces the failure immediately — no turn is dispatched."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = runner_members()
+    delivered: list = []
+    events: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append(session_id)
+        return "mid-1"
+
+    async def collect(session_id, message_id, member_id=None):
+        return "回复", []
+
+    run_svc = AgentTeamRunService(
+        db=db,
+        chat_service=FakeChatService(),
+        config_checker=lambda cid: cid == "cfg-live",
+    )
+    run_svc.ports_factory = lambda username, emit: scripted_ports_of(
+        deliver, collect, events
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "n1",
+                "member_id": "mA",
+                "task": "t1",
+                "execution": {"config_id": "cfg-live"},
+            },
+            {
+                "id": "n2",
+                "member_id": "mB",
+                "task": "t2 {{n1}}",
+                "execution": {"config_id": "cfg-gone"},
+            },
+        ],
+        "edges": [{"from": "n1", "to": "n2"}],
+    }
+    node_states = {
+        "n1": {
+            "status": "done",
+            "member_id": "mA",
+            "task_rendered": "t1",
+            "result": "前驱结果",
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        },
+        "n2": {
+            "status": "running",
+            "member_id": "mB",
+            "task_rendered": None,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        },
+    }
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="t",
+        coordinator_member_id="mA",
+        members=members,
+        config={},
+    )
+    await db.create_agent_team_run(
+        run_id="rres",
+        team_id="t1",
+        workflow_id=None,
+        mode="dag",
+        input="x",
+        status="interrupted",
+        graph_snapshot=graph,
+        node_states=node_states,
+        rounds=[],
+    )
+
+    await run_svc.resume_run("alice", "rres")
+    runner = run_svc._runners["rres"]
+    for _ in range(250):
+        if runner.status in ("completed", "paused", "stopped", "failed"):
+            break
+        await asyncio.sleep(0.02)
+
+    # n2 (re-built pending, cfg-gone) pre-fails before any spawn; n1 stays done.
+    assert runner.node_states["n2"]["status"] == "failed"
+    assert runner.node_states["n2"]["error"] == "配置档案已删除"
+    assert runner.node_states["n1"]["status"] == "done"
+    assert delivered == []
+    row = await db.get_agent_team_run("rres")
+    assert row.node_states["n2"]["status"] == "failed"
+    assert row.node_states["n2"]["error"] == "配置档案已删除"

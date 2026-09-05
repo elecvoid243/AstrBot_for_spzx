@@ -103,6 +103,7 @@ class DAGRunner:
         run_input: str = "",
         node_states: dict[str, dict] | None = None,
         on_member_stop: Callable[[dict], None] | None = None,
+        config_checker: Callable[[str], bool] | None = None,
         workflow_id: str | None = None,
     ) -> None:
         self.run_id = run_id
@@ -117,6 +118,9 @@ class DAGRunner:
         self.username = username
         self.run_input = run_input
         self.on_member_stop = on_member_stop
+        # Optional config_id -> bool guard; a node whose execution profile no
+        # longer resolves fails before dispatching a turn (spec §2.3).
+        self.config_checker = config_checker
         self.status = "running"
         self.node_states: dict[str, dict] = dict(node_states or {})
         # Nodes absent from the provided states (e.g. a runner built without
@@ -276,6 +280,27 @@ class DAGRunner:
             state.update(status="failed", error=f"member {node['member_id']} missing")
             await self._persist()
             self._emit({"type": "node_status", "node_id": node_id, "status": "failed"})
+            self._emit(self._progress())
+            return
+        execution = node.get("execution") or {}
+        # Pre-flight guard (spec §2.3): a node bound to a config profile that
+        # no longer resolves fails before the busy-wait — dispatching a turn
+        # would only fail at scheduler-selection time.
+        if (
+            self.config_checker is not None
+            and execution.get("config_id")
+            and not self.config_checker(execution["config_id"])
+        ):
+            state.update(status="failed", error="配置档案已删除")
+            await self._persist()
+            self._emit(
+                {
+                    "type": "node_status",
+                    "node_id": node_id,
+                    "status": "failed",
+                    "error": "配置档案已删除",
+                }
+            )
             self._emit(self._progress())
             return
         try:
@@ -1043,7 +1068,14 @@ class AutoOrchestrator:
 class AgentTeamRunService:
     """Run lifecycle: start/resume/stop DAG and auto runs, expose snapshots."""
 
-    def __init__(self, db, chat_service, busy_checker=None, on_member_stop=None):
+    def __init__(
+        self,
+        db,
+        chat_service,
+        busy_checker=None,
+        on_member_stop=None,
+        config_checker=None,
+    ):
         """Args:
         db: Database helper.
         chat_service: Dashboard ChatService (ports wiring + busy detection).
@@ -1051,11 +1083,16 @@ class AgentTeamRunService:
         on_member_stop: Optional sync hook receiving the full member dict,
             invoked on run stop once per in-flight member turn; app.py wires
             it to active_event_registry.request_agent_stop_all(member umo).
+        config_checker: Optional config_id -> bool guard; DAG nodes whose
+            execution config_id fails it fail before dispatch (deleted
+            profile), both at deliver time and on resume. app.py wires it to
+            core_lifecycle.astrbot_config_mgr.confs membership.
         """
         self.db = db
         self.chat_service = chat_service
         self.busy_checker = busy_checker
         self.on_member_stop = on_member_stop
+        self.config_checker = config_checker
         # Overridden in tests; production uses build_ports over the real
         # webchat queue manager.
         self.ports_factory: Callable[[str, Callable], TeamPorts] = (
@@ -1136,6 +1173,21 @@ class AgentTeamRunService:
             )
             for node_id, state in (row.node_states or {}).items()
         }
+        # Deleted-config pre-fail: pending nodes bound to a config profile
+        # that no longer resolves fail right here so a deleted profile
+        # surfaces immediately on resume instead of at dispatch time.
+        if self.config_checker is not None:
+            graph_nodes = {
+                n.get("id"): n for n in (row.graph_snapshot or {}).get("nodes", [])
+            }
+            for node_id, state in node_states.items():
+                if state["status"] != "pending":
+                    continue
+                execution = (graph_nodes.get(node_id) or {}).get("execution") or {}
+                config_id = execution.get("config_id")
+                if config_id and not self.config_checker(config_id):
+                    state["status"] = "failed"
+                    state["error"] = "配置档案已删除"
         await self.db.update_agent_team_run(
             run_id, status="running", node_states=node_states
         )
@@ -1274,6 +1326,7 @@ class AgentTeamRunService:
             run_input=run_input,
             node_states=node_states,
             on_member_stop=self.on_member_stop,
+            config_checker=self.config_checker,
             workflow_id=workflow_id,
         )
         self._runners[run_id] = runner

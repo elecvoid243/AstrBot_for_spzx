@@ -193,6 +193,7 @@ def create_dashboard_asgi_app(
         chat_service=chat,
         busy_checker=services.agent_teams.busy_checker,
         on_member_stop=_stop_member_turn,
+        config_checker=lambda cid: cid in core_lifecycle.astrbot_config_mgr.confs,
     )
 
     # Kernel goal loop: injected goal turns on webchat sessions register as

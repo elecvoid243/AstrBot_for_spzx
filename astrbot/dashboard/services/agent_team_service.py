@@ -353,12 +353,58 @@ class AgentTeamService:
         for node in nodes:
             if not str(node.get("task") or "").strip():
                 raise AgentTeamsServiceError(f"节点 {node.get('id')!r} 缺少任务模板")
+            if node.get("execution") is not None:
+                self._validate_node_execution(node.get("id"), node["execution"])
         try:
             validate_dag(nodes, edges)
         except TeamDAGError as e:
             raise AgentTeamsServiceError(str(e)) from e
         self.validate_member_bindings(graph, team.members)
         return {"nodes": nodes, "edges": edges}
+
+    def _validate_node_execution(self, node_id: str, execution) -> None:
+        """Validate one node's `execution` override block (spec §2.3).
+
+        Unknown tool/skill names are deliberately NOT rejected here: tool
+        availability is dynamic (plugins and skills come and go between save
+        and run), so only the value shape and resolvable ids are checked.
+
+        Args:
+            node_id: Node id used in error messages.
+            execution: Raw `execution` payload value.
+
+        Raises:
+            AgentTeamsServiceError: On a non-dict block, an unknown config
+                profile or persona id, or malformed tools/skills lists.
+        """
+        if not isinstance(execution, dict):
+            raise AgentTeamsServiceError(f"节点 {node_id} 的 execution 配置格式错误")
+        config_id = execution.get("config_id")
+        if config_id is not None and (
+            not isinstance(config_id, str)
+            or not config_id.strip()
+            or config_id not in self.core_lifecycle.astrbot_config_mgr.confs
+        ):
+            raise AgentTeamsServiceError(
+                f"节点 {node_id} 的配置档案不存在: {config_id}"
+            )
+        persona_id = execution.get("persona_id")
+        if (
+            persona_id is not None
+            and self.core_lifecycle.persona_mgr.get_persona_v3_by_id(persona_id) is None
+        ):
+            raise AgentTeamsServiceError(f"节点 {node_id} 的角色不存在: {persona_id}")
+        for key in ("tools", "skills"):
+            value = execution.get(key)
+            # Unset stays unset; an empty list means "disable all" and is valid.
+            if value is None or (isinstance(value, list) and not value):
+                continue
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                raise AgentTeamsServiceError(
+                    f"节点 {node_id} 的 {key} 必须是非空字符串列表"
+                )
 
     async def create_workflow(self, username: str, team_id: str, payload: dict) -> dict:
         team = await self._get_owned(username, team_id)

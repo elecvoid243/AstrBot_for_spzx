@@ -1,5 +1,7 @@
 """AgentTeamService tests: team CRUD and member session lifecycle."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from astrbot.core.db.sqlite import SQLiteDatabase
@@ -37,10 +39,22 @@ class FakeProviderManager:
         self.set.append((provider_id, umo))
 
 
+class FakePersonaManager:
+    """Persona manager stand-in mirroring get_persona_v3_by_id (name lookup)."""
+
+    def __init__(self, personas=None):
+        self.personas_v3 = list(personas or [])
+
+    def get_persona_v3_by_id(self, persona_id):
+        return next((p for p in self.personas_v3 if p["name"] == persona_id), None)
+
+
 class FakeCoreLifecycle:
-    def __init__(self):
+    def __init__(self, confs=None, personas=None):
         self.conversation_manager = FakeConversationManager()
         self.provider_manager = FakeProviderManager()
+        self.astrbot_config_mgr = SimpleNamespace(confs=dict(confs or {}))
+        self.persona_mgr = FakePersonaManager(personas)
 
 
 async def make_service(tmp_path, busy=None):

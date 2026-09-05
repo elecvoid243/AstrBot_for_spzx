@@ -11,7 +11,10 @@
         hide-details
         class="monitor-goal"
       />
+      <!-- Auto orchestration needs no workflow, so the select only shows
+           for DAG runs (the backend rejects an empty workflow id there). -->
       <v-select
+        v-if="mode === 'dag'"
         v-model="workflowId"
         :items="workflowItems"
         item-title="title"
@@ -21,16 +24,13 @@
         hide-details
         class="monitor-workflow"
       />
-      <!-- No `hide-details` on this select: Vuetify gates the whole
-           details/messages block on it, which would suppress the hint. -->
       <v-select
         v-model="mode"
         :items="modeItems"
         item-title="title"
         item-value="value"
         density="compact"
-        persistent-hint
-        :hint="tm('monitor.autoModeDisabled')"
+        hide-details
         class="monitor-mode"
       />
       <v-chip v-if="statusLabel" size="small" variant="tonal" class="monitor-status-chip">
@@ -43,7 +43,7 @@
           variant="tonal"
           color="primary"
           :loading="starting"
-          :disabled="!goal.trim() || !workflowId"
+          :disabled="!goal.trim() || (mode === 'dag' && !workflowId)"
           @click="onStart"
         >
           {{ tm('monitor.start') }}
@@ -78,14 +78,28 @@
     <div v-if="busyCount" class="monitor-busy-hint">{{ tm('monitor.busy') }}</div>
     <div v-if="!runState" class="monitor-empty">{{ tm('monitor.empty') }}</div>
 
-    <div class="monitor-viewbar">
+    <!-- Auto runs have no workflow graph: round chip + dispatch log replace
+         the DAG view, the window grid stays for both modes. -->
+    <div v-if="isAuto && runState" class="monitor-auto-panel">
+      <v-chip size="small" variant="tonal" class="monitor-round-chip">
+        {{ roundLabel }}
+      </v-chip>
+      <div v-if="dispatchLines.length" class="monitor-dispatch-log">
+        <span class="monitor-dispatch-title">{{ tm('monitor.dispatchLog') }}</span>
+        <div v-for="(line, i) in dispatchLines" :key="i" class="monitor-dispatch-line">
+          {{ line }}
+        </div>
+      </div>
+    </div>
+
+    <div v-if="!isAuto" class="monitor-viewbar">
       <v-btn-toggle v-model="view" mandatory density="comfortable">
         <v-btn value="grid">{{ tm('monitor.viewWindow') }}</v-btn>
         <v-btn value="dag">{{ tm('monitor.viewDag') }}</v-btn>
       </v-btn-toggle>
     </div>
 
-    <div v-if="view === 'grid'" class="monitor-grid">
+    <div v-if="view === 'grid' || isAuto" class="monitor-grid">
       <GridLayout
         v-model:layout="layout"
         :col-num="12"
@@ -194,9 +208,8 @@ const runGraph = ref<{ nodes?: any[]; edges?: any[] } | null>(null);
 
 // DAG runs always execute a workflow graph (the backend rejects an empty
 // workflow id), so there is deliberately no "none" option here: the select
-// defaults to the team's first workflow and 开始运行 stays disabled until one
-// is selected (auto orchestration, which would not need a workflow, arrives
-// in Plan 3).
+// defaults to the team's first workflow and is hidden entirely for auto runs
+// (auto orchestration is goal-driven and needs no workflow).
 const workflowItems = computed(() =>
   workflows.value.map((w) => ({
     title: String(w.name || w.workflow_id),
@@ -216,10 +229,11 @@ watch(
   { immediate: true },
 );
 
-// Auto orchestration is disabled until the backend ships it.
+// 'auto' dispatches to the backend's round-based AutoOrchestrator; 'dag'
+// replays the team's workflow graph.
 const modeItems = [
   { title: 'DAG', value: 'dag' },
-  { title: 'Auto', value: 'auto', props: { disabled: true } },
+  { title: 'Auto', value: 'auto' },
 ];
 
 // Statuses where starting a fresh run is allowed (detached or terminal).
@@ -252,19 +266,44 @@ const progressText = computed(() => {
   return `${p.done + p.skipped} / ${p.total}`;
 });
 
+// ----- auto mode display -----
+// The attached run is the backend's round-based orchestrator: node_states
+// stays empty and the round/dispatch events drive the display instead.
+const isAuto = computed(() => runState.value?.mode === 'auto');
+
+// Round limit from the monitored team's config, matching the backend default.
+const maxRounds = computed(() => Number(props.team?.config?.max_rounds) || 20);
+
+const roundLabel = computed(() =>
+  tm('monitor.roundLabel', { n: runState.value?.round?.n ?? 0, max: maxRounds.value }),
+);
+
+// Compact log lines for the last 5 dispatches: `#<round> <member>: <task>`,
+// with task text truncated at 40 chars.
+const dispatchLines = computed(() =>
+  (runState.value?.dispatches ?? []).slice(-5).flatMap((d) =>
+    d.assignments.map((a) => {
+      const task = a.task.length > 40 ? `${a.task.slice(0, 40)}…` : a.task;
+      return `#${d.round} ${a.member}: ${task}`;
+    }),
+  ),
+);
+
 // ----- actions -----
 async function onStart() {
-  // workflowId re-check mirrors the disabled state (defense in depth).
-  if (!props.team || !goal.value.trim() || !workflowId.value) return;
+  // Guard mirrors the button's disabled state (defense in depth); only DAG
+  // runs require a picked workflow.
+  if (!props.team || !goal.value.trim() || (mode.value === 'dag' && !workflowId.value)) return;
   starting.value = true;
   try {
+    const isDag = mode.value === 'dag';
     const snapshot = await startRun(props.team.team_id, {
       mode: mode.value,
       input: goal.value.trim(),
-      workflow_id: workflowId.value || null,
+      workflow_id: isDag ? workflowId.value : null,
     });
-    if (snapshot) {
-      // Runs always execute a workflow graph — reuse the selected row's.
+    if (snapshot && isDag) {
+      // DAG runs always execute a workflow graph — reuse the selected row's.
       const wf = workflows.value.find((w) => String(w.workflow_id) === workflowId.value);
       runGraph.value = (wf?.graph as typeof runGraph.value) ?? null;
     }
@@ -541,6 +580,37 @@ watch(
 .monitor-viewbar {
   display: flex;
   align-items: center;
+}
+
+.monitor-auto-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.monitor-dispatch-log {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  border: 1px dashed var(--dashboard-border, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+}
+
+.monitor-dispatch-title {
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+  font-size: 12px;
+}
+
+.monitor-dispatch-line {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .monitor-grid-layout {

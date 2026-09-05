@@ -236,6 +236,7 @@ async function openRun(runId: string, seed?: TeamsRunStateSeed) {
   const seedRow = row as
     | {
         status?: string;
+        mode?: string;
         nodeStates?: Record<string, { status: string; error?: string }>;
         node_states?: Record<string, { status: string; error?: string }>;
         graph?: unknown;
@@ -243,12 +244,15 @@ async function openRun(runId: string, seed?: TeamsRunStateSeed) {
     | null
     | undefined;
   // Caller seeds use the reducer's camelCase shape, snapshot/history rows the
-  // backend's snake_case — accept both.
+  // backend's snake_case — accept both. Unknown mode values fall back to the
+  // reducer's 'dag' default.
   runState.value = createTeamsRunState(
     runId,
     seedRow
       ? {
           status: seedRow.status,
+          mode:
+            seedRow.mode === 'auto' ? 'auto' : seedRow.mode === 'dag' ? 'dag' : undefined,
           nodeStates: seedRow.nodeStates ?? seedRow.node_states,
           graph: seedRow.graph,
         }
@@ -280,6 +284,9 @@ async function startRun(
   const runId = String(snapshot.run_id);
   runState.value = createTeamsRunState(runId, {
     status: snapshot.status,
+    // The auto orchestrator's snapshot carries mode: "auto"; DAG snapshots
+    // predate the field and fall back to the reducer's 'dag' default.
+    mode: snapshot.mode === 'auto' ? 'auto' : undefined,
     nodeStates: snapshot.node_states,
   });
   attach(runId);

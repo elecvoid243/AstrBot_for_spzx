@@ -71,6 +71,8 @@
     "stop": "Stop",
     "resumeInterrupted": "Resume Run",
     "autoModeDisabled": "Automatic orchestration will be available in a future release",
+    "roundLabel": "Round {n} / max {max}",
+    "dispatchLog": "Dispatch log",
     "status": { "idle": "Idle", "running": "Running", "paused": "Paused", "stopped": "Stopped", "completed": "Completed", "failed": "Failed", "interrupted": "Interrupted" },
     "node": { "pending": "Pending", "running": "Running", "done": "Done", "failed": "Failed", "skipped": "Skipped" },
     "retryNode": "Retry This Node",

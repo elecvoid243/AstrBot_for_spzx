@@ -189,6 +189,7 @@ function makeRunState(overrides: Record<string, any> = {}) {
   return {
     runId: 'run-1',
     status: 'running',
+    mode: 'dag' as string,
     progress: { done: 1, running: 1, pending: 1, skipped: 0, failed: 0, total: 3 },
     round: { n: 1, max: 3 },
     windows: {} as Record<string, any>,
@@ -201,6 +202,7 @@ function makeRunState(overrides: Record<string, any> = {}) {
     pausedNodeId: null as string | null,
     lastError: null,
     stoppedReason: null,
+    dispatches: [] as any[],
     ...overrides,
   };
 }
@@ -283,6 +285,10 @@ function findButton(wrapper: VueWrapper<any>, text: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps implementations: the stale-run test teaches closeRun
+  // to null the singleton state, which must not leak into later tests that
+  // flush mount recovery with no active run.
+  runMocks.closeRun.mockReset();
   localStorage.clear();
   runMocks.runState.value = null;
   runMocks.loadActiveRuns.mockResolvedValue([]);
@@ -412,18 +418,38 @@ describe('RunMonitor start payload', () => {
     });
   });
 
-  it('mode select offers dag enabled and auto disabled with the hint', () => {
+  it('mode select offers dag and auto both enabled without a hint', () => {
     const wrapper = mountRun();
     const modeSelect = wrapper.find('select.monitor-mode');
     expect(modeSelect.find('option[value="dag"]').attributes('disabled')).toBeUndefined();
-    expect(modeSelect.find('option[value="auto"]').attributes('disabled')).toBeDefined();
+    expect(modeSelect.find('option[value="auto"]').attributes('disabled')).toBeUndefined();
 
-    // The hint must actually render: Vuetify gates the whole details/messages
-    // block on `hideDetails`, so boolean `hide-details` + `hint` is dead
-    // markup. Pin the prop pair the stub receives.
+    // The auto-mode hint is gone, so the select suppresses the details block
+    // like its sibling selects (no dead hint markup left behind).
     const modeSelectComponent = wrapper.findComponent('.monitor-mode') as VueWrapper<any>;
-    expect(modeSelectComponent.props('hint')).toBe(zh.monitor.autoModeDisabled);
-    expect(modeSelectComponent.props('hideDetails')).toBeFalsy();
+    expect(modeSelectComponent.props('hint')).toBeFalsy();
+    expect(modeSelectComponent.props('hideDetails')).toBeTruthy();
+  });
+
+  it('auto mode starts without a workflow and sends workflow_id: null', async () => {
+    const wrapper = mountRun();
+    await wrapper.find('textarea.ta-stub').setValue('自动编排目标');
+    await wrapper.find('select.monitor-mode').setValue('auto');
+    await nextTick();
+
+    // The workflow select is hidden entirely in auto mode and the start
+    // button is enabled even though a workflow pick is not needed.
+    expect(wrapper.find('select.monitor-workflow').exists()).toBe(false);
+    const start = findButton(wrapper, zh.monitor.start)!;
+    expect(start.attributes('disabled')).toBeUndefined();
+    await start.trigger('click');
+    await flushPromises();
+
+    expect(runMocks.startRun).toHaveBeenCalledWith('t1', {
+      mode: 'auto',
+      input: '自动编排目标',
+      workflow_id: null,
+    });
   });
 });
 
@@ -560,6 +586,66 @@ describe('RunMonitor DAG view', () => {
     expect(wrapper.find('.monitor-empty').text()).toBe(zh.monitor.empty);
     // The new team can start its own run again.
     expect(findButton(wrapper, zh.monitor.start)).toBeTruthy();
+  });
+});
+
+describe('RunMonitor auto mode display', () => {
+  it('hides the view toggle and DAG canvas for an attached auto run and shows the round chip', () => {
+    runMocks.runState.value = makeRunState({ mode: 'auto', round: { n: 2, max: 0 } });
+    const wrapper = mountRun();
+
+    // The 窗口/DAG toggle and canvas are DAG-only; the window grid stays.
+    expect(wrapper.find('.monitor-viewbar').exists()).toBe(false);
+    expect(findButton(wrapper, zh.monitor.viewDag)).toBeUndefined();
+    expect(wrapper.find('.flow-canvas-stub').exists()).toBe(false);
+    expect(wrapper.findAll('.grid-item-stub')).toHaveLength(2);
+
+    // Round chip: n from the folded round event, max falls back to 20 when
+    // the team config carries no max_rounds.
+    const chip = wrapper.find('.monitor-round-chip');
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toBe(
+      zh.monitor.roundLabel.replace('{n}', '2').replace('{max}', '20'),
+    );
+  });
+
+  it('renders the last 5 dispatches as a compact log with tasks truncated at 40 chars', async () => {
+    const dispatches = [1, 2, 3, 4, 5, 6, 7].map((round) => ({
+      round,
+      assignments: [{ member: 'm1', task: '任务'.repeat(25) }],
+    }));
+    runMocks.runState.value = makeRunState({
+      mode: 'auto',
+      round: { n: 7, max: 0 },
+      dispatches,
+    });
+    const wrapper = mountRun({
+      team: { ...fixtures.team, config: { max_rounds: 7 } },
+    });
+    await flushPromises();
+
+    // Max comes from the team config when present.
+    expect(wrapper.find('.monitor-round-chip').text()).toBe(
+      zh.monitor.roundLabel.replace('{n}', '7').replace('{max}', '7'),
+    );
+
+    const log = wrapper.find('.monitor-dispatch-log');
+    expect(log.exists()).toBe(true);
+    expect(log.text()).toContain(zh.monitor.dispatchLog);
+    const lines = log.findAll('.monitor-dispatch-line');
+    // Only the last 5 dispatches render, in order.
+    expect(lines).toHaveLength(5);
+    expect(lines[0].text()).toContain('#3');
+    expect(lines[4].text()).toContain('#7');
+    // Task text is truncated to 40 chars with an ellipsis.
+    expect(lines[0].text()).toBe(`#3 m1: ${'任务'.repeat(20)}…`);
+  });
+
+  it('hides the dispatch log block while no dispatch has arrived', () => {
+    runMocks.runState.value = makeRunState({ mode: 'auto' });
+    const wrapper = mountRun();
+    expect(wrapper.find('.monitor-round-chip').exists()).toBe(true);
+    expect(wrapper.find('.monitor-dispatch-log').exists()).toBe(false);
   });
 });
 

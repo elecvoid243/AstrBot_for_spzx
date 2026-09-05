@@ -71,6 +71,8 @@
     "stop": "停止",
     "resumeInterrupted": "恢复运行",
     "autoModeDisabled": "自动编排将在后续版本开放",
+    "roundLabel": "第 {n} 轮 / 上限 {max}",
+    "dispatchLog": "派发记录",
     "status": { "idle": "空闲", "running": "运行中", "paused": "已暂停", "stopped": "已停止", "completed": "已完成", "failed": "失败", "interrupted": "已中断" },
     "node": { "pending": "待执行", "running": "执行中", "done": "完成", "failed": "失败", "skipped": "已跳过" },
     "retryNode": "重试该节点",

@@ -71,6 +71,8 @@
     "stop": "Остановить",
     "resumeInterrupted": "Возобновить запуск",
     "autoModeDisabled": "Автоматическая оркестрация появится в следующих версиях",
+    "roundLabel": "Раунд {n} / макс. {max}",
+    "dispatchLog": "Журнал диспетчеризации",
     "status": { "idle": "Простой", "running": "Выполняется", "paused": "Пауза", "stopped": "Остановлен", "completed": "Завершён", "failed": "Ошибка", "interrupted": "Прерван" },
     "node": { "pending": "Ожидание", "running": "Выполняется", "done": "Готово", "failed": "Ошибка", "skipped": "Пропущено" },
     "retryNode": "Повторить этот узел",

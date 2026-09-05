@@ -16,6 +16,7 @@ from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.mcp_client import MCPTool
 from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
 from astrbot.core.astr_agent_hooks import MAIN_AGENT_HOOKS
 from astrbot.core.astr_agent_run_util import AgentRunner
@@ -705,6 +706,10 @@ async def _ensure_persona_and_skills(
             if not dynamic_cfg.get("enabled", False):
                 req.system_prompt += f"\n{router_prompt}\n"
 
+    # add agent team tools registered for this conversation (no-op when no
+    # team run is active on this umo)
+    await _apply_agent_team_tools(req, event)
+
     try:
         event.trace.record(
             "sel_persona",
@@ -1173,6 +1178,27 @@ def _apply_llm_safety_mode(config: MainAgentBuildConfig, req: ProviderRequest) -
             "Unsupported llm_safety_mode strategy: %s.",
             config.safety_mode_strategy,
         )
+
+
+async def _apply_agent_team_tools(
+    req: ProviderRequest,
+    event: AstrMessageEvent,
+) -> None:
+    """Merge the agent team tools registered for this conversation into the request.
+
+    Looks up `AgentTeamToolRegistry` by the event's unified_msg_origin. When no
+    team run is active on the umo, `req.func_tool` is left untouched (it stays
+    None if it was None, avoiding empty ToolSet churn). Otherwise each
+    registered tool is added to the request's toolset; `ToolSet.add_tool`
+    overwrites same-name tools, so a repeated merge stays idempotent.
+    """
+    tools = AgentTeamToolRegistry.get_tools(event.unified_msg_origin)
+    if not tools:
+        return
+    if req.func_tool is None:
+        req.func_tool = ToolSet()
+    for tool in tools:
+        req.func_tool.add_tool(tool)
 
 
 async def _apply_subagent_manager_tools(

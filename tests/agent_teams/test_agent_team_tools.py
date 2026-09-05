@@ -79,3 +79,36 @@ def test_registry_scoping():
         AgentTeamToolRegistry.unregister("umo-a")
     assert AgentTeamToolRegistry.get_tools("umo-a") == []
     AgentTeamToolRegistry.unregister("umo-a")  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_build_main_agent_merges_registry_tools(monkeypatch):
+    """Registry tools appear in req.func_tool only for the registered umo."""
+    from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
+    from astrbot.core.astr_main_agent import _apply_agent_team_tools
+
+    class FakeEvent:
+        unified_msg_origin = "webchat:FriendMessage:conv-1"
+
+    class FakeReq:
+        func_tool = None
+
+    req = FakeReq()
+    # unregistered -> no tools, func_tool stays None (no empty ToolSet spam)
+    await _apply_agent_team_tools(req, FakeEvent())
+    assert req.func_tool is None
+
+    tools = build_team_tools(["a", "b"], None, None)
+    AgentTeamToolRegistry.register(FakeEvent.unified_msg_origin, tools)
+    try:
+        await _apply_agent_team_tools(req, FakeEvent())
+        assert req.func_tool is not None
+        assert {t.name for t in req.func_tool.tools} >= {
+            "team_dispatch",
+            "team_finish",
+        }
+        # idempotent re-merge (active-overwrite)
+        await _apply_agent_team_tools(req, FakeEvent())
+        assert len([t for t in req.func_tool.tools if t.name == "team_dispatch"]) == 1
+    finally:
+        AgentTeamToolRegistry.unregister(FakeEvent.unified_msg_origin)

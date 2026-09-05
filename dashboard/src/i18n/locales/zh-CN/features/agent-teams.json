@@ -55,6 +55,8 @@
     "validation": "校验",
     "selectNode": "点击节点编辑任务",
     "missingMember": "有节点绑定的成员已被移除",
+    "cycleDetected": "检测到环：{path}",
+    "tooManyNodes": "节点数超限：{count}（上限 {max}）",
     "monitorMode": "运行视图"
   },
   "monitor": {

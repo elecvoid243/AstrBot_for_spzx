@@ -190,13 +190,13 @@ const bannerMessage = computed(() => {
     return tm('editor.missingMember');
   }
   if (graphNodes.value.length > MAX_NODES) {
-    return `Too many nodes: ${graphNodes.value.length} (max ${MAX_NODES})`;
+    return tm('editor.tooManyNodes', { count: graphNodes.value.length, max: MAX_NODES });
   }
   const graph = buildGraphPayload();
   const structural = renderableError(graph);
   if (structural) return structural;
   const cycle = findCycle(graph.nodes, graph.edges);
-  if (cycle) return `Cycle detected: ${cycle.join(' → ')}`;
+  if (cycle) return tm('editor.cycleDetected', { path: cycle.join(' → ') });
   return '';
 });
 

@@ -55,6 +55,8 @@
     "validation": "Validation",
     "selectNode": "Click a node to edit its task",
     "missingMember": "A member bound to a node has been removed",
+    "cycleDetected": "Cycle detected: {path}",
+    "tooManyNodes": "Too many nodes: {count} (max {max})",
     "monitorMode": "Run View"
   },
   "monitor": {

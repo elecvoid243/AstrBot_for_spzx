@@ -55,6 +55,8 @@
     "validation": "Проверка",
     "selectNode": "Нажмите на узел, чтобы изменить задачу",
     "missingMember": "Участник, привязанный к узлу, был удалён",
+    "cycleDetected": "Обнаружен цикл: {path}",
+    "tooManyNodes": "Слишком много узлов: {count} (макс. {max})",
     "monitorMode": "Режим выполнения"
   },
   "monitor": {

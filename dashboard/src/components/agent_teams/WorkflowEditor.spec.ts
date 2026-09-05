@@ -264,7 +264,7 @@ describe('WorkflowEditor', () => {
     const banner = wrapper.find('.editor-banner');
     expect(banner.exists()).toBe(true);
     expect(banner.text()).toContain(zh.editor.validation);
-    expect(banner.text()).toContain('n1');
+    expect(banner.text()).toContain(zh.editor.cycleDetected.replace('{path}', 'n1 → n2 → n1'));
 
     await wrapper
       .find('input[data-label="' + zh.editor.workflowName + '"]')
@@ -274,6 +274,21 @@ describe('WorkflowEditor', () => {
 
     expect(composableMocks.saveWorkflow).not.toHaveBeenCalled();
     expect(wrapper.find('.editor-banner').exists()).toBe(true);
+  });
+
+  it('shows the localized node-overflow banner at the backend node limit', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 21);
+
+    const banner = wrapper.find('.editor-banner');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain(
+      zh.editor.tooManyNodes.replace('{count}', '21').replace('{max}', '20'),
+    );
+
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    expect(composableMocks.saveWorkflow).not.toHaveBeenCalled();
   });
 
   it('flags nodes whose member no longer exists and blocks save', async () => {

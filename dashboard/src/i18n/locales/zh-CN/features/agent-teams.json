@@ -1,0 +1,80 @@
+{
+  "page": {
+    "title": "Agent 团队",
+    "beta": "Beta",
+    "refresh": "刷新"
+  },
+  "tabs": { "editor": "工作流编排", "monitor": "运行监控", "history": "历史" },
+  "teams": {
+    "create": "新建团队",
+    "empty": "暂无团队，点击“新建团队”创建",
+    "name": "团队名称",
+    "delete": "解散团队",
+    "deleteConfirm": "确定解散该团队？成员会话将保留",
+    "coordinator": "协调者",
+    "coordinatorSwitch": "设为协调者",
+    "config": "团队配置",
+    "failurePolicy": "失败策略",
+    "failurePolicyPause": "暂停等待处理",
+    "failurePolicyAutoSkip": "自动跳过并继续",
+    "replyTimeout": "单回合超时（秒）",
+    "maxRounds": "最大轮次",
+    "maxParallel": "最大并行数",
+    "injectMaxLength": "结果注入长度上限"
+  },
+  "members": {
+    "title": "成员",
+    "add": "添加成员",
+    "remove": "移除",
+    "empty": "至少需要 2 名成员",
+    "name": "成员名称",
+    "fromPersona": "从人格创建",
+    "custom": "自定义创建",
+    "persona": "人格",
+    "systemPrompt": "系统提示词",
+    "provider": "模型（可选）",
+    "providerDefault": "使用会话默认模型"
+  },
+  "editor": {
+    "workflowName": "工作流名称",
+    "save": "保存工作流",
+    "addNode": "添加节点",
+    "deleteNode": "删除选中",
+    "nodeMember": "执行成员",
+    "nodeTask": "任务模板",
+    "nodeTaskHint": "支持变量：{{input}} 运行输入、{{节点ID}} 引用前驱节点结果",
+    "insertInput": "插入 {{input}}",
+    "validation": "校验",
+    "selectNode": "点击节点编辑任务",
+    "missingMember": "有节点绑定的成员已被移除",
+    "monitorMode": "运行视图"
+  },
+  "monitor": {
+    "input": "任务目标",
+    "inputPlaceholder": "描述这次团队要完成的目标…",
+    "workflow": "工作流（手动编排）",
+    "noWorkflow": "无",
+    "start": "开始运行",
+    "pause": "暂停",
+    "resume": "继续",
+    "stop": "停止",
+    "resumeInterrupted": "恢复运行",
+    "autoModeDisabled": "自动编排将在后续版本开放",
+    "status": { "idle": "空闲", "running": "运行中", "paused": "已暂停", "stopped": "已停止", "completed": "已完成", "failed": "失败", "interrupted": "已中断" },
+    "node": { "pending": "待执行", "running": "执行中", "done": "完成", "failed": "失败", "skipped": "已跳过" },
+    "retryNode": "重试该节点",
+    "skipNode": "跳过并级联跳过",
+    "dagProgress": "DAG 进度",
+    "busy": "会话忙，等待中…",
+    "empty": "输入目标并点击“开始运行”"
+  },
+  "history": {
+    "title": "运行历史",
+    "empty": "暂无运行记录",
+    "time": "时间",
+    "mode": "模式",
+    "input": "目标",
+    "status": "状态"
+  },
+  "errors": { "loadFailed": "加载失败", "saveFailed": "保存失败", "operationFailed": "操作失败" }
+}

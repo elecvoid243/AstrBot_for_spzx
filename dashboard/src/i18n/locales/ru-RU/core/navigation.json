@@ -13,6 +13,7 @@
         "trace": "Трассировка"
     },
     "subagent": "Субагенты",
+    "agentTeams": "Команды агентов",
     "toolUse": "Инструменты MCP",
     "extension": "Плагины",
     "extensionTabs": {

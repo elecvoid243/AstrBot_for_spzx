@@ -1,0 +1,80 @@
+{
+  "page": {
+    "title": "Agent Teams",
+    "beta": "Beta",
+    "refresh": "Refresh"
+  },
+  "tabs": { "editor": "Workflow Editor", "monitor": "Run Monitor", "history": "History" },
+  "teams": {
+    "create": "New Team",
+    "empty": "No teams yet. Click \"New Team\" to create one",
+    "name": "Team Name",
+    "delete": "Disband Team",
+    "deleteConfirm": "Disband this team? Member sessions will be preserved",
+    "coordinator": "Coordinator",
+    "coordinatorSwitch": "Set as Coordinator",
+    "config": "Team Configuration",
+    "failurePolicy": "Failure Policy",
+    "failurePolicyPause": "Pause and wait for handling",
+    "failurePolicyAutoSkip": "Auto-skip and continue",
+    "replyTimeout": "Per-round timeout (seconds)",
+    "maxRounds": "Max Rounds",
+    "maxParallel": "Max Parallelism",
+    "injectMaxLength": "Result Injection Length Limit"
+  },
+  "members": {
+    "title": "Members",
+    "add": "Add Member",
+    "remove": "Remove",
+    "empty": "At least 2 members are required",
+    "name": "Member Name",
+    "fromPersona": "Create from Persona",
+    "custom": "Create Custom",
+    "persona": "Persona",
+    "systemPrompt": "System Prompt",
+    "provider": "Model (optional)",
+    "providerDefault": "Use session default model"
+  },
+  "editor": {
+    "workflowName": "Workflow Name",
+    "save": "Save Workflow",
+    "addNode": "Add Node",
+    "deleteNode": "Delete Selected",
+    "nodeMember": "Executor",
+    "nodeTask": "Task Template",
+    "nodeTaskHint": "Supported variables: {{input}} for the run input, {{node ID}} to reference a predecessor node's result",
+    "insertInput": "Insert {{input}}",
+    "validation": "Validation",
+    "selectNode": "Click a node to edit its task",
+    "missingMember": "A member bound to a node has been removed",
+    "monitorMode": "Run View"
+  },
+  "monitor": {
+    "input": "Task Goal",
+    "inputPlaceholder": "Describe the goal for this team run…",
+    "workflow": "Workflow (manual orchestration)",
+    "noWorkflow": "None",
+    "start": "Start Run",
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop",
+    "resumeInterrupted": "Resume Run",
+    "autoModeDisabled": "Automatic orchestration will be available in a future release",
+    "status": { "idle": "Idle", "running": "Running", "paused": "Paused", "stopped": "Stopped", "completed": "Completed", "failed": "Failed", "interrupted": "Interrupted" },
+    "node": { "pending": "Pending", "running": "Running", "done": "Done", "failed": "Failed", "skipped": "Skipped" },
+    "retryNode": "Retry This Node",
+    "skipNode": "Skip and Cascade-Skip",
+    "dagProgress": "DAG Progress",
+    "busy": "Session busy, waiting…",
+    "empty": "Enter a goal and click \"Start Run\""
+  },
+  "history": {
+    "title": "Run History",
+    "empty": "No runs yet",
+    "time": "Time",
+    "mode": "Mode",
+    "input": "Goal",
+    "status": "Status"
+  },
+  "errors": { "loadFailed": "Failed to load", "saveFailed": "Failed to save", "operationFailed": "Operation failed" }
+}

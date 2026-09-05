@@ -13,6 +13,7 @@
     "trace": "Trace"
   },
   "subagent": "SubAgents",
+  "agentTeams": "Agent Teams",
   "toolUse": "MCP Tools",
   "config": "Config",
   "chat": "Chat",

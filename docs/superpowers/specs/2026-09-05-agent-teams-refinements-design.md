@@ -94,12 +94,16 @@ Agent Teams 主体功能已落地。本设计解决使用中暴露的四类问�
 ```
 节点 execution.persona_id / tools / skills        （最高，仅本节点本回合）
   ↓
-节点 execution.config_id 的档案默认人格/能力
+成员会话规则（sp session_service_config，通常未设置）
   ↓
-成员会话默认人格（conversation 绑定）/ 成员 provider_id
+成员 conversation 人格绑定（成员默认人格）/ 成员 provider_id
+  ↓
+节点 execution.config_id 档案默认人格/能力
   ↓
 平台 / WebChat 默认
 ```
+
+（档案默认人格位于成员 conversation 绑定之下——与 AstrBot 既有链一致：显式的成员人格身份优先于其运行所用档案的默认人格；`resolve_selected_persona` 仅需在默认档位支持按 config_id 取档案。）
 
 工具与 Skill 的完整解析顺序：先加载配置档案的运行能力 → 再解析最终人格的 `tools`/`skills` → 最后应用节点三态覆盖 → 过滤不存在/未激活/被档案禁用的能力（沿既有过滤管线，不新建第二套人格加载逻辑）。
 

@@ -33,9 +33,24 @@ export interface TeamsNodeState {
   error?: string;
 }
 
+/** One member/task pair of an auto-orchestration dispatch. */
+export interface TeamsDispatchAssignment {
+  member: string;
+  task: string;
+}
+
+/** One folded `dispatch` event: a round's assignments plus optional notes. */
+export interface TeamsDispatchRecord {
+  round: number;
+  assignments: TeamsDispatchAssignment[];
+  notes?: string;
+}
+
 export interface TeamsRunState {
   runId: string;
   status: string;
+  /** Orchestration mode of the attached run: 'dag' by default, 'auto' for the round-based orchestrator. */
+  mode: "auto" | "dag";
   progress: TeamsRunProgress;
   round: { n: number; max: number };
   windows: Record<string, MemberWindowState>;
@@ -44,6 +59,8 @@ export interface TeamsRunState {
   pausedNodeId: string | null;
   lastError: string | null;
   stoppedReason: string | null;
+  /** Auto-orchestration dispatch log, appended in event order. */
+  dispatches: TeamsDispatchRecord[];
 }
 
 export interface TeamsMessageEvent {
@@ -81,7 +98,9 @@ export interface TeamsRoundEvent {
 
 export interface TeamsDispatchEvent {
   type: "dispatch";
-  assignments: Record<string, string>;
+  round: number;
+  assignments: TeamsDispatchAssignment[];
+  notes?: string;
 }
 
 export interface TeamsBusyEvent {
@@ -122,6 +141,8 @@ const TERMINAL_RUN_STATUSES = ["completed", "stopped", "failed"];
 /** Seed taken from an active-run snapshot or a run history row. */
 export interface TeamsRunStateSeed {
   status?: string;
+  /** Orchestration mode carried by run rows/snapshots; defaults to 'dag'. */
+  mode?: "auto" | "dag";
   nodeStates?: Record<string, TeamsNodeState>;
   /**
    * Workflow graph carried by the snapshot/history row. Accepted so callers
@@ -146,6 +167,7 @@ export function createTeamsRunState(
   return {
     runId,
     status: seed?.status ?? "running",
+    mode: seed?.mode === "auto" ? "auto" : "dag",
     progress: { done: 0, running: 0, pending: 0, skipped: 0, failed: 0, total: 0 },
     round: { n: 0, max: 0 },
     windows: {},
@@ -154,6 +176,7 @@ export function createTeamsRunState(
     pausedNodeId: null,
     lastError: null,
     stoppedReason: null,
+    dispatches: [],
   };
 }
 
@@ -230,12 +253,39 @@ export function parseTeamsEvent(raw: unknown): TeamsRunEvent | null {
       };
     }
     case "round": {
-      if (typeof obj.n !== "number" || typeof obj.max !== "number") return null;
-      return { type: "round", n: obj.n, max: obj.max };
+      if (typeof obj.n !== "number") return null;
+      // The auto orchestrator names the limit `max_rounds`; DAG-originated
+      // payloads may use `max`. Accept both so the round folds either way.
+      const max = typeof obj.max === "number" ? obj.max : obj.max_rounds;
+      if (typeof max !== "number") return null;
+      return { type: "round", n: obj.n, max };
     }
     case "dispatch": {
-      if (!obj.assignments || typeof obj.assignments !== "object") return null;
-      return { type: "dispatch", assignments: obj.assignments };
+      // Auto-orchestration dispatch: the round plus an array of {member,
+      // task} pairs. Anything else is dropped — this lands the deferred
+      // Array.isArray guard (the legacy Record shape parses to null now).
+      if (typeof obj.round !== "number") return null;
+      if (!Array.isArray(obj.assignments)) return null;
+      const assignments: TeamsDispatchAssignment[] = [];
+      for (const item of obj.assignments) {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          typeof item.member !== "string" ||
+          typeof item.task !== "string"
+        ) {
+          return null;
+        }
+        assignments.push({ member: item.member, task: item.task });
+      }
+      const ev: TeamsDispatchEvent = {
+        type: "dispatch",
+        round: obj.round,
+        assignments,
+      };
+      // The backend sends `notes: null` when the coordinator added none.
+      if (typeof obj.notes === "string") ev.notes = obj.notes;
+      return ev;
     }
     case "busy": {
       if (!obj.session_id || typeof obj.session_id !== "string") return null;
@@ -355,10 +405,17 @@ export function applyTeamsEvent(state: TeamsRunState, ev: TeamsRunEvent): void {
     case "round":
       state.round = { n: ev.n, max: ev.max };
       break;
-    case "dispatch":
-      // Recognized but not folded: the run state has no assignment field
-      // (the DAG view renders nodes from the graph, not from dispatch).
+    case "dispatch": {
+      // Append to the auto-orchestration dispatch log; the monitor renders
+      // the tail for auto runs (DAG runs never emit dispatch events).
+      const record: TeamsDispatchRecord = {
+        round: ev.round,
+        assignments: ev.assignments,
+      };
+      if (ev.notes !== undefined) record.notes = ev.notes;
+      state.dispatches.push(record);
       break;
+    }
     case "busy":
       // Emitted repeatedly while waiting — add-only marker here; never
       // removed by busy events themselves.

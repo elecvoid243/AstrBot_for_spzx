@@ -234,13 +234,18 @@ describe("agentTeamsRunReducer", () => {
     expect(p.status).toBe("stopped");
   });
 
-  it("folds round and recognizes dispatch events", () => {
+  it("folds round events under both max and max_rounds keys", () => {
     const s = createTeamsRunState("r1");
     applyTeamsEvent(s, parseTeamsEvent({ type: "round", n: 2, max: 5 })!);
     expect(s.round).toEqual({ n: 2, max: 5 });
-    expect(
-      parseTeamsEvent({ type: "dispatch", assignments: { n1: "m1" } })?.type,
-    ).toBe("dispatch");
+    // The auto orchestrator names the limit `max_rounds`.
+    const auto = createTeamsRunState("r2");
+    applyTeamsEvent(
+      auto,
+      parseTeamsEvent({ type: "round", n: 1, max_rounds: 20 })!,
+    );
+    expect(auto.round).toEqual({ n: 1, max: 20 });
+    expect(parseTeamsEvent({ type: "round", n: 3 })).toBeNull();
   });
 
   it("returns null for malformed payloads instead of throwing", () => {
@@ -256,5 +261,85 @@ describe("agentTeamsRunReducer", () => {
     expect(parseTeamsEvent({ type: "dag_progress", done: 1 })).toBeNull();
     expect(parseTeamsEvent({ type: "busy" })).toBeNull();
     expect(parseTeamsEvent({ type: "stopped" })).toBeNull();
+  });
+});
+
+describe("agentTeamsRunReducer run mode", () => {
+  it("seeds mode with a 'dag' default", () => {
+    expect(createTeamsRunState("r1").mode).toBe("dag");
+    expect(createTeamsRunState("r1", {}).mode).toBe("dag");
+    expect(createTeamsRunState("r1", { mode: "auto" }).mode).toBe("auto");
+    expect(createTeamsRunState("r1", { mode: "dag" }).mode).toBe("dag");
+  });
+
+  it("starts with an empty dispatch log", () => {
+    expect(createTeamsRunState("r1").dispatches).toEqual([]);
+  });
+});
+
+describe("agentTeamsRunReducer dispatch folding", () => {
+  it("appends valid dispatch events with round, assignments and notes", () => {
+    const s = createTeamsRunState("r1");
+    applyTeamsEvent(
+      s,
+      parseTeamsEvent({
+        type: "dispatch",
+        round: 1,
+        assignments: [
+          { member: "m1", task: "实现登录接口" },
+          { member: "m2", task: "编写测试" },
+        ],
+        notes: "先做后端",
+      })!,
+    );
+    applyTeamsEvent(
+      s,
+      parseTeamsEvent({
+        type: "dispatch",
+        round: 2,
+        assignments: [{ member: "m1", task: "修复评审意见" }],
+      })!,
+    );
+    expect(s.dispatches).toEqual([
+      {
+        round: 1,
+        assignments: [
+          { member: "m1", task: "实现登录接口" },
+          { member: "m2", task: "编写测试" },
+        ],
+        notes: "先做后端",
+      },
+      { round: 2, assignments: [{ member: "m1", task: "修复评审意见" }] },
+    ]);
+  });
+
+  it("rejects malformed dispatch payloads (assignments must be an array of {member, task})", () => {
+    // The legacy Record shape is no longer accepted.
+    expect(
+      parseTeamsEvent({ type: "dispatch", round: 1, assignments: { n1: "m1" } }),
+    ).toBeNull();
+    // Non-array assignments hit the deferred Array.isArray guard.
+    expect(
+      parseTeamsEvent({ type: "dispatch", round: 1, assignments: "junk" }),
+    ).toBeNull();
+    expect(parseTeamsEvent({ type: "dispatch", round: 1 })).toBeNull();
+    // Items missing member/task strings are rejected.
+    expect(
+      parseTeamsEvent({ type: "dispatch", round: 1, assignments: [{ member: "m1" }] }),
+    ).toBeNull();
+    expect(
+      parseTeamsEvent({
+        type: "dispatch",
+        round: 1,
+        assignments: [{ member: 3, task: "x" }],
+      }),
+    ).toBeNull();
+    // The round number is part of the folded record, so it is required.
+    expect(
+      parseTeamsEvent({
+        type: "dispatch",
+        assignments: [{ member: "m1", task: "t" }],
+      }),
+    ).toBeNull();
   });
 });

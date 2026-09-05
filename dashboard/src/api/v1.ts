@@ -1983,3 +1983,77 @@ export const agentCollabApi = {
     );
   },
 };
+
+export const agentTeamsApi = {
+  listTeams() {
+    return httpClient.get<ApiEnvelope<any>>('/api/v1/agent_teams');
+  },
+  createTeam(payload: any) {
+    return httpClient.post<ApiEnvelope<any>>('/api/v1/agent_teams', payload);
+  },
+  getTeam(teamId: string) {
+    return httpClient.get<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}`);
+  },
+  updateTeam(teamId: string, payload: any) {
+    return httpClient.patch<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}`, payload);
+  },
+  deleteTeam(teamId: string) {
+    return httpClient.delete<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}`);
+  },
+  addMember(teamId: string, payload: any) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/members`, payload);
+  },
+  removeMember(teamId: string, memberId: string) {
+    return httpClient.delete<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`
+    );
+  },
+  listWorkflows(teamId: string) {
+    return httpClient.get<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/workflows`);
+  },
+  createWorkflow(teamId: string, payload: any) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/workflows`, payload);
+  },
+  updateWorkflow(teamId: string, workflowId: string, payload: any) {
+    return httpClient.put<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/${encodeURIComponent(teamId)}/workflows/${encodeURIComponent(workflowId)}`,
+      payload
+    );
+  },
+  deleteWorkflow(teamId: string, workflowId: string) {
+    return httpClient.delete<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/${encodeURIComponent(teamId)}/workflows/${encodeURIComponent(workflowId)}`
+    );
+  },
+  startRun(teamId: string, payload: { mode: string; input: string; workflow_id?: string | null }) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/runs`, payload);
+  },
+  listActiveRuns() {
+    return httpClient.get<ApiEnvelope<any>>('/api/v1/agent_teams/runs/active');
+  },
+  listTeamRuns(teamId: string) {
+    return httpClient.get<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/runs`);
+  },
+  pauseRun(runId: string) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/pause`);
+  },
+  resumeRun(runId: string) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/resume`);
+  },
+  stopRun(runId: string) {
+    return httpClient.post<ApiEnvelope<any>>(`/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/stop`);
+  },
+  retryNode(runId: string, nodeId: string) {
+    return httpClient.post<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/retry`
+    );
+  },
+  skipNode(runId: string, nodeId: string) {
+    return httpClient.post<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/skip`
+    );
+  },
+  runStreamUrl(runId: string) {
+    return `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/stream`;
+  },
+};

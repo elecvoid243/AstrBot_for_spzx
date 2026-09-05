@@ -5281,6 +5281,275 @@ paths:
         "200":
           description: Webhook accepted
 
+  /api/v1/agent_teams:
+    get:
+      tags: [AgentTeams]
+      summary: List agent teams owned by the current user
+      operationId: listAgentTeams
+      x-astrbot-scope: chat
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    post:
+      tags: [AgentTeams]
+      summary: Create a team and all member sessions
+      operationId: createAgentTeam
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamCreatePayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}:
+    get:
+      tags: [AgentTeams]
+      summary: Get one team
+      operationId: getAgentTeam
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    patch:
+      tags: [AgentTeams]
+      summary: Update team name/coordinator/config
+      operationId: updateAgentTeam
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamUpdatePayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    delete:
+      tags: [AgentTeams]
+      summary: Delete a team (member sessions are preserved)
+      operationId: deleteAgentTeam
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}/members:
+    post:
+      tags: [AgentTeams]
+      summary: Add a member (creates its WebChat session server-side)
+      operationId: addAgentTeamMember
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamMemberPayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}/members/{member_id}:
+    delete:
+      tags: [AgentTeams]
+      summary: Remove a member
+      operationId: removeAgentTeamMember
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - $ref: "#/components/parameters/MemberIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}/workflows:
+    get:
+      tags: [AgentTeams]
+      summary: List the team's workflow templates
+      operationId: listAgentTeamWorkflows
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    post:
+      tags: [AgentTeams]
+      summary: Create a workflow template
+      operationId: createAgentTeamWorkflow
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamWorkflowPayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}/workflows/{workflow_id}:
+    put:
+      tags: [AgentTeams]
+      summary: Update a workflow template (graph + layout, server-validated)
+      operationId: updateAgentTeamWorkflow
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamWorkflowPayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    delete:
+      tags: [AgentTeams]
+      summary: Delete a workflow template
+      operationId: deleteAgentTeamWorkflow
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/{team_id}/runs:
+    get:
+      tags: [AgentTeams]
+      summary: List the team's run history (full rows incl. graph/node_states)
+      operationId: listAgentTeamRuns
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    post:
+      tags: [AgentTeams]
+      summary: Start a run (409 when the team already has an active run)
+      operationId: startAgentTeamRun
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentTeamRunStartPayload"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+        "409":
+          $ref: "#/components/responses/Error"
+
+  /api/v1/agent_teams/runs/active:
+    get:
+      tags: [AgentTeams]
+      summary: List the user's active runs with snapshots
+      operationId: listActiveAgentTeamRuns
+      x-astrbot-scope: chat
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/pause:
+    post:
+      tags: [AgentTeams]
+      summary: Pause a run
+      operationId: pauseAgentTeamRun
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/resume:
+    post:
+      tags: [AgentTeams]
+      summary: Resume a paused or interrupted run
+      operationId: resumeAgentTeamRun
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/stop:
+    post:
+      tags: [AgentTeams]
+      summary: Stop a run
+      operationId: stopAgentTeamRun
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/retry:
+    post:
+      tags: [AgentTeams]
+      summary: Retry a failed node
+      operationId: retryAgentTeamNode
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/NodeIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/skip:
+    post:
+      tags: [AgentTeams]
+      summary: Skip a failed node and cascade-skip its successors
+      operationId: skipAgentTeamNode
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/NodeIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/stream:
+    get:
+      tags: [AgentTeams]
+      summary: Server-sent events for one run (full history replay, then live, heartbeats)
+      operationId: streamAgentTeamRun
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          description: Server-sent run event stream or an error envelope
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -5496,6 +5765,31 @@ components:
       required: true
       schema:
         type: string
+    TeamIdPath:
+      name: team_id
+      in: path
+      required: true
+      schema: { type: string }
+    MemberIdPath:
+      name: member_id
+      in: path
+      required: true
+      schema: { type: string }
+    WorkflowIdPath:
+      name: workflow_id
+      in: path
+      required: true
+      schema: { type: string }
+    RunIdPath:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string }
+    NodeIdPath:
+      name: node_id
+      in: path
+      required: true
+      schema: { type: string }
 
   schemas:
     SuccessEnvelope:
@@ -6625,3 +6919,73 @@ components:
         content:
           type: string
       additionalProperties: true
+
+    AgentTeamMemberPayload:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        persona_id: { type: [string, "null"] }
+        system_prompt: { type: [string, "null"] }
+        provider_id: { type: [string, "null"] }
+
+    AgentTeamCreatePayload:
+      type: object
+      required: [name, members, coordinator]
+      properties:
+        name: { type: string }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/AgentTeamMemberPayload" }
+        coordinator: { type: string }
+        config: { type: object, additionalProperties: true }
+
+    AgentTeamUpdatePayload:
+      type: object
+      additionalProperties: true
+
+    WorkflowNode:
+      type: object
+      required: [id, member_id, task]
+      properties:
+        id: { type: string }
+        member_id: { type: string }
+        task: { type: string }
+        title: { type: [string, "null"] }
+
+    WorkflowEdge:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string }
+        to: { type: string }
+
+    WorkflowGraph:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/WorkflowEdge" }
+
+    AgentTeamWorkflowPayload:
+      type: object
+      required: [name, graph]
+      properties:
+        name: { type: string }
+        graph: { $ref: "#/components/schemas/WorkflowGraph" }
+        layout:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: { type: number }
+
+    AgentTeamRunStartPayload:
+      type: object
+      required: [mode, input]
+      properties:
+        mode: { type: string, enum: [auto, dag] }
+        input: { type: string }
+        workflow_id: { type: [string, "null"] }

@@ -34,6 +34,7 @@
     "name": "Member Name",
     "nameRequired": "Member name is required",
     "addSuccess": "Member “{name}” added",
+    "removeConfirm": "Remove member “{name}”?",
     "fromPersona": "Create from Persona",
     "custom": "Create Custom",
     "persona": "Persona",
@@ -86,7 +87,8 @@
     "time": "Time",
     "mode": "Mode",
     "input": "Goal",
-    "status": "Status"
+    "status": "Status",
+    "open": "Open"
   },
   "errors": { "loadFailed": "Failed to load", "saveFailed": "Failed to save", "operationFailed": "Operation failed" }
 }

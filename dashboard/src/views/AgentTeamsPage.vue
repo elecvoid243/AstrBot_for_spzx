@@ -26,6 +26,7 @@
           :selected-team="selectedTeam"
           @select="selectTeam"
           @create="onCreate"
+          @add-member="onAddMember"
           @remove-member="onRemoveMember"
         />
 
@@ -43,20 +44,25 @@
               </section>
             </v-window-item>
             <v-window-item value="monitor">
-              <!-- Task 8 replaces this -->
-              <section v-if="tab === 'monitor'" class="agent-teams-panel agent-teams-panel-monitor">
-                {{ tm('tabs.monitor') }}
+              <section v-if="tab === 'monitor'" class="agent-teams-panel-monitor">
+                <RunMonitor :team="selectedTeam" :initial-run="pendingRun" />
               </section>
             </v-window-item>
             <v-window-item value="history">
-              <!-- Task 9 replaces this -->
-              <section v-if="tab === 'history'" class="agent-teams-panel agent-teams-panel-history">
-                {{ tm('tabs.history') }}
+              <section v-if="tab === 'history'" class="agent-teams-panel-history">
+                <RunsHistory :team="selectedTeam" @open="onOpenRun" />
               </section>
             </v-window-item>
           </v-window>
         </div>
       </div>
+
+      <TeamCreateDialog v-model="showCreateDialog" @saved="onTeamSaved" />
+      <MemberAddDialog
+        v-model="showMemberDialog"
+        :team-id="selectedTeam?.team_id ?? ''"
+        @saved="onMemberSaved"
+      />
     </v-container>
   </div>
 </template>
@@ -65,9 +71,15 @@
 import { onMounted, ref, watch } from 'vue';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
+import MemberAddDialog from '@/components/agent_teams/MemberAddDialog.vue';
+import RunMonitor from '@/components/agent_teams/RunMonitor.vue';
+import RunsHistory from '@/components/agent_teams/RunsHistory.vue';
+import TeamCreateDialog from '@/components/agent_teams/TeamCreateDialog.vue';
 import WorkflowEditor from '@/components/agent_teams/WorkflowEditor.vue';
 import { useAgentTeams } from '@/composables/useAgentTeams';
+import { useAgentTeamsRun } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
+import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog';
 import { useToast } from '@/utils/toast';
 
 const { tm } = useModuleI18n('features/agent-teams');
@@ -80,8 +92,17 @@ const {
   loadWorkflows,
   selectTeam,
 } = useAgentTeams();
+const { openRun } = useAgentTeamsRun();
+const confirmDialog = useConfirmDialog();
 
 const tab = ref('editor');
+const showCreateDialog = ref(false);
+const showMemberDialog = ref(false);
+// History row handed to the monitor when a run is opened from the history
+// tab: RunMonitor seeds its DAG view from the row's graph snapshot and skips
+// mount recovery when the attached run matches this row (openRun has already
+// attached it).
+const pendingRun = ref<any | null>(null);
 
 /** Reload the team list plus the selected team's workflows. */
 async function refresh() {
@@ -91,13 +112,40 @@ async function refresh() {
   }
 }
 
-// Task 9 mounts TeamCreateDialog here and replaces this placeholder.
-function onCreate() {}
+function onCreate() {
+  showCreateDialog.value = true;
+}
 
-/** Remove one member from the selected team and refresh the list. */
+function onAddMember() {
+  if (!selectedTeam.value) return;
+  showMemberDialog.value = true;
+}
+
+/** After the create dialog saved, refresh the list and select the team. */
+async function onTeamSaved(team: any) {
+  await loadTeams();
+  if (team?.team_id) {
+    selectTeam(team.team_id);
+  }
+}
+
+/** After a member was added, refresh the list to pick up the new member. */
+async function onMemberSaved() {
+  await loadTeams();
+}
+
+/** Confirm, remove one member from the selected team and refresh the list. */
 async function onRemoveMember(memberId: string) {
   const team = selectedTeam.value;
   if (!team) return;
+  const memberName = String(
+    (team.members ?? []).find((m: any) => m.member_id === memberId)?.name ?? memberId,
+  );
+  const ok = await askForConfirmation(
+    tm('members.removeConfirm', { name: memberName }),
+    confirmDialog,
+  );
+  if (!ok) return;
   const { error } = useToast();
   try {
     const res = await agentTeamsApi.removeMember(team.team_id, memberId);
@@ -111,9 +159,23 @@ async function onRemoveMember(memberId: string) {
   }
 }
 
+/**
+ * Open a run from the history tab in the monitor: the history row seeds the
+ * run state and DAG instantly, and the SSE stream replays the event history
+ * on top. The row is also passed down to RunMonitor so its mount recovery
+ * keeps the explicitly opened run instead of clobbering it.
+ */
+function onOpenRun(runId: string, row: any) {
+  pendingRun.value = row ?? null;
+  void openRun(runId, row);
+  tab.value = 'monitor';
+}
+
 // Reload the workflows whenever the selected team changes so the editor's
-// workflow picker always reflects the active team.
+// workflow picker always reflects the active team. A pending history row
+// belongs to the previous team and is dropped.
 watch(selectedTeamId, (teamId) => {
+  pendingRun.value = null;
   if (teamId) {
     void loadWorkflows(teamId);
   }
@@ -146,15 +208,6 @@ onMounted(() => {
 .agent-teams-main {
   flex: 1;
   min-width: 0;
-}
-
-.agent-teams-panel {
-  min-height: 320px;
-  padding: 24px;
-  border: 1px dashed var(--dashboard-border, rgba(0, 0, 0, 0.12));
-  border-radius: 12px;
-  color: var(--dashboard-muted, rgba(0, 0, 0, 0.55));
-  font-size: 14px;
 }
 
 @media (max-width: 900px) {

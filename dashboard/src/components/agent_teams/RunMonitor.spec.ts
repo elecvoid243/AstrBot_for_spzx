@@ -523,6 +523,36 @@ describe('RunMonitor DAG view', () => {
   });
 });
 
+describe('RunMonitor history handoff', () => {
+  it('keeps a run explicitly opened from history and skips mount recovery', async () => {
+    // The page called openRun(run-9, row) before mounting this panel and
+    // passes the history row down as initialRun.
+    runMocks.runState.value = makeRunState({ runId: 'run-9', status: 'completed' });
+    const wrapper = mountRun({ initialRun: fixtures.runRow });
+    await flushPromises();
+
+    // Recovery must not clobber the explicitly opened run...
+    expect(runMocks.loadActiveRuns).not.toHaveBeenCalled();
+    expect(runMocks.openRun).not.toHaveBeenCalled();
+
+    // ...and the DAG is seeded from the handed-off row's graph snapshot.
+    await wrapper.findComponent({ name: 'VBtnToggleStub' }).vm.$emit('update:modelValue', 'dag');
+    await nextTick();
+    const canvas = wrapper.findComponent({ name: 'TeamsFlowCanvasStub' });
+    expect(canvas.props('nodes').map((n: any) => n.id)).toEqual(['n1', 'n2']);
+    expect(canvas.props('edges')).toEqual([{ id: 'e:n1->n2', source: 'n1', target: 'n2' }]);
+  });
+
+  it('falls back to mount recovery when the attached run does not match initialRun', async () => {
+    runMocks.runState.value = makeRunState({ runId: 'run-other' });
+    runMocks.loadActiveRuns.mockResolvedValue([fixtures.runRow]);
+    mountRun({ initialRun: fixtures.runRow });
+    await flushPromises();
+
+    expect(runMocks.openRun).toHaveBeenCalledWith('run-9', fixtures.runRow);
+  });
+});
+
 describe('AgentWindow rendering (through the grid)', () => {
   it('renders the sent block and falls back to streamText with is-streaming', () => {
     runMocks.runState.value = makeRunState({

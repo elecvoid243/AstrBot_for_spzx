@@ -157,6 +157,13 @@ interface MonitorTile {
 const props = defineProps<{
   /** Team whose run is monitored; members drive the window grid. */
   team: any | null;
+  /**
+   * History row the page explicitly opened via `openRun(runId, row)` before
+   * mounting this panel (history-tab handoff). When the attached run matches
+   * this row, mount recovery is skipped (it must not clobber the explicitly
+   * opened run) and the DAG is seeded from the row's graph snapshot.
+   */
+  initialRun?: any | null;
 }>();
 
 const { tm } = useModuleI18n('features/agent-teams');
@@ -411,9 +418,18 @@ const dagEdges = computed<FlowEdgePayload[]>(() =>
  * Reopen the team's active run if one exists: the run row (snake_case
  * graph/node_states) doubles as the reducer seed and feeds the DAG view until
  * SSE events refresh the state.
+ *
+ * A run explicitly opened from the history tab (the page calls
+ * `openRun(runId, row)` before switching to this tab and passes the row down
+ * as `initialRun`) is kept as-is: the recovery below must not clobber it, so
+ * only the DAG graph is seeded from the handed-off row.
  */
 async function initTeam() {
   runGraph.value = null;
+  if (runState.value && props.initialRun?.run_id === runState.value.runId) {
+    runGraph.value = (props.initialRun.graph as typeof runGraph.value) ?? null;
+    return;
+  }
   const runs = await loadActiveRuns();
   const row: AgentTeamRunSummary | undefined = (runs ?? []).find(
     (r) => props.team && r?.team_id && r.team_id === props.team.team_id,

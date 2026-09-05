@@ -1,13 +1,16 @@
-// Scaffold spec for the agent-teams page shell (Task 5): the page renders
-// the team directory through AgentTeamsSidebar, exposes the
-// editor/monitor/history tab shell with placeholder panels, and forwards
-// selection/refresh to the useAgentTeams composable. The sidebar contract
-// (select / create / removeMember emits, coordinator marking) is pinned in
-// the second describe block. Vuetify is stubbed manually (the app registers
-// it globally; tests do not pull it in).
+// Scaffold spec for the agent-teams page shell (Task 5, extended by Task 9):
+// the page renders the team directory through AgentTeamsSidebar, exposes the
+// editor/monitor/history tabs with the real panel components (stubbed here —
+// each panel has its own spec) and forwards selection/refresh to the
+// useAgentTeams composable. Task 9 covers the dialog wiring (create saved ->
+// select new team, member add refresh), the confirm-guarded member removal
+// and the history -> monitor handoff (openRun + initialRun + tab switch).
+// The sidebar contract (select / create / removeMember emits, coordinator
+// marking) is pinned in the second describe block. Vuetify is stubbed
+// manually (the app registers it globally; tests do not pull it in).
 import { flushPromises, mount } from '@vue/test-utils';
-import { defineComponent, h, inject, provide } from 'vue';
-import { describe, expect, it, vi } from 'vitest';
+import { defineComponent, h, inject, nextTick, provide } from 'vue';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const composableMocks = vi.hoisted(() => ({
   loadTeams: vi.fn(),
@@ -19,6 +22,8 @@ const composableMocks = vi.hoisted(() => ({
   saveWorkflow: vi.fn(),
   deleteWorkflow: vi.fn(),
 }));
+
+const runMocks = vi.hoisted(() => ({ openRun: vi.fn() }));
 
 const removeMemberApiMock = vi.hoisted(() => vi.fn());
 
@@ -60,6 +65,26 @@ vi.mock('@/composables/useAgentTeams', async () => {
       deleteTeam: composableMocks.deleteTeam,
       saveWorkflow: composableMocks.saveWorkflow,
       deleteWorkflow: composableMocks.deleteWorkflow,
+    }),
+  };
+});
+
+vi.mock('@/composables/useAgentTeamsRun', async () => {
+  const { ref, shallowRef } = await vi.importActual<typeof import('vue')>('vue');
+  return {
+    useAgentTeamsRun: () => ({
+      runState: shallowRef(null),
+      monitors: ref([]),
+      loadActiveRuns: vi.fn(),
+      openRun: runMocks.openRun,
+      closeRun: vi.fn(),
+      startRun: vi.fn(),
+      pause: vi.fn(),
+      resumeRun: vi.fn(),
+      stop: vi.fn(),
+      retryNode: vi.fn(),
+      skipNode: vi.fn(),
+      reconnect: vi.fn(),
     }),
   };
 });
@@ -135,10 +160,40 @@ const stubs = {
     props: { value: { type: String, default: '' } },
     template: '<div class="window-item-stub"><slot /></div>',
   },
+  // Panel components are stubbed at page level: each has its own spec, and
+  // the page specs only assert the wiring around them.
+  WorkflowEditor: {
+    name: 'WorkflowEditorStub',
+    props: ['team', 'workflows'],
+    template: '<div class="workflow-editor-stub" />',
+  },
+  RunMonitor: {
+    name: 'RunMonitorStub',
+    props: ['team', 'initialRun'],
+    template: '<div class="run-monitor-stub" />',
+  },
+  RunsHistory: {
+    name: 'RunsHistoryStub',
+    props: ['team'],
+    emits: ['open'],
+    template: '<div class="runs-history-stub" />',
+  },
+  TeamCreateDialog: {
+    name: 'TeamCreateDialogStub',
+    props: ['modelValue', 'team'],
+    emits: ['update:modelValue', 'saved'],
+    template: '<div class="team-create-stub" />',
+  },
+  MemberAddDialog: {
+    name: 'MemberAddDialogStub',
+    props: ['modelValue', 'teamId'],
+    emits: ['update:modelValue', 'saved'],
+    template: '<div class="member-add-stub" />',
+  },
 };
 
-function mountPage() {
-  return mount(AgentTeamsPage, { global: { stubs } });
+function mountPage(provide: Record<string, unknown> = {}) {
+  return mount(AgentTeamsPage, { global: { stubs, provide } });
 }
 
 function mountSidebar(props: Record<string, unknown> = {}) {
@@ -210,6 +265,111 @@ describe('AgentTeamsPage', () => {
 
     expect(composableMocks.loadTeams).toHaveBeenCalledTimes(1);
     expect(composableMocks.loadWorkflows).toHaveBeenCalledWith('t1');
+  });
+});
+
+describe('AgentTeamsPage integration (Task 9)', () => {
+  // Call history of the shared API/run mocks leaks between tests otherwise.
+  beforeEach(() => {
+    removeMemberApiMock.mockClear();
+    runMocks.openRun.mockClear();
+  });
+
+  it('sidebar create opens TeamCreateDialog; saved refreshes and selects the new team', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    composableMocks.loadTeams.mockClear();
+    composableMocks.selectTeam.mockClear();
+
+    const createBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.text() === '新建团队');
+    await createBtn!.trigger('click');
+
+    const dialog = wrapper.findComponent({ name: 'TeamCreateDialogStub' });
+    expect(dialog.props('modelValue')).toBe(true);
+
+    dialog.vm.$emit('saved', { team_id: 't9', name: 'New 团队' });
+    await flushPromises();
+
+    expect(composableMocks.loadTeams).toHaveBeenCalledTimes(1);
+    expect(composableMocks.selectTeam).toHaveBeenCalledWith('t9');
+  });
+
+  it('sidebar add-member opens MemberAddDialog for the selected team; saved refreshes', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    composableMocks.loadTeams.mockClear();
+
+    const addBtn = wrapper.find('button[aria-label="添加成员"]');
+    expect(addBtn.exists()).toBe(true);
+    await addBtn.trigger('click');
+
+    const dialog = wrapper.findComponent({ name: 'MemberAddDialogStub' });
+    expect(dialog.props('modelValue')).toBe(true);
+    expect(dialog.props('teamId')).toBe('t1');
+
+    dialog.vm.$emit('saved', { member_id: 'm9' });
+    await flushPromises();
+
+    expect(composableMocks.loadTeams).toHaveBeenCalledTimes(1);
+  });
+
+  it('removeMember confirms, removes through the API and refreshes the list', async () => {
+    removeMemberApiMock.mockResolvedValue({ data: { status: 'ok' } });
+    const confirmMock = vi.fn().mockResolvedValue(true);
+    const wrapper = mountPage({ $confirm: confirmMock });
+    await flushPromises();
+    composableMocks.loadTeams.mockClear();
+
+    const sidebar = wrapper.findComponent(AgentTeamsSidebar);
+    sidebar.vm.$emit('removeMember', 'm2');
+    await flushPromises();
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    // The confirmation message names the member being removed
+    // (askForConfirmation passes { message } to the dialog handler).
+    expect(confirmMock.mock.calls[0][0].message).toContain('Bob');
+    expect(removeMemberApiMock).toHaveBeenCalledWith('t1', 'm2');
+    expect(composableMocks.loadTeams).toHaveBeenCalledTimes(1);
+  });
+
+  it('removeMember cancelled leaves the team untouched', async () => {
+    const confirmMock = vi.fn().mockResolvedValue(false);
+    const wrapper = mountPage({ $confirm: confirmMock });
+    await flushPromises();
+
+    const sidebar = wrapper.findComponent(AgentTeamsSidebar);
+    sidebar.vm.$emit('removeMember', 'm2');
+    await flushPromises();
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(removeMemberApiMock).not.toHaveBeenCalled();
+  });
+
+  it('history open switches to the monitor tab and opens the run with the row', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const historyTab = wrapper
+      .findAll('.tab-stub')
+      .find((tab) => tab.text() === '历史');
+    await historyTab!.trigger('click');
+
+    const history = wrapper.findComponent({ name: 'RunsHistoryStub' });
+    expect(history.exists()).toBe(true);
+
+    const row = { run_id: 'run-9', graph: { nodes: [], edges: [] }, node_states: {} };
+    history.vm.$emit('open', 'run-9', row);
+    await nextTick();
+
+    expect(runMocks.openRun).toHaveBeenCalledWith('run-9', row);
+    expect(wrapper.find('.agent-teams-panel-monitor').exists()).toBe(true);
+    // strictEqual: the page stores the row in a ref, so the prop arrives as
+    // its reactive proxy.
+    expect(wrapper.findComponent({ name: 'RunMonitorStub' }).props('initialRun')).toStrictEqual(
+      row,
+    );
   });
 });
 

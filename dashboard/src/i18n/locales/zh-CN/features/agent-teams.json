@@ -34,6 +34,7 @@
     "name": "成员名称",
     "nameRequired": "请填写成员名称",
     "addSuccess": "成员「{name}」已添加",
+    "removeConfirm": "确定移除成员「{name}」？",
     "fromPersona": "从人格创建",
     "custom": "自定义创建",
     "persona": "人格",
@@ -86,7 +87,8 @@
     "time": "时间",
     "mode": "模式",
     "input": "目标",
-    "status": "状态"
+    "status": "状态",
+    "open": "打开"
   },
   "errors": { "loadFailed": "加载失败", "saveFailed": "保存失败", "operationFailed": "操作失败" }
 }

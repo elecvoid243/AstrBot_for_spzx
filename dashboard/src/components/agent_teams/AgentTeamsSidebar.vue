@@ -28,7 +28,17 @@
     </div>
 
     <template v-if="selectedTeam">
-      <div class="members-head">{{ tm('members.title') }}</div>
+      <div class="members-head">
+        <span>{{ tm('members.title') }}</span>
+        <v-btn
+          icon="mdi-plus"
+          variant="text"
+          size="small"
+          class="member-add"
+          :aria-label="tm('members.add')"
+          @click="emit('addMember')"
+        />
+      </div>
       <div
         v-for="member in selectedTeam.members"
         :key="member.member_id"
@@ -80,6 +90,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'select', teamId: string): void;
   (e: 'create'): void;
+  (e: 'addMember'): void;
   (e: 'removeMember', memberId: string): void;
 }>();
 
@@ -144,6 +155,9 @@ const { tm } = useModuleI18n('features/agent-teams');
 }
 
 .members-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-top: 10px;
   padding: 0 4px;
   color: var(--dashboard-muted, rgba(0, 0, 0, 0.55));
@@ -151,6 +165,10 @@ const { tm } = useModuleI18n('features/agent-teams');
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.member-add {
+  flex-shrink: 0;
 }
 
 .member-row {

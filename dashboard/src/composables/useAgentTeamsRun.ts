@@ -3,7 +3,7 @@
 // and run dialogs). SSE payloads are folded into the pure reducer state from
 // agentTeamsRunReducer; control actions (start/pause/stop/retry/skip) wrap
 // the API facade and toast error envelopes instead of throwing.
-import { ref, shallowRef, triggerRef } from 'vue';
+import { ref } from 'vue';
 import type { AxiosResponse } from 'axios';
 import { fetchWithAuth } from '@/api/http';
 import { agentTeamsApi } from '@/api/v1';
@@ -32,11 +32,13 @@ const RECONNECT_DELAY_MS = 1000;
 // when the run finishes); no reconnect is attempted afterwards.
 const TERMINAL_RUN_STATUSES = ['completed', 'stopped', 'failed'];
 
-// runState is a shallowRef over the reducer's plain mutable state: folds
-// mutate it in place and triggerRef() notifies watchers after each event.
-// Its nested `windows` objects keep a stable identity across folds, so
-// components needing deep granularity can hold those objects directly.
-const runState = shallowRef<TeamsRunState | null>(null);
+// runState is a deep ref over the reducer's plain mutable state: folds
+// mutate the reactive proxy in place and nested property writes trigger the
+// watchers/computeds that track them (e.g. AgentWindow's `blocks` computed
+// reads `windows[member].streamText` two levels deep — a shallowRef +
+// triggerRef host freezes those child computeds because the window objects
+// keep a stable identity across folds).
+const runState = ref<TeamsRunState | null>(null);
 // Active-run summaries for the monitor list (run_id/status/progress/...).
 const monitors = ref<AgentTeamRunSummary[]>([]);
 let attachAbort: AbortController | null = null;
@@ -129,8 +131,9 @@ function attach(runId: string) {
           const state = runState.value;
           // Ignore late events from a stream of a run we already left.
           if (!state || state.runId !== runId) return;
+          // state is the reactive proxy: folds mutate deeply and the nested
+          // writes notify the trackers themselves (no triggerRef needed).
           applyTeamsEvent(state, event);
-          triggerRef(runState);
         });
       } catch (error) {
         if (abort.signal.aborted) return;
@@ -194,7 +197,6 @@ async function unwrapEnvelope(
 function setLocalStatus(runId: string, status: string) {
   if (runState.value?.runId !== runId) return;
   runState.value.status = status;
-  triggerRef(runState);
 }
 
 /**

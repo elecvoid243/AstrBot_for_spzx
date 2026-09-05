@@ -128,8 +128,10 @@ const stubs = {
       loading: { type: Boolean, default: false },
     },
     emits: ['click'],
+    // The native event is re-emitted (Vuetify does the same) so handlers can
+    // use modifiers such as .stop.
     template:
-      '<button type="button" class="v-btn-stub" :disabled="disabled || loading" @click="$emit(\'click\')"><i v-if="icon" class="mdi" :class="icon" /><slot /></button>',
+      '<button type="button" class="v-btn-stub" :disabled="disabled || loading" @click="$emit(\'click\', $event)"><i v-if="icon" class="mdi" :class="icon" /><slot /></button>',
   },
   'v-chip': { template: '<span class="chip-stub"><slot /></span>' },
   'v-tabs': defineComponent({
@@ -296,6 +298,34 @@ describe('AgentTeamsPage integration (Task 9)', () => {
     expect(composableMocks.selectTeam).toHaveBeenCalledWith('t9');
   });
 
+  it('sidebar edit opens TeamCreateDialog in edit mode; saved refreshes and selects', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+    composableMocks.loadTeams.mockClear();
+    composableMocks.selectTeam.mockClear();
+
+    const editBtn = wrapper.find('.team-row.is-selected .team-edit');
+    expect(editBtn.exists()).toBe(true);
+    await editBtn.trigger('click');
+
+    const sidebar = wrapper.findComponent(AgentTeamsSidebar);
+    expect(sidebar.emitted('edit')).toHaveLength(1);
+    // .stop: the edit click must not double as a row selection.
+    expect(sidebar.emitted('select')).toBeUndefined();
+    expect(composableMocks.selectTeam).not.toHaveBeenCalled();
+
+    const dialog = wrapper.findComponent({ name: 'TeamCreateDialogStub' });
+    expect(dialog.props('modelValue')).toBe(true);
+    // Edit mode: the dialog receives the selected team.
+    expect(dialog.props('team')).toEqual(TEAMS[0]);
+
+    dialog.vm.$emit('saved', { team_id: 't1', name: 'Alpha 团队' });
+    await flushPromises();
+
+    expect(composableMocks.loadTeams).toHaveBeenCalledTimes(1);
+    expect(composableMocks.selectTeam).toHaveBeenCalledWith('t1');
+  });
+
   it('sidebar add-member opens MemberAddDialog for the selected team; saved refreshes', async () => {
     const wrapper = mountPage();
     await flushPromises();
@@ -401,6 +431,19 @@ describe('AgentTeamsSidebar', () => {
     const rows = wrapper.findAll('.team-row');
     await rows[1].trigger('click');
     expect(wrapper.emitted('select')).toEqual([['t2']]);
+  });
+
+  it('renders the edit pencil only on the selected team row and emits edit without select', async () => {
+    const wrapper = mountSidebar();
+    const rows = wrapper.findAll('.team-row');
+    expect(rows[0].find('.team-edit').exists()).toBe(true);
+    expect(rows[1].find('.team-edit').exists()).toBe(false);
+    expect(rows[0].find('.team-edit').attributes('aria-label')).toBe('编辑团队');
+
+    await rows[0].find('.team-edit').trigger('click');
+    expect(wrapper.emitted('edit')).toHaveLength(1);
+    // The pencil must not double as a row selection (.stop).
+    expect(wrapper.emitted('select')).toBeUndefined();
   });
 
   it('marks the coordinator member and emits removeMember from the remove button', async () => {

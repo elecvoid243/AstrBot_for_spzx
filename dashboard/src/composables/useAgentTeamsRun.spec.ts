@@ -30,6 +30,7 @@ const toastMocks = vi.hoisted(() => ({
 
 vi.mock("@/utils/toast", () => ({ useToast: () => toastMocks }));
 
+import { computed } from "vue";
 import { useAgentTeamsRun } from "./useAgentTeamsRun";
 
 const ok = (data: unknown) =>
@@ -56,6 +57,30 @@ function sseResponse(frames: Uint8Array[]): Response {
     headers: new Headers({ "content-type": "text/event-stream" }),
     body,
   } as unknown as Response;
+}
+
+// SSE response whose body stays open: frames can be pumped while an observer
+// (computed/component) is already attached, to assert live reactivity.
+function controlledSse(): {
+  response: Response;
+  push: (payload: unknown) => void;
+  close: () => void;
+} {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return {
+    response: {
+      ok: true,
+      headers: new Headers({ "content-type": "text/event-stream" }),
+      body,
+    } as unknown as Response,
+    push: (payload) => controller.enqueue(frame(payload)),
+    close: () => controller.close(),
+  };
 }
 
 // A stream that never emits and never closes: pins the connection open so
@@ -158,8 +183,66 @@ describe("useAgentTeamsRun SSE fold", () => {
     expect(state.status).toBe("stopped");
   });
 
-  it("openRun seeds state from the active-run snapshot when present", async () => {
-    apiMocks.listActiveRuns.mockResolvedValue(
+  it("streams deltas through the deep-reactive state into child-computed reads", async () => {
+    // Regression: with a shallowRef + triggerRef host the folds re-rendered
+    // only the monitor's own template — child props (window objects) compared
+    // Object.is-equal, so AgentWindow's `blocks` computed never recomputed.
+    // This mirrors that read path: the window object is captured once (the
+    // prop handoff) and a computed tracks its nested fields through the same
+    // reactive proxy the component would read.
+    apiMocks.listActiveRuns.mockResolvedValue(ok({ runs: [] }));
+    const stream = controlledSse();
+    fetchWithAuthMock.mockReturnValue(stream.response);
+
+    const run = useAgentTeamsRun();
+    await run.openRun("run-1");
+    await flush();
+
+    stream.push({ type: "message", direction: "sent", member_id: "m1", text: "task A" });
+    await flush();
+
+    // Prop handoff: the parent passes the window object by reference; the
+    // child computed tracks only its nested fields from here on.
+    const win = run.runState.value?.windows.m1 ?? null;
+    expect(win).not.toBeNull();
+    const view = computed(() => ({
+      sent: win?.sent ?? null,
+      streamText: win?.streamText ?? "",
+      streaming: win?.streaming ?? false,
+      parts: win?.parts ?? [],
+    }));
+    expect(view.value).toEqual({
+      sent: "task A",
+      streamText: "",
+      streaming: false,
+      parts: [],
+    });
+
+    stream.push({ type: "message", direction: "stream", member_id: "m1", text: "Hel" });
+    await flush();
+    stream.push({ type: "message", direction: "stream", member_id: "m1", text: "lo" });
+    await flush();
+    expect(view.value.streamText).toBe("Hello");
+    expect(view.value.streaming).toBe(true);
+
+    stream.push({
+      type: "message",
+      direction: "reply",
+      member_id: "m1",
+      text: "Hello world",
+      parts: [{ type: "text" }],
+    });
+    await flush();
+    expect(view.value).toEqual({
+      sent: "task A",
+      streamText: "Hello world",
+      streaming: false,
+      parts: [{ type: "text" }],
+    });
+    stream.close();
+  });
+
+  it("openRun seeds state from the active-run snapshot when present", async () => {    apiMocks.listActiveRuns.mockResolvedValue(
       ok({
         runs: [
           {

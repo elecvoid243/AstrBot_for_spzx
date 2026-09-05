@@ -26,6 +26,7 @@
           :selected-team="selectedTeam"
           @select="selectTeam"
           @create="onCreate"
+          @edit="onEditTeam"
           @add-member="onAddMember"
           @remove-member="onRemoveMember"
         />
@@ -57,7 +58,7 @@
         </div>
       </div>
 
-      <TeamCreateDialog v-model="showCreateDialog" @saved="onTeamSaved" />
+      <TeamCreateDialog v-model="showCreateDialog" :team="editingTeam" @saved="onTeamSaved" />
       <MemberAddDialog
         v-model="showMemberDialog"
         :team-id="selectedTeam?.team_id ?? ''"
@@ -97,6 +98,10 @@ const confirmDialog = useConfirmDialog();
 
 const tab = ref('editor');
 const showCreateDialog = ref(false);
+// Team handed to TeamCreateDialog: null = create mode, a team = edit mode
+// (the dialog edits name/coordinator/config only). Set by the sidebar's
+// create button vs. the selected team row's edit button.
+const editingTeam = ref<any | null>(null);
 const showMemberDialog = ref(false);
 // History row handed to the monitor when a run is opened from the history
 // tab: RunMonitor seeds its DAG view from the row's graph snapshot and skips
@@ -113,6 +118,14 @@ async function refresh() {
 }
 
 function onCreate() {
+  editingTeam.value = null;
+  showCreateDialog.value = true;
+}
+
+/** Edit the selected team through TeamCreateDialog's edit mode. */
+function onEditTeam() {
+  if (!selectedTeam.value) return;
+  editingTeam.value = selectedTeam.value;
   showCreateDialog.value = true;
 }
 

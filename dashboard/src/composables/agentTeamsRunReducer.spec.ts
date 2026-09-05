@@ -167,6 +167,39 @@ describe("agentTeamsRunReducer", () => {
     expect(s.windows["m2"].parts).toEqual([{ type: "plain", text: "答案" }]);
   });
 
+  it("clears reply parts on a new sent so round-2 streams are not masked", () => {
+    const s = createTeamsRunState("r1");
+    applyTeamsEvent(
+      s,
+      parseTeamsEvent({
+        type: "message",
+        direction: "reply",
+        member_id: "m1",
+        text: "第一轮回答",
+        parts: [{ type: "plain", text: "第一轮回答" }],
+      })!,
+    );
+    expect(s.windows["m1"].parts).toHaveLength(1);
+
+    // Round-2 delivery: stale round-1 parts must not mask the incoming
+    // stream until the round-2 reply replaces the window content.
+    applyTeamsEvent(
+      s,
+      parseTeamsEvent({
+        type: "message",
+        direction: "sent",
+        member_id: "m1",
+        text: "第二轮任务",
+      })!,
+    );
+    expect(s.windows["m1"]).toMatchObject({
+      sent: "第二轮任务",
+      streamText: "",
+      streaming: false,
+    });
+    expect(s.windows["m1"].parts).toEqual([]);
+  });
+
   it("adds busy sessions repeatedly and clears them on that member's reply", () => {
     const s = createTeamsRunState("r1");
     applyTeamsEvent(s, parseTeamsEvent({ type: "busy", session_id: "c1" })!);

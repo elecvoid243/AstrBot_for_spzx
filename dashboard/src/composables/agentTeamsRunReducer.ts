@@ -283,10 +283,13 @@ export function applyTeamsEvent(state: TeamsRunState, ev: TeamsRunEvent): void {
         state.windows[ev.member_id] = win;
       }
       if (ev.direction === "sent") {
-        // A new task delivery opens a fresh window phase.
+        // A new task delivery opens a fresh window phase: parts from the
+        // previous round's reply are cleared too, or they would mask the
+        // round-2 stream until its own reply arrives.
         win.sent = ev.text;
         win.streamText = "";
         win.streaming = false;
+        win.parts = [];
       } else if (ev.direction === "stream") {
         win.streamText += ev.text;
         win.streaming = true;

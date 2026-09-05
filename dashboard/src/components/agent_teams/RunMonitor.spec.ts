@@ -91,10 +91,10 @@ const renderStubs = vi.hoisted(() => ({
 }));
 
 vi.mock('@/composables/useAgentTeamsRun', async () => {
-  // shallowRef mirrors the real composable: window objects keep their
-  // identity across folds so the grid can forward them by reference.
-  const { ref, shallowRef } = await vi.importActual<typeof import('vue')>('vue');
-  runMocks.runState = shallowRef(null);
+  // A deep ref mirrors the real composable: fold mutations flow through the
+  // reactive proxy, so child components track nested window fields directly.
+  const { ref } = await vi.importActual<typeof import('vue')>('vue');
+  runMocks.runState = ref(null);
   runMocks.monitors = ref([]);
   return {
     useAgentTeamsRun: () => ({
@@ -289,6 +289,7 @@ beforeEach(() => {
   runMocks.openRun.mockResolvedValue(null);
   runMocks.startRun.mockResolvedValue({ run_id: 'run-new', status: 'running' });
   teamsMocks.loadWorkflows.mockResolvedValue([]);
+  teamsMocks.workflows.value = [fixtures.workflow];
 });
 
 describe('RunMonitor control bar', () => {
@@ -366,17 +367,34 @@ describe('RunMonitor control bar', () => {
 });
 
 describe('RunMonitor start payload', () => {
-  it('clicking 开始运行 starts a dag run without a workflow (workflow_id null)', async () => {
+  it('start is disabled without a workflow and carries the selected workflow_id with one', async () => {
+    // No "none" option: the backend rejects an empty workflow_id for dag
+    // runs, so the select defaults to the first workflow and 开始运行 is
+    // gated on a selection.
+    teamsMocks.workflows.value = [];
     const wrapper = mountRun();
     await wrapper.find('textarea.ta-stub').setValue(' 修复登录 bug ');
-    await findButton(wrapper, zh.monitor.start)!.trigger('click');
+
+    const start = findButton(wrapper, zh.monitor.start)!;
+    expect(start.attributes('disabled')).toBeDefined();
+    await start.trigger('click');
+    await flushPromises();
+    // Defense in depth: onStart re-checks the workflow guard.
+    expect(runMocks.startRun).not.toHaveBeenCalled();
+
+    // The team's workflow list arriving re-defaults the select and enables
+    // the start; the payload then carries that workflow_id.
+    teamsMocks.workflows.value = [fixtures.workflow];
+    await flushPromises();
+    const enabled = findButton(wrapper, zh.monitor.start)!;
+    expect(enabled.attributes('disabled')).toBeUndefined();
+    await enabled.trigger('click');
     await flushPromises();
 
-    expect(runMocks.startRun).toHaveBeenCalledTimes(1);
     expect(runMocks.startRun).toHaveBeenCalledWith('t1', {
       mode: 'dag',
       input: '修复登录 bug',
-      workflow_id: null,
+      workflow_id: 'wf1',
     });
   });
 
@@ -420,7 +438,8 @@ describe('RunMonitor member grid', () => {
 
     const agents = wrapper.findAllComponents({ name: 'AgentWindow' });
     expect(agents).toHaveLength(2);
-    expect(agents[0].props('window')).toBe(win);
+    // The deep-ref state hands the window down as a reactive proxy of win.
+    expect(agents[0].props('window')).toEqual(win);
     expect(agents[0].props('busy')).toBe(true);
     expect(agents[1].props('window')).toBeNull();
     expect(agents[1].props('busy')).toBe(false);
@@ -520,6 +539,27 @@ describe('RunMonitor DAG view', () => {
     mountRun();
     await flushPromises();
     expect(runMocks.openRun).not.toHaveBeenCalled();
+  });
+
+  it('closes a stale run from another team when this team has no active run', async () => {
+    // The composable is a module singleton: a run attached while another team
+    // was monitored must not leak into this monitor (stale status chip,
+    // 暂停/停止 targeting the wrong run, 开始运行 blocked for this team).
+    runMocks.runState.value = makeRunState({ runId: 'run-old', status: 'running' });
+    // Mirror the real closeRun: it nulls the singleton state.
+    runMocks.closeRun.mockImplementation(() => {
+      runMocks.runState.value = null;
+    });
+
+    const wrapper = mountRun({ team: { ...fixtures.team, team_id: 't2', name: 'Beta' } });
+    await flushPromises();
+    await nextTick();
+
+    expect(runMocks.closeRun).toHaveBeenCalled();
+    expect(runMocks.runState.value).toBeNull();
+    expect(wrapper.find('.monitor-empty').text()).toBe(zh.monitor.empty);
+    // The new team can start its own run again.
+    expect(findButton(wrapper, zh.monitor.start)).toBeTruthy();
   });
 });
 

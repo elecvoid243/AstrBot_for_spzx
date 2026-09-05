@@ -23,6 +23,17 @@
         @click="emit('select', team.team_id)"
       >
         <span class="team-name">{{ team.name }}</span>
+        <!-- Edit entry for the selected team: opens the team dialog in edit
+             mode (name/coordinator/config). .stop keeps the row select. -->
+        <v-btn
+          v-if="team.team_id === selectedTeamId"
+          icon="mdi-pencil"
+          variant="text"
+          size="small"
+          class="team-edit"
+          :aria-label="tm('teams.edit')"
+          @click.stop="emit('edit')"
+        />
         <span class="team-count">{{ team.members?.length ?? 0 }}</span>
       </div>
     </div>
@@ -90,6 +101,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'select', teamId: string): void;
   (e: 'create'): void;
+  (e: 'edit'): void;
   (e: 'addMember'): void;
   (e: 'removeMember', memberId: string): void;
 }>();
@@ -141,11 +153,16 @@ const { tm } = useModuleI18n('features/agent-teams');
 
 .team-name {
   min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
   font-size: 14px;
+}
+
+.team-edit {
+  flex-shrink: 0;
 }
 
 .team-count {

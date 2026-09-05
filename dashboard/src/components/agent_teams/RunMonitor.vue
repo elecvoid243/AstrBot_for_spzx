@@ -43,7 +43,7 @@
           variant="tonal"
           color="primary"
           :loading="starting"
-          :disabled="!goal.trim()"
+          :disabled="!goal.trim() || !workflowId"
           @click="onStart"
         >
           {{ tm('monitor.start') }}
@@ -192,13 +192,29 @@ const starting = ref(false);
 // (the reducer state carries node states but deliberately not the graph).
 const runGraph = ref<{ nodes?: any[]; edges?: any[] } | null>(null);
 
-const workflowItems = computed(() => [
-  { title: tm('monitor.noWorkflow'), value: '' },
-  ...workflows.value.map((w) => ({
+// DAG runs always execute a workflow graph (the backend rejects an empty
+// workflow id), so there is deliberately no "none" option here: the select
+// defaults to the team's first workflow and 开始运行 stays disabled until one
+// is selected (auto orchestration, which would not need a workflow, arrives
+// in Plan 3).
+const workflowItems = computed(() =>
+  workflows.value.map((w) => ({
     title: String(w.name || w.workflow_id),
     value: String(w.workflow_id),
   })),
-]);
+);
+
+// Re-default the selection whenever the loaded team's workflow list changes
+// (initial load, team switch) and the current pick is no longer valid.
+watch(
+  workflowItems,
+  (items) => {
+    if (!items.some((it) => it.value === workflowId.value)) {
+      workflowId.value = items[0]?.value ?? '';
+    }
+  },
+  { immediate: true },
+);
 
 // Auto orchestration is disabled until the backend ships it.
 const modeItems = [
@@ -207,6 +223,8 @@ const modeItems = [
 ];
 
 // Statuses where starting a fresh run is allowed (detached or terminal).
+// The workflow requirement gates the button's `disabled` state (visible but
+// inert until a workflow is picked), not its visibility.
 const STARTABLE_STATUSES = ['idle', 'completed', 'stopped', 'failed'];
 const canStart = computed(
   () => !runState.value || STARTABLE_STATUSES.includes(runState.value.status),
@@ -236,7 +254,8 @@ const progressText = computed(() => {
 
 // ----- actions -----
 async function onStart() {
-  if (!props.team || !goal.value.trim()) return;
+  // workflowId re-check mirrors the disabled state (defense in depth).
+  if (!props.team || !goal.value.trim() || !workflowId.value) return;
   starting.value = true;
   try {
     const snapshot = await startRun(props.team.team_id, {
@@ -437,6 +456,12 @@ async function initTeam() {
   if (row) {
     runGraph.value = (row.graph as typeof runGraph.value) ?? null;
     await openRun(row.run_id, row as TeamsRunStateSeed);
+  } else {
+    // The composable is a module singleton: without this, a run attached
+    // while another team was monitored (or before this mount) would stay
+    // attached here — stale status chip, 暂停/停止 targeting the wrong run
+    // and 开始运行 blocked for this team.
+    closeRun();
   }
 }
 

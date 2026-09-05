@@ -170,7 +170,7 @@ export const translations = {
       persona: zhCNPersona,
       command: zhCNCommand,
       subagent: zhCNSubagent,
-      agentTeams: zhCNAgentTeams,
+      'agent-teams': zhCNAgentTeams,
       welcome: zhCNWelcome
     },
     messages: {
@@ -220,7 +220,7 @@ export const translations = {
       persona: enUSPersona,
       command: enUSCommand,
       subagent: enUSSubagent,
-      agentTeams: enUSAgentTeams,
+      'agent-teams': enUSAgentTeams,
       welcome: enUSWelcome
     },
     messages: {
@@ -270,7 +270,7 @@ export const translations = {
       persona: ruRUPersona,
       command: ruRUCommand,
       subagent: ruRUSubagent,
-      agentTeams: ruRUAgentTeams,
+      'agent-teams': ruRUAgentTeams,
       welcome: ruRUWelcome
     },
     messages: {

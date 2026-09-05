@@ -80,6 +80,11 @@ const sidebarItem: menu[] = [
         icon: 'mdi-vector-link',
         to: '/subagent'
       },
+      {
+        title: 'core.navigation.agentTeams',
+        icon: 'mdi-account-group',
+        to: '/agent-teams'
+      },
     ]
   }
   // {

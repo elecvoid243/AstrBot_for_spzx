@@ -226,6 +226,11 @@ const MainRoutes = {
       component: () => import('@/views/SubAgentPage.vue')
     },
     {
+      name: 'AgentTeams',
+      path: '/agent-teams',
+      component: () => import('@/views/AgentTeamsPage.vue')
+    },
+    {
       name: 'CronJobs',
       path: '/cron',
       component: () => import('@/views/CronJobPage.vue')

@@ -1,4 +1,4 @@
-"""Agent Teams run lifecycle: event bus, DAGRunner, run service (spec §6.3/§6.5/§6.6)."""
+"""Agent Teams run lifecycle: event bus, DAGRunner, AutoOrchestrator, run service (spec §6.3/§6.4/§6.5/§6.6)."""
 
 import asyncio
 import time
@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 
 from astrbot import logger
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
     downstream_of,
@@ -490,8 +491,419 @@ class DAGRunner:
             )
 
 
+class AutoOrchestrator:
+    """Rounds-based coordinator engine for auto mode (spec §6.4).
+
+    Each round delivers the goal/digest to the coordinator with the
+    `team_dispatch`/`team_finish` tools registered for exactly that turn's
+    duration; a dispatch spawns a concurrent member wave, `team_finish`
+    completes the run. Everything is persisted in `rounds` (no DAG nodes), so
+    an interrupted run resumes by rebuilding from the row.
+    """
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        team_id: str,
+        team_name: str,
+        members: list[dict],
+        coordinator: dict,
+        config: dict,
+        run_input: str,
+        ports: TeamPorts,
+        db,
+        bus: RunEventBus,
+        username: str,
+        rounds: list[dict] | None = None,
+        on_member_stop: Callable[[str], object] | None = None,
+    ) -> None:
+        self.run_id = run_id
+        self.team_id = team_id
+        self.team_name = team_name
+        self.members = members
+        self.coordinator = coordinator
+        self.config = {**DEFAULT_TEAM_CONFIG, **(config or {})}
+        self.run_input = run_input
+        self.ports = ports
+        self.db = db
+        self.bus = bus
+        self.username = username
+        # Round records carried over from a previous process on resume; the
+        # next round number is len(self.rounds) + 1.
+        self.rounds: list[dict] = list(rounds or [])
+        self.on_member_stop = on_member_stop
+        self.status = "running"
+        self.task: asyncio.Task | None = None
+        # Set by the coordinator tool callbacks for the turn in flight; the
+        # dispatch handling after the turn consumes exactly one of them.
+        self._pending_dispatch: list | None = None
+        self._pending_notes: str | None = None
+        self._finish: dict | None = None
+        self._no_tool_rounds = 0
+        self._resume_wake = asyncio.Event()
+        self._stop_requested = asyncio.Event()
+
+    def _emit(self, event: dict) -> None:
+        self.bus.emit({"ts": time.time(), **event})
+
+    async def _persist(self) -> None:
+        """Flush status + rounds to the run row (per round and per wave)."""
+        await self.db.update_agent_team_run(
+            self.run_id, status=self.status, rounds=self.rounds
+        )
+
+    def snapshot(self) -> dict:
+        """Return a JSON-safe summary for API and SSE consumers."""
+        return {
+            "run_id": self.run_id,
+            "team_id": self.team_id,
+            "workflow_id": None,
+            "mode": "auto",
+            "status": self.status,
+            "rounds": self.rounds,
+            "progress": {
+                "round": len(self.rounds),
+                "max_rounds": int(self.config["max_rounds"]),
+            },
+        }
+
+    # ---------- controls ----------
+
+    def pause(self) -> None:
+        """Halt scheduling; the in-flight phase settles, then run() returns."""
+        if self.status == "running":
+            self.status = "paused"
+
+    def resume(self) -> None:
+        if self.status == "paused":
+            self.status = "running"
+            self._resume_wake.set()
+
+    def request_stop(self) -> None:
+        self._stop_requested.set()
+        self._resume_wake.set()
+
+    # ---------- coordinator tool callbacks ----------
+
+    async def _on_dispatch(self, assignments: list[dict[str, str]], notes) -> None:
+        self._pending_dispatch = assignments
+        self._pending_notes = notes
+
+    async def _on_finish(self, summary: str) -> None:
+        self._finish = {"summary": summary}
+
+    # ---------- coordinator context ----------
+
+    def _results_digest(self) -> str:
+        """Digest of prior rounds: per member the latest result (~500 chars),
+        plus the coordinator's last notes so it can carry its own hints."""
+        latest: dict[str, str] = {}
+        notes = ""
+        for entry in self.rounds:
+            if entry.get("notes"):
+                notes = str(entry["notes"])
+            for item in entry.get("results", []):
+                name = str(item.get("member") or "?")
+                if "result" in item:
+                    latest[name] = str(item["result"])[:500]
+                elif "error" in item:
+                    latest[name] = f"[错误] {item['error']}"[:500]
+        lines = [f"{name}: {text}" for name, text in latest.items()]
+        if notes:
+            lines.append(f"协调者备注：{notes[:500]}")
+        return "\n".join(lines)
+
+    def _coordinator_context(self, n: int) -> str:
+        """Build the coordinator turn body: roster, goal/digest, instructions."""
+        max_rounds = int(self.config["max_rounds"])
+        roster = "\n".join(
+            f"- {m['name']}: {m.get('persona_id') or '自定义成员'}"
+            for m in self.members
+        )
+        if n <= 1:
+            task_block = f"团队目标：\n{self.run_input}"
+        else:
+            digest = self._results_digest()
+            task_block = (
+                f"团队目标：\n{self.run_input}\n\n"
+                f"各成员最新结果：\n{digest or '（暂无）'}"
+            )
+        reminder = ""
+        if self._no_tool_rounds > 0:
+            reminder = (
+                "\n\nReminder: your previous turn did not call team_dispatch "
+                "or team_finish. Act now: either dispatch this round's tasks "
+                "with team_dispatch, or end the run with team_finish."
+            )
+        return (
+            f"你是团队「{self.team_name}」的协调者（第 {n}/{max_rounds} 轮）。\n"
+            f"团队成员：\n{roster}\n\n{task_block}\n\n"
+            "Instructions: call the team_dispatch tool once with THIS round's "
+            "assignments (one {member, task} pair per member task, using exact "
+            "member names). When the overall goal is fully achieved and all "
+            "member results are in, call team_finish with a final summary to "
+            "end the run." + reminder
+        )
+
+    async def _wait_if_busy(self, session_id: str) -> None:
+        while self.ports.is_busy(session_id) and self.status == "running":
+            self._emit({"type": "busy", "session_id": session_id})
+            await asyncio.sleep(self.ports.busy_poll_interval)
+
+    # ---------- phases ----------
+
+    async def _coordinator_turn(self, n: int) -> str:
+        """Deliver one coordinator turn with the team tools registered.
+
+        Returns:
+            "ok" when the turn completed, "timeout" when the reply timed out
+            (the run was paused and persisted here), or "skipped" when the run
+            was paused/stopped before the turn's I/O started.
+
+        The registry entry lives exactly for this turn: registered before the
+        round event, unregistered in `finally` after collect returns.
+        """
+        body = self._coordinator_context(n)
+        tools = build_team_tools(
+            [m["name"] for m in self.members],
+            on_dispatch=self._on_dispatch,
+            on_finish=self._on_finish,
+        )
+        umo = self.coordinator["umo"]
+        AgentTeamToolRegistry.register(umo, tools)
+        try:
+            self._emit(
+                {"type": "round", "n": n, "max_rounds": int(self.config["max_rounds"])}
+            )
+            self._pending_dispatch = None
+            self._pending_notes = None
+            self._finish = None
+            await self._wait_if_busy(self.coordinator["session_id"])
+            if self.status != "running" or self._stop_requested.is_set():
+                return "skipped"
+            session_id = self.coordinator["session_id"]
+            member_id = self.coordinator["member_id"]
+
+            async def _turn_io() -> None:
+                message_id = await self.ports.deliver(session_id, body, None)
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "sent",
+                        "member_id": member_id,
+                        "session_id": session_id,
+                        "text": body,
+                    }
+                )
+                reply, _parts = await self.ports.collect(
+                    session_id, message_id, member_id
+                )
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "reply",
+                        "member_id": member_id,
+                        "session_id": session_id,
+                        "text": reply,
+                    }
+                )
+
+            try:
+                await asyncio.wait_for(
+                    _turn_io(), timeout=float(self.config["reply_timeout"])
+                )
+            except asyncio.TimeoutError:
+                self.status = "paused"
+                await self._persist()
+                self._emit({"type": "paused", "reason": "coordinator timeout"})
+                return "timeout"
+            return "ok"
+        finally:
+            AgentTeamToolRegistry.unregister(umo)
+
+    async def _member_wave(self, n: int, assignments: list[dict]) -> None:
+        """Deliver one assignment per member concurrently and record results."""
+        semaphore = asyncio.Semaphore(int(self.config["max_parallel"]))
+        by_name = {m["name"].strip().casefold(): m for m in self.members}
+        context = f"[团队任务] 来自协调者（第 {n} 轮）"
+
+        async def run_one(assignment: dict) -> dict:
+            name = str(assignment.get("member") or "").strip()
+            member = by_name.get(name.casefold())
+            if member is None:
+                return {"member": name, "error": "unknown member"}
+            # Cap concurrent member turns; unknown members skip the I/O and
+            # never need a slot.
+            async with semaphore:
+                try:
+                    task = str(assignment.get("task") or "")
+                    message_id = await self.ports.deliver(
+                        member["session_id"], task, context
+                    )
+                    self._emit(
+                        {
+                            "type": "message",
+                            "direction": "sent",
+                            "member_id": member["member_id"],
+                            "session_id": member["session_id"],
+                            "text": task,
+                        }
+                    )
+                    reply, _parts = await asyncio.wait_for(
+                        self.ports.collect(
+                            member["session_id"], message_id, member["member_id"]
+                        ),
+                        timeout=float(self.config["reply_timeout"]),
+                    )
+                except asyncio.TimeoutError:
+                    return {"member": name, "error": "reply timeout"}
+                except Exception as e:  # noqa: BLE001
+                    return {"member": name, "error": str(e)}
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "reply",
+                        "member_id": member["member_id"],
+                        "session_id": member["session_id"],
+                        "text": reply,
+                    }
+                )
+                return {"member": name, "result": reply}
+
+        results = await asyncio.gather(*(run_one(a) for a in assignments))
+        self.rounds[-1]["results"] = list(results)
+
+    # ---------- main loop ----------
+
+    async def run(self) -> None:
+        """Drive rounds until finish, pause, or stop.
+
+        Never raises: a crash lands the run on terminal `failed` so the UI
+        never sticks on a running state.
+        """
+        try:
+            try:
+                await self._ensure_row()
+                await self._run_loop()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("agent team run %s crashed", self.run_id)
+                AgentTeamToolRegistry.unregister(self.coordinator["umo"])
+                self.status = "failed"
+                await self._persist()
+                self._emit({"type": "stopped", "reason": f"runner error: {exc}"})
+                return
+            if self.status == "stopped":
+                self._emit({"type": "stopped", "reason": "user stop"})
+        finally:
+            # Terminal runs release the ports' resources; a paused run keeps
+            # them (run() is re-callable after resume).
+            if self.status in TERMINAL_RUN_STATUSES and self.ports.close is not None:
+                try:
+                    await self.ports.close()
+                except Exception:  # noqa: BLE001
+                    # Cleanup must never mask the run outcome.
+                    logger.exception(
+                        "agent team run %s: ports close failed", self.run_id
+                    )
+
+    async def _ensure_row(self) -> None:
+        """Create the run row if it does not exist yet.
+
+        The service path persists the row before starting the orchestrator; a
+        directly-constructed orchestrator (tests, embedded usage) still gets
+        one so every later transition is actually persisted.
+        """
+        if await self.db.get_agent_team_run(self.run_id) is not None:
+            return
+        await self.db.create_agent_team_run(
+            run_id=self.run_id,
+            team_id=self.team_id,
+            workflow_id=None,
+            mode="auto",
+            input=self.run_input,
+            status=self.status,
+            graph_snapshot={},
+            node_states={},
+            rounds=list(self.rounds),
+        )
+
+    async def _run_loop(self) -> None:
+        while True:
+            if self._stop_requested.is_set():
+                # Defensive: the turn's finally already unregisters, this
+                # covers exits between phases.
+                AgentTeamToolRegistry.unregister(self.coordinator["umo"])
+                self.status = "stopped"
+                await self._persist()
+                return
+            if self.status == "paused":
+                self._resume_wake.clear()
+                if self.status == "paused":
+                    # resume() may have fired between the check and the clear
+                    # above; re-check so the wake signal is never erased.
+                    await self._persist()
+                    self._emit({"type": "paused", "reason": "user pause"})
+                    await self._resume_wake.wait()
+                continue
+            n = len(self.rounds) + 1
+            max_rounds = int(self.config["max_rounds"])
+            if n > max_rounds:
+                self.status = "paused"
+                await self._persist()
+                self._emit({"type": "paused", "reason": "max_rounds", "round": n})
+                return
+            outcome = await self._coordinator_turn(n)
+            if outcome == "timeout":
+                # Already paused, persisted and announced by the turn.
+                return
+            if self._stop_requested.is_set() or self.status != "running":
+                continue
+            if self._finish is not None:
+                self.status = "completed"
+                await self.db.update_agent_team_run(
+                    self.run_id,
+                    status=self.status,
+                    result_summary=self._finish["summary"],
+                    rounds=self.rounds,
+                )
+                self._emit({"type": "stopped", "reason": "finished"})
+                return
+            assignments = self._pending_dispatch
+            if not assignments:
+                # No tool call this turn: remind via the next turn's context;
+                # two in a row park the run (resumable, counter resets).
+                self._no_tool_rounds += 1
+                if self._no_tool_rounds >= 2:
+                    self.status = "paused"
+                    await self._persist()
+                    self._emit(
+                        {
+                            "type": "paused",
+                            "reason": "no dispatch two rounds in a row",
+                        }
+                    )
+                    return
+                continue
+            self._no_tool_rounds = 0
+            self._emit({"type": "dispatch", "round": n, "assignments": assignments})
+            self.rounds.append(
+                {
+                    "n": n,
+                    "assignments": assignments,
+                    "notes": self._pending_notes,
+                    "results": [],
+                }
+            )
+            await self._persist()
+            if self._stop_requested.is_set() or self.status != "running":
+                continue
+            await self._member_wave(n, assignments)
+            await self._persist()
+
+
 class AgentTeamRunService:
-    """Run lifecycle: start/resume/stop DAG runs and expose snapshots."""
+    """Run lifecycle: start/resume/stop DAG and auto runs, expose snapshots."""
 
     def __init__(self, db, chat_service, busy_checker=None, on_member_stop=None):
         """Args:
@@ -511,7 +923,7 @@ class AgentTeamRunService:
         self.ports_factory: Callable[[str, Callable], TeamPorts] = (
             lambda username, emit: build_ports(chat_service, username, emit)
         )
-        self._runners: dict[str, DAGRunner] = {}
+        self._runners: dict[str, DAGRunner | AutoOrchestrator] = {}
         self._buses: dict[str, RunEventBus] = {}
 
     async def boot_sweep(self) -> int:
@@ -558,6 +970,22 @@ class AgentTeamRunService:
 
         if row.status not in ("interrupted", "paused"):
             raise AgentTeamsServiceError(f"运行 '{run_id}' 当前状态不可恢复")
+        config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
+        if row.mode == "auto":
+            # Rebuild from the persisted rounds (next round = len+1). A fresh
+            # orchestrator starts with the no-tool counter at 0, so a
+            # no-dispatch pause gets a fresh chance with a stronger reminder.
+            await self.db.update_agent_team_run(run_id, status="running")
+            runner = self._build_orchestrator(
+                run_id=run_id,
+                team=team,
+                config=config,
+                run_input=row.input,
+                username=username,
+                rounds=list(row.rounds or []),
+            )
+            self._start_runner_task(runner)
+            return runner.snapshot()
         # Redo semantics: in-flight nodes at interruption are re-dispatched
         # from scratch; done/skipped nodes and their results are preserved.
         node_states = {
@@ -568,7 +996,6 @@ class AgentTeamRunService:
             )
             for node_id, state in (row.node_states or {}).items()
         }
-        config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
         await self.db.update_agent_team_run(
             run_id, status="running", node_states=node_states
         )
@@ -586,12 +1013,13 @@ class AgentTeamRunService:
         return runner.snapshot()
 
     async def start_run(self, username: str, team_id: str, payload: dict) -> dict:
-        """Start a DAG run for a team.
+        """Start a DAG or auto run for a team.
 
         Args:
             username: Requesting dashboard user.
             team_id: Owning team.
-            payload: {mode: "dag", input: str, workflow_id: str}.
+            payload: {mode: "dag" | "auto", input: str, workflow_id: str};
+                workflow_id is required for dag and rejected for auto.
 
         Returns:
             The initial run snapshot.
@@ -603,12 +1031,17 @@ class AgentTeamRunService:
         """
         team = await self._require_team(username, team_id)
         mode = str(payload.get("mode") or "dag")
-        if mode != "dag":
-            raise AgentTeamsServiceError("Plan 1 仅支持 mode=dag（自动编排见后续计划）")
+        if mode not in ("dag", "auto"):
+            raise AgentTeamsServiceError(f"不支持的运行模式：{mode}")
         workflow_id = str(payload.get("workflow_id") or "")
-        workflow = await self.db.get_agent_team_workflow(workflow_id)
-        if workflow is None or workflow.team_id != team_id:
-            raise AgentTeamsServiceError(f"工作流 '{workflow_id}' 不存在")
+        if mode == "auto":
+            if workflow_id:
+                raise AgentTeamsServiceError("自动编排无需选择工作流")
+            workflow = None
+        else:
+            workflow = await self.db.get_agent_team_workflow(workflow_id)
+            if workflow is None or workflow.team_id != team_id:
+                raise AgentTeamsServiceError(f"工作流 '{workflow_id}' 不存在")
         if await self.db.get_active_agent_team_run(team_id):
             raise AgentTeamsServiceError("该团队已有 active run，无法重复启动")
         run_input = str(payload.get("input") or "").strip()
@@ -616,6 +1049,29 @@ class AgentTeamRunService:
             raise AgentTeamsServiceError("运行输入不能为空")
 
         config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
+        run_id = uuid.uuid4().hex[:12]
+        if mode == "auto":
+            # Auto mode persists everything in `rounds`; no workflow, no DAG.
+            await self.db.create_agent_team_run(
+                run_id=run_id,
+                team_id=team_id,
+                workflow_id=None,
+                mode=mode,
+                input=run_input,
+                status="running",
+                graph_snapshot={},
+                node_states={},
+                rounds=[],
+            )
+            orchestrator = self._build_orchestrator(
+                run_id=run_id,
+                team=team,
+                config=config,
+                run_input=run_input,
+                username=username,
+            )
+            self._start_runner_task(orchestrator)
+            return orchestrator.snapshot()
         node_states = {
             node["id"]: {
                 "status": "pending",
@@ -628,7 +1084,6 @@ class AgentTeamRunService:
             }
             for node in workflow.graph.get("nodes", [])
         }
-        run_id = uuid.uuid4().hex[:12]
         await self.db.create_agent_team_run(
             run_id=run_id,
             team_id=team_id,
@@ -685,7 +1140,42 @@ class AgentTeamRunService:
         self._buses[run_id] = bus
         return runner
 
-    def _start_runner_task(self, runner: DAGRunner) -> None:
+    def _build_orchestrator(
+        self,
+        *,
+        run_id,
+        team,
+        config,
+        run_input,
+        username,
+        rounds: list[dict] | None = None,
+    ) -> AutoOrchestrator:
+        bus = RunEventBus()
+        members = team["members"]
+        coordinator = next(
+            (m for m in members if m["member_id"] == team.get("coordinator_member_id")),
+            members[0],
+        )
+        orchestrator = AutoOrchestrator(
+            run_id=run_id,
+            team_id=team["team_id"],
+            team_name=team["name"],
+            members=members,
+            coordinator=coordinator,
+            config=config,
+            run_input=run_input,
+            ports=self.ports_factory(username, bus.emit),
+            db=self.db,
+            bus=bus,
+            username=username,
+            rounds=rounds,
+            on_member_stop=self.on_member_stop,
+        )
+        self._runners[run_id] = orchestrator
+        self._buses[run_id] = bus
+        return orchestrator
+
+    def _start_runner_task(self, runner: DAGRunner | AutoOrchestrator) -> None:
         runner.task = asyncio.create_task(
             runner.run(), name=f"agent_team_run_{runner.run_id}"
         )
@@ -750,7 +1240,10 @@ class AgentTeamRunService:
         if runner.task is not None and not runner.task.done():
             runner.request_stop()
             if self.on_member_stop is not None:
-                for state in runner.node_states.values():
+                # DAG runs track in-flight members via node_states; auto runs
+                # carry no node states (cancel propagation for both lands in
+                # the stop-semantics task).
+                for state in getattr(runner, "node_states", {}).values():
                     if state["status"] != "running":
                         continue
                     member = runner._member_by_id(state["member_id"])
@@ -782,7 +1275,7 @@ class AgentTeamRunService:
             self._start_runner_task(runner)
         return {"message": "已跳过"}
 
-    def _require_runner(self, run_id: str) -> DAGRunner:
+    def _require_runner(self, run_id: str) -> DAGRunner | AutoOrchestrator:
         runner = self._runners.get(run_id)
         if runner is None:
             raise AgentTeamsServiceError(f"运行 '{run_id}' 不存在或已结束")

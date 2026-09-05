@@ -33,6 +33,22 @@ const RECONNECT_DELAY_MS = 1000;
 // when the run finishes); no reconnect is attempted afterwards.
 const TERMINAL_RUN_STATUSES = ['completed', 'stopped', 'failed'];
 
+// Invoked when the SSE reconnect attempts for a run are exhausted. The attach
+// loop lives at module level (singleton composable), so the hook is a module
+// field too; UI hosts register it (e.g. RunMonitor toasts the failure).
+let onAttachFailed: ((runId: string) => void) | null = null;
+
+/**
+ * Register (or clear) the handler invoked when stream reconnection fails.
+ *
+ * Args:
+ *   handler: Called with the run id once reconnect attempts are exhausted, or
+ *     null to clear the current handler.
+ */
+function setOnAttachFailed(handler: ((runId: string) => void) | null) {
+  onAttachFailed = handler;
+}
+
 // runState is a deep ref over the reducer's plain mutable state: folds
 // mutate the reactive proxy in place and nested property writes trigger the
 // watchers/computeds that track them (e.g. AgentWindow's `blocks` computed
@@ -151,6 +167,11 @@ function attach(runId: string) {
       await new Promise<void>((resolve) => {
         reconnectTimer = setTimeout(resolve, RECONNECT_DELAY_MS);
       });
+    }
+    // Reconnect attempts exhausted while this run is still the attached one:
+    // notify through the hook (previously console-only, invisible to users).
+    if (!abort.signal.aborted && runState.value?.runId === runId) {
+      onAttachFailed?.(runId);
     }
   })();
 }
@@ -373,5 +394,6 @@ export function useAgentTeamsRun() {
     retryNode,
     skipNode,
     reconnect,
+    setOnAttachFailed,
   };
 }

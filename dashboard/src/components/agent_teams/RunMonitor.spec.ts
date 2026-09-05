@@ -63,8 +63,13 @@ const runMocks = vi.hoisted(() => ({
   retryNode: vi.fn(),
   skipNode: vi.fn(),
   reconnect: vi.fn(),
+  setOnAttachFailed: vi.fn(),
   monitors: null as any,
   runState: null as any,
+}));
+
+const toastMocks = vi.hoisted(() => ({
+  error: vi.fn(),
 }));
 
 const teamsMocks = vi.hoisted(() => ({
@@ -110,6 +115,7 @@ vi.mock('@/composables/useAgentTeamsRun', async () => {
       retryNode: runMocks.retryNode,
       skipNode: runMocks.skipNode,
       reconnect: runMocks.reconnect,
+      setOnAttachFailed: runMocks.setOnAttachFailed,
     }),
   };
 });
@@ -182,6 +188,8 @@ vi.mock('@/components/chat/message_list_comps/MarkdownMessagePart.vue', () => ({
 vi.mock('@/components/chat/message_list_comps/ReasoningBlock.vue', () => ({
   default: renderStubs.ReasoningBlock,
 }));
+
+vi.mock('@/utils/toast', () => ({ useToast: () => toastMocks }));
 
 import RunMonitor from './RunMonitor.vue';
 
@@ -737,5 +745,126 @@ describe('AgentWindow rendering (through the grid)', () => {
     expect(chips).toHaveLength(2);
     expect(chips[0].text()).toBe(zh.monitor.node.done);
     expect(chips[1].text()).toBe(zh.monitor.node.running);
+  });
+
+  it('renders the node error block with the label and backend text', async () => {
+    runMocks.loadActiveRuns.mockResolvedValue([fixtures.runRow]);
+    runMocks.runState.value = makeRunState({
+      runId: 'run-9',
+      status: 'failed',
+      nodeStates: {
+        n1: { status: 'failed', error: '模型返回 500' },
+        n2: { status: 'pending' },
+      },
+    });
+    const wrapper = mountRun({ initialRun: fixtures.runRow });
+    await flushPromises();
+
+    // The error is forwarded per member: only the owner of the failed node.
+    const agents = wrapper.findAllComponents({ name: 'AgentWindow' });
+    expect(agents[0].props('nodeError')).toBe('模型返回 500');
+    expect(agents[1].props('nodeError')).toBeNull();
+
+    const errBlock = wrapper.find('.agent-window-error');
+    expect(errBlock.exists()).toBe(true);
+    expect(errBlock.text()).toContain(zh.monitor.nodeError);
+    expect(errBlock.text()).toContain('模型返回 500');
+  });
+
+  it('shows no node error block without a folded node error', async () => {
+    runMocks.loadActiveRuns.mockResolvedValue([fixtures.runRow]);
+    runMocks.runState.value = makeRunState({
+      runId: 'run-9',
+      nodeStates: {
+        // failed status without an error text (e.g. user-initiated skip).
+        n1: { status: 'failed' },
+        n2: { status: 'pending' },
+      },
+    });
+    const wrapper = mountRun({ initialRun: fixtures.runRow });
+    await flushPromises();
+
+    expect(wrapper.findAllComponents({ name: 'AgentWindow' })[0].props('nodeError')).toBeNull();
+    expect(wrapper.find('.agent-window-error').exists()).toBe(false);
+  });
+
+  it('omits node errors for auto runs (v1: no per-member nodes)', () => {
+    runMocks.runState.value = makeRunState({
+      mode: 'auto',
+      nodeStates: { n1: { status: 'failed', error: 'boom' } },
+    });
+    const wrapper = mountRun();
+    const agents = wrapper.findAllComponents({ name: 'AgentWindow' });
+    expect(agents.map((a) => a.props('nodeError'))).toEqual([null, null]);
+  });
+});
+
+describe('RunMonitor run-error banner', () => {
+  it('shows the banner with the folded lastError', () => {
+    runMocks.runState.value = makeRunState({ lastError: '节点执行超时' });
+    const wrapper = mountRun();
+
+    const banner = wrapper.find('.monitor-error-banner');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain(zh.monitor.runError);
+    expect(banner.text()).toContain('节点执行超时');
+  });
+
+  it('shows the banner for a non-benign stoppedReason', () => {
+    runMocks.runState.value = makeRunState({
+      status: 'stopped',
+      stoppedReason: 'team disbanded',
+    });
+    const wrapper = mountRun();
+
+    const banner = wrapper.find('.monitor-error-banner');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('team disbanded');
+  });
+
+  it('hides the banner for normal completion (done) and user stop', () => {
+    runMocks.runState.value = makeRunState({ status: 'stopped', stoppedReason: 'done' });
+    let wrapper = mountRun();
+    expect(wrapper.find('.monitor-error-banner').exists()).toBe(false);
+    wrapper.unmount();
+
+    runMocks.runState.value = makeRunState({ status: 'stopped', stoppedReason: 'user stop' });
+    wrapper = mountRun();
+    expect(wrapper.find('.monitor-error-banner').exists()).toBe(false);
+    wrapper.unmount();
+
+    runMocks.runState.value = makeRunState();
+    wrapper = mountRun();
+    expect(wrapper.find('.monitor-error-banner').exists()).toBe(false);
+  });
+
+  it('is dismissible and resets the dismissal for a newly opened run', async () => {
+    runMocks.runState.value = makeRunState({ lastError: '第一次错误' });
+    const wrapper = mountRun();
+    expect(wrapper.find('.monitor-error-banner').exists()).toBe(true);
+
+    await wrapper.find('.monitor-error-banner button').trigger('click');
+    await nextTick();
+    expect(wrapper.find('.monitor-error-banner').exists()).toBe(false);
+
+    // A fresh run state (new object) must show its own banner again.
+    runMocks.runState.value = makeRunState({ lastError: '第二次错误' });
+    await nextTick();
+    const banner = wrapper.find('.monitor-error-banner');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain('第二次错误');
+  });
+});
+
+describe('RunMonitor attach-failure toast', () => {
+  it('registers the composable hook and toasts when it fires', () => {
+    runMocks.runState.value = makeRunState();
+    const wrapper = mountRun();
+
+    expect(runMocks.setOnAttachFailed).toHaveBeenCalledTimes(1);
+    const handler = runMocks.setOnAttachFailed.mock.calls[0][0] as (runId: string) => void;
+    handler('run-1');
+    expect(toastMocks.error).toHaveBeenCalledWith(zh.monitor.attachFailed);
+    wrapper.unmount();
   });
 });

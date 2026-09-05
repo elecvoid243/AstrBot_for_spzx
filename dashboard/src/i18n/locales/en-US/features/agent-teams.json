@@ -81,7 +81,10 @@
     "viewWindow": "Windows",
     "viewDag": "DAG View",
     "busy": "Session busy, waiting…",
-    "empty": "Enter a goal and click \"Start Run\""
+    "empty": "Enter a goal and click \"Start Run\"",
+    "nodeError": "Node error",
+    "runError": "Run error",
+    "attachFailed": "Lost connection to the run event stream"
   },
   "history": {
     "title": "Run History",

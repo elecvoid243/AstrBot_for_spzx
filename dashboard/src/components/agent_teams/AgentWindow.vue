@@ -15,6 +15,10 @@
       <v-spacer />
       <span v-if="busy" class="agent-window-busy-dot" />
     </div>
+    <div v-if="nodeError" class="agent-window-error">
+      <span class="agent-window-error-label">{{ tm('monitor.nodeError') }}</span>
+      <span class="agent-window-error-text">{{ nodeError }}</span>
+    </div>
     <div ref="bodyEl" class="agent-window-body">
       <template v-if="hasContent">
         <div v-if="window?.sent" class="agent-window-sent">{{ window.sent }}</div>
@@ -67,6 +71,11 @@ const props = defineProps<{
   window: MemberWindowState | null;
   /** Status of the member's active node (`monitor.node.*` key suffix). */
   nodeStatus?: string;
+  /**
+   * Backend error text of the member's most recent failed node; null/absent
+   * hides the inline error block (auto mode v1 has no per-member nodes).
+   */
+  nodeError?: string | null;
   /** True while the member's session is waiting for its reply. */
   busy?: boolean;
 }>();
@@ -193,6 +202,25 @@ watch(
   50% {
     opacity: 1;
   }
+}
+
+/* Inline node-error block: red tint regardless of the member color. */
+.agent-window-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: none;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.agent-window-error-label {
+  font-weight: 600;
 }
 
 .agent-window-body {

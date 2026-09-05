@@ -114,6 +114,7 @@ beforeEach(() => {
 
 afterEach(() => {
   useAgentTeamsRun().closeRun();
+  useAgentTeamsRun().setOnAttachFailed(null);
   vi.useRealTimers();
 });
 
@@ -450,6 +451,54 @@ describe("useAgentTeamsRun lifecycle", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
     await flush();
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("invokes onAttachFailed once when reconnect attempts are exhausted", async () => {
+    vi.useFakeTimers();
+    apiMocks.listActiveRuns.mockResolvedValue(ok({ runs: [] }));
+    // Stream closes immediately with no events: every attempt "drops".
+    fetchWithAuthMock.mockImplementation(() => sseResponse([]));
+
+    const onAttachFailed = vi.fn();
+    const run = useAgentTeamsRun();
+    run.setOnAttachFailed(onAttachFailed);
+    await run.openRun("run-e");
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(5);
+    expect(onAttachFailed).toHaveBeenCalledTimes(1);
+    expect(onAttachFailed).toHaveBeenCalledWith("run-e");
+  });
+
+  it("does not invoke onAttachFailed after closeRun aborts the attach loop", async () => {
+    vi.useFakeTimers();
+    apiMocks.listActiveRuns.mockResolvedValue(ok({ runs: [] }));
+    fetchWithAuthMock.mockImplementation(() => hangingResponse());
+
+    const onAttachFailed = vi.fn();
+    const run = useAgentTeamsRun();
+    run.setOnAttachFailed(onAttachFailed);
+    await run.openRun("run-f");
+    run.closeRun();
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(onAttachFailed).not.toHaveBeenCalled();
+  });
+
+  it("does not invoke onAttachFailed when the run ended terminally", async () => {
+    apiMocks.listActiveRuns.mockResolvedValue(ok({ runs: [] }));
+    fetchWithAuthMock.mockReturnValue(
+      sseResponse([frame({ type: "stopped", reason: "done" })]),
+    );
+
+    const onAttachFailed = vi.fn();
+    const run = useAgentTeamsRun();
+    run.setOnAttachFailed(onAttachFailed);
+    await run.openRun("run-g");
+    await flush();
+
+    expect(onAttachFailed).not.toHaveBeenCalled();
   });
 });
 

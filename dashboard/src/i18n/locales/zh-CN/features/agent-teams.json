@@ -81,7 +81,10 @@
     "viewWindow": "窗口",
     "viewDag": "DAG 视图",
     "busy": "会话忙，等待中…",
-    "empty": "输入目标并点击“开始运行”"
+    "empty": "输入目标并点击“开始运行”",
+    "nodeError": "节点错误",
+    "runError": "运行异常",
+    "attachFailed": "与运行事件流的连接已断开"
   },
   "history": {
     "title": "运行历史",

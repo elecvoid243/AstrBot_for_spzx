@@ -75,6 +75,21 @@
       </div>
     </div>
 
+    <!-- Run-level error banner: folded lastError / non-benign stoppedReason.
+         Normal completion ("done") and user stops never render it. -->
+    <div v-if="bannerMessage" class="monitor-error-banner">
+      <span class="monitor-error-banner-label">{{ tm('monitor.runError') }}</span>
+      <span class="monitor-error-banner-text">{{ bannerMessage }}</span>
+      <v-spacer />
+      <v-btn
+        icon="mdi-close"
+        variant="text"
+        size="small"
+        class="monitor-error-dismiss"
+        @click="bannerDismissed = true"
+      />
+    </div>
+
     <div v-if="busyCount" class="monitor-busy-hint">{{ tm('monitor.busy') }}</div>
     <div v-if="!runState" class="monitor-empty">{{ tm('monitor.empty') }}</div>
 
@@ -122,6 +137,7 @@
             :member="memberById(item.i)"
             :window="runState?.windows[item.i] ?? null"
             :node-status="memberNodeStatus(item.i)"
+            :node-error="memberNodeError(item.i)"
             :busy="isMemberBusy(item.i)"
           />
         </GridItem>
@@ -159,6 +175,7 @@ import type { TeamsRunStateSeed } from '@/composables/agentTeamsRunReducer';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun, type AgentTeamRunSummary } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
+import { useToast } from '@/utils/toast';
 
 interface MonitorTile {
   i: string;
@@ -181,6 +198,7 @@ const props = defineProps<{
 }>();
 
 const { tm } = useModuleI18n('features/agent-teams');
+const { error: toastError } = useToast();
 const { workflows, loadWorkflows } = useAgentTeams();
 const {
   runState,
@@ -193,7 +211,15 @@ const {
   stop,
   retryNode,
   skipNode,
+  setOnAttachFailed,
 } = useAgentTeamsRun();
+
+// Reconnect exhaustion inside the composable is invisible to users (console
+// only); surface it here. The composable is a module singleton, so the hook
+// is re-registered on every mount of this panel.
+setOnAttachFailed(() => {
+  toastError(tm('monitor.attachFailed'));
+});
 
 // ----- control bar state -----
 const goal = ref('');
@@ -253,6 +279,34 @@ const statusLabel = computed(() => {
 });
 
 const busyCount = computed(() => runState.value?.busySessionIds.size ?? 0);
+
+// ----- run-error banner -----
+// Stop reasons that mean normal completion, not a failure.
+const BENIGN_STOP_REASONS = ['done', 'user stop'];
+
+const bannerDismissed = ref(false);
+
+/**
+ * Run-level error to surface in the banner: the folded `lastError`, else a
+ * `stoppedReason` that is not a benign completion ("done" / "user stop").
+ */
+const bannerError = computed(() => {
+  const state = runState.value;
+  if (!state) return null;
+  if (state.lastError) return state.lastError;
+  if (state.stoppedReason && !BENIGN_STOP_REASONS.includes(state.stoppedReason)) {
+    return state.stoppedReason;
+  }
+  return null;
+});
+
+const bannerMessage = computed(() => (bannerDismissed.value ? null : bannerError.value));
+
+// A freshly opened run state must show its own banner even when the previous
+// one was dismissed (folds mutate in place, so only reassignment triggers).
+watch(runState, () => {
+  bannerDismissed.value = false;
+});
 
 const progressPercent = computed(() => {
   const p = runState.value?.progress;
@@ -443,6 +497,29 @@ function memberNodeStatus(memberId: string): string | undefined {
   );
 }
 
+// Node statuses that carry a backend error text for the window error block.
+const NODE_ERROR_STATUSES = ['failed', 'interrupted'];
+
+/**
+ * Backend error text of the member's most recent failed node, for the inline
+ * AgentWindow error block (dag mode: nodes reference members via the run
+ * graph). Auto mode v1 has no per-member nodes, so its windows never show a
+ * node error — the run-level banner covers it.
+ */
+function memberNodeError(memberId: string): string | null {
+  if (isAuto.value) return null;
+  const nodeIds = new Set(
+    dagNodes.value.filter((n) => n.data.memberId === memberId).map((n) => n.id),
+  );
+  if (!nodeIds.size) return null;
+  const errored = Object.entries(runState.value?.nodeStates ?? {}).filter(
+    ([nodeId, ns]) =>
+      nodeIds.has(nodeId) && !!ns.error && NODE_ERROR_STATUSES.includes(ns.status),
+  );
+  if (!errored.length) return null;
+  return errored[errored.length - 1][1].error ?? null;
+}
+
 // ----- DAG view -----
 // Positions are staggered (run graph snapshots carry no layout map); the
 // canvas fits the view on init anyway.
@@ -566,6 +643,37 @@ watch(
   background: rgba(250, 204, 21, 0.12);
   color: inherit;
   font-size: 13px;
+}
+
+/* Run-level error banner: red tint, dismissible. */
+.monitor-error-banner {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.12);
+  color: inherit;
+  font-size: 13px;
+}
+
+.monitor-error-banner-label {
+  font-weight: 600;
+  color: #f87171;
+  white-space: nowrap;
+}
+
+.monitor-error-banner-text {
+  flex: 1;
+  min-width: 120px;
+  word-break: break-word;
+}
+
+.monitor-error-dismiss {
+  align-self: center;
+  flex: none;
 }
 
 .monitor-empty {

@@ -5,7 +5,11 @@ import asyncio
 import pytest
 
 from astrbot.core.db.sqlite import SQLiteDatabase
-from astrbot.dashboard.services.agent_team_ports import TeamPorts
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
+from astrbot.dashboard.services.agent_team_ports import (
+    TeamPorts,
+    build_ports_for_test,
+)
 from astrbot.dashboard.services.agent_team_run_service import (
     AgentTeamRunService,
     DAGRunner,
@@ -60,7 +64,9 @@ def scripted_ports(responses: dict, events: list, delivered: list) -> TeamPorts:
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
-    async def collect(session_id: str, message_id: str) -> tuple[str, list]:
+    async def collect(
+        session_id: str, message_id: str, member_id: str | None = None
+    ) -> tuple[str, list]:
         member = MEMBER_BY_SESSION[session_id]
         result = responses[member["name"]]
         await asyncio.sleep(0.01)
@@ -89,6 +95,59 @@ async def wait_terminal(runner: DAGRunner, timeout_s: float = 5.0):
         if runner.status in ("completed", "paused", "stopped", "failed"):
             return
         await asyncio.sleep(0.02)
+
+
+@pytest.mark.asyncio
+async def test_stream_events_carry_member_id(tmp_path):
+    """Regression (spec §6.6): live stream deltas emitted during collect()
+    must reach the event bus tagged with the executing member's member_id —
+    the dashboard reducer drops message events without one."""
+    make_members()
+    mgr = WebChatQueueMgr()
+
+    async def fake_listener(data):
+        _username, conv_id, payload = data
+        mid = payload["message_id"]
+        for chunk, t in (("流式", "plain"), ("", "end")):
+            await mgr.put_system_event(
+                conv_id,
+                {
+                    "type": t,
+                    "message_id": mid,
+                    "data": chunk,
+                    "streaming": False,
+                    "chain_type": "normal",
+                },
+            )
+
+    mgr.set_listener(fake_listener)
+    events: list = []
+    bus = RunEventBus()
+    ports = build_ports_for_test(mgr, "alice", emit=events.append)
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    runner = DAGRunner(
+        run_id="rm",
+        team_id="t1",
+        graph={"nodes": [{"id": "n1", "member_id": "mA", "task": "t"}], "edges": []},
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=bus,
+        username="alice",
+        run_input="x",
+    )
+    await runner.run()
+
+    assert runner.status == "completed"
+    streams = [e for e in events if e.get("direction") == "stream"]
+    assert streams, "collect() must emit live stream deltas"
+    assert all(e.get("member_id") == "mA" for e in streams)
+    assert "".join(e["text"] for e in streams) == "流式"
+    # The reply event (emitted by the runner itself) carries the member too.
+    replies = [e for e in bus.history() if e.get("direction") == "reply"]
+    assert replies and replies[0]["member_id"] == "mA"
 
 
 @pytest.mark.asyncio
@@ -229,6 +288,10 @@ async def test_start_run_full_lifecycle(tmp_path):
         team["team_id"],
         {"mode": "dag", "input": "主题", "workflow_id": wf["workflow_id"]},
     )
+    # Snapshots carry the graph + workflow id so the dashboard can rebuild
+    # the DAG view after a reload (active-run monitor recovery).
+    assert snapshot["workflow_id"] == wf["workflow_id"]
+    assert snapshot["graph"] == graph
     runner = run_svc._runners[snapshot["run_id"]]
     await wait_terminal(runner)
     snap = await run_svc.get_run_snapshot("alice", snapshot["run_id"])

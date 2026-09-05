@@ -102,10 +102,12 @@ class DAGRunner:
         run_input: str = "",
         node_states: dict[str, dict] | None = None,
         on_member_stop: Callable[[str], object] | None = None,
+        workflow_id: str | None = None,
     ) -> None:
         self.run_id = run_id
         self.team_id = team_id
         self.graph = graph
+        self.workflow_id = workflow_id
         self.config = {**DEFAULT_TEAM_CONFIG, **(config or {})}
         self.members = members
         self.ports = ports
@@ -171,12 +173,18 @@ class DAGRunner:
         }
 
     def snapshot(self) -> dict:
-        """Return a JSON-safe summary for API and SSE consumers."""
+        """Return a JSON-safe summary for API and SSE consumers.
+
+        `graph` and `workflow_id` let dashboard consumers (active-run monitor
+        recovery, history handoff) rebuild the DAG view without extra lookups.
+        """
         return {
             "run_id": self.run_id,
             "team_id": self.team_id,
+            "workflow_id": self.workflow_id,
             "status": self.status,
             "node_states": self.node_states,
+            "graph": self.graph,
             "progress": {k: v for k, v in self._progress().items() if k != "type"},
         }
 
@@ -315,7 +323,9 @@ class DAGRunner:
                 }
             )
             reply, _parts = await asyncio.wait_for(
-                self.ports.collect(member["session_id"], message_id),
+                self.ports.collect(
+                    member["session_id"], message_id, member["member_id"]
+                ),
                 timeout=float(self.config["reply_timeout"]),
             )
         except asyncio.TimeoutError:
@@ -570,6 +580,7 @@ class AgentTeamRunService:
             run_input=row.input,
             node_states=node_states,
             username=username,
+            workflow_id=row.workflow_id,
         )
         self._start_runner_task(runner)
         return runner.snapshot()
@@ -637,6 +648,7 @@ class AgentTeamRunService:
             run_input=run_input,
             node_states=node_states,
             username=username,
+            workflow_id=workflow_id,
         )
         self._start_runner_task(runner)
         return runner.snapshot()
@@ -651,6 +663,7 @@ class AgentTeamRunService:
         run_input,
         node_states,
         username,
+        workflow_id=None,
     ) -> DAGRunner:
         bus = RunEventBus()
         runner = DAGRunner(
@@ -666,6 +679,7 @@ class AgentTeamRunService:
             run_input=run_input,
             node_states=node_states,
             on_member_stop=self.on_member_stop,
+            workflow_id=workflow_id,
         )
         self._runners[run_id] = runner
         self._buses[run_id] = bus

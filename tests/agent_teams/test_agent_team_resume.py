@@ -52,7 +52,7 @@ async def test_resume_preserves_done_and_redoes_running(tmp_path):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
-    async def collect(session_id, message_id):
+    async def collect(session_id, message_id, member_id=None):
         await asyncio.sleep(0.01)
         return "重做完成", [{"type": "plain", "data": "重做完成"}]
 
@@ -215,7 +215,7 @@ async def make_failure_paused_run(tmp_path):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
-    async def collect(session_id, message_id):
+    async def collect(session_id, message_id, member_id=None):
         result = responses[by_session[session_id]["name"]]
         await asyncio.sleep(0.01)
         if isinstance(result, Exception):

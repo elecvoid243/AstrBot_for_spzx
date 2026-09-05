@@ -37,7 +37,11 @@ class TeamPorts:
     """I/O ports for team runners; injected for testability."""
 
     deliver: Callable[[str, str, str | None], Awaitable[str]]
-    collect: Callable[[str, str], Awaitable[tuple[str, list]]]
+    # Signature: (session_id, message_id, member_id). The runner tags every
+    # collect call with the executing member; implementations stamp that tag
+    # onto the emitted stream message events (spec §6.6 message events carry
+    # member_id) so the dashboard reducer can route the deltas.
+    collect: Callable[[str, str, str | None], Awaitable[tuple[str, list]]]
     is_busy: Callable[[str], bool]
     emit: Callable[[dict], None]
     reply_timeout: float = 600.0
@@ -107,7 +111,9 @@ def build_ports_for_test(
         )
         return message_id
 
-    async def collect(session_id: str, message_id: str) -> tuple[str, list]:
+    async def collect(
+        session_id: str, message_id: str, member_id: str | None = None
+    ) -> tuple[str, list]:
         from astrbot.dashboard.services.chat_service import BotMessageAccumulator
 
         cid = _conversation_id(session_id)
@@ -133,15 +139,19 @@ def build_ports_for_test(
                 delta = full[len(prev_text) :] if full.startswith(prev_text) else full
                 prev_text = full
                 if delta:
-                    emit(
-                        {
-                            "type": "message",
-                            "direction": "stream",
-                            "session_id": session_id,
-                            "text": delta,
-                            "ts": time.time(),
-                        }
-                    )
+                    event = {
+                        "type": "message",
+                        "direction": "stream",
+                        "session_id": session_id,
+                        "text": delta,
+                        "ts": time.time(),
+                    }
+                    # Spec §6.6: message events carry member_id. The runner
+                    # passes the executing member; un-tagged deltas would be
+                    # dropped by the dashboard reducer.
+                    if member_id:
+                        event["member_id"] = member_id
+                    emit(event)
             elif msg_type in ("complete", "end"):
                 if (
                     msg_type == "complete"

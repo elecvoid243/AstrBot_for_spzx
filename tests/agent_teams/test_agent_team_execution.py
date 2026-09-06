@@ -839,14 +839,19 @@ async def test_workflow_save_rejects_unknown_config_id(tmp_path):
     _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
     team = await make_validation_team(svc)
 
-    with pytest.raises(
-        AgentTeamsServiceError, match="节点 n2 的配置档案不存在: cfg-gone"
-    ):
+    with pytest.raises(AgentTeamsServiceError) as exc_info:
         await svc.create_workflow(
             "alice",
             team["team_id"],
             {"name": "w", "graph": exec_graph(team, {"config_id": "cfg-gone"})},
         )
+    entry = next(
+        e
+        for e in exc_info.value.field_errors
+        if e["path"] == "nodes.n2.execution.config_id"
+    )
+    assert entry["code"] == "NOT_FOUND"
+    assert entry["message"] == "节点 n2 的配置档案不存在: cfg-gone"
 
 
 @pytest.mark.asyncio
@@ -854,12 +859,19 @@ async def test_workflow_save_rejects_unknown_persona_id(tmp_path):
     _, svc = await make_validation_service(tmp_path, confs={"cfg-live": {}})
     team = await make_validation_team(svc)
 
-    with pytest.raises(AgentTeamsServiceError, match="节点 n2"):
+    with pytest.raises(AgentTeamsServiceError) as exc_info:
         await svc.create_workflow(
             "alice",
             team["team_id"],
             {"name": "w", "graph": exec_graph(team, {"persona_id": "ghost"})},
         )
+    entry = next(
+        e
+        for e in exc_info.value.field_errors
+        if e["path"] == "nodes.n2.execution.persona_id"
+    )
+    assert entry["code"] == "NOT_FOUND"
+    assert entry["message"] == "节点 n2 的角色不存在: ghost"
 
 
 @pytest.mark.asyncio
@@ -914,12 +926,18 @@ async def test_workflow_save_rejects_malformed_execution(tmp_path):
         {"tools": [1]},
         {"skills": {"a": 1}},
     ):
-        with pytest.raises(AgentTeamsServiceError, match="节点 n2"):
+        with pytest.raises(AgentTeamsServiceError) as exc_info:
             await svc.create_workflow(
                 "alice",
                 team["team_id"],
                 {"name": "w", "graph": exec_graph(team, bad)},
             )
+        entry = next(
+            e
+            for e in exc_info.value.field_errors
+            if e["path"].startswith("nodes.n2.execution")
+        )
+        assert entry["message"].startswith("节点 n2")
 
 
 # Runner-level config checks.

@@ -27,7 +27,17 @@ VALID_FAILURE_POLICIES = ("pause", "auto_skip")
 
 
 class AgentTeamsServiceError(Exception):
-    """Raised for agent team service errors; the message is user-facing."""
+    """Raised for agent team service errors; the message is user-facing.
+
+    Args:
+        message: User-facing error summary.
+        field_errors: Optional list of {path, code, message} dicts describing
+            field-level validation problems; empty for plain raises.
+    """
+
+    def __init__(self, message: str, field_errors: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.field_errors = field_errors or []
 
 
 def _new_id(n: int = 8) -> str:
@@ -305,29 +315,34 @@ class AgentTeamService:
         }
 
     @staticmethod
-    def validate_member_bindings(graph: dict, members: list[dict]) -> None:
-        """Raise when any node references a member not on the team roster.
+    def validate_member_bindings(graph: dict, members: list[dict]) -> list[dict]:
+        """Collect field errors for nodes bound to members off the roster.
 
         Args:
             graph: {nodes, edges} graph dict.
             members: Current team members.
 
-        Raises:
-            AgentTeamsServiceError: Listing every missing member id.
+        Returns:
+            One {path, code, message} entry per offending node, keyed
+            ``nodes.<id>.member_id``; empty when every binding resolves.
         """
         known = {m["member_id"] for m in members}
-        missing = sorted(
+        return [
             {
-                str(n.get("member_id"))
-                for n in graph.get("nodes") or []
-                if n.get("member_id") not in known
+                "path": f"nodes.{n.get('id')}.member_id",
+                "code": "NOT_FOUND",
+                "message": f"节点绑定的成员不存在: {n.get('member_id')}",
             }
-        )
-        if missing:
-            raise AgentTeamsServiceError(f"节点绑定的成员不存在: {', '.join(missing)}")
+            for n in graph.get("nodes") or []
+            if n.get("member_id") not in known
+        ]
 
     def _validate_workflow_payload(self, team: AgentTeam, graph: dict) -> dict:
         """Validate a workflow graph against DAG rules and the team roster.
+
+        Field-mappable problems are all collected and raised together as one
+        AgentTeamsServiceError carrying `field_errors` ({path, code, message}
+        dicts); only structural problems (node count) raise immediately.
 
         Args:
             team: The owning team row.
@@ -337,7 +352,8 @@ class AgentTeamService:
             The normalized graph dict.
 
         Raises:
-            AgentTeamsServiceError: On any validation failure.
+            AgentTeamsServiceError: On any validation failure; `field_errors`
+                lists every collected field problem.
         """
         from astrbot.dashboard.services.agent_team_dag import (
             TeamDAGError,
@@ -350,19 +366,45 @@ class AgentTeamService:
             raise AgentTeamsServiceError("工作流至少需要 1 个节点")
         if len(nodes) > self.MAX_NODES:
             raise AgentTeamsServiceError(f"节点数不能超过 {self.MAX_NODES}")
-        for node in nodes:
-            if not str(node.get("task") or "").strip():
-                raise AgentTeamsServiceError(f"节点 {node.get('id')!r} 缺少任务模板")
-            if node.get("execution") is not None:
-                self._validate_node_execution(node.get("id"), node["execution"])
+
+        field_errors: list[dict] = []
+        # Duplicate-id detection comes first (it is what validate_dag checks
+        # first too): node-keyed entries are ambiguous when ids repeat, so the
+        # structural mapping problem is recorded before the per-node ones.
         try:
             validate_dag(nodes, edges)
         except TeamDAGError as e:
-            raise AgentTeamsServiceError(str(e)) from e
-        self.validate_member_bindings(graph, team.members)
+            text = str(e)
+            if "duplicate" in text:
+                path, code = "nodes", "DUPLICATE"
+            elif "unknown node" in text:
+                path, code = "edges", "INVALID"
+            else:
+                path, code = "edges", "CYCLE"
+            field_errors.append({"path": path, "code": code, "message": text})
+        for node in nodes:
+            if not str(node.get("task") or "").strip():
+                field_errors.append(
+                    {
+                        "path": f"nodes.{node.get('id')}.task",
+                        "code": "REQUIRED",
+                        "message": f"节点 {node.get('id')!r} 缺少任务模板",
+                    }
+                )
+            if node.get("execution") is not None:
+                self._validate_node_execution(
+                    node.get("id"), node["execution"], field_errors
+                )
+        field_errors.extend(self.validate_member_bindings(graph, team.members))
+        if field_errors:
+            raise AgentTeamsServiceError(
+                f"工作流校验失败（{len(field_errors)} 项）", field_errors=field_errors
+            )
         return {"nodes": nodes, "edges": edges}
 
-    def _validate_node_execution(self, node_id: str, execution) -> None:
+    def _validate_node_execution(
+        self, node_id: str, execution, field_errors: list[dict]
+    ) -> None:
         """Validate one node's `execution` override block (spec §2.3).
 
         Unknown tool/skill names are deliberately NOT rejected here: tool
@@ -370,30 +412,45 @@ class AgentTeamService:
         and run), so only the value shape and resolvable ids are checked.
 
         Args:
-            node_id: Node id used in error messages.
+            node_id: Node id used in error paths and messages.
             execution: Raw `execution` payload value.
-
-        Raises:
-            AgentTeamsServiceError: On a non-dict block, an unknown config
-                profile or persona id, or malformed tools/skills lists.
+            field_errors: Collector; matching {path, code, message} entries
+                are appended instead of raising.
         """
         if not isinstance(execution, dict):
-            raise AgentTeamsServiceError(f"节点 {node_id} 的 execution 配置格式错误")
+            field_errors.append(
+                {
+                    "path": f"nodes.{node_id}.execution",
+                    "code": "INVALID",
+                    "message": f"节点 {node_id} 的 execution 配置格式错误",
+                }
+            )
+            return
         config_id = execution.get("config_id")
         if config_id is not None and (
             not isinstance(config_id, str)
             or not config_id.strip()
             or config_id not in self.core_lifecycle.astrbot_config_mgr.confs
         ):
-            raise AgentTeamsServiceError(
-                f"节点 {node_id} 的配置档案不存在: {config_id}"
+            field_errors.append(
+                {
+                    "path": f"nodes.{node_id}.execution.config_id",
+                    "code": "NOT_FOUND",
+                    "message": f"节点 {node_id} 的配置档案不存在: {config_id}",
+                }
             )
         persona_id = execution.get("persona_id")
         if (
             persona_id is not None
             and self.core_lifecycle.persona_mgr.get_persona_v3_by_id(persona_id) is None
         ):
-            raise AgentTeamsServiceError(f"节点 {node_id} 的角色不存在: {persona_id}")
+            field_errors.append(
+                {
+                    "path": f"nodes.{node_id}.execution.persona_id",
+                    "code": "NOT_FOUND",
+                    "message": f"节点 {node_id} 的角色不存在: {persona_id}",
+                }
+            )
         for key in ("tools", "skills"):
             value = execution.get(key)
             # Unset stays unset; an empty list means "disable all" and is valid.
@@ -402,8 +459,12 @@ class AgentTeamService:
             if not isinstance(value, list) or not all(
                 isinstance(item, str) and item.strip() for item in value
             ):
-                raise AgentTeamsServiceError(
-                    f"节点 {node_id} 的 {key} 必须是非空字符串列表"
+                field_errors.append(
+                    {
+                        "path": f"nodes.{node_id}.execution.{key}",
+                        "code": "INVALID",
+                        "message": f"节点 {node_id} 的 {key} 必须是非空字符串列表",
+                    }
                 )
 
     async def create_workflow(self, username: str, team_id: str, payload: dict) -> dict:
@@ -449,7 +510,11 @@ class AgentTeamService:
         else:
             # Re-validate the stored graph against the CURRENT roster so a
             # removed member invalidates dependent workflows immediately.
-            self.validate_member_bindings(row.graph, team.members)
+            violations = self.validate_member_bindings(row.graph, team.members)
+            if violations:
+                raise AgentTeamsServiceError(
+                    f"工作流校验失败（{len(violations)} 项）", field_errors=violations
+                )
         if "layout" in payload:
             updates["layout"] = payload.get("layout") or {}
         if updates:

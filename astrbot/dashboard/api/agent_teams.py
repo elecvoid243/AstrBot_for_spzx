@@ -44,7 +44,9 @@ def get_run_service(request: Request) -> AgentTeamRunService:
 def _handle(e: AgentTeamsServiceError):
     """Map a service error to an HTTP response; run conflicts become 409."""
     status = 409 if _CONFLICT_MARKER in str(e) else 400
-    return JSONResponse(error(str(e)), status_code=status)
+    # Field-level validation problems ride the error envelope as data.fields.
+    data = {"fields": e.field_errors} if e.field_errors else None
+    return JSONResponse(error(str(e), data), status_code=status)
 
 
 async def _json_body(request: Request) -> dict:

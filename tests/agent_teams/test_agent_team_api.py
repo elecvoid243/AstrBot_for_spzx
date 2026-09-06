@@ -30,6 +30,18 @@ class FakeTeamSvc:
     async def list_teams(self, username):
         return {"teams": []}
 
+    async def create_workflow(self, username, team_id, payload):
+        raise AgentTeamsServiceError(
+            "工作流校验失败（1 项）",
+            field_errors=[
+                {
+                    "path": "nodes.n1.task",
+                    "code": "REQUIRED",
+                    "message": "节点 'n1' 缺少任务模板",
+                }
+            ],
+        )
+
     async def update_workflow(self, username, team_id, workflow_id, payload):
         FakeTeamSvc.calls.append(("update", username, team_id, workflow_id, payload))
         return {"workflow_id": workflow_id, "team_id": team_id}
@@ -83,6 +95,27 @@ def test_start_run_maps_active_conflict_to_409(client):
         json={"mode": "dag", "input": "conflict", "workflow_id": "w1"},
     )
     assert resp.status_code == 409
+    # A plain service error carries no field data.
+    assert "data" not in resp.json()
+
+
+def test_workflow_error_envelope_carries_field_errors(client):
+    """Field-level validation problems ride the error envelope as data.fields."""
+    resp = client.post(
+        "/api/v1/agent_teams/t1/workflows",
+        json={"name": "w", "graph": {"nodes": [], "edges": []}},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["status"] == "error"
+    assert "工作流校验失败" in body["message"]
+    assert body["data"]["fields"] == [
+        {
+            "path": "nodes.n1.task",
+            "code": "REQUIRED",
+            "message": "节点 'n1' 缺少任务模板",
+        }
+    ]
 
 
 def test_pause_run_forwards_username_first_on_legacy_route(client):

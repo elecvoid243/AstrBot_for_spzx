@@ -17,7 +17,22 @@ export interface MemberWindowState {
   /** Structured message parts carried by the reply, if any. */
   parts: any[];
   streaming: boolean;
+  /** Chronological timeline of turns, choices, and system events for this member. */
+  timeline: MemberTimelineEntry[];
 }
+
+/** Timeline entry for a turn, choice, or system event (Plan 3 T6). */
+export interface MemberTimelineEntry {
+  turnId: string;
+  nodeId?: string;
+  kind: 'turn' | 'choice' | 'system';
+  direction?: 'sent' | 'reply' | 'shown' | 'resolved';
+  text: string;
+  parts?: any[];
+  streaming?: boolean;
+  metadata?: any;
+}
+
 
 export interface TeamsRunProgress {
   done: number;
@@ -70,6 +85,18 @@ export interface TeamsMessageEvent {
   session_id?: string;
   text: string;
   parts?: any[];
+  turn_id?: string;
+  node_id?: string;
+  run_id?: string;
+}
+
+export interface TeamsChoiceEvent {
+  type: "choice";
+  direction: "shown" | "resolved";
+  session_id: string;
+  member_id?: string;
+  data?: any; // parsed spec dict on shown
+  reason?: string; // on resolved
 }
 
 export interface TeamsNodeStatusEvent {
@@ -126,6 +153,7 @@ export interface TeamsStoppedEvent {
 
 export type TeamsRunEvent =
   | TeamsMessageEvent
+  | TeamsChoiceEvent
   | TeamsNodeStatusEvent
   | TeamsDagProgressEvent
   | TeamsRoundEvent
@@ -217,6 +245,10 @@ export function parseTeamsEvent(raw: unknown): TeamsRunEvent | null {
       // optional even though the busy fold uses it when present.
       if (typeof obj.session_id === "string") ev.session_id = obj.session_id;
       if (Array.isArray(obj.parts)) ev.parts = obj.parts;
+      // Plan 3 T3 enrichment: turn_id, node_id, run_id
+      if (typeof obj.turn_id === "string") ev.turn_id = obj.turn_id;
+      if (typeof obj.node_id === "string") ev.node_id = obj.node_id;
+      if (typeof obj.run_id === "string") ev.run_id = obj.run_id;
       return ev;
     }
     case "node_status": {
@@ -287,6 +319,23 @@ export function parseTeamsEvent(raw: unknown): TeamsRunEvent | null {
       if (typeof obj.notes === "string") ev.notes = obj.notes;
       return ev;
     }
+    case "choice": {
+      // Plan 3 T6: parse choice events from backend (shown/resolved)
+      if (!obj.session_id || typeof obj.session_id !== "string") return null;
+      if (!obj.direction || typeof obj.direction !== "string") return null;
+      const ev: any = {
+        type: "choice",
+        session_id: obj.session_id,
+        direction: obj.direction,
+      };
+      if (typeof obj.member_id === "string") ev.member_id = obj.member_id;
+      if (obj.direction === "shown") {
+        ev.data = obj.data; // parsed spec dict
+      } else if (obj.direction === "resolved") {
+        if (typeof obj.reason === "string") ev.reason = obj.reason;
+      }
+      return ev;
+    }
     case "busy": {
       if (!obj.session_id || typeof obj.session_id !== "string") return null;
       return { type: "busy", session_id: obj.session_id };
@@ -329,9 +378,14 @@ export function applyTeamsEvent(state: TeamsRunState, ev: TeamsRunEvent): void {
           streamText: "",
           parts: [],
           streaming: false,
+          timeline: [],
         };
         state.windows[ev.member_id] = win;
       }
+
+      // Timeline folding (Plan 3 T6): merge turns by turn_id, keep flat projection.
+      const turnId = ev.turn_id || `legacy-${win.timeline.length}`;
+      
       if (ev.direction === "sent") {
         // A new task delivery opens a fresh window phase: parts from the
         // previous round's reply are cleared too, or they would mask the
@@ -340,9 +394,36 @@ export function applyTeamsEvent(state: TeamsRunState, ev: TeamsRunEvent): void {
         win.streamText = "";
         win.streaming = false;
         win.parts = [];
+        // Push new turn entry
+        win.timeline.push({
+          turnId,
+          nodeId: ev.node_id,
+          kind: 'turn',
+          direction: 'sent',
+          text: ev.text,
+          parts: [],
+          streaming: false,
+        });
       } else if (ev.direction === "stream") {
         win.streamText += ev.text;
         win.streaming = true;
+        // Append to matching turn (or latest, or create)
+        const turn = win.timeline.find(e => e.turnId === turnId && e.kind === 'turn')
+                  || win.timeline[win.timeline.length - 1];
+        if (turn && turn.kind === 'turn') {
+          turn.text += ev.text;
+          turn.streaming = true;
+        } else {
+          win.timeline.push({
+            turnId,
+            nodeId: ev.node_id,
+            kind: 'turn',
+            direction: 'sent',
+            text: ev.text,
+            parts: [],
+            streaming: true,
+          });
+        }
       } else {
         // The final text always replaces the buffer: when the reply extends
         // the stream, assignment lands stream + tail; when it does not
@@ -350,10 +431,52 @@ export function applyTeamsEvent(state: TeamsRunState, ev: TeamsRunEvent): void {
         win.streamText = ev.text;
         win.streaming = false;
         if (Array.isArray(ev.parts)) win.parts = ev.parts;
+        // Finalize turn entry
+        const turn = win.timeline.find(e => e.turnId === turnId && e.kind === 'turn');
+        if (turn) {
+          turn.text = ev.text;
+          turn.parts = ev.parts;
+          turn.streaming = false;
+        } else {
+          win.timeline.push({
+            turnId,
+            nodeId: ev.node_id,
+            kind: 'turn',
+            direction: 'reply',
+            text: ev.text,
+            parts: ev.parts,
+            streaming: false,
+          });
+        }
         // The runner emits `busy` only while waiting for this member's
         // reply, so the reply is the natural clear signal for its session.
         if (ev.session_id) state.busySessionIds.delete(ev.session_id);
       }
+      break;
+    }
+    case "choice": {
+      // Plan 3 T6: fold choice events into member timeline
+      if (!ev.member_id) break; // No member_id, cannot route to a window
+      let win = state.windows[ev.member_id];
+      if (!win) {
+        win = {
+          memberId: ev.member_id,
+          sent: null,
+          streamText: "",
+          parts: [],
+          streaming: false,
+          timeline: [],
+        };
+        state.windows[ev.member_id] = win;
+      }
+      const entry: MemberTimelineEntry = {
+        turnId: `choice-${win.timeline.length}`,
+        kind: 'choice',
+        direction: ev.direction,
+        text: ev.direction === 'shown' ? (ev.data?.prompt || '') : (ev.reason || ''),
+        parts: ev.direction === 'shown' ? [{ type: 'interactive_choice', spec: ev.data }] : undefined,
+      };
+      win.timeline.push(entry);
       break;
     }
     case "node_status": {

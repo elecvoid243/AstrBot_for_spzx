@@ -342,4 +342,54 @@ describe("agentTeamsRunReducer dispatch folding", () => {
       }),
     ).toBeNull();
   });
+
+  describe("timeline folding (Plan 3 T6)", () => {
+    it("appends sent/stream/reply as turn entries with turn_id merge", () => {
+      const state = createTeamsRunState();
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "sent", session_id: "s1", member_id: "m1", text: "task A", turn_id: "t1", run_id: "r1" })!);
+      expect(state.windows.m1.timeline).toHaveLength(1);
+      expect(state.windows.m1.timeline[0]).toMatchObject({ turnId: "t1", kind: "turn", direction: "sent", text: "task A", streaming: false });
+      // Flat projection unchanged
+      expect(state.windows.m1.sent).toBe("task A");
+
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "stream", session_id: "s1", member_id: "m1", text: "delta", turn_id: "t1", run_id: "r1" })!);
+      expect(state.windows.m1.timeline).toHaveLength(1); // merged
+      expect(state.windows.m1.timeline[0].text).toBe("task Adelta");
+      expect(state.windows.m1.timeline[0].streaming).toBe(true);
+      expect(state.windows.m1.streamText).toBe("delta");
+
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "reply", session_id: "s1", member_id: "m1", text: "answer", parts: [{ type: "plain", text: "answer" }], turn_id: "t1", run_id: "r1" })!);
+      expect(state.windows.m1.timeline).toHaveLength(1); // finalized
+      expect(state.windows.m1.timeline[0]).toMatchObject({ turnId: "t1", text: "answer", parts: [{ type: "plain", text: "answer" }], streaming: false });
+      expect(state.windows.m1.streamText).toBe("answer");
+    });
+
+    it("pushes choice entries with parsed spec and reason", () => {
+      const state = createTeamsRunState();
+      const shown = parseTeamsEvent({ type: "choice", direction: "shown", session_id: "s1", member_id: "m1", data: { prompt: "Pick one", options: [] } })!;
+      applyTeamsEvent(state, shown);
+      expect(state.windows.m1.timeline).toHaveLength(1);
+      expect(state.windows.m1.timeline[0]).toMatchObject({ kind: "choice", direction: "shown", text: "Pick one", parts: [{ type: "interactive_choice", spec: { prompt: "Pick one", options: [] } }] });
+
+      const resolved = parseTeamsEvent({ type: "choice", direction: "resolved", session_id: "s1", member_id: "m1", reason: "user cancelled" })!;
+      applyTeamsEvent(state, resolved);
+      expect(state.windows.m1.timeline).toHaveLength(2);
+      expect(state.windows.m1.timeline[1]).toMatchObject({ kind: "choice", direction: "resolved", text: "user cancelled" });
+    });
+
+    it("synthesizes legacy turn_id for events without turn_id", () => {
+      const state = createTeamsRunState();
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "sent", session_id: "s1", member_id: "m1", text: "old" })!);
+      expect(state.windows.m1.timeline[0].turnId).toMatch(/^legacy-/);
+    });
+
+    it("keeps flat projection compatible (AgentWindow unchanged)", () => {
+      const state = createTeamsRunState();
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "sent", session_id: "s1", member_id: "m1", text: "task", turn_id: "t1", run_id: "r1" })!);
+      applyTeamsEvent(state, parseTeamsEvent({ type: "message", direction: "stream", session_id: "s1", member_id: "m1", text: "delta", turn_id: "t1", run_id: "r1" })!);
+      expect(state.windows.m1.sent).toBe("task");
+      expect(state.windows.m1.streamText).toBe("delta");
+      expect(state.windows.m1.streaming).toBe(true);
+    });
+  });
 });

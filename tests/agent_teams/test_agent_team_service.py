@@ -469,7 +469,7 @@ async def test_update_member_kb_names_pins_session_kb_config(tmp_path, monkeypat
 async def test_update_member_kb_names_unknown_raises_before_session_write(
     tmp_path, monkeypatch
 ):
-    """An unknown kb name rejects the update before any session pin is written."""
+    """An unknown kb name rejects the update before any side effect."""
     svc, calls = await _capture_session_puts(
         tmp_path,
         monkeypatch,
@@ -479,6 +479,8 @@ async def test_update_member_kb_names_unknown_raises_before_session_write(
         "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
     )
     member = team["members"][0]
+    convs_before = len(svc.core_lifecycle.conversation_manager.created)
+    pins_before = len(svc.core_lifecycle.provider_manager.set)
     with pytest.raises(AgentTeamsServiceError, match="知识库不存在: 不存在"):
         await svc.update_member(
             "owner0",
@@ -486,8 +488,14 @@ async def test_update_member_kb_names_unknown_raises_before_session_write(
             member["member_id"],
             {"runner_config": {"kb_names": ["指南", "不存在"]}},
         )
-    # The error surfaces instead of silently keeping/scribbling a pin.
+    # The update is rejected during validation: no session pin is written, no
+    # persona/provider re-pin happens, and the DB row keeps no runner_config.
     assert calls == []
+    assert len(svc.core_lifecycle.conversation_manager.created) == convs_before
+    assert len(svc.core_lifecycle.provider_manager.set) == pins_before
+    row = await svc.db.get_agent_team(team["team_id"])
+    stored = next(m for m in row.members if m["member_id"] == member["member_id"])
+    assert "runner_config" not in stored
 
 
 @pytest.mark.asyncio

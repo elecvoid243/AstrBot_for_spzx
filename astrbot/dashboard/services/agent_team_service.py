@@ -372,29 +372,28 @@ class AgentTeamService:
             out["context_length"] = v
         return out
 
-    async def _apply_member_kb_config(self, umo: str, kb_names: list[str]) -> None:
-        """Pin the member session's knowledge base config.
+    async def _resolve_member_kb_config(self, kb_names: list[str]) -> dict:
+        """Resolve kb names to the session kb_config value for a member.
 
         The knowledge base retrieval pipeline prefers the session kb_config when
-        it carries `kb_ids`, so storing the resolved ids here makes the member's
-        `kb_names` override take effect for every turn of the session. An empty
-        list disables KBs for the session (``kb_ids=[]`` makes the retrieval
-        tool return no context). Unknown names reject the update so a stale pin
-        can never survive silently.
+        it carries `kb_ids`, so the resolved ids make the member's `kb_names`
+        override take effect for every turn of the session. An empty list
+        disables KBs for the session (``kb_ids=[]`` makes the retrieval tool
+        return no context). Unknown names raise so a stale pin can never survive
+        silently, and the caller stays free of any side effect on failure.
 
         Args:
-            umo: The member's unified message origin.
             kb_names: Knowledge base names to enable (empty disables).
+
+        Returns:
+            The dict to store as the member session's ``kb_config``.
 
         Raises:
             AgentTeamsServiceError: When any referenced knowledge base name
                 cannot be resolved.
         """
-        from astrbot.core import sp
-
         if not kb_names:
-            await sp.session_put(umo, "kb_config", {"kb_ids": []})
-            return
+            return {"kb_ids": []}
         kb_mgr = self.core_lifecycle.kb_manager
         kb_ids = []
         unknown: list[str] = []
@@ -406,7 +405,7 @@ class AgentTeamService:
                 unknown.append(name)
         if unknown:
             raise AgentTeamsServiceError(f"知识库不存在: {', '.join(unknown)}")
-        await sp.session_put(umo, "kb_config", {"kb_ids": kb_ids, "top_k": 5})
+        return {"kb_ids": kb_ids, "top_k": 5}
 
     async def update_member(
         self, username: str, team_id: str, member_id: str, payload: dict
@@ -435,6 +434,8 @@ class AgentTeamService:
         if member is None:
             raise AgentTeamsServiceError(f"成员 '{member_id}' 不存在")
         updated = dict(member)
+        kb_pin: dict | None = None
+        kb_pin_set = False
         if "name" in payload:
             name = str(payload.get("name") or "").strip()
             if not name or len(name) > MAX_NAME_LEN:
@@ -463,6 +464,13 @@ class AgentTeamService:
             updated["runner_config"] = self._validate_member_runner_config(
                 payload["runner_config"]
             )
+            kb_names = updated["runner_config"].get("kb_names")
+            if kb_names is not None:
+                # Resolve kb names during validation: unknown names raise
+                # before the DB commit and before any session re-pin side
+                # effect (which would drop the member's chat context).
+                kb_pin = await self._resolve_member_kb_config(kb_names)
+                kb_pin_set = True
 
         members = [
             updated if m["member_id"] == member_id else m
@@ -502,10 +510,12 @@ class AgentTeamService:
                 await sp.session_remove(
                     umo, f"provider_perf_{ProviderType.CHAT_COMPLETION.value}"
                 )
-        if "runner_config" in payload:
-            kb_names = updated["runner_config"].get("kb_names")
-            if kb_names is not None:
-                await self._apply_member_kb_config(umo, kb_names)
+        # Apply the resolved kb_config after the DB commit: it is a pure session
+        # side effect, and the resolution already happened during validation.
+        if kb_pin_set:
+            from astrbot.core import sp
+
+            await sp.session_put(umo, "kb_config", kb_pin)
 
         return await self.get_team(username, team_id)
 

@@ -14,6 +14,7 @@ from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tool
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
     downstream_of,
+    referenced_placeholders,
     render_task,
 )
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports
@@ -122,6 +123,7 @@ class DAGRunner:
         self.username = username
         self.run_input = run_input
         self.on_member_stop = on_member_stop
+        self._nodes_by_id = {n["id"]: n for n in graph.get("nodes", [])}
         # Optional config_id -> bool guard; a node whose execution profile no
         # longer resolves fails before dispatching a turn (spec §2.3).
         self.config_checker = config_checker
@@ -307,12 +309,30 @@ class DAGRunner:
             )
             self._emit(self._progress())
             return
+        # Edges as data flow (spec §3.2): predecessors the template does not
+        # reference explicitly get their done results auto-injected after the
+        # rendered text, so upstream output always reaches the member.
+        referenced = referenced_placeholders(node.get("task", ""))
+        inject_list: list[tuple[str, str]] = []
+        for pred in self._preds.get(node_id, []):
+            if pred in referenced:
+                continue
+            p_state = self.node_states.get(pred) or {}
+            if p_state.get("status") != "done" or not p_state.get("result"):
+                continue
+            pred_node = self._nodes_by_id.get(pred, {})
+            # Distinct name: `member` above is the executing node's own
+            # member and must not be shadowed before the delivery below.
+            pred_member = self._member_by_id(pred_node.get("member_id") or "")
+            display = pred_node.get("title") or (pred_member or {}).get("name") or pred
+            inject_list.append((pred, display))
         try:
             task_text = render_task(
                 node.get("task", ""),
                 self.run_input,
                 self._results,
                 int(self.config["inject_max_length"]),
+                auto_inject_predecessors=inject_list or None,
             )
         except TeamDAGError as e:
             state.update(status="failed", error=str(e))
@@ -506,7 +526,6 @@ class DAGRunner:
         )
 
     async def _run_loop(self) -> None:
-        nodes_by_id = {n["id"]: n for n in self.graph.get("nodes", [])}
         while True:
             if self._stop_requested.is_set():
                 self.status = "stopped"
@@ -532,7 +551,9 @@ class DAGRunner:
                     self._emit({"type": "paused", "reason": "user pause"})
                     await self._resume_wake.wait()
                 continue
-            wave = [nodes_by_id[n] for n in ready[: int(self.config["max_parallel"])]]
+            wave = [
+                self._nodes_by_id[n] for n in ready[: int(self.config["max_parallel"])]
+            ]
             await asyncio.gather(*(self._execute_node(n) for n in wave))
             await self._apply_failure_policy()
 

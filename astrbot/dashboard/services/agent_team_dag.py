@@ -111,16 +111,51 @@ def downstream_of(node_id: str, edges: list[dict]) -> list[str]:
     return seen
 
 
+def referenced_placeholders(template: str) -> set[str]:
+    """Return the placeholder names a template references.
+
+    Args:
+        template: Template text containing {{input}} / {{<node_id>}}.
+
+    Returns:
+        The set of referenced placeholder keys (whitespace-tolerant).
+    """
+    return set(_PLACEHOLDER_RE.findall(template))
+
+
 def render_task(
-    template: str, run_input: str, results: dict[str, str], max_length: int
+    template: str,
+    run_input: str,
+    results: dict[str, str],
+    max_length: int,
+    *,
+    auto_inject_predecessors: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render a node task template.
+
+    With `auto_inject_predecessors`, results of predecessors the template
+    does NOT reference explicitly are appended after the rendered template
+    as ``[上游结果]`` blocks (spec §3.2, edges-as-data-flow): each eligible
+    ``(node_id, display_name)`` contributes
+
+    ::
+
+        [上游结果]
+        ◆ {display_name} ({node_id})：
+        {result tail-truncated to max_length}
+
+    Blocks are separated by blank lines and attached to the template with a
+    blank line; a predecessor that is referenced by a placeholder in the
+    template, or whose result is missing, contributes nothing.
 
     Args:
         template: Template text containing {{input}} / {{<node_id>}}.
         run_input: The run-level input substituted for {{input}}.
         results: node_id -> full reply text for referenced predecessors.
-        max_length: Tail-truncation limit for each substitution.
+        max_length: Tail-truncation limit for each substitution and injected
+            result.
+        auto_inject_predecessors: Optional (node_id, display_name) pairs to
+            auto-inject; None keeps the plain substitution behavior.
 
     Returns:
         The rendered task text.
@@ -143,4 +178,20 @@ def render_task(
             value = f"…[已截断，仅保留尾部]\n{value[-max_length:]}"
         return value
 
-    return _PLACEHOLDER_RE.sub(_substitute, template)
+    rendered = _PLACEHOLDER_RE.sub(_substitute, template)
+    if not auto_inject_predecessors:
+        return rendered
+    referenced = referenced_placeholders(template)
+    blocks: list[str] = []
+    for node_id, display_name in auto_inject_predecessors:
+        # Defensive re-check: explicitly referenced preds are already in the
+        # text, and a missing result means the pred never finished usefully.
+        if node_id in referenced or node_id not in results:
+            continue
+        value = results[node_id]
+        if len(value) > max_length:
+            value = f"…[已截断，仅保留尾部]\n{value[-max_length:]}"
+        blocks.append(f"[上游结果]\n◆ {display_name} ({node_id})：\n{value}")
+    if not blocks:
+        return rendered
+    return rendered + "\n\n" + "\n\n".join(blocks)

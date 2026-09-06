@@ -572,3 +572,90 @@ async def test_run_service_enforces_ownership(tmp_path):
     assert snap["run_id"] == run_id
     bus = await run_svc.get_event_bus("alice", run_id)
     assert bus is run_svc._buses[run_id]
+
+
+INJECT_GRAPH = {
+    "nodes": [
+        {"id": "n1", "member_id": "mA", "task": "a {{input}}"},
+        # n2 never references {{n1}}: it must receive n1's result via the
+        # auto-injected [上游结果] block (edges-as-data-flow, spec §3.2).
+        {"id": "n2", "member_id": "mB", "task": "b", "title": "校对节点"},
+        # n3 references {{n1}} explicitly: n1 is NOT re-injected, n2 is.
+        {"id": "n3", "member_id": "mC", "task": "c {{n1}}"},
+    ],
+    "edges": [
+        {"from": "n1", "to": "n2"},
+        {"from": "n1", "to": "n3"},
+        {"from": "n2", "to": "n3"},
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_dag_runner_auto_injects_predecessor_results(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    ports = scripted_ports(
+        {"主管": "调研结论", "写手": "校对结论", "审校": "汇总结论"}, events, delivered
+    )
+    runner = DAGRunner(
+        run_id="ri1",
+        team_id="t1",
+        graph=INJECT_GRAPH,
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="主题",
+    )
+    await runner.run()
+    assert runner.status == "completed"
+    assert all(s["status"] == "done" for s in runner.node_states.values())
+
+    # n2 (conv-1) has no {{n1}} reference: n1's result arrives auto-injected,
+    # displayed via the member name (n1 carries no title).
+    n2_text = next(t for s, t in delivered if s == "conv-1")
+    assert "[上游结果]" in n2_text
+    assert "◆ 主管 (n1)：\n调研结论" in n2_text
+
+    # n3 (conv-2) references {{n1}}: n1 is substituted, not re-injected; n2
+    # (unreferenced pred) is auto-injected and displayed via its node title.
+    n3_text = next(t for s, t in delivered if s == "conv-2")
+    assert "调研结论" in n3_text
+    assert "◆ 主管 (n1)" not in n3_text
+    assert "[上游结果]" in n3_text
+    assert "◆ 校对节点 (n2)：\n校对结论" in n3_text
+
+
+@pytest.mark.asyncio
+async def test_dag_runner_skips_injection_for_empty_predecessor_result(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    ports = scripted_ports(
+        {"主管": "", "写手": "校对结论", "审校": "汇总结论"}, events, delivered
+    )
+    runner = DAGRunner(
+        run_id="ri2",
+        team_id="t1",
+        graph=INJECT_GRAPH,
+        config=CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="主题",
+    )
+    await runner.run()
+    assert runner.status == "completed"
+    # n1 finished with an empty result: no [上游结果] block for n2.
+    n2_text = next(t for s, t in delivered if s == "conv-1")
+    assert "[上游结果]" not in n2_text

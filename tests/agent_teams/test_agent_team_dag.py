@@ -6,6 +6,7 @@ import pytest
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
     downstream_of,
+    referenced_placeholders,
     render_task,
     topological_layers,
     validate_dag,
@@ -59,3 +60,94 @@ def test_render_unknown_placeholder():
 def test_render_truncates_tail():
     out = render_task("{{n1}}", "x", {"n1": "0123456789"}, max_length=4)
     assert out.endswith("6789") and "截断" in out
+
+
+def test_referenced_placeholders():
+    assert referenced_placeholders("a {{n1}} b {{ n2 }} c {{input}}") == {
+        "n1",
+        "n2",
+        "input",
+    }
+    assert referenced_placeholders("no refs here") == set()
+
+
+def test_render_task_auto_injects_unreferenced_predecessor():
+    out = render_task(
+        "总结 {{input}}",
+        "写诗",
+        {"n1": "春天来了"},
+        max_length=100,
+        auto_inject_predecessors=[("n1", "研究员")],
+    )
+    assert out == "总结 写诗\n\n[上游结果]\n◆ 研究员 (n1)：\n春天来了"
+
+
+def test_render_task_referenced_predecessor_not_reinjected():
+    out = render_task(
+        "结论 {{n1}}",
+        "x",
+        {"n1": "春天来了"},
+        max_length=100,
+        auto_inject_predecessors=[("n1", "研究员")],
+    )
+    assert out == "结论 春天来了"
+
+
+def test_render_task_all_referenced_no_block():
+    out = render_task(
+        "{{n1}} 然后 {{n2}}",
+        "x",
+        {"n1": "一", "n2": "二"},
+        max_length=100,
+        auto_inject_predecessors=[("n1", "甲"), ("n2", "乙")],
+    )
+    assert out == "一 然后 二"
+    assert "[上游结果]" not in out
+
+
+def test_render_task_injects_multiple_predecessors_with_blank_lines():
+    out = render_task(
+        "汇总",
+        "x",
+        {"n1": "A结果", "n2": "B结果"},
+        max_length=100,
+        auto_inject_predecessors=[("n1", "甲"), ("n2", "乙")],
+    )
+    assert out == (
+        "汇总\n\n[上游结果]\n◆ 甲 (n1)：\nA结果\n\n[上游结果]\n◆ 乙 (n2)：\nB结果"
+    )
+
+
+def test_render_task_inject_skips_preds_without_results():
+    # A pred absent from results (non-done / empty) contributes no block.
+    out = render_task(
+        "任务",
+        "x",
+        {},
+        max_length=100,
+        auto_inject_predecessors=[("n1", "甲"), ("n2", "乙")],
+    )
+    assert out == "任务"
+
+
+def test_render_task_inject_truncates_each_result_with_marker():
+    out = render_task(
+        "任务",
+        "x",
+        {"n1": "0123456789", "n2": "短结果"},
+        max_length=4,
+        auto_inject_predecessors=[("n1", "甲"), ("n2", "乙")],
+    )
+    assert out == (
+        "任务\n\n"
+        "[上游结果]\n◆ 甲 (n1)：\n…[已截断，仅保留尾部]\n6789\n\n"
+        "[上游结果]\n◆ 乙 (n2)：\n短结果"
+    )
+
+
+def test_render_task_default_and_none_inject_identical():
+    a = render_task("{{n1}}", "x", {"n1": "y"}, max_length=10)
+    b = render_task(
+        "{{n1}}", "x", {"n1": "y"}, max_length=10, auto_inject_predecessors=None
+    )
+    assert a == b == "y"

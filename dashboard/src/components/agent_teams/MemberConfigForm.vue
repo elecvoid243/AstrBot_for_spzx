@@ -32,8 +32,12 @@
       />
     </div>
 
-    <!-- Tools / skills overrides only apply once a persona is pinned: they
-         describe how the member's runner filters the persona capabilities. -->
+    <!-- Tools/skills overrides only apply once a persona is pinned: they
+         describe how the member's runner filters the persona capabilities.
+         The radio group is the mode entry; the reuse of the config page's
+         PersonaCapabilitiesEditor renders the card-style picker (图2) for the
+         allowlist. The editor and the radios stay in sync: the editor emits
+         null (all selected), [] (none) or a list, mapped back to the mode. -->
     <section v-if="personaId.trim()" class="member-form-section">
       <span class="member-form-section-title">{{ tm('memberConfig.tools') }}</span>
       <v-radio-group v-model="toolsMode" density="compact" hide-details>
@@ -45,17 +49,6 @@
         />
         <v-radio :label="tm('editor.toolsAllowlist')" value="allowlist" density="compact" />
       </v-radio-group>
-      <div v-if="toolsMode === 'allowlist'" class="member-form-checkboxes">
-        <v-checkbox-btn
-          v-for="opt in toolOptions"
-          :key="opt.value"
-          :model-value="tools.includes(opt.value)"
-          :label="opt.title"
-          density="compact"
-          hide-details
-          @update:model-value="toggleTool(opt.value)"
-        />
-      </div>
     </section>
 
     <section v-if="personaId.trim()" class="member-form-section">
@@ -69,18 +62,17 @@
         />
         <v-radio :label="tm('editor.skillsAllowlist')" value="allowlist" density="compact" />
       </v-radio-group>
-      <div v-if="skillsMode === 'allowlist'" class="member-form-checkboxes">
-        <v-checkbox-btn
-          v-for="opt in skillOptions"
-          :key="opt.value"
-          :model-value="skills.includes(opt.value)"
-          :label="opt.title"
-          density="compact"
-          hide-details
-          @update:model-value="toggleSkill(opt.value)"
-        />
-      </div>
     </section>
+
+    <PersonaCapabilitiesEditor
+      v-if="personaId.trim()"
+      :tools="editorTools"
+      :skills="editorSkills"
+      :available-tools="availableTools"
+      :available-skills="availableSkills"
+      @update:tools="onCapabilitiesUpdate('tools', $event)"
+      @update:skills="onCapabilitiesUpdate('skills', $event)"
+    />
 
     <div class="member-form-grid">
       <v-text-field
@@ -133,6 +125,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import PersonaSelector from '@/components/shared/PersonaSelector.vue';
 import KnowledgeBaseSelector from '@/components/shared/KnowledgeBaseSelector.vue';
+import PersonaCapabilitiesEditor from '@/components/shared/PersonaCapabilitiesEditor.vue';
 import { agentTeamsApi, configProfileApi, providerApi, skillApi, toolApi } from '@/api/v1';
 import { useModuleI18n } from '@/i18n/composables';
 import { extractApiError } from '@/utils/extractApiError';
@@ -174,8 +167,10 @@ const kbNames = ref<string[]>([]);
 const saving = ref(false);
 
 const configProfileOptions = ref<{ title: string; value: string }[]>([]);
-const toolOptions = ref<{ title: string; value: string }[]>([]);
-const skillOptions = ref<{ title: string; value: string }[]>([]);
+/** Raw tool/skill items passed to the capability editor (it owns grouping,
+ * counts, inactive chips and the per-source selection dialog). */
+const availableTools = ref<any[]>([]);
+const availableSkills = ref<any[]>([]);
 const providerOptions = ref<{ title: string; value: string }[]>([]);
 
 /** Profile dropdown: the "follow session default" empty option plus profiles. */
@@ -244,9 +239,9 @@ async function loadOptions() {
   try {
     const res = await toolApi.list();
     if (res.data?.status === 'ok') {
-      toolOptions.value = ((res.data.data ?? []) as any[])
-        .filter((t) => t && t.name && t.active !== false)
-        .map((t) => ({ title: String(t.name), value: String(t.name) }));
+      availableTools.value = ((res.data.data ?? []) as any[]).filter(
+        (t) => t && t.name,
+      );
     }
   } catch (err) {
     toast.error(extractApiError(err, tm('memberConfig.loadFailed')).message);
@@ -256,9 +251,7 @@ async function loadOptions() {
     if (res.data?.status === 'ok') {
       const payload = res.data.data ?? [];
       const skills = Array.isArray(payload) ? payload : (payload.skills ?? []);
-      skillOptions.value = (skills as any[])
-        .filter((s) => s && s.name && s.active !== false)
-        .map((s) => ({ title: String(s.name), value: String(s.name) }));
+      availableSkills.value = (skills as any[]).filter((s) => s && s.name);
     }
   } catch (err) {
     toast.error(extractApiError(err, tm('memberConfig.loadFailed')).message);
@@ -285,18 +278,48 @@ watch(
   { immediate: true },
 );
 
-/** Toggle one allowlist checkbox for tools. */
-function toggleTool(tool: string) {
-  const index = tools.value.indexOf(tool);
-  if (index === -1) tools.value.push(tool);
-  else tools.value.splice(index, 1);
-}
+/**
+ * Capability value handed to the editor: the card shows the current state —
+ * null (follow persona) renders every item checked, `[]` (disable all) renders
+ * nothing checked, a list renders the checked subset.
+ */
+const editorTools = computed(() =>
+  toolsMode.value === 'allowlist'
+    ? tools.value
+    : toolsMode.value === 'disable_all'
+      ? []
+      : null,
+);
 
-/** Toggle one allowlist checkbox for skills. */
-function toggleSkill(skill: string) {
-  const index = skills.value.indexOf(skill);
-  if (index === -1) skills.value.push(skill);
-  else skills.value.splice(index, 1);
+const editorSkills = computed(() =>
+  skillsMode.value === 'allowlist'
+    ? skills.value
+    : skillsMode.value === 'disable_all'
+      ? []
+      : null,
+);
+
+/**
+ * Keep the mode radio in sync with the editor card: checking every item yields
+ * null (inherit), unchecked everything yields `[]` (disable all), otherwise a
+ * subset list (allowlist) — the exact backend serialization triple.
+ */
+function onCapabilitiesUpdate(field: 'tools' | 'skills', value: unknown) {
+  const mode = field === 'tools' ? toolsMode : skillsMode;
+  const list = field === 'tools' ? tools : skills;
+  if (value === null) {
+    mode.value = 'inherit';
+    list.value = [];
+  } else if (Array.isArray(value)) {
+    const names = value.map((item) => String(item)).filter((item) => item.trim());
+    if (names.length === 0) {
+      mode.value = 'disable_all';
+      list.value = [];
+    } else {
+      mode.value = 'allowlist';
+      list.value = names;
+    }
+  }
 }
 
 /** Coerce a numeric input to a number, keeping empty/invalid as omitted. */
@@ -402,12 +425,6 @@ async function save() {
 .member-form-section-title {
   font-size: 13px;
   font-weight: 600;
-}
-
-.member-form-checkboxes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
 }
 
 .member-form-actions {

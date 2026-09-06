@@ -12,6 +12,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { nextTick } from 'vue';
 import zh from '@/i18n/locales/zh-CN/features/agent-teams.json';
 
 const toastMock = vi.hoisted(() => ({
@@ -66,6 +67,26 @@ vi.mock('@/components/shared/KnowledgeBaseSelector.vue', async () => {
       emits: ['update:modelValue'],
       template:
         '<input class="kb-stub" :value="modelValue.join(\',\')" @input="$emit(\'update:modelValue\', $event.target.value.split(\',\').filter(Boolean))" />',
+    }),
+  };
+});
+
+// PersonaCapabilitiesEditor is the config page's card-style picker (图2);
+// its grouping/counts/dialog behavior is covered by its own shared-component
+// tests. The form spec only needs the tools/skills props + update emits.
+vi.mock('@/components/shared/PersonaCapabilitiesEditor.vue', async () => {
+  const { defineComponent } = await import('vue');
+  return {
+    default: defineComponent({
+      name: 'PersonaCapabilitiesEditorStub',
+      props: {
+        tools: { type: [Array, Object], default: null },
+        skills: { type: [Array, Object], default: null },
+        availableTools: { type: Array, default: () => [] },
+        availableSkills: { type: Array, default: () => [] },
+      },
+      emits: ['update:tools', 'update:skills'],
+      template: `<div class="capabilities-stub" :data-tools="tools === null ? 'null' : JSON.stringify(tools)" :data-skills="skills === null ? 'null' : JSON.stringify(skills)"><slot /></div>`,
     }),
   };
 });
@@ -245,9 +266,11 @@ describe('MemberConfigPanel', () => {
     await byLabel(wrapper, zh.memberConfig.name).setValue('Alice Renamed');
     await byLabel(wrapper, zh.memberConfig.configProfile).setValue('cfg1');
     await byLabel(wrapper, zh.memberConfig.provider).setValue('prov-openai');
-    // Tools: allowlist with one active tool.
+    // Tools: allowlist with one active tool (driven through the card editor).
     await clickRadio(radioGroup(wrapper, 0), 'allowlist');
-    await wrapper.find('.checkbox-stub[data-label="tool_a"] input[type="checkbox"]').trigger('change');
+    await wrapper
+      .findComponent({ name: 'PersonaCapabilitiesEditorStub' })
+      .vm.$emit('update:tools', ['tool_a']);
     // Skills: disable all.
     await clickRadio(radioGroup(wrapper, 1), 'disable_all');
     await byLabel(wrapper, zh.memberConfig.maxSteps).setValue('8');
@@ -294,6 +317,30 @@ describe('MemberConfigPanel', () => {
       // Backend semantics: `[]` = disable all, list = allowlist, omission = follow.
       runner_config: { tools: [], kb_names: [] },
     });
+  });
+
+  it('keeps the mode radios and the capability editor in sync', async () => {
+    const wrapper = mountPanel();
+    await flushPromises();
+    const caps = () => wrapper.findComponent({ name: 'PersonaCapabilitiesEditorStub' });
+
+    // Radio -> editor: inherit renders null (all checked), disable_all [].
+    expect(caps().props('tools')).toBeNull();
+    await clickRadio(radioGroup(wrapper, 0), 'disable_all');
+    await nextTick();
+    expect(caps().props('tools')).toEqual([]);
+
+    // Editor -> radio: emitting [] collapses to disable_all serialization.
+    caps().vm.$emit('update:tools', []);
+    await wrapper.find('[data-test="member-config-save"]').trigger('click');
+    await flushPromises();
+    expect(apiMocks.updateMember.mock.calls[0][2].runner_config.tools).toEqual([]);
+
+    // Editor -> radio: null (all selected) means inherit, so tools is omitted.
+    caps().vm.$emit('update:tools', null);
+    await wrapper.find('[data-test="member-config-save"]').trigger('click');
+    await flushPromises();
+    expect('tools' in apiMocks.updateMember.mock.calls[1][2].runner_config).toBe(false);
   });
 
   it('transmits null when an existing persona is cleared', async () => {

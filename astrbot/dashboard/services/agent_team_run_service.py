@@ -3,7 +3,7 @@
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from astrbot import logger
 from astrbot.core.agent_team_execution import (
@@ -44,6 +44,21 @@ def _run_to_dict(row) -> dict:
     }
 
 
+def _stream_turn_tagger(
+    run_id: str, turn_by_session: dict[str, str]
+) -> Callable[[dict], None]:
+    """Build the bus stream-enricher hook: live stream deltas leaving
+    ports.collect carry the in-flight turn's ids (message events gain
+    run_id/turn_id). Other events pass through untouched."""
+
+    def _tag(event: dict) -> None:
+        if event.get("type") == "message" and event.get("direction") == "stream":
+            event["run_id"] = run_id
+            event["turn_id"] = turn_by_session.get(event.get("session_id") or "")
+
+    return _tag
+
+
 class RunEventBus:
     """Per-run in-memory event history plus live subscriber fan-out.
 
@@ -57,9 +72,15 @@ class RunEventBus:
     def __init__(self) -> None:
         self._history: list[dict] = []
         self._subscribers: list[asyncio.Queue] = []
+        # Optional hook (set by a runner) invoked on every emitted event; it
+        # tags live stream deltas with the in-flight turn's ids before they
+        # reach history/subscribers.
+        self.stream_enricher: Callable[[dict], None] | None = None
 
     def emit(self, event: dict) -> None:
         """Record an event and fan it out to all subscribers."""
+        if self.stream_enricher is not None:
+            self.stream_enricher(event)
         self._history.append(event)
         for queue in list(self._subscribers):
             if queue.qsize() >= self._SUB_QUEUE_MAX:
@@ -110,6 +131,7 @@ class DAGRunner:
         on_member_stop: Callable[[dict], None] | None = None,
         config_checker: Callable[[str], bool] | None = None,
         workflow_id: str | None = None,
+        transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.run_id = run_id
         self.team_id = team_id
@@ -123,6 +145,19 @@ class DAGRunner:
         self.username = username
         self.run_input = run_input
         self.on_member_stop = on_member_stop
+        # Optional transcript sink: a single-row async callable the service
+        # wires to the DB (tests script recording sinks). Every sink call is
+        # best-effort — a transcript failure never fails the run.
+        self.transcript_sink = transcript_sink
+        # Live stream deltas flow out of ports.collect through the ports'
+        # captured emit (the run bus in the service path); tag them with the
+        # in-flight turn's ids via the bus hook. Choice events pass through
+        # untouched — their transcript rows belong to the interrupt/choice
+        # path (plan 3 task 4), not to the sent/reply/system rows here.
+        self._turn_by_session: dict[str, str] = {}
+        self.bus.stream_enricher = _stream_turn_tagger(
+            self.run_id, self._turn_by_session
+        )
         self._nodes_by_id = {n["id"]: n for n in graph.get("nodes", [])}
         # Optional config_id -> bool guard; a node whose execution profile no
         # longer resolves fails before dispatching a turn (spec §2.3).
@@ -162,6 +197,54 @@ class DAGRunner:
 
     def _emit(self, event: dict) -> None:
         self.bus.emit({"ts": time.time(), **event})
+
+    async def _transcript(
+        self,
+        direction: str,
+        text: str | None,
+        *,
+        member_id: str,
+        node_id: str | None = None,
+        round: int | None = None,
+        turn_id: str,
+        parts: list | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Build one transcript row and hand it to the sink (best-effort).
+
+        Args:
+            direction: One of `sent | reply | system` (choice rows are sunk
+                by the interrupt/choice path, not here).
+            text: Final full turn text; None for system rows.
+            member_id: Owning member identifier.
+            node_id: DAG node the turn belongs to, when applicable.
+            round: Auto-mode round number, when applicable.
+            turn_id: Identity merging the turn's rows and stream deltas.
+            parts: Structured message parts, when applicable.
+            metadata: Extra data (e.g. the error of a failed turn).
+
+        A missing or failing sink is logged and swallowed: a transcript
+        problem must never fail the run.
+        """
+        if self.transcript_sink is None:
+            return
+        row = {
+            "run_id": self.run_id,
+            "member_id": member_id,
+            "node_id": node_id,
+            "round": round,
+            "turn_id": turn_id,
+            "direction": direction,
+            "text": text,
+            "parts": parts,
+            "metadata": metadata,
+        }
+        try:
+            await self.transcript_sink(row)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "agent team run %s: transcript sink failed: %s", self.run_id, e
+            )
 
     async def _persist(self) -> None:
         """Flush status + node_states to the run row (per-transition)."""
@@ -309,6 +392,9 @@ class DAGRunner:
             )
             self._emit(self._progress())
             return
+        # One turn identity per node execution: the transcript rows and this
+        # turn's message events (including stream deltas) share it.
+        turn_id = uuid.uuid4().hex[:12]
         # Edges as data flow (spec §3.2): predecessors the template does not
         # reference explicitly get their done results auto-injected after the
         # rendered text, so upstream output always reaches the member.
@@ -392,6 +478,9 @@ class DAGRunner:
                     skills=execution.get("skills"),
                 )
             )
+        # Stream deltas for this turn are tagged via the session -> turn_id
+        # map; cleared in the finally below (every exit path).
+        self._turn_by_session[member["session_id"]] = turn_id
         try:
             # deliver stays inside the try so a delivery failure fails the
             # node instead of escaping gather while sibling wave coroutines
@@ -406,7 +495,16 @@ class DAGRunner:
                     "member_id": member["member_id"],
                     "session_id": member["session_id"],
                     "text": task_text,
+                    "turn_id": turn_id,
+                    "run_id": self.run_id,
                 }
+            )
+            await self._transcript(
+                "sent",
+                task_text,
+                member_id=member["member_id"],
+                node_id=node_id,
+                turn_id=turn_id,
             )
             # Race the reply collection against the stop request: a stop
             # mid-turn abandons the collection right away instead of waiting
@@ -427,7 +525,7 @@ class DAGRunner:
                 )
                 if stop_task in done:
                     return
-                reply, _parts = collect_task.result()
+                reply, reply_parts = collect_task.result()
             finally:
                 for pending in (collect_task, stop_task):
                     if not pending.done():
@@ -437,8 +535,24 @@ class DAGRunner:
             state.update(
                 status="failed", error="reply timeout", finished_at=time.time()
             )
+            await self._transcript(
+                "system",
+                None,
+                member_id=member["member_id"],
+                node_id=node_id,
+                turn_id=turn_id,
+                metadata={"error": "reply timeout"},
+            )
         except Exception as e:  # noqa: BLE001
             state.update(status="failed", error=str(e), finished_at=time.time())
+            await self._transcript(
+                "system",
+                None,
+                member_id=member["member_id"],
+                node_id=node_id,
+                turn_id=turn_id,
+                metadata={"error": str(e)},
+            )
         else:
             state.update(status="done", result=reply, finished_at=time.time())
             self._results[node_id] = reply
@@ -449,9 +563,21 @@ class DAGRunner:
                     "member_id": member["member_id"],
                     "session_id": member["session_id"],
                     "text": reply,
+                    "turn_id": turn_id,
+                    "run_id": self.run_id,
+                    "parts": reply_parts,
                 }
             )
+            await self._transcript(
+                "reply",
+                reply,
+                member_id=member["member_id"],
+                node_id=node_id,
+                turn_id=turn_id,
+                parts=reply_parts,
+            )
         finally:
+            self._turn_by_session.pop(member["session_id"], None)
             # Every exit path (stop abandonment, timeout, delivery failure)
             # releases the token; late foreign events fall back to default
             # routing once it is gone.
@@ -628,6 +754,7 @@ class AutoOrchestrator:
         username: str,
         rounds: list[dict] | None = None,
         on_member_stop: Callable[[dict], None] | None = None,
+        transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.run_id = run_id
         self.team_id = team_id
@@ -644,6 +771,19 @@ class AutoOrchestrator:
         # next round number is len(self.rounds) + 1.
         self.rounds: list[dict] = list(rounds or [])
         self.on_member_stop = on_member_stop
+        # Optional transcript sink: a single-row async callable the service
+        # wires to the DB (tests script recording sinks). Every sink call is
+        # best-effort — a transcript failure never fails the run.
+        self.transcript_sink = transcript_sink
+        # Live stream deltas flow out of ports.collect through the ports'
+        # captured emit (the run bus in the service path); tag them with the
+        # in-flight turn's ids via the bus hook. Choice events pass through
+        # untouched — their transcript rows belong to the interrupt/choice
+        # path (plan 3 task 4), not to the sent/reply/system rows here.
+        self._turn_by_session: dict[str, str] = {}
+        self.bus.stream_enricher = _stream_turn_tagger(
+            self.run_id, self._turn_by_session
+        )
         self.status = "running"
         self.task: asyncio.Task | None = None
         # Set by the coordinator tool callbacks for the turn in flight; the
@@ -673,6 +813,54 @@ class AutoOrchestrator:
         await self.db.update_agent_team_run(
             self.run_id, status=self.status, rounds=self.rounds
         )
+
+    async def _transcript(
+        self,
+        direction: str,
+        text: str | None,
+        *,
+        member_id: str,
+        node_id: str | None = None,
+        round: int | None = None,
+        turn_id: str,
+        parts: list | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Build one transcript row and hand it to the sink (best-effort).
+
+        Args:
+            direction: One of `sent | reply | system` (choice rows are sunk
+                by the interrupt/choice path, not here).
+            text: Final full turn text; None for system rows.
+            member_id: Owning member identifier.
+            node_id: Unused in auto mode (no DAG nodes); kept for row parity.
+            round: Auto-mode round number the turn belongs to.
+            turn_id: Identity merging the turn's rows and stream deltas.
+            parts: Structured message parts, when applicable.
+            metadata: Extra data (e.g. the error of a failed turn).
+
+        A missing or failing sink is logged and swallowed: a transcript
+        problem must never fail the run.
+        """
+        if self.transcript_sink is None:
+            return
+        row = {
+            "run_id": self.run_id,
+            "member_id": member_id,
+            "node_id": node_id,
+            "round": round,
+            "turn_id": turn_id,
+            "direction": direction,
+            "text": text,
+            "parts": parts,
+            "metadata": metadata,
+        }
+        try:
+            await self.transcript_sink(row)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "agent team run %s: transcript sink failed: %s", self.run_id, e
+            )
 
     def snapshot(self) -> dict:
         """Return a JSON-safe summary for API and SSE consumers."""
@@ -803,6 +991,9 @@ class AutoOrchestrator:
         The registry entry lives exactly for this turn: registered before the
         round event, unregistered in `finally` after collect returns.
         """
+        # One turn identity per coordinator turn: transcript rows and this
+        # turn's message events (including stream deltas) share it.
+        turn_id = uuid.uuid4().hex[:12]
         body = self._coordinator_context(n)
         tools = build_team_tools(
             [m["name"] for m in self.members],
@@ -824,6 +1015,9 @@ class AutoOrchestrator:
             session_id = self.coordinator["session_id"]
             member_id = self.coordinator["member_id"]
             self._in_flight_members = [self.coordinator]
+            # Stream deltas for this turn are tagged via the session ->
+            # turn_id map; cleared in the method's finally (every exit path).
+            self._turn_by_session[session_id] = turn_id
 
             async def _turn_io() -> None:
                 # Auto mode has no per-node execution blocks: turns run under
@@ -838,9 +1032,18 @@ class AutoOrchestrator:
                         "member_id": member_id,
                         "session_id": session_id,
                         "text": body,
+                        "turn_id": turn_id,
+                        "run_id": self.run_id,
                     }
                 )
-                reply, _parts = await self.ports.collect(
+                await self._transcript(
+                    "sent",
+                    body,
+                    member_id=member_id,
+                    round=n,
+                    turn_id=turn_id,
+                )
+                reply, reply_parts = await self.ports.collect(
                     session_id, message_id, member_id
                 )
                 self._emit(
@@ -850,7 +1053,18 @@ class AutoOrchestrator:
                         "member_id": member_id,
                         "session_id": session_id,
                         "text": reply,
+                        "turn_id": turn_id,
+                        "run_id": self.run_id,
+                        "parts": reply_parts,
                     }
+                )
+                await self._transcript(
+                    "reply",
+                    reply,
+                    member_id=member_id,
+                    round=n,
+                    turn_id=turn_id,
+                    parts=reply_parts,
                 )
 
             # Race the turn I/O against the stop request: a stop mid-turn
@@ -880,6 +1094,14 @@ class AutoOrchestrator:
                         collect_task, stop_task, return_exceptions=True
                     )
             except asyncio.TimeoutError:
+                await self._transcript(
+                    "system",
+                    None,
+                    member_id=member_id,
+                    round=n,
+                    turn_id=turn_id,
+                    metadata={"error": "reply timeout"},
+                )
                 self.status = "paused"
                 await self._persist()
                 self._emit({"type": "paused", "reason": "coordinator timeout"})
@@ -887,6 +1109,7 @@ class AutoOrchestrator:
             return "ok"
         finally:
             self._in_flight_members = []
+            self._turn_by_session.pop(self.coordinator["session_id"], None)
             AgentTeamToolRegistry.unregister(umo)
 
     async def _member_wave(self, n: int, assignments: list[dict]) -> None:
@@ -921,6 +1144,9 @@ class AutoOrchestrator:
                         # Stop landed while queued for a slot: never start a
                         # new turn after the user asked to stop.
                         return {"member": name, "error": "stopped"}
+                    # One turn identity per wave turn: transcript rows and
+                    # this turn's message events share it.
+                    turn_id = uuid.uuid4().hex[:12]
                     try:
                         task = str(assignment.get("task") or "")
                         # Auto mode has no per-node execution blocks: turns
@@ -935,8 +1161,21 @@ class AutoOrchestrator:
                                 "member_id": member["member_id"],
                                 "session_id": member["session_id"],
                                 "text": task,
+                                "turn_id": turn_id,
+                                "run_id": self.run_id,
                             }
                         )
+                        await self._transcript(
+                            "sent",
+                            task,
+                            member_id=member["member_id"],
+                            round=n,
+                            turn_id=turn_id,
+                        )
+                        # Stream deltas for this turn are tagged via the
+                        # session -> turn_id map; cleared in the finally below
+                        # (every exit path from the collect race).
+                        self._turn_by_session[member["session_id"]] = turn_id
                         # Same stop race as the DAG runner: abandon the
                         # collection promptly on stop instead of waiting out
                         # the remaining reply_timeout (spec §6.3/§10).
@@ -958,8 +1197,9 @@ class AutoOrchestrator:
                             )
                             if stop_task in done:
                                 return {"member": name, "error": "stopped"}
-                            reply, _parts = collect_task.result()
+                            reply, reply_parts = collect_task.result()
                         finally:
+                            self._turn_by_session.pop(member["session_id"], None)
                             for pending in (collect_task, stop_task):
                                 if not pending.done():
                                     pending.cancel()
@@ -967,8 +1207,24 @@ class AutoOrchestrator:
                                 collect_task, stop_task, return_exceptions=True
                             )
                     except asyncio.TimeoutError:
+                        await self._transcript(
+                            "system",
+                            None,
+                            member_id=member["member_id"],
+                            round=n,
+                            turn_id=turn_id,
+                            metadata={"error": "reply timeout"},
+                        )
                         return {"member": name, "error": "reply timeout"}
                     except Exception as e:  # noqa: BLE001
+                        await self._transcript(
+                            "system",
+                            None,
+                            member_id=member["member_id"],
+                            round=n,
+                            turn_id=turn_id,
+                            metadata={"error": str(e)},
+                        )
                         return {"member": name, "error": str(e)}
                     self._emit(
                         {
@@ -977,7 +1233,18 @@ class AutoOrchestrator:
                             "member_id": member["member_id"],
                             "session_id": member["session_id"],
                             "text": reply,
+                            "turn_id": turn_id,
+                            "run_id": self.run_id,
+                            "parts": reply_parts,
                         }
+                    )
+                    await self._transcript(
+                        "reply",
+                        reply,
+                        member_id=member["member_id"],
+                        round=n,
+                        turn_id=turn_id,
+                        parts=reply_parts,
                     )
                     return {"member": name, "result": reply}
 
@@ -1371,7 +1638,15 @@ class AgentTeamRunService:
         node_states,
         username,
         workflow_id=None,
+        transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> DAGRunner:
+        if transcript_sink is None:
+            # Production transcript sink: the runner-built rows already carry
+            # run_id and match the repo method's kwargs verbatim.
+            async def _db_sink(row: dict) -> None:
+                await self.db.append_agent_team_run_message(**row)
+
+            transcript_sink = _db_sink
         bus = RunEventBus()
         runner = DAGRunner(
             run_id=run_id,
@@ -1388,6 +1663,7 @@ class AgentTeamRunService:
             on_member_stop=self.on_member_stop,
             config_checker=self.config_checker,
             workflow_id=workflow_id,
+            transcript_sink=transcript_sink,
         )
         self._runners[run_id] = runner
         self._buses[run_id] = bus
@@ -1402,7 +1678,15 @@ class AgentTeamRunService:
         run_input,
         username,
         rounds: list[dict] | None = None,
+        transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> AutoOrchestrator:
+        if transcript_sink is None:
+            # Production transcript sink: the runner-built rows already carry
+            # run_id and match the repo method's kwargs verbatim.
+            async def _db_sink(row: dict) -> None:
+                await self.db.append_agent_team_run_message(**row)
+
+            transcript_sink = _db_sink
         bus = RunEventBus()
         members = team["members"]
         coordinator = next(
@@ -1423,6 +1707,7 @@ class AgentTeamRunService:
             username=username,
             rounds=rounds,
             on_member_stop=self.on_member_stop,
+            transcript_sink=transcript_sink,
         )
         self._runners[run_id] = orchestrator
         self._buses[run_id] = bus

@@ -7,7 +7,8 @@
   "tabs": {
     "editor": "工作流编排",
     "monitor": "运行监控",
-    "history": "历史"
+    "history": "历史",
+    "members": "成员"
   },
   "teams": {
     "create": "新建团队",
@@ -39,6 +40,7 @@
     "nameRequired": "请填写成员名称",
     "addSuccess": "成员「{name}」已添加",
     "removeConfirm": "确定移除成员「{name}」？",
+    "noTeam": "请先选择团队",
     "fromPersona": "从人格创建",
     "custom": "自定义创建",
     "persona": "人格",

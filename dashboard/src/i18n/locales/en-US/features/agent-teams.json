@@ -7,7 +7,8 @@
   "tabs": {
     "editor": "Workflow Editor",
     "monitor": "Run Monitor",
-    "history": "History"
+    "history": "History",
+    "members": "Members"
   },
   "teams": {
     "create": "New Team",
@@ -39,6 +40,7 @@
     "nameRequired": "Member name is required",
     "addSuccess": "Member “{name}” added",
     "removeConfirm": "Remove member “{name}”?",
+    "noTeam": "Select a team first",
     "fromPersona": "Create from Persona",
     "custom": "Create Custom",
     "persona": "Persona",

@@ -1,7 +1,7 @@
 // Scaffold spec for the agent-teams page shell (Task 5, extended by Task 9):
 // the page renders the team directory through AgentTeamsSidebar, exposes the
-// editor/monitor/history tabs with the real panel components (stubbed here —
-// each panel has its own spec) and forwards selection/refresh to the
+// editor/monitor/history/members tabs with the real panel components (stubbed
+// here — each panel has its own spec) and forwards selection/refresh to the
 // useAgentTeams composable. Task 9 covers the dialog wiring (create saved ->
 // select new team, member add refresh), the confirm-guarded member removal
 // and the history -> monitor handoff (openRun + initialRun + tab switch).
@@ -180,6 +180,12 @@ const stubs = {
     emits: ['open'],
     template: '<div class="runs-history-stub" />',
   },
+  MemberConfigPanel: {
+    name: 'MemberConfigPanelStub',
+    props: ['team'],
+    emits: ['updateTeam'],
+    template: '<div class="member-config-panel-stub" />',
+  },
   TeamCreateDialog: {
     name: 'TeamCreateDialogStub',
     props: ['modelValue', 'team'],
@@ -219,10 +225,10 @@ describe('AgentTeamsPage', () => {
     expect(wrapper.text()).toContain('Beta 团队');
   });
 
-  it('renders the three tab labels', () => {
+  it('renders the four tab labels', () => {
     const wrapper = mountPage();
     const labels = wrapper.findAll('.tab-stub').map((tab) => tab.text());
-    expect(labels).toEqual(['工作流编排', '运行监控', '历史']);
+    expect(labels).toEqual(['工作流编排', '运行监控', '历史', '成员']);
   });
 
   it('shows the editor panel by default and swaps panels when a tab is clicked', async () => {
@@ -238,6 +244,73 @@ describe('AgentTeamsPage', () => {
 
     expect(wrapper.find('.agent-teams-panel-monitor').exists()).toBe(true);
     expect(wrapper.find('.agent-teams-panel-editor').exists()).toBe(false);
+  });
+
+  it('members tab shows the member config panel for the selected team', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const membersTab = wrapper.findAll('.tab-stub').find((tab) => tab.text() === '成员');
+    expect(membersTab).toBeTruthy();
+    await membersTab!.trigger('click');
+
+    const panel = wrapper.findComponent({ name: 'MemberConfigPanelStub' });
+    expect(panel.exists()).toBe(true);
+    expect(panel.props('team')).toEqual(TEAMS[0]);
+  });
+
+  it('members panel updateTeam re-emits the resolved team into page state', async () => {
+    // The mocked composable is file-scoped: snapshot and restore its state.
+    const { useAgentTeams: useComposable } = await import('@/composables/useAgentTeams');
+    const { teams, selectedTeamId } = useComposable();
+    const snapshot = [...teams.value];
+    const selection = selectedTeamId.value;
+    try {
+      const wrapper = mountPage();
+      await flushPromises();
+
+      const membersTab = wrapper.findAll('.tab-stub').find((tab) => tab.text() === '成员');
+      await membersTab!.trigger('click');
+
+      const panel = wrapper.findComponent({ name: 'MemberConfigPanelStub' });
+      const updated = {
+        ...TEAMS[0],
+        members: [...TEAMS[0].members, { member_id: 'm4', name: 'Dave' }],
+      };
+      panel.vm.$emit('updateTeam', updated);
+      await nextTick();
+
+      // The page replaced its team row: the panel and the sidebar see the
+      // resolved team (member count bubbles up through the shared list).
+      expect(wrapper.findComponent({ name: 'MemberConfigPanelStub' }).props('team')).toEqual(
+        updated,
+      );
+      expect(wrapper.find('.team-row.is-selected').text()).toContain('3');
+    } finally {
+      teams.value = snapshot;
+      selectedTeamId.value = selection;
+    }
+  });
+
+  it('members tab shows a hint instead of the panel without a selected team', async () => {
+    const { useAgentTeams: useComposable } = await import('@/composables/useAgentTeams');
+    const { teams, selectedTeamId } = useComposable();
+    const snapshot = [...teams.value];
+    const selection = selectedTeamId.value;
+    try {
+      selectedTeamId.value = null;
+      const wrapper = mountPage();
+      await flushPromises();
+
+      const membersTab = wrapper.findAll('.tab-stub').find((tab) => tab.text() === '成员');
+      await membersTab!.trigger('click');
+
+      expect(wrapper.text()).toContain('请先选择团队');
+      expect(wrapper.findComponent({ name: 'MemberConfigPanelStub' }).exists()).toBe(false);
+    } finally {
+      teams.value = snapshot;
+      selectedTeamId.value = selection;
+    }
   });
 
   it('clicking a team row forwards select to the composable', async () => {

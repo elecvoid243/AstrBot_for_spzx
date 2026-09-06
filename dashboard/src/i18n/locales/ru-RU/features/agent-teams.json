@@ -7,7 +7,8 @@
   "tabs": {
     "editor": "Редактор workflows",
     "monitor": "Мониторинг запуска",
-    "history": "История"
+    "history": "История",
+    "members": "Участники"
   },
   "teams": {
     "create": "Новая команда",
@@ -39,6 +40,7 @@
     "nameRequired": "Введите имя участника",
     "addSuccess": "Участник «{name}» добавлен",
     "removeConfirm": "Удалить участника «{name}»?",
+    "noTeam": "Сначала выберите команду",
     "fromPersona": "Создать из персонажа",
     "custom": "Создать вручную",
     "persona": "Персонаж",

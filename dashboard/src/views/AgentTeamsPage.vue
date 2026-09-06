@@ -36,6 +36,7 @@
             <v-tab value="editor">{{ tm('tabs.editor') }}</v-tab>
             <v-tab value="monitor">{{ tm('tabs.monitor') }}</v-tab>
             <v-tab value="history">{{ tm('tabs.history') }}</v-tab>
+            <v-tab value="members">{{ tm('tabs.members') }}</v-tab>
           </v-tabs>
 
           <v-window v-model="tab" class="mt-4">
@@ -62,6 +63,16 @@
                 <RunsHistory :team="selectedTeam" @open="onOpenRun" />
               </section>
             </v-window-item>
+            <v-window-item value="members">
+              <section v-if="tab === 'members'" class="agent-teams-panel-members">
+                <MemberConfigPanel
+                  v-if="selectedTeam"
+                  :team="selectedTeam"
+                  @update-team="onTeamMembersUpdated"
+                />
+                <div v-else class="members-empty">{{ tm('members.noTeam') }}</div>
+              </section>
+            </v-window-item>
           </v-window>
         </div>
       </div>
@@ -81,6 +92,7 @@ import { onMounted, ref, watch } from 'vue';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
 import MemberAddDialog from '@/components/agent_teams/MemberAddDialog.vue';
+import MemberConfigPanel from '@/components/agent_teams/MemberConfigPanel.vue';
 import RunMonitor from '@/components/agent_teams/RunMonitor.vue';
 import RunsHistory from '@/components/agent_teams/RunsHistory.vue';
 import TeamCreateDialog from '@/components/agent_teams/TeamCreateDialog.vue';
@@ -156,6 +168,18 @@ async function onTeamSaved(team: any) {
 /** After a member was added, refresh the list to pick up the new member. */
 async function onMemberSaved() {
   await loadTeams();
+}
+
+/**
+ * Replace the selected team with the resolved team the member config panel
+ * re-emitted after a save, so the sidebar member list and the other tabs see
+ * the fresh member data (the panel already carries the server response).
+ */
+function onTeamMembersUpdated(team: any) {
+  const index = teams.value.findIndex((t) => t.team_id === team?.team_id);
+  if (index >= 0) {
+    teams.value[index] = team;
+  }
 }
 
 /** Confirm, remove one member from the selected team and refresh the list. */
@@ -245,6 +269,15 @@ onMounted(() => {
 .agent-teams-main {
   flex: 1;
   min-width: 0;
+}
+
+.members-empty {
+  padding: 18px;
+  border: 1px dashed var(--dashboard-border, rgba(128, 128, 128, 0.3));
+  border-radius: 10px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.7));
+  font-size: 13px;
+  text-align: center;
 }
 
 @media (max-width: 900px) {

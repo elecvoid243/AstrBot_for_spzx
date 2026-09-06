@@ -2,7 +2,8 @@
   <div class="teams-flow-canvas">
     <VueFlow
       :nodes="displayNodes"
-      :edges="edges"
+      :edges="displayEdges"
+      :node-types="nodeTypes"
       :nodes-draggable="isEdit"
       :nodes-connectable="isEdit"
       :elements-selectable="isEdit"
@@ -13,7 +14,11 @@
       @nodes-change="onNodesChange"
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
-    />
+    >
+      <Background :gap="16" />
+      <Controls />
+      <MiniMap pannable zoomable />
+    </VueFlow>
   </div>
 </template>
 
@@ -25,6 +30,8 @@
 export interface FlowNode {
   id: string;
   position: { x: number; y: number };
+  /** Renderer type; the canvas forces the custom `member` card. */
+  type?: string;
   data: {
     label: string;
     memberName?: string;
@@ -45,21 +52,42 @@ export interface FlowEdgePayload {
   [key: string]: unknown;
 }
 
+import { markRaw } from 'vue';
+import type { NodeComponent, NodeTypesObject } from '@vue-flow/core';
+import MemberFlowNode from './MemberFlowNode.vue';
+
+/**
+ * Custom node renderer registry. Declared at module level and markRaw'd so
+ * VueFlow never observes it (reactive nodeTypes cause a perf warning and
+ * re-render churn). Cast through NodeComponent: Vue Flow forwards the full
+ * NodeProps to the card, but the card only declares the subset it uses.
+ */
+const nodeTypes: NodeTypesObject = {
+  member: markRaw(MemberFlowNode) as unknown as NodeComponent,
+};
+
 export default {};
 </script>
 
 <script setup lang="ts">
 // Shared DAG canvas for the agent-teams workflow editor (edit mode) and the
-// run monitor (monitor mode, wired in Task 8). Keeps to VueFlow DEFAULT nodes
-// — behavior differs per mode:
+// run monitor (monitor mode). Every node renders as the MemberFlowNode card:
 // - edit: draggable / connectable / selectable, emits normalized connects,
-//   position maps after drags and node selection.
-// - monitor: interaction locked, each node gets an `at-node-<status>` class
-//   driven by the `nodeStates` prop (styled below, dark-theme friendly) and a
-//   native error tooltip on failed/interrupted nodes.
+//   position maps after drags and node selection; missing members are dashed
+//   red via the caller-provided `at-node-missing` class.
+// - monitor: interaction locked; run status/error reach the card through
+//   `data.status`/`data.error` (enriched by the caller), so the card owns the
+//   status ring and native error tooltip. Edges get arrow markers and animate
+//   out of running nodes.
 import { computed } from 'vue';
-import { VueFlow } from '@vue-flow/core';
+import { VueFlow, MarkerType } from '@vue-flow/core';
 import type { Connection, NodeChange } from '@vue-flow/core';
+import { Background } from '@vue-flow/background';
+import { MiniMap } from '@vue-flow/minimap';
+import { Controls } from '@vue-flow/controls';
+// Background ships its styles inline; the other chrome packages need theirs.
+import '@vue-flow/minimap/dist/style.css';
+import '@vue-flow/controls/dist/style.css';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 
@@ -69,8 +97,9 @@ const props = withDefaults(
     edges: FlowEdgePayload[];
     mode?: 'edit' | 'monitor';
     /**
-     * Per-node run states; only read in monitor mode. `error` carries the
-     * backend failure text of failed/interrupted nodes (spec §3.1).
+     * Per-node run states, still bound by the monitor for the data contract.
+     * Status rendering itself moved into the node card (via data.status, also
+     * enriched by the caller from this same map).
      */
     nodeStates?: Record<string, { status: string; error?: string | null }> | null;
   }>(),
@@ -85,27 +114,31 @@ const emit = defineEmits<{
 
 const isEdit = computed(() => props.mode === 'edit');
 
-/**
- * Node list handed to VueFlow: passthrough in edit mode; in monitor mode the
- * node class is bound to the node's run status (`at-node-<status>`) and
- * failed/interrupted nodes expose their error as a native `title` tooltip on
- * the node container via VueFlow's `domAttributes` escape hatch (spec §3.1).
- */
+/** Every node renders as the member card; enriched data is passed through. */
 const displayNodes = computed(() =>
-  props.nodes.map((node) => {
-    if (!isEdit.value) {
-      const state = props.nodeStates?.[node.id];
-      if (state?.status) {
-        return {
-          ...node,
-          class: `at-node-${state.status}`,
-          ...(state.error ? { domAttributes: { title: state.error } } : {}),
-        };
-      }
-    }
-    return node;
-  }),
+  props.nodes.map((node) => ({
+    ...node,
+    type: 'member',
+  })),
 );
+
+/**
+ * Edges handed to VueFlow: arrow markers on all of them, plus a running
+ * animation on edges whose SOURCE node is currently running (monitor mode
+ * only; status comes from the node's enriched data).
+ */
+const displayEdges = computed(() => {
+  const statusByNodeId = new Map(
+    props.nodes.map((node) => [node.id, (node.data as Record<string, unknown>)?.status]),
+  );
+  return props.edges.map((edge) => {
+    const next: FlowEdgePayload = { ...edge, markerEnd: MarkerType.ArrowClosed };
+    if (!isEdit.value && statusByNodeId.get(edge.source) === 'running') {
+      next.animated = true;
+    }
+    return next;
+  });
+});
 
 /** Normalize a raw VueFlow connection and drop self-loops. */
 function onConnect(connection: Connection) {
@@ -147,54 +180,5 @@ function onPaneClick() {
   border-radius: 12px;
   overflow: hidden;
   background: var(--dashboard-surface, rgba(128, 128, 128, 0.04));
-}
-
-/* Node states in monitor mode. The classes land on elements rendered inside
-   the VueFlow subtree, so :deep() is required; colors use translucent rgba
-   plus a solid accent so they read on both light and dark themes. */
-.teams-flow-canvas :deep(.vue-flow__node.at-node-pending) {
-  border-color: rgba(148, 163, 184, 0.9);
-  background: rgba(100, 116, 139, 0.25);
-  color: inherit;
-}
-
-.teams-flow-canvas :deep(.vue-flow__node.at-node-running) {
-  border-color: #60a5fa;
-  background: rgba(59, 130, 246, 0.22);
-  color: inherit;
-  animation: at-node-pulse 1.4s ease-in-out infinite;
-}
-
-.teams-flow-canvas :deep(.vue-flow__node.at-node-done) {
-  border-color: #4ade80;
-  background: rgba(34, 197, 94, 0.2);
-  color: inherit;
-}
-
-.teams-flow-canvas :deep(.vue-flow__node.at-node-failed) {
-  border-color: #f87171;
-  background: rgba(239, 68, 68, 0.22);
-  color: inherit;
-}
-
-.teams-flow-canvas :deep(.vue-flow__node.at-node-skipped) {
-  border-color: #facc15;
-  background: rgba(250, 204, 21, 0.18);
-  color: inherit;
-}
-
-@keyframes at-node-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.55);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(96, 165, 250, 0);
-  }
-}
-
-/* Edit mode: nodes bound to a member that no longer exists. */
-.teams-flow-canvas :deep(.vue-flow__node.at-node-missing) {
-  border: 1px dashed #f87171;
 }
 </style>

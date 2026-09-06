@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia } from 'pinia';
 import { nextTick } from 'vue';
 import zh from '@/i18n/locales/zh-CN/features/agent-teams.json';
+import { collabMemberColor } from '@/utils/memberColors';
 
 const fixtures = vi.hoisted(() => ({
   team: {
@@ -684,6 +685,87 @@ describe('RunMonitor history handoff', () => {
     await flushPromises();
 
     expect(runMocks.openRun).toHaveBeenCalledWith('run-9', fixtures.runRow);
+  });
+});
+
+describe('RunMonitor DAG node enrichment', () => {
+  async function openDag(wrapper: VueWrapper<any>) {
+    await wrapper.findComponent({ name: 'VBtnToggleStub' }).vm.$emit('update:modelValue', 'dag');
+    await nextTick();
+    return wrapper.findComponent({ name: 'TeamsFlowCanvasStub' });
+  }
+
+  it('enriches dag nodes with member color, status, error, in-degree and interactive', async () => {
+    runMocks.loadActiveRuns.mockResolvedValue([fixtures.runRow]); // n1 -> n2
+    runMocks.runState.value = makeRunState({
+      runId: 'run-9',
+      status: 'interrupted',
+      nodeStates: {
+        n1: { status: 'running' },
+        n2: { status: 'failed', error: '模型返回 500' },
+      },
+    });
+    const wrapper = mountRun();
+    await flushPromises();
+    const canvas = await openDag(wrapper);
+
+    const nodes = canvas.props('nodes');
+    expect(nodes[0].data).toMatchObject({
+      label: 'Alice (n1)',
+      memberName: 'Alice',
+      memberId: 'm1',
+      memberColor: collabMemberColor('Alice'),
+      status: 'running',
+      inDegree: 0,
+      interactive: true,
+      taskPreview: 'A',
+    });
+    expect(nodes[0].data.error).toBeUndefined();
+    // n2 sits behind the n1->n2 edge and carries the folded node error.
+    expect(nodes[1].data).toMatchObject({
+      memberName: 'Bob',
+      memberId: 'm2',
+      memberColor: collabMemberColor('Bob'),
+      status: 'failed',
+      error: '模型返回 500',
+      inDegree: 1,
+    });
+  });
+
+  it('prefers task_rendered for the card preview and truncates it at 60 chars', async () => {
+    const longTask = '任务'.repeat(50); // 100 chars
+    runMocks.loadActiveRuns.mockResolvedValue([
+      {
+        ...fixtures.runRow,
+        graph: {
+          nodes: [{ id: 'n1', member_id: 'm1', task: 'short', task_rendered: longTask }],
+          edges: [],
+        },
+      },
+    ]);
+    runMocks.runState.value = makeRunState({ runId: 'run-9', status: 'interrupted' });
+    const wrapper = mountRun();
+    await flushPromises();
+    const canvas = await openDag(wrapper);
+
+    expect(canvas.props('nodes')[0].data.taskPreview).toBe(`${longTask.slice(0, 60)}…`);
+  });
+
+  it('falls back to the raw task and keeps nodes without a folded state clean', async () => {
+    runMocks.loadActiveRuns.mockResolvedValue([fixtures.runRow]);
+    runMocks.runState.value = makeRunState({
+      runId: 'run-9',
+      status: 'interrupted',
+      nodeStates: {},
+    });
+    const wrapper = mountRun();
+    await flushPromises();
+    const canvas = await openDag(wrapper);
+
+    const nodes = canvas.props('nodes');
+    expect(nodes[0].data.taskPreview).toBe('A');
+    expect(nodes[0].data.status).toBeUndefined();
+    expect(nodes[0].data.error).toBeUndefined();
   });
 });
 

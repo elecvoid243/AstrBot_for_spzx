@@ -195,6 +195,7 @@ import { configProfileApi, skillApi, toolApi } from '@/api/v1';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useModuleI18n } from '@/i18n/composables';
 import { useToast } from '@/utils/toast';
+import { collabMemberColor } from '@/utils/memberColors';
 import { extractApiError } from '@/utils/extractApiError';
 import { findCycle, renderableError } from '@/utils/dagCheck';
 import type { DagCheckNode } from '@/utils/dagCheck';
@@ -428,12 +429,39 @@ const memberIds = computed(
   () => new Set((props.team?.members ?? []).map((m: any) => m.member_id)),
 );
 
-/** Nodes flagged with `at-node-missing` when their member was removed. */
-const displayNodes = computed(() =>
-  graphNodes.value.map((node) => {
+/**
+ * Node list handed to the canvas, enriched for the MemberFlowNode card:
+ * member accent color, header title/number, task preview, per-node execution
+ * chip labels, inbound edge count and the missing-member flag. The profile
+ * name comes from the lazily loaded option cache; until that list is fetched
+ * the raw config id is shown (v1 fallback).
+ */
+const displayNodes = computed<FlowNode[]>(() =>
+  graphNodes.value.map((node, index) => {
     const missing = !!node.data.memberId && !memberIds.value.has(node.data.memberId);
-    if (!missing) return node;
-    return { ...node, class: 'at-node-missing' };
+    const exec = executionByNode.value[node.id];
+    const configId = (exec?.config_id ?? '').trim();
+    const personaId = (exec?.persona_id ?? '').trim();
+    const configTitle = configProfileOptions.value.find((p) => p.value === configId)?.title;
+    const rawTask = String(node.data.task ?? '');
+    return {
+      ...node,
+      class: missing ? 'at-node-missing' : node.class,
+      data: {
+        ...node.data,
+        memberColor: collabMemberColor(
+          String(node.data.memberName ?? node.data.memberId ?? node.id),
+        ),
+        nodeTitle: node.id,
+        nodeNumber: index + 1,
+        taskPreview: rawTask.length > 60 ? `${rawTask.slice(0, 60)}…` : rawTask,
+        missingMember: missing,
+        inDegree: graphEdges.value.filter((e) => e.target === node.id).length,
+        interactive: true,
+        configLabel: configId ? (configTitle ?? configId) : undefined,
+        personaLabel: personaId || undefined,
+      },
+    };
   }),
 );
 

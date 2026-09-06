@@ -176,6 +176,7 @@ import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun, type AgentTeamRunSummary } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
 import { useToast } from '@/utils/toast';
+import { collabMemberColor } from '@/utils/memberColors';
 
 interface MonitorTile {
   i: string;
@@ -522,23 +523,38 @@ function memberNodeError(memberId: string): string | null {
 
 // ----- DAG view -----
 // Positions are staggered (run graph snapshots carry no layout map); the
-// canvas fits the view on init anyway.
-const dagNodes = computed<FlowNode[]>(() =>
-  (runGraph.value?.nodes ?? []).map((n: any, i: number) => {
+// canvas fits the view on init anyway. Node data is enriched for the
+// MemberFlowNode card: member color, folded run status/error, task preview
+// (task_rendered when the node already ran, else the raw template) and the
+// inbound edge count. Config/persona chips are omitted in monitor v1 — they
+// are not part of node_states.
+const dagNodes = computed<FlowNode[]>(() => {
+  const edges = runGraph.value?.edges ?? [];
+  const states = runState.value?.nodeStates ?? {};
+  return (runGraph.value?.nodes ?? []).map((n: any, i: number) => {
+    const id = String(n.id ?? `n${i}`);
     const memberId = String(n.member_id ?? '');
     const memberName = String(memberById(memberId).name ?? memberId);
+    const state = states[id];
+    const rawTask = String(n.task_rendered ?? n.task ?? '');
     return {
-      id: String(n.id ?? `n${i}`),
+      id,
       position: { x: 60 + (i % 3) * 220, y: 50 + Math.floor(i / 3) * 140 },
       data: {
-        label: `${memberName} (${n.id})`,
+        label: `${memberName} (${id})`,
         memberName,
         memberId,
+        memberColor: collabMemberColor(memberName),
         task: String(n.task ?? ''),
+        taskPreview: rawTask.length > 60 ? `${rawTask.slice(0, 60)}…` : rawTask,
+        status: state?.status,
+        error: state?.error || undefined,
+        inDegree: edges.filter((e: any) => String(e.to) === id).length,
+        interactive: true,
       },
     };
-  }),
-);
+  });
+});
 
 const dagEdges = computed<FlowEdgePayload[]>(() =>
   (runGraph.value?.edges ?? []).map((e: any) => ({

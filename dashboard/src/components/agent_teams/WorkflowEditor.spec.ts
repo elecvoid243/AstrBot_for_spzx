@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nextTick, ref } from 'vue';
 import type { Ref } from 'vue';
 import zh from '@/i18n/locales/zh-CN/features/agent-teams.json';
+import { collabMemberColor } from '@/utils/memberColors';
 
 const toastMock = vi.hoisted(() => ({
   success: vi.fn(),
@@ -72,21 +73,60 @@ vi.mock('@vue-flow/core', async () => {
       nodesDraggable: { type: Boolean, default: false },
       nodesConnectable: { type: Boolean, default: false },
       elementsSelectable: { type: Boolean, default: false },
+      // Custom node registry forwarded by the canvas; asserted via props().
+      nodeTypes: { type: Object, default: null },
     },
     emits: ['connect', 'nodesChange', 'nodeClick', 'paneClick'],
+    // The default slot hosts the canvas chrome (Background/Controls/MiniMap).
     template: `<div class="vue-flow-stub">
+      <slot />
       <div
         v-for="n in nodes"
         :key="n.id"
         class="vue-flow-stub-node"
         :class="n.class"
         :data-id="n.id"
-        :title="n.domAttributes ? n.domAttributes.title : undefined"
       >{{ n.data ? n.data.label : n.label }}</div>
     </div>`,
   });
-  return { VueFlow: VueFlowStub };
+  return {
+    VueFlow: VueFlowStub,
+    // MemberFlowNode imports these at module scope; the card only renders
+    // them inside a real VueFlow node context.
+    Handle: defineComponent({
+      name: 'HandleStub',
+      props: { type: { type: String, default: 'source' }, position: { type: String, default: '' } },
+      template: '<div class="handle-stub" />',
+    }),
+    Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
+    MarkerType: { Arrow: 'arrow', ArrowClosed: 'arrowclosed' },
+  };
 });
+
+// The canvas chrome packages call useVueFlow() internally (needs a provider),
+// so they are replaced with passthrough stubs rendering identifiable DOM.
+vi.mock('@vue-flow/background', () => ({
+  Background: {
+    name: 'BackgroundStub',
+    props: { gap: { type: Number, default: 20 } },
+    template: '<div class="vf-background-stub" :data-gap="gap" />',
+  },
+}));
+
+vi.mock('@vue-flow/minimap', () => ({
+  MiniMap: {
+    name: 'MiniMapStub',
+    props: { pannable: { type: Boolean, default: false }, zoomable: { type: Boolean, default: false } },
+    template: '<div class="vf-minimap-stub" />',
+  },
+}));
+
+vi.mock('@vue-flow/controls', () => ({
+  Controls: {
+    name: 'ControlsStub',
+    template: '<div class="vf-controls-stub" />',
+  },
+}));
 
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import WorkflowEditor from './WorkflowEditor.vue';
@@ -870,11 +910,98 @@ describe('WorkflowEditor execution config', () => {
   });
 });
 
+describe('WorkflowEditor member card data', () => {
+  /** Expand the inspector's execution config group (loads the option lists). */
+  async function expandExecGroup(wrapper: VueWrapper<any>) {
+    await findButton(wrapper, zh.editor.executionConfig)!.trigger('click');
+    await flushPromises();
+  }
+
+  it('feeds the canvas member cards (color, number, task preview, in-degree)', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW] });
+    await wrapper.find('select.workflow-picker').setValue('wf1');
+    await flushPromises();
+
+    const nodes = canvasNodes(wrapper);
+    expect(nodes[0].type).toBe('member');
+    expect(nodes[0].data).toMatchObject({
+      memberName: 'Alice',
+      memberId: 'm1',
+      memberColor: collabMemberColor('Alice'),
+      nodeTitle: 'n1',
+      nodeNumber: 1,
+      taskPreview: 'Do A',
+      inDegree: 0,
+      interactive: true,
+      missingMember: false,
+    });
+    // n2 sits behind the loaded n1->n2 edge.
+    expect(nodes[1].data).toMatchObject({ nodeNumber: 2, inDegree: 1 });
+  });
+
+  it('truncates long task previews to ~60 chars with an ellipsis', async () => {
+    const longTask = '任务'.repeat(60);
+    const wf = {
+      ...WORKFLOW,
+      graph: { nodes: [{ id: 'n1', member_id: 'm1', task: longTask }], edges: [] },
+      layout: { n1: { x: 0, y: 0 } },
+    };
+    const wrapper = mountEditor({ workflows: [wf] });
+    await wrapper.find('select.workflow-picker').setValue('wf1');
+    await flushPromises();
+
+    expect(canvasNodes(wrapper)[0].data.taskPreview).toBe(`${longTask.slice(0, 60)}…`);
+  });
+
+  it('exposes execution chip labels with the raw config id as fallback', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_WITH_EXEC] });
+    await wrapper.find('select.workflow-picker').setValue('wf3');
+    await flushPromises();
+
+    const nodes = canvasNodes(wrapper);
+    // The profile option cache is not loaded until the inspector expands, so
+    // the card shows the raw execution ids (v1 fallback).
+    expect(nodes[0].data.configLabel).toBe('cfg1');
+    expect(nodes[0].data.personaLabel).toBe('p1');
+    expect(nodes[1].data.configLabel).toBeUndefined();
+    expect(nodes[1].data.personaLabel).toBeUndefined();
+  });
+
+  it('uses the loaded config profile name once the option cache exists', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_WITH_EXEC] });
+    await wrapper.find('select.workflow-picker').setValue('wf3');
+    await flushPromises();
+    await selectNode(wrapper, 'n1');
+    await expandExecGroup(wrapper);
+
+    expect(canvasNodes(wrapper)[0].data.configLabel).toBe('Profile One');
+  });
+
+  it('flags nodes whose member is missing on the card data', async () => {
+    const wrapper = mountEditor({ workflows: [GHOST_WORKFLOW] });
+    await wrapper.find('select.workflow-picker').setValue('wf2');
+    await flushPromises();
+
+    const node = canvasNodes(wrapper)[0];
+    expect(node.data.missingMember).toBe(true);
+    expect(node.class).toContain('at-node-missing');
+  });
+});
+
 describe('TeamsFlowCanvas', () => {
   const NODES = [
-    { id: 'n1', position: { x: 0, y: 0 }, data: { label: 'Alice (n1)' } },
-    { id: 'n2', position: { x: 80, y: 0 }, data: { label: 'Bob (n2)' } },
+    {
+      id: 'n1',
+      position: { x: 0, y: 0 },
+      data: { label: 'Alice (n1)', memberName: 'Alice', memberId: 'm1', task: 'Do A' },
+    },
+    {
+      id: 'n2',
+      position: { x: 80, y: 0 },
+      data: { label: 'Bob (n2)', memberName: 'Bob', memberId: 'm2', task: 'Do B' },
+    },
   ];
+  const EDGES = [{ id: 'e:n1->n2', source: 'n1', target: 'n2' }];
 
   it('edit mode is draggable/connectable/selectable and re-emits normalized connects', async () => {
     const wrapper = mount(TeamsFlowCanvas, {
@@ -913,10 +1040,83 @@ describe('TeamsFlowCanvas', () => {
     expect(wrapper.emitted('selectNode')).toEqual([['n2'], [null]]);
   });
 
-  it('monitor mode locks interaction and binds node status classes', () => {
+  it('renders every node as the member card type with a non-reactive registry', () => {
+    const wrapper = mount(TeamsFlowCanvas, {
+      props: { nodes: NODES, edges: [], mode: 'edit' },
+      global: { stubs },
+    }) as VueWrapper<any>;
+    const flow = canvas(wrapper);
+
+    const nodes = flow.props('nodes') as any[];
+    expect(nodes.map((n) => n.type)).toEqual(['member', 'member']);
+    // Enriched data is forwarded as-is for the card to render.
+    expect(nodes[0].data).toMatchObject({ memberName: 'Alice', memberId: 'm1', task: 'Do A' });
+    expect(nodes[0].data.label).toBe('Alice (n1)');
+
+    const registry = flow.props('nodeTypes') as Record<string, unknown>;
+    expect(registry.member).toBeTruthy();
+  });
+
+  it('adds arrow markers to every edge and never animates in edit mode', () => {
+    const wrapper = mount(TeamsFlowCanvas, {
+      props: { nodes: NODES, edges: EDGES, mode: 'edit' },
+      global: { stubs },
+    }) as VueWrapper<any>;
+
+    const out = canvas(wrapper).props('edges') as any[];
+    expect(out).toHaveLength(1);
+    expect(out[0].markerEnd).toBe('arrowclosed');
+    expect(out[0].animated).toBeFalsy();
+  });
+
+  it('animates monitor edges only from running source nodes', () => {
+    const nodes = [
+      { id: 'n1', position: { x: 0, y: 0 }, data: { label: 'n1', status: 'running' } },
+      { id: 'n2', position: { x: 80, y: 0 }, data: { label: 'n2', status: 'pending' } },
+      { id: 'n3', position: { x: 160, y: 0 }, data: { label: 'n3', status: 'done' } },
+    ];
     const wrapper = mount(TeamsFlowCanvas, {
       props: {
-        nodes: NODES,
+        nodes,
+        edges: [
+          { id: 'e1', source: 'n1', target: 'n2' },
+          { id: 'e2', source: 'n2', target: 'n3' },
+          { id: 'e3', source: 'unknown', target: 'n1' },
+        ],
+        mode: 'monitor',
+        nodeStates: {
+          n1: { status: 'running' },
+          n2: { status: 'pending' },
+          n3: { status: 'done' },
+        },
+      },
+      global: { stubs },
+    }) as VueWrapper<any>;
+
+    const out = canvas(wrapper).props('edges') as any[];
+    expect(out.map((e) => e.markerEnd)).toEqual(['arrowclosed', 'arrowclosed', 'arrowclosed']);
+    // e1's source n1 is running -> animated; e2/e3 are not.
+    expect(out[0].animated).toBe(true);
+    expect(out[1].animated).toBeFalsy();
+    expect(out[2].animated).toBeFalsy();
+  });
+
+  it('monitor mode locks interaction, forwards status data and drops domAttributes tooltips', () => {
+    const nodes = [
+      {
+        id: 'n1',
+        position: { x: 0, y: 0 },
+        data: { label: 'Alice (n1)', status: 'running', error: undefined },
+      },
+      {
+        id: 'n2',
+        position: { x: 80, y: 0 },
+        data: { label: 'Bob (n2)', status: 'failed', error: '模型返回 500' },
+      },
+    ];
+    const wrapper = mount(TeamsFlowCanvas, {
+      props: {
+        nodes,
         edges: [],
         mode: 'monitor',
         nodeStates: {
@@ -930,15 +1130,34 @@ describe('TeamsFlowCanvas', () => {
 
     expect(flow.props('nodesDraggable')).toBe(false);
     expect(flow.props('nodesConnectable')).toBe(false);
-    const nodes = flow.props('nodes') as any[];
-    expect(nodes[0].class).toBe('at-node-running');
-    expect(nodes[1].class).toBe('at-node-failed');
-    // Failed/interrupted nodes carry their error as a native tooltip on the
-    // node container (VueFlow domAttributes escape hatch); clean nodes none.
-    expect(nodes[1].domAttributes).toEqual({ title: '模型返回 500' });
-    expect(nodes[0].domAttributes).toBeUndefined();
-    const rendered = wrapper.findAll('.vue-flow-stub-node');
-    expect(rendered[1].attributes('title')).toBe('模型返回 500');
-    expect(rendered[0].attributes('title')).toBeUndefined();
+    const out = flow.props('nodes') as any[];
+    // The card owns status/error rendering: data passes through untouched and
+    // the node-level domAttributes tooltip escape hatch is gone (no double
+    // tooltip on failed nodes).
+    expect(out[0].data).toMatchObject({ status: 'running' });
+    expect(out[1].data).toMatchObject({ status: 'failed', error: '模型返回 500' });
+    for (const node of out) {
+      expect(node.domAttributes).toBeUndefined();
+    }
+  });
+
+  it('mounts the canvas chrome (background, controls, minimap) in both modes', () => {
+    for (const mode of ['edit', 'monitor'] as const) {
+      const wrapper = mount(TeamsFlowCanvas, {
+        props: { nodes: NODES, edges: EDGES, mode },
+        global: { stubs },
+      }) as VueWrapper<any>;
+
+      expect(wrapper.find('.vf-background-stub').exists()).toBe(true);
+      expect(wrapper.find('.vf-background-stub').attributes('data-gap')).toBe('16');
+      expect(wrapper.find('.vf-controls-stub').exists()).toBe(true);
+      const minimap = wrapper.find('.vf-minimap-stub');
+      expect(minimap.exists()).toBe(true);
+      // MiniMap is rendered with pannable + zoomable enabled.
+      const minimapComponent = wrapper.findComponent({ name: 'MiniMapStub' });
+      expect(minimapComponent.props('pannable')).toBe(true);
+      expect(minimapComponent.props('zoomable')).toBe(true);
+      wrapper.unmount();
+    }
   });
 });

@@ -297,3 +297,58 @@ async def test_update_member_rejects_out_of_range_numbers(tmp_path):
             member_id,
             {"runner_config": {"context_length": -5}},
         )
+
+
+@pytest.mark.asyncio
+async def test_update_member_name_only_does_not_re_pin_session(tmp_path):
+    """A name/runner_config edit must not recreate the member conversation."""
+    _, svc = await make_service(tmp_path)
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member = team["members"][0]
+    conversations_before = len(svc.core_lifecycle.conversation_manager.created)
+    pins_before = len(svc.core_lifecycle.provider_manager.set)
+    await svc.update_member(
+        "owner0",
+        team["team_id"],
+        member["member_id"],
+        {"name": "主管", "runner_config": {"max_steps": 5}},
+    )
+    assert len(svc.core_lifecycle.conversation_manager.created) == conversations_before
+    assert len(svc.core_lifecycle.provider_manager.set) == pins_before
+
+
+@pytest.mark.asyncio
+async def test_update_member_changed_persona_provider_re_pins(tmp_path, monkeypatch):
+    """An actual persona/provider change re-pins; same-value edits do not."""
+    _, svc = await make_service(tmp_path)
+    monkeypatch.setattr(svc.core_lifecycle.persona_mgr, "personas_v3", [{"name": "p9"}])
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    # 主管 has persona p1 -> switching to p9 must create a new conversation.
+    member = team["members"][0]
+    conversations_before = len(svc.core_lifecycle.conversation_manager.created)
+    await svc.update_member(
+        "owner0", team["team_id"], member["member_id"], {"persona_id": "p9"}
+    )
+    assert (
+        len(svc.core_lifecycle.conversation_manager.created) == conversations_before + 1
+    )
+    assert svc.core_lifecycle.conversation_manager.created[-1]["persona_id"] == "p9"
+    # Setting the same persona again must NOT re-pin.
+    await svc.update_member(
+        "owner0", team["team_id"], member["member_id"], {"persona_id": "p9"}
+    )
+    assert (
+        len(svc.core_lifecycle.conversation_manager.created) == conversations_before + 1
+    )
+    # 写手 has provider prov-a -> switching to prov-b must set the provider.
+    writer = team["members"][1]
+    pins_before = len(svc.core_lifecycle.provider_manager.set)
+    await svc.update_member(
+        "owner0", team["team_id"], writer["member_id"], {"provider_id": "prov-b"}
+    )
+    assert len(svc.core_lifecycle.provider_manager.set) == pins_before + 1
+    assert svc.core_lifecycle.provider_manager.set[-1][0] == "prov-b"

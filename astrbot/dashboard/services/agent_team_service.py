@@ -428,23 +428,34 @@ class AgentTeamService:
                 payload["runner_config"]
             )
 
-        # Re-pin the member session (same helpers as _create_member) so the new
-        # persona/provider take effect on the next dispatch.
-        umo = member.get("umo") or ""
-        if updated.get("persona_id"):
-            await self.core_lifecycle.conversation_manager.new_conversation(
-                umo, "webchat", persona_id=updated["persona_id"]
-            )
-        if updated.get("provider_id"):
-            await self.core_lifecycle.provider_manager.set_provider(
-                updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
-            )
-
         members = [
             updated if m["member_id"] == member_id else m
             for m in team.get("members", [])
         ]
         await self.db.update_agent_team(team_id, members=members)
+
+        # Re-pin the member session (same helpers as _create_member) so a
+        # changed persona/provider takes effect on the next dispatch. Only
+        # when the value actually changed: new_conversation always creates a
+        # fresh conversation, so a name-only edit must never drop the member's
+        # active chat context. Re-pinning is only for SETTING a persona or
+        # provider; clearing them back to None keeps the session as-is.
+        umo = member.get("umo") or ""
+        persona_changed = "persona_id" in payload and (
+            payload["persona_id"] or None
+        ) != member.get("persona_id")
+        if persona_changed and updated.get("persona_id"):
+            await self.core_lifecycle.conversation_manager.new_conversation(
+                umo, "webchat", persona_id=updated["persona_id"]
+            )
+        provider_changed = "provider_id" in payload and (
+            payload["provider_id"] or None
+        ) != member.get("provider_id")
+        if provider_changed and updated.get("provider_id"):
+            await self.core_lifecycle.provider_manager.set_provider(
+                updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
+            )
+
         return await self.get_team(username, team_id)
 
     # ---------- workflows ----------

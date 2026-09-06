@@ -44,6 +44,16 @@ class NodeExecutionBinding:
     """The tool names enabled for this member, if restricted."""
     skills: list[str] | None = None
     """The skill names enabled for this member, if restricted."""
+    provider_id: str | None = None
+    """Provider override for this member turn, if any."""
+    max_steps: int | None = None
+    """Tool-loop step limit override (agent_runner.config.misc.max_steps)."""
+    tool_call_timeout: float | None = None
+    """Tool call timeout override in seconds."""
+    kb_names: list[str] | None = None
+    """Knowledge base names override (kb_names)."""
+    context_length: int | None = None
+    """Context length override (request-level model/compression cap)."""
 
 
 # Registry storage keyed by execution token. Module-level on purpose: the

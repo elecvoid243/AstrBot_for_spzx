@@ -28,6 +28,30 @@ from astrbot.dashboard.services.agent_team_service import (
 TERMINAL_RUN_STATUSES = ("completed", "stopped", "failed")
 
 
+def _merged_member_execution(member: dict, node_execution: dict | None) -> dict:
+    """Merge member-level config under the node's execution block (spec §3.4).
+
+    The member's top-level persona_id/provider_id pins and its runner_config
+    block fill the gaps; the node's execution block always wins on collision.
+
+    Args:
+        member: The member dict (top-level persona_id/provider_id plus the
+            optional runner_config block).
+        node_execution: The node's execution block, or None when the node
+            carries none.
+
+    Returns:
+        The merged execution dict (member level under node level). The
+        persona_id/provider_id keys are always present (None when unset).
+    """
+    member_level = {
+        **member.get("runner_config", {}),
+        "persona_id": member.get("persona_id") or None,
+        "provider_id": member.get("provider_id") or None,
+    }
+    return {**member_level, **(node_execution or {})}
+
+
 def _run_to_dict(row) -> dict:
     return {
         "run_id": row.run_id,
@@ -399,7 +423,10 @@ class DAGRunner:
             self._emit({"type": "node_status", "node_id": node_id, "status": "failed"})
             self._emit(self._progress())
             return
-        execution = node.get("execution") or {}
+        execution = _merged_member_execution(member, node.get("execution") or {}) or {}
+        # Member-level persona/provider pins and runner_config merge under the
+        # node block (spec §3.4): the node always wins, the member fills the
+        # gaps. A merged config_id feeds the pre-flight guard below too.
         # Pre-flight guard (spec §2.3): a node bound to a config profile that
         # no longer resolves fails before the busy-wait — dispatching a turn
         # would only fail at scheduler-selection time.
@@ -488,13 +515,17 @@ class DAGRunner:
                 state.update(status="pending", started_at=None)
                 await self._persist()
             return
-        # Per-turn execution binding (spec §2.3): a node carrying an
-        # execution block dispatches under a token the EventBus resolves to
-        # the binding's own PipelineScheduler. Registered here, unregistered
-        # in the delivery try's finally below — the token lives exactly for
-        # this turn.
+        # Per-turn execution binding (spec §2.3): a node carrying a resolved
+        # profile (its execution block or the member's runner_config/pins)
+        # dispatches under a token the EventBus resolves to the binding's own
+        # PipelineScheduler. Registered here, unregistered in the delivery
+        # try's finally below — the token lives exactly for this turn. The
+        # merged dict always carries persona_id/provider_id keys (None when
+        # unset), so an explicit non-None scan guards default nodes: a node
+        # with neither block nor member config dispatches with no token, as
+        # before.
         token = None
-        if execution:
+        if any(value is not None for value in execution.values()):
             token = AgentTeamExecutionRegistry.register(
                 NodeExecutionBinding(
                     run_id=self.run_id,
@@ -503,10 +534,15 @@ class DAGRunner:
                     node_id=node_id,
                     umo=member["umo"],
                     owner_username=self.username,
-                    config_id=execution.get("config_id"),
-                    persona_id=execution.get("persona_id"),
+                    config_id=execution.get("config_id") or None,
+                    persona_id=execution.get("persona_id") or None,
                     tools=execution.get("tools"),
                     skills=execution.get("skills"),
+                    provider_id=execution.get("provider_id") or None,
+                    max_steps=execution.get("max_steps"),
+                    tool_call_timeout=execution.get("tool_call_timeout"),
+                    kb_names=execution.get("kb_names"),
+                    context_length=execution.get("context_length"),
                 )
             )
         # Stream deltas for this turn are tagged via the session -> turn_id

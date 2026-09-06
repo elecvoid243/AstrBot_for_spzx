@@ -374,14 +374,25 @@ class AgentTeamService:
         try:
             validate_dag(nodes, edges)
         except TeamDAGError as e:
-            text = str(e)
-            if "duplicate" in text:
+            kind = getattr(e, "kind", None)
+            if kind == "duplicate":
                 path, code = "nodes", "DUPLICATE"
-            elif "unknown node" in text:
+            elif kind == "dangling":
                 path, code = "edges", "INVALID"
-            else:
+            elif kind == "missing_id":
+                path, code = "nodes", "INVALID"
+            elif kind == "cycle":
                 path, code = "edges", "CYCLE"
-            field_errors.append({"path": path, "code": code, "message": text})
+            else:
+                # Substring fallback for raise sites without a kind.
+                text = str(e)
+                if "duplicate" in text:
+                    path, code = "nodes", "DUPLICATE"
+                elif "unknown node" in text:
+                    path, code = "edges", "INVALID"
+                else:
+                    path, code = "edges", "CYCLE"
+            field_errors.append({"path": path, "code": code, "message": str(e)})
         for node in nodes:
             if not str(node.get("task") or "").strip():
                 field_errors.append(

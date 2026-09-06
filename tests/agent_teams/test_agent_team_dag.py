@@ -3,6 +3,7 @@
 
 import pytest
 
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
     downstream_of,
@@ -10,6 +11,15 @@ from astrbot.dashboard.services.agent_team_dag import (
     render_task,
     topological_layers,
     validate_dag,
+)
+from astrbot.dashboard.services.agent_team_service import (
+    AgentTeamService,
+    AgentTeamsServiceError,
+)
+from tests.agent_teams.test_agent_team_service import (
+    MEMBERS,
+    FakeChatService,
+    FakeCoreLifecycle,
 )
 
 NODES = [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}, {"id": "n4"}]
@@ -151,3 +161,68 @@ def test_render_task_default_and_none_inject_identical():
         "{{n1}}", "x", {"n1": "y"}, max_length=10, auto_inject_predecessors=None
     )
     assert a == b == "y"
+
+
+# ---------- TeamDAGError kinds + workflow field-error classification ----------
+# (fold-in seed: kind-based mapping fixes the missing-id -> edges/CYCLE
+# misclassification from Plans 1-2 reviews)
+
+
+def test_validate_dag_raises_with_kinds():
+    with pytest.raises(TeamDAGError) as missing:
+        validate_dag([{"id": ""}], [])
+    assert missing.value.kind == "missing_id"
+    with pytest.raises(TeamDAGError) as dup:
+        validate_dag([{"id": "n1"}, {"id": "n1"}], [])
+    assert dup.value.kind == "duplicate"
+    with pytest.raises(TeamDAGError) as dangling:
+        validate_dag(NODES, [{"from": "nx", "to": "n1"}])
+    assert dangling.value.kind == "dangling"
+    with pytest.raises(TeamDAGError) as cycle:
+        validate_dag(NODES, EDGES + [{"from": "n4", "to": "n1"}])
+    assert cycle.value.kind == "cycle"
+
+
+@pytest.mark.asyncio
+async def test_workflow_field_errors_classified_by_dag_error_kind(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    svc = AgentTeamService(
+        db=db,
+        core_lifecycle=FakeCoreLifecycle(),
+        chat_service=FakeChatService(),
+    )
+    team = await svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member_id = team["members"][0]["member_id"]
+    # A node without an id maps to nodes/INVALID (previously edges/CYCLE).
+    with pytest.raises(AgentTeamsServiceError) as missing:
+        await svc.create_workflow(
+            "alice",
+            team["team_id"],
+            {
+                "name": "w1",
+                "graph": {
+                    "nodes": [{"task": "x", "member_id": member_id}],
+                    "edges": [],
+                },
+            },
+        )
+    assert missing.value.field_errors[0]["path"] == "nodes"
+    assert missing.value.field_errors[0]["code"] == "INVALID"
+    # A dangling edge maps to edges/INVALID.
+    with pytest.raises(AgentTeamsServiceError) as dangling:
+        await svc.create_workflow(
+            "alice",
+            team["team_id"],
+            {
+                "name": "w2",
+                "graph": {
+                    "nodes": [{"id": "n1", "task": "x", "member_id": member_id}],
+                    "edges": [{"from": "n1", "to": "ghost"}],
+                },
+            },
+        )
+    assert dangling.value.field_errors[0]["path"] == "edges"
+    assert dangling.value.field_errors[0]["code"] == "INVALID"

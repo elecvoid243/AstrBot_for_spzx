@@ -1,12 +1,16 @@
 """Transcript tests: repo rows against SQLite + runner-level sink wiring."""
 
+import asyncio
 import logging
 
 import pytest
 
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
-from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
+from astrbot.dashboard.services.agent_team_ports import (
+    TeamPorts,
+    build_ports_for_test,
+)
 from astrbot.dashboard.services.agent_team_run_service import (
     AgentTeamRunService,
     AutoOrchestrator,
@@ -490,3 +494,177 @@ async def test_service_wires_production_transcript_sink(tmp_path):
     assert rows[0].node_id == "n1"
     assert rows[0].turn_id == rows[-1].turn_id
     assert all(r.turn_id for r in rows)
+
+
+# ---------- choice suspension (spec §4.5) ----------
+
+
+@pytest.mark.asyncio
+async def test_choice_shown_suspends_deadline_until_resolved(tmp_path):
+    """A pending ask_user_choice re-arms the collect deadline: the node must
+    not fail with "reply timeout" while the user looks at the choice box, and
+    the resolved turn completes normally."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    make_members()
+    events: list = []
+    delivered: list = []
+    gate = asyncio.Event()
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append(text)
+        return "mid-1"
+
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
+        # The choice box shows almost immediately; the "user" answers well
+        # past reply_timeout; the turn then completes. Mirrors the real
+        # collect contract: the choice event is emitted to the ports sink
+        # (the run bus in the service path) AND handed to on_event.
+        await asyncio.sleep(0.05)
+        shown = {
+            "type": "choice",
+            "direction": "shown",
+            "session_id": session_id,
+            "data": {"prompt": "选一个"},
+        }
+        events.append(shown)
+        on_event(shown)
+        await gate.wait()
+        on_event(
+            {
+                "type": "choice",
+                "direction": "resolved",
+                "session_id": session_id,
+                "reason": "submit",
+            }
+        )
+        return "选好了", [{"type": "plain", "data": "选好了"}]
+
+    ports = TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=events.append
+    )
+    bus = RunEventBus()
+    runner = DAGRunner(
+        run_id="rchoice",
+        team_id="t1",
+        graph={"nodes": [{"id": "n1", "member_id": "mA", "task": "t"}], "edges": []},
+        config=DAG_CONFIG,
+        members=list(MEMBER_BY_SESSION.values()),
+        ports=ports,
+        db=db,
+        bus=bus,
+        username="alice",
+        run_input="x",
+    )
+    runner.config["reply_timeout"] = 0.3
+    task = asyncio.create_task(runner.run())
+    for _ in range(250):
+        if any(
+            e.get("type") == "node_status" and e.get("waiting_choice")
+            for e in bus.history()
+        ):
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("waiting_choice node_status never emitted")
+    # Outlive the original deadline (0.3s): without the re-arm the node would
+    # already be failing with "reply timeout" right about now.
+    await asyncio.sleep(0.4)
+    assert runner.node_states["n1"]["status"] == "running"
+    gate.set()
+    await asyncio.wait_for(task, timeout=5.0)
+
+    assert runner.status == "completed"
+    assert runner.node_states["n1"]["status"] == "done"
+    assert runner.node_states["n1"]["result"] == "选好了"
+
+    # collect's own choice events reach the bus exactly once (the runner's
+    # closure only flips the flag + announces waiting_choice — no re-emit).
+    shown = [
+        e for e in events if e.get("type") == "choice" and e.get("direction") == "shown"
+    ]
+    assert len(shown) == 1
+    waiting = [
+        e
+        for e in bus.history()
+        if e.get("type") == "node_status" and e.get("waiting_choice")
+    ]
+    assert len(waiting) == 1 and waiting[0]["node_id"] == "n1"
+
+
+@pytest.mark.asyncio
+async def test_service_get_transcript_pages_chronologically(tmp_path):
+    """Service transcript paging: chronological rows with the oldest id as
+    the next_before_id cursor; an exhausted page is empty with a None
+    cursor; an unknown run errors."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    chat = FakeChatService()
+    team_svc = AgentTeamService(
+        db=db, core_lifecycle=FakeCoreLifecycle(), chat_service=chat
+    )
+    team = await team_svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    MEMBER_BY_SESSION.clear()
+    for m in team["members"]:
+        MEMBER_BY_SESSION[m["session_id"]] = m
+    graph = {
+        "nodes": [
+            {"id": "n1", "member_id": team["members"][0]["member_id"], "task": "做"}
+        ]
+    }
+    wf = await team_svc.create_workflow(
+        "alice", team["team_id"], {"name": "w", "graph": graph}
+    )
+    run_svc = AgentTeamRunService(db=db, chat_service=chat)
+    responses = {m["name"]: f"{m['name']}-done" for m in team["members"]}
+    run_svc.ports_factory = lambda username, emit: scripted_ports(responses, [], [])
+    snapshot = await run_svc.start_run(
+        "alice",
+        team["team_id"],
+        {"mode": "dag", "input": "主题", "workflow_id": wf["workflow_id"]},
+    )
+    runner = run_svc._runners[snapshot["run_id"]]
+    await wait_terminal(runner)
+    member_id = team["members"][0]["member_id"]
+
+    page = await run_svc.get_transcript("alice", snapshot["run_id"], member_id)
+    assert [m["direction"] for m in page["messages"]] == ["sent", "reply"]
+    assert page["messages"][0]["text"] == "做"
+    assert page["messages"][1]["text"] == "主管-done"
+    assert page["messages"][0]["node_id"] == "n1"
+    assert page["messages"][0]["turn_id"] == page["messages"][1]["turn_id"]
+    oldest_id = page["messages"][0]["id"]
+    assert page["next_before_id"] == oldest_id
+
+    # Exhausted page: empty messages, None cursor.
+    last = await run_svc.get_transcript(
+        "alice", snapshot["run_id"], member_id, before_id=oldest_id
+    )
+    assert last == {"messages": [], "next_before_id": None}
+
+    # A fresh run with no rows yields the empty shape too.
+    await db.create_agent_team_run(
+        run_id="rempty",
+        team_id=team["team_id"],
+        workflow_id=None,
+        mode="dag",
+        input="x",
+        status="completed",
+        graph_snapshot={},
+        node_states={},
+        rounds=[],
+    )
+    empty = await run_svc.get_transcript("alice", "rempty", member_id)
+    assert empty == {"messages": [], "next_before_id": None}
+
+    from astrbot.dashboard.services.agent_team_service import AgentTeamsServiceError
+
+    with pytest.raises(AgentTeamsServiceError, match="不存在"):
+        await run_svc.get_transcript("alice", "r-ghost", member_id)

@@ -10,15 +10,24 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
 
 class TeamDAGError(ValueError):
-    """Raised for invalid workflow graphs or task template render failures."""
+    """Raised for invalid workflow graphs or task template render failures.
+
+    kind: machine-readable classification for field-error mapping — one of
+    ``cycle | duplicate | dangling | missing_id``; None for render-time
+    errors (those surface as node failures, not workflow field errors).
+    """
+
+    def __init__(self, message: str, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def _node_ids(nodes: list[dict]) -> list[str]:
     ids = [str(n.get("id", "")) for n in nodes]
     if any(not i for i in ids):
-        raise TeamDAGError("node missing id")
+        raise TeamDAGError("node missing id", kind="missing_id")
     if len(set(ids)) != len(ids):
-        raise TeamDAGError("duplicate node id")
+        raise TeamDAGError("duplicate node id", kind="duplicate")
     return ids
 
 
@@ -42,7 +51,9 @@ def validate_dag(nodes: list[dict], edges: list[dict]) -> dict[str, list[str]]:
     for edge in edges:
         src, dst = str(edge.get("from", "")), str(edge.get("to", ""))
         if src not in id_set or dst not in id_set:
-            raise TeamDAGError(f"edge references unknown node: {src!r}->{dst!r}")
+            raise TeamDAGError(
+                f"edge references unknown node: {src!r}->{dst!r}", kind="dangling"
+            )
         adjacency[src].append(dst)
 
     # Kahn's algorithm; leftover nodes mean a cycle.
@@ -60,7 +71,7 @@ def validate_dag(nodes: list[dict], edges: list[dict]) -> dict[str, list[str]]:
             if indegree[dst] == 0:
                 queue.append(dst)
     if visited != len(ids):
-        raise TeamDAGError("cycle detected in workflow graph")
+        raise TeamDAGError("cycle detected in workflow graph", kind="cycle")
     return adjacency
 
 

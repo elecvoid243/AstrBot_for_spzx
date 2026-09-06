@@ -998,7 +998,7 @@ async def test_runner_fails_node_with_deleted_config_profile(tmp_path):
         delivered.append(session_id)
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "回复", []
 
     graph = {
@@ -1054,7 +1054,7 @@ async def test_runner_config_checker_pass_runs_normally(tmp_path):
         delivered.append(session_id)
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "回复", []
 
     graph = {
@@ -1101,7 +1101,7 @@ async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
         delivered.append(session_id)
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "回复", []
 
     run_svc = AgentTeamRunService(
@@ -1233,7 +1233,7 @@ async def test_runner_delivers_node_turn_with_execution_token(tmp_path):
         )
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "回复", []
 
     db, runner = token_runner(tmp_path, "rtok", deliver, collect)
@@ -1265,7 +1265,7 @@ async def test_runner_deliver_failure_still_unregisters_token(tmp_path):
         captured["token"] = execution_token
         raise RuntimeError("deliver exploded")
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "", []
 
     db, runner = token_runner(tmp_path, "rtokfail", deliver, collect)
@@ -1293,7 +1293,7 @@ async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
         captured["token"] = execution_token
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         return "回复", []
 
     runner = DAGRunner(
@@ -1343,7 +1343,7 @@ async def test_runner_stop_mid_turn_still_unregisters_token(tmp_path):
         captured["token"] = execution_token
         return "mid-1"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(session_id, message_id, member_id=None, on_event=None):
         await gate.wait()
         return "", []
 

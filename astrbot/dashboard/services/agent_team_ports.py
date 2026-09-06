@@ -46,7 +46,13 @@ class TeamPorts:
     # collect call with the executing member; implementations stamp that tag
     # onto the emitted stream message events (spec §6.6 message events carry
     # member_id) so the dashboard reducer can route the deltas.
-    collect: Callable[[str, str, str | None], Awaitable[tuple[str, list]]]
+    # The 4th kwarg `on_event` receives the same choice events collect emits
+    # (spec §4.5): the run bus is one consumer (reducer/transcript) and the
+    # runner's callback is the other (choice-suspension signal).
+    collect: Callable[
+        [str, str, str | None, Callable[[dict], None] | None],
+        Awaitable[tuple[str, list]],
+    ]
     is_busy: Callable[[str], bool]
     emit: Callable[[dict], None]
     reply_timeout: float = 600.0
@@ -126,7 +132,10 @@ def build_ports_for_test(
         return message_id
 
     async def collect(
-        session_id: str, message_id: str, member_id: str | None = None
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event: Callable[[dict], None] | None = None,
     ) -> tuple[str, list]:
         from astrbot.dashboard.services.chat_service import BotMessageAccumulator
 
@@ -164,6 +173,11 @@ def build_ports_for_test(
                 if member_id:
                     event["member_id"] = member_id
                 emit(event)
+                # Two consumers, one payload: the emit above feeds the run
+                # bus (reducer/transcript), on_event signals the runner's
+                # choice-suspension deadline loop.
+                if on_event is not None:
+                    on_event(event)
             elif msg_type == "interactive_choice_resolved":
                 # Spec §4.5: the user answered the choice box; the runner
                 # resumes the turn (and its suspended reply timeout).
@@ -176,6 +190,8 @@ def build_ports_for_test(
                 if member_id:
                     event["member_id"] = member_id
                 emit(event)
+                if on_event is not None:
+                    on_event(event)
             if msg_type == "plain":
                 acc.add_plain(
                     payload.get("data", ""),

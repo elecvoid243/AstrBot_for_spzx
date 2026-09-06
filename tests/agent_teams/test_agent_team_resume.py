@@ -52,7 +52,12 @@ async def test_resume_preserves_done_and_redoes_running(tmp_path):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
         await asyncio.sleep(0.01)
         return "重做完成", [{"type": "plain", "data": "重做完成"}]
 
@@ -215,7 +220,12 @@ async def make_failure_paused_run(tmp_path):
         delivered.append((session_id, text))
         return f"mid-{len(delivered)}"
 
-    async def collect(session_id, message_id, member_id=None):
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
         result = responses[by_session[session_id]["name"]]
         await asyncio.sleep(0.01)
         if isinstance(result, Exception):
@@ -281,3 +291,117 @@ async def test_stop_run_lands_terminal_on_dead_paused_task(tmp_path):
     assert row.status == "stopped"
     stopped = [e for e in run_svc._buses[run_id].history() if e["type"] == "stopped"]
     assert any(e.get("reason") == "user stop" for e in stopped)
+
+
+@pytest.mark.asyncio
+async def test_resume_seeds_prefail_node_status_events(tmp_path):
+    """Fold-in seed: nodes pre-failed on resume (deleted config profile) get
+    seed node_status events on the fresh bus, so a monitor attached after the
+    resume still sees the failure (the runner never executes those nodes)."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    events: list = []
+    delivered: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append((session_id, text))
+        return f"mid-{len(delivered)}"
+
+    async def collect(session_id, message_id, member_id=None, on_event=None):
+        await asyncio.sleep(0.01)
+        return "ok", []
+
+    svc = AgentTeamRunService(
+        db=db,
+        chat_service=FakeChatService(),
+        config_checker=lambda config_id: False,
+    )
+    svc.ports_factory = lambda username, emit: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=events.append
+    )
+    members = [
+        {
+            "member_id": "m1",
+            "name": "a",
+            "session_id": "c1",
+            "umo": "webchat:FriendMessage:c1",
+            "persona_id": None,
+            "provider_id": None,
+            "system_prompt": None,
+        },
+        {
+            "member_id": "m2",
+            "name": "b",
+            "session_id": "c2",
+            "umo": "webchat:FriendMessage:c2",
+            "persona_id": None,
+            "provider_id": None,
+            "system_prompt": None,
+        },
+    ]
+    graph = {
+        "nodes": [
+            {
+                "id": "n1",
+                "member_id": "m1",
+                "task": "t1",
+                "execution": {"config_id": "gone"},
+            },
+            {"id": "n2", "member_id": "m2", "task": "t2"},
+        ],
+        "edges": [],
+    }
+    node_states = {
+        "n1": {
+            "status": "pending",
+            "member_id": "m1",
+            "task_rendered": None,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        },
+        "n2": {
+            "status": "pending",
+            "member_id": "m2",
+            "task_rendered": None,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        },
+    }
+    await db.create_agent_team_run(
+        run_id="rseed",
+        team_id="t1",
+        workflow_id=None,
+        mode="dag",
+        input="x",
+        status="interrupted",
+        graph_snapshot=graph,
+        node_states=node_states,
+        rounds=[],
+    )
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="t",
+        coordinator_member_id="m1",
+        members=members,
+        config={},
+    )
+
+    await svc.resume_run("alice", "rseed")
+
+    history = svc._buses["rseed"].history()
+    seeds = [
+        e
+        for e in history
+        if e.get("type") == "node_status"
+        and e.get("node_id") == "n1"
+        and e.get("status") == "failed"
+    ]
+    assert seeds, "the pre-failed node must be announced on the new bus"
+    assert seeds[0]["error"] == "配置档案已删除"
+    # The seed is the very first event: it precedes every runner event.
+    assert history[0]["node_id"] == "n1" and history[0]["status"] == "failed"

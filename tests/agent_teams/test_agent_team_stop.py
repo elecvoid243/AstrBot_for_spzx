@@ -12,6 +12,7 @@ import pytest
 
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
 from astrbot.dashboard.services.agent_team_run_service import (
     AgentTeamRunService,
@@ -19,7 +20,10 @@ from astrbot.dashboard.services.agent_team_run_service import (
     DAGRunner,
     RunEventBus,
 )
-from astrbot.dashboard.services.agent_team_service import AgentTeamService
+from astrbot.dashboard.services.agent_team_service import (
+    AgentTeamService,
+    AgentTeamsServiceError,
+)
 from tests.agent_teams.test_agent_team_service import (
     MEMBERS,
     FakeChatService,
@@ -73,7 +77,10 @@ def blocking_ports(members: list[dict], events: list, gate: asyncio.Event) -> Te
         return f"mid-{len(events)}"
 
     async def collect(
-        session_id: str, message_id: str, member_id: str | None = None
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
     ) -> tuple[str, list]:
         await gate.wait()
         return "", []
@@ -213,7 +220,10 @@ async def test_stop_propagates_member_dict(tmp_path):
         return "mid-1"
 
     async def collect(
-        session_id: str, message_id: str, member_id: str | None = None
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
     ) -> tuple[str, list]:
         await gate.wait()
         return "", []
@@ -388,3 +398,328 @@ async def test_service_without_hook_defaults_to_none(tmp_path):
     runner.request_stop()  # on_member_stop=None: must not raise
     await asyncio.wait_for(task, timeout=2.0)
     assert runner.status == "stopped"
+
+
+# ---------- member interrupt (spec §4.4) ----------
+
+
+async def make_running_dag_run(tmp_path):
+    """Start a single-node DAG run via the service with a gated collect.
+
+    Returns:
+        (db, run_svc, run_id, runner, team, gate) with the node already in
+        the `running` state and the reply collection blocked on `gate`.
+    """
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    chat = FakeChatService()
+    team_svc = AgentTeamService(
+        db=db, core_lifecycle=FakeCoreLifecycle(), chat_service=chat
+    )
+    team = await team_svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    wf = await team_svc.create_workflow(
+        "alice",
+        team["team_id"],
+        {
+            "name": "w",
+            "graph": {
+                "nodes": [
+                    {"id": "n1", "member_id": team["members"][0]["member_id"], "task": "做"}
+                ]
+            },
+        },
+    )
+    run_svc = AgentTeamRunService(db=db, chat_service=chat)
+    gate = asyncio.Event()
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        return "mid-1"
+
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
+        await gate.wait()
+        return "", []
+
+    run_svc.ports_factory = lambda username, emit: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=emit
+    )
+    snap = await run_svc.start_run(
+        "alice",
+        team["team_id"],
+        {"mode": "dag", "input": "主题", "workflow_id": wf["workflow_id"]},
+    )
+    runner = run_svc._runners[snap["run_id"]]
+    await wait_until(lambda: runner.node_states["n1"]["status"] == "running")
+    return db, run_svc, snap["run_id"], runner, team, gate
+
+
+@pytest.mark.asyncio
+async def test_interrupt_marks_running_node_interrupted(tmp_path, monkeypatch):
+    """Service interrupt: the member's agent stop is requested, the running
+    node lands the independent `interrupted` state, the run pauses (persisted
+    + announced), and a late collect result never overwrites the state."""
+    db, run_svc, run_id, runner, team, gate = await make_running_dag_run(tmp_path)
+    member_a = team["members"][0]
+    stops: list[str] = []
+    monkeypatch.setattr(
+        active_event_registry,
+        "request_agent_stop_all",
+        lambda umo, exclude=None: stops.append(umo),
+    )
+
+    result = await run_svc.interrupt_node("alice", run_id, member_a["member_id"])
+
+    assert result == {"message": "已中断"}
+    assert stops == [member_a["umo"]]
+    state = runner.node_states["n1"]
+    assert state["status"] == "interrupted"
+    assert state["error"] == "用户中断"
+    assert runner.status == "paused"
+    assert runner._progress()["interrupted"] == 1
+    row = await db.get_agent_team_run(run_id)
+    assert row.status == "paused"
+    assert row.node_states["n1"]["status"] == "interrupted"
+    history = run_svc._buses[run_id].history()
+    node_status = [
+        e
+        for e in history
+        if e.get("type") == "node_status" and e.get("status") == "interrupted"
+    ]
+    assert node_status and node_status[-1]["node_id"] == "n1"
+    paused = [e for e in history if e.get("type") == "paused"]
+    assert paused[-1]["reason"] == "node interrupted"
+    assert paused[-1]["node_id"] == "n1"
+
+    # A collect resolving after the interrupt must NOT land the node on
+    # done/failed: the interrupt owns the terminal state.
+    gate.set()
+    await asyncio.wait_for(runner.task, timeout=2.0)
+    assert runner.node_states["n1"]["status"] == "interrupted"
+    assert runner.node_states["n1"]["error"] == "用户中断"
+    row = await db.get_agent_team_run(run_id)
+    assert row.status == "paused"
+    assert row.node_states["n1"]["status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_auto_stops_member_turn_only(tmp_path, monkeypatch):
+    """Auto mode has no node states: the interrupt only requests the member's
+    agent stop; the orchestrator keeps running and records the partial
+    result in the round (spec §4.4)."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    chat = FakeChatService()
+    team_svc = AgentTeamService(
+        db=db, core_lifecycle=FakeCoreLifecycle(), chat_service=chat
+    )
+    team = await team_svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    coordinator = team["members"][0]
+    stops: list[str] = []
+    monkeypatch.setattr(
+        active_event_registry,
+        "request_agent_stop_all",
+        lambda umo, exclude=None: stops.append(umo),
+    )
+    run_svc = AgentTeamRunService(db=db, chat_service=chat)
+    gate = asyncio.Event()
+    events: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        events.append({"type": "sent", "session_id": session_id})
+        return "mid-1"
+
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
+        if session_id == coordinator["session_id"]:
+            await gate.wait()
+        return "回复", []
+
+    run_svc.ports_factory = lambda username, emit: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=emit
+    )
+    snap = await run_svc.start_run(
+        "alice", team["team_id"], {"mode": "auto", "input": "目标"}
+    )
+    orch = run_svc._runners[snap["run_id"]]
+    await wait_until(
+        lambda: any(
+            e.get("type") == "sent" and e.get("session_id") == coordinator["session_id"]
+            for e in events
+        )
+    )
+
+    result = await run_svc.interrupt_node("alice", snap["run_id"], coordinator["member_id"])
+
+    assert result == {"message": "已中断"}
+    assert stops == [coordinator["umo"]]
+    assert orch.status == "running"  # no pause, no node state in auto mode
+
+    # Cleanup: release the turn and stop the orchestrator.
+    orch.request_stop()
+    await asyncio.wait_for(orch.task, timeout=2.0)
+    gate.set()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_unknown_member_errors(tmp_path, monkeypatch):
+    """An unknown member raises before any agent stop is requested."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    chat = FakeChatService()
+    team_svc = AgentTeamService(
+        db=db, core_lifecycle=FakeCoreLifecycle(), chat_service=chat
+    )
+    team = await team_svc.create_team(
+        "alice", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    await db.create_agent_team_run(
+        run_id="rint9",
+        team_id=team["team_id"],
+        workflow_id=None,
+        mode="dag",
+        input="x",
+        status="running",
+        graph_snapshot={},
+        node_states={},
+        rounds=[],
+    )
+    run_svc = AgentTeamRunService(db=db, chat_service=chat)
+    stops: list[str] = []
+    monkeypatch.setattr(
+        active_event_registry,
+        "request_agent_stop_all",
+        lambda umo, exclude=None: stops.append(umo),
+    )
+
+    with pytest.raises(AgentTeamsServiceError, match="成员"):
+        await run_svc.interrupt_node("alice", "rint9", "m-ghost")
+    assert stops == []
+
+
+@pytest.mark.asyncio
+async def test_interrupt_persists_after_runner_task_done(tmp_path):
+    """Post-exit interrupt (dead runner task) still flips, persists, and
+    announces the node state (mirror of the dead-task stop pattern)."""
+    db, run_svc, run_id, runner, team, _gate = await make_running_dag_run(tmp_path)
+    runner.request_stop()  # lands stopped with the node stuck on "running"
+    await asyncio.wait_for(runner.task, timeout=2.0)
+    assert runner.status == "stopped"
+    assert runner.node_states["n1"]["status"] == "running"
+
+    result = await run_svc.interrupt_node(
+        "alice", run_id, team["members"][0]["member_id"]
+    )
+
+    assert result == {"message": "已中断"}
+    assert runner.node_states["n1"]["status"] == "interrupted"
+    row = await db.get_agent_team_run(run_id)
+    assert row.node_states["n1"]["status"] == "interrupted"
+    history = run_svc._buses[run_id].history()
+    assert any(
+        e.get("type") == "node_status" and e.get("status") == "interrupted"
+        for e in history
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_and_skip_accept_interrupted(tmp_path):
+    """retry/skip treat `interrupted` like `failed` (spec §4.4: no cascade,
+    but both recovery actions are available)."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = make_members()
+    ports = blocking_ports(members, [], asyncio.Event())
+    runner = make_dag_runner("rint2", members, ports, db, RunEventBus())
+    runner.node_states["n1"].update(status="interrupted", error="用户中断")
+    assert runner._progress()["interrupted"] == 1
+
+    await runner.retry_node("n1")
+    assert runner.node_states["n1"]["status"] == "pending"
+    assert runner.node_states["n1"]["error"] is None
+
+    runner.node_states["n1"].update(status="interrupted")
+    await runner.skip_node("n1")
+    assert runner.node_states["n1"]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_edges_inject_single_block(tmp_path):
+    """Fold-in seed: `_preds` dedupes duplicate edges so a repeated edge
+    produces exactly one auto-inject block."""
+    db = SQLiteDatabase(str(tmp_path / "t.db"))
+    await db.initialize()
+    members = make_members()
+    delivered: list = []
+    events: list = []
+
+    async def deliver(session_id, text, context=None, execution_token=None):
+        delivered.append((session_id, text))
+        return "mid-1"
+
+    async def collect(
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
+    ) -> tuple[str, list]:
+        member = next(m for m in members if m["session_id"] == session_id)
+        return f"{member['member_id']}-done", []
+
+    graph = {
+        "nodes": [
+            {"id": "n1", "member_id": "mA", "task": "一 {{input}}"},
+            {"id": "n2", "member_id": "mB", "task": "二"},
+        ],
+        "edges": [{"from": "n1", "to": "n2"}, {"from": "n1", "to": "n2"}],
+    }
+    runner = DAGRunner(
+        run_id="rdup",
+        team_id="t1",
+        graph=graph,
+        config=CONFIG,
+        members=members,
+        ports=TeamPorts(
+            deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=events.append
+        ),
+        db=db,
+        bus=RunEventBus(),
+        username="alice",
+        run_input="x",
+    )
+    assert runner._preds["n2"] == ["n1"]
+    await asyncio.wait_for(runner.run(), timeout=5.0)
+    assert runner.status == "completed"
+    n2_delivery = next(text for sid, text in delivered if sid == "conv-1")
+    assert n2_delivery.count("[上游结果]") == 1
+
+
+@pytest.mark.asyncio
+async def test_dead_task_stop_closes_ports(tmp_path):
+    """Fold-in seed: stopping a dead-task (failure-paused) run releases the
+    ports' resources, like the runner's own terminal path."""
+    from tests.agent_teams.test_agent_team_resume import make_failure_paused_run
+
+    db, run_svc, run_id, runner, _responses = await make_failure_paused_run(tmp_path)
+    closed: list = []
+
+    async def close():
+        closed.append(run_id)
+
+    runner.ports.close = close
+
+    await run_svc.request_stop_run("alice", run_id)
+
+    assert runner.status == "stopped"
+    assert closed == [run_id]

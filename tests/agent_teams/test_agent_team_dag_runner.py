@@ -67,7 +67,10 @@ def scripted_ports(responses: dict, events: list, delivered: list) -> TeamPorts:
         return f"mid-{len(delivered)}"
 
     async def collect(
-        session_id: str, message_id: str, member_id: str | None = None
+        session_id: str,
+        message_id: str,
+        member_id: str | None = None,
+        on_event=None,
     ) -> tuple[str, list]:
         member = MEMBER_BY_SESSION[session_id]
         result = responses[member["name"]]

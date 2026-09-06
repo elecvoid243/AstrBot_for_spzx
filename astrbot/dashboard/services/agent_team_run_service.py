@@ -11,6 +11,7 @@ from astrbot.core.agent_team_execution import (
     NodeExecutionBinding,
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
+from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.dashboard.services.agent_team_dag import (
     TeamDAGError,
     downstream_of,
@@ -41,6 +42,24 @@ def _run_to_dict(row) -> dict:
         "rounds": row.rounds,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+    }
+
+
+def _run_message_to_dict(row) -> dict:
+    """Serialize one transcript row for the API (JSON-safe, chronological
+    pages carry these verbatim)."""
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "member_id": row.member_id,
+        "node_id": row.node_id,
+        "round": row.round,
+        "turn_id": row.turn_id,
+        "direction": row.direction,
+        "text": row.text,
+        "parts": row.parts,
+        "metadata": row.meta,
+        "created_at": row.created_at,
     }
 
 
@@ -188,9 +207,15 @@ class DAGRunner:
             if state["status"] == "done" and state.get("result"):
                 self._results[node_id] = state["result"]
         self._preds: dict[str, list[str]] = {}
+        raw_preds: dict[str, list[str]] = {}
         for edge in graph.get("edges", []):
             src, dst = str(edge["from"]), str(edge["to"])
-            self._preds.setdefault(dst, []).append(src)
+            raw_preds.setdefault(dst, []).append(src)
+        # Duplicate edges must not duplicate the auto-inject blocks built
+        # from predecessor lists downstream.
+        self._preds = {
+            dst: list(dict.fromkeys(srcs)) for dst, srcs in raw_preds.items()
+        }
 
     def _member_by_id(self, member_id: str) -> dict | None:
         return next((m for m in self.members if m["member_id"] == member_id), None)
@@ -263,6 +288,7 @@ class DAGRunner:
             "pending": counts.get("pending", 0),
             "skipped": counts.get("skipped", 0),
             "failed": counts.get("failed", 0),
+            "interrupted": counts.get("interrupted", 0),
             "total": len(self.node_states),
         }
 
@@ -307,16 +333,17 @@ class DAGRunner:
                     self.on_member_stop(member)
 
     async def retry_node(self, node_id: str) -> None:
-        """Re-queue a failed node and resume the run (spec §6.3).
+        """Re-queue a failed or interrupted node and resume the run (spec §6.3).
 
         Args:
-            node_id: The failed node to re-execute.
+            node_id: The failed/interrupted node to re-execute.
 
         Raises:
-            AgentTeamsServiceError: If the node is not in `failed` state.
+            AgentTeamsServiceError: If the node is neither failed nor
+                interrupted.
         """
         state = self.node_states.get(node_id)
-        if state is None or state["status"] != "failed":
+        if state is None or state["status"] not in ("failed", "interrupted"):
             raise AgentTeamsServiceError(f"节点 {node_id} 不可重试")
         state.update(
             status="pending",
@@ -329,16 +356,17 @@ class DAGRunner:
         self.resume()
 
     async def skip_node(self, node_id: str) -> None:
-        """Mark a failed node skipped and cascade-skip pending downstream.
+        """Mark a failed/interrupted node skipped and cascade-skip downstream.
 
         Args:
-            node_id: The failed node to skip.
+            node_id: The failed/interrupted node to skip.
 
         Raises:
-            AgentTeamsServiceError: If the node is not in `failed` state.
+            AgentTeamsServiceError: If the node is neither failed nor
+                interrupted.
         """
         state = self.node_states.get(node_id)
-        if state is None or state["status"] != "failed":
+        if state is None or state["status"] not in ("failed", "interrupted"):
             raise AgentTeamsServiceError(f"节点 {node_id} 不可跳过")
         state["status"] = "skipped"
         for downstream in downstream_of(node_id, self.graph.get("edges", [])):
@@ -453,9 +481,12 @@ class DAGRunner:
 
         await self._wait_if_busy(member["session_id"])
         if self.status != "running":
-            # paused/stop raced the delivery: put the node back to pending
-            state.update(status="pending", started_at=None)
-            await self._persist()
+            # paused/stop raced the delivery: put the node back to pending.
+            # An `interrupted` node keeps its terminal state (the interrupt
+            # owns it, spec §4.4) and the coroutine just settles.
+            if state["status"] == "running":
+                state.update(status="pending", started_at=None)
+                await self._persist()
             return
         # Per-turn execution binding (spec §2.3): a node carrying an
         # execution block dispatches under a token the EventBus resolves to
@@ -506,76 +537,120 @@ class DAGRunner:
                 node_id=node_id,
                 turn_id=turn_id,
             )
-            # Race the reply collection against the stop request: a stop
-            # mid-turn abandons the collection right away instead of waiting
-            # out the remaining reply_timeout (spec §6.3/§10).
+            # Race the reply collection against the stop request and the
+            # reply deadline: a stop mid-turn abandons the collection right
+            # away instead of waiting out the remaining reply_timeout, and a
+            # pending ask_user_choice suspends (re-arms) the deadline until
+            # the user answers (spec §4.5/§6.3/§10).
+            choice_pending = False
+
+            def _on_choice_event(event: dict) -> None:
+                # Two consumers, one payload: collect already emitted the
+                # choice event to the run bus; this callback only flips the
+                # suspension flag and announces the waiting state (no re-emit
+                # of the choice event itself).
+                nonlocal choice_pending
+                if event.get("type") != "choice":
+                    return
+                if event.get("direction") == "shown":
+                    if not choice_pending:
+                        choice_pending = True
+                        self._emit(
+                            {
+                                "type": "node_status",
+                                "node_id": node_id,
+                                "member_id": member["member_id"],
+                                "waiting_choice": True,
+                            }
+                        )
+                elif event.get("direction") == "resolved":
+                    choice_pending = False
+
             collect_task = asyncio.ensure_future(
-                asyncio.wait_for(
-                    self.ports.collect(
-                        member["session_id"], message_id, member["member_id"]
-                    ),
-                    timeout=float(self.config["reply_timeout"]),
+                self.ports.collect(
+                    member["session_id"],
+                    message_id,
+                    member["member_id"],
+                    on_event=_on_choice_event,
                 )
             )
             stop_task = asyncio.ensure_future(self._stop_requested.wait())
+            deadline = time.time() + float(self.config["reply_timeout"])
             try:
-                done, _ = await asyncio.wait(
-                    {collect_task, stop_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if stop_task in done:
-                    return
-                reply, reply_parts = collect_task.result()
+                while True:
+                    remaining = max(deadline - time.time(), 0.05)
+                    done, _ = await asyncio.wait(
+                        {collect_task, stop_task},
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if collect_task in done:
+                        reply, reply_parts = collect_task.result()
+                        break
+                    if stop_task in done:
+                        return
+                    if choice_pending:
+                        # Choice box pending: suspend the deadline until the
+                        # user answers (re-armed from now).
+                        deadline = time.time() + 300.0
+                        continue
+                    # Deadline exhausted with no pending choice: existing
+                    # timeout semantics (node failed "reply timeout").
+                    collect_task.cancel()
+                    raise asyncio.TimeoutError
             finally:
                 for pending in (collect_task, stop_task):
                     if not pending.done():
                         pending.cancel()
                 await asyncio.gather(collect_task, stop_task, return_exceptions=True)
         except asyncio.TimeoutError:
-            state.update(
-                status="failed", error="reply timeout", finished_at=time.time()
-            )
-            await self._transcript(
-                "system",
-                None,
-                member_id=member["member_id"],
-                node_id=node_id,
-                turn_id=turn_id,
-                metadata={"error": "reply timeout"},
-            )
+            if state["status"] != "interrupted":
+                state.update(
+                    status="failed", error="reply timeout", finished_at=time.time()
+                )
+                await self._transcript(
+                    "system",
+                    None,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    turn_id=turn_id,
+                    metadata={"error": "reply timeout"},
+                )
         except Exception as e:  # noqa: BLE001
-            state.update(status="failed", error=str(e), finished_at=time.time())
-            await self._transcript(
-                "system",
-                None,
-                member_id=member["member_id"],
-                node_id=node_id,
-                turn_id=turn_id,
-                metadata={"error": str(e)},
-            )
+            if state["status"] != "interrupted":
+                state.update(status="failed", error=str(e), finished_at=time.time())
+                await self._transcript(
+                    "system",
+                    None,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    turn_id=turn_id,
+                    metadata={"error": str(e)},
+                )
         else:
-            state.update(status="done", result=reply, finished_at=time.time())
-            self._results[node_id] = reply
-            self._emit(
-                {
-                    "type": "message",
-                    "direction": "reply",
-                    "member_id": member["member_id"],
-                    "session_id": member["session_id"],
-                    "text": reply,
-                    "turn_id": turn_id,
-                    "run_id": self.run_id,
-                    "parts": reply_parts,
-                }
-            )
-            await self._transcript(
-                "reply",
-                reply,
-                member_id=member["member_id"],
-                node_id=node_id,
-                turn_id=turn_id,
-                parts=reply_parts,
-            )
+            if state["status"] != "interrupted":
+                state.update(status="done", result=reply, finished_at=time.time())
+                self._results[node_id] = reply
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "reply",
+                        "member_id": member["member_id"],
+                        "session_id": member["session_id"],
+                        "text": reply,
+                        "turn_id": turn_id,
+                        "run_id": self.run_id,
+                        "parts": reply_parts,
+                    }
+                )
+                await self._transcript(
+                    "reply",
+                    reply,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    turn_id=turn_id,
+                    parts=reply_parts,
+                )
         finally:
             self._turn_by_session.pop(member["session_id"], None)
             # Every exit path (stop abandonment, timeout, delivery failure)
@@ -1503,6 +1578,7 @@ class AgentTeamRunService:
         # Deleted-config pre-fail: pending nodes bound to a config profile
         # that no longer resolves fail right here so a deleted profile
         # surfaces immediately on resume instead of at dispatch time.
+        prefailed: list[str] = []
         if self.config_checker is not None:
             graph_nodes = {
                 n.get("id"): n for n in (row.graph_snapshot or {}).get("nodes", [])
@@ -1515,6 +1591,7 @@ class AgentTeamRunService:
                 if config_id and not self.config_checker(config_id):
                     state["status"] = "failed"
                     state["error"] = "配置档案已删除"
+                    prefailed.append(node_id)
         await self.db.update_agent_team_run(
             run_id, status="running", node_states=node_states
         )
@@ -1528,6 +1605,18 @@ class AgentTeamRunService:
             username=username,
             workflow_id=row.workflow_id,
         )
+        # Seed the pre-failed nodes onto the fresh bus history: the runner
+        # never executes those nodes, so a monitor attached after the resume
+        # would otherwise never see their failure.
+        for node_id in prefailed:
+            runner._emit(
+                {
+                    "type": "node_status",
+                    "node_id": node_id,
+                    "status": "failed",
+                    "error": node_states[node_id].get("error"),
+                }
+            )
         self._start_runner_task(runner)
         return runner.snapshot()
 
@@ -1788,7 +1877,110 @@ class AgentTeamRunService:
             runner.status = "stopped"
             await self.db.update_agent_team_run(run_id, status="stopped")
             runner._emit({"type": "stopped", "reason": "user stop"})
+            # The runner's run() already exited, so its terminal ports cleanup
+            # never ran (or ran for a paused run that keeps resources).
+            # Release them here with the same guarded shape as run()'s finally.
+            if runner.ports.close is not None:
+                try:
+                    await runner.ports.close()
+                except Exception:  # noqa: BLE001
+                    # Cleanup must never mask the stop outcome.
+                    logger.exception("agent team run %s: ports close failed", run_id)
         return {"message": "已停止"}
+
+    async def interrupt_node(self, username: str, run_id: str, member_id: str) -> dict:
+        """Interrupt one member's in-flight turn (spec §4.4).
+
+        Requests the member's agent stop, then — in DAG mode — lands the
+        member's running node on the independent `interrupted` state and
+        parks the run on paused (a late collect result never overwrites it).
+        Auto mode has no node states: the stop lands and the running round
+        records the partial result.
+
+        Args:
+            username: Requesting dashboard user.
+            run_id: Persisted run id.
+            member_id: Member whose agent turn is interrupted.
+
+        Returns:
+            `{"message": "已中断"}`.
+
+        Raises:
+            AgentTeamsServiceError: On ownership errors or an unknown member.
+        """
+        row, team = await self._require_run(username, run_id)
+        member = next((m for m in team["members"] if m["member_id"] == member_id), None)
+        if member is None:
+            raise AgentTeamsServiceError(f"成员 '{member_id}' 不存在")
+        active_event_registry.request_agent_stop_all(member["umo"])
+        runner = self._require_runner(run_id)
+        if isinstance(runner, DAGRunner):
+            node_id = next(
+                (
+                    n_id
+                    for n_id, state in runner.node_states.items()
+                    if state["status"] == "running" and state["member_id"] == member_id
+                ),
+                None,
+            )
+            if node_id is not None:
+                state = runner.node_states[node_id]
+                state["status"] = "interrupted"
+                state["error"] = "用户中断"
+                # A post-exit (dead-task) run already carries a terminal
+                # status; only a live run parks on paused here.
+                if runner.status not in TERMINAL_RUN_STATUSES:
+                    runner.status = "paused"
+                await runner._persist()
+                runner._emit(
+                    {
+                        "type": "node_status",
+                        "node_id": node_id,
+                        "member_id": member_id,
+                        "status": "interrupted",
+                        "error": "用户中断",
+                    }
+                )
+                runner._emit(runner._progress())
+                runner._emit(
+                    {
+                        "type": "paused",
+                        "reason": "node interrupted",
+                        "node_id": node_id,
+                    }
+                )
+        return {"message": "已中断"}
+
+    async def get_transcript(
+        self,
+        username: str,
+        run_id: str,
+        member_id: str,
+        before_id: int | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Page one member's transcript rows in chronological order.
+
+        Args:
+            username: Requesting dashboard user.
+            run_id: Persisted run id.
+            member_id: Member whose transcript rows are read.
+            before_id: Exclusive cursor (return rows older than this id).
+            limit: Page size.
+
+        Returns:
+            `{"messages": [chronological rows], "next_before_id": oldest id
+            of the page or None when empty}`.
+        """
+        await self._require_run(username, run_id)
+        rows = await self.db.get_agent_team_run_transcript(
+            run_id, member_id, before_id=before_id, limit=limit
+        )
+        messages = [_run_message_to_dict(r) for r in reversed(rows)]
+        return {
+            "messages": messages,
+            "next_before_id": messages[0]["id"] if messages else None,
+        }
 
     async def retry_node(self, username: str, run_id: str, node_id: str) -> dict:
         await self._require_run(username, run_id)

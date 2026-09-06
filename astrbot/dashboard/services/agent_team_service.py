@@ -377,26 +377,36 @@ class AgentTeamService:
 
         The knowledge base retrieval pipeline prefers the session kb_config when
         it carries `kb_ids`, so storing the resolved ids here makes the member's
-        `kb_names` override take effect for every turn of the session. Unknown
-        names are skipped silently; an empty list clears the pin.
+        `kb_names` override take effect for every turn of the session. An empty
+        list disables KBs for the session (``kb_ids=[]`` makes the retrieval
+        tool return no context). Unknown names reject the update so a stale pin
+        can never survive silently.
 
         Args:
             umo: The member's unified message origin.
             kb_names: Knowledge base names to enable (empty disables).
+
+        Raises:
+            AgentTeamsServiceError: When any referenced knowledge base name
+                cannot be resolved.
         """
         from astrbot.core import sp
 
         if not kb_names:
-            await sp.session_put(umo, "kb_config", {})
+            await sp.session_put(umo, "kb_config", {"kb_ids": []})
             return
         kb_mgr = self.core_lifecycle.kb_manager
         kb_ids = []
+        unknown: list[str] = []
         for name in kb_names:
             helper = await kb_mgr.get_kb_by_name(name)
             if helper and helper.kb:
                 kb_ids.append(helper.kb.kb_id)
-        if kb_ids:
-            await sp.session_put(umo, "kb_config", {"kb_ids": kb_ids, "top_k": 5})
+            else:
+                unknown.append(name)
+        if unknown:
+            raise AgentTeamsServiceError(f"知识库不存在: {', '.join(unknown)}")
+        await sp.session_put(umo, "kb_config", {"kb_ids": kb_ids, "top_k": 5})
 
     async def update_member(
         self, username: str, team_id: str, member_id: str, payload: dict
@@ -461,26 +471,37 @@ class AgentTeamService:
         await self.db.update_agent_team(team_id, members=members)
 
         # Re-pin the member session (same helpers as _create_member) so a
-        # changed persona/provider takes effect on the next dispatch. Only
-        # when the value actually changed: new_conversation always creates a
-        # fresh conversation, so a name-only edit must never drop the member's
-        # active chat context. Re-pinning is only for SETTING a persona or
-        # provider; clearing them back to None keeps the session as-is.
+        # changed persona/provider takes effect on the next dispatch. Only when
+        # the value actually changed: new_conversation always creates a fresh
+        # conversation, so a name-only edit must never drop the member's active
+        # chat context. Clearing a persona re-pins to NO persona; clearing a
+        # provider removes the session pin so the default provider applies.
         umo = member.get("umo") or ""
         persona_changed = "persona_id" in payload and (
             payload["persona_id"] or None
         ) != member.get("persona_id")
-        if persona_changed and updated.get("persona_id"):
+        if persona_changed:
             await self.core_lifecycle.conversation_manager.new_conversation(
-                umo, "webchat", persona_id=updated["persona_id"]
+                umo, "webchat", persona_id=updated.get("persona_id")
             )
         provider_changed = "provider_id" in payload and (
             payload["provider_id"] or None
         ) != member.get("provider_id")
-        if provider_changed and updated.get("provider_id"):
-            await self.core_lifecycle.provider_manager.set_provider(
-                updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
-            )
+        if provider_changed:
+            if updated.get("provider_id"):
+                await self.core_lifecycle.provider_manager.set_provider(
+                    updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
+                )
+            else:
+                # provider_manager has no unset API (set_provider(None) raises
+                # ValueError for a missing id), so remove the exact session key
+                # set_provider writes and get_using_provider_async reads; the
+                # session then falls back to the default model provider.
+                from astrbot.core import sp
+
+                await sp.session_remove(
+                    umo, f"provider_perf_{ProviderType.CHAT_COMPLETION.value}"
+                )
         if "runner_config" in payload:
             kb_names = updated["runner_config"].get("kb_names")
             if kb_names is not None:

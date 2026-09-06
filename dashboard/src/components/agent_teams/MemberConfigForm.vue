@@ -310,13 +310,14 @@ function numericOrUndefined(value: string): number | undefined {
 /**
  * Build the PATCH payload: the runner_config block is sent in full (the
  * backend replaces the stored block wholesale), with empty fields omitted —
- * except `kb_names` and the disable-all capability markers, where `[]` is
- * meaningful.
+ * except `kb_names`, the disable-all capability markers (`[]` is meaningful),
+ * and the persona/provider pins, which are always sent so a clear arrives as
+ * an explicit `null` instead of being silently dropped.
  */
 function buildPayload(): Record<string, unknown> {
   const payload: Record<string, unknown> = { name: name.value.trim() };
-  if (personaId.value.trim()) payload.persona_id = personaId.value.trim();
-  if (providerId.value.trim()) payload.provider_id = providerId.value.trim();
+  payload.persona_id = personaId.value.trim() || null;
+  payload.provider_id = providerId.value.trim() || null;
   const systemPrompt = String(props.member?.system_prompt ?? '').trim();
   if (systemPrompt) payload.system_prompt = systemPrompt;
 

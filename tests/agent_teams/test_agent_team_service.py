@@ -370,6 +370,55 @@ async def test_update_member_changed_persona_provider_re_pins(tmp_path, monkeypa
     assert svc.core_lifecycle.provider_manager.set[-1][0] == "prov-b"
 
 
+@pytest.mark.asyncio
+async def test_update_member_clear_persona_provider_re_pins(tmp_path, monkeypatch):
+    """Clearing persona re-pins to no persona; clearing provider drops the pin."""
+    import astrbot.core as core_mod
+
+    _, svc = await make_service(tmp_path)
+    removed = []
+
+    async def fake_session_remove(umo, key):
+        removed.append((umo, key))
+
+    monkeypatch.setattr(core_mod.sp, "session_remove", fake_session_remove)
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    # 主管 has persona p1 -> clearing it must create a fresh conversation with
+    # persona_id None so no persona stays pinned on the session.
+    leader = team["members"][0]
+    conversations_before = len(svc.core_lifecycle.conversation_manager.created)
+    await svc.update_member(
+        "owner0", team["team_id"], leader["member_id"], {"persona_id": None}
+    )
+    assert (
+        len(svc.core_lifecycle.conversation_manager.created) == conversations_before + 1
+    )
+    assert svc.core_lifecycle.conversation_manager.created[-1]["persona_id"] is None
+    # Clearing an already-clear persona must NOT re-pin.
+    await svc.update_member(
+        "owner0", team["team_id"], leader["member_id"], {"persona_id": None}
+    )
+    assert (
+        len(svc.core_lifecycle.conversation_manager.created) == conversations_before + 1
+    )
+    # 写手 has provider prov-a -> clearing it must remove the pinned provider
+    # key (no set_provider call) so the session falls back to the default.
+    writer = team["members"][1]
+    pins_before = len(svc.core_lifecycle.provider_manager.set)
+    await svc.update_member(
+        "owner0", team["team_id"], writer["member_id"], {"provider_id": None}
+    )
+    assert len(svc.core_lifecycle.provider_manager.set) == pins_before
+    assert removed == [(writer["umo"], "provider_perf_chat_completion")]
+    # Clearing an already-clear provider must not touch the session again.
+    await svc.update_member(
+        "owner0", team["team_id"], writer["member_id"], {"provider_id": None}
+    )
+    assert removed == [(writer["umo"], "provider_perf_chat_completion")]
+
+
 async def _capture_session_puts(tmp_path, monkeypatch, kbs=None):
     """Create a service with a fake kb manager and captured sp.session_put calls."""
     import astrbot.core as core_mod
@@ -404,9 +453,9 @@ async def test_update_member_kb_names_pins_session_kb_config(tmp_path, monkeypat
         "owner0",
         team["team_id"],
         member["member_id"],
-        {"runner_config": {"kb_names": ["指南", "法规", "不存在"]}},
+        {"runner_config": {"kb_names": ["指南", "法规"]}},
     )
-    # Unknown names are skipped; ids are stored in name order.
+    # ids are stored in name order.
     assert calls == [
         (
             member["umo"],
@@ -417,10 +466,35 @@ async def test_update_member_kb_names_pins_session_kb_config(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_update_member_kb_names_unknown_raises_before_session_write(
+    tmp_path, monkeypatch
+):
+    """An unknown kb name rejects the update before any session pin is written."""
+    svc, calls = await _capture_session_puts(
+        tmp_path,
+        monkeypatch,
+        [FakeKnowledgeBaseHelper("kb-uuid-1", "指南")],
+    )
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member = team["members"][0]
+    with pytest.raises(AgentTeamsServiceError, match="知识库不存在: 不存在"):
+        await svc.update_member(
+            "owner0",
+            team["team_id"],
+            member["member_id"],
+            {"runner_config": {"kb_names": ["指南", "不存在"]}},
+        )
+    # The error surfaces instead of silently keeping/scribbling a pin.
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_update_member_kb_names_empty_clears_session_kb_config(
     tmp_path, monkeypatch
 ):
-    """Empty kb_names clears the pin; absent kb_names writes nothing."""
+    """Empty kb_names pins `kb_ids: []` (retrieval disables); absent writes nothing."""
     svc, calls = await _capture_session_puts(
         tmp_path,
         monkeypatch,
@@ -436,7 +510,7 @@ async def test_update_member_kb_names_empty_clears_session_kb_config(
         member["member_id"],
         {"runner_config": {"kb_names": []}},
     )
-    assert calls == [(member["umo"], "kb_config", {})]
+    assert calls == [(member["umo"], "kb_config", {"kb_ids": []})]
     # runner_config without kb_names must not touch the session kb_config.
     calls.clear()
     await svc.update_member(

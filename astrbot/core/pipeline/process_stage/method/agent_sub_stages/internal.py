@@ -75,23 +75,42 @@ def _binding_overrides(
     if binding is None:
         return max_step, main_agent_cfg
     if getattr(binding, "max_steps", None) is not None:
-        max_step = int(binding.max_steps)
+        try:
+            max_step = int(binding.max_steps)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid agent team binding max_steps: %r; using stage default.",
+                binding.max_steps,
+            )
+    # The binding comes from a saved workflow graph, so a crafted value could
+    # break int()/float(); keep the snapshot defaults on failure instead of
+    # raising inside process().
+    tool_call_timeout = main_agent_cfg.tool_call_timeout
+    if getattr(binding, "tool_call_timeout", None) is not None:
+        try:
+            tool_call_timeout = float(binding.tool_call_timeout)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid agent team binding tool_call_timeout: %r; using stage default.",
+                binding.tool_call_timeout,
+            )
+    context_length = main_agent_cfg.fallback_max_context_tokens
+    if getattr(binding, "context_length", None) is not None:
+        try:
+            context_length = int(binding.context_length)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid agent team binding context_length: %r; using stage default.",
+                binding.context_length,
+            )
     if (
-        getattr(binding, "tool_call_timeout", None) is not None
-        or getattr(binding, "context_length", None) is not None
+        tool_call_timeout != main_agent_cfg.tool_call_timeout
+        or context_length != main_agent_cfg.fallback_max_context_tokens
     ):
         main_agent_cfg = replace(
             main_agent_cfg,
-            tool_call_timeout=(
-                float(binding.tool_call_timeout)
-                if getattr(binding, "tool_call_timeout", None) is not None
-                else main_agent_cfg.tool_call_timeout
-            ),
-            fallback_max_context_tokens=(
-                int(binding.context_length)
-                if getattr(binding, "context_length", None) is not None
-                else main_agent_cfg.fallback_max_context_tokens
-            ),
+            tool_call_timeout=tool_call_timeout,
+            fallback_max_context_tokens=context_length,
         )
     return max_step, main_agent_cfg
 

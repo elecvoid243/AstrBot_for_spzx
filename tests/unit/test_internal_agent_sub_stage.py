@@ -44,6 +44,29 @@ def test_binding_overrides_max_steps_only():
     assert main_agent_cfg is cfg
 
 
+def test_binding_overrides_invalid_max_steps_keeps_default():
+    """A crafted non-numeric max_steps must not raise inside process()."""
+    cfg = _make_cfg()
+    binding = SimpleNamespace(
+        max_steps="abc", tool_call_timeout=None, context_length=None
+    )
+    max_step, main_agent_cfg = _binding_overrides(_make_event(binding), 30, cfg)
+    assert max_step == 30
+    assert main_agent_cfg is cfg
+
+
+def test_binding_overrides_invalid_timeout_and_context_length_keep_defaults():
+    """Crafted non-numeric timeout/context values fall back to snapshot defaults."""
+    cfg = _make_cfg()
+    binding = SimpleNamespace(
+        max_steps=None, tool_call_timeout="soon", context_length="many"
+    )
+    _, main_agent_cfg = _binding_overrides(_make_event(binding), 30, cfg)
+    assert main_agent_cfg is cfg
+    assert main_agent_cfg.tool_call_timeout == 120
+    assert main_agent_cfg.fallback_max_context_tokens == 128000
+
+
 def test_binding_overrides_timeout_and_context_length():
     cfg = _make_cfg()
     binding = SimpleNamespace(

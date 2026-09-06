@@ -277,7 +277,7 @@ describe('MemberConfigPanel', () => {
     expect(wrapper.emitted('updateTeam')).toEqual([[UPDATED_TEAM]]);
   });
 
-  it('serializes tools disable_all as an empty list and omits unset fields', async () => {
+  it('serializes tools disable_all as an empty list and unset persona/provider as null', async () => {
     const wrapper = mountPanel();
     await flushPromises();
 
@@ -288,8 +288,28 @@ describe('MemberConfigPanel', () => {
     expect(apiMocks.updateMember).toHaveBeenCalledWith('t1', 'm1', {
       name: 'Alice',
       persona_id: 'persona_a',
+      // persona/provider pins are always sent: null means "cleared" so the
+      // backend can actually un-pin the session.
+      provider_id: null,
       // Backend semantics: `[]` = disable all, list = allowlist, omission = follow.
       runner_config: { tools: [], kb_names: [] },
+    });
+  });
+
+  it('transmits null when an existing persona is cleared', async () => {
+    const wrapper = mountPanel();
+    await flushPromises();
+
+    // m1 (Alice) has persona pinned; clear the persona input.
+    await wrapper.find('.persona-stub').setValue('');
+    await wrapper.find('[data-test="member-config-save"]').trigger('click');
+    await flushPromises();
+
+    expect(apiMocks.updateMember).toHaveBeenCalledWith('t1', 'm1', {
+      name: 'Alice',
+      persona_id: null,
+      provider_id: null,
+      runner_config: { kb_names: [] },
     });
   });
 

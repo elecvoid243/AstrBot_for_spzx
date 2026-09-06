@@ -85,7 +85,17 @@
     "skillsOverride": "Навыки",
     "skillsInherit": "Унаследовать",
     "skillsDisableAll": "Отключить все",
-    "skillsAllowlist": "Только выбранные"
+    "skillsAllowlist": "Только выбранные",
+    "basicInfo": "Информация об узле",
+    "basicNodeId": "ID узла",
+    "basicMember": "Участник",
+    "upstreamList": "Входящие узлы",
+    "downstreamList": "Исходящие узлы",
+    "relationsEmpty": "Нет",
+    "saveAndRun": "Сохранить и запустить",
+    "missingMember": "Участник отсутствует — нажмите, чтобы исправить",
+    "handleTarget": "Входящий коннектор",
+    "handleSource": "Исходящий коннектор"
   },
   "monitor": {
     "input": "Цель задачи",

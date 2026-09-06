@@ -177,4 +177,37 @@ describe('MemberFlowNode states and handles', () => {
     expect(attrs).not.toContain('zindex');
     expect(attrs).not.toContain('connectable');
   });
+
+  it('renders the missing-member marker as a labelled button (Plan 3 T8)', () => {
+    // Keyboard users must be able to reach the fix affordance; the click then
+    // bubbles into Vue Flow's node click, which selects the node.
+    const wrapper = mountNode({ missingMember: true });
+    const marker = wrapper.find('[data-test="missing-marker"]');
+
+    expect(marker.exists()).toBe(true);
+    expect(marker.element.tagName).toBe('BUTTON');
+    expect(marker.attributes('aria-label')).toBeTruthy();
+  });
+
+  it('labels both connect handles for assistive tech (Plan 3 T8)', () => {
+    // interactive defaults to false in this spec's seam, so mount with the
+    // handles enabled and assert on the rendered stubs' labels.
+    const wrapper = mount(MemberFlowNode, {
+      props: { id: 'n1', data: { ...BASE_DATA, interactive: true } },
+      global: {
+        stubs: {
+          Handle: {
+            props: ['type', 'position'],
+            template: '<div class="handle-stub" :data-type="type" />',
+          },
+        },
+      },
+    });
+
+    const handles = wrapper.findAll('.handle-stub');
+    expect(handles).toHaveLength(2);
+    for (const handle of handles) {
+      expect(handle.attributes('aria-label')).toBeTruthy();
+    }
+  });
 });

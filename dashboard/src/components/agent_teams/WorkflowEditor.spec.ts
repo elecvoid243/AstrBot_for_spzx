@@ -1281,6 +1281,76 @@ describe('WorkflowEditor member card data', () => {
   });
 });
 
+describe('WorkflowEditor inspector relations and save-and-run (Plan 3 T8)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({
+      workflow_id: 'wf9',
+      name: 'saved',
+    });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  it('lists the selected node basic info and its upstream/downstream nodes', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    await selectNode(wrapper, 'n2');
+
+    expect(wrapper.find('[data-test="basic-info"]').text()).toContain('n2');
+    expect(wrapper.findAll('[data-test="upstream-chip"]').map((c) => c.text())).toEqual(['n1']);
+    // n2 is a leaf here, so its downstream list stays empty.
+    expect(wrapper.findAll('[data-test="downstream-chip"]')).toHaveLength(0);
+
+    await selectNode(wrapper, 'n1');
+    expect(wrapper.findAll('[data-test="downstream-chip"]').map((c) => c.text())).toEqual(['n2']);
+    expect(wrapper.findAll('[data-test="upstream-chip"]')).toHaveLength(0);
+  });
+
+  it('emits saveAndRun with the saved workflow id after a successful save', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await wrapper.find('[data-test="save-and-run"]').trigger('click');
+    await flushPromises();
+
+    expect(composableMocks.saveWorkflow).toHaveBeenCalledTimes(1);
+    expect(wrapper.emitted('saveAndRun')).toEqual([['wf9']]);
+  });
+
+  it('does not emit saveAndRun when the save returns an error envelope', async () => {
+    composableMocks.saveWorkflow.mockResolvedValueOnce(null);
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await wrapper.find('[data-test="save-and-run"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.emitted('saveAndRun')).toBeUndefined();
+  });
+
+  it('offers the member palette as a drawer on narrow viewports', async () => {
+    displayMocks.lgAndUp!.value = false;
+    const wrapper = mountEditor();
+    await nextTick();
+
+    // The palette drawer is opt-in: the toolbar button opens it, so the canvas
+    // keeps the width until the user asks for the palette.
+    const openButton = wrapper.find('[data-test="open-members"]');
+    expect(openButton.exists()).toBe(true);
+    expect(wrapper.find('[data-test="members-drawer"]').exists()).toBe(false);
+
+    await openButton.trigger('click');
+    await nextTick();
+    expect(wrapper.find('[data-test="members-drawer"]').exists()).toBe(true);
+  });
+
+  it('keeps the toolbar palette button hidden on wide viewports', async () => {
+    displayMocks.lgAndUp!.value = true;
+    const wrapper = mountEditor();
+    await nextTick();
+    expect(wrapper.find('[data-test="open-members"]').exists()).toBe(false);
+  });
+});
+
 describe('TeamsFlowCanvas', () => {
   const NODES = [
     {

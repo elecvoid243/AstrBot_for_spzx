@@ -41,12 +41,20 @@
           <v-window v-model="tab" class="mt-4">
             <v-window-item value="editor">
               <section v-if="tab === 'editor'" class="agent-teams-panel-editor">
-                <WorkflowEditor :team="selectedTeam" :workflows="workflows" />
+                <WorkflowEditor
+                  :team="selectedTeam"
+                  :workflows="workflows"
+                  @save-and-run="onSaveAndRun"
+                />
               </section>
             </v-window-item>
             <v-window-item value="monitor">
               <section v-if="tab === 'monitor'" class="agent-teams-panel-monitor">
-                <RunMonitor :team="selectedTeam" :initial-run="pendingRun" />
+                <RunMonitor
+                  :team="selectedTeam"
+                  :initial-run="pendingRun"
+                  :preset-workflow-id="presetWorkflowId"
+                />
               </section>
             </v-window-item>
             <v-window-item value="history">
@@ -98,6 +106,8 @@ const { openRun } = useAgentTeamsRun();
 const confirmDialog = useConfirmDialog();
 
 const tab = ref('editor');
+// Workflow preselected for the monitor by the editor's 保存并运行 handoff.
+const presetWorkflowId = ref('');
 const showCreateDialog = ref(false);
 // Team handed to TeamCreateDialog: null = create mode, a team = edit mode
 // (the dialog edits name/coordinator/config only). Set by the sidebar's
@@ -184,6 +194,17 @@ async function onRemoveMember(memberId: string) {
 function onOpenRun(runId: string, row: any) {
   pendingRun.value = row ?? null;
   void openRun(runId, row);
+  tab.value = 'monitor';
+}
+
+/**
+ * Hand a freshly saved workflow to the monitor tab (editor 保存并运行).
+ *
+ * Only the tab switch and the workflow preselection happen here — the user
+ * still types the goal and presses 开始运行, because a run needs an input.
+ */
+function onSaveAndRun(workflowId: string) {
+  presetWorkflowId.value = workflowId;
   tab.value = 'monitor';
 }
 

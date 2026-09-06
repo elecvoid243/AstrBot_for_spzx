@@ -7,12 +7,16 @@
       type="target"
       :position="Position.Left"
       class="at-node-handle"
+      role="button"
+      :aria-label="tm('editor.handleTarget')"
     />
     <Handle
       v-if="data.interactive !== false"
       type="source"
       :position="Position.Right"
       class="at-node-handle"
+      role="button"
+      :aria-label="tm('editor.handleSource')"
     />
 
     <div class="at-node-header">
@@ -25,9 +29,18 @@
 
     <div class="at-node-member">
       <i class="at-node-member-dot" :style="{ background: data.memberColor }" />
-      <span v-if="data.missingMember" class="at-node-member-missing">
+      <!-- ② The missing-member marker is a real button so keyboard users reach
+           it; the click bubbles into Vue Flow's node click, which selects the
+           node and opens the inspector on its member field (spec §3.3). -->
+      <button
+        v-if="data.missingMember"
+        type="button"
+        class="at-node-member-missing"
+        data-test="missing-marker"
+        :aria-label="tm('editor.missingMember')"
+      >
         {{ tm('editor.memberMissing') }}
-      </span>
+      </button>
       <span v-else class="at-node-member-name">{{ data.memberName }}</span>
     </div>
 

@@ -213,6 +213,12 @@ const props = defineProps<{
    * opened run) and the DAG is seeded from the row's graph snapshot.
    */
   initialRun?: any | null;
+  /**
+   * Workflow the editor just saved via 保存并运行 (Plan 3 T8). It preselects the
+   * workflow picker so the user only types the goal; an empty string means the
+   * picker keeps its own default.
+   */
+  presetWorkflowId?: string;
 }>();
 
 const { tm } = useModuleI18n('features/agent-teams');
@@ -269,6 +275,20 @@ watch(
   (items) => {
     if (!items.some((it) => it.value === workflowId.value)) {
       workflowId.value = items[0]?.value ?? '';
+    }
+  },
+  { immediate: true },
+);
+
+// The editor's 保存并运行 handoff wins over the list default: it names the
+// workflow the user just edited, so select it as soon as it is loadable.
+watch(
+  () => props.presetWorkflowId,
+  (presetId) => {
+    if (!presetId) return;
+    if (workflowItems.value.some((it) => it.value === presetId)) {
+      workflowId.value = presetId;
+      mode.value = 'dag';
     }
   },
   { immediate: true },

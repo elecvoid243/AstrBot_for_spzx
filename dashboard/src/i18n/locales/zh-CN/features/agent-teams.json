@@ -85,7 +85,17 @@
     "skillsOverride": "Skill 覆盖",
     "skillsInherit": "继承",
     "skillsDisableAll": "全部禁用",
-    "skillsAllowlist": "仅允许"
+    "skillsAllowlist": "仅允许",
+    "basicInfo": "节点信息",
+    "basicNodeId": "节点 ID",
+    "basicMember": "执行成员",
+    "upstreamList": "上游节点",
+    "downstreamList": "下游节点",
+    "relationsEmpty": "无",
+    "saveAndRun": "保存并运行",
+    "missingMember": "成员缺失，点击修正",
+    "handleTarget": "入站连接点",
+    "handleSource": "出站连接点"
   },
   "monitor": {
     "input": "任务目标",

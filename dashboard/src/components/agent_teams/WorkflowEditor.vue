@@ -55,9 +55,30 @@
       <v-btn variant="text" color="error" :disabled="!selectedNodeId" @click="deleteNode">
         {{ tm('editor.deleteNode') }}
       </v-btn>
+      <!-- ④ Only narrow viewports need this: the palette is docked otherwise. -->
+      <v-btn
+        v-if="!lgAndUp"
+        variant="text"
+        data-test="open-members"
+        @click="membersOpen = true"
+      >
+        {{ tm('editor.membersPanel') }}
+      </v-btn>
       <v-spacer />
       <v-btn variant="tonal" :loading="saving" @click="save">
         {{ tm('editor.save') }}
+      </v-btn>
+      <!-- ③ Save-and-run: the common path after editing a workflow is to run
+           it, so the page switches to the monitor tab with this workflow
+           preselected once the save succeeds. -->
+      <v-btn
+        variant="text"
+        color="primary"
+        data-test="save-and-run"
+        :loading="saving"
+        @click="saveAndRun"
+      >
+        {{ tm('editor.saveAndRun') }}
       </v-btn>
     </div>
 
@@ -87,7 +108,48 @@
          a nested v-layout so the drawer registers in a local layout instead of
          the app-level one (v-main content never shifts when it opens). -->
     <v-layout class="editor-body" :class="{ 'has-inspector': lgAndUp && inspectorOpen }">
-      <aside class="editor-members" :aria-label="tm('editor.membersPanel')">
+      <!-- ④ Member palette: docked strip on wide viewports, temporary drawer on
+           narrow ones (the canvas needs the width more than the palette does). -->
+      <v-navigation-drawer
+        v-if="!lgAndUp"
+        v-model="membersOpen"
+        temporary
+        location="left"
+        :width="240"
+        class="editor-members-drawer"
+        data-test="members-drawer"
+      >
+        <aside class="editor-members" :aria-label="tm('editor.membersPanel')">
+          <span class="editor-members-title">{{ tm('editor.membersPanel') }}</span>
+          <p class="editor-members-hint">{{ tm('editor.dropHint') }}</p>
+          <button
+            v-for="row in memberRows"
+            :key="'drawer-' + row.memberId"
+            type="button"
+            class="editor-member-row editor-member-row-drawer"
+            draggable="true"
+            :aria-label="row.name"
+            @dragstart="onMemberDragStart($event, row.memberId)"
+            @click="addNode(row.memberId); membersOpen = false"
+          >
+            <i class="editor-member-dot" :style="{ background: row.color }" aria-hidden="true" />
+            <span class="editor-member-name">{{ row.name }}</span>
+            <span v-if="row.isCoordinator" class="editor-member-coord">
+              {{ tm('teams.coordinator') }}
+            </span>
+            <span class="editor-member-used">
+              {{ tm('editor.usedCount', { n: row.usedCount }) }}
+            </span>
+            <span v-if="row.summary" class="editor-member-summary">{{ row.summary }}</span>
+          </button>
+        </aside>
+      </v-navigation-drawer>
+
+      <aside
+        class="editor-members"
+        :class="{ 'is-compact': !lgAndUp }"
+        :aria-label="tm('editor.membersPanel')"
+      >
         <span class="editor-members-title">{{ tm('editor.membersPanel') }}</span>
         <p class="editor-members-hint">{{ tm('editor.dropHint') }}</p>
         <button
@@ -130,6 +192,58 @@
         class="editor-inspector-drawer"
       >
         <div v-if="selectedNode" class="editor-inspector">
+          <!-- ① Basic info: what this node is, at a glance (spec §3.3). -->
+          <section class="editor-basic" data-test="basic-info">
+            <span class="editor-group-title">{{ tm('editor.basicInfo') }}</span>
+            <div class="editor-basic-row">
+              <span class="editor-basic-label">{{ tm('editor.basicNodeId') }}</span>
+              <span class="editor-basic-value">{{ selectedNodeId }}</span>
+            </div>
+            <div class="editor-basic-row">
+              <span class="editor-basic-label">{{ tm('editor.basicMember') }}</span>
+              <span class="editor-basic-value">
+                {{ selectedNodeMemberName || tm('editor.memberMissing') }}
+              </span>
+            </div>
+          </section>
+
+          <!-- ① Upstream / downstream lists: the graph is the dependency truth,
+               so the inspector mirrors it instead of asking users to read edges. -->
+          <section class="editor-relations" data-test="relations">
+            <div class="editor-relation-block">
+              <span class="editor-group-title">{{ tm('editor.upstreamList') }}</span>
+              <div v-if="upstreamNodeIds.length" class="editor-relation-chips">
+                <v-chip
+                  v-for="id in upstreamNodeIds"
+                  :key="'up-' + id"
+                  size="x-small"
+                  variant="tonal"
+                  data-test="upstream-chip"
+                  @click="selectNode(id)"
+                >
+                  {{ id }}
+                </v-chip>
+              </div>
+              <p v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</p>
+            </div>
+            <div class="editor-relation-block">
+              <span class="editor-group-title">{{ tm('editor.downstreamList') }}</span>
+              <div v-if="downstreamNodeIds.length" class="editor-relation-chips">
+                <v-chip
+                  v-for="id in downstreamNodeIds"
+                  :key="'down-' + id"
+                  size="x-small"
+                  variant="tonal"
+                  data-test="downstream-chip"
+                  @click="selectNode(id)"
+                >
+                  {{ id }}
+                </v-chip>
+              </div>
+              <p v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</p>
+            </div>
+          </section>
+
           <v-select
             v-model="selectedMemberId"
             :items="memberItems"
@@ -326,6 +440,10 @@ const props = defineProps<{
   workflows: any[];
 }>();
 
+// Plan 3 T8: after a successful save-and-run the page switches to the monitor
+// tab with this workflow preselected (the editor never starts runs itself).
+const emit = defineEmits<{ saveAndRun: [workflowId: string] }>();
+
 const { tm } = useModuleI18n('features/agent-teams');
 const toast = useToast();
 const { saveWorkflow, lastErrorFields } = useAgentTeams();
@@ -333,6 +451,9 @@ const { lgAndUp } = useDisplay();
 
 const selectedWorkflowId = ref('');
 const workflowName = ref('');
+// ④ Narrow viewports show the member palette as a temporary drawer; wide ones
+// keep the docked strip, so this flag only drives the drawer.
+const membersOpen = ref(false);
 const graphNodes = ref<FlowNode[]>([]);
 const graphEdges = ref<{ id: string; source: string; target: string }[]>([]);
 const layout = ref<Record<string, { x: number; y: number }>>({});
@@ -560,6 +681,33 @@ const workflowItems = computed(() => [
 const selectedNode = computed(
   () => graphNodes.value.find((n) => n.id === selectedNodeId.value) ?? null,
 );
+
+/** Display name of the selected node's bound member ('' when unbound/missing). */
+const selectedNodeMemberName = computed<string>(() => {
+  const memberId = selectedNode.value?.data.memberId;
+  if (!memberId) return '';
+  const member = (props.team?.members ?? []).find((m: any) => m.member_id === memberId);
+  return member?.name ?? '';
+});
+
+/**
+ * Direct predecessors of the selected node.
+ *
+ * Mirrors the runtime injection rule (spec §3.2): an edge is a data-flow edge,
+ * so the inspector lists exactly the nodes whose results reach this one.
+ */
+const upstreamNodeIds = computed<string[]>(() => {
+  const nodeId = selectedNodeId.value;
+  if (!nodeId) return [];
+  return graphEdges.value.filter((e) => e.target === nodeId).map((e) => e.source);
+});
+
+/** Direct successors of the selected node (who consumes this node's result). */
+const downstreamNodeIds = computed<string[]>(() => {
+  const nodeId = selectedNodeId.value;
+  if (!nodeId) return [];
+  return graphEdges.value.filter((e) => e.source === nodeId).map((e) => e.target);
+});
 
 /** Member ids currently on the team roster. */
 const memberIds = computed(
@@ -887,8 +1035,8 @@ function onFieldClick(path: string) {
   if (id && graphNodes.value.some((n) => n.id === id)) selectNode(id);
 }
 
-async function save() {
-  if (!props.team || bannerMessage.value) return;
+async function save(): Promise<string | null> {
+  if (!props.team || bannerMessage.value) return null;
   const layoutPayload: Record<string, { x: number; y: number }> = {};
   for (const node of graphNodes.value) {
     layoutPayload[node.id] = { ...(layout.value[node.id] ?? node.position) };
@@ -902,14 +1050,26 @@ async function save() {
   saving.value = true;
   try {
     const result = await saveWorkflow(props.team.team_id, payload as any);
-    if (result === null) return; // error envelope already toasted by the composable
+    if (result === null) return null; // error envelope already toasted by the composable
     toast.success(tm('editor.saveSuccess'));
     // Track the saved row so further saves update instead of create.
     if (result?.workflow_id) selectedWorkflowId.value = result.workflow_id;
     markSaved();
+    return selectedWorkflowId.value || null;
   } finally {
     saving.value = false;
   }
+}
+
+/**
+ * Save, then hand the workflow to the monitor tab.
+ *
+ * Only a successful save hands off: a validation failure or an error envelope
+ * leaves the user in the editor with the banner/toast that explains why.
+ */
+async function saveAndRun() {
+  const workflowId = await save();
+  if (workflowId) emit('saveAndRun', workflowId);
 }
 
 /** Blank the editor (used for the "new workflow" option). */

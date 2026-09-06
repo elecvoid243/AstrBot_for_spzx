@@ -85,7 +85,17 @@
     "skillsOverride": "Skill Overrides",
     "skillsInherit": "Inherit",
     "skillsDisableAll": "Disable All",
-    "skillsAllowlist": "Allowlist"
+    "skillsAllowlist": "Allowlist",
+    "basicInfo": "Node Info",
+    "basicNodeId": "Node ID",
+    "basicMember": "Member",
+    "upstreamList": "Upstream",
+    "downstreamList": "Downstream",
+    "relationsEmpty": "None",
+    "saveAndRun": "Save & Run",
+    "missingMember": "Member missing — click to fix",
+    "handleTarget": "Inbound connector",
+    "handleSource": "Outbound connector"
   },
   "monitor": {
     "input": "Task Goal",

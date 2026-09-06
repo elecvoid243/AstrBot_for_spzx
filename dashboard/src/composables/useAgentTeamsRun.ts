@@ -10,6 +10,7 @@ import { agentTeamsApi } from '@/api/v1';
 import type { ApiEnvelope } from '@/api/v1';
 import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
+import { readSseStream } from '@/utils/sseReader';
 import {
   applyTeamsEvent,
   createTeamsRunState,
@@ -75,29 +76,7 @@ async function readRunStream(
   body: ReadableStream<Uint8Array>,
   onEvent: (payload: any) => void,
 ) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
-    for (const event of events) {
-      const data = event
-        .split('\n')
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trimStart())
-        .join('\n');
-      if (!data) continue;
-      try {
-        onEvent(JSON.parse(data));
-      } catch (error) {
-        console.error('Failed to parse agent teams SSE payload:', error, data);
-      }
-    }
-  }
+  await readSseStream(body, onEvent);
 }
 
 /** Abort the current SSE attachment and any pending reconnect timer. */

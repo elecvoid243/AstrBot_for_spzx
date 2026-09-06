@@ -140,7 +140,7 @@
             <span class="editor-member-used">
               {{ tm('editor.usedCount', { n: row.usedCount }) }}
             </span>
-            <span v-if="row.summary" class="editor-member-summary">{{ row.summary }}</span>
+            <span v-if="row.summary" class="editor-member-summary" :title="row.summary">{{ row.summary }}</span>
           </button>
         </aside>
       </v-navigation-drawer>
@@ -168,19 +168,101 @@
             {{ tm('teams.coordinator') }}
           </span>
           <span class="editor-member-used">{{ tm('editor.usedCount', { n: row.usedCount }) }}</span>
-          <span v-if="row.summary" class="editor-member-summary">{{ row.summary }}</span>
+          <span v-if="row.summary" class="editor-member-summary" :title="row.summary">{{ row.summary }}</span>
         </button>
       </aside>
 
       <div class="editor-canvas" role="region" :aria-label="tm('editor.dropHint')">
+        <!-- Floating canvas toolbar: undo/redo, clipboard, layout aids and the
+             search box; only editor-level actions live here (zoom/fit stays in
+             VueFlow's built-in Controls). -->
+        <div class="editor-canvas-toolbar" data-test="canvas-toolbar">
+          <div class="editor-tb-group">
+            <v-btn :disabled="!canUndo" :title="tm('editor.undo')" data-test="undo" @click="undo">
+              <v-icon>mdi-undo</v-icon>
+            </v-btn>
+            <v-btn :disabled="!canRedo" :title="tm('editor.redo')" data-test="redo" @click="redo">
+              <v-icon>mdi-redo</v-icon>
+            </v-btn>
+          </div>
+          <div class="editor-tb-group">
+            <v-btn
+              :disabled="!selectedNodeId"
+              :title="tm('editor.copyNode')"
+              data-test="copy-node"
+              @click="copyNode"
+            >
+              <v-icon>mdi-content-copy</v-icon>
+            </v-btn>
+            <v-btn
+              :disabled="!clipboard"
+              :title="tm('editor.pasteNode')"
+              data-test="paste-node"
+              @click="pasteNode"
+            >
+              <v-icon>mdi-content-paste</v-icon>
+            </v-btn>
+          </div>
+          <div class="editor-tb-group">
+            <v-btn :title="tm('editor.autoLayout')" data-test="auto-layout" @click="autoLayout">
+              <v-icon>mdi-auto-fix</v-icon>
+            </v-btn>
+            <v-btn
+              :title="snapToGrid ? tm('editor.snapGridOff') : tm('editor.snapGridOn')"
+              data-test="snap-grid"
+              @click="snapToGrid = !snapToGrid"
+            >
+              <v-icon>{{ snapToGrid ? 'mdi-grid' : 'mdi-grid-off' }}</v-icon>
+            </v-btn>
+            <v-btn
+              :title="tm('editor.minimap')"
+              data-test="minimap"
+              @click="minimapVisible = !minimapVisible"
+            >
+              <v-icon>mdi-map-outline</v-icon>
+            </v-btn>
+          </div>
+          <div class="editor-search-bar">
+            <input
+              v-model="searchQuery"
+              class="editor-search-input"
+              :placeholder="tm('editor.searchPlaceholder')"
+              :aria-label="tm('editor.searchPlaceholder')"
+              data-test="search-input"
+            />
+            <v-chip
+              v-if="searchQuery && matchedNodes.length"
+              size="small"
+              variant="text"
+              data-test="search-count"
+            >
+              {{ tm('editor.nodeSearchCount', { count: matchedNodes.length }) }}
+            </v-chip>
+          </div>
+          <v-btn
+            v-if="bulkDeleteEnabled"
+            variant="outlined"
+            color="error"
+            data-test="bulk-delete"
+            @click="bulkDelete"
+          >
+            <v-icon start>mdi-delete-multiple</v-icon>
+            {{ tm('editor.bulkDeleteAction', { count: selectedNodeIds.size }) }}
+          </v-btn>
+        </div>
         <TeamsFlowCanvas
+          ref="canvasRef"
           mode="edit"
           :nodes="displayNodes"
           :edges="graphEdges"
+          :minimap-visible="minimapVisible"
+          :snap-to-grid="snapToGrid"
           @connect="onConnect"
           @positionChange="onPositionChange"
           @selectNode="selectNode"
           @dropAt="onDropAt"
+          @delete-edge="onDeleteEdge"
+          @selection-change="onSelectionChange"
         />
       </div>
 
@@ -192,57 +274,82 @@
         class="editor-inspector-drawer"
       >
         <div v-if="selectedNode" class="editor-inspector">
-          <!-- ① Basic info: what this node is, at a glance (spec §3.3). -->
-          <section class="editor-basic" data-test="basic-info">
-            <span class="editor-group-title">{{ tm('editor.basicInfo') }}</span>
-            <div class="editor-basic-row">
-              <span class="editor-basic-label">{{ tm('editor.basicNodeId') }}</span>
-              <span class="editor-basic-value">{{ selectedNodeId }}</span>
+          <!-- ① Basic info card: id + member as labelled rows (spec §3.1). -->
+          <div class="inspector-card" data-test="basic-info">
+            <div class="inspector-card-title">
+              <v-icon size="small" aria-hidden="true">mdi-information-outline</v-icon>
+              {{ tm('editor.basicInfo') }}
             </div>
-            <div class="editor-basic-row">
-              <span class="editor-basic-label">{{ tm('editor.basicMember') }}</span>
-              <span class="editor-basic-value">
-                {{ selectedNodeMemberName || tm('editor.memberMissing') }}
-              </span>
+            <div class="inspector-card-body">
+              <div class="info-row">
+                <span class="info-label">{{ tm('editor.basicNodeId') }}</span>
+                <v-chip size="small" variant="tonal" color="primary">{{ selectedNodeId }}</v-chip>
+              </div>
+              <div class="info-row">
+                <span class="info-label">{{ tm('editor.basicMember') }}</span>
+                <v-chip
+                  v-if="selectedNodeMemberName"
+                  size="small"
+                  color="primary"
+                  prepend-icon="mdi-account-circle"
+                >
+                  {{ selectedNodeMemberName }}
+                </v-chip>
+                <v-chip v-else size="small" color="warning" variant="outlined">
+                  <v-icon start size="small">mdi-alert</v-icon>
+                  {{ tm('editor.memberMissing') }}
+                </v-chip>
+              </div>
             </div>
-          </section>
+          </div>
 
-          <!-- ① Upstream / downstream lists: the graph is the dependency truth,
-               so the inspector mirrors it instead of asking users to read edges. -->
-          <section class="editor-relations" data-test="relations">
-            <div class="editor-relation-block">
-              <span class="editor-group-title">{{ tm('editor.upstreamList') }}</span>
-              <div v-if="upstreamNodeIds.length" class="editor-relation-chips">
-                <v-chip
-                  v-for="id in upstreamNodeIds"
-                  :key="'up-' + id"
-                  size="x-small"
-                  variant="tonal"
-                  data-test="upstream-chip"
-                  @click="selectNode(id)"
-                >
-                  {{ id }}
-                </v-chip>
-              </div>
-              <p v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</p>
+          <!-- ① Dependencies card: side-by-side upstream / downstream (spec §3.1). -->
+          <div class="inspector-card" data-test="relations">
+            <div class="inspector-card-title">
+              <v-icon size="small" aria-hidden="true">mdi-graph-outline</v-icon>
+              {{ tm('editor.upstreamList') }} / {{ tm('editor.downstreamList') }}
             </div>
-            <div class="editor-relation-block">
-              <span class="editor-group-title">{{ tm('editor.downstreamList') }}</span>
-              <div v-if="downstreamNodeIds.length" class="editor-relation-chips">
-                <v-chip
-                  v-for="id in downstreamNodeIds"
-                  :key="'down-' + id"
-                  size="x-small"
-                  variant="tonal"
-                  data-test="downstream-chip"
-                  @click="selectNode(id)"
-                >
-                  {{ id }}
-                </v-chip>
+            <div class="inspector-card-body relation-cols">
+              <div class="editor-relation-block">
+                <div class="relation-header">
+                  <v-icon size="x-small" color="primary" aria-hidden="true">mdi-arrow-left-circle</v-icon>
+                  <span class="text-caption ml-1">{{ tm('editor.upstreamList') }}</span>
+                </div>
+                <div v-if="upstreamNodeIds.length" class="editor-relation-chips">
+                  <v-chip
+                    v-for="id in upstreamNodeIds"
+                    :key="'up-' + id"
+                    size="x-small"
+                    variant="tonal"
+                    data-test="upstream-chip"
+                    @click="selectNode(id)"
+                  >
+                    {{ id }}
+                  </v-chip>
+                </div>
+                <span v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</span>
               </div>
-              <p v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</p>
+              <div class="editor-relation-block">
+                <div class="relation-header">
+                  <v-icon size="x-small" color="primary" aria-hidden="true">mdi-arrow-right-circle</v-icon>
+                  <span class="text-caption ml-1">{{ tm('editor.downstreamList') }}</span>
+                </div>
+                <div v-if="downstreamNodeIds.length" class="editor-relation-chips">
+                  <v-chip
+                    v-for="id in downstreamNodeIds"
+                    :key="'down-' + id"
+                    size="x-small"
+                    variant="tonal"
+                    data-test="downstream-chip"
+                    @click="selectNode(id)"
+                  >
+                    {{ id }}
+                  </v-chip>
+                </div>
+                <span v-else class="editor-relation-empty">{{ tm('editor.relationsEmpty') }}</span>
+              </div>
             </div>
-          </section>
+          </div>
 
           <v-select
             v-model="selectedMemberId"
@@ -365,6 +472,8 @@
             v-model="selectedTask"
             :label="tm('editor.nodeTask')"
             rows="5"
+            auto-grow
+            max-rows="8"
             density="compact"
             hide-details
             class="mt-3"
@@ -374,7 +483,7 @@
               {{ tm('editor.unconnectedRef', { id: ref }) }}
             </li>
           </ul>
-          <p class="editor-task-hint">{{ tm('editor.nodeTaskHint') }}</p>
+          <p class="editor-task-hint">{{ taskHintText }}</p>
         </div>
       </v-navigation-drawer>
     </v-layout>
@@ -397,7 +506,7 @@
 // (config profile / persona / tool+skill allowlists) edited in the inspector's
 // collapsible "执行配置" group; the block is omitted from the payload when
 // every field stays inherit.
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useDisplay } from 'vuetify';
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import type { FlowNode } from './TeamsFlowCanvas.vue';
@@ -415,6 +524,11 @@ import type { DagCheckNode } from '@/utils/dagCheck';
 // Mirrors AgentTeamService.MAX_NODES on the backend.
 const MAX_NODES = 20;
 const INPUT_TOKEN = '{{input}}';
+
+/** Deep-clone plain editor data (nodes/edges/layout/execution) for snapshots. */
+function deepClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 /** Tool override modes; `inherit` keeps the backend field unset. */
 type ExecToolsMode = 'inherit' | 'disable_all' | 'allowlist';
@@ -472,6 +586,314 @@ const configProfileOptions = ref<{ title: string; value: string }[]>([]);
 const toolOptions = ref<{ title: string; value: string }[]>([]);
 const skillOptions = ref<{ title: string; value: string }[]>([]);
 const executionByNode = ref<Record<string, NodeExecState>>({});
+
+// --- Undo / redo history ------------------------------------------------
+// Snapshots of the whole editor graph are recorded before each structural
+// mutation (add/remove node, add/remove edge, paste). The initial state is
+// seeded when the editor blanks or loads a workflow so Ctrl+Z returns to it.
+interface HistorySnapshot {
+  nodes: FlowNode[];
+  edges: { id: string; source: string; target: string }[];
+  layout: Record<string, { x: number; y: number }>;
+  executionByNode: Record<string, NodeExecState>;
+}
+
+const history = ref<HistorySnapshot[]>([]);
+const historyIndex = ref(-1);
+const MAX_HISTORY = 50;
+const canUndo = computed(() => historyIndex.value > 0);
+const canRedo = computed(() => historyIndex.value < history.value.length - 1);
+
+function makeSnapshot(): HistorySnapshot {
+  return {
+    nodes: deepClone(graphNodes.value),
+    edges: deepClone(graphEdges.value),
+    layout: deepClone(layout.value),
+    executionByNode: deepClone(executionByNode.value),
+  };
+}
+
+/** Seal the current state as a history entry (branch-friendly). */
+function pushHistory() {
+  history.value = history.value.slice(0, historyIndex.value + 1);
+  history.value.push(makeSnapshot());
+  if (history.value.length > MAX_HISTORY) history.value.shift();
+  historyIndex.value = history.value.length - 1;
+}
+
+/** Restore a snapshot and drop the selection if the node is gone. */
+function restoreSnapshot(snapshot: HistorySnapshot) {
+  graphNodes.value = deepClone(snapshot.nodes);
+  graphEdges.value = deepClone(snapshot.edges);
+  layout.value = deepClone(snapshot.layout);
+  executionByNode.value = deepClone(snapshot.executionByNode);
+  // A box selection may reference nodes the restored graph no longer has.
+  selectedNodeIds.value.clear();
+  if (selectedNodeId.value && !graphNodes.value.some((n) => n.id === selectedNodeId.value)) {
+    selectNode(null);
+  }
+}
+
+/**
+ * Re-seed history to a single entry representing the current graph (blank or
+ * freshly loaded). Called whenever the editor content is replaced wholesale.
+ */
+function resetHistory() {
+  history.value = [makeSnapshot()];
+  historyIndex.value = 0;
+}
+
+// Debounced checkpoint for edits that mutate the graph without going through
+// a structural op (task text, member swap, exec config, node drags). Without
+// it, Ctrl+Z would rewind past the edit and destroy it permanently.
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function contentSignature(): string {
+  return JSON.stringify(makeSnapshot());
+}
+
+function sealedSignature(): string {
+  const entry = history.value[historyIndex.value];
+  return entry ? JSON.stringify(entry) : '';
+}
+
+// Any graph mutation (structural or inspector-driven) schedules a trailing
+// checkpoint. The signature guard skips loads and undo restores, where the
+// state already equals the sealed entry, and absorbs the immediate pushes
+// done by the structural ops.
+watch(
+  [graphNodes, graphEdges, layout, executionByNode],
+  () => {
+    if (pushTimer !== null) clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => {
+      pushTimer = null;
+      if (contentSignature() !== sealedSignature()) pushHistory();
+    }, 300);
+  },
+  { deep: true },
+);
+
+/** Seal any pending debounced edit so the next undo step lands on it. */
+function flushPendingHistory() {
+  if (pushTimer === null) return;
+  clearTimeout(pushTimer);
+  pushTimer = null;
+  if (contentSignature() !== sealedSignature()) pushHistory();
+}
+
+function undo() {
+  flushPendingHistory();
+  if (!canUndo.value) return;
+  historyIndex.value -= 1;
+  restoreSnapshot(history.value[historyIndex.value]!);
+}
+
+function redo() {
+  flushPendingHistory();
+  if (!canRedo.value) return;
+  historyIndex.value += 1;
+  restoreSnapshot(history.value[historyIndex.value]!);
+}
+
+// --- Node copy / paste ---------------------------------------------------
+
+/** Clipboard holds the node payload plus its execution override (may be null). */
+interface ClipboardData {
+  node: FlowNode;
+  exec: NodeExecState | null;
+}
+
+const clipboard = ref<ClipboardData | null>(null);
+
+/** Copy the selected node (payload + execution override) to the clipboard. */
+function copyNode() {
+  const node = selectedNode.value;
+  if (!node) return;
+  clipboard.value = {
+    node: deepClone(node),
+    exec: executionByNode.value[node.id]
+      ? deepClone(executionByNode.value[node.id]!)
+      : null,
+  };
+  toast.success(tm('editor.nodeCopied', { id: node.id }));
+}
+
+/** Paste a clipboard node at a +20/+20 offset with a fresh auto id. */
+function pasteNode() {
+  const source = clipboard.value;
+  if (!source) return;
+  const sourcePos = layout.value[source.node.id] ?? source.node.position;
+  const newId = nextNodeId();
+  const newPos = { x: sourcePos.x + 20, y: sourcePos.y + 20 };
+  const sourceMemberName = String(source.node.data.memberName ?? source.node.data.memberId ?? '');
+  const newNode: FlowNode = {
+    ...deepClone(source.node),
+    id: newId,
+    position: newPos,
+    data: { ...deepClone(source.node.data), label: `${sourceMemberName} (${newId})` },
+  };
+  // The search highlight belongs to the copied node's query match, not the paste.
+  newNode.class =
+    (newNode.class ?? '')
+      .split(' ')
+      .filter((c) => c && c !== 'at-node-search-match')
+      .join(' ') || undefined;
+  graphNodes.value.push(newNode);
+  layout.value[newId] = newPos;
+  executionByNode.value[newId] = source.exec
+    ? deepClone(source.exec)
+    : defaultExecState();
+  selectNode(newId);
+  pushHistory();
+  toast.success(tm('editor.nodePasted', { id: newId }));
+}
+
+// --- Bulk selection ------------------------------------------------------
+
+/** Node ids currently box-selected on the canvas (Ctrl/Cmd + drag). */
+const selectedNodeIds = ref<Set<string>>(new Set());
+const bulkDeleteEnabled = computed(() => selectedNodeIds.value.size > 1);
+
+function onSelectionChange(ids: string[] | null) {
+  selectedNodeIds.value = new Set(ids ?? []);
+}
+
+/** Delete every box-selected node plus all edges touching them. */
+function bulkDelete() {
+  if (selectedNodeIds.value.size === 0) return;
+  const count = selectedNodeIds.value.size;
+  if (!window.confirm(tm('editor.bulkDeleteConfirm', { count }))) return;
+  graphNodes.value = graphNodes.value.filter((n) => !selectedNodeIds.value.has(n.id));
+  graphEdges.value = graphEdges.value.filter(
+    (e) => !selectedNodeIds.value.has(e.source) && !selectedNodeIds.value.has(e.target),
+  );
+  for (const id of selectedNodeIds.value) {
+    delete executionByNode.value[id];
+    delete layout.value[id];
+  }
+  selectedNodeIds.value.clear();
+  if (selectedNodeId.value && !graphNodes.value.some((n) => n.id === selectedNodeId.value)) {
+    selectNode(null);
+  }
+  pushHistory();
+  toast.success(tm('editor.bulkDeleted', { count }));
+}
+
+// --- Node search ---------------------------------------------------------
+
+const searchQuery = ref('');
+
+// Recompute the match highlight whenever the query changes.
+watch(searchQuery, () => applySearchHighlight());
+
+/** Nodes matching the search text against id, member name and task. */
+const matchedNodes = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) return [];
+  return graphNodes.value.filter((node) => {
+    const id = node.id.toLowerCase();
+    const memberName = String(node.data.memberName ?? '').toLowerCase();
+    const task = String(node.data.task ?? '').toLowerCase();
+    return id.includes(query) || memberName.includes(query) || task.includes(query);
+  });
+});
+
+/** Highlight matches and pan the viewport to the first one. */
+function applySearchHighlight() {
+  for (const node of graphNodes.value) {
+    const matched = matchedNodes.value.some((m) => m.id === node.id);
+    const classes = (node.class ?? '').split(' ').filter((c) => c !== 'at-node-search-match');
+    node.class = matched ? [...classes, 'at-node-search-match'].join(' ') : classes.join(' ') || undefined;
+  }
+  const first = matchedNodes.value[0];
+  if (!first) return;
+  const pos = layout.value[first.id] ?? first.position;
+  canvasRef.value?.panTo?.(pos.x, pos.y);
+}
+
+// --- Canvas toolbar ------------------------------------------------------
+
+const canvasRef = ref<any>(null);
+const snapToGrid = ref(false);
+const minimapVisible = ref(true);
+
+/** Lay nodes out in topological columns (a lightweight auto-layout). */
+function autoLayout() {
+  if (graphNodes.value.length === 0) return;
+  const indegree = new Map<string, number>();
+  const adj = new Map<string, string[]>();
+  for (const node of graphNodes.value) {
+    indegree.set(node.id, 0);
+    adj.set(node.id, []);
+  }
+  for (const edge of graphEdges.value) {
+    adj.get(edge.source)?.push(edge.target);
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+  }
+  const queue = graphNodes.value
+    .filter((n) => (indegree.get(n.id) ?? 0) === 0)
+    .map((n) => n.id);
+  const order: string[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    order.push(id);
+    for (const next of adj.get(id) ?? []) {
+      indegree.set(next, (indegree.get(next) ?? 0) - 1);
+      if ((indegree.get(next) ?? 0) === 0) queue.push(next);
+    }
+  }
+  // Anything left over belongs to a cycle; append it after the acyclic part.
+  for (const node of graphNodes.value) {
+    if (!order.includes(node.id)) order.push(node.id);
+  }
+  const X_GAP = 180;
+  const Y_GAP = 130;
+  order.forEach((id, index) => {
+    const col = Math.floor(index / 4);
+    const row = index % 4;
+    const pos = { x: 60 + col * X_GAP, y: 60 + row * Y_GAP };
+    layout.value[id] = pos;
+    const node = graphNodes.value.find((n) => n.id === id);
+    if (node) node.position = { ...pos };
+  });
+  pushHistory();
+}
+
+/** Global shortcut handlers. */
+function onKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  if (
+    target &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      target.closest?.('.v-field'))
+  ) {
+    return;
+  }
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  const key = e.key.toLowerCase();
+  if (key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    undo();
+  } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+    e.preventDefault();
+    redo();
+  } else if (key === 'c') {
+    e.preventDefault();
+    copyNode();
+  } else if (key === 'v') {
+    e.preventDefault();
+    pasteNode();
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown));
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown);
+  if (pushTimer !== null) clearTimeout(pushTimer);
+});
 
 /** Blank override state: everything follows the team defaults. */
 function defaultExecState(): NodeExecState {
@@ -770,6 +1192,21 @@ const selectedTask = computed<string>({
   },
 });
 
+/**
+ * Live hint for the task template: flags whether the run-input token and/or a
+ * predecessor reference are in use, so users see at a glance what the editor
+ * will inject at runtime.
+ */
+const taskHintText = computed(() => {
+  const value = selectedTask.value ?? '';
+  const hasInput = value.includes(INPUT_TOKEN);
+  const hasRef = /\{\{n\d+\}\}/.test(value);
+  if (hasInput && hasRef) return tm('editor.taskHintWithBoth');
+  if (hasInput) return tm('editor.taskHintWithInput');
+  if (hasRef) return tm('editor.taskHintWithRef');
+  return tm('editor.taskHintDefault');
+});
+
 function memberNameOf(memberId: string): string {
   const member = (props.team?.members ?? []).find((m: any) => m.member_id === memberId);
   return (member?.name as string) ?? memberId;
@@ -797,14 +1234,19 @@ function selectNode(nodeId: string | null) {
   inspectorOpen.value = nodeId !== null;
 }
 
-/** Append a node for the given member with auto id `n{max+1}`. */
-function addNode(memberId: string, position?: { x: number; y: number }) {
-  if (!memberId) return;
+/** Next auto node id: `n{current max + 1}` (skips gaps after deletions). */
+function nextNodeId(): string {
   const maxId = graphNodes.value.reduce((max, node) => {
     const match = /^n(\d+)$/.exec(node.id);
     return match ? Math.max(max, Number(match[1])) : max;
   }, 0);
-  const id = `n${maxId + 1}`;
+  return `n${maxId + 1}`;
+}
+
+/** Append a node for the given member with auto id `n{max+1}`. */
+function addNode(memberId: string, position?: { x: number; y: number }) {
+  if (!memberId) return;
+  const id = nextNodeId();
   const index = graphNodes.value.length;
   // Explicit position for canvas drops; staggered fallback for row clicks.
   const finalPosition = position ?? {
@@ -820,6 +1262,7 @@ function addNode(memberId: string, position?: { x: number; y: number }) {
   layout.value[id] = finalPosition;
   executionByNode.value[id] = defaultExecState();
   selectNode(id);
+  pushHistory();
 }
 
 /** Remove the selected node plus every edge touching it. */
@@ -831,6 +1274,15 @@ function deleteNode() {
   delete layout.value[id];
   delete executionByNode.value[id];
   selectNode(null);
+  pushHistory();
+}
+
+/** Remove a single edge by id (delete-edge event from the canvas). */
+function onDeleteEdge(edgeId: string) {
+  const index = graphEdges.value.findIndex((e) => e.id === edgeId);
+  if (index === -1) return;
+  graphEdges.value.splice(index, 1);
+  pushHistory();
 }
 
 /** Place a node dragged from the member strip onto the canvas. */
@@ -843,6 +1295,7 @@ function onConnect(params: { from: string; to: string }) {
   const id = `e:${params.from}->${params.to}`;
   if (graphEdges.value.some((e) => e.id === id)) return;
   graphEdges.value = [...graphEdges.value, { id, source: params.from, target: params.to }];
+  pushHistory();
 }
 
 function onPositionChange(positions: Record<string, { x: number; y: number }>) {
@@ -931,6 +1384,7 @@ function markSaved() {
 
 // Baseline snapshot for the blank editor; the load/save watchers re-baseline.
 markSaved();
+resetHistory();
 
 // --- Local problems (validation badge summary) --------------------------
 
@@ -1080,9 +1534,12 @@ function resetBlank() {
   layout.value = {};
   executionByNode.value = {};
   selectNode(null);
+  clipboard.value = null;
+  selectedNodeIds.value.clear();
   // Stale save-error fields belong to the discarded graph.
   lastErrorFields.value = [];
   markSaved();
+  resetHistory();
 }
 
 // Switching teams blanks the editor: workflow ids and member bindings are
@@ -1142,6 +1599,7 @@ watch(selectedWorkflowId, (wfId) => {
   }
   // The freshly loaded row is the clean baseline for the unsaved dot.
   markSaved();
+  resetHistory();
 });
 </script>
 
@@ -1420,6 +1878,126 @@ button.editor-banner-field {
   word-break: break-word;
 }
 
+/* Inspector card grouping: a titled block with labelled key/value rows and a
+   divider between rows, replacing the flat text list (spec §3.1). */
+.inspector-card {
+  margin-bottom: 12px;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 10px;
+  background: rgba(128, 128, 128, 0.05);
+  overflow: hidden;
+}
+
+.inspector-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(128, 128, 128, 0.14);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.inspector-card-body {
+  padding: 6px 10px 10px;
+}
+
+.info-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.info-row + .info-row {
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.info-label {
+  min-width: 72px;
+  flex: none;
+  font-size: 12px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+}
+
+/* Side-by-side upstream / downstream columns (spec §3.1.2). */
+.relation-cols {
+  display: flex;
+  gap: 12px;
+}
+
+.relation-cols .editor-relation-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.relation-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+  font-weight: 500;
+  color: inherit;
+}
+
+/* Floating canvas toolbar + search (spec §3.5). */
+.editor-canvas {
+  position: relative;
+}
+
+.editor-canvas-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  z-index: 10;
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.editor-tb-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-tb-group + .editor-tb-group,
+.editor-search-bar {
+  border-left: 1px solid rgba(128, 128, 128, 0.2);
+  padding-left: 8px;
+}
+
+.editor-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-search-input {
+  width: 180px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+}
+
+.editor-search-input:focus {
+  outline: 2px solid #1976d2;
+  outline-offset: 1px;
+}
+
 @media (max-width: 1100px) {
   .editor-body {
     flex-direction: column;
@@ -1440,5 +2018,15 @@ button.editor-banner-field {
   .editor-member-row {
     width: auto;
   }
+}
+</style>
+
+<style>
+/* Node search highlight lands on the VueFlow node wrapper, which is outside
+   this component's scoped scope, so it must be declared globally. */
+.at-node-search-match {
+  outline: 2px solid #1976d2;
+  outline-offset: 2px;
+  border-radius: 10px;
 }
 </style>

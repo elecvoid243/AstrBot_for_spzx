@@ -92,8 +92,21 @@ vi.mock('@vue-flow/core', async () => {
       elementsSelectable: { type: Boolean, default: false },
       // Custom node registry forwarded by the canvas; asserted via props().
       nodeTypes: { type: Object, default: null },
+      // Box-selection / snap toggles forwarded by the canvas (edit mode).
+      selectionKeyCode: { type: Array, default: null },
+      selectionMode: { type: String, default: '' },
+      snapToGrid: { type: Boolean, default: false },
+      snapGrid: { type: Array, default: null },
     },
-    emits: ['connect', 'nodesChange', 'nodeClick', 'paneClick'],
+    emits: [
+      'connect',
+      'nodesChange',
+      'nodeClick',
+      'paneClick',
+      'edgeClick',
+      'edgeDoubleClick',
+      'selectionDragStop',
+    ],
     // The default slot hosts the canvas chrome (Background/Controls/MiniMap).
     template: `<div class="vue-flow-stub">
       <slot />
@@ -109,7 +122,10 @@ vi.mock('@vue-flow/core', async () => {
   return {
     VueFlow: VueFlowStub,
     // TeamsFlowCanvas calls useVueFlow() to convert drop coordinates.
-    useVueFlow: () => ({ screenToFlowCoordinate: flowMock.screenToFlowCoordinate }),
+    useVueFlow: () => ({
+      screenToFlowCoordinate: flowMock.screenToFlowCoordinate,
+      setCenter: vi.fn(),
+    }),
     // MemberFlowNode imports these at module scope; the card only renders
     // them inside a real VueFlow node context.
     Handle: defineComponent({
@@ -119,6 +135,7 @@ vi.mock('@vue-flow/core', async () => {
     }),
     Position: { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' },
     MarkerType: { Arrow: 'arrow', ArrowClosed: 'arrowclosed' },
+    SelectionMode: { Partial: 'partial', Full: 'full' },
   };
 });
 
@@ -653,7 +670,7 @@ describe('WorkflowEditor', () => {
     await selectNode(wrapper, 'n1');
 
     const hint = wrapper.find('.editor-task-hint');
-    expect(hint.text()).toBe(zh.editor.nodeTaskHint);
+    expect(hint.text()).toBe(zh.editor.taskHintDefault);
     expect(hint.text()).toContain('{{input}}');
 
     const insertBtn = findButton(wrapper, zh.editor.insertInput)!;
@@ -799,6 +816,21 @@ describe('WorkflowEditor variable chips and error mapping', () => {
     // n1 has no predecessors: only the input chip remains.
     await selectNode(wrapper, 'n1');
     expect(wrapper.findAll('.editor-var-chip').map((c) => c.text())).toEqual(['{{input}}']);
+  });
+
+  it('switches the task hint by the used variable kinds', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    const taskArea = wrapper.find('.editor-inspector textarea');
+
+    expect(wrapper.find('.editor-task-hint').text()).toBe(zh.editor.taskHintDefault);
+    await taskArea.setValue('use {{input}}');
+    expect(wrapper.find('.editor-task-hint').text()).toBe(zh.editor.taskHintWithInput);
+    await taskArea.setValue('see {{n2}}');
+    expect(wrapper.find('.editor-task-hint').text()).toBe(zh.editor.taskHintWithRef);
+    await taskArea.setValue('both {{input}} {{n2}}');
+    expect(wrapper.find('.editor-task-hint').text()).toBe(zh.editor.taskHintWithBoth);
   });
 
   it('inserts a predecessor variable at the cursor from its chip', async () => {
@@ -1373,16 +1405,258 @@ describe('TeamsFlowCanvas', () => {
     }) as VueWrapper<any>;
     const flow = canvas(wrapper);
 
-    expect(flow.props('nodesDraggable')).toBe(true);
-    expect(flow.props('nodesConnectable')).toBe(true);
-    expect(flow.props('elementsSelectable')).toBe(true);
+      expect(flow.props('nodesDraggable')).toBe(true);
+      expect(flow.props('nodesConnectable')).toBe(true);
+      expect(flow.props('elementsSelectable')).toBe(true);
 
-    flow.vm.$emit('connect', { source: 'n1', target: 'n1' });
-    flow.vm.$emit('connect', { source: 'n1', target: 'n2' });
-    await flushPromises();
+      flow.vm.$emit('connect', { source: 'n1', target: 'n1' });
+      flow.vm.$emit('connect', { source: 'n1', target: 'n2' });
+      await flushPromises();
 
-    expect(wrapper.emitted('connect')).toEqual([[{ from: 'n1', to: 'n2' }]]);
+      expect(wrapper.emitted('connect')).toEqual([[{ from: 'n1', to: 'n2' }]]);
+    });
+
+    it('selects and deletes edges in edit mode', async () => {
+      const wrapper = mount(TeamsFlowCanvas, {
+        props: { nodes: NODES, edges: EDGES, mode: 'edit' },
+        global: { stubs },
+      }) as VueWrapper<any>;
+      const flow = canvas(wrapper);
+
+      window.confirm = vi.fn(() => true);
+      flow.vm.$emit('edgeClick', { edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' } });
+      await nextTick();
+      // Selecting an edge deselects any selected node.
+      expect(wrapper.emitted('selectNode')).toEqual([[null]]);
+
+      flow.vm.$emit('edgeDoubleClick', { edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' } });
+      await flushPromises();
+      expect(wrapper.emitted('deleteEdge')).toEqual([['e:n1->n2']]);
+    });
+
+    it('does not emit deleteEdge when the double-click confirm is cancelled', async () => {
+      const wrapper = mount(TeamsFlowCanvas, {
+        props: { nodes: NODES, edges: EDGES, mode: 'edit' },
+        global: { stubs },
+      }) as VueWrapper<any>;
+      const flow = canvas(wrapper);
+
+      window.confirm = vi.fn(() => false);
+      flow.vm.$emit('edgeDoubleClick', { edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' } });
+      await flushPromises();
+      expect(wrapper.emitted('deleteEdge')).toBeUndefined();
+    });
+
+    it('forwards box-selection ids and clears selection on pane click', async () => {
+      const wrapper = mount(TeamsFlowCanvas, {
+        props: { nodes: NODES, edges: EDGES, mode: 'edit' },
+        global: { stubs },
+      }) as VueWrapper<any>;
+      const flow = canvas(wrapper);
+
+      flow.vm.$emit('selectionDragStop', { nodes: [{ id: 'n1' }, { id: 'n2' }] });
+      await flushPromises();
+      expect(wrapper.emitted('selectionChange')).toEqual([[['n1', 'n2']]]);
+
+      flow.vm.$emit('paneClick');
+      await flushPromises();
+      expect(wrapper.emitted('selectNode')).toEqual([[null]]);
+    });
   });
+
+describe('WorkflowEditor edge manipulation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({ workflow_id: 'wf9', name: 'saved' });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  it('deletes an edge when double-clicked and confirmed', async () => {
+    window.confirm = vi.fn(() => true);
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    expect(canvasEdges(wrapper)).toHaveLength(1);
+
+    canvas(wrapper).vm.$emit('edgeDoubleClick', {
+      edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' },
+    });
+    await nextTick();
+
+    expect(canvasEdges(wrapper)).toHaveLength(0);
+  });
+
+  it('keeps the edge when the user cancels the confirmation', async () => {
+    window.confirm = vi.fn(() => false);
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+
+    canvas(wrapper).vm.$emit('edgeDoubleClick', {
+      edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' },
+    });
+    await nextTick();
+
+    expect(canvasEdges(wrapper)).toHaveLength(1);
+  });
+});
+
+describe('WorkflowEditor undo/redo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({ workflow_id: 'wf9', name: 'saved' });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  it('undoes a node addition', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    expect(canvasNodes(wrapper)).toHaveLength(1);
+
+    await wrapper.vm.undo();
+    expect(canvasNodes(wrapper)).toHaveLength(0);
+  });
+
+  it('redoes a node addition after undo', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await wrapper.vm.undo();
+
+    await wrapper.vm.redo();
+    expect(canvasNodes(wrapper)).toHaveLength(1);
+  });
+
+  it('truncates forward history when branching after undoing', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await addNodes(wrapper, 1);
+    await wrapper.vm.undo();
+    await addNodes(wrapper, 1); // branch: the undone n2 is no longer reachable
+
+    await wrapper.vm.redo();
+    expect(canvasNodes(wrapper)).toHaveLength(2);
+  });
+
+  it('checkpoints inspector edits so undo does not drop typed text', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+
+    const taskArea = wrapper.find('.editor-inspector textarea');
+    await taskArea.setValue('Fix bug');
+    await nextTick();
+
+    await wrapper.vm.undo();
+    await nextTick();
+
+    // Undo lands on the pre-edit checkpoint: the node survives and the typed
+    // text is reverted instead of being destroyed with the whole graph.
+    expect(canvasNodes(wrapper)).toHaveLength(1);
+    expect(wrapper.find('.editor-inspector textarea').element).toHaveProperty('value', '');
+  });
+});
+
+describe('WorkflowEditor copy/paste', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({ workflow_id: 'wf9', name: 'saved' });
+    composableMocks.lastErrorFields.value = [];
+    stubExecutionOptions();
+  });
+
+  async function setExecProfile(wrapper: VueWrapper<any>, profile: string) {
+    await findButton(wrapper, zh.editor.executionConfig)!.trigger('click');
+    await flushPromises();
+    await wrapper.find(`select[data-label="${zh.editor.configProfile}"]`).setValue(profile);
+    await flushPromises();
+  }
+
+  it('copies and pastes a node at an offset position', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await wrapper.vm.copyNode();
+    await wrapper.vm.pasteNode();
+    await nextTick();
+
+    const nodes = canvasNodes(wrapper);
+    expect(nodes).toHaveLength(2);
+    expect(nodes[1].id).toMatch(/^n\d+$/);
+    expect(nodes[1].id).not.toBe('n1');
+    expect(nodes[1].position.x).toBe(nodes[0].position.x + 20);
+  });
+
+  it('copies the execution config when pasting', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+    await setExecProfile(wrapper, 'cfg1');
+    await wrapper.vm.copyNode();
+    await wrapper.vm.pasteNode();
+    await nextTick();
+
+    // The pasted node is selected; its inspector shows the copied profile.
+    expect(
+      wrapper.find(`select[data-label="${zh.editor.configProfile}"]`).attributes('data-value'),
+    ).toBe('cfg1');
+  });
+});
+
+describe('WorkflowEditor bulk operations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({ workflow_id: 'wf9', name: 'saved' });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  it('deletes selected nodes and every edge touching them', async () => {
+    window.confirm = vi.fn(() => true);
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 3);
+    await emitConnect(wrapper, 'n1', 'n2');
+    await emitConnect(wrapper, 'n2', 'n3');
+
+    canvas(wrapper).vm.$emit('selectionDragStop', { nodes: [{ id: 'n1' }, { id: 'n2' }] });
+    await nextTick();
+
+    await wrapper.vm.bulkDelete();
+    await nextTick();
+
+    expect(canvasNodes(wrapper)).toHaveLength(1);
+    expect(canvasNodes(wrapper)[0].id).toBe('n3');
+    expect(canvasEdges(wrapper)).toHaveLength(0);
+  });
+
+  it('clears the box selection when a node is clicked', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 3);
+
+    canvas(wrapper).vm.$emit('selectionDragStop', { nodes: [{ id: 'n1' }, { id: 'n2' }] });
+    await nextTick();
+    expect(wrapper.find('[data-test="bulk-delete"]').exists()).toBe(true);
+
+    // Clicking a node defeats the box selection (the node stays selected for
+    // the inspector), so the bulk-delete affordance disappears.
+    canvas(wrapper).vm.$emit('nodeClick', { node: { id: 'n1' } });
+    await nextTick();
+    expect(wrapper.find('[data-test="bulk-delete"]').exists()).toBe(false);
+  });
+});
+
+describe('TeamsFlowCanvas', () => {
+  const NODES = [
+    {
+      id: 'n1',
+      position: { x: 0, y: 0 },
+      data: { label: 'Alice (n1)', memberName: 'Alice', memberId: 'm1', task: 'Do A' },
+    },
+    {
+      id: 'n2',
+      position: { x: 80, y: 0 },
+      data: { label: 'Bob (n2)', memberName: 'Bob', memberId: 'm2', task: 'Do B' },
+    },
+  ];
+  const EDGES = [{ id: 'e:n1->n2', source: 'n1', target: 'n2' }];
 
   it('emits position maps after drags and selection events', async () => {
     const wrapper = mount(TeamsFlowCanvas, {

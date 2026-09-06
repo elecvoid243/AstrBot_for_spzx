@@ -16,6 +16,11 @@ from astrbot.core.provider.entities import ProviderType
 MAX_MEMBERS = 10
 MAX_NAME_LEN = 32
 
+# Upper bounds for a member's runner_config numeric fields (spec §3.1).
+MAX_MEMBER_MAX_STEPS = 200
+MAX_MEMBER_TOOL_TIMEOUT = 3600
+MAX_MEMBER_CONTEXT_LENGTH = 1_000_000
+
 DEFAULT_TEAM_CONFIG = {
     "failure_policy": "pause",  # pause | auto_skip
     "reply_timeout": 600.0,
@@ -297,6 +302,150 @@ class AgentTeamService:
             team_id, members=[m for m in team.members if m["member_id"] != member_id]
         )
         return {"message": "成员已移除"}
+
+    def _validate_member_runner_config(self, runner_config: dict) -> dict:
+        """Validate a member's runner_config block (spec §3.1).
+
+        Args:
+            runner_config: The raw runner_config dict from the payload.
+
+        Returns:
+            The normalized dict with only known keys (empty values dropped).
+
+        Raises:
+            AgentTeamsServiceError: When a referenced config profile is
+                unknown or a numeric field is out of range.
+        """
+        if not isinstance(runner_config, dict):
+            raise AgentTeamsServiceError("runner_config 必须是对象")
+        out: dict = {}
+        if "config_id" in runner_config and runner_config["config_id"] not in (
+            None,
+            "",
+        ):
+            config_id = str(runner_config["config_id"])
+            if config_id not in self.core_lifecycle.astrbot_config_mgr.confs:
+                raise AgentTeamsServiceError(f"配置档案不存在: {config_id}")
+            out["config_id"] = config_id
+        for key in ("tools", "skills", "kb_names"):
+            value = runner_config.get(key)
+            if value is None:
+                continue
+            # An empty list is valid: tools/skills use it to disable all,
+            # matching the node execution semantics.
+            if not isinstance(value, list) or not all(
+                isinstance(v, str) for v in value
+            ):
+                raise AgentTeamsServiceError(f"{key} 必须是字符串列表")
+            out[key] = value
+        if "max_steps" in runner_config and runner_config["max_steps"] is not None:
+            try:
+                v = int(runner_config["max_steps"])
+            except (TypeError, ValueError):
+                raise AgentTeamsServiceError("max_steps 必须是有效数字") from None
+            if not 1 <= v <= MAX_MEMBER_MAX_STEPS:
+                raise AgentTeamsServiceError("max_steps 超出范围")
+            out["max_steps"] = v
+        if (
+            "tool_call_timeout" in runner_config
+            and runner_config["tool_call_timeout"] is not None
+        ):
+            try:
+                v = float(runner_config["tool_call_timeout"])
+            except (TypeError, ValueError):
+                raise AgentTeamsServiceError(
+                    "tool_call_timeout 必须是有效数字"
+                ) from None
+            if not 0 < v <= MAX_MEMBER_TOOL_TIMEOUT:
+                raise AgentTeamsServiceError("tool_call_timeout 超出范围")
+            out["tool_call_timeout"] = v
+        if (
+            "context_length" in runner_config
+            and runner_config["context_length"] is not None
+        ):
+            try:
+                v = int(runner_config["context_length"])
+            except (TypeError, ValueError):
+                raise AgentTeamsServiceError("context_length 必须是有效数字") from None
+            if not 1 <= v <= MAX_MEMBER_CONTEXT_LENGTH:
+                raise AgentTeamsServiceError("context_length 超出范围")
+            out["context_length"] = v
+        return out
+
+    async def update_member(
+        self, username: str, team_id: str, member_id: str, payload: dict
+    ) -> dict:
+        """Update an existing team member (name, persona/provider pin, runner_config).
+
+        Args:
+            username: Owner of the team.
+            team_id: The team id.
+            member_id: The member id to update.
+            payload: Fields to update: name, persona_id, provider_id,
+                system_prompt, runner_config.
+
+        Returns:
+            The updated team dict.
+
+        Raises:
+            AgentTeamsServiceError: When the team/member is missing, the name
+                is duplicated, or the payload fails validation.
+        """
+        team = await self.get_team(username, team_id)
+        member = next(
+            (m for m in team.get("members", []) if m.get("member_id") == member_id),
+            None,
+        )
+        if member is None:
+            raise AgentTeamsServiceError(f"成员 '{member_id}' 不存在")
+        updated = dict(member)
+        if "name" in payload:
+            name = str(payload.get("name") or "").strip()
+            if not name or len(name) > MAX_NAME_LEN:
+                raise AgentTeamsServiceError(f"成员名必填且 ≤{MAX_NAME_LEN} 字符")
+            if any(
+                m.get("name", "").lower() == name.lower()
+                and m["member_id"] != member_id
+                for m in team["members"]
+            ):
+                raise AgentTeamsServiceError(f"成员名必须 unique: {name}")
+            updated["name"] = name
+        if "persona_id" in payload:
+            persona_id = payload["persona_id"] or None
+            if (
+                persona_id
+                and self.core_lifecycle.persona_mgr.get_persona_v3_by_id(persona_id)
+                is None
+            ):
+                raise AgentTeamsServiceError(f"人格不存在: {persona_id}")
+            updated["persona_id"] = persona_id
+        if "provider_id" in payload:
+            updated["provider_id"] = payload["provider_id"] or None
+        if "system_prompt" in payload:
+            updated["system_prompt"] = payload["system_prompt"] or None
+        if "runner_config" in payload:
+            updated["runner_config"] = self._validate_member_runner_config(
+                payload["runner_config"]
+            )
+
+        # Re-pin the member session (same helpers as _create_member) so the new
+        # persona/provider take effect on the next dispatch.
+        umo = member.get("umo") or ""
+        if updated.get("persona_id"):
+            await self.core_lifecycle.conversation_manager.new_conversation(
+                umo, "webchat", persona_id=updated["persona_id"]
+            )
+        if updated.get("provider_id"):
+            await self.core_lifecycle.provider_manager.set_provider(
+                updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
+            )
+
+        members = [
+            updated if m["member_id"] == member_id else m
+            for m in team.get("members", [])
+        ]
+        await self.db.update_agent_team(team_id, members=members)
+        return await self.get_team(username, team_id)
 
     # ---------- workflows ----------
 

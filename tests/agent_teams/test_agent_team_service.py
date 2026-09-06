@@ -221,3 +221,79 @@ async def test_create_team_hardens_config_and_member_types(tmp_path):
         await svc.create_team("alice", {**base, "members": ["x", "y"]})
 
     assert svc.chat_service.counter == 0
+
+
+@pytest.mark.asyncio
+async def test_update_member_persists_runner_config(tmp_path, monkeypatch):
+    """runner_config is validated, persisted, and legacy fields stay intact."""
+    _, svc = await make_service(tmp_path)
+    monkeypatch.setattr(svc.core_lifecycle.astrbot_config_mgr, "confs", {"conf0": {}})
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member_id = team["members"][0]["member_id"]
+    updated = await svc.update_member(
+        "owner0",
+        team["team_id"],
+        member_id,
+        {"name": "主管", "runner_config": {"config_id": "conf0", "max_steps": 12}},
+    )
+    member = next(m for m in updated["members"] if m["member_id"] == member_id)
+    assert member["runner_config"]["config_id"] == "conf0"
+    assert member["runner_config"]["max_steps"] == 12
+    # legacy fields untouched
+    assert member["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_update_member_rejects_unknown_member(tmp_path):
+    _, svc = await make_service(tmp_path)
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    with pytest.raises(AgentTeamsServiceError, match="不存在"):
+        await svc.update_member("owner0", team["team_id"], "nope", {"name": "X"})
+
+
+@pytest.mark.asyncio
+async def test_update_member_rejects_invalid_config_id(tmp_path, monkeypatch):
+    _, svc = await make_service(tmp_path)
+    monkeypatch.setattr(svc.core_lifecycle.astrbot_config_mgr, "confs", {})
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member_id = team["members"][0]["member_id"]
+    with pytest.raises(AgentTeamsServiceError, match="配置档案不存在"):
+        await svc.update_member(
+            "owner0",
+            team["team_id"],
+            member_id,
+            {"runner_config": {"config_id": "missing"}},
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_member_rejects_out_of_range_numbers(tmp_path):
+    _, svc = await make_service(tmp_path)
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member_id = team["members"][0]["member_id"]
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.update_member(
+            "owner0", team["team_id"], member_id, {"runner_config": {"max_steps": 0}}
+        )
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.update_member(
+            "owner0",
+            team["team_id"],
+            member_id,
+            {"runner_config": {"tool_call_timeout": 99999}},
+        )
+    with pytest.raises(AgentTeamsServiceError):
+        await svc.update_member(
+            "owner0",
+            team["team_id"],
+            member_id,
+            {"runner_config": {"context_length": -5}},
+        )

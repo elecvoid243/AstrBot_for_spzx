@@ -151,6 +151,26 @@ async def remove_member(
         return _handle(e)
 
 
+@router.patch("/agent_teams/{team_id}/members/{member_id}")
+@legacy_router.patch("/{team_id}/members/{member_id}")
+async def update_member(
+    team_id: str,
+    member_id: str,
+    request: Request,
+    username: str = Depends(_auth_dep),
+    service: AgentTeamService = Depends(get_team_service),
+):
+    """Update a member of an agent team (name, persona/provider, runner_config)."""
+    try:
+        return ok(
+            await service.update_member(
+                username, team_id, member_id, await _json_body(request)
+            )
+        )
+    except AgentTeamsServiceError as e:
+        return _handle(e)
+
+
 @router.post("/agent_teams/{team_id}/workflows")
 @legacy_router.post("/{team_id}/workflows")
 async def create_workflow(

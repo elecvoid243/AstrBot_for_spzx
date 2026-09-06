@@ -2056,4 +2056,17 @@ export const agentTeamsApi = {
   runStreamUrl(runId: string) {
     return `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/stream`;
   },
+  interruptRunMember(runId: string, memberId: string) {
+    return httpClient.post<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(memberId)}/interrupt`
+    );
+  },
+  getMemberTranscript(runId: string, memberId: string, beforeId?: number, limit = 50) {
+    const params = new URLSearchParams();
+    if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    params.set('limit', String(limit));
+    return httpClient.get<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(memberId)}/transcript?${params.toString()}`
+    );
+  },
 };

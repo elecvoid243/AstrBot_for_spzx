@@ -4,7 +4,11 @@
     "beta": "Beta",
     "refresh": "Refresh"
   },
-  "tabs": { "editor": "Workflow Editor", "monitor": "Run Monitor", "history": "History" },
+  "tabs": {
+    "editor": "Workflow Editor",
+    "monitor": "Run Monitor",
+    "history": "History"
+  },
   "teams": {
     "create": "New Team",
     "edit": "Edit Team",
@@ -96,8 +100,23 @@
     "autoModeDisabled": "Automatic orchestration will be available in a future release",
     "roundLabel": "Round {n} / max {max}",
     "dispatchLog": "Dispatch log",
-    "status": { "idle": "Idle", "running": "Running", "paused": "Paused", "stopped": "Stopped", "completed": "Completed", "failed": "Failed", "interrupted": "Interrupted" },
-    "node": { "pending": "Pending", "running": "Running", "done": "Done", "failed": "Failed", "skipped": "Skipped", "interrupted": "Interrupted" },
+    "status": {
+      "idle": "Idle",
+      "running": "Running",
+      "paused": "Paused",
+      "stopped": "Stopped",
+      "completed": "Completed",
+      "failed": "Failed",
+      "interrupted": "Interrupted"
+    },
+    "node": {
+      "pending": "Pending",
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "interrupted": "Interrupted"
+    },
     "retryNode": "Retry This Node",
     "skipNode": "Skip and Cascade-Skip",
     "dagProgress": "DAG Progress",
@@ -118,5 +137,23 @@
     "status": "Status",
     "open": "Open"
   },
-  "errors": { "loadFailed": "Failed to load", "saveFailed": "Failed to save", "operationFailed": "Operation failed" }
+  "errors": {
+    "loadFailed": "Failed to load",
+    "saveFailed": "Failed to save",
+    "operationFailed": "Operation failed"
+  },
+  "dialog": {
+    "title": "Member Transcript",
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit Fullscreen",
+    "sendPlaceholder": "Type a message...",
+    "send": "Send",
+    "interrupt": "Interrupt",
+    "interruptConfirm": "Interrupt this member's task?",
+    "choiceWaiting": "Waiting for choice...",
+    "loadMore": "Load More",
+    "speakingHint": "Sending...",
+    "empty": "No messages yet",
+    "systemEntry": "System"
+  }
 }

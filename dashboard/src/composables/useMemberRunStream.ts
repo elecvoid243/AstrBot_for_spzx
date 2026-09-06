@@ -1,10 +1,12 @@
 // Author: elecvoid243
 // Date: 2026-09-05
 // Plan: docs/superpowers/plans/2026-09-05-agent-teams-refinements-3.md Task 6
-// Composable for attaching to a member's run stream (for MemberTranscriptDialog).
-// Handles interactive_choice, interactive_choice_resolved, and user_message_saved.
+// Attaches one member's chat run stream so the transcript dialog gets the same
+// fidelity as the chat page: `ask_user_choice` boxes hydrate through the shared
+// dispatcher + Pinia store, and follow-up turns appear as user bubbles. Only
+// those payload types are handled; Teams' own run events stay on the reducer.
 
-import { ref, shallowRef, type Ref } from 'vue';
+import { ref, type Ref } from 'vue';
 import { fetchWithAuth } from '@/api/http';
 import { chatApi } from '@/api/v1';
 import { readSseStream } from '@/utils/sseReader';
@@ -14,30 +16,44 @@ import {
   type BotMessageLike,
 } from './dispatchInteractiveChoice';
 
+/** One user turn echoed back by the run stream (`user_message_saved`). */
 interface UserBubble {
   id?: string;
   text: string;
 }
 
 export interface MemberRunStreamState {
+  /** Bot record the choice dispatcher pushes interactive_choice parts into. */
   record: BotMessageLike;
   userBubbles: Ref<UserBubble[]>;
   detach: () => void;
 }
 
 /**
- * Attach to a run's stream to hydrate a member's transcript dialog.
- * 
- * @param umo - Session ID for the member
- * @param sessionId - Session ID (same as umo for consistency)
- * @param runId - Run ID to resume
- * @returns Stream state with bot record, user bubbles, and detach function
+ * Attach one member's chat run stream for the transcript dialog.
+ *
+ * The stream is the member session's own run stream, so choice boxes and
+ * follow-up echoes arrive exactly as they do on the chat page. Only
+ * `interactive_choice`, `interactive_choice_resolved` and `user_message_saved`
+ * are handled; every other payload belongs to the Teams reducer and is ignored.
+ * No reconnect is attempted — the dialog re-attaches when it reopens.
+ *
+ * Returns:
+ *   An object whose `attach(umo, runId)` starts one stream and returns the bot
+ *   record, the user-bubble list, and a `detach` that aborts it.
  */
 export function useMemberRunStream(): {
-  attach: (umo: string, sessionId: string, runId: string) => MemberRunStreamState;
+  attach: (umo: string, runId: string) => MemberRunStreamState;
 } {
   return {
-    attach(umo: string, sessionId: string, runId: string): MemberRunStreamState {
+    /**
+     * Start streaming one run for the member owning `umo`.
+     *
+     * Args:
+     *   umo: Member session umo; scopes the interactive-choice store writes.
+     *   runId: Chat run to resume (the member turn's run id).
+     */
+    attach(umo: string, runId: string): MemberRunStreamState {
       const userBubbles = ref<UserBubble[]>([]);
       const record: BotMessageLike = {
         content: {
@@ -61,23 +77,19 @@ export function useMemberRunStream(): {
             response.body,
             (payload) => {
               if (!payload || typeof payload !== 'object') return;
-
               const type = payload.type;
-
               if (type === 'interactive_choice') {
+                // The dispatcher pushes the part and mirrors it into the store,
+                // so InteractiveChoiceBox submits through the chat-page path.
                 applyInteractiveChoiceSse(umo, record, payload);
               } else if (type === 'interactive_choice_resolved') {
                 applyInteractiveChoiceResolved(umo, payload);
               } else if (type === 'user_message_saved') {
-                const data = payload.data as any;
+                const data = payload.data as { id?: string; text?: unknown } | undefined;
                 if (data && typeof data.text === 'string') {
-                  userBubbles.value.push({
-                    id: data.id,
-                    text: data.text,
-                  });
+                  userBubbles.value.push({ id: data.id, text: data.text });
                 }
               }
-              // Ignore other events
             },
             abort.signal,
           );

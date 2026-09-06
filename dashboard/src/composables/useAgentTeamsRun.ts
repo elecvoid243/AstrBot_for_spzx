@@ -354,6 +354,24 @@ async function skipNode(nodeId: string) {
   return unwrapEnvelope(() => agentTeamsApi.skipNode(runId, nodeId));
 }
 
+/**
+ * Interrupt one member's in-flight turn on the attached run.
+ *
+ * The backend stops the member agent turn and lands its DAG node in the
+ * independent interrupted state (the run pauses; retry/skip stay available).
+ *
+ * Args:
+ *   memberId: Member whose turn should be interrupted.
+ *
+ * Returns:
+ *   The envelope data, or null when no run is attached or the call failed.
+ */
+async function interruptMember(memberId: string) {
+  const runId = runState.value?.runId;
+  if (!runId) return null;
+  return unwrapEnvelope(() => agentTeamsApi.interruptRunMember(runId, memberId));
+}
+
 /** Re-attach the SSE stream of the currently opened run. */
 function reconnect() {
   if (runState.value) attach(runState.value.runId);
@@ -372,6 +390,7 @@ export function useAgentTeamsRun() {
     stop,
     retryNode,
     skipNode,
+    interruptMember,
     reconnect,
     setOnAttachFailed,
   };

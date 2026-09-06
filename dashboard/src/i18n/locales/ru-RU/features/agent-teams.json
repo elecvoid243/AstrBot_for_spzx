@@ -4,7 +4,11 @@
     "beta": "Бета",
     "refresh": "Обновить"
   },
-  "tabs": { "editor": "Редактор workflows", "monitor": "Мониторинг запуска", "history": "История" },
+  "tabs": {
+    "editor": "Редактор workflows",
+    "monitor": "Мониторинг запуска",
+    "history": "История"
+  },
   "teams": {
     "create": "Новая команда",
     "edit": "Изменить команду",
@@ -96,8 +100,23 @@
     "autoModeDisabled": "Автоматическая оркестрация появится в следующих версиях",
     "roundLabel": "Раунд {n} / макс. {max}",
     "dispatchLog": "Журнал диспетчеризации",
-    "status": { "idle": "Простой", "running": "Выполняется", "paused": "Пауза", "stopped": "Остановлен", "completed": "Завершён", "failed": "Ошибка", "interrupted": "Прерван" },
-    "node": { "pending": "Ожидание", "running": "Выполняется", "done": "Готово", "failed": "Ошибка", "skipped": "Пропущено", "interrupted": "Прерван" },
+    "status": {
+      "idle": "Простой",
+      "running": "Выполняется",
+      "paused": "Пауза",
+      "stopped": "Остановлен",
+      "completed": "Завершён",
+      "failed": "Ошибка",
+      "interrupted": "Прерван"
+    },
+    "node": {
+      "pending": "Ожидание",
+      "running": "Выполняется",
+      "done": "Готово",
+      "failed": "Ошибка",
+      "skipped": "Пропущено",
+      "interrupted": "Прерван"
+    },
     "retryNode": "Повторить этот узел",
     "skipNode": "Пропустить с каскадом",
     "dagProgress": "Прогресс DAG",
@@ -118,5 +137,23 @@
     "status": "Статус",
     "open": "Открыть"
   },
-  "errors": { "loadFailed": "Не удалось загрузить", "saveFailed": "Не удалось сохранить", "operationFailed": "Не удалось выполнить операцию" }
+  "errors": {
+    "loadFailed": "Не удалось загрузить",
+    "saveFailed": "Не удалось сохранить",
+    "operationFailed": "Не удалось выполнить операцию"
+  },
+  "dialog": {
+    "title": "Расшифровка участника",
+    "fullscreen": "Полный экран",
+    "exitFullscreen": "Выйти из полного экрана",
+    "sendPlaceholder": "Введите сообщение...",
+    "send": "Отправить",
+    "interrupt": "Прервать",
+    "interruptConfirm": "Прервать задачу этого участника?",
+    "choiceWaiting": "Ожидание выбора...",
+    "loadMore": "Загрузить больше",
+    "speakingHint": "Отправка...",
+    "empty": "Пока нет сообщений",
+    "systemEntry": "Система"
+  }
 }

@@ -4,7 +4,11 @@
     "beta": "Beta",
     "refresh": "刷新"
   },
-  "tabs": { "editor": "工作流编排", "monitor": "运行监控", "history": "历史" },
+  "tabs": {
+    "editor": "工作流编排",
+    "monitor": "运行监控",
+    "history": "历史"
+  },
   "teams": {
     "create": "新建团队",
     "edit": "编辑团队",
@@ -96,8 +100,23 @@
     "autoModeDisabled": "自动编排将在后续版本开放",
     "roundLabel": "第 {n} 轮 / 上限 {max}",
     "dispatchLog": "派发记录",
-    "status": { "idle": "空闲", "running": "运行中", "paused": "已暂停", "stopped": "已停止", "completed": "已完成", "failed": "失败", "interrupted": "已中断" },
-    "node": { "pending": "待执行", "running": "执行中", "done": "完成", "failed": "失败", "skipped": "已跳过", "interrupted": "已中断" },
+    "status": {
+      "idle": "空闲",
+      "running": "运行中",
+      "paused": "已暂停",
+      "stopped": "已停止",
+      "completed": "已完成",
+      "failed": "失败",
+      "interrupted": "已中断"
+    },
+    "node": {
+      "pending": "待执行",
+      "running": "执行中",
+      "done": "完成",
+      "failed": "失败",
+      "skipped": "已跳过",
+      "interrupted": "已中断"
+    },
     "retryNode": "重试该节点",
     "skipNode": "跳过并级联跳过",
     "dagProgress": "DAG 进度",
@@ -118,5 +137,23 @@
     "status": "状态",
     "open": "打开"
   },
-  "errors": { "loadFailed": "加载失败", "saveFailed": "保存失败", "operationFailed": "操作失败" }
+  "errors": {
+    "loadFailed": "加载失败",
+    "saveFailed": "保存失败",
+    "operationFailed": "操作失败"
+  },
+  "dialog": {
+    "title": "成员对话记录",
+    "fullscreen": "全屏",
+    "exitFullscreen": "退出全屏",
+    "sendPlaceholder": "输入消息...",
+    "send": "发送",
+    "interrupt": "中断",
+    "interruptConfirm": "中断此成员的任务？",
+    "choiceWaiting": "等待选择...",
+    "loadMore": "加载更多",
+    "speakingHint": "发送中...",
+    "empty": "暂无消息",
+    "systemEntry": "系统"
+  }
 }

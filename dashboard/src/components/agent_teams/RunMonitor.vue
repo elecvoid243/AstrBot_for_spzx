@@ -139,6 +139,7 @@
             :node-status="memberNodeStatus(item.i)"
             :node-error="memberNodeError(item.i)"
             :busy="isMemberBusy(item.i)"
+            @expand="openMemberDialog(item.i)"
           />
         </GridItem>
       </GridLayout>
@@ -158,6 +159,19 @@
       />
     </div>
   </div>
+  <MemberTranscriptDialog
+    v-if="dialogMemberId && runState"
+    :model-value="dialogOpen"
+    :run-id="runState.runId"
+    :member-id="dialogMemberId"
+    :member-name="memberById(dialogMemberId).name"
+    :umo="memberUmo(dialogMemberId)"
+    :timeline="runState.windows[dialogMemberId]?.timeline ?? []"
+    :has-more="false"
+    @update:model-value="dialogOpen = $event"
+    @send="onDialogSend"
+    @interrupt="onDialogInterrupt"
+  />
 </template>
 
 <script setup lang="ts">
@@ -169,12 +183,15 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { GridLayout, GridItem } from 'grid-layout-plus';
 import AgentWindow from './AgentWindow.vue';
+import MemberTranscriptDialog from './MemberTranscriptDialog.vue';
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import type { FlowEdgePayload, FlowNode } from './TeamsFlowCanvas.vue';
 import type { TeamsRunStateSeed } from '@/composables/agentTeamsRunReducer';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun, type AgentTeamRunSummary } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
+import { chatApi } from '@/api/v1';
+import { extractApiError } from '@/utils/extractApiError';
 import { useToast } from '@/utils/toast';
 import { collabMemberColor } from '@/utils/memberColors';
 
@@ -212,6 +229,7 @@ const {
   stop,
   retryNode,
   skipNode,
+  interruptMember,
   setOnAttachFailed,
 } = useAgentTeamsRun();
 
@@ -615,6 +633,62 @@ watch(
     if (teamId) void loadWorkflows(teamId);
   },
 );
+
+// Plan 3 T7: per-member transcript dialog (timeline + speak + interrupt).
+const dialogOpen = ref(false);
+const dialogMemberId = ref<string | null>(null);
+
+/** Open the transcript dialog for one member (AgentWindow expand button). */
+function openMemberDialog(memberId: string) {
+  dialogMemberId.value = memberId;
+  dialogOpen.value = true;
+}
+
+/**
+ * Resolve a member umo for the choice-box binding and the run stream.
+ *
+ * Members created by the Teams service carry their umo; fall back to the
+ * session id so an older row still renders (the choice store keys by umo).
+ */
+function memberUmo(memberId: string): string {
+  const m = (props.team?.members ?? []).find((x: any) => x.member_id === memberId);
+  return m?.umo || m?.session_id || memberId;
+}
+
+/**
+ * Send a mid-run instruction to the member session.
+ *
+ * This is the ordinary chat send path (spec §4.4): while the member's turn is
+ * in flight the backend captures the message as a follow-up and merges it into
+ * that turn; when the member is idle it starts a new turn. Failures keep the
+ * dialog open and surface the backend reason.
+ */
+async function onDialogSend(text: string) {
+  const memberId = dialogMemberId.value;
+  if (!memberId) return;
+  const member = (props.team?.members ?? []).find(
+    (x: any) => x.member_id === memberId,
+  );
+  const sessionId = member?.session_id;
+  if (!sessionId) return;
+  try {
+    await chatApi.send({ message: text, session_id: sessionId });
+  } catch (err) {
+    toastError(extractApiError(err, tm('errors.operationFailed')).message);
+  }
+}
+
+/**
+ * Interrupt the member's in-flight turn.
+ *
+ * The node lands in the independent `interrupted` state and the run pauses;
+ * retry/skip stay available (spec §4.3). The composable toasts failures.
+ */
+async function onDialogInterrupt() {
+  const memberId = dialogMemberId.value;
+  if (!memberId) return;
+  await interruptMember(memberId);
+}
 </script>
 
 <style scoped>

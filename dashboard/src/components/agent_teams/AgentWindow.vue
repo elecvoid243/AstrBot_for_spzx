@@ -14,6 +14,16 @@
         {{ tm('monitor.node.' + nodeStatus) }}
       </v-chip>
       <v-spacer />
+      <v-btn
+        icon
+        size="x-small"
+        variant="text"
+        class="agent-window-expand"
+        data-test="expand-window"
+        @click="emit('expand')"
+      >
+        <v-icon size="16">mdi-arrow-expand</v-icon>
+      </v-btn>
       <span v-if="busy" class="agent-window-busy-dot" />
     </div>
     <div v-if="nodeError" class="agent-window-error">
@@ -81,6 +91,9 @@ const props = defineProps<{
   /** True while the member's session is waiting for its reply. */
   busy?: boolean;
 }>();
+
+// Plan 3 T7: expand opens the member transcript dialog.
+const emit = defineEmits<{ expand: [] }>();
 
 const { tm } = useModuleI18n('features/agent-teams');
 const customizer = useCustomizerStore();

@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 375 icons */
+/* Auto-generated MDI subset – 376 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -94,6 +94,10 @@
 
 .mdi-arrow-down-thin::before {
   content: "\F19B3";
+}
+
+.mdi-arrow-expand::before {
+  content: "\F0616";
 }
 
 .mdi-arrow-left::before {

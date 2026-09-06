@@ -53,7 +53,7 @@ describe('useMemberRunStream', () => {
     );
 
     const stream = useMemberRunStream();
-    const state = stream.attach('umo1', 'sess1', 'run1');
+    const state = stream.attach('umo1', 'run1');
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -80,7 +80,7 @@ describe('useMemberRunStream', () => {
     );
 
     const stream = useMemberRunStream();
-    const state = stream.attach('umo1', 'sess1', 'run1');
+    const state = stream.attach('umo1', 'run1');
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -97,7 +97,7 @@ describe('useMemberRunStream', () => {
     });
 
     const stream = useMemberRunStream();
-    const state = stream.attach('umo1', 'sess1', 'run1');
+    const state = stream.attach('umo1', 'run1');
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     state.detach();
@@ -115,7 +115,7 @@ describe('useMemberRunStream', () => {
     );
 
     const stream = useMemberRunStream();
-    const state = stream.attach('umo1', 'sess1', 'run1');
+    const state = stream.attach('umo1', 'run1');
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 

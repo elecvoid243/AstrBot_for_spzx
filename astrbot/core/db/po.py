@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from deprecated import deprecated
-from sqlalchemy import Index, desc
+from sqlalchemy import Column, Index, desc
 from sqlmodel import JSON, Field, SQLModel, Text, UniqueConstraint
 
 
@@ -271,6 +271,36 @@ class AgentTeamRun(TimestampMixin, SQLModel, table=True):
     node_states: dict = Field(default_factory=dict, sa_type=JSON)
     # auto mode only (Plan 3): [{n, assignments, results_digest}]
     rounds: list = Field(default_factory=list, sa_type=JSON)
+
+
+class AgentTeamRunMessage(TimestampMixin, SQLModel, table=True):
+    """One transcript row of an agent team run (per member turn/event).
+
+    ``id`` doubles as the pagination cursor for the transcript API.
+    """
+
+    __tablename__: str = "agent_team_run_messages"
+
+    id: int | None = Field(
+        default=None,
+        primary_key=True,
+        sa_column_kwargs={"autoincrement": True},
+    )
+    run_id: str = Field(max_length=32, nullable=False, index=True)
+    member_id: str = Field(max_length=32, nullable=False, index=True)
+    node_id: str | None = Field(default=None, max_length=32)
+    # Auto-mode round number; None for DAG-mode rows.
+    round: int | None = Field(default=None)
+    # Key merging streaming deltas within one turn.
+    turn_id: str = Field(max_length=64, nullable=False)
+    direction: str = Field(
+        max_length=8, nullable=False
+    )  # sent | reply | choice | system
+    text: str | None = Field(default=None, sa_type=Text)
+    parts: list | None = Field(default=None, sa_type=JSON)
+    # SQLAlchemy's declarative API reserves the attribute name ``metadata``,
+    # so the column is mapped from ``meta`` under its schema name.
+    meta: dict | None = Field(default=None, sa_column=Column("metadata", JSON))
 
 
 class Preference(TimestampMixin, SQLModel, table=True):

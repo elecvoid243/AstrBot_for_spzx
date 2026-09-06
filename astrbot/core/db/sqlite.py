@@ -18,6 +18,7 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentTeam,
     AgentTeamRun,
+    AgentTeamRunMessage,
     AgentTeamWorkflow,
     ApiKey,
     Attachment,
@@ -3128,5 +3129,121 @@ class SQLiteDatabase(BaseDatabase):
 
         async def _op(session: AsyncSession) -> list[AgentTeamRun]:
             return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)
+
+    async def append_agent_team_run_message(
+        self,
+        *,
+        run_id: str,
+        member_id: str,
+        node_id: str | None,
+        round: int | None,
+        turn_id: str,
+        direction: str,
+        text: str | None,
+        parts: list | None,
+        metadata: dict | None,
+    ) -> AgentTeamRunMessage:
+        """Append one transcript row for a run member.
+
+        Args:
+            run_id: Owning run identifier.
+            member_id: Owning member identifier.
+            node_id: DAG node the turn belongs to, when applicable.
+            round: Auto-mode round number, when applicable.
+            turn_id: Key merging streaming deltas within one turn.
+            direction: One of ``sent | reply | choice | system``.
+            text: Final full text of the turn, when applicable.
+            parts: Structured message parts (think/tool/attachment), if any.
+            metadata: Extra event data (e.g. system-event reasons), if any.
+
+        Returns:
+            The persisted AgentTeamRunMessage (with its cursor id).
+        """
+        message = AgentTeamRunMessage(
+            run_id=run_id,
+            member_id=member_id,
+            node_id=node_id,
+            round=round,
+            turn_id=turn_id,
+            direction=direction,
+            text=text,
+            parts=parts,
+            meta=metadata,
+        )
+
+        async def _op(session: AsyncSession) -> AgentTeamRunMessage:
+            session.add(message)
+            return message
+
+        return await self._run_in_tx(_op)
+
+    async def get_agent_team_run_transcript(
+        self,
+        run_id: str,
+        member_id: str,
+        before_id: int | None,
+        limit: int = 50,
+    ) -> list[AgentTeamRunMessage]:
+        """Get one page of a member's transcript, newest first.
+
+        Args:
+            run_id: Owning run identifier.
+            member_id: Owning member identifier.
+            before_id: Exclusive cursor; only rows with ``id < before_id``
+                are returned. None starts from the newest row.
+            limit: Page size.
+
+        Returns:
+            Rows ordered by id DESC; the caller reverses for chronological
+            display.
+        """
+        statement = (
+            select(AgentTeamRunMessage)
+            .where(
+                AgentTeamRunMessage.run_id == run_id,
+                AgentTeamRunMessage.member_id == member_id,
+            )
+            .order_by(AgentTeamRunMessage.id.desc())
+            .limit(limit)
+        )
+        if before_id is not None:
+            statement = statement.where(AgentTeamRunMessage.id < before_id)
+
+        async def _op(session: AsyncSession) -> list[AgentTeamRunMessage]:
+            return list((await session.execute(statement)).scalars().all())
+
+        return await self._run_in_tx(_op)
+
+    async def trim_agent_team_run_transcript(
+        self, run_id: str, member_id: str, keep: int = 500
+    ) -> int:
+        """Trim a member's transcript, keeping only the newest rows.
+
+        Args:
+            run_id: Owning run identifier.
+            member_id: Owning member identifier.
+            keep: Number of newest rows (by id) to retain.
+
+        Returns:
+            Number of deleted rows.
+        """
+        surplus = (
+            select(AgentTeamRunMessage.id)
+            .where(
+                AgentTeamRunMessage.run_id == run_id,
+                AgentTeamRunMessage.member_id == member_id,
+            )
+            .order_by(AgentTeamRunMessage.id.desc())
+            .offset(keep)
+        )
+        statement = delete(AgentTeamRunMessage).where(
+            AgentTeamRunMessage.id.in_(surplus)
+        )
+
+        async def _op(session: AsyncSession) -> int:
+            result = T.cast(CursorResult, await session.execute(statement))
+            return result.rowcount
 
         return await self._run_in_tx(_op)

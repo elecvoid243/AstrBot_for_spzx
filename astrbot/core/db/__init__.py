@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from astrbot.core.db.po import (
     AgentTeam,
     AgentTeamRun,
+    AgentTeamRunMessage,
     AgentTeamWorkflow,
     ApiKey,
     Attachment,
@@ -1165,4 +1166,39 @@ class BaseDatabase(abc.ABC):
         self, statuses: list[str]
     ) -> list[AgentTeamRun]:
         """Get all runs whose status is in the given list, latest first."""
+        ...
+
+    @abc.abstractmethod
+    async def append_agent_team_run_message(
+        self,
+        *,
+        run_id: str,
+        member_id: str,
+        node_id: str | None,
+        round: int | None,
+        turn_id: str,
+        direction: str,
+        text: str | None,
+        parts: list | None,
+        metadata: dict | None,
+    ) -> AgentTeamRunMessage:
+        """Append one transcript row for a run member."""
+        ...
+
+    @abc.abstractmethod
+    async def get_agent_team_run_transcript(
+        self,
+        run_id: str,
+        member_id: str,
+        before_id: int | None,
+        limit: int = 50,
+    ) -> list[AgentTeamRunMessage]:
+        """Get one page of a member's transcript, newest first."""
+        ...
+
+    @abc.abstractmethod
+    async def trim_agent_team_run_transcript(
+        self, run_id: str, member_id: str, keep: int = 500
+    ) -> int:
+        """Trim a member's transcript, keeping only the newest rows."""
         ...

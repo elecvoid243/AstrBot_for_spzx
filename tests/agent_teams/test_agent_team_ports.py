@@ -5,6 +5,8 @@ role of the webchat adapter, mirroring a scripted reply to system
 subscribers after receiving the injected input.
 """
 
+import json
+
 import pytest
 
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
@@ -112,3 +114,112 @@ async def test_ports_close_releases_system_subscriptions():
     assert len(mgr.system_subscribers.get(cid, set())) == before
     # Closing twice is harmless (dict already cleared).
     await ports.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_emits_choice_shown_and_resolved_events():
+    """Spec §4.5: the choice payloads mirrored to the system stream must
+    surface as `choice` events on the runner sink — `shown` carries the
+    parsed spec dict, `resolved` carries the user's reason — while the raw
+    spec JSON never pollutes the reply text."""
+    mgr = WebChatQueueMgr()
+    spec = {
+        "type": "interactive_choice",
+        "prompt": "Pick one",
+        "options": [{"id": "A", "label": "alpha"}, {"id": "B", "label": "beta"}],
+    }
+    envelope = json.dumps({"request_id": "req-1", "spec": spec})
+
+    async def fake_listener(data):
+        username, conv_id, payload = data
+        mid = payload["message_id"]
+        await mgr.put_system_event(
+            conv_id,
+            {
+                "type": "plain",
+                "message_id": mid,
+                "data": envelope,
+                "streaming": False,
+                "chain_type": "interactive_choice",
+            },
+        )
+        await mgr.put_system_event(
+            conv_id,
+            {
+                "type": "interactive_choice_resolved",
+                "message_id": mid,
+                "data": {
+                    "request_id": "req-1",
+                    "reason": "用户选了 A",
+                    "umo": "webchat!default!conv-choice-1",
+                },
+            },
+        )
+        await mgr.put_system_event(
+            conv_id,
+            {"type": "end", "message_id": mid, "data": "", "streaming": False},
+        )
+
+    mgr.set_listener(fake_listener)
+
+    events: list[dict] = []
+    ports = build_ports_for_test(mgr, "alice", emit=events.append)
+    message_id = await ports.deliver("conv-choice-1", "任务")
+    reply, parts = await ports.collect("conv-choice-1", message_id, member_id="m1")
+
+    assert reply == ""
+    assert any(
+        p["type"] == "interactive_choice" and p["request_id"] == "req-1" for p in parts
+    )
+    choices = [e for e in events if e["type"] == "choice"]
+    assert choices == [
+        {
+            "type": "choice",
+            "direction": "shown",
+            "session_id": "conv-choice-1",
+            "member_id": "m1",
+            "data": {"request_id": "req-1", "spec": spec},
+        },
+        {
+            "type": "choice",
+            "direction": "resolved",
+            "session_id": "conv-choice-1",
+            "member_id": "m1",
+            "reason": "用户选了 A",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_collect_choice_events_omit_member_id_when_untagged():
+    """Without a member tag the choice events must follow the message-event
+    pattern: the `member_id` key is absent entirely."""
+    mgr = WebChatQueueMgr()
+
+    async def fake_listener(data):
+        username, conv_id, payload = data
+        mid = payload["message_id"]
+        await mgr.put_system_event(
+            conv_id,
+            {
+                "type": "interactive_choice_resolved",
+                "message_id": mid,
+                "data": {"request_id": "req-2", "reason": "ok"},
+            },
+        )
+        await mgr.put_system_event(
+            conv_id,
+            {"type": "end", "message_id": mid, "data": "", "streaming": False},
+        )
+
+    mgr.set_listener(fake_listener)
+
+    events: list[dict] = []
+    ports = build_ports_for_test(mgr, "alice", emit=events.append)
+    message_id = await ports.deliver("conv-choice-2", "任务")
+    await ports.collect("conv-choice-2", message_id)
+
+    [resolved] = [e for e in events if e["type"] == "choice"]
+    assert resolved["direction"] == "resolved"
+    assert resolved["reason"] == "ok"
+    assert "member_id" not in resolved

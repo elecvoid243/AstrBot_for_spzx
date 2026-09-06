@@ -6,6 +6,7 @@ deliver/collect directly.
 """
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -142,6 +143,39 @@ def build_ports_for_test(
             if not isinstance(payload, dict) or payload.get("message_id") != message_id:
                 continue
             msg_type = payload.get("type")
+            if (
+                msg_type == "plain"
+                and payload.get("chain_type") == "interactive_choice"
+            ):
+                # Spec §4.5: the choice box is not reply text (the
+                # accumulator already excludes it from plain_text but
+                # keeps it as an interactive_choice part); surface it to
+                # the runner as a choice event carrying the parsed spec.
+                try:
+                    spec = json.loads(payload.get("data", ""))
+                except (TypeError, json.JSONDecodeError):
+                    spec = None
+                event = {
+                    "type": "choice",
+                    "direction": "shown",
+                    "session_id": session_id,
+                    "data": spec,
+                }
+                if member_id:
+                    event["member_id"] = member_id
+                emit(event)
+            elif msg_type == "interactive_choice_resolved":
+                # Spec §4.5: the user answered the choice box; the runner
+                # resumes the turn (and its suspended reply timeout).
+                event = {
+                    "type": "choice",
+                    "direction": "resolved",
+                    "session_id": session_id,
+                    "reason": (payload.get("data") or {}).get("reason"),
+                }
+                if member_id:
+                    event["member_id"] = member_id
+                emit(event)
             if msg_type == "plain":
                 acc.add_plain(
                     payload.get("data", ""),

@@ -1611,6 +1611,18 @@ class ChatService:
                             },
                         }
 
+                # Spec §4.5: ask_user_choice pushes its choice payloads
+                # straight onto the run's back_queue, but Agent Teams
+                # runners collect through the system stream — mirror the
+                # choice events to that stream verbatim. Additive only:
+                # the run stream and the chat page's own choice flow are
+                # untouched.
+                if (
+                    chain_type == "interactive_choice"
+                    or msg_type == "interactive_choice_resolved"
+                ):
+                    await webchat_queue_mgr.put_system_event(run.session_id, result)
+
                 snapshot_accumulator = deepcopy(display_accumulator)
                 run.message_parts = snapshot_accumulator.build_message_parts(
                     include_pending_tool_calls=True

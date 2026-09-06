@@ -319,6 +319,40 @@ async def skip_node(
         return _handle(e)
 
 
+@router.post("/agent_teams/runs/{run_id}/members/{member_id}/interrupt")
+@legacy_router.post("/runs/{run_id}/members/{member_id}/interrupt")
+async def interrupt_member(
+    run_id: str,
+    member_id: str,
+    username: str = Depends(_auth_dep),
+    service: AgentTeamRunService = Depends(get_run_service),
+):
+    try:
+        return ok(await service.interrupt_node(username, run_id, member_id))
+    except AgentTeamsServiceError as e:
+        return _handle(e)
+
+
+@router.get("/agent_teams/runs/{run_id}/members/{member_id}/transcript")
+@legacy_router.get("/runs/{run_id}/members/{member_id}/transcript")
+async def member_transcript(
+    run_id: str,
+    member_id: str,
+    before_id: int | None = None,
+    limit: int = 50,
+    username: str = Depends(_auth_dep),
+    service: AgentTeamRunService = Depends(get_run_service),
+):
+    try:
+        return ok(
+            await service.get_transcript(
+                username, run_id, member_id, before_id=before_id, limit=limit
+            )
+        )
+    except AgentTeamsServiceError as e:
+        return _handle(e)
+
+
 @router.get("/agent_teams/runs/{run_id}/stream")
 @legacy_router.get("/runs/{run_id}/stream")
 async def stream_run(

@@ -52,6 +52,9 @@ class FakeTeamSvc:
 
 
 class FakeRunSvc:
+    # Class-level call recorder for the run-service routes under test.
+    calls: list[tuple] = []
+
     async def start_run(self, username, team_id, payload):
         if payload.get("input") == "conflict":
             raise AgentTeamsServiceError("该团队已有 active run，无法重复启动")
@@ -60,6 +63,30 @@ class FakeRunSvc:
     async def pause_run(self, username, run_id):
         assert username == "alice" and run_id == "r1"
         return {"message": "已暂停"}
+
+    async def interrupt_node(self, username, run_id, member_id):
+        assert username == "alice"
+        if run_id == "rmissing":
+            raise AgentTeamsServiceError("运行 'rmissing' 不存在")
+        FakeRunSvc.calls.append(("interrupt", run_id, member_id))
+        return {"message": "已中断"}
+
+    async def get_transcript(
+        self, username, run_id, member_id, before_id=None, limit=50
+    ):
+        assert username == "alice"
+        if run_id == "rmissing":
+            raise AgentTeamsServiceError("运行 'rmissing' 不存在")
+        FakeRunSvc.calls.append(("transcript", run_id, member_id, before_id, limit))
+        if before_id is not None:
+            return {"messages": [], "next_before_id": None}
+        return {
+            "messages": [
+                {"id": 2, "direction": "reply", "text": "回复"},
+                {"id": 1, "direction": "sent", "text": "任务"},
+            ],
+            "next_before_id": 1,
+        }
 
     async def get_event_bus(self, username, run_id):
         assert username == "alice" and run_id == "r1"
@@ -122,6 +149,51 @@ def test_pause_run_forwards_username_first_on_legacy_route(client):
     resp = client.post("/api/agent_teams/runs/r1/pause")
     assert resp.status_code == 200
     assert resp.json()["data"] == {"message": "已暂停"}
+
+
+def test_interrupt_member_route_on_both_routers(client):
+    FakeRunSvc.calls.clear()
+    resp = client.post("/api/v1/agent_teams/runs/r1/members/m1/interrupt")
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"message": "已中断"}
+
+    resp = client.post("/api/agent_teams/runs/r1/members/m1/interrupt")
+    assert resp.status_code == 200
+
+    assert FakeRunSvc.calls == [("interrupt", "r1", "m1"), ("interrupt", "r1", "m1")]
+
+
+def test_interrupt_member_unknown_run_maps_to_400(client):
+    resp = client.post("/api/v1/agent_teams/runs/rmissing/members/m1/interrupt")
+    assert resp.status_code == 400
+    assert resp.json()["status"] == "error"
+
+
+def test_member_transcript_route_shape_and_paging_on_both_routers(client):
+    FakeRunSvc.calls.clear()
+    resp = client.get("/api/v1/agent_teams/runs/r1/members/m1/transcript")
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert [m["id"] for m in body["messages"]] == [2, 1]
+    assert body["next_before_id"] == 1
+
+    resp = client.get(
+        "/api/v1/agent_teams/runs/r1/members/m1/transcript",
+        params={"before_id": 1, "limit": 10},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"messages": [], "next_before_id": None}
+    assert FakeRunSvc.calls[-1] == ("transcript", "r1", "m1", 1, 10)
+
+    resp = client.get("/api/agent_teams/runs/r1/members/m1/transcript")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["messages"][0]["id"] == 2
+
+
+def test_member_transcript_unknown_run_maps_to_400(client):
+    resp = client.get("/api/v1/agent_teams/runs/rmissing/members/m1/transcript")
+    assert resp.status_code == 400
+    assert resp.json()["status"] == "error"
 
 
 def test_workflow_update_delete_routes_nest_team_id_in_path(client):

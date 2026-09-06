@@ -4048,6 +4048,38 @@ export type SkipAgentTeamNodeResponse = (SuccessEnvelope);
 
 export type SkipAgentTeamNodeError = unknown;
 
+export type InterruptAgentTeamMemberData = {
+    path: {
+        member_id: string;
+        run_id: string;
+    };
+};
+
+export type InterruptAgentTeamMemberResponse = (SuccessEnvelope);
+
+export type InterruptAgentTeamMemberError = unknown;
+
+export type GetAgentTeamMemberTranscriptData = {
+    path: {
+        member_id: string;
+        run_id: string;
+    };
+    query?: {
+        /**
+         * Exclusive cursor; only rows with a smaller id are returned.
+         */
+        before_id?: number;
+        /**
+         * Page size.
+         */
+        limit?: number;
+    };
+};
+
+export type GetAgentTeamMemberTranscriptResponse = (SuccessEnvelope);
+
+export type GetAgentTeamMemberTranscriptError = unknown;
+
 export type StreamAgentTeamRunData = {
     path: {
         run_id: string;

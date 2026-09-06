@@ -5534,6 +5534,42 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/agent_teams/runs/{run_id}/members/{member_id}/interrupt:
+    post:
+      tags: [AgentTeams]
+      summary: Interrupt one member's in-flight turn
+      operationId: interruptAgentTeamMember
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/MemberIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/agent_teams/runs/{run_id}/members/{member_id}/transcript:
+    get:
+      tags: [AgentTeams]
+      summary: Page one member's transcript rows chronologically
+      operationId: getAgentTeamMemberTranscript
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/MemberIdPath"
+        - name: before_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Exclusive cursor; only rows with a smaller id are returned.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+          description: Page size.
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/agent_teams/runs/{run_id}/stream:
     get:
       tags: [AgentTeams]

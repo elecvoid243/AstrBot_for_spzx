@@ -426,7 +426,11 @@ async def make_running_dag_run(tmp_path):
             "name": "w",
             "graph": {
                 "nodes": [
-                    {"id": "n1", "member_id": team["members"][0]["member_id"], "task": "做"}
+                    {
+                        "id": "n1",
+                        "member_id": team["members"][0]["member_id"],
+                        "task": "做",
+                    }
                 ]
             },
         },
@@ -560,7 +564,9 @@ async def test_interrupt_auto_stops_member_turn_only(tmp_path, monkeypatch):
         )
     )
 
-    result = await run_svc.interrupt_node("alice", snap["run_id"], coordinator["member_id"])
+    result = await run_svc.interrupt_node(
+        "alice", snap["run_id"], coordinator["member_id"]
+    )
 
     assert result == {"message": "已中断"}
     assert stops == [coordinator["umo"]]
@@ -691,7 +697,10 @@ async def test_duplicate_edges_inject_single_block(tmp_path):
         config=CONFIG,
         members=members,
         ports=TeamPorts(
-            deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=events.append
+            deliver=deliver,
+            collect=collect,
+            is_busy=lambda sid: False,
+            emit=events.append,
         ),
         db=db,
         bus=RunEventBus(),

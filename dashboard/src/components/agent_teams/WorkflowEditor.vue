@@ -11,27 +11,47 @@
         hide-details
         style="max-width: 220px"
       />
-      <v-text-field
-        v-model="workflowName"
-        :label="tm('editor.workflowName')"
-        density="compact"
-        hide-details
-        style="max-width: 220px"
-      />
-      <v-select
-        v-model="addMemberId"
-        :items="memberItems"
-        item-title="title"
-        item-value="value"
-        :label="tm('editor.nodeMember')"
-        density="compact"
-        hide-details
-        class="add-node-picker"
-        style="max-width: 180px"
-      />
-      <v-btn variant="text" prepend-icon="mdi-plus" :disabled="memberItems.length === 0" @click="addNode">
-        {{ tm('editor.addNode') }}
-      </v-btn>
+      <div class="editor-name-wrap">
+        <v-text-field
+          v-model="workflowName"
+          :label="tm('editor.workflowName')"
+          density="compact"
+          hide-details
+          style="max-width: 220px"
+        />
+        <span
+          v-if="isDirty"
+          class="editor-unsaved-dot"
+          role="img"
+          :title="tm('editor.unsaved')"
+          :aria-label="tm('editor.unsaved')"
+        />
+      </div>
+      <div class="editor-validation">
+        <v-btn
+          variant="text"
+          size="small"
+          :disabled="localProblems.length === 0"
+          :aria-label="tm('editor.validationBadge')"
+          @click="problemsOpen = !problemsOpen"
+        >
+          <v-icon size="small" aria-hidden="true">mdi-alert-circle-outline</v-icon>
+          {{ tm('editor.validationBadge') }}
+          <span class="editor-problem-count">{{ localProblems.length }}</span>
+        </v-btn>
+        <ul v-if="problemsOpen" class="editor-problems-list">
+          <li v-for="problem in localProblems" :key="problem.key">
+            <button
+              type="button"
+              class="editor-problem-item"
+              :disabled="!problem.nodeId"
+              @click="onProblemClick(problem)"
+            >
+              {{ problem.message }}
+            </button>
+          </li>
+        </ul>
+      </div>
       <v-btn variant="text" color="error" :disabled="!selectedNodeId" @click="deleteNode">
         {{ tm('editor.deleteNode') }}
       </v-btn>
@@ -53,130 +73,170 @@
       </ul>
     </div>
 
-    <div class="editor-body">
-      <div class="editor-canvas">
+    <!-- Workbench body: member strip | canvas | inspector drawer. Rendered as
+         a nested v-layout so the drawer registers in a local layout instead of
+         the app-level one (v-main content never shifts when it opens). -->
+    <v-layout class="editor-body" :class="{ 'has-inspector': lgAndUp && inspectorOpen }">
+      <aside class="editor-members" :aria-label="tm('editor.membersPanel')">
+        <span class="editor-members-title">{{ tm('editor.membersPanel') }}</span>
+        <p class="editor-members-hint">{{ tm('editor.dropHint') }}</p>
+        <button
+          v-for="row in memberRows"
+          :key="row.memberId"
+          type="button"
+          class="editor-member-row"
+          draggable="true"
+          :aria-label="row.name"
+          @dragstart="onMemberDragStart($event, row.memberId)"
+          @click="addNode(row.memberId)"
+        >
+          <i class="editor-member-dot" :style="{ background: row.color }" aria-hidden="true" />
+          <span class="editor-member-name">{{ row.name }}</span>
+          <span v-if="row.isCoordinator" class="editor-member-coord">
+            {{ tm('teams.coordinator') }}
+          </span>
+          <span class="editor-member-used">{{ tm('editor.usedCount', { n: row.usedCount }) }}</span>
+          <span v-if="row.summary" class="editor-member-summary">{{ row.summary }}</span>
+        </button>
+      </aside>
+
+      <div class="editor-canvas" role="region" :aria-label="tm('editor.dropHint')">
         <TeamsFlowCanvas
           mode="edit"
           :nodes="displayNodes"
           :edges="graphEdges"
           @connect="onConnect"
           @positionChange="onPositionChange"
-          @selectNode="onSelectNode"
+          @selectNode="selectNode"
+          @dropAt="onDropAt"
         />
       </div>
 
-      <aside v-if="selectedNode" class="editor-inspector">
-        <v-select
-          v-model="selectedMemberId"
-          :items="memberItems"
-          item-title="title"
-          item-value="value"
-          :label="tm('editor.nodeMember')"
-          density="compact"
-          hide-details
-        />
-        <div class="editor-exec mt-3">
-          <v-btn size="small" variant="text" block class="exec-toggle" @click="toggleExecGroup">
-            <v-icon size="small">{{ execOpen ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
-            {{ tm('editor.executionConfig') }}
+      <v-navigation-drawer
+        v-model="inspectorOpen"
+        location="right"
+        :temporary="!lgAndUp"
+        :width="340"
+        class="editor-inspector-drawer"
+      >
+        <div v-if="selectedNode" class="editor-inspector">
+          <v-select
+            v-model="selectedMemberId"
+            :items="memberItems"
+            item-title="title"
+            item-value="value"
+            :label="tm('editor.nodeMember')"
+            density="compact"
+            hide-details
+          />
+          <div class="editor-exec mt-3">
+            <v-btn size="small" variant="text" block class="exec-toggle" @click="toggleExecGroup">
+              <v-icon size="small">{{ execOpen ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
+              {{ tm('editor.executionConfig') }}
+            </v-btn>
+            <template v-if="execOpen && selectedExec">
+              <v-select
+                v-model="selectedExec.config_id"
+                :items="configProfileSelectItems"
+                item-title="title"
+                item-value="value"
+                :label="tm('editor.configProfile')"
+                density="compact"
+                hide-details
+                class="mt-2"
+              />
+              <v-checkbox-btn
+                v-model="personaOverride"
+                :label="tm('editor.personaOverride')"
+                density="compact"
+                hide-details
+                class="mt-2"
+              />
+              <div v-if="personaOverride" class="mt-2">
+                <PersonaSelector v-model="selectedExec.persona_id" />
+                <p v-if="!selectedExec.persona_id" class="editor-exec-hint">
+                  {{ tm('editor.personaFollowProfile') }}
+                </p>
+              </div>
+              <v-radio-group
+                v-model="selectedToolsMode"
+                :label="tm('editor.toolsOverride')"
+                density="compact"
+                hide-details
+                class="mt-2"
+              >
+                <v-radio :label="tm('editor.toolsInherit')" value="inherit" density="compact" />
+                <v-radio
+                  :label="tm('editor.toolsDisableAll')"
+                  value="disable_all"
+                  density="compact"
+                />
+                <v-radio :label="tm('editor.toolsAllowlist')" value="allowlist" density="compact" />
+              </v-radio-group>
+              <v-select
+                v-if="selectedExec.toolsMode === 'allowlist'"
+                v-model="selectedExec.tools"
+                :items="toolOptions"
+                multiple
+                density="compact"
+                hide-details
+                class="mt-2"
+              />
+              <v-radio-group
+                v-model="selectedSkillsMode"
+                :label="tm('editor.skillsOverride')"
+                density="compact"
+                hide-details
+                class="mt-2"
+              >
+                <v-radio :label="tm('editor.skillsInherit')" value="inherit" density="compact" />
+                <v-radio
+                  :label="tm('editor.skillsDisableAll')"
+                  value="disable_all"
+                  density="compact"
+                />
+                <v-radio
+                  :label="tm('editor.skillsAllowlist')"
+                  value="allowlist"
+                  density="compact"
+                />
+              </v-radio-group>
+              <v-select
+                v-if="selectedExec.skillsMode === 'allowlist'"
+                v-model="selectedExec.skills"
+                :items="skillOptions"
+                multiple
+                density="compact"
+                hide-details
+                class="mt-2"
+              />
+            </template>
+          </div>
+          <v-textarea
+            ref="taskAreaRef"
+            v-model="selectedTask"
+            :label="tm('editor.nodeTask')"
+            rows="5"
+            density="compact"
+            hide-details
+            class="mt-3"
+          />
+          <v-btn size="small" variant="tonal" class="mt-2" @click="insertInputToken">
+            {{ tm('editor.insertInput') }}
           </v-btn>
-          <template v-if="execOpen && selectedExec">
-            <v-select
-              v-model="selectedExec.config_id"
-              :items="configProfileSelectItems"
-              item-title="title"
-              item-value="value"
-              :label="tm('editor.configProfile')"
-              density="compact"
-              hide-details
-              class="mt-2"
-            />
-            <v-checkbox-btn
-              v-model="personaOverride"
-              :label="tm('editor.personaOverride')"
-              density="compact"
-              hide-details
-              class="mt-2"
-            />
-            <div v-if="personaOverride" class="mt-2">
-              <PersonaSelector v-model="selectedExec.persona_id" />
-              <p v-if="!selectedExec.persona_id" class="editor-exec-hint">
-                {{ tm('editor.personaFollowProfile') }}
-              </p>
-            </div>
-            <v-radio-group
-              v-model="selectedToolsMode"
-              :label="tm('editor.toolsOverride')"
-              density="compact"
-              hide-details
-              class="mt-2"
-            >
-              <v-radio :label="tm('editor.toolsInherit')" value="inherit" density="compact" />
-              <v-radio
-                :label="tm('editor.toolsDisableAll')"
-                value="disable_all"
-                density="compact"
-              />
-              <v-radio :label="tm('editor.toolsAllowlist')" value="allowlist" density="compact" />
-            </v-radio-group>
-            <v-select
-              v-if="selectedExec.toolsMode === 'allowlist'"
-              v-model="selectedExec.tools"
-              :items="toolOptions"
-              multiple
-              density="compact"
-              hide-details
-              class="mt-2"
-            />
-            <v-radio-group
-              v-model="selectedSkillsMode"
-              :label="tm('editor.skillsOverride')"
-              density="compact"
-              hide-details
-              class="mt-2"
-            >
-              <v-radio :label="tm('editor.skillsInherit')" value="inherit" density="compact" />
-              <v-radio
-                :label="tm('editor.skillsDisableAll')"
-                value="disable_all"
-                density="compact"
-              />
-              <v-radio :label="tm('editor.skillsAllowlist')" value="allowlist" density="compact" />
-            </v-radio-group>
-            <v-select
-              v-if="selectedExec.skillsMode === 'allowlist'"
-              v-model="selectedExec.skills"
-              :items="skillOptions"
-              multiple
-              density="compact"
-              hide-details
-              class="mt-2"
-            />
-          </template>
+          <p class="editor-task-hint">{{ tm('editor.nodeTaskHint') }}</p>
         </div>
-        <v-textarea
-          ref="taskAreaRef"
-          v-model="selectedTask"
-          :label="tm('editor.nodeTask')"
-          rows="5"
-          density="compact"
-          hide-details
-          class="mt-3"
-        />
-        <v-btn size="small" variant="tonal" class="mt-2" @click="insertInputToken">
-          {{ tm('editor.insertInput') }}
-        </v-btn>
-        <p class="editor-task-hint">{{ tm('editor.nodeTaskHint') }}</p>
-      </aside>
-      <aside v-else class="editor-inspector-placeholder">{{ tm('editor.selectNode') }}</aside>
-    </div>
+      </v-navigation-drawer>
+    </v-layout>
   </div>
 </template>
 
 <script setup lang="ts">
-// ComfyUI-style DAG editor for one team's workflows (Task 7). Owns the
-// workflow name, the node/edge graph and a nodeId -> position layout map that
-// round-trips through the backend payload:
+// ComfyUI-style DAG editor for one team's workflows (Task 7), reworked into a
+// three-column workbench (Task 4): a draggable member strip, the flow canvas
+// and a right-hand inspector drawer (docked on wide viewports, temporary
+// overlay on narrow ones). Owns the workflow name, the node/edge graph and a
+// nodeId -> position layout map that round-trips through the backend payload:
 //   { name, graph: { nodes: [{id, member_id, task, execution?}], edges: [{from, to}] }, layout }
 // Validation is mirrored client-side (cycle / duplicate / dangling / missing
 // member / >20 nodes) and rendered as a live banner; saving goes through the
@@ -188,6 +248,7 @@
 // collapsible "执行配置" group; the block is omitted from the payload when
 // every field stays inherit.
 import { computed, nextTick, ref, watch } from 'vue';
+import { useDisplay } from 'vuetify';
 import TeamsFlowCanvas from './TeamsFlowCanvas.vue';
 import type { FlowNode } from './TeamsFlowCanvas.vue';
 import PersonaSelector from '@/components/shared/PersonaSelector.vue';
@@ -231,6 +292,7 @@ const props = defineProps<{
 const { tm } = useModuleI18n('features/agent-teams');
 const toast = useToast();
 const { saveWorkflow, lastErrorFields } = useAgentTeams();
+const { lgAndUp } = useDisplay();
 
 const selectedWorkflowId = ref('');
 const workflowName = ref('');
@@ -238,9 +300,11 @@ const graphNodes = ref<FlowNode[]>([]);
 const graphEdges = ref<{ id: string; source: string; target: string }[]>([]);
 const layout = ref<Record<string, { x: number; y: number }>>({});
 const selectedNodeId = ref<string | null>(null);
-const addMemberId = ref('');
 const saving = ref(false);
 const taskAreaRef = ref<any>(null);
+// Inspector drawer visibility: opens on node select, closes on deselect
+// (canvas pane click, delete, workflow switch) and via the drawer itself.
+const inspectorOpen = ref(false);
 
 // --- Per-node execution override state ---------------------------------
 
@@ -415,6 +479,42 @@ const memberItems = computed(() =>
   })),
 );
 
+/** One draggable row in the member strip. */
+interface MemberRow {
+  memberId: string;
+  name: string;
+  color: string;
+  isCoordinator: boolean;
+  /** Persona / provider summary line (may be empty). */
+  summary: string;
+  /** How many graph nodes reference this member. */
+  usedCount: number;
+}
+
+/** Member strip rows: identity, accent color and per-member usage count. */
+const memberRows = computed<MemberRow[]>(() =>
+  (props.team?.members ?? []).map((m: any) => {
+    const name = String(m.name ?? m.member_id ?? '');
+    return {
+      memberId: String(m.member_id),
+      name,
+      color: collabMemberColor(name),
+      isCoordinator: m.member_id === props.team?.coordinator_member_id,
+      summary: [m.persona_id, m.provider_id]
+        .map((value: unknown) => String(value ?? '').trim())
+        .filter(Boolean)
+        .join(' · '),
+      usedCount: graphNodes.value.filter((n) => n.data.memberId === m.member_id).length,
+    };
+  }),
+);
+
+/** Dragstart payload consumed by the canvas drop handler (TeamsFlowCanvas). */
+function onMemberDragStart(event: DragEvent, memberId: string) {
+  event.dataTransfer?.setData('application/x-member-id', memberId);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+}
+
 const workflowItems = computed(() => [
   { title: tm('editor.newWorkflow'), value: '' },
   ...props.workflows.map((w) => ({ title: w.name || w.workflow_id, value: w.workflow_id })),
@@ -506,31 +606,35 @@ const bannerMessage = computed(() => {
   return '';
 });
 
-/** Append a node for the picked member with auto id `n{max+1}`. */
-function addNode() {
-  if (!addMemberId.value) {
-    addMemberId.value = memberItems.value[0]?.value ?? '';
-  }
-  if (!addMemberId.value) return;
+/** Select (or deselect) a node and sync the inspector drawer visibility. */
+function selectNode(nodeId: string | null) {
+  selectedNodeId.value = nodeId;
+  inspectorOpen.value = nodeId !== null;
+}
+
+/** Append a node for the given member with auto id `n{max+1}`. */
+function addNode(memberId: string, position?: { x: number; y: number }) {
+  if (!memberId) return;
   const maxId = graphNodes.value.reduce((max, node) => {
     const match = /^n(\d+)$/.exec(node.id);
     return match ? Math.max(max, Number(match[1])) : max;
   }, 0);
   const id = `n${maxId + 1}`;
   const index = graphNodes.value.length;
-  const position = {
+  // Explicit position for canvas drops; staggered fallback for row clicks.
+  const finalPosition = position ?? {
     x: 60 + (index % 4) * 200,
     y: 60 + Math.floor(index / 4) * 130,
   };
-  const memberName = memberNameOf(addMemberId.value);
+  const memberName = memberNameOf(memberId);
   graphNodes.value.push({
     id,
-    position,
-    data: { label: `${memberName} (${id})`, memberName, memberId: addMemberId.value, task: '' },
+    position: finalPosition,
+    data: { label: `${memberName} (${id})`, memberName, memberId, task: '' },
   });
-  layout.value[id] = position;
+  layout.value[id] = finalPosition;
   executionByNode.value[id] = defaultExecState();
-  selectedNodeId.value = id;
+  selectNode(id);
 }
 
 /** Remove the selected node plus every edge touching it. */
@@ -541,7 +645,12 @@ function deleteNode() {
   graphEdges.value = graphEdges.value.filter((e) => e.source !== id && e.target !== id);
   delete layout.value[id];
   delete executionByNode.value[id];
-  selectedNodeId.value = null;
+  selectNode(null);
+}
+
+/** Place a node dragged from the member strip onto the canvas. */
+function onDropAt(memberId: string, position: { x: number; y: number }) {
+  addNode(memberId, position);
 }
 
 /** Append a normalized edge from the canvas, deduplicating repeats. */
@@ -560,10 +669,6 @@ function onPositionChange(positions: Record<string, { x: number; y: number }>) {
     const position = positions[node.id];
     if (position) node.position = { ...position };
   }
-}
-
-function onSelectNode(nodeId: string | null) {
-  selectedNodeId.value = nodeId;
 }
 
 // Ensure the selected node always has an execution state entry so inspector
@@ -615,6 +720,54 @@ function buildGraphPayload() {
   };
 }
 
+// --- Dirty tracking -----------------------------------------------------
+// Lightweight snapshot of the last saved/loaded content (name + graph +
+// layout); `null` until the first reset/load marks a baseline.
+
+const savedSnapshot = ref<string | null>(null);
+
+function snapshotNow(): string {
+  return JSON.stringify({
+    name: workflowName.value.trim(),
+    graph: buildGraphPayload(),
+    layout: { ...layout.value },
+  });
+}
+
+/** True when the current content differs from the last saved/loaded snapshot. */
+const isDirty = computed(() => savedSnapshot.value !== null && snapshotNow() !== savedSnapshot.value);
+
+function markSaved() {
+  savedSnapshot.value = snapshotNow();
+}
+
+// Baseline snapshot for the blank editor; the load/save watchers re-baseline.
+markSaved();
+
+// --- Local problems (validation badge summary) --------------------------
+
+/** One entry of the toolbar validation summary. */
+interface EditorProblem {
+  key: string;
+  message: string;
+  /** Graph node the problem belongs to; entries with a node are clickable. */
+  nodeId?: string;
+}
+
+/** Local problems shown in the toolbar badge (save-blocking banner today). */
+const localProblems = computed<EditorProblem[]>(() => {
+  const problems: EditorProblem[] = [];
+  if (bannerMessage.value) problems.push({ key: 'banner', message: bannerMessage.value });
+  return problems;
+});
+
+const problemsOpen = ref(false);
+
+function onProblemClick(problem: EditorProblem) {
+  problemsOpen.value = false;
+  if (problem.nodeId) selectNode(problem.nodeId);
+}
+
 async function save() {
   if (!props.team || bannerMessage.value) return;
   const layoutPayload: Record<string, { x: number; y: number }> = {};
@@ -634,6 +787,7 @@ async function save() {
     toast.success(tm('editor.saveSuccess'));
     // Track the saved row so further saves update instead of create.
     if (result?.workflow_id) selectedWorkflowId.value = result.workflow_id;
+    markSaved();
   } finally {
     saving.value = false;
   }
@@ -646,9 +800,10 @@ function resetBlank() {
   graphEdges.value = [];
   layout.value = {};
   executionByNode.value = {};
-  selectedNodeId.value = null;
+  selectNode(null);
   // Stale save-error fields belong to the discarded graph.
   lastErrorFields.value = [];
+  markSaved();
 }
 
 // Switching teams blanks the editor: workflow ids and member bindings are
@@ -664,7 +819,8 @@ watch(
 // Loading an existing workflow populates name, graph and layout; picking the
 // "new workflow" option blanks the editor. Unknown ids keep the current state
 // (e.g. right after a save, before the refreshed rows reach the prop).
-watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
+watch(selectedWorkflowId, (wfId) => {
+  selectNode(null);
   if (!wfId) {
     resetBlank();
     return;
@@ -705,6 +861,8 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
       target: String(ge.to),
     });
   }
+  // The freshly loaded row is the clean baseline for the unsaved dot.
+  markSaved();
 });
 </script>
 
@@ -715,6 +873,71 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.editor-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Unsaved-changes marker; text-labeled via title/aria-label (not color-only). */
+.editor-unsaved-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex: none;
+}
+
+.editor-validation {
+  position: relative;
+}
+
+.editor-problem-count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.18);
+  font-size: 11px;
+}
+
+.editor-problems-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 260px;
+  max-width: 460px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 8px;
+  background: var(--dashboard-surface, rgba(128, 128, 128, 0.04));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+}
+
+.editor-problem-item {
+  display: block;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  word-break: break-word;
+  cursor: default;
+}
+
+.editor-problem-item:not(:disabled) {
+  cursor: pointer;
+}
+
+.editor-problem-item:not(:disabled):hover {
+  background: rgba(128, 128, 128, 0.12);
 }
 
 .editor-banner {
@@ -746,6 +969,93 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
   display: flex;
   align-items: stretch;
   gap: 12px;
+  /* Anchor for the inspector drawer rendered inside this nested layout. */
+  position: relative;
+  min-height: 520px;
+}
+
+.editor-members {
+  width: 200px;
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 12px;
+  overflow-y: auto;
+  max-height: 520px;
+}
+
+.editor-members-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.editor-members-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+}
+
+.editor-member-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: grab;
+}
+
+.editor-member-row:hover {
+  background: rgba(128, 128, 128, 0.12);
+  border-color: var(--dashboard-border, rgba(128, 128, 128, 0.25));
+}
+
+.editor-member-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.editor-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.editor-member-coord {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.15);
+  font-size: 10px;
+}
+
+.editor-member-used {
+  font-size: 10px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+}
+
+.editor-member-summary {
+  width: 100%;
+  font-size: 11px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-canvas {
@@ -754,26 +1064,17 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
   height: 520px;
 }
 
-.editor-inspector {
-  width: 300px;
-  flex-shrink: 0;
-  padding: 12px;
-  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
-  border-radius: 12px;
+/* Docked inspector column (wide viewports): keep the canvas clear of the
+   drawer instead of letting it overlay the graph. */
+.editor-body.has-inspector .editor-canvas {
+  margin-right: 340px;
 }
 
-.editor-inspector-placeholder {
-  width: 300px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.editor-inspector {
+  box-sizing: border-box;
+  height: 100%;
   padding: 12px;
-  border: 1px dashed var(--dashboard-border, rgba(128, 128, 128, 0.25));
-  border-radius: 12px;
-  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
-  font-size: 13px;
-  text-align: center;
+  overflow-y: auto;
 }
 
 .editor-task-hint {
@@ -788,9 +1089,20 @@ watch(selectedWorkflowId, (wfId) => {  selectedNodeId.value = null;
     flex-direction: column;
   }
 
-  .editor-inspector,
-  .editor-inspector-placeholder {
+  .editor-members {
     width: 100%;
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .editor-members-hint {
+    width: 100%;
+  }
+
+  .editor-member-row {
+    width: auto;
   }
 }
 </style>

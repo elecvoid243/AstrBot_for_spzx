@@ -34,8 +34,25 @@ const apiMocks = vi.hoisted(() => ({
   skillList: vi.fn(),
 }));
 
+// Canvas coordinate conversion spy: TeamsFlowCanvas calls useVueFlow()
+// from @vue-flow/core (mocked below) to translate screen -> flow coords.
+// The default mapping (x2/y2) makes conversion observable in assertions.
+const flowMock = vi.hoisted(() => ({
+  screenToFlowCoordinate: vi.fn(),
+}));
+
+// Holder for the mocked useDisplay().lgAndUp; a real ref is assigned after
+// imports so template computeds stay reactive across viewport switches.
+const displayMocks = vi.hoisted(() => ({
+  lgAndUp: null as unknown as Ref<boolean>,
+}));
+
 vi.mock('@/utils/toast', () => ({
   useToast: () => toastMock,
+}));
+
+vi.mock('vuetify', () => ({
+  useDisplay: () => ({ lgAndUp: displayMocks.lgAndUp }),
 }));
 
 vi.mock('@/composables/useAgentTeams', () => ({
@@ -91,6 +108,8 @@ vi.mock('@vue-flow/core', async () => {
   });
   return {
     VueFlow: VueFlowStub,
+    // TeamsFlowCanvas calls useVueFlow() to convert drop coordinates.
+    useVueFlow: () => ({ screenToFlowCoordinate: flowMock.screenToFlowCoordinate }),
     // MemberFlowNode imports these at module scope; the card only renders
     // them inside a real VueFlow node context.
     Handle: defineComponent({
@@ -133,12 +152,14 @@ import WorkflowEditor from './WorkflowEditor.vue';
 
 // The mock factory captured only the holder; give it a reactive ref now.
 composableMocks.lastErrorFields = ref([]);
+displayMocks.lgAndUp = ref(true);
 
 const TEAM = {
   team_id: 't1',
   name: 'Alpha',
+  coordinator_member_id: 'm1',
   members: [
-    { member_id: 'm1', name: 'Alice' },
+    { member_id: 'm1', name: 'Alice', persona_id: 'persona_a' },
     { member_id: 'm2', name: 'Bob' },
   ],
 };
@@ -332,6 +353,20 @@ const stubs = {
   },
   'v-chip': { template: '<span class="chip-stub"><slot /></span>' },
   'v-spacer': { template: '<div class="v-spacer" />' },
+  // Nested layout root for the inspector drawer (keeps the drawer out of the
+  // app-level layout so v-main content never shifts).
+  'v-layout': { template: '<div class="layout-stub"><slot /></div>' },
+  'v-navigation-drawer': {
+    props: {
+      modelValue: { type: Boolean, default: false },
+      location: { type: String, default: '' },
+      temporary: { type: Boolean, default: false },
+      absolute: { type: Boolean, default: false },
+      width: { type: [Number, String], default: undefined },
+    },
+    emits: ['update:modelValue'],
+    template: `<aside v-if="modelValue" class="drawer-stub" :data-location="location" :data-temporary="temporary" :data-width="String(width)"><slot /></aside>`,
+  },
 };
 
 function mountEditor(props: Record<string, unknown> = {}) {
@@ -384,11 +419,22 @@ function findButton(wrapper: VueWrapper<any>, text: string) {
 }
 
 async function addNodes(wrapper: VueWrapper<any>, count: number) {
-  const add = findButton(wrapper, zh.editor.addNode)!;
+  // Node creation moved into the member strip: each row click adds one node.
+  const rows = wrapper.findAll('.editor-member-row');
   for (let i = 0; i < count; i += 1) {
-    await add.trigger('click');
+    await rows[i % rows.length]!.trigger('click');
   }
 }
+
+// Reset the shared flow/display mocks before every test in this file.
+beforeEach(() => {
+  flowMock.screenToFlowCoordinate.mockReset();
+  flowMock.screenToFlowCoordinate.mockImplementation((p: { x: number; y: number }) => ({
+    x: p.x * 2,
+    y: p.y * 2,
+  }));
+  displayMocks.lgAndUp!.value = true;
+});
 
 describe('WorkflowEditor', () => {
   beforeEach(() => {
@@ -403,8 +449,7 @@ describe('WorkflowEditor', () => {
   it('adds nodes with auto ids, member binding and staggered positions', async () => {
     const wrapper = mountEditor();
     await addNodes(wrapper, 1);
-    await wrapper.find('select.add-node-picker').setValue('m2');
-    await addNodes(wrapper, 1);
+    await wrapper.findAll('.editor-member-row')[1]!.trigger('click');
 
     const nodes = canvasNodes(wrapper);
     expect(nodes.map((n) => n.id)).toEqual(['n1', 'n2']);
@@ -558,7 +603,6 @@ describe('WorkflowEditor', () => {
     const wrapper = mountEditor();
     await addNodes(wrapper, 1);
     await emitPositionChange(wrapper, { n1: { x: 42, y: 24 } });
-    await wrapper.find('select.add-node-picker').setValue('m2');
     await addNodes(wrapper, 1);
 
     const nodes = canvasNodes(wrapper);
@@ -606,6 +650,110 @@ describe('WorkflowEditor', () => {
     await insertBtn.trigger('click');
 
     expect(taskArea.element).toHaveProperty('value', 'Fix{{input}} bug');
+  });
+});
+
+describe('WorkflowEditor workbench', () => {
+  it('adds nodes via member rows that carry drag payload, usage counts and badges', async () => {
+    const wrapper = mountEditor();
+    const rows = wrapper.findAll('.editor-member-row');
+    expect(rows).toHaveLength(2);
+    // Coordinator badge on Alice; usage counts start at zero.
+    expect(rows[0]!.text()).toContain(zh.teams.coordinator);
+    expect(rows[0]!.text()).toContain(zh.editor.usedCount.replace('{n}', '0'));
+
+    const setData = vi.fn();
+    await rows[0]!.trigger('dragstart', { dataTransfer: { setData } });
+    expect(setData).toHaveBeenCalledWith('application/x-member-id', 'm1');
+
+    await rows[0]!.trigger('click');
+    await nextTick();
+    expect(canvasNodes(wrapper).map((n) => n.data.memberId)).toEqual(['m1']);
+    expect(wrapper.findAll('.editor-member-row')[0]!.text()).toContain(
+      zh.editor.usedCount.replace('{n}', '1'),
+    );
+  });
+
+  it('adds a node at the converted drop position with the dragged member', async () => {
+    const wrapper = mountEditor();
+    await wrapper.find('.teams-flow-canvas').trigger('drop', {
+      dataTransfer: {
+        getData: (type: string) => (type === 'application/x-member-id' ? 'm2' : ''),
+      },
+      clientX: 100,
+      clientY: 80,
+    });
+    await nextTick();
+
+    // The canvas converts screen -> flow coords (mock maps x2/y2) and the
+    // editor places the new node there.
+    expect(flowMock.screenToFlowCoordinate).toHaveBeenCalledWith({ x: 100, y: 80 });
+    const nodes = canvasNodes(wrapper);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      id: 'n1',
+      position: { x: 200, y: 160 },
+      data: { memberId: 'm2', memberName: 'Bob' },
+    });
+  });
+
+  it('marks the editor dirty on edits and clears the dot after a save', async () => {
+    const wrapper = mountEditor();
+    expect(wrapper.find('.editor-unsaved-dot').exists()).toBe(false);
+
+    await addNodes(wrapper, 1);
+    expect(wrapper.find('.editor-unsaved-dot').exists()).toBe(true);
+
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.editor-unsaved-dot').exists()).toBe(false);
+  });
+
+  it('counts local problems in the validation badge and lists them on click', async () => {
+    const wrapper = mountEditor();
+    expect(findButton(wrapper, zh.editor.validationBadge)!.attributes('disabled')).toBeDefined();
+
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    await emitConnect(wrapper, 'n2', 'n1');
+
+    const badge = findButton(wrapper, zh.editor.validationBadge)!;
+    expect(badge.attributes('disabled')).toBeUndefined();
+    expect(badge.text()).toContain('1');
+
+    await badge.trigger('click');
+    const list = wrapper.find('.editor-problems-list');
+    expect(list.exists()).toBe(true);
+    expect(list.text()).toContain(zh.editor.cycleDetected.replace('{path}', 'n1 → n2 → n1'));
+    // Structural problems have no node target: the entry is not clickable.
+    expect(list.find('button.editor-problem-item').attributes('disabled')).toBeDefined();
+  });
+
+  it('opens the docked inspector on select and closes on deselect', async () => {
+    const wrapper = mountEditor();
+    expect(wrapper.find('.drawer-stub').exists()).toBe(false);
+
+    await addNodes(wrapper, 1);
+    const drawer = wrapper.find('.drawer-stub');
+    expect(drawer.exists()).toBe(true);
+    expect(drawer.attributes('data-location')).toBe('right');
+    expect(drawer.attributes('data-temporary')).toBe('false');
+    expect(wrapper.find('.editor-inspector').exists()).toBe(true);
+
+    canvas(wrapper).vm.$emit('paneClick');
+    await nextTick();
+    expect(wrapper.find('.drawer-stub').exists()).toBe(false);
+    expect(wrapper.find('.editor-inspector').exists()).toBe(false);
+  });
+
+  it('falls back to a temporary overlay drawer on narrow viewports', async () => {
+    displayMocks.lgAndUp!.value = false;
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+
+    const drawer = wrapper.find('.drawer-stub');
+    expect(drawer.exists()).toBe(true);
+    expect(drawer.attributes('data-temporary')).toBe('true');
   });
 });
 
@@ -1139,6 +1287,45 @@ describe('TeamsFlowCanvas', () => {
     for (const node of out) {
       expect(node.domAttributes).toBeUndefined();
     }
+  });
+
+  it('forwards member drops as dropAt with converted flow coordinates', async () => {
+    const wrapper = mount(TeamsFlowCanvas, {
+      props: { nodes: NODES, edges: [], mode: 'edit' },
+      global: { stubs },
+    }) as VueWrapper<any>;
+    const root = wrapper.find('.teams-flow-canvas');
+
+    // The root prevent-defaults dragover so the browser allows the drop.
+    const dragover = new Event('dragover', { bubbles: true, cancelable: true });
+    root.element.dispatchEvent(dragover);
+    expect(dragover.defaultPrevented).toBe(true);
+
+    await root.trigger('drop', {
+      dataTransfer: {
+        getData: (type: string) => (type === 'application/x-member-id' ? 'm2' : ''),
+      },
+      clientX: 100,
+      clientY: 80,
+    });
+    await flushPromises();
+
+    expect(flowMock.screenToFlowCoordinate).toHaveBeenCalledWith({ x: 100, y: 80 });
+    expect(wrapper.emitted('dropAt')).toEqual([['m2', { x: 200, y: 160 }]]);
+  });
+
+  it('ignores drops that carry no member payload', async () => {
+    const wrapper = mount(TeamsFlowCanvas, {
+      props: { nodes: NODES, edges: [], mode: 'edit' },
+      global: { stubs },
+    }) as VueWrapper<any>;
+    await wrapper.find('.teams-flow-canvas').trigger('drop', {
+      dataTransfer: { getData: () => '' },
+      clientX: 5,
+      clientY: 5,
+    });
+    await flushPromises();
+    expect(wrapper.emitted('dropAt')).toBeUndefined();
   });
 
   it('mounts the canvas chrome (background, controls, minimap) in both modes', () => {

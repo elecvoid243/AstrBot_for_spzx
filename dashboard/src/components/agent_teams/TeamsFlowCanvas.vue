@@ -1,5 +1,5 @@
 <template>
-  <div class="teams-flow-canvas">
+  <div class="teams-flow-canvas" @dragover.prevent @drop="onDrop">
     <VueFlow
       :nodes="displayNodes"
       :edges="displayEdges"
@@ -74,13 +74,15 @@ export default {};
 // run monitor (monitor mode). Every node renders as the MemberFlowNode card:
 // - edit: draggable / connectable / selectable, emits normalized connects,
 //   position maps after drags and node selection; missing members are dashed
-//   red via the caller-provided `at-node-missing` class.
+//   red via the caller-provided `at-node-missing` class. Member drag-drops
+//   from the editor's member strip are converted to flow coordinates here
+//   (this component owns the VueFlow store) and forwarded as `dropAt`.
 // - monitor: interaction locked; run status/error reach the card through
 //   `data.status`/`data.error` (enriched by the caller), so the card owns the
 //   status ring and native error tooltip. Edges get arrow markers and animate
 //   out of running nodes.
 import { computed } from 'vue';
-import { VueFlow, MarkerType } from '@vue-flow/core';
+import { VueFlow, MarkerType, useVueFlow } from '@vue-flow/core';
 import type { Connection, NodeChange } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { MiniMap } from '@vue-flow/minimap';
@@ -110,7 +112,29 @@ const emit = defineEmits<{
   (e: 'connect', params: { from: string; to: string }): void;
   (e: 'positionChange', positions: Record<string, { x: number; y: number }>): void;
   (e: 'selectNode', nodeId: string | null): void;
+  (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
 }>();
+
+// This component owns the <VueFlow> instance: calling useVueFlow() here
+// creates the store that the inner VueFlow component adopts, so the drop
+// handler can translate screen coordinates through the live viewport.
+const { screenToFlowCoordinate } = useVueFlow();
+
+/** DataTransfer MIME type carrying the dragged member id (set by the editor). */
+const MEMBER_MIME = 'application/x-member-id';
+
+/**
+ * Convert a member drag-drop into a flow-coordinate `dropAt` event.
+ *
+ * Args:
+ *   event: The native drop event on the canvas root.
+ */
+function onDrop(event: DragEvent) {
+  const memberId = event.dataTransfer?.getData(MEMBER_MIME);
+  if (!memberId) return;
+  const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
+  emit('dropAt', memberId, { x: position.x, y: position.y });
+}
 
 const isEdit = computed(() => props.mode === 'edit');
 

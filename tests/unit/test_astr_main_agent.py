@@ -3,6 +3,7 @@
 import datetime
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -176,9 +177,12 @@ def test_append_system_reminders_includes_weekday(mock_event):
 
 
 def test_local_mode_prompt_uses_windows_powershell_51():
-    with patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"), patch(
-        "astrbot.core.astr_main_agent.resolve_windows_shell",
-        return_value="powershell.exe",
+    with (
+        patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"),
+        patch(
+            "astrbot.core.astr_main_agent.resolve_windows_shell",
+            return_value="powershell.exe",
+        ),
     ):
         prompt = ama._build_local_mode_prompt()
 
@@ -188,9 +192,12 @@ def test_local_mode_prompt_uses_windows_powershell_51():
 
 
 def test_local_mode_prompt_hints_pwsh_when_resolved():
-    with patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"), patch(
-        "astrbot.core.astr_main_agent.resolve_windows_shell",
-        return_value="pwsh.exe",
+    with (
+        patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"),
+        patch(
+            "astrbot.core.astr_main_agent.resolve_windows_shell",
+            return_value="pwsh.exe",
+        ),
     ):
         prompt = ama._build_local_mode_prompt()
 
@@ -200,9 +207,12 @@ def test_local_mode_prompt_hints_pwsh_when_resolved():
 
 
 def test_local_mode_prompt_ignores_pwsh_on_non_windows():
-    with patch("astrbot.core.astr_main_agent.platform.system", return_value="Linux"), patch(
-        "astrbot.core.astr_main_agent.resolve_windows_shell",
-        return_value="pwsh.exe",
+    with (
+        patch("astrbot.core.astr_main_agent.platform.system", return_value="Linux"),
+        patch(
+            "astrbot.core.astr_main_agent.resolve_windows_shell",
+            return_value="pwsh.exe",
+        ),
     ):
         prompt = ama._build_local_mode_prompt()
 
@@ -313,6 +323,68 @@ class TestSelectProvider:
         mock_event.set_extra.assert_called_with(
             module.LLM_ERROR_MESSAGE_EXTRA_KEY,
             "LLM 请求失败：选择的提供商类型无效（str），已跳过本次请求。",
+        )
+
+    @pytest.mark.asyncio
+    async def test_select_provider_binding_override(
+        self,
+        mock_event,
+        mock_context,
+        mock_provider,
+    ):
+        """Agent team binding provider id wins over the default lookup."""
+        module = ama
+        mock_event.get_extra.side_effect = lambda k: (
+            SimpleNamespace(provider_id="prov-a")
+            if k == "agent_team_execution"
+            else None
+        )
+        mock_context.get_provider_by_id.return_value = mock_provider
+
+        result = await module._select_provider(mock_event, mock_context)
+
+        assert result == mock_provider
+        mock_context.get_provider_by_id.assert_called_once_with("prov-a")
+        mock_context.get_using_provider_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_select_provider_binding_missing_provider_errors(
+        self, mock_event, mock_context
+    ):
+        """A binding provider that cannot be resolved errors cleanly (no crash)."""
+        module = ama
+        mock_event.get_extra.side_effect = lambda k: (
+            SimpleNamespace(provider_id="prov-a")
+            if k == "agent_team_execution"
+            else None
+        )
+        mock_context.get_provider_by_id.return_value = None
+
+        result = await module._select_provider(mock_event, mock_context)
+
+        assert result is None
+        mock_event.set_extra.assert_called_with(
+            module.LLM_ERROR_MESSAGE_EXTRA_KEY,
+            "LLM 请求失败：未找到指定的提供商 `prov-a`。",
+        )
+        mock_context.get_using_provider_async.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_select_provider_binding_without_provider_falls_back(
+        self, mock_event, mock_context, mock_provider
+    ):
+        """A binding without provider_id falls through to default selection."""
+        module = ama
+        mock_event.get_extra.side_effect = lambda k: (
+            SimpleNamespace(provider_id=None) if k == "agent_team_execution" else None
+        )
+        mock_context.get_using_provider.return_value = mock_provider
+
+        result = await module._select_provider(mock_event, mock_context)
+
+        assert result == mock_provider
+        mock_context.get_using_provider_async.assert_called_once_with(
+            umo=mock_event.unified_msg_origin
         )
 
     @pytest.mark.asyncio

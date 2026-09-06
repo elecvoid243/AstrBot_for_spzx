@@ -279,6 +279,19 @@ async def _select_provider(
             )
             return None
         return provider
+    # Agent team node execution binding may pin its own provider (member
+    # runner_config.provider_id); falls through to default selection when unset.
+    binding = event.get_extra("agent_team_execution")
+    binding_provider = getattr(binding, "provider_id", None)
+    if binding_provider:
+        provider = plugin_context.get_provider_by_id(binding_provider)
+        if provider is None or not isinstance(provider, Provider):
+            logger.error("Agent team binding provider %r not found.", binding_provider)
+            _set_llm_error_message(
+                event, f"LLM 请求失败：未找到指定的提供商 `{binding_provider}`。"
+            )
+            return None
+        return provider
     try:
         return await plugin_context.get_using_provider_async(
             umo=event.unified_msg_origin

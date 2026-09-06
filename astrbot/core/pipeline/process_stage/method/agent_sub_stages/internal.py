@@ -50,6 +50,52 @@ from ...follow_up import (
 )
 
 
+def _binding_overrides(
+    event: AstrMessageEvent,
+    max_step: int,
+    main_agent_cfg: MainAgentBuildConfig,
+) -> tuple[int, MainAgentBuildConfig]:
+    """Compute per-event run overrides carried by the agent team execution binding.
+
+    The stage instance is shared across concurrent events, so the overrides are
+    returned as a local snapshot; nothing on the caller (or this module) is
+    mutated. When the event carries no binding, the given defaults are returned
+    unchanged.
+
+    Args:
+        event: The message event being processed.
+        max_step: The stage's configured max step.
+        main_agent_cfg: The stage's configured main agent build config.
+
+    Returns:
+        A (max_step, main_agent_cfg) pair: binding values where set, otherwise
+        the passed-in defaults.
+    """
+    binding = event.get_extra("agent_team_execution")
+    if binding is None:
+        return max_step, main_agent_cfg
+    if getattr(binding, "max_steps", None) is not None:
+        max_step = int(binding.max_steps)
+    if (
+        getattr(binding, "tool_call_timeout", None) is not None
+        or getattr(binding, "context_length", None) is not None
+    ):
+        main_agent_cfg = replace(
+            main_agent_cfg,
+            tool_call_timeout=(
+                float(binding.tool_call_timeout)
+                if getattr(binding, "tool_call_timeout", None) is not None
+                else main_agent_cfg.tool_call_timeout
+            ),
+            fallback_max_context_tokens=(
+                int(binding.context_length)
+                if getattr(binding, "context_length", None) is not None
+                else main_agent_cfg.fallback_max_context_tokens
+            ),
+        )
+    return max_step, main_agent_cfg
+
+
 class InternalAgentSubStage(Stage):
     async def initialize(self, ctx: PipelineContext) -> None:
         self.ctx = ctx
@@ -213,6 +259,13 @@ class InternalAgentSubStage(Stage):
                 logger.debug("skip llm request: empty message and no provider_request")
                 return
 
+            # Per-event overrides from the agent team execution binding (None on
+            # ordinary turns). Local snapshot: never mutate self.* because the
+            # stage is shared across concurrent events.
+            max_step, main_agent_cfg = _binding_overrides(
+                event, self.max_step, self.main_agent_cfg
+            )
+
             logger.debug("ready to request llm provider")
             follow_up_capture = try_capture_follow_up(event)
             if follow_up_capture:
@@ -246,7 +299,7 @@ class InternalAgentSubStage(Stage):
                 runner_registered = False
                 try:
                     build_cfg = replace(
-                        self.main_agent_cfg,
+                        main_agent_cfg,
                         provider_wake_prefix=provider_wake_prefix,
                         streaming_response=streaming_response,
                     )
@@ -339,7 +392,7 @@ class InternalAgentSubStage(Stage):
                                 run_live_agent(
                                     agent_runner,
                                     tts_provider,
-                                    self.max_step,
+                                    max_step,
                                     self.show_tool_use,
                                     self.show_tool_call_result,
                                     show_reasoning=self.show_reasoning,
@@ -370,7 +423,7 @@ class InternalAgentSubStage(Stage):
                             .set_async_stream(
                                 run_agent(
                                     agent_runner,
-                                    self.max_step,
+                                    max_step,
                                     self.show_tool_use,
                                     self.show_tool_call_result,
                                     show_reasoning=self.show_reasoning,
@@ -400,7 +453,7 @@ class InternalAgentSubStage(Stage):
                     else:
                         async for _ in run_agent(
                             agent_runner,
-                            self.max_step,
+                            max_step,
                             self.show_tool_use,
                             self.show_tool_call_result,
                             stream_to_general,

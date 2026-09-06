@@ -372,6 +372,32 @@ class AgentTeamService:
             out["context_length"] = v
         return out
 
+    async def _apply_member_kb_config(self, umo: str, kb_names: list[str]) -> None:
+        """Pin the member session's knowledge base config.
+
+        The knowledge base retrieval pipeline prefers the session kb_config when
+        it carries `kb_ids`, so storing the resolved ids here makes the member's
+        `kb_names` override take effect for every turn of the session. Unknown
+        names are skipped silently; an empty list clears the pin.
+
+        Args:
+            umo: The member's unified message origin.
+            kb_names: Knowledge base names to enable (empty disables).
+        """
+        from astrbot.core import sp
+
+        if not kb_names:
+            await sp.session_put(umo, "kb_config", {})
+            return
+        kb_mgr = self.core_lifecycle.kb_manager
+        kb_ids = []
+        for name in kb_names:
+            helper = await kb_mgr.get_kb_by_name(name)
+            if helper and helper.kb:
+                kb_ids.append(helper.kb.kb_id)
+        if kb_ids:
+            await sp.session_put(umo, "kb_config", {"kb_ids": kb_ids, "top_k": 5})
+
     async def update_member(
         self, username: str, team_id: str, member_id: str, payload: dict
     ) -> dict:
@@ -455,6 +481,10 @@ class AgentTeamService:
             await self.core_lifecycle.provider_manager.set_provider(
                 updated["provider_id"], ProviderType.CHAT_COMPLETION, umo
             )
+        if "runner_config" in payload:
+            kb_names = updated["runner_config"].get("kb_names")
+            if kb_names is not None:
+                await self._apply_member_kb_config(umo, kb_names)
 
         return await self.get_team(username, team_id)
 

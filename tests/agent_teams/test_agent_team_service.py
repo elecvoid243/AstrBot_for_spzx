@@ -49,12 +49,28 @@ class FakePersonaManager:
         return next((p for p in self.personas_v3 if p["name"] == persona_id), None)
 
 
+class FakeKnowledgeBaseHelper:
+    def __init__(self, kb_id, kb_name):
+        self.kb = SimpleNamespace(kb_id=kb_id, kb_name=kb_name)
+
+
+class FakeKnowledgeBaseManager:
+    """kb manager stand-in mirroring get_kb_by_name (lookup, never raises)."""
+
+    def __init__(self, kbs=None):
+        self.kbs = list(kbs or [])
+
+    async def get_kb_by_name(self, name):
+        return next((h for h in self.kbs if h.kb.kb_name == name), None)
+
+
 class FakeCoreLifecycle:
     def __init__(self, confs=None, personas=None):
         self.conversation_manager = FakeConversationManager()
         self.provider_manager = FakeProviderManager()
         self.astrbot_config_mgr = SimpleNamespace(confs=dict(confs or {}))
         self.persona_mgr = FakePersonaManager(personas)
+        self.kb_manager = FakeKnowledgeBaseManager()
 
 
 async def make_service(tmp_path, busy=None):
@@ -352,3 +368,86 @@ async def test_update_member_changed_persona_provider_re_pins(tmp_path, monkeypa
     )
     assert len(svc.core_lifecycle.provider_manager.set) == pins_before + 1
     assert svc.core_lifecycle.provider_manager.set[-1][0] == "prov-b"
+
+
+async def _capture_session_puts(tmp_path, monkeypatch, kbs=None):
+    """Create a service with a fake kb manager and captured sp.session_put calls."""
+    import astrbot.core as core_mod
+
+    _, svc = await make_service(tmp_path)
+    svc.core_lifecycle.kb_manager = FakeKnowledgeBaseManager(kbs or [])
+    calls = []
+
+    async def fake_session_put(umo, key, value):
+        calls.append((umo, key, value))
+
+    monkeypatch.setattr(core_mod.sp, "session_put", fake_session_put)
+    return svc, calls
+
+
+@pytest.mark.asyncio
+async def test_update_member_kb_names_pins_session_kb_config(tmp_path, monkeypatch):
+    """kb_names maps to kb ids and pins the member session kb_config."""
+    svc, calls = await _capture_session_puts(
+        tmp_path,
+        monkeypatch,
+        [
+            FakeKnowledgeBaseHelper("kb-uuid-1", "指南"),
+            FakeKnowledgeBaseHelper("kb-uuid-2", "法规"),
+        ],
+    )
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member = team["members"][0]
+    await svc.update_member(
+        "owner0",
+        team["team_id"],
+        member["member_id"],
+        {"runner_config": {"kb_names": ["指南", "法规", "不存在"]}},
+    )
+    # Unknown names are skipped; ids are stored in name order.
+    assert calls == [
+        (
+            member["umo"],
+            "kb_config",
+            {"kb_ids": ["kb-uuid-1", "kb-uuid-2"], "top_k": 5},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_member_kb_names_empty_clears_session_kb_config(
+    tmp_path, monkeypatch
+):
+    """Empty kb_names clears the pin; absent kb_names writes nothing."""
+    svc, calls = await _capture_session_puts(
+        tmp_path,
+        monkeypatch,
+        [FakeKnowledgeBaseHelper("kb-uuid-1", "指南")],
+    )
+    team = await svc.create_team(
+        "owner0", {"name": "t", "members": MEMBERS, "coordinator": "主管"}
+    )
+    member = team["members"][0]
+    await svc.update_member(
+        "owner0",
+        team["team_id"],
+        member["member_id"],
+        {"runner_config": {"kb_names": []}},
+    )
+    assert calls == [(member["umo"], "kb_config", {})]
+    # runner_config without kb_names must not touch the session kb_config.
+    calls.clear()
+    await svc.update_member(
+        "owner0",
+        team["team_id"],
+        member["member_id"],
+        {"runner_config": {"max_steps": 5}},
+    )
+    assert calls == []
+    # Payload without runner_config must not touch the session kb_config either.
+    await svc.update_member(
+        "owner0", team["team_id"], member["member_id"], {"name": "主管"}
+    )
+    assert calls == []

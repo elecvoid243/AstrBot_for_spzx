@@ -118,3 +118,54 @@ export function renderableError(graph: DagCheckGraph): string | null {
   }
   return null;
 }
+
+/**
+ * Placeholder grammar shared with the backend renderer
+ * (astrbot/dashboard/services/agent_team_dag.py `_PLACEHOLDER_RE`):
+ * whitespace-tolerant `{{ key }}` with alphanumeric/underscore keys.
+ */
+const PLACEHOLDER_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
+
+/**
+ * Find which graph node ids a node's task template references without the
+ * node being directly connected to them.
+ *
+ * Every `{{<id>}}` in the template whose id is a graph node id but not a
+ * direct predecessor of `nodeId` is reported (in order of first appearance,
+ * deduplicated). `{{input}}` is the run input, never a node reference, and
+ * ids that do not match any graph node are ignored. Informational only —
+ * the backend auto-injects unconnected predecessor results.
+ *
+ * Args:
+ *   nodeId: The node whose template is inspected.
+ *   template: The task template text (may be empty).
+ *   nodes: Graph nodes (only `id` is read).
+ *   edges: Directed edges (`from` -> `to`).
+ *
+ * Returns:
+ *   Referenced-but-unconnected graph node ids.
+ */
+export function unconnectedReferences(
+  nodeId: string,
+  template: string,
+  nodes: DagCheckNode[],
+  edges: DagCheckEdge[],
+): string[] {
+  if (!template) return [];
+  const nodeIds = new Set((nodes ?? []).map((n) => n?.id).filter(Boolean) as string[]);
+  const predecessors = new Set(
+    (edges ?? [])
+      .filter((edge) => edge && edge.from && edge.to === nodeId)
+      .map((edge) => edge.from as string),
+  );
+
+  const referenced: string[] = [];
+  const seen = new Set<string>();
+  for (const match of template.matchAll(PLACEHOLDER_RE)) {
+    const id = match[1];
+    if (id === 'input' || !nodeIds.has(id) || predecessors.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    referenced.push(id);
+  }
+  return referenced;
+}

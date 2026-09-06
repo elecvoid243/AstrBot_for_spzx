@@ -6,7 +6,7 @@
 // unique. The functions stay pure (no Vue imports) so they can be reused by
 // the editor banner, the save gate and future monitor UI.
 import { describe, expect, it } from 'vitest';
-import { findCycle, renderableError } from './dagCheck';
+import { findCycle, renderableError, unconnectedReferences } from './dagCheck';
 
 const N = (id: string) => ({ id });
 
@@ -94,5 +94,50 @@ describe('renderableError', () => {
   it('returns null for empty or malformed graphs', () => {
     expect(renderableError({ nodes: [], edges: [] })).toBeNull();
     expect(renderableError({ nodes: undefined as any, edges: undefined as any })).toBeNull();
+  });
+});
+
+describe('unconnectedReferences', () => {
+  const nodes = [N('n1'), N('n2'), N('n3')];
+
+  it('reports graph nodes referenced but not directly connected to the node', () => {
+    const edges = [{ from: 'n1', to: 'n3' }];
+    // n1 is a direct predecessor of n3; n2 is not.
+    expect(unconnectedReferences('n3', 'do {{n2}} after {{n1}}', nodes, edges)).toEqual(['n2']);
+  });
+
+  it('treats every direct predecessor edge direction as connected', () => {
+    const edges = [{ from: 'n2', to: 'n1' }];
+    expect(unconnectedReferences('n1', 'use {{n2}}', nodes, edges)).toEqual([]);
+  });
+
+  it('never counts the {{input}} placeholder', () => {
+    expect(unconnectedReferences('n1', 'x {{input}} y', nodes, [])).toEqual([]);
+  });
+
+  it('ignores ids that are not graph nodes and malformed placeholders', () => {
+    expect(unconnectedReferences('n1', 'see {{n9}} and {n2} and {{}}', nodes, [])).toEqual([]);
+  });
+
+  it('reports a self-reference (a node is not its own predecessor)', () => {
+    expect(unconnectedReferences('n1', 'self {{n1}}', nodes, [])).toEqual(['n1']);
+  });
+
+  it('tolerates whitespace and dedupes repeated references', () => {
+    expect(unconnectedReferences('n1', '{{ n2 }} plus {{n2}}', nodes, [])).toEqual(['n2']);
+  });
+
+  it('returns references in order of first appearance', () => {
+    expect(unconnectedReferences('n1', '{{n3}} then {{n2}} then {{n3}}', nodes, [])).toEqual([
+      'n3',
+      'n2',
+    ]);
+  });
+
+  it('returns nothing for blank templates and malformed edges', () => {
+    expect(unconnectedReferences('n1', '', nodes, [])).toEqual([]);
+    expect(
+      unconnectedReferences('n1', '{{n2}}', nodes, [{ from: '', to: 'n1' } as any]),
+    ).toEqual(['n2']);
   });
 });

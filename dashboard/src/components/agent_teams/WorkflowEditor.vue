@@ -61,14 +61,24 @@
       </v-btn>
     </div>
 
-    <div v-if="bannerMessage || lastErrorFields.length" class="editor-banner">
+    <div v-if="bannerMessage || displayErrorFields.length" class="editor-banner">
       <strong>{{ tm('editor.validation') }}</strong>
       <span v-if="bannerMessage">{{ bannerMessage }}</span>
       <!-- Structured backend validation errors (e.g. execution block issues)
-           published by useAgentTeams; the plain message is toasted there. -->
-      <ul v-if="lastErrorFields.length" class="editor-banner-fields">
-        <li v-for="(field, index) in lastErrorFields" :key="`${field.path}-${index}`">
-          {{ field.path }}: {{ field.message }}
+           published by useAgentTeams; the plain message is toasted there.
+           Entries pointing at a graph node (`nodes.<id>...`) select that node
+           in the inspector; messages already shown locally are deduplicated. -->
+      <ul v-if="displayErrorFields.length" class="editor-banner-fields">
+        <li v-for="(field, index) in displayErrorFields" :key="`${field.path}-${index}`">
+          <button
+            v-if="fieldNodeId(field.path)"
+            type="button"
+            class="editor-banner-field"
+            @click="onFieldClick(field.path)"
+          >
+            {{ field.path }}: {{ field.message }}
+          </button>
+          <span v-else class="editor-banner-field">{{ field.path }}: {{ field.message }}</span>
         </li>
       </ul>
     </div>
@@ -212,6 +222,30 @@
               />
             </template>
           </div>
+          <div class="editor-var-chips">
+            <span class="editor-var-chips-label">{{ tm('editor.variableChips') }}</span>
+            <button
+              type="button"
+              class="editor-var-chip editor-var-chip-input"
+              :aria-label="tm('editor.insertInput')"
+              @click="insertToken(INPUT_TOKEN)"
+            >
+              {{ INPUT_TOKEN }}
+            </button>
+            <button
+              v-for="chip in predecessorChips"
+              :key="chip.id"
+              type="button"
+              class="editor-var-chip"
+              :aria-label="tm('editor.upstreamChip', { id: chip.id })"
+              @click="insertToken(`{{${chip.id}}}`)"
+            >
+              {{ chip.label }}
+            </button>
+            <v-btn size="small" variant="tonal" @click="insertToken(INPUT_TOKEN)">
+              {{ tm('editor.insertInput') }}
+            </v-btn>
+          </div>
           <v-textarea
             ref="taskAreaRef"
             v-model="selectedTask"
@@ -221,9 +255,11 @@
             hide-details
             class="mt-3"
           />
-          <v-btn size="small" variant="tonal" class="mt-2" @click="insertInputToken">
-            {{ tm('editor.insertInput') }}
-          </v-btn>
+          <ul v-if="selectedUnconnected.length" class="editor-unconnected">
+            <li v-for="ref in selectedUnconnected" :key="ref">
+              {{ tm('editor.unconnectedRef', { id: ref }) }}
+            </li>
+          </ul>
           <p class="editor-task-hint">{{ tm('editor.nodeTaskHint') }}</p>
         </div>
       </v-navigation-drawer>
@@ -258,7 +294,8 @@ import { useModuleI18n } from '@/i18n/composables';
 import { useToast } from '@/utils/toast';
 import { collabMemberColor } from '@/utils/memberColors';
 import { extractApiError } from '@/utils/extractApiError';
-import { findCycle, renderableError } from '@/utils/dagCheck';
+import type { ApiErrorField } from '@/utils/extractApiError';
+import { findCycle, renderableError, unconnectedReferences } from '@/utils/dagCheck';
 import type { DagCheckNode } from '@/utils/dagCheck';
 
 // Mirrors AgentTeamService.MAX_NODES on the backend.
@@ -678,8 +715,11 @@ watch(selectedNodeId, (id) => {
   if (id && !executionByNode.value[id]) executionByNode.value[id] = defaultExecState();
 });
 
-/** Insert the `{{input}}` token at the textarea cursor (or at the end). */
-function insertInputToken() {
+/**
+ * Insert a variable token at the textarea cursor (or append at the end when
+ * the textarea element is not reachable, e.g. in tests without focus).
+ */
+function insertToken(token: string) {
   const root = taskAreaRef.value?.$el as HTMLElement | undefined;
   const el = ((root?.querySelector?.('textarea') as HTMLTextAreaElement | null) ??
     (root as HTMLTextAreaElement | null)) as HTMLTextAreaElement | null;
@@ -687,14 +727,14 @@ function insertInputToken() {
   if (el && typeof el.selectionStart === 'number') {
     const start = el.selectionStart;
     const end = el.selectionEnd;
-    selectedTask.value = current.slice(0, start) + INPUT_TOKEN + current.slice(end);
-    const cursor = start + INPUT_TOKEN.length;
+    selectedTask.value = current.slice(0, start) + token + current.slice(end);
+    const cursor = start + token.length;
     void nextTick(() => {
       el.focus?.();
       el.setSelectionRange?.(cursor, cursor);
     });
   } else {
-    selectedTask.value = current + INPUT_TOKEN;
+    selectedTask.value = current + token;
   }
 }
 
@@ -754,10 +794,30 @@ interface EditorProblem {
   nodeId?: string;
 }
 
-/** Local problems shown in the toolbar badge (save-blocking banner today). */
+/**
+ * Local problems for the toolbar badge: the save-blocking banner (missing
+ * member / overflow / structural / cycle) plus one entry per unconnected
+ * `{{node}}` reference. Only the banner is save-blocking; reference warnings
+ * are informational (the backend auto-injects unconnected predecessors).
+ */
 const localProblems = computed<EditorProblem[]>(() => {
   const problems: EditorProblem[] = [];
   if (bannerMessage.value) problems.push({ key: 'banner', message: bannerMessage.value });
+  const graph = buildGraphPayload();
+  for (const node of graph.nodes) {
+    for (const ref of unconnectedReferences(
+      node.id,
+      String(node.task ?? ''),
+      graph.nodes,
+      graph.edges,
+    )) {
+      problems.push({
+        key: `unconnected:${node.id}:${ref}`,
+        message: tm('editor.unconnectedRef', { id: ref }),
+        nodeId: node.id,
+      });
+    }
+  }
   return problems;
 });
 
@@ -766,6 +826,65 @@ const problemsOpen = ref(false);
 function onProblemClick(problem: EditorProblem) {
   problemsOpen.value = false;
   if (problem.nodeId) selectNode(problem.nodeId);
+}
+
+/** Unconnected reference warnings for the node open in the inspector. */
+const selectedUnconnected = computed<string[]>(() => {
+  const node = selectedNode.value;
+  if (!node) return [];
+  const graph = buildGraphPayload();
+  return unconnectedReferences(
+    node.id,
+    String(node.data.task ?? ''),
+    graph.nodes,
+    graph.edges,
+  );
+});
+
+/** Variable chips: {{input}} plus one labeled chip per direct predecessor. */
+const predecessorChips = computed<{ id: string; label: string }[]>(() => {
+  const id = selectedNodeId.value;
+  if (!id) return [];
+  const chips: { id: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const edge of graphEdges.value) {
+    if (edge.target !== id || seen.has(edge.source)) continue;
+    seen.add(edge.source);
+    const source = graphNodes.value.find((n) => n.id === edge.source);
+    const title = (source?.data.memberName as string) ?? edge.source;
+    chips.push({ id: edge.source, label: `{{${edge.source}}} · ${title}` });
+  }
+  return chips;
+});
+
+// --- Server field-error mapping -----------------------------------------
+
+/** Node id encoded in a `nodes.<id>...` field path, if any. */
+function fieldNodeId(path: string): string | null {
+  return /^nodes\.([^.]+)/.exec(path)?.[1] ?? null;
+}
+
+/**
+ * Server field errors ready for the banner: deduplicated by message text,
+ * against the local problems (banner + reference warnings) and among
+ * themselves, so a reason already shown locally is not repeated.
+ */
+const displayErrorFields = computed<ApiErrorField[]>(() => {
+  const local = new Set(localProblems.value.map((p) => p.message));
+  const seen = new Set<string>();
+  const out: ApiErrorField[] = [];
+  for (const field of lastErrorFields.value) {
+    if (local.has(field.message) || seen.has(field.message)) continue;
+    seen.add(field.message);
+    out.push(field);
+  }
+  return out;
+});
+
+/** Click a server field entry whose path points at a graph node. */
+function onFieldClick(path: string) {
+  const id = fieldNodeId(path);
+  if (id && graphNodes.value.some((n) => n.id === id)) selectNode(id);
 }
 
 async function save() {
@@ -956,6 +1075,63 @@ watch(selectedWorkflowId, (wfId) => {
 .editor-banner-fields {
   margin: 0;
   padding-left: 16px;
+  word-break: break-word;
+}
+
+/* Server field-error entries: node-path ones are buttons that select the node. */
+.editor-banner-field {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  word-break: break-word;
+}
+
+button.editor-banner-field {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+/* Variable chips above the task textarea. */
+.editor-var-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.editor-var-chips-label {
+  font-size: 11px;
+  color: var(--dashboard-muted, rgba(128, 128, 128, 0.8));
+}
+
+.editor-var-chip {
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.1);
+  color: inherit;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.editor-var-chip:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+/* Local-only reference warnings under the task editor (never save-blocking). */
+.editor-unconnected {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: #f59e0b;
   word-break: break-word;
 }
 

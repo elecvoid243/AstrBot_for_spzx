@@ -220,6 +220,21 @@ const WORKFLOW_WITH_SKILLS_DISABLED = {
   layout: { n1: { x: 0, y: 0 }, n2: { x: 1, y: 1 } },
 };
 
+// n1 -> n2, plus an unconnected n3 that n2's template references.
+const WORKFLOW_CHAIN = {
+  workflow_id: 'wf5',
+  name: 'Chain',
+  graph: {
+    nodes: [
+      { id: 'n1', member_id: 'm1', task: 'Do A' },
+      { id: 'n2', member_id: 'm2', task: 'see {{n3}}' },
+      { id: 'n3', member_id: 'm1', task: 'Do C' },
+    ],
+    edges: [{ from: 'n1', to: 'n2' }],
+  },
+  layout: { n1: { x: 0, y: 0 }, n2: { x: 10, y: 0 }, n3: { x: 20, y: 0 } },
+};
+
 const okEnvelope = (data: unknown) =>
   Promise.resolve({ data: { status: 'ok', message: null, data } });
 
@@ -754,6 +769,136 @@ describe('WorkflowEditor workbench', () => {
     const drawer = wrapper.find('.drawer-stub');
     expect(drawer.exists()).toBe(true);
     expect(drawer.attributes('data-temporary')).toBe('true');
+  });
+});
+
+describe('WorkflowEditor variable chips and error mapping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({
+      workflow_id: 'wf9',
+      name: 'saved',
+    });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  /** Load a workflow fixture, then select one of its nodes. */
+  async function openWorkflowNode(wrapper: VueWrapper<any>, workflowId: string, nodeId: string) {
+    await wrapper.find('select.workflow-picker').setValue(workflowId);
+    await flushPromises();
+    await selectNode(wrapper, nodeId);
+  }
+
+  it('renders an {{input}} chip plus one labeled chip per direct predecessor', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW] });
+    await openWorkflowNode(wrapper, 'wf1', 'n2');
+
+    const chips = wrapper.findAll('.editor-var-chip');
+    expect(chips.map((c) => c.text())).toEqual(['{{input}}', '{{n1}} · Alice']);
+
+    // n1 has no predecessors: only the input chip remains.
+    await selectNode(wrapper, 'n1');
+    expect(wrapper.findAll('.editor-var-chip').map((c) => c.text())).toEqual(['{{input}}']);
+  });
+
+  it('inserts a predecessor variable at the cursor from its chip', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW] });
+    await openWorkflowNode(wrapper, 'wf1', 'n2');
+
+    const taskArea = wrapper.find('.editor-inspector textarea');
+    await taskArea.setValue('Fix bug');
+    (taskArea.element as HTMLTextAreaElement).setSelectionRange(3, 3);
+    // Second chip is the n1 predecessor; the first is {{input}}.
+    await wrapper.findAll('.editor-var-chip')[1]!.trigger('click');
+
+    expect(taskArea.element).toHaveProperty('value', 'Fix{{n1}} bug');
+  });
+
+  it('warns locally about unconnected references without blocking save', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_CHAIN] });
+    await openWorkflowNode(wrapper, 'wf5', 'n2');
+
+    const warnings = wrapper.findAll('.editor-unconnected li');
+    expect(warnings.map((w) => w.text())).toEqual([
+      zh.editor.unconnectedRef.replace('{id}', 'n3'),
+    ]);
+
+    // A node with clean references shows no warning block.
+    await selectNode(wrapper, 'n1');
+    expect(wrapper.find('.editor-unconnected').exists()).toBe(false);
+
+    // Warnings are informational only: saving is never blocked by them.
+    await wrapper.find('input[data-label="' + zh.editor.workflowName + '"]').setValue('Chain');
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    expect(composableMocks.saveWorkflow).toHaveBeenCalledTimes(1);
+    expect(toastMock.success).toHaveBeenCalled();
+  });
+
+  it('lists unconnected references in the summary and selects the node on click', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW_CHAIN] });
+    // n1 is selected, but the problem belongs to n2.
+    await openWorkflowNode(wrapper, 'wf5', 'n1');
+
+    const badge = findButton(wrapper, zh.editor.validationBadge)!;
+    expect(badge.attributes('disabled')).toBeUndefined();
+    expect(badge.text()).toContain('1');
+
+    await badge.trigger('click');
+    const list = wrapper.find('.editor-problems-list');
+    expect(list.text()).toContain(zh.editor.unconnectedRef.replace('{id}', 'n3'));
+
+    const entry = list.find('button.editor-problem-item:not([disabled])');
+    expect(entry.exists()).toBe(true);
+    await entry.trigger('click');
+
+    // Clicking the problem selects (and opens the inspector for) node n2.
+    const taskArea = wrapper.find('.editor-inspector textarea');
+    expect(taskArea.element).toHaveProperty('value', 'see {{n3}}');
+  });
+
+  it('makes server field errors with node paths clickable to select the node', async () => {
+    const wrapper = mountEditor({ workflows: [WORKFLOW] });
+    await openWorkflowNode(wrapper, 'wf1', 'n1');
+    composableMocks.saveWorkflow.mockResolvedValueOnce(null);
+    await findButton(wrapper, zh.editor.save)!.trigger('click');
+    await flushPromises();
+    composableMocks.lastErrorFields.value = [
+      { path: 'nodes.n2.task', message: '任务模板过长' },
+      { path: 'name', message: '名称已存在' },
+    ];
+    await nextTick();
+
+    const items = wrapper.findAll('.editor-banner-fields .editor-banner-field');
+    expect(items).toHaveLength(2);
+    // `nodes.n2.task` maps to a graph node -> clickable; `name` does not.
+    expect(items[0]!.element.tagName).toBe('BUTTON');
+    expect(items[0]!.text()).toContain('nodes.n2.task');
+    expect(items[1]!.element.tagName).toBe('SPAN');
+
+    await items[0]!.trigger('click');
+    const taskArea = wrapper.find('.editor-inspector textarea');
+    expect(taskArea.element).toHaveProperty('value', 'Do B');
+  });
+
+  it('dedupes server field messages against local problems and themselves', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    await emitConnect(wrapper, 'n2', 'n1');
+    const localCycle = zh.editor.cycleDetected.replace('{path}', 'n1 → n2 → n1');
+    composableMocks.lastErrorFields.value = [
+      { path: 'graph', message: localCycle },
+      { path: 'graph', message: '其他错误' },
+      { path: 'graph', message: '其他错误' },
+    ];
+    await nextTick();
+
+    const items = wrapper.findAll('.editor-banner-fields .editor-banner-field');
+    // The server entry matching the local banner is dropped, and the two
+    // identical server messages collapse into one.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.text()).toContain('其他错误');
   });
 });
 

@@ -2008,6 +2008,14 @@ export const agentTeamsApi = {
       `/api/v1/agent_teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`
     );
   },
+  async updateMember(teamId: string, memberId: string, payload: Record<string, unknown>) {
+    const res = await httpClient.patch<ApiEnvelope<any>>(
+      `/api/v1/agent_teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`,
+      payload,
+    );
+    // Resolve the envelope and return the updated team dict (Task 5 contract).
+    return res.data.data;
+  },
   listWorkflows(teamId: string) {
     return httpClient.get<ApiEnvelope<any>>(`/api/v1/agent_teams/${encodeURIComponent(teamId)}/workflows`);
   },

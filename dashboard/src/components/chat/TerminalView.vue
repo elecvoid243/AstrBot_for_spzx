@@ -338,6 +338,10 @@ function submitPendingLine(): void {
   term?.write("\r\n");
   if (line.trim()) {
     history.push(line);
+    // A just-executed line becomes the "current" line again: reset the
+    // browse pointer so the next ↑ starts from the newest command
+    // instead of resuming the previous mid-history position.
+    historyIndex = -1;
   }
   echoLine = line;
   echoPos = 0;

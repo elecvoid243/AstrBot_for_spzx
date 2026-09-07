@@ -305,6 +305,25 @@ async def get_chat_session(
     return await _run(lambda: service.get_session(auth.username, session_id))
 
 
+@router.get("/chat/sessions/{session_id}/history")
+async def get_chat_session_history(
+    session_id: str,
+    before_id: int | None = None,
+    limit: int = 50,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Page one batch of history older than ``before_id`` for a session."""
+    return await _run(
+        lambda: service.get_history_before(
+            auth.username,
+            session_id,
+            before_id,
+            limit,
+        )
+    )
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

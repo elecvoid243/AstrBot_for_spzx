@@ -699,6 +699,9 @@
             <ChatMessageList
               v-model:edit-draft="messageEditDraft"
               :messages="activeMessages"
+              :history-has-more="Boolean(historyPaging?.hasMore)"
+              :history-loading-older="Boolean(historyPaging?.loadingOlder)"
+              :history-offset="historyOffset"
               :current-umo="currentUmo ?? undefined"
               :is-dark="isDark"
               :is-streaming="
@@ -732,6 +735,7 @@
               @open-thread="openThreadPanel"
               @open-reasoning="openReasoningPanel"
               @open-refs="openRefsSidebar"
+              @load-older="loadOlderHistory"
             />
           </div>
 
@@ -1526,12 +1530,15 @@ const {
   loadedSessions,
   sessionProjects,
   sessionArchivedFlags,
+  historyPagingBySession,
+  historyOffsetBySession,
   activeMessages,
   isSessionRunning,
   hasLiveSystemRecord,
   isUserMessage,
   messageParts,
   loadSessionMessages,
+  loadOlderMessages,
   createLocalExchange,
   sendMessageStream,
   editMessage,
@@ -1720,6 +1727,18 @@ const sessionProject = computed(() =>
 const currentSessionTitle = computed(() =>
   currentSession.value ? sessionTitle(currentSession.value) : "",
 );
+// History windowing state for the active session (hasMore, loadingOlder,
+// and the absolute index of the first loaded record for data-message-index).
+const historyPaging = computed(() =>
+  currSessionId.value
+    ? historyPagingBySession[currSessionId.value] || null
+    : null,
+);
+const historyOffset = computed(() =>
+  currSessionId.value
+    ? historyOffsetBySession[currSessionId.value] || 0
+    : 0,
+);
 const selectedProject = computed(
   () =>
     projects.value.find(
@@ -1837,13 +1856,34 @@ async function scrollToMessageFromQuery() {
   if (isNaN(target) || target < 0) return;
   await nextTick();
   await new Promise((r) => setTimeout(r, 300));
-  const el = document.querySelector(
-    `[data-message-index="${target}"]`,
-  ) as HTMLElement | null;
-  if (!el) return;
-  el.scrollIntoView({ block: "center" });
-  const { scrollToIndex: _, ...rest } = route.query;
-  router.replace({ query: rest });
+  // Windowed history: a search result may live outside the loaded window.
+  // Page older history until the target is rendered or nothing is left.
+  const jumpSessionId = currSessionId.value;
+  let guard = 0;
+  while (guard++ < 100) {
+    const el = document.querySelector(
+      `[data-message-index="${target}"]`,
+    ) as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      const { scrollToIndex: _, ...rest } = route.query;
+      router.replace({ query: rest });
+      return;
+    }
+    // Session switched mid-jump — the index belongs to the previous session.
+    if (!jumpSessionId || currSessionId.value !== jumpSessionId) return;
+    const paging = historyPagingBySession[jumpSessionId];
+    if (!paging?.hasMore) return;
+    if (paging.loadingOlder) {
+      await new Promise((r) => setTimeout(r, 120));
+      continue;
+    }
+    const offsetBefore = historyOffsetBySession[jumpSessionId] ?? 0;
+    await loadOlderHistory();
+    const offsetAfter = historyOffsetBySession[jumpSessionId] ?? 0;
+    // No progress (e.g. failed request) — stop instead of spinning.
+    if (offsetAfter >= offsetBefore) return;
+  }
 }
 
 watch(
@@ -3992,6 +4032,29 @@ function handleMessagesScroll() {
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
   shouldStickToBottom.value = distance < 80;
+  // History windowing: reached the top boundary while older history exists
+  // → load the next page (the loadOlderHistory anchor keeps the viewport).
+  const paging = currSessionId.value
+    ? historyPagingBySession[currSessionId.value]
+    : null;
+  if (container.scrollTop < 80 && paging?.hasMore && !paging.loadingOlder) {
+    void loadOlderHistory();
+  }
+}
+
+/**
+ * Prepend an older history page, anchoring the scroll height so the
+ * viewport does not jump after the prepend.
+ */
+async function loadOlderHistory() {
+  if (!currSessionId.value) return;
+  const container = messagesContainer.value;
+  const prevHeight = container ? container.scrollHeight : null;
+  await loadOlderMessages(currSessionId.value);
+  if (container && prevHeight !== null) {
+    await nextTick();
+    container.scrollTop += container.scrollHeight - prevHeight;
+  }
 }
 
 function scrollToBottom() {

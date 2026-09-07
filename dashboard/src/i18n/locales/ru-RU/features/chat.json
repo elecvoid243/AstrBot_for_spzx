@@ -1727,5 +1727,8 @@
       "kind_project": "Проект",
       "kind_worktree": "Worktree"
     }
+  },
+  "history": {
+    "loadOlder": "Загрузить более старые сообщения"
   }
 }

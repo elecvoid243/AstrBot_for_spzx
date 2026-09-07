@@ -273,8 +273,34 @@ class BaseDatabase(abc.ABC):
         user_id: str,
         page: int = 1,
         page_size: int = 20,
+        before_id: int | None = None,
     ) -> list[PlatformMessageHistory]:
-        """Get platform message history for a specific user."""
+        """Get platform message history for a specific user.
+
+        Args:
+            platform_id: Platform instance ID.
+            user_id: Unified message origin for the group.
+            page: 1-based page number. Ignored when ``before_id`` is set.
+            page_size: Number of rows per page.
+            before_id: Exclusive cursor; only records with a smaller id are
+                returned. None starts from the newest rows.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def count_platform_message_history(
+        self,
+        platform_id: str,
+        user_id: str,
+        before_id: int | None = None,
+    ) -> int:
+        """Count platform message history records.
+
+        Args:
+            platform_id: Platform instance ID.
+            user_id: Unified message origin for the group.
+            before_id: When set, only count records with a smaller id.
+        """
         ...
 
     @abc.abstractmethod

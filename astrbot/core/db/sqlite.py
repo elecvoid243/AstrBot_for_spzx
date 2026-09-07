@@ -937,8 +937,18 @@ class SQLiteDatabase(BaseDatabase):
         user_id,
         page=1,
         page_size=20,
+        before_id=None,
     ):
-        """Get platform message history records."""
+        """Get platform message history records.
+
+        Args:
+            platform_id: Platform instance ID.
+            user_id: Unified message origin for the group.
+            page: 1-based page number. Ignored when ``before_id`` is set.
+            page_size: Number of rows per page.
+            before_id: Exclusive cursor; only records with a smaller id are
+                returned. None starts from the newest rows.
+        """
         async with self.get_db() as session:
             session: AsyncSession
             offset = (page - 1) * page_size
@@ -953,8 +963,41 @@ class SQLiteDatabase(BaseDatabase):
                     desc(PlatformMessageHistory.id),
                 )
             )
+            if before_id is not None:
+                query = query.where(PlatformMessageHistory.id < before_id)
             result = await session.execute(query.offset(offset).limit(page_size))
             return result.scalars().all()
+
+    async def count_platform_message_history(
+        self,
+        platform_id,
+        user_id,
+        before_id=None,
+    ) -> int:
+        """Count platform message history records.
+
+        Args:
+            platform_id: Platform instance ID.
+            user_id: Unified message origin for the group.
+            before_id: When set, only count records with a smaller id.
+
+        Returns:
+            Number of matching records.
+        """
+        async with self.get_db() as session:
+            session: AsyncSession
+            query = (
+                select(func.count())
+                .select_from(PlatformMessageHistory)
+                .where(
+                    PlatformMessageHistory.platform_id == platform_id,
+                    PlatformMessageHistory.user_id == user_id,
+                )
+            )
+            if before_id is not None:
+                query = query.where(PlatformMessageHistory.id < before_id)
+            result = await session.execute(query)
+            return int(result.scalar_one() or 0)
 
     async def get_platform_message_history_by_id(
         self, message_id: int

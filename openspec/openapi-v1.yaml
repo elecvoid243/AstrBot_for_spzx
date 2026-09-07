@@ -1453,6 +1453,28 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/history:
+    get:
+      tags: [Chat]
+      summary: Page one batch of history older than before_id for a session
+      operationId: getChatSessionHistory
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: before_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Exclusive cursor; only records with a smaller id are returned.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+          description: Page size.
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/stop:
     post:
       tags: [Chat]

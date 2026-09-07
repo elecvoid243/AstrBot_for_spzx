@@ -81,6 +81,9 @@
     "quickActions": "快速操作",
     "examples": "示例问题"
   },
+  "history": {
+    "loadOlder": "加载更早的消息"
+  },
   "actions": {
     "copy": "复制",
     "regenerate": "重新生成",

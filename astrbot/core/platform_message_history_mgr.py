@@ -111,13 +111,24 @@ class PlatformMessageHistoryManager:
         user_id: str,
         page: int = 1,
         page_size: int = 200,
+        before_id: int | None = None,
     ) -> list[PlatformMessageHistory]:
-        """Get platform message history for a specific user."""
+        """Get platform message history for a specific user.
+
+        Args:
+            platform_id: Platform instance ID.
+            user_id: Unified message origin for the group.
+            page: 1-based page number. Ignored when ``before_id`` is set.
+            page_size: Number of rows per page.
+            before_id: Exclusive cursor; only records with a smaller id are
+                returned. None starts from the newest rows.
+        """
         history = await self.db.get_platform_message_history(
             platform_id=platform_id,
             user_id=user_id,
             page=page,
             page_size=page_size,
+            before_id=before_id,
         )
         history.reverse()
         return history

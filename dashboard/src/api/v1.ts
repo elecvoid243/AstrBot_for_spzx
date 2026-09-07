@@ -830,6 +830,14 @@ export const chatApi = {
       openApiV1.getChatSession({ path: { session_id: sessionId } }),
     );
   },
+  getHistory(sessionId: string, params?: { before_id?: number; limit?: number }) {
+    return typed<any>(
+      openApiV1.getChatSessionHistory({
+        path: { session_id: sessionId },
+        query: generatedQuery(params),
+      }),
+    );
+  },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {
     return typed<any>(
       openApiV1.updateChatSession({

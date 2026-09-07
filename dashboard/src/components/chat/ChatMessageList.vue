@@ -5,12 +5,28 @@
     :class="[`variant-${variant}`, { 'is-dark': isDark }]"
   >
     <div class="messages-list">
+      <div v-if="historyHasMore" class="history-load-more">
+        <button
+          type="button"
+          class="history-load-more-btn"
+          :disabled="historyLoadingOlder"
+          @click="emit('loadOlder')"
+        >
+          <v-progress-circular
+            v-if="historyLoadingOlder"
+            indeterminate
+            size="16"
+            width="2"
+          />
+          <span v-else>{{ tm("history.loadOlder") }}</span>
+        </button>
+      </div>
       <div
         v-for="(msg, msgIndex) in messages"
         :key="msg.id || `${msgIndex}-${msg.created_at || ''}`"
         v-show="!isCollapsedInherited(msgIndex)"
         class="message-row"
-        :data-message-index="msgIndex"
+        :data-message-index="historyOffset + msgIndex"
         :class="[
           isUserMessage(msg) ? 'from-user' : 'from-bot',
           {
@@ -581,6 +597,13 @@ const props = withDefaults(
      * interactive choices without depending on a fresh SSE event.
      */
     currentUmo?: string;
+    /**
+     * History windowing: whether older history exists and how many records
+     * are still unloaded at the top (absolute index of the first row).
+     */
+    historyHasMore?: boolean;
+    historyLoadingOlder?: boolean;
+    historyOffset?: number;
   }>(),
   {
     isDark: false,
@@ -596,6 +619,9 @@ const props = withDefaults(
     editDraft: "",
     savingEdit: false,
     currentUmo: "",
+    historyHasMore: false,
+    historyLoadingOlder: false,
+    historyOffset: 0,
   },
 );
 
@@ -619,6 +645,7 @@ const emit = defineEmits<{
     requestId: string,
     payload: { choice_id: string; free_text: string },
   ];
+  loadOlder: [];
 }>();
 
 registerChatMarkdownComponents();
@@ -1446,6 +1473,32 @@ function formatDuration(seconds: number) {
 
 .branch-divider-toggle:hover {
   background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.history-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.history-load-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.history-load-more-btn:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.history-load-more-btn:disabled {
+  cursor: default;
 }
 
 .message-stack {

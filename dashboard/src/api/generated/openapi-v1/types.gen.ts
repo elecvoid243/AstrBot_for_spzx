@@ -1556,6 +1556,26 @@ export type DeleteChatSessionResponse = (SuccessEnvelope);
 
 export type DeleteChatSessionError = unknown;
 
+export type GetChatSessionHistoryData = {
+    path: {
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Exclusive cursor; only records with a smaller id are returned.
+         */
+        before_id?: number;
+        /**
+         * Page size.
+         */
+        limit?: number;
+    };
+};
+
+export type GetChatSessionHistoryResponse = (SuccessEnvelope);
+
+export type GetChatSessionHistoryError = unknown;
+
 export type StopChatSessionData = {
     path: {
         session_id: string;

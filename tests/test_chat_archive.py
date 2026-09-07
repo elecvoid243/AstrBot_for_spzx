@@ -320,6 +320,7 @@ async def test_get_session_exposes_archived_flag():
     service = _make_chat_service()
     service.db.get_project_by_session = AsyncMock(return_value=None)
     service.db.get_webchat_threads_by_parent_session = AsyncMock(return_value=[])
+    service.db.count_platform_message_history = AsyncMock(return_value=0)
     service.platform_history_mgr.get = AsyncMock(return_value=[])
     service.get_active_chat_runs = AsyncMock(return_value=[])
 

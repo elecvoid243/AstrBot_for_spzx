@@ -36,6 +36,10 @@ from astrbot.core.utils.media_utils import (
 
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
+# ChatUI history windowing: opening a session fetches only the most recent
+# messages; older pages are loaded on demand via /chat/sessions/{id}/history.
+HISTORY_WINDOW_SIZE = 50
+MAX_HISTORY_PAGE_SIZE = 200
 WEBCHAT_IMAGE_MIME_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -2477,11 +2481,13 @@ class ChatService:
         project_info = await self.db.get_project_by_session(
             session_id=session_id, creator=username
         )
+        # Only the most recent window is loaded; older history is paged via
+        # get_history_before triggered by the ChatUI scroll-to-top or button.
         history_ls = await self.platform_history_mgr.get(
             platform_id=platform_id,
             user_id=session_id,
             page=1,
-            page_size=1000,
+            page_size=HISTORY_WINDOW_SIZE,
         )
         threads = await self.db.get_webchat_threads_by_parent_session(
             parent_session_id=session_id,
@@ -2507,9 +2513,16 @@ class ChatService:
             for entry in history_payload
         ]
 
+        total_messages = await self.db.count_platform_message_history(
+            platform_id=platform_id,
+            user_id=session_id,
+        )
+
         response_data = {
             "history": history_payload,
             "threads": [serialize_thread(thread) for thread in threads],
+            "total_messages": total_messages,
+            "has_more": total_messages > len(history_ls),
             "is_running": self.running_convs.get(session_id, False),
             "active_runs": self.get_active_chat_runs(username, session_id),
             # 2026-08-13: lets the frontend render archived sessions in a
@@ -2523,6 +2536,83 @@ class ChatService:
                 "emoji": project_info.emoji,
             }
         return response_data
+
+    async def get_history_before(
+        self,
+        username: str,
+        session_id: str,
+        before_id: int | None,
+        limit: int = 50,
+    ) -> dict:
+        """Return one page of history older than ``before_id`` for a session.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            before_id: Exclusive cursor; records with a smaller id are returned.
+            limit: Page size, capped at ``MAX_HISTORY_PAGE_SIZE``.
+
+        Returns:
+            History records (ascending) plus the next cursor and thread rows.
+
+        Raises:
+            ChatServiceError: If the session is missing or owned by another
+                user, or when ``before_id`` is not provided.
+        """
+        if before_id is None:
+            raise ChatServiceError("Missing key: before_id")
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+        platform_id = session.platform_id
+        page_size = max(1, min(limit, MAX_HISTORY_PAGE_SIZE))
+
+        history_ls = await self.platform_history_mgr.get(
+            platform_id=platform_id,
+            user_id=session_id,
+            page=1,
+            page_size=page_size,
+            before_id=before_id,
+        )
+        history_payload = _sanitize_history_bot_records(
+            [history.model_dump() for history in history_ls]
+        )
+        history_payload = [
+            {
+                **entry,
+                "created_at": to_utc_isoformat(entry.get("created_at")),
+                "updated_at": to_utc_isoformat(entry.get("updated_at")),
+            }
+            for entry in history_payload
+        ]
+
+        threads = await self.db.get_webchat_threads_by_parent_session(
+            parent_session_id=session_id,
+            creator=username,
+        )
+        parent_ids = {history.id for history in history_ls}
+        page_threads = [
+            thread for thread in threads if thread.parent_message_id in parent_ids
+        ]
+
+        oldest_id = history_ls[0].id if history_ls else None
+        older_count = (
+            await self.db.count_platform_message_history(
+                platform_id=platform_id,
+                user_id=session_id,
+                before_id=oldest_id,
+            )
+            if oldest_id is not None
+            else 0
+        )
+        return {
+            "history": history_payload,
+            "threads": [serialize_thread(thread) for thread in page_threads],
+            "has_more": older_count > 0,
+            "next_before_id": oldest_id,
+        }
 
     async def get_session_from_dashboard_query(
         self,

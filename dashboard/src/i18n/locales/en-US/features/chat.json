@@ -81,6 +81,9 @@
     "quickActions": "Quick Actions",
     "examples": "Example Questions"
   },
+  "history": {
+    "loadOlder": "Load older messages"
+  },
   "actions": {
     "copy": "Copy",
     "regenerate": "Regenerate",

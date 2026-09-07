@@ -48,6 +48,19 @@ import {
 
 export type TransportMode = "sse" | "websocket";
 
+// History windowing: opening a session loads only the most recent messages;
+// older pages are fetched on demand with a `before_id` cursor (ChatUI
+// scroll-to-top or the "load older" button).
+const HISTORY_PAGE_SIZE = 50;
+
+/** Per-session history pagination state (window + exclusive cursor). */
+type HistoryPaging = {
+  hasMore: boolean;
+  oldestLoadedId: number | null;
+  totalMessages: number;
+  loadingOlder: boolean;
+};
+
 /**
  * Per-message "thinking effort" value sent with each chat request. "auto"
  * keeps the provider-level static config; "off" disables thinking where the
@@ -300,6 +313,11 @@ export function useMessages(options: UseMessagesOptions) {
   // 2026-08-13: archived flag per loaded session, from the getSession
   // payload. The ChatUI renders archived sessions in read-only mode.
   const sessionArchivedFlags = reactive<Record<string, boolean>>({});
+  // 2026-09-07: history windowing state. `historyOffsetBySession` is the
+  // absolute index (within the session's full history) of the first loaded
+  // record, keeping `data-message-index` aligned with the search endpoint.
+  const historyPagingBySession = reactive<Record<string, HistoryPaging>>({});
+  const historyOffsetBySession = reactive<Record<string, number>>({});
   // System event stream (goal-loop orphan turns): one long-lived SSE per
   // active session, feeding live records through the systemStream leaf.
   // Wrap with `reactive` so that (1) record mutations made via the raw
@@ -531,9 +549,24 @@ export function useMessages(options: UseMessagesOptions) {
       const response = await chatApi.getSession(sessionId);
       const payload = response.data?.data || {};
       const history = payload.history || [];
-      const records = history.map(normalizeHistoryRecord);
+      const records: ChatRecord[] = history.map(normalizeHistoryRecord);
       attachThreads(records, payload.threads || []);
       await resolveRecordMedia(records);
+      // History windowing: remember the window bounds so older pages can be
+      // fetched with a before_id cursor, and so the rendered absolute index
+      // (historyOffset + local index) stays aligned with the search endpoint.
+      const oldestRecord = records.find((r) => Number.isFinite(Number(r.id)));
+      const totalMessages = Number(payload.total_messages || 0);
+      historyPagingBySession[sessionId] = {
+        hasMore: Boolean(payload.has_more),
+        oldestLoadedId: oldestRecord ? Number(oldestRecord.id) : null,
+        totalMessages,
+        loadingOlder: false,
+      };
+      historyOffsetBySession[sessionId] = Math.max(
+        0,
+        totalMessages - records.length,
+      );
       // Live records (system stream / run resume) may have arrived while the
       // history snapshot was in flight; the snapshot then overwrote them.
       // Re-append anything not present in the snapshot so no message is lost.
@@ -605,6 +638,54 @@ export function useMessages(options: UseMessagesOptions) {
       messagesBySession[sessionId] = messagesBySession[sessionId] || [];
     } finally {
       if (showLoading) loadingMessages.value = false;
+    }
+  }
+
+  /**
+   * Prepends one page of older history for a session (before_id cursor).
+   * The caller is responsible for preserving the scroll position across the
+   * prepend (scroll-height anchoring) — see Chat.vue load older flow.
+   */
+  async function loadOlderMessages(sessionId: string) {
+    const paging = historyPagingBySession[sessionId];
+    if (!paging || paging.loadingOlder || !paging.hasMore) return;
+    paging.loadingOlder = true;
+    try {
+      const response = await chatApi.getHistory(sessionId, {
+        before_id: paging.oldestLoadedId ?? undefined,
+        limit: HISTORY_PAGE_SIZE,
+      });
+      const payload = response.data?.data || {};
+      const olderRecords: ChatRecord[] = (payload.history || []).map(
+        normalizeHistoryRecord,
+      );
+      attachThreads(olderRecords, payload.threads || []);
+      await resolveRecordMedia(olderRecords);
+      const existing: ChatRecord[] = messagesBySession[sessionId] || [];
+      // Cursor pages are exclusive, so fetched records cannot overlap with the
+      // loaded window; the id filter is a belt-and-suspenders guard.
+      const existingIds = new Set(
+        existing
+          .map((r) => String(r.id))
+          .filter((id) => id && id !== "undefined"),
+      );
+      const deduped = olderRecords.filter(
+        (r) => r.id == null || !existingIds.has(String(r.id)),
+      );
+      if (deduped.length) {
+        messagesBySession[sessionId] = [...deduped, ...existing];
+      }
+      const oldestRecord = deduped.find((r) => Number.isFinite(Number(r.id)));
+      if (oldestRecord) paging.oldestLoadedId = Number(oldestRecord.id);
+      paging.hasMore = Boolean(payload.has_more);
+      historyOffsetBySession[sessionId] = Math.max(
+        0,
+        (historyOffsetBySession[sessionId] || 0) - deduped.length,
+      );
+    } catch (error) {
+      console.error("Failed to load older messages:", error);
+    } finally {
+      paging.loadingOlder = false;
     }
   }
 
@@ -1840,6 +1921,8 @@ export function useMessages(options: UseMessagesOptions) {
     loadedSessions,
     sessionProjects,
     sessionArchivedFlags,
+    historyPagingBySession,
+    historyOffsetBySession,
     activeMessages,
     isSessionRunning,
     hasLiveSystemRecord,
@@ -1848,6 +1931,7 @@ export function useMessages(options: UseMessagesOptions) {
     messageContent,
     messageParts,
     loadSessionMessages,
+    loadOlderMessages,
     createLocalExchange,
     sendMessageStream,
     editMessage,

@@ -139,6 +139,7 @@
     "redo": "重做 (Ctrl+Y)",
     "copyNode": "复制节点 (Ctrl+C)",
     "pasteNode": "粘贴节点 (Ctrl+V)",
+    "deleteSelection": "删除选中 (Delete)",
     "autoLayout": "自动布局",
     "snapGridOn": "开启网格对齐",
     "snapGridOff": "关闭网格对齐",

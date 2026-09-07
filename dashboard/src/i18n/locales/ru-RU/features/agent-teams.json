@@ -139,6 +139,7 @@
     "redo": "Повторить (Ctrl+Y)",
     "copyNode": "Копировать узел (Ctrl+C)",
     "pasteNode": "Вставить узел (Ctrl+V)",
+    "deleteSelection": "Удалить выбранное (Delete)",
     "autoLayout": "Авторасстановка",
     "snapGridOn": "Включить привязку к сетке",
     "snapGridOff": "Отключить привязку к сетке",

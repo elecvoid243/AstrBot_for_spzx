@@ -1428,6 +1428,9 @@ describe('TeamsFlowCanvas', () => {
       await nextTick();
       // Selecting an edge deselects any selected node.
       expect(wrapper.emitted('selectNode')).toEqual([[null]]);
+      // The edge selection is forwarded so the editor can enable its delete
+      // action for the selected edge.
+      expect(wrapper.emitted('selectEdge')).toEqual([['e:n1->n2']]);
 
       flow.vm.$emit('edgeDoubleClick', { edge: { id: 'e:n1->n2', source: 'n1', target: 'n2' } });
       await flushPromises();
@@ -1461,6 +1464,8 @@ describe('TeamsFlowCanvas', () => {
       flow.vm.$emit('paneClick');
       await flushPromises();
       expect(wrapper.emitted('selectNode')).toEqual([[null]]);
+      // Pane clicks clear the edge selection as well.
+      expect(wrapper.emitted('selectEdge')).toEqual([[null]]);
     });
   });
 
@@ -1640,6 +1645,103 @@ describe('WorkflowEditor bulk operations', () => {
     canvas(wrapper).vm.$emit('nodeClick', { node: { id: 'n1' } });
     await nextTick();
     expect(wrapper.find('[data-test="bulk-delete"]').exists()).toBe(false);
+  });
+});
+
+describe('WorkflowEditor delete actions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    composableMocks.saveWorkflow.mockResolvedValue({ workflow_id: 'wf9', name: 'saved' });
+    composableMocks.lastErrorFields.value = [];
+  });
+
+  function deleteButton(wrapper: VueWrapper<any>) {
+    return wrapper.find('[data-test="delete-selection"]');
+  }
+
+  function selectEdge(wrapper: VueWrapper<any>, edgeId: string) {
+    canvas(wrapper).vm.$emit('edgeClick', {
+      edge: { id: edgeId, source: edgeId.split('->')[0], target: edgeId.split('->')[1] },
+    });
+  }
+
+  it('enables the delete button only when a node or edge is selected', async () => {
+    const wrapper = mountEditor();
+    // Nothing selected yet: the button is disabled.
+    expect(deleteButton(wrapper).element.hasAttribute('disabled')).toBe(true);
+
+    await addNodes(wrapper, 1);
+    // addNode auto-selects the new node.
+    expect(deleteButton(wrapper).element.hasAttribute('disabled')).toBe(false);
+
+    // A pane click clears the node selection.
+    canvas(wrapper).vm.$emit('paneClick');
+    await nextTick();
+    expect(deleteButton(wrapper).element.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('deletes the selected node and its edges via the toolbar button', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    await selectNode(wrapper, 'n1');
+
+    await deleteButton(wrapper).trigger('click');
+    await nextTick();
+
+    expect(canvasNodes(wrapper).map((n) => n.id)).toEqual(['n2']);
+    expect(canvasEdges(wrapper)).toHaveLength(0);
+  });
+
+  it('deletes the selected edge via the toolbar button', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    selectEdge(wrapper, 'e:n1->n2');
+    await nextTick();
+
+    await deleteButton(wrapper).trigger('click');
+    await nextTick();
+
+    expect(canvasNodes(wrapper)).toHaveLength(2);
+    expect(canvasEdges(wrapper)).toHaveLength(0);
+  });
+
+  it('deletes the selected node with the Delete key', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete' }));
+    await nextTick();
+
+    expect(canvasNodes(wrapper)).toHaveLength(0);
+  });
+
+  it('deletes the selected edge with the Backspace key', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 2);
+    await emitConnect(wrapper, 'n1', 'n2');
+    selectEdge(wrapper, 'e:n1->n2');
+    await nextTick();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace' }));
+    await nextTick();
+
+    expect(canvasEdges(wrapper)).toHaveLength(0);
+  });
+
+  it('ignores Delete while typing in an input', async () => {
+    const wrapper = mountEditor();
+    await addNodes(wrapper, 1);
+    await selectNode(wrapper, 'n1');
+
+    const input = wrapper.find('input.tf-stub');
+    input.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    await nextTick();
+
+    // The focused input swallows the shortcut: the node survives.
+    expect(canvasNodes(wrapper)).toHaveLength(1);
   });
 });
 

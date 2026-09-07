@@ -139,6 +139,7 @@
     "redo": "Redo (Ctrl+Y)",
     "copyNode": "Copy node (Ctrl+C)",
     "pasteNode": "Paste node (Ctrl+V)",
+    "deleteSelection": "Delete selection (Delete)",
     "autoLayout": "Auto layout",
     "snapGridOn": "Enable grid snapping",
     "snapGridOff": "Disable grid snapping",

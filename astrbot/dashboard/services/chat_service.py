@@ -40,6 +40,10 @@ CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
 # messages; older pages are loaded on demand via /chat/sessions/{id}/history.
 HISTORY_WINDOW_SIZE = 50
 MAX_HISTORY_PAGE_SIZE = 200
+# Message marker index (user-message dots on the ChatUI scroll strip):
+# capped scan pages so a pathological session cannot run away.
+MESSAGE_MARKER_PAGE_SIZE = 500
+MAX_MESSAGE_MARKERS = 1000
 WEBCHAT_IMAGE_MIME_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -2612,6 +2616,81 @@ class ChatService:
             "threads": [serialize_thread(thread) for thread in page_threads],
             "has_more": older_count > 0,
             "next_before_id": oldest_id,
+        }
+
+    async def get_message_markers(
+        self,
+        username: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict:
+        """Scan the session history and index user messages for the ChatUI.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            limit: Max markers to index; capped at ``MAX_MESSAGE_MARKERS``.
+
+        Returns:
+            Ascending marker list plus the total record count and a
+            truncation flag. Indices are 1:1 positions in the full ascending
+            history, matching the absolute index space the ChatUI renders.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+        platform_id = session.platform_id
+
+        cap = max(1, min(limit or MAX_MESSAGE_MARKERS, MAX_MESSAGE_MARKERS))
+        total = await self.db.count_platform_message_history(
+            platform_id=platform_id,
+            user_id=session_id,
+        )
+        markers: list[dict] = []
+        truncated = False
+        cursor = None
+        position_from_newest = 0
+        while True:
+            page = await self.platform_history_mgr.get(
+                platform_id=platform_id,
+                user_id=session_id,
+                page=1,
+                page_size=MESSAGE_MARKER_PAGE_SIZE,
+                before_id=cursor,
+            )
+            if not page:
+                break
+            # The page is ascending (oldest first); walk it from the newest
+            # end so a record's position-from-newest maps to its absolute
+            # index (total - 1 - position) in the rendered history.
+            finished = False
+            for record in reversed(page):
+                content = record.content
+                if isinstance(content, dict) and content.get("type") == "user":
+                    if len(markers) >= cap:
+                        truncated = True
+                        finished = True
+                        break
+                    markers.append(
+                        {
+                            "id": record.id,
+                            "index": total - 1 - position_from_newest,
+                            "snippet": extract_platform_message_text(content)[:40],
+                        }
+                    )
+                position_from_newest += 1
+            if finished:
+                break
+            if len(page) < MESSAGE_MARKER_PAGE_SIZE:
+                break
+            cursor = page[0].id
+        markers.reverse()
+        return {
+            "markers": markers,
+            "total_messages": total,
+            "truncated": truncated,
         }
 
     async def get_session_from_dashboard_query(

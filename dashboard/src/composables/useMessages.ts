@@ -61,6 +61,22 @@ type HistoryPaging = {
   loadingOlder: boolean;
 };
 
+/** One user message in the session-wide marker index (ChatUI strip). */
+type SessionMarker = {
+  id: number;
+  index: number;
+  snippet: string;
+};
+
+/** Session message-marker index, loaded lazily alongside the history. */
+type SessionMarkers = {
+  markers: SessionMarker[];
+  totalMessages: number;
+  truncated: boolean;
+  loaded: boolean;
+  loading: boolean;
+};
+
 /**
  * Per-message "thinking effort" value sent with each chat request. "auto"
  * keeps the provider-level static config; "off" disables thinking where the
@@ -318,6 +334,10 @@ export function useMessages(options: UseMessagesOptions) {
   // record, keeping `data-message-index` aligned with the search endpoint.
   const historyPagingBySession = reactive<Record<string, HistoryPaging>>({});
   const historyOffsetBySession = reactive<Record<string, number>>({});
+  // 2026-09-07: session-wide user-message marker index for the scroll strip
+  // (fetched fire-and-forget on session load; loaded=false keeps the DOM
+  // measurement fallback in Chat.vue).
+  const sessionMarkersBySession = reactive<Record<string, SessionMarkers>>({});
   // System event stream (goal-loop orphan turns): one long-lived SSE per
   // active session, feeding live records through the systemStream leaf.
   // Wrap with `reactive` so that (1) record mutations made via the raw
@@ -567,6 +587,9 @@ export function useMessages(options: UseMessagesOptions) {
         0,
         totalMessages - records.length,
       );
+      // Marker index for the scroll strip — non-blocking, degrades to the
+      // DOM-measured fallback on failure.
+      void loadSessionMarkers(sessionId);
       // Live records (system stream / run resume) may have arrived while the
       // history snapshot was in flight; the snapshot then overwrote them.
       // Re-append anything not present in the snapshot so no message is lost.
@@ -686,6 +709,47 @@ export function useMessages(options: UseMessagesOptions) {
       console.error("Failed to load older messages:", error);
     } finally {
       paging.loadingOlder = false;
+    }
+  }
+
+  /**
+   * Fetches the session-wide user-message marker index for the scroll strip.
+   * Fire-and-forget: a failure only degrades the strip to the loaded-window
+   * (DOM measured) fallback.
+   */
+  async function loadSessionMarkers(sessionId: string) {
+    const prev = sessionMarkersBySession[sessionId];
+    if (prev?.loading) return;
+    sessionMarkersBySession[sessionId] = {
+      markers: prev?.markers || [],
+      totalMessages: prev?.totalMessages || 0,
+      truncated: prev?.truncated || false,
+      loaded: prev?.loaded || false,
+      loading: true,
+    };
+    try {
+      const response = await chatApi.getMarkers(sessionId);
+      const payload = response.data?.data || {};
+      sessionMarkersBySession[sessionId] = {
+        markers: (payload.markers || []).map((m: any) => ({
+          id: Number(m.id),
+          index: Number(m.index),
+          snippet: String(m.snippet || ""),
+        })),
+        totalMessages: Number(payload.total_messages || 0),
+        truncated: Boolean(payload.truncated),
+        loaded: true,
+        loading: false,
+      };
+    } catch (error) {
+      console.error("Failed to load session markers:", error);
+      sessionMarkersBySession[sessionId] = {
+        markers: prev?.markers || [],
+        totalMessages: prev?.totalMessages || 0,
+        truncated: prev?.truncated || false,
+        loaded: prev?.loaded || false,
+        loading: false,
+      };
     }
   }
 
@@ -1923,6 +1987,7 @@ export function useMessages(options: UseMessagesOptions) {
     sessionArchivedFlags,
     historyPagingBySession,
     historyOffsetBySession,
+    sessionMarkersBySession,
     activeMessages,
     isSessionRunning,
     hasLiveSystemRecord,

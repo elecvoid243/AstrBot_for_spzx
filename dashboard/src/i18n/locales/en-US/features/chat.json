@@ -82,7 +82,8 @@
     "examples": "Example Questions"
   },
   "history": {
-    "loadOlder": "Load older messages"
+    "loadOlder": "Load older messages",
+    "jumpLoading": "Loading older messages…"
   },
   "actions": {
     "copy": "Copy",

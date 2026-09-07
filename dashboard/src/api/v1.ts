@@ -838,6 +838,11 @@ export const chatApi = {
       }),
     );
   },
+  getMarkers(sessionId: string) {
+    return typed<any>(
+      openApiV1.getChatSessionMarkers({ path: { session_id: sessionId } }),
+    );
+  },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {
     return typed<any>(
       openApiV1.updateChatSession({

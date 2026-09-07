@@ -324,6 +324,16 @@ async def get_chat_session_history(
     )
 
 
+@router.get("/chat/sessions/{session_id}/markers")
+async def get_chat_session_markers(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Return the user-message marker index for a session."""
+    return await _run(lambda: service.get_message_markers(auth.username, session_id))
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

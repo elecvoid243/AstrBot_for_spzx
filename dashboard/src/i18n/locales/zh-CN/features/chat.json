@@ -82,7 +82,8 @@
     "examples": "示例问题"
   },
   "history": {
-    "loadOlder": "加载更早的消息"
+    "loadOlder": "加载更早的消息",
+    "jumpLoading": "正在加载更早的消息…"
   },
   "actions": {
     "copy": "复制",

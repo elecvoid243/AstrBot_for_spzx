@@ -1576,6 +1576,16 @@ export type GetChatSessionHistoryResponse = (SuccessEnvelope);
 
 export type GetChatSessionHistoryError = unknown;
 
+export type GetChatSessionMarkersData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type GetChatSessionMarkersResponse = (SuccessEnvelope);
+
+export type GetChatSessionMarkersError = unknown;
+
 export type StopChatSessionData = {
     path: {
         session_id: string;

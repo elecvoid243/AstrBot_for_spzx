@@ -748,19 +748,24 @@
         <div
           v-if="scrollMarkers.length"
           class="scroll-marker-strip"
+          :class="{ 'is-jumping': jumpInProgress }"
           :style="{
             height: stripHeight + 'px',
             right: stripRightOffset + 'px',
           }"
           @click="onStripClick"
         >
+          <div v-if="jumpInProgress" class="scroll-marker-loading">
+            <v-progress-circular indeterminate size="14" width="2" />
+            <span>{{ tm("history.jumpLoading") }}</span>
+          </div>
           <div
             v-for="marker in scrollMarkers"
             :key="`sm-${marker.id}`"
             class="scroll-marker-dot"
             :class="{ 'scroll-marker-dot--inherited': marker.inherited }"
             :style="{ top: marker.topPct + '%' }"
-            @click.stop="scrollToMessage(marker.id)"
+            @click.stop="onDotClick(marker)"
             @mouseenter="onDotEnter(marker.preview, $event)"
             @mousemove="onDotMove($event)"
             @mouseleave="onDotLeave"
@@ -1176,6 +1181,9 @@ const savingMessageEdit = ref(false);
 const scrollMarkers = ref<
   Array<{
     id: string | number;
+    // Absolute index within the session history; -1 when unknown (the
+    // loaded-window fallback markers still scroll by message id).
+    index: number;
     topPct: number;
     preview: string;
     inherited: boolean;
@@ -1183,6 +1191,13 @@ const scrollMarkers = ref<
 >([]);
 const stripHeight = ref(0);
 const stripRightOffset = ref(0); // scrollbar width (px) so the yellow strip sits flush with the scrollbar's left edge
+// A marker jump that has to page older history is in flight — suppress
+// duplicate clicks and show the strip loading hint.
+const jumpInProgress = ref(false);
+// While a programmatic scroll animation runs, keep the scroll-top auto-load
+// from firing mid-animation (it would prepend + anchor and cancel the
+// smooth scroll, leaving the viewport off the target).
+const suppressHistoryAutoLoad = ref(false);
 const dotTooltip = reactive({
   visible: false,
   text: "",
@@ -1532,6 +1547,7 @@ const {
   sessionArchivedFlags,
   historyPagingBySession,
   historyOffsetBySession,
+  sessionMarkersBySession,
   activeMessages,
   isSessionRunning,
   hasLiveSystemRecord,
@@ -1856,33 +1872,13 @@ async function scrollToMessageFromQuery() {
   if (isNaN(target) || target < 0) return;
   await nextTick();
   await new Promise((r) => setTimeout(r, 300));
-  // Windowed history: a search result may live outside the loaded window.
-  // Page older history until the target is rendered or nothing is left.
-  const jumpSessionId = currSessionId.value;
-  let guard = 0;
-  while (guard++ < 100) {
-    const el = document.querySelector(
-      `[data-message-index="${target}"]`,
-    ) as HTMLElement | null;
-    if (el) {
-      el.scrollIntoView({ block: "center" });
-      const { scrollToIndex: _, ...rest } = route.query;
-      router.replace({ query: rest });
-      return;
-    }
-    // Session switched mid-jump — the index belongs to the previous session.
-    if (!jumpSessionId || currSessionId.value !== jumpSessionId) return;
-    const paging = historyPagingBySession[jumpSessionId];
-    if (!paging?.hasMore) return;
-    if (paging.loadingOlder) {
-      await new Promise((r) => setTimeout(r, 120));
-      continue;
-    }
-    const offsetBefore = historyOffsetBySession[jumpSessionId] ?? 0;
-    await loadOlderHistory();
-    const offsetAfter = historyOffsetBySession[jumpSessionId] ?? 0;
-    // No progress (e.g. failed request) — stop instead of spinning.
-    if (offsetAfter >= offsetBefore) return;
+  // Windowed history: a search result may live outside the loaded window —
+  // jumpToIndex pages older history until the target is rendered. If the
+  // target cannot be reached (no more history), leave the query so the next
+  // session open retries.
+  if (await jumpToIndex(target)) {
+    const { scrollToIndex: _, ...rest } = route.query;
+    router.replace({ query: rest });
   }
 }
 
@@ -2036,6 +2032,17 @@ watch(
     }
   },
   { immediate: true },
+);
+
+// Scroll marker strip: once the session marker index arrives, switch the
+// strip from the loaded-window fallback to the full-session positions.
+watch(
+  () =>
+    currSessionId.value
+      ? sessionMarkersBySession[currSessionId.value]
+      : null,
+  () => nextTick(() => updateScrollMarkers()),
+  { deep: true },
 );
 
 // Re-fetch the spcode status when the active session changes. Each
@@ -3423,6 +3430,69 @@ function scrollToMessage(messageId?: string | number) {
   rows?.[index]?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
+/** Smooth-scroll to the row whose absolute data-message-index is target. */
+function scrollToMessageIndex(targetIndex: number) {
+  const row = messagesContainer.value?.querySelector(
+    `[data-message-index="${targetIndex}"]`,
+  ) as HTMLElement | null;
+  if (!row) return false;
+  // Keep the scroll-top auto-load from canceling the animation mid-flight.
+  suppressHistoryAutoLoad.value = true;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  window.setTimeout(() => {
+    suppressHistoryAutoLoad.value = false;
+  }, 600);
+  return true;
+}
+
+/**
+ * Jump to an absolute history index. When the target sits outside the loaded
+ * window, page older history until it is covered, then scroll once.
+ *
+ * @returns True when the target row was found and scrolled to.
+ */
+async function jumpToIndex(targetIndex: number): Promise<boolean> {
+  const sessionId = currSessionId.value;
+  if (!sessionId || jumpInProgress.value) return false;
+  const offsetNow = historyOffsetBySession[sessionId] ?? 0;
+  if (targetIndex >= offsetNow) {
+    return scrollToMessageIndex(targetIndex);
+  }
+  jumpInProgress.value = true;
+  try {
+    let guard = 0;
+    while (guard++ < 100) {
+      if (currSessionId.value !== sessionId) return false;
+      const paging = historyPagingBySession[sessionId];
+      const offset = historyOffsetBySession[sessionId] ?? 0;
+      if (targetIndex >= offset) break;
+      if (!paging?.hasMore) return false;
+      if (paging.loadingOlder) {
+        await new Promise((r) => setTimeout(r, 120));
+        continue;
+      }
+      await loadOlderMessages(sessionId);
+      // No progress (e.g. failed request) — stop instead of spinning.
+      if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
+    }
+    return scrollToMessageIndex(targetIndex);
+  } finally {
+    jumpInProgress.value = false;
+  }
+}
+
+function onDotClick(marker: {
+  id: string | number;
+  index: number;
+}) {
+  if (marker.index >= 0) {
+    void jumpToIndex(marker.index);
+  } else {
+    // Fallback markers (no marker index loaded) — scroll over the window.
+    scrollToMessage(marker.id);
+  }
+}
+
 function updateScrollMarkers() {
   const container = messagesContainer.value;
   if (!container) {
@@ -3442,10 +3512,29 @@ function updateScrollMarkers() {
     scrollMarkers.value = [];
     return;
   }
+  // Session-wide marker index: one dot per user message, positioned by its
+  // absolute index so the strip covers the whole session even while the
+  // history window only holds the newest pages.
+  const markerIndex = currSessionId.value
+    ? sessionMarkersBySession[currSessionId.value]
+    : null;
+  if (markerIndex?.loaded && markerIndex.markers.length) {
+    const total = Math.max(1, markerIndex.totalMessages);
+    scrollMarkers.value = markerIndex.markers.map((m) => ({
+      id: m.id,
+      index: m.index,
+      topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
+      preview: m.snippet || "…",
+      inherited: false,
+    }));
+    return;
+  }
+  // Fallback: measure the loaded rows (marker index failed to load).
   const rows = container.querySelectorAll(".message-row");
   const containerRect = container.getBoundingClientRect();
   const markers: Array<{
     id: string | number;
+    index: number;
     topPct: number;
     preview: string;
     inherited: boolean;
@@ -3462,6 +3551,7 @@ function updateScrollMarkers() {
     const offsetTop = rowRect.top - containerRect.top + container.scrollTop;
     markers.push({
       id: msg.id,
+      index: -1,
       topPct: (offsetTop / scrollable) * 100,
       preview: truncate(plainTextFromMessage(msg), 40),
       inherited: row.classList.contains("inherited-row"),
@@ -3484,6 +3574,16 @@ function onStripClick(event: MouseEvent) {
   const strip = event.currentTarget as HTMLElement;
   const rect = strip.getBoundingClientRect();
   const pct = (event.clientY - rect.top) / rect.height;
+  // Full-session marker index: treat a background click as a jump to the
+  // proportional absolute index (paging older history on demand).
+  const markerIndex = currSessionId.value
+    ? sessionMarkersBySession[currSessionId.value]
+    : null;
+  if (markerIndex?.loaded && markerIndex.totalMessages > 1) {
+    const target = Math.round(pct * (markerIndex.totalMessages - 1));
+    void jumpToIndex(target);
+    return;
+  }
   container.scrollTop = pct * (container.scrollHeight - container.clientHeight);
 }
 
@@ -4034,10 +4134,16 @@ function handleMessagesScroll() {
   shouldStickToBottom.value = distance < 80;
   // History windowing: reached the top boundary while older history exists
   // → load the next page (the loadOlderHistory anchor keeps the viewport).
+  // Suppressed while a programmatic jump scrolls (see suppressHistoryAutoLoad).
   const paging = currSessionId.value
     ? historyPagingBySession[currSessionId.value]
     : null;
-  if (container.scrollTop < 80 && paging?.hasMore && !paging.loadingOlder) {
+  if (
+    container.scrollTop < 80 &&
+    !suppressHistoryAutoLoad.value &&
+    paging?.hasMore &&
+    !paging.loadingOlder
+  ) {
     void loadOlderHistory();
   }
 }
@@ -5311,6 +5417,24 @@ kbd {
   cursor: pointer;
   z-index: 5;
   pointer-events: none;
+}
+.scroll-marker-strip .scroll-marker-loading {
+  position: absolute;
+  right: 8px;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-surface), 0.95);
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.scroll-marker-strip.is-jumping .scroll-marker-dot {
+  opacity: 0.35;
 }
 .scroll-marker-strip .scroll-marker-dot {
   position: absolute;

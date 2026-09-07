@@ -88,7 +88,7 @@ export default {};
 //   `data.status`/`data.error` (enriched by the caller), so the card owns the
 //   status ring and native error tooltip. Edges get arrow markers and animate
 //   out of running nodes.
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import { VueFlow, MarkerType, useVueFlow, SelectionMode } from '@vue-flow/core';
 import type { Connection, EdgeMouseEvent, NodeChange } from '@vue-flow/core';
 import { useModuleI18n } from '@/i18n/composables';
@@ -116,8 +116,14 @@ const props = withDefaults(
     minimapVisible?: boolean;
     /** Snap node positions to the grid while dragging (edit mode only). */
     snapToGrid?: boolean;
+    /**
+     * Id of the currently selected edge (edit mode). Owned by the parent so
+     * the editor toolbar can enable its delete action; the canvas only reads
+     * it to render the selected-edge highlight.
+     */
+    selectedEdgeId?: string | null;
   }>(),
-  { mode: 'edit', nodeStates: null, minimapVisible: true, snapToGrid: false },
+  { mode: 'edit', nodeStates: null, minimapVisible: true, snapToGrid: false, selectedEdgeId: null },
 );
 
 const emit = defineEmits<{
@@ -127,6 +133,8 @@ const emit = defineEmits<{
   (e: 'dropAt', memberId: string, position: { x: number; y: number }): void;
   (e: 'deleteEdge', edgeId: string): void;
   (e: 'selectionChange', nodeIds: string[]): void;
+  /** Edge selection changed (id when selected, null when cleared). */
+  (e: 'selectEdge', edgeId: string | null): void;
 }>();
 
 // This component owns the <VueFlow> instance: calling useVueFlow() here
@@ -134,9 +142,6 @@ const emit = defineEmits<{
 // handler can translate screen coordinates through the live viewport.
 const { screenToFlowCoordinate, setCenter } = useVueFlow();
 const { tm } = useModuleI18n('features/agent-teams');
-
-/** Locally selected edge id (edit mode); drives the selected-edge styling. */
-const selectedEdgeId = ref<string | null>(null);
 
 /**
  * Center the viewport on a flow coordinate (search-to-result).
@@ -198,7 +203,7 @@ const displayEdges = computed(() => {
       // Edit mode uses smoothstep edges with a selected/unselected stroke so
       // a click makes the target edge visually distinct before deletion.
       next.type = 'smoothstep';
-      const selected = selectedEdgeId.value === edge.id;
+      const selected = props.selectedEdgeId === edge.id;
       next.selected = selected;
       next.style = selected
         ? { stroke: '#1976d2', strokeWidth: 2.5 }
@@ -234,7 +239,7 @@ function onNodesChange(changes: NodeChange[]) {
 }
 
 function onNodeClick(event: { node: { id: string } }) {
-  selectedEdgeId.value = null;
+  emit('selectEdge', null);
   emit('selectNode', event?.node?.id ?? null);
   // Clicking a node defeats any active box selection.
   if (isEdit.value) emit('selectionChange', []);
@@ -246,7 +251,7 @@ function onNodeClick(event: { node: { id: string } }) {
  */
 function onEdgeClick(event: EdgeMouseEvent) {
   if (!isEdit.value) return;
-  selectedEdgeId.value = event.edge.id;
+  emit('selectEdge', event.edge.id);
   emit('selectNode', null);
 }
 
@@ -257,7 +262,7 @@ function onEdgeDoubleClick(event: EdgeMouseEvent) {
   const to = event.edge.target;
   if (window.confirm(tm('editor.deleteEdgeConfirm', { from, to }))) {
     emit('deleteEdge', event.edge.id);
-    selectedEdgeId.value = null;
+    emit('selectEdge', null);
   }
 }
 
@@ -270,7 +275,7 @@ function onSelectionDragStop(event: { nodes?: { id: string }[] }) {
 }
 
 function onPaneClick() {
-  selectedEdgeId.value = null;
+  emit('selectEdge', null);
   emit('selectNode', null);
   // Pane clicks clear the box selection as well.
   if (isEdit.value) emit('selectionChange', []);

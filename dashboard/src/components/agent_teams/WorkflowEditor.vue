@@ -178,15 +178,28 @@
              VueFlow's built-in Controls). -->
         <div class="editor-canvas-toolbar" data-test="canvas-toolbar">
           <div class="editor-tb-group">
-            <v-btn :disabled="!canUndo" :title="tm('editor.undo')" data-test="undo" @click="undo">
+            <v-btn
+              size="small"
+              :disabled="!canUndo"
+              :title="tm('editor.undo')"
+              data-test="undo"
+              @click="undo"
+            >
               <v-icon>mdi-undo</v-icon>
             </v-btn>
-            <v-btn :disabled="!canRedo" :title="tm('editor.redo')" data-test="redo" @click="redo">
+            <v-btn
+              size="small"
+              :disabled="!canRedo"
+              :title="tm('editor.redo')"
+              data-test="redo"
+              @click="redo"
+            >
               <v-icon>mdi-redo</v-icon>
             </v-btn>
           </div>
           <div class="editor-tb-group">
             <v-btn
+              size="small"
               :disabled="!selectedNodeId"
               :title="tm('editor.copyNode')"
               data-test="copy-node"
@@ -195,6 +208,7 @@
               <v-icon>mdi-content-copy</v-icon>
             </v-btn>
             <v-btn
+              size="small"
               :disabled="!clipboard"
               :title="tm('editor.pasteNode')"
               data-test="paste-node"
@@ -202,12 +216,22 @@
             >
               <v-icon>mdi-content-paste</v-icon>
             </v-btn>
+            <v-btn
+              size="small"
+              :disabled="!canDeleteSelection"
+              :title="tm('editor.deleteSelection')"
+              data-test="delete-selection"
+              @click="deleteSelection"
+            >
+              <v-icon>mdi-delete-outline</v-icon>
+            </v-btn>
           </div>
           <div class="editor-tb-group">
-            <v-btn :title="tm('editor.autoLayout')" data-test="auto-layout" @click="autoLayout">
+            <v-btn size="small" :title="tm('editor.autoLayout')" data-test="auto-layout" @click="autoLayout">
               <v-icon>mdi-auto-fix</v-icon>
             </v-btn>
             <v-btn
+              size="small"
               :title="snapToGrid ? tm('editor.snapGridOff') : tm('editor.snapGridOn')"
               data-test="snap-grid"
               @click="snapToGrid = !snapToGrid"
@@ -215,6 +239,7 @@
               <v-icon>{{ snapToGrid ? 'mdi-grid' : 'mdi-grid-off' }}</v-icon>
             </v-btn>
             <v-btn
+              size="small"
               :title="tm('editor.minimap')"
               data-test="minimap"
               @click="minimapVisible = !minimapVisible"
@@ -257,12 +282,14 @@
           :edges="graphEdges"
           :minimap-visible="minimapVisible"
           :snap-to-grid="snapToGrid"
+          :selected-edge-id="selectedEdgeId"
           @connect="onConnect"
           @positionChange="onPositionChange"
           @selectNode="selectNode"
           @dropAt="onDropAt"
           @delete-edge="onDeleteEdge"
           @selection-change="onSelectionChange"
+          @select-edge="onSelectEdge"
         />
       </div>
 
@@ -572,6 +599,9 @@ const graphNodes = ref<FlowNode[]>([]);
 const graphEdges = ref<{ id: string; source: string; target: string }[]>([]);
 const layout = ref<Record<string, { x: number; y: number }>>({});
 const selectedNodeId = ref<string | null>(null);
+// Currently selected edge (set by the canvas on edge click); drives the
+// canvas highlight and the toolbar's delete action.
+const selectedEdgeId = ref<string | null>(null);
 const saving = ref(false);
 const taskAreaRef = ref<any>(null);
 // Inspector drawer visibility: opens on node select, closes on deselect
@@ -631,6 +661,9 @@ function restoreSnapshot(snapshot: HistorySnapshot) {
   selectedNodeIds.value.clear();
   if (selectedNodeId.value && !graphNodes.value.some((n) => n.id === selectedNodeId.value)) {
     selectNode(null);
+  }
+  if (selectedEdgeId.value && !graphEdges.value.some((e) => e.id === selectedEdgeId.value)) {
+    selectedEdgeId.value = null;
   }
 }
 
@@ -872,7 +905,14 @@ function onKeydown(e: KeyboardEvent) {
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
-  if (!mod) return;
+  if (!mod) {
+    // Delete/Backspace remove the current selection (edge first, then node).
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      deleteSelection();
+    }
+    return;
+  }
   const key = e.key.toLowerCase();
   if (key === 'z' && !e.shiftKey) {
     e.preventDefault();
@@ -1274,6 +1314,7 @@ function deleteNode() {
   delete layout.value[id];
   delete executionByNode.value[id];
   selectNode(null);
+  selectedEdgeId.value = null;
   pushHistory();
 }
 
@@ -1282,8 +1323,29 @@ function onDeleteEdge(edgeId: string) {
   const index = graphEdges.value.findIndex((e) => e.id === edgeId);
   if (index === -1) return;
   graphEdges.value.splice(index, 1);
+  if (selectedEdgeId.value === edgeId) selectedEdgeId.value = null;
   pushHistory();
 }
+
+/** Edge selection changed on the canvas (id when selected, null when cleared). */
+function onSelectEdge(edgeId: string | null) {
+  selectedEdgeId.value = edgeId;
+}
+
+/** Delete the current selection: a selected edge, or the selected node. */
+function deleteSelection() {
+  const edgeId = selectedEdgeId.value;
+  if (edgeId) {
+    onDeleteEdge(edgeId);
+    return;
+  }
+  if (selectedNodeId.value) deleteNode();
+}
+
+/** Whether the delete action has a target (selected node or edge). */
+const canDeleteSelection = computed(
+  () => selectedNodeId.value !== null || selectedEdgeId.value !== null,
+);
 
 /** Place a node dragged from the member strip onto the canvas. */
 function onDropAt(memberId: string, position: { x: number; y: number }) {
@@ -1951,12 +2013,13 @@ button.editor-banner-field {
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
   justify-content: center;
-  gap: 8px;
+  gap: 4px;
   z-index: 10;
   max-width: calc(100% - 24px);
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.94);
@@ -1966,24 +2029,29 @@ button.editor-banner-field {
 .editor-tb-group {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .editor-tb-group + .editor-tb-group,
 .editor-search-bar {
   border-left: 1px solid rgba(128, 128, 128, 0.2);
-  padding-left: 8px;
+  padding-left: 6px;
 }
 
 .editor-search-bar {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* The search box is the only flexible piece: it shrinks first so the
+     toolbar keeps a single row on narrow viewports. */
+  flex: 0 1 auto;
+  min-width: 40px;
 }
 
 .editor-search-input {
-  width: 180px;
-  height: 32px;
+  width: 140px;
+  min-width: 40px;
+  height: 28px;
   padding: 0 8px;
   border: 1px solid var(--dashboard-border, rgba(128, 128, 128, 0.25));
   border-radius: 8px;

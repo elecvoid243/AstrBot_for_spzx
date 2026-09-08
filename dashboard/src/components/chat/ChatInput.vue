@@ -304,6 +304,44 @@
         </div>
       </transition>
 
+      <!--
+        2026-08-16 skill-guide: pending one-shot skill nudges, shown above
+        the composer exactly like staged uploads. Each badge mirrors a skill
+        queued via POST /skill-guide/load; it is consumed when the message
+        is sent (the plugin drains the queue on the next LLM request).
+
+        2026-09-08 (elecvoid243): this is the single rendering for BOTH
+        queue paths ("+" menu and the "/" palette). Chips wrap onto extra
+        lines instead of being clipped inside the composer.
+      -->
+      <transition name="attachments">
+        <div
+          v-if="skillGuide.queued.value.length > 0"
+          class="skill-guide-preview"
+        >
+          <span class="skill-guide-preview__label">
+            <v-icon icon="mdi-lightbulb-on-outline" size="14"></v-icon>
+            {{ tm("input.skillGuide.pendingLabel") }}
+          </span>
+          <div
+            v-for="name in skillGuide.queued.value"
+            :key="name"
+            class="skill-guide-chip"
+          >
+            <span class="skill-guide-chip__name" :title="name">{{ name }}</span>
+            <button
+              type="button"
+              class="skill-guide-chip__remove"
+              :aria-label="tm('input.skillGuide.removeTitle', { name })"
+              :title="tm('input.skillGuide.removeTitle', { name })"
+              @click="skillGuide.toggleSkill(name)"
+            >
+              <v-icon icon="mdi-close" size="12"></v-icon>
+            </button>
+          </div>
+        </div>
+      </transition>
+
       <CommandSuggestion
         :visible="showCommandSuggestion"
         :commands="filteredCommands"
@@ -352,7 +390,7 @@
               it never changes the "+" menu's width. The plugin is gated on
               GET /skill-guide/active having answered once
               (useSkillGuide.available); queued skills are mirrored by the
-              inline chips at the start of the composer.
+              pending badges row above the composer.
             -->
             <SkillGuideMenuItem
               v-if="skillGuide.available.value"
@@ -402,53 +440,6 @@
           </StyledMenu>
         </div>
         <div class="input-field-shell">
-          <!--
-            2026-09-08 (elecvoid243): queued one-shot skill nudges render
-            inline at the start of the composer (figure-2 style) instead of
-            the old row above it. Each chip mirrors a skill queued via
-            POST /skill-guide/load; the plugin drains the queue on the next
-            LLM request and ChatInput clears the mirror on send.
-          -->
-          <div
-            v-if="skillGuide.queued.value.length > 0"
-            class="skill-guide-inline"
-            data-test="skill-guide-inline"
-          >
-            <div
-              v-for="name in visibleQueuedSkills"
-              :key="name"
-              class="skill-guide-chip"
-            >
-              <v-icon
-                icon="mdi-lightbulb-on-outline"
-                size="13"
-                class="skill-guide-chip__icon"
-              />
-              <span class="skill-guide-chip__name" :title="name">{{
-                name
-              }}</span>
-              <button
-                type="button"
-                class="skill-guide-chip__remove"
-                :aria-label="tm('input.skillGuide.removeTitle', { name })"
-                :title="tm('input.skillGuide.removeTitle', { name })"
-                @click="skillGuide.toggleSkill(name)"
-              >
-                <v-icon icon="mdi-close" size="12"></v-icon>
-              </button>
-            </div>
-            <span
-              v-if="hiddenQueuedSkillCount > 0"
-              class="skill-guide-inline__more"
-              :title="
-                skillGuide.queued.value
-                  .slice(MAX_VISIBLE_SKILL_CHIPS)
-                  .join(', ')
-              "
-            >
-              +{{ hiddenQueuedSkillCount }}
-            </span>
-          </div>
           <input
             v-if="!inputIsMultiline"
             ref="inputField"
@@ -1106,9 +1097,9 @@ const sessionIsGroup = computed(() => Boolean(props.currentSession?.is_group));
 
 // 2026-08-16 skill-guide: singleton state for the Skill Guide plugin.
 // ChatInput owns `setSession` (session switch → re-fetch the active
-// skill list for the new umo); the SkillGuideMenuItem and the inline
-// composer chips read the same refs, so the popover ✓ marks and the
-// chips can never diverge.
+// skill list for the new umo); the SkillGuideMenuItem and the pending
+// badges row above the composer read the same refs, so the popover ✓
+// marks and the badges can never diverge.
 const skillGuide = useSkillGuide();
 
 /**
@@ -1137,16 +1128,6 @@ const skillCommands = computed<SuggestionCommand[]>(() => {
       queued: skillGuide.queued.value.includes(skill.name),
     }));
 });
-
-// Inline skill chips inside the composer (figure-2 style): keep the row
-// compact when many skills are queued.
-const MAX_VISIBLE_SKILL_CHIPS = 3;
-const visibleQueuedSkills = computed(() =>
-  skillGuide.queued.value.slice(0, MAX_VISIBLE_SKILL_CHIPS),
-);
-const hiddenQueuedSkillCount = computed(() =>
-  Math.max(0, skillGuide.queued.value.length - MAX_VISIBLE_SKILL_CHIPS),
-);
 
 watch(
   () => [props.sessionId, sessionIsGroup.value] as const,
@@ -2974,25 +2955,25 @@ defineExpose({
   color: rgb(var(--v-theme-error));
 }
 
-/* 2026-09-08 (elecvoid243): queued one-shot skill chips, rendered inline
-   at the start of the composer (figure-2 style). */
-.skill-guide-inline {
+/* 2026-09-08 (elecvoid243): queued one-shot skill chips, rendered above the
+   composer (wrapping onto extra lines) — the single display for BOTH the
+   "+" menu and the "/" palette. */
+.skill-guide-preview {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  width: 100%;
   flex: 0 0 auto;
-  max-width: 55%;
-  margin-right: 8px;
-  overflow: hidden;
+  padding: 8px 12px 0;
 }
-.skill-guide-inline__more {
-  flex-shrink: 0;
+.skill-guide-preview__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.55);
   white-space: nowrap;
-}
-.input-container.is-multiline .skill-guide-inline {
-  margin-top: 2px;
 }
 .skill-guide-chip {
   display: inline-flex;
@@ -3005,10 +2986,6 @@ defineExpose({
   background: rgba(var(--v-theme-primary), 0.08);
   font-size: 12px;
   color: rgb(var(--v-theme-on-surface));
-}
-.skill-guide-chip__icon {
-  flex-shrink: 0;
-  color: rgb(var(--v-theme-primary));
 }
 .skill-guide-chip__name {
   overflow: hidden;

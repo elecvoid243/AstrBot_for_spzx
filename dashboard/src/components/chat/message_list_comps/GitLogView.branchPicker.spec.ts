@@ -41,6 +41,7 @@ function makeCommit(sha: string) {
     body: null,
     parents: [],
     shortstat: { files: 1, additions: 2, deletions: 3 },
+    tags: [],
   };
 }
 
@@ -54,6 +55,7 @@ function makeSnapshot(): SpcodeLogSnapshot {
     worktree: "w",
     directory: "d",
     ref: "HEAD",
+    resolvedRef: "",
     count: 1,
     hasMore: false,
     truncated: false,

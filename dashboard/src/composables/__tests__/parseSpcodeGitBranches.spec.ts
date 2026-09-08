@@ -134,4 +134,37 @@ describe("parseSpcodeGitBranches", () => {
     expect(snap.meta.loaded).toBe(false);
     expect(snap.branches).toEqual([]);
   });
+
+  it("maps tags and defaults to [] when absent", () => {
+    const withTags = parseSpcodeGitBranches({
+      loaded: true,
+      directory: "d",
+      umo: "u",
+      branches: [],
+      tags: [{ name: "v1.0.0", sha: "a".repeat(40), annotated: true }],
+      total: 0,
+      current: null,
+      detached: false,
+      reason: null,
+      stderr: "",
+      elapsed_ms: 1,
+    } as never);
+    expect(withTags.tags).toEqual([
+      { name: "v1.0.0", sha: "a".repeat(40), annotated: true },
+    ]);
+
+    const withoutTags = parseSpcodeGitBranches({
+      loaded: true,
+      directory: "d",
+      umo: "u",
+      branches: [],
+      total: 0,
+      current: null,
+      detached: false,
+      reason: null,
+      stderr: "",
+      elapsed_ms: 1,
+    } as never);
+    expect(withoutTags.tags).toEqual([]);
+  });
 });

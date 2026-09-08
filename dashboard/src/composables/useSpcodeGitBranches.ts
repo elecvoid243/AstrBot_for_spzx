@@ -243,6 +243,13 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
           current: b.current,
           remote: b.remote,
         })),
+        // 2026-09-08: mutation 响应不带 tags(后端仅 GET git-branches 返回);
+        // 从已解析的刷新快照回填,避免原子替换后 tag 列表被清空。
+        tags: refreshed.tags.map((t) => ({
+          name: t.name,
+          sha: t.sha,
+          annotated: t.annotated,
+        })),
         total: refreshed.total,
         current: refreshed.current,
         detached: refreshed.detached,

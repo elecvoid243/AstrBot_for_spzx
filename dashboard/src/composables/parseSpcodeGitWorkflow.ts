@@ -108,6 +108,8 @@ export interface SpcodeLogRawCommit {
   body: string | null;
   parents: string[];
   shortstat: { files: number; additions: number; deletions: number };
+  /** 2026-09-08: 指向该 commit 的 tag 名列表(旧插件可能不返回)。 */
+  tags?: unknown;
 }
 
 export interface SpcodeLogRawData {
@@ -123,6 +125,8 @@ export interface SpcodeLogRawData {
   has_more: boolean;
   truncated: boolean;
   max_bytes: number;
+  /** 2026-09-08: hash-like ref 规范化后的完整 SHA(旧插件可能不返回)。 */
+  resolved_ref?: unknown;
   commits: SpcodeLogRawCommit[];
 }
 
@@ -136,6 +140,8 @@ export interface SpcodeLogCommit {
   body: string | null;
   parents: string[];
   shortstat: { files: number; additions: number; deletions: number };
+  /** 2026-09-08: 指向该 commit 的 tag 名列表(无 tag 时为 [])。 */
+  tags: string[];
 }
 
 export interface SpcodeLogSnapshot {
@@ -147,6 +153,8 @@ export interface SpcodeLogSnapshot {
   worktree: string;
   directory: string;
   ref: string;
+  /** 2026-09-08: hash-like ref 规范化后的完整 SHA;非 hash ref / 旧插件为 ""。 */
+  resolvedRef: string;
   count: number;
   hasMore: boolean;
   truncated: boolean;
@@ -305,6 +313,7 @@ export function parseSpcodeGitLog(raw: unknown): ParseResult<SpcodeLogSnapshot> 
         additions: asNumber(c0.shortstat?.additions),
         deletions: asNumber(c0.shortstat?.deletions),
       },
+      tags: asStringArray(c0.tags),
     };
   });
   return {
@@ -318,6 +327,7 @@ export function parseSpcodeGitLog(raw: unknown): ParseResult<SpcodeLogSnapshot> 
       worktree: asString(d.worktree),
       directory: asString(d.directory),
       ref: asString(d.ref, "HEAD"),
+      resolvedRef: asString(d.resolved_ref),
       count: asNumber(d.count),
       hasMore: asBoolean(d.has_more),
       truncated: asBoolean(d.truncated),

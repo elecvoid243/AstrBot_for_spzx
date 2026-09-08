@@ -19,6 +19,19 @@ export interface SpcodeGitBranchRaw {
   remote: boolean;
 }
 
+/** 2026-09-08: GET /spcode/git-branches 的 tag 条目原始形状。 */
+export interface SpcodeGitTagRaw {
+  name?: unknown;
+  sha?: unknown;
+  annotated?: unknown;
+}
+
+export interface SpcodeGitTag {
+  name: string;
+  sha: string;
+  annotated: boolean;
+}
+
 export interface SpcodeGitBranchesRawResponse {
   loaded: boolean;
   directory: string | null;
@@ -26,6 +39,8 @@ export interface SpcodeGitBranchesRawResponse {
   branches: SpcodeGitBranchRaw[];
   /** 2026-08-16: git remote 配置的远端名列表（即使尚无 refs/remotes/* ref）。 */
   remotes?: string[] | null;
+  /** 2026-09-08: 仓库 tag 列表（旧插件可能不返回）。 */
+  tags?: SpcodeGitTagRaw[] | null;
   total: number;
   current: string | null;
   detached: boolean;
@@ -56,6 +71,8 @@ export interface SpcodeGitBranchesSnapshot {
   branches: SpcodeGitBranch[];
   /** 2026-08-16: git remote 配置的远端名列表（即使尚无 refs/remotes/* ref）。 */
   remotes: string[];
+  /** 2026-09-08: 仓库 tag 列表（无 tag / 旧插件为 []）。 */
+  tags: SpcodeGitTag[];
   total: number;
   current: string | null;
   detached: boolean;
@@ -86,6 +103,15 @@ export function parseSpcodeGitBranches(
       : [],
     remotes: Array.isArray(data.remotes)
       ? data.remotes.map((r) => String(r)).filter((r) => r !== "")
+      : [],
+    tags: Array.isArray(data.tags)
+      ? data.tags
+          .map((t) => ({
+            name: String(t?.name ?? ""),
+            sha: String(t?.sha ?? ""),
+            annotated: Boolean(t?.annotated),
+          }))
+          .filter((t) => t.name !== "")
       : [],
     total: typeof data.total === "number" ? data.total : 0,
     current: data.current ?? null,

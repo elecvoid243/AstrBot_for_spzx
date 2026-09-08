@@ -218,6 +218,9 @@
     "execution": "执行",
     "result": "结果"
   },
+  "subagentCollapse": {
+    "hint": "折叠执行卡片"
+  },
   "toolStatus": {
     "done": "已完成",
     "running": "运行中"

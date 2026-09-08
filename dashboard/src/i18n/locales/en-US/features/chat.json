@@ -218,6 +218,9 @@
     "execution": "Execution",
     "result": "Result"
   },
+  "subagentCollapse": {
+    "hint": "Collapse the subagent card"
+  },
   "toolStatus": {
     "done": "Done",
     "running": "Running"

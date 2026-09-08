@@ -214,6 +214,9 @@
     "execution": "Выполнение",
     "result": "Результат"
   },
+  "subagentCollapse": {
+    "hint": "Свернуть карточку субагента"
+  },
   "toolStatus": {
     "done": "Готово",
     "running": "Выполняется"

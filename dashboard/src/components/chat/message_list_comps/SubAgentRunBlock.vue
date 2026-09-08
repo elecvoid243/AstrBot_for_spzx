@@ -98,6 +98,20 @@
         <div v-if="part.error" class="error-text">{{ part.error }}</div>
       </div>
     </v-expand-transition>
+
+    <!-- Always-visible collapse affordance. Sticks to the bottom of the
+         visible scroll viewport while this card is taller than it, so a
+         long streaming run can be collapsed without scrolling back up. -->
+    <button
+      v-if="expanded"
+      class="subagent-collapse-fab"
+      type="button"
+      :title="tm('subagentCollapse.hint')"
+      :aria-label="tm('subagentCollapse.hint')"
+      @click="expanded = false"
+    >
+      <v-icon size="16">mdi-chevron-up</v-icon>
+    </button>
   </div>
 </template>
 
@@ -236,7 +250,11 @@ const activityParts = computed(() => {
   margin: 6px 0;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 8px;
-  overflow: hidden;
+  /* `clip` (not `hidden`) so this card is NOT a scroll container: the
+     sticky collapse button below must resolve against the chat scroll
+     container (.messages-panel), otherwise `hidden` would trap it in
+     the card's own non-scrolling scrollport and it would never move. */
+  overflow: clip;
 }
 
 .subagent-run-block.is-dark {
@@ -318,6 +336,48 @@ const activityParts = computed(() => {
 
 .is-dark .subagent-run-body {
   border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Sticky collapse affordance (visible only while the card is expanded).
+   2026-09-08: a long streaming subagent run pushes the card past the
+   viewport bottom, so the card header's chevron is off-screen by the
+   time the user wants to fold it. This button stays pinned 12 px above
+   the bottom edge of the scroll viewport while the card is taller than
+   the viewport, then it settles in the card's bottom-right corner. The
+   negative top margin cancels the button's own height so the card keeps
+   its previous size and the button reads as floating over the content
+   instead of pushing the layout. */
+.subagent-collapse-fab {
+  position: sticky;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  margin: -28px 10px 0 auto;
+  padding: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 50%;
+  background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.subagent-collapse-fab:hover {
+  color: rgb(var(--v-theme-primary));
+  border-color: rgba(var(--v-theme-primary), 0.45);
+}
+
+.is-dark .subagent-collapse-fab {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
 }
 
 .section-label {

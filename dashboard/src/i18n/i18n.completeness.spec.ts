@@ -91,3 +91,20 @@ describe("interactiveChoice i18n completeness", () => {
     });
   }
 });
+
+describe("subagentCollapse i18n completeness", () => {
+  // 2026-09-08: the sticky collapse button on the subagent run card uses
+  // this key for both its title and aria-label. Pin it across the three
+  // locales so the button never renders a "[MISSING: …]" placeholder.
+  for (const [locale, dict] of localizations) {
+    it(`${locale} defines subagentCollapse.hint`, () => {
+      const subagentCollapse = dict.subagentCollapse as
+        | Record<string, unknown>
+        | undefined;
+      expect(
+        typeof subagentCollapse?.hint,
+        `${locale} missing subagentCollapse.hint string`,
+      ).toBe("string");
+    });
+  }
+});

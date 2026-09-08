@@ -1122,9 +1122,12 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
             }}
           </v-icon>
         </button>
-        <button
-          type="button"
+        <!-- 2026-09-08 fix: header 由 <button> 改为 div[role=button]，使 tag
+             徽章不再是嵌套 button（非法 HTML）；键盘 Enter/Space 与点击等价。 -->
+        <div
           class="git-log-item-header"
+          role="button"
+          tabindex="0"
           :aria-expanded="expanded.has(c.sha)"
           :aria-label="
             expanded.has(c.sha)
@@ -1136,6 +1139,8 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
                 )
           "
           @click="toggleCommit(c.sha)"
+          @keydown.enter.prevent="toggleCommit(c.sha)"
+          @keydown.space.prevent="toggleCommit(c.sha)"
         >
           <v-icon size="14" class="git-log-item-icon">mdi-source-commit</v-icon>
           <span class="git-log-item-sha">{{
@@ -1156,6 +1161,8 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
                 })
               "
               @click.stop="onTagClick(t)"
+              @keydown.enter.stop
+              @keydown.space.stop
             >
               {{ t }}
             </button>
@@ -1172,7 +1179,7 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
             </v-tooltip>
           </span>
           <span class="git-log-item-subject">{{ c.subject }}</span>
-        </button>
+        </div>
         <div class="git-log-item-meta">
           <span class="git-log-item-author">{{ c.author.name }}</span>
           <span class="git-log-item-sep">·</span>

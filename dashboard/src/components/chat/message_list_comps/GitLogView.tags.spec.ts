@@ -1,8 +1,8 @@
 // Author: impl_b4 @ 2026-09-08
 // Spec: 2026-09-08-git-log-tags-and-filters §2.4 — tag 徽章渲染与点击筛选。
 // 沿用 GitLogView.branchPicker.spec.ts 的 heavy-stub 策略：只断言徽章与 emit。
-import { beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 
@@ -77,11 +77,18 @@ function baseProps(tags: string[]) {
 }
 
 /** 2026-09-08: overrides 允许单个用例只替换 state / activeRef /
- *  appliedGrep 等个别 prop，而不必复制整份 props 样板。 */
-function mountLog(tags: string[], overrides: Record<string, unknown> = {}) {
+ *  appliedGrep 等个别 prop，而不必复制整份 props 样板。
+ *  attachTo 供滚动相关用例把组件真正挂到 document 上（watch 回调里
+ *  用 document.querySelector 查找根节点）。 */
+function mountLog(
+  tags: string[],
+  overrides: Record<string, unknown> = {},
+  attachTo?: Element,
+) {
   return mount(GitLogView, {
     props: { ...baseProps(tags), ...overrides } as never,
     global: { stubs },
+    ...(attachTo ? { attachTo } : {}),
   });
 }
 
@@ -89,6 +96,11 @@ function mountLog(tags: string[], overrides: Record<string, unknown> = {}) {
 // 供本文件所有 describe 共用（hash focus / 空态用例同样要挂载组件）。
 beforeEach(() => {
   setActivePinia(createPinia());
+});
+
+// 滚动相关用例 spy 了 Element.prototype.scrollIntoView，逐例还原，避免泄漏。
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("GitLogView tag chips", () => {
@@ -166,6 +178,40 @@ describe("GitLogView hash focus", () => {
     });
     expect(wrapper.find(".git-log-item").classes()).not.toContain("is-focused");
   });
+
+  // 2026-09-08 fix: 历史轮询每 10s 用新对象替换 props.state。watcher 源
+  // 必须是 getter 数组（逐元素比较）；若返回新数组，则每次轮询都被判定
+  // 为「变化」，回调会把用户拽回高亮行。
+  it("does not re-scroll when polling replaces state with the same focus", async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView");
+    const state = makeState([]);
+    state.snapshot.resolvedRef = "a".repeat(40);
+    const wrapper = mountLog(
+      [],
+      { state: state as never, activeRef: "aaaaaaaa" },
+      document.body,
+    );
+
+    // 模拟一次轮询：同 kind、同 resolvedRef，但对象引用是新的。
+    const replacement = makeState([]);
+    replacement.snapshot.resolvedRef = "a".repeat(40);
+    await wrapper.setProps({ state: replacement as never });
+    await flushPromises();
+
+    expect(scrollSpy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("scrolls when the focused commit genuinely changes", async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView");
+    const wrapper = mountLog([], {}, document.body);
+
+    await wrapper.setProps({ focusedCommitSha: "a".repeat(40) });
+    await flushPromises();
+
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
 });
 
 describe("GitLogView no-match empty state", () => {
@@ -186,5 +232,14 @@ describe("GitLogView no-match empty state", () => {
     state.snapshot.commits = [];
     const wrapper = mountLog([], { state: state as never });
     expect(wrapper.find(".git-log-center-text").text()).toBe("暂无提交记录");
+  });
+
+  // 2026-09-08 fix: 空态分支必须同时判定 commits.length === 0，否则
+  // grep 生效且有结果时 no-match 分支会吞掉整个列表。
+  it("keeps rendering the list when a grep is applied and matches exist", () => {
+    const wrapper = mountLog(["v1.0.0"], { appliedGrep: "zzz" });
+    expect(wrapper.find(".git-log-list").exists()).toBe(true);
+    expect(wrapper.find(".git-log-item").exists()).toBe(true);
+    expect(wrapper.find(".git-log-center").exists()).toBe(false);
   });
 });

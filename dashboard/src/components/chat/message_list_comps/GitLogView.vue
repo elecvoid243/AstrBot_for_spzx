@@ -69,6 +69,9 @@ const props = defineProps<{
    * `is-focused` class and is scrolled into view. `null` means
    * no deep-link is active. The parent owns persistence; we just
    * highlight.
+   * 2026-09-08 (spec §2.5): 深链之外，ref 过滤命中 hash 时后端回显
+   * `resolvedRef`，组件据此派生同样的聚焦（见 effectiveFocusSha）；
+   * 因此 `null` 仅表示「无深链聚焦」，不表示「无高亮」。
    */
   focusedCommitSha: string | null;
   /** Composable handle injected by the sidebar (git-stats heatmap
@@ -251,7 +254,10 @@ const effectiveFocusSha = computed(
  *      that excludes the SHA we just skip the scroll.
  */
 watch(
-  () => [effectiveFocusSha.value, props.state.kind] as const,
+  // 2026-09-08 fix: 源必须是 getter 数组（逐元素比较）。若写成返回新数组的
+  // 单个 getter，Vue 的 hasChanged 对数组做引用比较，恒为 true —— 历史
+  // 轮询每 10s 替换一次 props.state，就会把用户重新拽回高亮行。
+  [() => effectiveFocusSha.value, () => props.state.kind],
   async ([sha, kind]) => {
     if (!sha || kind !== "ok") return;
     await nextTick();

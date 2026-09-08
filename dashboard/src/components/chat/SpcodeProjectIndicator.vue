@@ -132,28 +132,22 @@ const servicesMenuOpen = ref(false);
 const codegraph = useSpcodeCodegraphStatus();
 const vivado = useSpcodeVivadoStatus();
 
-// codegraph 状态只保留 3 态(mcpRunning × activeProject 两个维度)。
-// 旧 SpcodeCodegraphChip 的"路径不匹配"(activeProject ≠ 当前加载项目目录,
-// warning dot + "Codegraph 不匹配")已于 2026-08-15 随 chip 移除:system_prompt
-// 已强制 LLM 每次调用 codegraph_explore 显式传 projectPath,默认目录与加载
-// 项目是否一致不再影响查询结果,该提醒失去意义。
+// codegraph 状态只保留 2 态(mcpRunning 单一维度)。
+// 2026-09-08: MCP 在跑即视为"已加载"——不再把"未设置默认项目"当作未加载
+// 态(system_prompt 已要求每次 codegraph_explore 显式传 projectPath,默认
+// 目录缺失不影响 codegraph 可用性);默认目录改在 detail 行提示。
+// 旧 SpCodegraphChip 的"路径不匹配"提醒已于 2026-08-15 随 chip 移除。
 const codegraphState = computed(() => {
   const s = codegraph.status.value;
   const hasProject = s.activeProject.length > 0;
-  if (s.mcpRunning && hasProject) {
-    return {
-      dot: "success",
-      icon: "mdi-database-check",
-      label: "Codegraph 已连接",
-      detail: s.activeProject,
-    };
-  }
   if (s.mcpRunning) {
     return {
-      dot: "neutral",
-      icon: "mdi-database-remove-outline",
-      label: "Codegraph 未加载",
-      detail: "MCP 运行中但未设置项目",
+      dot: "success",
+      icon: hasProject ? "mdi-database-check" : "mdi-database-outline",
+      label: "Codegraph 已加载",
+      detail: hasProject
+        ? s.activeProject
+        : "未设置默认项目(查询时需显式指定目录)",
     };
   }
   return {
@@ -354,6 +348,9 @@ function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string 
   if (now.st === "running") {
     if (now.op === "codegraph_set") {
       return tm("spcodeProjectLoad.indicator.codegraphRestarting");
+    }
+    if (now.op === "codegraph_init") {
+      return tm("spcodeProjectLoad.indicator.codegraphIndexing");
     }
     if (now.op === "project_load" && /codegraph/i.test(now.step)) {
       return tm("spcodeProjectLoad.indicator.codegraphInitializing");

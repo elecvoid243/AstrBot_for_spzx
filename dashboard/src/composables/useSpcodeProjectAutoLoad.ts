@@ -392,5 +392,23 @@ export function useSpcodeSilentOps() {
     raiseOnFailure(raw, umo);
   }
 
-  return { silentLoadDirectory, silentUnload, silentCodegraphSet };
+  /** Silent codegraph init/update. Throws ProjectLoadError on failure. */
+  async function silentCodegraphInit(
+    umo: string,
+    directory: string,
+  ): Promise<void> {
+    const raw = await postSilent(
+      "spcode/codegraph-init",
+      { umo, directory },
+      600_000, // init 300 s + --force retry 180 s + margin
+    );
+    raiseOnFailure(raw, umo);
+  }
+
+  return {
+    silentLoadDirectory,
+    silentUnload,
+    silentCodegraphSet,
+    silentCodegraphInit,
+  };
 }

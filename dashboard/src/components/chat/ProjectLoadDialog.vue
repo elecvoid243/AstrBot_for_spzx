@@ -8,7 +8,7 @@
  * for the no-session fallback path (dispatched verbatim as before).
  */
 export interface ProjectLoadSubmitPayload {
-  mode: "project" | "codegraph" | "unload";
+  mode: "project" | "codegraph" | "codegraph-init" | "unload";
   path?: string;
   noAgentsmd?: boolean;
   noCodegraph?: boolean;
@@ -27,6 +27,7 @@ import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useProjectPathHistory } from "@/composables/useProjectPathHistory";
 import { useConfirmDialog } from "@/utils/confirmDialog";
 import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
+import SpSegmentedControl from "./SpSegmentedControl.vue";
 
 /**
  * Compose the final chat input text for the load/set command.
@@ -47,7 +48,7 @@ import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
 function buildLoadCommand(
   wakePrefix: string,
   path: string,
-  cmdMode: "project" | "codegraph",
+  cmdMode: "project" | "codegraph" | "codegraph-init",
   loadAgentsMd: boolean,
   loadCodegraph: boolean,
   extraFlags: string[] = [],
@@ -58,7 +59,12 @@ function buildLoadCommand(
     trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2;
   const needsQuoting = !alreadyQuoted && /\s/.test(trimmed);
   const finalPath = needsQuoting ? `"${trimmed}"` : trimmed;
-  const verb = cmdMode === "codegraph" ? "codegraph set" : "project load";
+  const verb =
+    cmdMode === "codegraph-init"
+      ? "codegraph init"
+      : cmdMode === "codegraph"
+        ? "codegraph set"
+        : "project load";
   const flags =
     cmdMode === "project"
       ? [
@@ -106,6 +112,29 @@ const dialogTitle = computed(() =>
     : tm("spcodeProjectLoad.dialog.title"),
 );
 
+// ── Codegraph 管理双子页(2026-09-08) ───────────────────────────────────
+// "初始化 / 更新" → POST /spcode/codegraph-init（codegraph init，已初始化
+// 时后端自动 --force 重建）；"设为默认目录" → POST /spcode/codegraph-set
+// （原有行为）。两页共用下方的路径输入 + 历史列表。
+const codegraphTab = ref<string>("init");
+const codegraphSegments = computed(() => [
+  { value: "init", label: tm("spcodeProjectLoad.dialog.codegraphTabInit") },
+  { value: "set", label: tm("spcodeProjectLoad.dialog.codegraphTabSet") },
+]);
+const codegraphHint = computed(() =>
+  codegraphTab.value === "init"
+    ? tm("spcodeProjectLoad.dialog.codegraphInitHint")
+    : tm("spcodeProjectLoad.dialog.codegraphSetHint"),
+);
+const submitLabel = computed(() => {
+  if (props.commandMode !== "codegraph") {
+    return tm("spcodeProjectLoad.dialog.submit");
+  }
+  return codegraphTab.value === "init"
+    ? tm("spcodeProjectLoad.dialog.codegraphInitSubmit")
+    : tm("spcodeProjectLoad.dialog.codegraphSetSubmit");
+});
+
 // ── Reactive state ──────────────────────────────────────────────────────
 const dialogOpen = ref(false);
 const path = ref("");
@@ -148,6 +177,7 @@ watch(dialogOpen, (open) => {
     loadAgentsMd.value = true;
     loadCodegraph.value = true;
     autoInitGit.value = true;
+    codegraphTab.value = "init";
   }
 });
 
@@ -201,16 +231,20 @@ async function onConfirm(): Promise<void> {
   if (!trimmed) return;
   const prefix = props.wakePrefixes[0] || "/";
 
-  // Codegraph mode: unchanged behavior (no mode/kind/overwrite logic).
+  // Codegraph mode: two sub-pages sharing the path field. "init" hits
+  // POST /spcode/codegraph-init (codegraph init, backend auto-retries with
+  // --force when the directory is already indexed); "set" keeps the legacy
+  // POST /spcode/codegraph-set. No mode/kind/overwrite logic either way.
   if (props.commandMode === "codegraph") {
     addToPathHistory(trimmed);
+    const isInit = codegraphTab.value === "init";
     emit("submit", {
-      mode: "codegraph",
+      mode: isInit ? "codegraph-init" : "codegraph",
       path: trimmed,
       legacyText: buildLoadCommand(
         prefix,
         trimmed,
-        "codegraph",
+        isInit ? "codegraph-init" : "codegraph",
         loadAgentsMd.value,
         loadCodegraph.value,
       ),
@@ -304,6 +338,21 @@ function onUnload(): void {
         </v-btn>
         <v-divider v-if="props.commandMode === 'project'" class="my-4" />
         <v-form @submit.prevent="onConfirm">
+          <!--
+            Codegraph 管理双子页(2026-09-08):"初始化 / 更新" 对指定目录
+            执行 codegraph init(已初始化时后端自动 --force 重建索引);
+            "设为默认目录" 执行 codegraph set(会重启 MCP)。两页共用下方
+            路径输入 + 历史列表。
+          -->
+          <template v-if="props.commandMode === 'codegraph'">
+            <SpSegmentedControl
+              v-model="codegraphTab"
+              :segments="codegraphSegments"
+            />
+            <div class="text-caption text-medium-emphasis mt-2 mb-3">
+              {{ codegraphHint }}
+            </div>
+          </template>
           <v-text-field
             v-model="path"
             :label="tm('spcodeProjectLoad.dialog.pathLabel')"
@@ -461,7 +510,7 @@ function onUnload(): void {
           :disabled="!canSubmit"
           @click="onConfirm"
         >
-          {{ tm("spcodeProjectLoad.dialog.submit") }}
+          {{ submitLabel }}
         </v-btn>
       </v-card-actions>
     </v-card>

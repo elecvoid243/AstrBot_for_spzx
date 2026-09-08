@@ -13,7 +13,8 @@ import { pluginExtensionApi } from "@/api/v1";
 export type OperationKind =
   | "project_load"
   | "project_unload"
-  | "codegraph_set";
+  | "codegraph_set"
+  | "codegraph_init";
 export type OperationStatus = "idle" | "running" | "done" | "failed";
 
 export interface OperationProgress {
@@ -103,11 +104,22 @@ async function pollOnce(umo: string): Promise<void> {
 }
 
 export function useSpcodeOperationProgress() {
-  /** Reset to running and poll every 500 ms until a terminal state. */
-  function startPolling(umo: string): void {
+  /**
+   * Reset to running and poll every 500 ms until a terminal state.
+   *
+   * Args:
+   *   umo: Session umo the silent operation was dispatched for.
+   *   timeoutMs: Polling deadline (default 200 s). codegraph init can run
+   *     for minutes (300 s + 180 s --force retry), so callers pass a
+   *     larger budget there.
+   */
+  function startPolling(
+    umo: string,
+    timeoutMs: number = POLL_TIMEOUT_MS,
+  ): void {
     stopTimer();
     progress.value = { ...IDLE, status: "running" };
-    deadline = Date.now() + POLL_TIMEOUT_MS;
+    deadline = Date.now() + timeoutMs;
     void pollOnce(umo); // immediate first poll; chain continues via scheduleNext
   }
 

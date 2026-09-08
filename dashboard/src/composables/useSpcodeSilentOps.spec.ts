@@ -105,4 +105,23 @@ describe("useSpcodeSilentOps", () => {
       expect.anything(),
     );
   });
+
+  it("silentCodegraphInit posts umo + directory", async () => {
+    mockPostOk({ initialized: true, directory: "C:/p" });
+    const { silentCodegraphInit } = useSpcodeSilentOps();
+    await silentCodegraphInit("u1", "C:/p");
+    expect(postMock()).toHaveBeenCalledWith(
+      "spcode/codegraph-init",
+      { umo: "u1", directory: "C:/p" },
+      expect.anything(),
+    );
+  });
+
+  it("silentCodegraphInit throws on failure", async () => {
+    mockPostFail("tool_unavailable");
+    const { silentCodegraphInit } = useSpcodeSilentOps();
+    await expect(
+      silentCodegraphInit("u1", "C:/p"),
+    ).rejects.toBeInstanceOf(ProjectLoadError);
+  });
 });

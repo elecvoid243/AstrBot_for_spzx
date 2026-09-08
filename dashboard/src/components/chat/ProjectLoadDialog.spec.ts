@@ -177,12 +177,14 @@ async function openDialog(wrapper: VueWrapper): Promise<void> {
   await nextTick();
 }
 
-function buttonByText(wrapper: VueWrapper, text: string) {
+function buttonByText(wrapper: VueWrapper, text: string, last = false) {
   const found = wrapper
     .findAll("button")
-    .find((button) => button.text().trim() === text);
-  expect(found, `button with text "${text}" not found`).toBeDefined();
-  return found!;
+    .filter((button) => button.text().trim() === text);
+  expect(found.length, `button with text "${text}" not found`).toBeGreaterThan(
+    0,
+  );
+  return last ? found[found.length - 1] : found[0];
 }
 
 async function clickOption(wrapper: VueWrapper, text: string): Promise<void> {
@@ -193,9 +195,12 @@ async function clickOption(wrapper: VueWrapper, text: string): Promise<void> {
 async function submitPayload(
   wrapper: VueWrapper,
   path: string,
+  buttonText = "加载",
 ): Promise<Record<string, unknown>> {
   await wrapper.get('[data-testid="project-path"]').setValue(path);
-  await buttonByText(wrapper, "加载").trigger("click");
+  // last=true: a codegraph sub-page tab and its submit button can share a
+  // label ("设为默认目录"), and the submit button renders after the tabs.
+  await buttonByText(wrapper, buttonText, true).trigger("click");
   await nextTick();
   return wrapper.emitted("submit")!.at(-1)![0] as Record<string, unknown>;
 }
@@ -409,12 +414,33 @@ describe("ProjectLoadDialog load-step options", () => {
     expect(wrapper.text()).not.toContain("自动初始化 Git 仓库");
   });
 
-  it("keeps the Codegraph-only dialog free of project load flags", async () => {
+  it("initializes codegraph by default and keeps project load flags out", async () => {
     const wrapper = mountDialog("codegraph");
     await openDialog(wrapper);
 
     expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(0);
-    const payload = await submitPayload(wrapper, "C:/projects/demo");
+    const payload = await submitPayload(
+      wrapper,
+      "C:/projects/demo",
+      "初始化 / 更新",
+    );
+    expect(payload).toMatchObject({
+      mode: "codegraph-init",
+      path: "C:/projects/demo",
+      legacyText: "/codegraph init C:/projects/demo",
+    });
+  });
+
+  it("sets the default codegraph directory from the second sub-page", async () => {
+    const wrapper = mountDialog("codegraph");
+    await openDialog(wrapper);
+
+    await clickOption(wrapper, "设为默认目录");
+    const payload = await submitPayload(
+      wrapper,
+      "C:/projects/demo",
+      "设为默认目录",
+    );
     expect(payload).toMatchObject({
       mode: "codegraph",
       path: "C:/projects/demo",

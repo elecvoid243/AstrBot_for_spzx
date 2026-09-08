@@ -1622,7 +1622,7 @@ async function handleProjectLoadSubmit(
 ): Promise<void> {
   const session = props.currentSession;
   if (!session) {
-    if (payload.mode === "codegraph") {
+    if (payload.mode === "codegraph" || payload.mode === "codegraph-init") {
       applyOptimisticCodegraphStatus(payload.legacyText);
     } else {
       applyOptimisticProjectStatus(payload.legacyText);
@@ -1635,12 +1635,19 @@ async function handleProjectLoadSubmit(
     session.session_id,
     Boolean(session.is_group),
   ).umo;
-  operationProgress.startPolling(umo);
+  // codegraph init 后端最长 300s + --force 重试 180s,轮询预算单独放大。
+  operationProgress.startPolling(
+    umo,
+    payload.mode === "codegraph-init" ? 600_000 : undefined,
+  );
   try {
     if (payload.mode === "unload") {
       await silentOps.silentUnload(umo);
       // 2026-09-01: manual unload invalidates the "already loaded" tag.
       clearSessionLoadedTag(session.session_id);
+    } else if (payload.mode === "codegraph-init") {
+      await silentOps.silentCodegraphInit(umo, payload.path!);
+      await codegraphStatus.refresh();
     } else if (payload.mode === "codegraph") {
       await silentOps.silentCodegraphSet(umo, payload.path!);
       await codegraphStatus.refresh();

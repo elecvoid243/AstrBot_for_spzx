@@ -39,7 +39,12 @@ const stubs = {
 
 function setProgress(
   status: "idle" | "running" | "done" | "failed",
-  operation: "project_load" | "project_unload" | "codegraph_set" | null,
+  operation:
+    | "project_load"
+    | "project_unload"
+    | "codegraph_set"
+    | "codegraph_init"
+    | null,
   extra: Partial<{ currentStep: string; messages: string[]; reason: string }> = {},
 ) {
   const { progress } = useSpcodeOperationProgress();
@@ -166,13 +171,35 @@ describe("SpcodeProjectIndicator services popover", () => {
     expect(wrapper.findAll(".sp-svc-row").length).toBe(0);
     await wrapper.find(".sp-chip-services-btn").trigger("click");
     expect(wrapper.findAll(".sp-svc-row").length).toBe(2);
-    expect(wrapper.text()).toContain("Codegraph 已连接");
+    expect(wrapper.text()).toContain("Codegraph 已加载");
     expect(wrapper.text()).toContain("Vivado 已就绪");
     // The codegraph path detail is labelled as the *default* project so
     // users don't mistake it for the only directory codegraph works on.
     const cgDetail = wrapper.find(".sp-svc-row__detail");
     expect(cgDetail.text()).toContain("F:/proj");
     expect(cgDetail.text()).toContain("默认");
+  });
+
+  it("treats a running MCP as loaded even without a default project", async () => {
+    useSpcodeCodegraphStatus().status.value = {
+      enabled: true,
+      mcpRunning: true,
+      activeProject: "",
+      fetchedAt: 1,
+    };
+    const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
+    await wrapper.find(".sp-chip-services-btn").trigger("click");
+
+    expect(wrapper.text()).toContain("Codegraph 已加载");
+    expect(wrapper.text()).not.toContain("Codegraph 未加载");
+    // The detail line still tells the user no default directory is set.
+    expect(wrapper.find(".sp-svc-row__detail").text()).toContain(
+      "未设置默认项目",
+    );
+    // Success dot, not the neutral one.
+    expect(wrapper.find(".sp-svc-row__dot").classes()).toContain(
+      "sp-svc-row__dot--success",
+    );
   });
 
   it("codegraph row falls back to the not-running label when MCP is down", async () => {
@@ -322,6 +349,19 @@ describe("SpcodeProjectIndicator status bubble", () => {
     await nextTick();
     expect(wrapper.find(".sp-bubble").exists()).toBe(true);
     expect(wrapper.find(".sp-bubble").text()).toContain("正在重启 codegraph");
+  });
+
+  it("shows an indexing bubble while codegraph_init runs", async () => {
+    vi.useFakeTimers();
+    const wrapper = await mountWithBaseline();
+    setProgress("running", "codegraph_init", {
+      currentStep: "⏳ 正在 初始化 codegraph 项目 F:/proj...",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(true);
+    expect(wrapper.find(".sp-bubble").text()).toContain(
+      "正在初始化 codegraph 索引",
+    );
   });
 
   it("shows a disconnected bubble when the MCP goes down outside an operation", async () => {

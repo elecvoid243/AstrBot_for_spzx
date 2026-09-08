@@ -9,7 +9,10 @@
  *
  * 设计原则:
  *   - 静默失败: 任何错误都视为"无公告", 公告条不显示.
- *   - 单次加载: 进入页面拉一次即可, 不做轮询.
+ *   - Polling: fetch once on startup, then silently re-fetch every
+ *     POLL_INTERVAL_MS so announcement updates appear without a page
+ *     refresh. Transient poll failures keep the last known data; only an
+ *     upstream 404 ("announcement removed") clears the bar.
  *   - 集中缓存: 暴露 module 级单例, 多个组件共享同一份数据.
  *   - collapsed 为共享 UI 状态 (不持久化, 刷新后重置):
  *     AnnouncementBar (公告条本体) 与 VerticalHeader (顶栏喇叭按钮)
@@ -41,6 +44,9 @@ interface AnnouncementState {
 // --- module 级单例: 多组件共享同一份公告数据 ---
 let _singleton: AnnouncementState | null = null;
 
+// Re-fetch interval for the announcement bar (15 minutes).
+const POLL_INTERVAL_MS = 15 * 60 * 1000;
+
 function createAnnouncementState(): AnnouncementState {
   const data = ref<AnnouncementData | null>(null);
   const loading = ref(false);
@@ -62,9 +68,13 @@ function createAnnouncementState(): AnnouncementState {
         data.value = null;
       }
     } catch (e: any) {
-      // 404 (无公告) / 502 / 503 / 网络错误: 全部静默
+      // 404 (公告已被撤下): 明确的"无公告", 清空.
+      // 其余 (网络错误 / 502 / 503 / 超时): 瞬时故障, 轮询场景下保留
+      // 已展示的公告, 避免公告条闪没; 首次加载时本来就没有数据.
       error.value = e?.response?.data?.message ?? e?.message ?? "unknown";
-      data.value = null;
+      if (!data.value || e?.response?.status === 404) {
+        data.value = null;
+      }
     } finally {
       loading.value = false;
     }
@@ -72,6 +82,10 @@ function createAnnouncementState(): AnnouncementState {
 
   // 立即触发首次加载
   void load();
+
+  // Singleton lives for the whole SPA session, so the timer is never
+  // cleared; poll failures are handled silently inside load().
+  window.setInterval(() => void load(), POLL_INTERVAL_MS);
 
   return { data, loading, error, reload: load, collapsed };
 }

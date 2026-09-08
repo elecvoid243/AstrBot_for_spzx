@@ -1443,6 +1443,7 @@
             }
           },
           "empty": "暂无提交记录",
+          "noMatches": "没有匹配的提交",
           "emptyRepository": "仓库还没有任何提交",
           "loadMore": "加载更多",
           "loading": "加载中…",
@@ -1581,6 +1582,7 @@
             "identity_not_set": "请先 `git config --global user.email ...`",
             "empty_repository": "仓库还没有任何提交",
             "ref_not_found": "找不到该 commit",
+            "ref_ambiguous": "引用有歧义：该缩写匹配多个对象",
             "commit_too_large": "该 commit 过大，请使用 diff 端点查看完整 patch"
           }
         }

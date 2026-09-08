@@ -5441,6 +5441,7 @@ watch(
             :ref-items="refPickerItems"
             :current-branch="currentBranchName"
             :active-ref="gitLog.filter.value.ref ?? null"
+            :applied-grep="gitLog.filter.value.grep ?? ''"
             :squash-reset-token="squashResetToken"
             :changelog-reset-token="changelogResetToken"
             @update:range="(v) => (gitStatsRange = v)"

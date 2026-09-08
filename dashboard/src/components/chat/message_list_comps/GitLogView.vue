@@ -97,6 +97,9 @@ const props = defineProps<{
    *  localFilter. ""/HEAD/<currentBranch> all mean "viewing the
    *  current branch". */
   activeRef: string | null;
+  /** 2026-09-08 (spec §2.6): 已应用的「提交名」关键字，用于区分
+   *  「过滤无结果」与「仓库暂无提交」两种空态。 */
+  appliedGrep?: string;
   /** 2026-08-03 git-squash (spec 2026-08-03-git-squash-design §4.2):
    *  bumped by the sidebar after a successful squash so we clear the
    *  selection. */
@@ -206,6 +209,19 @@ function isHeadCommit(c: { sha: string }): boolean {
 // Local filter form state. Emitted on Apply; reset on Reset.
 const localFilter = ref<LogFilter>({ ref: "HEAD", n: 20 });
 
+/** 2026-09-08 (spec §2.5): 用户输入 hash 时后端回显 resolved_ref，
+ *  直接复用 focusedCommitSha 的展开 / 滚动 / 高亮链路。 */
+const HASH_LIKE_RE = /^[0-9a-f]{4,40}$/i;
+const hashFocusSha = computed(() => {
+  const r = props.activeRef;
+  if (!r || !HASH_LIKE_RE.test(r)) return null;
+  const s = props.state;
+  return s.kind === "ok" ? s.snapshot.resolvedRef || null : null;
+});
+const effectiveFocusSha = computed(
+  () => props.focusedCommitSha ?? hashFocusSha.value,
+);
+
 /**
  * 2026-07-15 history-sha-jump: scroll the focused commit into
  * view after the list re-renders. Three subtleties:
@@ -235,7 +251,7 @@ const localFilter = ref<LogFilter>({ ref: "HEAD", n: 20 });
  *      that excludes the SHA we just skip the scroll.
  */
 watch(
-  () => [props.focusedCommitSha, props.state.kind] as const,
+  () => [effectiveFocusSha.value, props.state.kind] as const,
   async ([sha, kind]) => {
     if (!sha || kind !== "ok") return;
     await nextTick();
@@ -273,6 +289,10 @@ const isEmptyRepository = computed(() => {
     props.state.kind === "error" && props.state.reason === "empty_repository"
   );
 });
+
+/** 2026-09-08 (spec §2.6): 已应用「提交名」grep 时，空列表意味着
+ *  「过滤无结果」而非「仓库暂无提交」，空态文案要区分开。 */
+const hasActiveGrep = computed(() => (props.appliedGrep ?? "") !== "");
 
 const isTruncated = computed(() => {
   if (props.state.kind === "ok") return props.state.snapshot.truncated;
@@ -1046,6 +1066,21 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
       </span>
     </div>
 
+    <!-- 2026-09-08 (spec §2.6): 已应用「提交名」grep 且无结果 → 专门的
+         空态；与下面的 history.empty（未过滤但没有提交）区分。必须同时
+         判定 commits.length === 0，否则 grep 生效且有结果时会误吞列表。 -->
+    <div
+      v-else-if="commits.length === 0 && hasActiveGrep"
+      class="git-log-center"
+    >
+      <v-icon size="32" color="grey">mdi-source-commit-off</v-icon>
+      <span class="git-log-center-text">
+        {{
+          tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.noMatches")
+        }}
+      </span>
+    </div>
+
     <div v-else-if="commits.length === 0" class="git-log-center">
       <v-icon size="32" color="grey">mdi-source-commit-off</v-icon>
       <span class="git-log-center-text">
@@ -1068,7 +1103,9 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
           // carries this class; it is consumed by the CSS rule
           // below AND by the watcher above which uses the
           // `data-commit-sha` selector to scrollIntoView.
-          'is-focused': props.focusedCommitSha === c.sha,
+          // 2026-09-08 (spec §2.5): effectiveFocusSha 额外覆盖
+          // 「hash ref 搜索」场景（后端回显 resolvedRef）。
+          'is-focused': effectiveFocusSha === c.sha,
         }"
         :data-commit-sha="c.sha"
       >

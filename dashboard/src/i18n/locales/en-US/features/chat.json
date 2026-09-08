@@ -1443,6 +1443,7 @@
             }
           },
           "empty": "No commits",
+          "noMatches": "No matching commits",
           "emptyRepository": "Repository has no commits yet",
           "loadMore": "Load more",
           "loading": "Loading…",
@@ -1548,6 +1549,7 @@
             "identity_not_set": "Run `git config --global user.email ...` first",
             "empty_repository": "Repository has no commits yet",
             "ref_not_found": "Commit not found",
+            "ref_ambiguous": "Ambiguous ref: the short hash matches multiple objects",
             "commit_too_large": "Commit is too large; use the diff endpoint to view the full patch"
           }
         }

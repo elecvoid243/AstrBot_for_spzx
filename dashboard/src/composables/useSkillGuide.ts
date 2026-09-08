@@ -41,6 +41,12 @@ export interface SkillGuideSkill {
   description: string
   path: string
   source_type: string
+  /** Global activation flag (core GET /skills). Absent on
+   *  /skill-guide/active entries, which are already session-effective. */
+  active?: boolean
+  /** Plugin activation flag for source_type === "plugin" (core
+   *  GET /skills). Absent on /skill-guide/active entries. */
+  plugin_active?: boolean
 }
 
 /** One rendered row of the skill menu: a skill plus its persona state. */
@@ -130,6 +136,31 @@ const displaySkills = computed<SkillGuideDisplaySkill[]>(() => {
 })
 
 /**
+ * Candidate skills for the "/" command palette: session-effective skills
+ * (persona-mounted, always included) unioned with the globally enabled
+ * ones from core GET /skills. With "show all" on, every skill on disk is
+ * listed too. Session-effective entries come first, then alphabetical.
+ */
+const candidateSkills = computed<SkillGuideDisplaySkill[]>(() => {
+  const byName = new Map<string, SkillGuideDisplaySkill>()
+  for (const skill of skills.value) {
+    byName.set(skill.name, { ...skill, mounted: true })
+  }
+  for (const skill of allSkills.value) {
+    if (byName.has(skill.name)) continue
+    const globallyEnabled =
+      skill.active !== false &&
+      (skill.source_type !== "plugin" || skill.plugin_active !== false)
+    if (!showAll.value && !globallyEnabled) continue
+    byName.set(skill.name, { ...skill, mounted: false })
+  }
+  return [...byName.values()].sort(
+    (a, b) =>
+      Number(b.mounted) - Number(a.mounted) || a.name.localeCompare(b.name),
+  )
+})
+
+/**
  * Composable returning the Skill Guide singleton.
  *
  * The dashboard only writes to the refs through the explicit methods
@@ -152,6 +183,13 @@ export function useSkillGuide() {
     loadFailed.value = false
     if (umo) {
       await refresh(umo)
+      // The "/" command palette needs the global skill inventory even
+      // when the "show all" toggle is off (candidateSkills unions it in),
+      // so warm the cache on session mount. Gated on the plugin being
+      // available (no point querying /skills without it); soft-fail.
+      if (available.value && !allSkillsFetched && !allSkillsLoading.value) {
+        void refreshAllSkills()
+      }
     } else {
       available.value = false
     }
@@ -226,11 +264,20 @@ export function useSkillGuide() {
             description?: unknown
             path?: unknown
             source_type?: unknown
+            active?: unknown
+            plugin_active?: unknown
           }) => ({
             name: String(skill?.name ?? ''),
             description: String(skill?.description ?? ''),
             path: String(skill?.path ?? ''),
             source_type: String(skill?.source_type ?? ''),
+            // Missing flags default to enabled so legacy payload shapes
+            // keep listing their skills in the "/" palette.
+            active: skill?.active !== false,
+            plugin_active:
+              skill?.plugin_active === undefined
+                ? undefined
+                : Boolean(skill.plugin_active),
           }),
         )
         .filter((skill) => skill.name !== '')
@@ -344,11 +391,13 @@ export function useSkillGuide() {
     allSkillsLoading,
     allSkillsFailed,
     displaySkills,
+    candidateSkills,
     // methods
     setSession,
     refresh,
     setShowAll,
     refreshAllSkills,
+    queueSkill,
     toggleSkill,
     clearAll,
     consumeQueued,

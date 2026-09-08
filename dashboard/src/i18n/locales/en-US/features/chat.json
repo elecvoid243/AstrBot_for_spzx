@@ -54,7 +54,8 @@
       "searchPlaceholder": "Search skills by name or description",
       "searchClear": "Clear search",
       "noMatch": "No matching skills",
-      "close": "Close"
+      "close": "Close",
+      "queueFailed": "Failed to load skill {name}"
     }
   },
   "message": {
@@ -428,7 +429,9 @@
   "commandSuggestion": {
     "navigate": "Navigate",
     "select": "Select",
-    "close": "Close"
+    "close": "Close",
+    "skillTag": "Skill",
+    "queued": "Queued"
   },
   "errors": {
     "sendMessageFailed": "Failed to send message, please try again",

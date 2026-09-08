@@ -54,7 +54,8 @@
       "searchPlaceholder": "Поиск скилла по имени или описанию",
       "searchClear": "Очистить поиск",
       "noMatch": "Скиллы не найдены",
-      "close": "Закрыть"
+      "close": "Закрыть",
+      "queueFailed": "Не удалось загрузить скилл {name}"
     }
   },
   "message": {
@@ -424,7 +425,9 @@
   "commandSuggestion": {
     "navigate": "Выбор",
     "select": "Подтвердить",
-    "close": "Закрыть"
+    "close": "Закрыть",
+    "skillTag": "Скилл",
+    "queued": "Загружен"
   },
   "errors": {
     "sendMessageFailed": "Ошибка отправки сообщения, попробуйте еще раз",

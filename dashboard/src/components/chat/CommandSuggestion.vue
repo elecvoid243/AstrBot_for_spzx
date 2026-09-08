@@ -18,8 +18,24 @@
       >
         <div class="command-suggestion-main">
           <span class="command-name">{{ cmd.effective_command }}</span>
-          <span v-if="cmd.plugin_display_name" class="command-plugin">
-            {{ cmd.plugin_display_name }}
+          <span class="command-tags">
+            <span
+              v-if="cmd.kind === 'skill'"
+              class="command-plugin command-plugin--skill"
+            >
+              <v-icon icon="mdi-lightbulb-on-outline" size="11" />
+              {{ tm("commandSuggestion.skillTag") }}
+            </span>
+            <span
+              v-if="cmd.queued"
+              class="command-plugin command-plugin--queued"
+            >
+              <v-icon icon="mdi-check" size="11" />
+              {{ tm("commandSuggestion.queued") }}
+            </span>
+            <span v-if="cmd.plugin_display_name" class="command-plugin">
+              {{ cmd.plugin_display_name }}
+            </span>
           </span>
         </div>
         <div v-if="cmd.description" class="command-description">
@@ -57,6 +73,10 @@ export interface SuggestionCommand {
   plugin_display_name: string | null;
   enabled: boolean;
   reserved: boolean;
+  /** "skill" = one-shot skill nudge (astrbot_plugin_skill_guide). */
+  kind?: "command" | "skill";
+  /** Skill already queued for the next request. */
+  queued?: boolean;
 }
 
 interface Props {
@@ -221,6 +241,38 @@ function handleMouseLeave() {
 .is-dark .command-plugin {
   color: #aaa;
   background: rgba(255, 255, 255, 0.08);
+}
+
+.command-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.command-plugin--skill,
+.command-plugin--queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.command-plugin--skill {
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
+}
+
+.command-plugin--queued {
+  color: rgb(var(--v-theme-success));
+  background: rgba(var(--v-theme-success), 0.12);
+}
+
+.is-dark .command-plugin--skill {
+  background: rgba(var(--v-theme-primary), 0.2);
+}
+
+.is-dark .command-plugin--queued {
+  background: rgba(var(--v-theme-success), 0.2);
 }
 
 .command-description {

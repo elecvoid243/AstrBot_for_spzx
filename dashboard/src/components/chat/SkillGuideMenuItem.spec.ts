@@ -401,27 +401,32 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
 });
 
 describe("SkillGuideMenuItem — show-all mode", () => {
-  it("defaults to persona-mounted skills only (no /skills fetch)", async () => {
-    await primeSession();
+  it("defaults to persona-mounted skills only", async () => {
+    // The global /skills list is warmed on session mount to feed the "/"
+    // palette (see useSkillGuide.candidateSkills); the popover must still
+    // render persona-mounted rows only while show-all is off.
     listMock.mockResolvedValue(ALL_SKILLS_PAYLOAD);
+    await primeSession();
     const wrapper = mountItem();
     await openByHover(wrapper);
 
     expect(wrapper.text()).toContain("brainstorming");
     expect(wrapper.text()).not.toContain("grilling");
-    expect(listMock).not.toHaveBeenCalled();
   });
 
   it("lists every data/skills skill on toggle, graying unmounted ones after the mounted ones", async () => {
-    await primeSession();
+    // Resolve the global /skills mock before priming so the session-mount
+    // warm-up fetch succeeds (show-all then renders the cached list).
     listMock.mockResolvedValue(ALL_SKILLS_PAYLOAD);
+    await primeSession();
     const wrapper = mountItem();
     await openByHover(wrapper);
 
     await wrapper.find('[data-test="skill-guide-show-all"]').trigger("click");
     await flushPromises();
 
-    expect(listMock).toHaveBeenCalled();
+    // The list may come from the session-mount warm-up cache, so assert
+    // the rendered result instead of a fresh /skills call.
     expect(wrapper.text()).toContain("grilling");
     const grilling = wrapper.find('[data-test="skill-guide-item-grilling"]');
     expect(grilling.classes()).toContain(
@@ -441,8 +446,8 @@ describe("SkillGuideMenuItem — show-all mode", () => {
   });
 
   it("queues an unmounted (gray) skill via POST /skill-guide/load", async () => {
-    await primeSession();
     listMock.mockResolvedValue(ALL_SKILLS_PAYLOAD);
+    await primeSession();
     postMock.mockResolvedValue(okLoad("grilling"));
     const wrapper = mountItem();
     await openByHover(wrapper);

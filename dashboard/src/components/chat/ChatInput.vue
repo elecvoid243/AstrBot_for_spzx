@@ -304,40 +304,6 @@
         </div>
       </transition>
 
-      <!--
-        2026-08-16 skill-guide: pending one-shot skill nudges, shown above
-        the composer exactly like staged uploads. Each badge mirrors a skill
-        queued via POST /skill-guide/load; it is consumed when the message
-        is sent (the plugin drains the queue on the next LLM request).
-      -->
-      <transition name="attachments">
-        <div
-          v-if="skillGuide.queued.value.length > 0"
-          class="skill-guide-preview"
-        >
-          <span class="skill-guide-preview__label">
-            <v-icon icon="mdi-lightbulb-on-outline" size="14"></v-icon>
-            {{ tm("input.skillGuide.pendingLabel") }}
-          </span>
-          <div
-            v-for="name in skillGuide.queued.value"
-            :key="name"
-            class="skill-guide-chip"
-          >
-            <span class="skill-guide-chip__name" :title="name">{{ name }}</span>
-            <button
-              type="button"
-              class="skill-guide-chip__remove"
-              :aria-label="tm('input.skillGuide.removeTitle', { name })"
-              :title="tm('input.skillGuide.removeTitle', { name })"
-              @click="skillGuide.toggleSkill(name)"
-            >
-              <v-icon icon="mdi-close" size="12"></v-icon>
-            </button>
-          </div>
-        </div>
-      </transition>
-
       <CommandSuggestion
         :visible="showCommandSuggestion"
         :commands="filteredCommands"
@@ -386,7 +352,7 @@
               it never changes the "+" menu's width. The plugin is gated on
               GET /skill-guide/active having answered once
               (useSkillGuide.available); queued skills are mirrored by the
-              pending badges row below the composer.
+              inline chips at the start of the composer.
             -->
             <SkillGuideMenuItem
               v-if="skillGuide.available.value"
@@ -436,6 +402,53 @@
           </StyledMenu>
         </div>
         <div class="input-field-shell">
+          <!--
+            2026-09-08 (elecvoid243): queued one-shot skill nudges render
+            inline at the start of the composer (figure-2 style) instead of
+            the old row above it. Each chip mirrors a skill queued via
+            POST /skill-guide/load; the plugin drains the queue on the next
+            LLM request and ChatInput clears the mirror on send.
+          -->
+          <div
+            v-if="skillGuide.queued.value.length > 0"
+            class="skill-guide-inline"
+            data-test="skill-guide-inline"
+          >
+            <div
+              v-for="name in visibleQueuedSkills"
+              :key="name"
+              class="skill-guide-chip"
+            >
+              <v-icon
+                icon="mdi-lightbulb-on-outline"
+                size="13"
+                class="skill-guide-chip__icon"
+              />
+              <span class="skill-guide-chip__name" :title="name">{{
+                name
+              }}</span>
+              <button
+                type="button"
+                class="skill-guide-chip__remove"
+                :aria-label="tm('input.skillGuide.removeTitle', { name })"
+                :title="tm('input.skillGuide.removeTitle', { name })"
+                @click="skillGuide.toggleSkill(name)"
+              >
+                <v-icon icon="mdi-close" size="12"></v-icon>
+              </button>
+            </div>
+            <span
+              v-if="hiddenQueuedSkillCount > 0"
+              class="skill-guide-inline__more"
+              :title="
+                skillGuide.queued.value
+                  .slice(MAX_VISIBLE_SKILL_CHIPS)
+                  .join(', ')
+              "
+            >
+              +{{ hiddenQueuedSkillCount }}
+            </span>
+          </div>
           <input
             v-if="!inputIsMultiline"
             ref="inputField"
@@ -643,6 +656,11 @@ import type { ThinkingEffortLevel } from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import CommandSuggestion from "./CommandSuggestion.vue";
+import {
+  mergeSuggestions,
+  normalizeCommandSearchText as normalizeCommandSearchTextBase,
+  stripWakePrefix as stripWakePrefixBase,
+} from "./suggestionMerge";
 import ProjectLoadMenuItem from "./ProjectLoadMenuItem.vue";
 import ProjectLoadDialog from "./ProjectLoadDialog.vue";
 import type { ProjectLoadSubmitPayload } from "./ProjectLoadDialog.vue";
@@ -939,6 +957,9 @@ const allCommands = ref<CommandItem[]>([]);
 const showCommandSuggestion = ref(false);
 const selectedCommandIndex = ref(0);
 const commandSuggestionLoading = ref(false);
+// Guards the skill auto-trigger against re-entrancy while the queue POST
+// is in flight (the prompt is rewritten right after it resolves).
+const skillAutoQueueBusy = ref(false);
 
 // Template ref to the spcode project-load dialog. The dialog is
 // mounted at the ChatInput level (outside any popover) so this ref
@@ -992,18 +1013,11 @@ function hasWakePrefix(text: string): boolean {
 
 /** 去掉文本开头匹配的任意唤醒词前缀，返回剥离后的文本 */
 function stripWakePrefix(text: string): string {
-  let result = text;
-  for (const p of wakePrefixes.value) {
-    if (result.startsWith(p)) {
-      result = result.slice(p.length);
-      break; // 只剥离第一个匹配的前缀
-    }
-  }
-  return result;
+  return stripWakePrefixBase(text, wakePrefixes.value);
 }
 
 function normalizeCommandSearchText(value: string) {
-  return stripWakePrefix(value.trim()).toLowerCase();
+  return normalizeCommandSearchTextBase(value, wakePrefixes.value);
 }
 
 /** 从所有指令中展平获取启用的普通指令和子指令 */
@@ -1061,42 +1075,16 @@ const enabledCommands = computed(() => {
   return result;
 });
 
-function sortSystemPluginCommandsFirst(commands: SuggestionCommand[]) {
-  return [...commands].sort((a, b) => Number(b.reserved) - Number(a.reserved));
-}
-
-/** 根据当前输入过滤候选指令 */
+/** 根据当前输入过滤候选指令（命令 + skill），见 suggestionMerge.ts */
 const filteredCommands = computed(() => {
   const text = props.prompt;
   if (!text || !hasWakePrefix(text)) return [];
-
-  const query = normalizeCommandSearchText(text);
-  if (!query) return sortSystemPluginCommandsFirst(enabledCommands.value);
-
-  const startsWithMatches: SuggestionCommand[] = [];
-  const containsMatches: SuggestionCommand[] = [];
-
-  for (const cmd of enabledCommands.value) {
-    const commandText = normalizeCommandSearchText(cmd.effective_command);
-    const pluginText = normalizeCommandSearchText(
-      cmd.plugin_display_name || "",
-    );
-    const descriptionText = normalizeCommandSearchText(cmd.description || "");
-    const matchesCommand = commandText.includes(query);
-    const matchesMetadata =
-      pluginText.includes(query) || descriptionText.includes(query);
-
-    if (commandText.startsWith(query)) {
-      startsWithMatches.push(cmd);
-    } else if (matchesCommand || matchesMetadata) {
-      containsMatches.push(cmd);
-    }
-  }
-
-  return [
-    ...sortSystemPluginCommandsFirst(startsWithMatches),
-    ...sortSystemPluginCommandsFirst(containsMatches),
-  ];
+  return mergeSuggestions({
+    commands: enabledCommands.value,
+    skills: skillCommands.value,
+    text,
+    wakePrefixes: wakePrefixes.value,
+  });
 });
 
 const localPrompt = computed({
@@ -1118,10 +1106,48 @@ const sessionIsGroup = computed(() => Boolean(props.currentSession?.is_group));
 
 // 2026-08-16 skill-guide: singleton state for the Skill Guide plugin.
 // ChatInput owns `setSession` (session switch → re-fetch the active
-// skill list for the new umo); the SkillGuideMenuItem and the pending
-// badges row below read the same refs, so the popover ✓ marks and the
-// badges can never diverge.
+// skill list for the new umo); the SkillGuideMenuItem and the inline
+// composer chips read the same refs, so the popover ✓ marks and the
+// chips can never diverge.
 const skillGuide = useSkillGuide();
+
+/**
+ * 2026-09-08 (elecvoid243): skill pseudo-commands for the "/" palette.
+ * Sources: session-effective skills + globally enabled skills (see
+ * useSkillGuide.candidateSkills). A skill whose name collides with a real
+ * command is dropped — the command wins.
+ */
+const skillCommands = computed<SuggestionCommand[]>(() => {
+  const prefix = wakePrefixes.value[0] || "/";
+  const commandNames = new Set(
+    enabledCommands.value.map((cmd) =>
+      normalizeCommandSearchText(cmd.effective_command),
+    ),
+  );
+  return skillGuide.candidateSkills.value
+    .filter((skill) => !commandNames.has(skill.name.toLowerCase()))
+    .map((skill) => ({
+      handler_full_name: `skill:${skill.name}`,
+      effective_command: `${prefix}${skill.name}`,
+      description: skill.description || "",
+      plugin_display_name: null,
+      enabled: true,
+      reserved: false,
+      kind: "skill" as const,
+      queued: skillGuide.queued.value.includes(skill.name),
+    }));
+});
+
+// Inline skill chips inside the composer (figure-2 style): keep the row
+// compact when many skills are queued.
+const MAX_VISIBLE_SKILL_CHIPS = 3;
+const visibleQueuedSkills = computed(() =>
+  skillGuide.queued.value.slice(0, MAX_VISIBLE_SKILL_CHIPS),
+);
+const hiddenQueuedSkillCount = computed(() =>
+  Math.max(0, skillGuide.queued.value.length - MAX_VISIBLE_SKILL_CHIPS),
+);
+
 watch(
   () => [props.sessionId, sessionIsGroup.value] as const,
   async ([sessionId, isGroup]) => {
@@ -1360,10 +1386,83 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 }
 
-/** 处理输入变化，控制命令提示显示 */
+/**
+ * 2026-09-08 (elecvoid243): freshest composer text. `props.prompt` lags by
+ * one tick (v-model emit -> parent re-render), so the skill auto-trigger
+ * reads the DOM value; otherwise a token stripped right after a keystroke
+ * would also drop the character the user typed in that same event.
+ */
+function currentInputText(): string {
+  return inputField.value?.value ?? props.prompt;
+}
+
+/** 匹配 "<前缀><skill 名><空白>" 形式的精确 skill token（忽略大小写） */
+function matchExactSkillToken(text: string): string | null {
+  if (!hasWakePrefix(text)) return null;
+  const stripped = stripWakePrefix(text.trimStart());
+  const match = /^([^\s]+)\s/.exec(stripped);
+  if (!match) return null;
+  const token = match[1].toLowerCase();
+  const skill = skillCommands.value.find(
+    (cmd) => stripWakePrefix(cmd.effective_command).toLowerCase() === token,
+  );
+  return skill ? skill.effective_command : null;
+}
+
+/** 从输入头部摘掉触发 token，保留用户已输入的正文 */
+function consumeSkillToken(name: string): void {
+  const text = currentInputText();
+  if (!hasWakePrefix(text)) return;
+  const stripped = stripWakePrefix(text.trimStart());
+  const match = /^([^\s]+)(\s+)?/.exec(stripped);
+  if (!match || match[1].toLowerCase() !== name.toLowerCase()) return;
+  const rest = stripped.slice(match[0].length);
+  localPrompt.value = rest;
+  nextTick(() => {
+    const el = inputField.value;
+    el?.setSelectionRange(rest.length, rest.length);
+    autoResize();
+  });
+}
+
+/**
+ * 排队一个 skill（一次性引导注入）并摘掉输入框里的触发 token，让用户
+ * 可以继续输入正文。面板选中与"键入即触发"共用此路径。
+ */
+async function applySkillCommand(displayCommand: string): Promise<void> {
+  const name = stripWakePrefix(displayCommand).trim();
+  if (!name || skillAutoQueueBusy.value) return;
+  skillAutoQueueBusy.value = true;
+  try {
+    const ok = await skillGuide.queueSkill(name);
+    if (ok) {
+      consumeSkillToken(name);
+    } else {
+      toastStore.add({
+        message: tm("input.skillGuide.queueFailed", { name }),
+        color: "error",
+        timeout: 4000,
+      });
+    }
+  } finally {
+    skillAutoQueueBusy.value = false;
+    showCommandSuggestion.value = false;
+    nextTick(() => {
+      inputField.value?.focus();
+      autoResize();
+    });
+  }
+}
+
+/** 处理输入变化，控制命令提示显示；skill 名后跟空格时自动加载 */
 function handleInput() {
-  const text = props.prompt;
+  const text = currentInputText();
   if (text && hasWakePrefix(text) && !isComposing.value) {
+    const autoSkill = matchExactSkillToken(text);
+    if (autoSkill) {
+      void applySkillCommand(autoSkill);
+      return;
+    }
     showCommandSuggestion.value = filteredCommands.value.length > 0;
     selectedCommandIndex.value = 0;
   } else {
@@ -1380,8 +1479,12 @@ function handleBlur() {
   }, 200);
 }
 
-/** 选择命令，填入输入框 */
+/** 选择命令：普通命令填入输入框；skill 排队后摘掉 token，正文保留 */
 function handleCommandSelect(cmd: SuggestionCommand) {
+  if (cmd.kind === "skill") {
+    void applySkillCommand(cmd.effective_command);
+    return;
+  }
   localPrompt.value = cmd.effective_command + " ";
   showCommandSuggestion.value = false;
   nextTick(() => {
@@ -2871,24 +2974,25 @@ defineExpose({
   color: rgb(var(--v-theme-error));
 }
 
-/* 2026-08-16 skill-guide: pending one-shot skill nudge badges, styled to
-   match the reference/attachment chips above the composer. */
-.skill-guide-preview {
+/* 2026-09-08 (elecvoid243): queued one-shot skill chips, rendered inline
+   at the start of the composer (figure-2 style). */
+.skill-guide-inline {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 6px;
-  width: 100%;
   flex: 0 0 auto;
-  padding: 8px 12px 0;
+  max-width: 55%;
+  margin-right: 8px;
+  overflow: hidden;
 }
-.skill-guide-preview__label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.skill-guide-inline__more {
+  flex-shrink: 0;
   font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.55);
   white-space: nowrap;
+}
+.input-container.is-multiline .skill-guide-inline {
+  margin-top: 2px;
 }
 .skill-guide-chip {
   display: inline-flex;
@@ -2901,6 +3005,10 @@ defineExpose({
   background: rgba(var(--v-theme-primary), 0.08);
   font-size: 12px;
   color: rgb(var(--v-theme-on-surface));
+}
+.skill-guide-chip__icon {
+  flex-shrink: 0;
+  color: rgb(var(--v-theme-primary));
 }
 .skill-guide-chip__name {
   overflow: hidden;

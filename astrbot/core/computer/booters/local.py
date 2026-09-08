@@ -148,45 +148,81 @@ def _self_pids() -> frozenset[int]:
     return frozenset(pids)
 
 
-# Commands that, in the local runtime, would match the running AstrBot /
-# Python process when invoked without an explicit PID. They are refused
-# regardless of the argument so an agent cannot iterate the process list
-# (for example via ``pgrep`` + ``pkill``) to discover the protected PID.
-_SELF_KILL_NAME_PATTERNS = (
-    "taskkill",  # Windows: kill by PID / IM / window title
-    "stop-process",  # PowerShell: kill by name or PID
-    "pkill",  # Unix: kill by pattern match
+# Command names treated as kill invocations. Order matters: longer names must
+# precede their prefixes (``killall5`` before ``killall`` before ``kill``).
+# Everything except the bare ``kill`` selects its victim from the process list
+# and is refused outright, because it cannot be checked against the protected
+# PID set.
+_KILL_COMMAND_NAMES = (
+    "killall5",  # Unix (System V): kill every process
     "killall",  # Unix: kill by exact process name
+    "taskkill",  # Windows: kill by PID / IM / window title
+    "pkill",  # Unix: kill by pattern match
+    "stop-process",  # PowerShell: kill by name or PID
+    "spps",  # PowerShell alias of Stop-Process
     "pgrep",  # Unix: process lookup (often paired with pkill)
+    "kill",  # Unix kill / PowerShell alias of Stop-Process
 )
+
+# A kill invocation, optionally reached through a path (``/bin/kill``) or a
+# shell substitution (``$(kill 1234)``). ``args`` is the remainder of the
+# command up to the next shell separator and is scanned for literal PIDs.
+_KILL_INVOCATION_PATTERN = re.compile(
+    r"(?:^|[\s;&|(){}<>$`\"'/=])"
+    r"(?P<name>" + "|".join(_KILL_COMMAND_NAMES) + r")"
+    r"(?:\.[a-z]+)?\b(?P<args>[^;&|\n]*)"
+)
+
+# Kill-style API calls such as ``os.kill(pid, 9)``, ``Process.kill("KILL", pid)``
+# or PowerShell's ``$_.Kill()``. A shell command has no reason to spell a kill
+# this way.
+_KILL_API_CALL_PATTERN = re.compile(r"\bkill\s*\(")
 
 
 def _would_kill_self(command: str) -> bool:
     """Best-effort detection of commands that target the host AstrBot process.
 
-    Complements the substring blacklist in :data:`_BLOCKED_COMMAND_PATTERNS` by
-    inspecting command tokens for kill patterns that target protected PIDs and
-    for name-based kill commands that would match the running Python process.
+    Complements the substring blacklist in :data:`_BLOCKED_COMMAND_PATTERNS`
+    by inspecting the command for kill invocations that name a protected PID
+    or that select their victim by process name.
 
-    This is intentionally conservative for the local runtime where the shell
-    command runs in the same OS instance as AstrBot. The sandbox runtime is
-    not affected because its commands execute in an isolated container.
+    This is a speed bump, not a security boundary: the local shell runs with
+    the same privileges as AstrBot, so indirections not modelled here (extra
+    quoting, encodings, another interpreter, a script on disk) still get
+    through. Only OS-level isolation gives a real guarantee. The sandbox
+    runtime is unaffected because its commands run in an isolated container.
+
+    Args:
+        command: Shell command text about to run, or text about to be written
+            to a managed shell session.
+
+    Returns:
+        True when the command must be refused.
     """
     lowered = command.lower()
     protected = _self_pids()
 
-    # Explicit numeric PID kill, e.g. `kill 1234`, `kill -15 1234`,
-    # `kill -TERM 1234`. `kill -9` is already covered by the blacklist but
-    # is matched here as well for any other signal number.
-    for match in re.finditer(r"\bkill\b\s+((?:-\w+\s+)*)(\d+)", lowered):
-        try:
-            pid = int(match.group(2))
-        except ValueError:
-            continue
-        if pid in protected:
+    if _KILL_API_CALL_PATTERN.search(lowered):
+        return True
+
+    # Dropping quotes defeats trivial concatenation such as ``k''ill 1234``
+    # without changing the token boundaries the pattern relies on.
+    flattened = lowered.replace("'", "").replace('"', "")
+
+    for match in _KILL_INVOCATION_PATTERN.finditer(flattened):
+        if match.group("name") != "kill":
+            return True
+        args = match.group("args")
+        if any(int(pid) in protected for pid in re.findall(r"\d+", args)):
+            return True
+        # A ``kill`` without a literal PID either selects by name
+        # (``kill -Name python``) or leans on a pipeline
+        # (``gps python | kill``); neither can be verified as safe.
+        # ``kill -l`` only lists signal names, so it stays allowed.
+        if not re.search(r"\d", args) and args.strip() not in {"-l", "--list"}:
             return True
 
-    return any(keyword in lowered for keyword in _SELF_KILL_NAME_PATTERNS)
+    return False
 
 
 def resolve_windows_shell() -> str:
@@ -393,11 +429,16 @@ class LocalShellComponent(ShellComponent):
             Process result with output, status, and session metadata.
 
         Raises:
-            PermissionError: If the command matches a blocked pattern.
+            PermissionError: If the command matches a blocked pattern or
+                would terminate the AstrBot host process.
             ValueError: If a timing or output limit is invalid.
         """
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
+        if _would_kill_self(command):
+            raise PermissionError(
+                "Blocked: refusing to terminate the AstrBot host process."
+            )
         if yield_time_ms < 0 or yield_time_ms > 30_000:
             raise ValueError("`yield_time_ms` must be between 0 and 30000.")
         if timeout is not None and timeout <= 0:
@@ -754,8 +795,17 @@ class LocalShellComponent(ShellComponent):
             Current process status after the write.
 
         Raises:
+            PermissionError: If the text would terminate the AstrBot host
+                process.
             ValueError: If the session is unavailable or no longer accepts input.
         """
+        # Per-write check only: a command split across several writes is not
+        # reassembled, so this raises the bar rather than closing the path.
+        if _would_kill_self(chars):
+            raise PermissionError(
+                "Blocked: refusing to write a host-terminating command to the "
+                "shell session."
+            )
         session = await self._get_owned_session(
             owner_id,
             requester_id,

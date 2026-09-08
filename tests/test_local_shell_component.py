@@ -670,3 +670,97 @@ async def test_managed_shell_keeps_completed_session_until_output_is_drained():
         ) == {"sessions": []}
     finally:
         await shell.shutdown_sessions()
+
+
+_HOST_PID = 4321
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "kill {pid}",
+        "kill -TERM {pid}",
+        "kill -s SIGKILL {pid}",
+        "kill -s TERM {pid}",
+        "kill -n 9 {pid}",
+        "kill -- {pid}",
+        "k''ill {pid}",
+        "/bin/kill -s SIGKILL {pid}",
+        "bash -c 'kill -s SIGKILL {pid}'",
+        "echo $(kill {pid})",
+        "python -c 'import os,signal;os.kill({pid},signal.SIGKILL)'",
+        "perl -e 'kill 9, {pid}'",
+        "ruby -e 'Process.kill(\"KILL\", {pid})'",
+        "kill -Name python",
+        "spps -Name python",
+        "gps python | kill",
+        "Get-Process python | ForEach-Object {{ $_.Kill() }}",
+    ],
+)
+def test_would_kill_self_blocks_host_terminating_commands(monkeypatch, command):
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+
+    assert local_booter._would_kill_self(command.format(pid=_HOST_PID))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "kill -l",
+        "kill {pid}",
+        "echo hello",
+        "python -c 'print(1)'",
+        "git log --grep=ready",
+    ],
+)
+def test_would_kill_self_allows_unrelated_commands(monkeypatch, command):
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+
+    assert not local_booter._would_kill_self(command.format(pid=_HOST_PID + 1))
+
+
+@pytest.mark.asyncio
+async def test_exec_managed_blocks_host_terminating_command():
+    shell = LocalShellComponent()
+
+    with pytest.raises(PermissionError, match="host process"):
+        await shell.exec_managed(
+            f"kill -s SIGKILL {os.getpid()}",
+            owner_id="owner-a",
+            creator_id="user-a",
+            creator_is_admin=False,
+            sandboxed=False,
+            yield_time_ms=0,
+        )
+
+    assert await shell.list_sessions(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=False,
+    ) == {"sessions": []}
+
+
+@pytest.mark.asyncio
+async def test_write_session_blocks_host_terminating_input():
+    shell = LocalShellComponent()
+    result = await shell.exec_managed(
+        _python_command("import time; time.sleep(30)"),
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=False,
+        sandboxed=False,
+        yield_time_ms=0,
+    )
+
+    try:
+        with pytest.raises(PermissionError, match="host-terminating"):
+            await shell.write_session(
+                owner_id="owner-a",
+                requester_id="user-a",
+                requester_is_admin=False,
+                session_id=result["session_id"],
+                chars=f"os.kill({os.getpid()}, 9)\n",
+            )
+        assert shell._sessions[result["session_id"]].process.returncode is None
+    finally:
+        await shell.shutdown_sessions()

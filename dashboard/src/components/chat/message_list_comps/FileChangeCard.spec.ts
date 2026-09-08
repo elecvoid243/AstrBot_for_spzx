@@ -66,6 +66,23 @@ const WRITE_ENTRY: FileChangeEntry = {
   },
 };
 
+// 2026-09-09: the write tool appends " (encoding: xxx)" to its success
+// result, so collectFileChanges stores the marked name in filePath. The
+// card must keep showing the marker while the open APIs receive the
+// clean path (the file on disk never carries it).
+const WRITE_ENTRY_MARKED: FileChangeEntry = {
+  ...WRITE_ENTRY,
+  callId: "w2",
+  filePath: "F:\\proj\\b.txt (encoding: utf-8)",
+  tool: {
+    id: "w2",
+    name: "astrbot_file_write_tool",
+    args: { path: "F:\\proj\\b.txt", content: "a\nb\nc" },
+    result: "File written successfully: F:\\proj\\b.txt (encoding: utf-8)",
+    finished_ts: 2,
+  },
+};
+
 const EDIT_ENTRY: FileChangeEntry = {
   callId: "e1",
   kind: "edit",
@@ -278,5 +295,27 @@ describe("FileChangeCard", () => {
     await flushPromises();
     expect(mocks.toastError).toHaveBeenCalled();
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  // ── 2026-09-09 encoding marker ───────────────────────────────────
+
+  it("keeps the encoding marker in the display name but strips it for open-on-disk", async () => {
+    const wrapper = mountCard(WRITE_ENTRY_MARKED);
+    expect(wrapper.find(".file-change-name").text()).toContain(
+      "b.txt (encoding: utf-8)",
+    );
+
+    await wrapper.find(".file-change-open-btn").trigger("click");
+    await flushPromises();
+    expect(mocks.openLocalFile).toHaveBeenCalledWith("F:\\proj\\b.txt");
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("strips the encoding marker for open-folder too", async () => {
+    const wrapper = mountCard(WRITE_ENTRY_MARKED);
+    await wrapper.find(".file-change-folder-btn").trigger("click");
+    await flushPromises();
+    expect(mocks.openLocalFolder).toHaveBeenCalledWith("F:\\proj\\b.txt");
+    expect(mocks.openLocalFile).not.toHaveBeenCalled();
   });
 });

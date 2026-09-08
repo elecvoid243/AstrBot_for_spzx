@@ -73,7 +73,7 @@
         class="file-change-open-btn"
         :disabled="opening"
         :title="tm('fileChange.openOnDisk')"
-        @click.stop="openOnDisk(entry.filePath, basename)"
+        @click.stop="openOnDisk(openPath, basename)"
       >
         <v-icon size="14">mdi-open-in-new</v-icon>
       </button>
@@ -86,7 +86,7 @@
         class="file-change-open-btn file-change-folder-btn"
         :disabled="opening"
         :title="tm('fileChange.openFolder')"
-        @click.stop="openFolder(entry.filePath, basename)"
+        @click.stop="openFolder(openPath, basename)"
       >
         <v-icon size="14">mdi-folder-open-outline</v-icon>
       </button>
@@ -149,6 +149,7 @@ import {
   fileChangeTone,
   normalizeToolArgs,
   parseFileEditResult,
+  stripWriteEncodingMarker,
   type FileChangeEntry,
 } from "@/utils/fileChangeTool";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
@@ -168,12 +169,22 @@ const isExpanded = ref(false);
 
 const { opening, openOnDisk, openFolder } = useOpenOnDisk("fileChange");
 
+/**
+ * 2026-09-09: path handed to the open-on-disk / open-folder APIs. Write
+ * results carry a display-only ` (encoding: xxx)` marker that the file on
+ * disk never has; the card keeps showing it (basename / title) but the
+ * API must receive the clean path.
+ */
+const openPath = computed(() =>
+  stripWriteEncodingMarker(props.entry.filePath),
+);
+
 /** Removals delete the file and a running call may not have flushed
  *  yet, so the open action only makes sense for finished edit/write
  *  entries with a resolved path. */
 const canOpenOnDisk = computed(
   () =>
-    Boolean(props.entry.filePath) &&
+    Boolean(openPath.value) &&
     props.entry.kind !== "remove" &&
     props.entry.status !== "running",
 );
@@ -181,7 +192,7 @@ const canOpenOnDisk = computed(
 /** The containing folder survives a removal, so it can be opened for
  *  every finished entry kind; only running calls are excluded. */
 const canOpenFolder = computed(
-  () => Boolean(props.entry.filePath) && props.entry.status !== "running",
+  () => Boolean(openPath.value) && props.entry.status !== "running",
 );
 
 const kindIcon = computed(() => {
@@ -228,7 +239,10 @@ const writeContent = computed(() =>
   String(normalizeToolArgs(props.entry.tool.args ?? props.entry.tool.arguments).content ?? ""),
 );
 
-const writeLanguage = computed(() => detectLanguage(props.entry.filePath));
+// Language detection must use the clean path: the display marker
+// (" (encoding: xxx)") breaks the trailing-extension match, which
+// silently downgraded write cards to plain text.
+const writeLanguage = computed(() => detectLanguage(openPath.value));
 
 const shikiHighlighter = ref<any>(null);
 const shikiReady = ref(false);

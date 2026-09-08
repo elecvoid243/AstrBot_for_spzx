@@ -123,6 +123,19 @@ export function fileBasename(path: string): string {
 }
 
 /**
+ * Strip the trailing ` (encoding: xxx)` marker the write tool appends to
+ * its success result (`File written successfully: <path> (encoding: utf-8)`).
+ *
+ * 2026-09-09: the marker is display-only — the file on disk never carries
+ * it. `collectFileChanges` keeps it inside `filePath` so the card can show
+ * it, but every API call built from that path (open on disk / open folder)
+ * must use this stripped form.
+ */
+export function stripWriteEncodingMarker(path: string): string {
+    return (path ?? "").replace(/\s*\(encoding:\s*[^)]*\)\s*$/i, "");
+}
+
+/**
  * Color tone for a file-change entry, used to tint FileChangeCard and
  * the ReasoningBlock chips (2026-08-11): write (new/whole-file) →
  * green, edit (modification) → yellow, remove (deletion) → red.

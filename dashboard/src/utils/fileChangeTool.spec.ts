@@ -13,6 +13,7 @@ import {
   fileChangeTone,
   isFileChangeToolName,
   parseFileEditResult,
+  stripWriteEncodingMarker,
   type FileChangeEntry,
 } from "@/utils/fileChangeTool";
 
@@ -160,6 +161,40 @@ describe("fileBasename", () => {
   it("returns the input for bare names and empty strings", () => {
     expect(fileBasename("a.py")).toBe("a.py");
     expect(fileBasename("")).toBe("");
+  });
+});
+
+// 2026-09-09: the write tool appends " (encoding: xxx)" to its success
+// result; the marker is display-only and must be stripped before any
+// path is handed to an API (open on disk / open folder / language detect).
+describe("stripWriteEncodingMarker", () => {
+  it("strips the trailing encoding marker", () => {
+    expect(
+      stripWriteEncodingMarker("F:\\proj\\notes.md (encoding: utf-8)"),
+    ).toBe("F:\\proj\\notes.md");
+    expect(stripWriteEncodingMarker("F:\\proj\\a.txt (encoding: cp936)")).toBe(
+      "F:\\proj\\a.txt",
+    );
+  });
+
+  it("strips the alias encodings the backend normalizes to", () => {
+    expect(stripWriteEncodingMarker("C:/p/a.txt (encoding: utf-8-sig)")).toBe(
+      "C:/p/a.txt",
+    );
+    expect(stripWriteEncodingMarker("C:/p/a.txt (encoding: ansi)")).toBe(
+      "C:/p/a.txt",
+    );
+  });
+
+  it("leaves a clean path untouched", () => {
+    expect(stripWriteEncodingMarker("F:\\proj\\b.txt")).toBe("F:\\proj\\b.txt");
+    expect(stripWriteEncodingMarker("")).toBe("");
+  });
+
+  it("only strips a trailing marker, not an inner one", () => {
+    expect(
+      stripWriteEncodingMarker("F:\\proj\\a (encoding: x)\\b.txt"),
+    ).toBe("F:\\proj\\a (encoding: x)\\b.txt");
   });
 });
 

@@ -4217,6 +4217,11 @@ const logHasMore = computed(() => {
 });
 const logIsLoading = computed(() => gitLog.state.value.kind === "loading");
 function onLogApply(filter: LogFilter): void {
+  // 2026-09-08 final-fix: 深链聚焦（focusCommit）在 GitLogView 的
+  // effectiveFocusSha 里优先级高于 hash 搜索派生的 hashFocusSha。Apply
+  // 后若不清空，用户再用 hash 搜索时命中行会静默不高亮。深链自身走
+  // gitLog.refresh()，不经过本函数，所以这里清空不会打断深链。
+  focusedCommitSha.value = null;
   // 用 filter 调用 refresh(spec §6.5.1:filter 变化时 key 自动变化,旧 ETag 不复用)
   void gitLog.refresh(filter);
 }
@@ -4236,6 +4241,9 @@ function onLogRefresh(): void {
   void gitStats.refresh(statsRangeArgs());
 }
 function onLogReset(filter: LogFilter): void {
+  // 2026-09-08 final-fix: 同 onLogApply —— Reset 也必须让深链聚焦让位，
+  // 否则 hash 搜索的 resolvedRef 高亮会被残留的 focusedCommitSha 压掉。
+  focusedCommitSha.value = null;
   // Reset semantics differ from a regular Apply: the URL of the reset
   // request is identical to the very first history-tab load (?ref=HEAD&n=20),
   // so without dropping the ETag the backend returns 304 Not Modified and

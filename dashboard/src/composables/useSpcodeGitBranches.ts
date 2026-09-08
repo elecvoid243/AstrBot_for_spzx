@@ -232,8 +232,12 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
       // Atomically swap state with the refreshed branch list.
       const refreshed = parsed.snapshot.branches;
       // 2026-09-08: mutation 响应不带 tags(后端仅 GET git-branches 返回),
-      // 故沿用上一份快照的 tag 列表,待下一次轮询刷新;
-      // 若响应意外带了 tags,则优先采用响应里的。
+      // 故沿用上一份快照的 tag 列表,待下一次轮询刷新。
+      // 2026-09-08 final-fix: 下面「响应 tags 优先」那一臂今天**不可达** ——
+      // parseSpcodeBranchManagement.buildSnapshot 从不把 tags 透传给
+      // refreshed.tags(恒为 []),因此实际生效的永远是 prevTags。保留该
+      // 分支是 forward-compat:未来后端 / 解析器开始在 mutation 响应里
+      // 带 tags 时,响应数据会自动优先,无需再改这里。
       const prevTags =
         state.value.kind === "ok" ? state.value.snapshot.tags : [];
       const rawResponse: SpcodeGitBranchesRawResponse = {

@@ -269,4 +269,19 @@ describe("GitLogView no-match empty state", () => {
     expect(wrapper.find(".git-log-item").exists()).toBe(true);
     expect(wrapper.find(".git-log-center").exists()).toBe(false);
   });
+
+  // 2026-09-08 final-fix: 请求失败且没有上一份快照时，commits 回退为空
+  // 数组，旧实现会把「没有匹配的提交」空态和错误横幅同时渲染出来。
+  // 空态只属于 kind === 'ok'，失败时应当只显示错误横幅。
+  it("renders only the error banner (no empty state) when the request failed", () => {
+    const state = { kind: "error" as const, reason: "git_error" };
+    const wrapper = mountLog([], {
+      state: state as never,
+      appliedGrep: "zzz",
+    });
+    expect(wrapper.find(".git-log-banner-error").exists()).toBe(true);
+    expect(wrapper.find(".git-log-center").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("没有匹配的提交");
+    expect(wrapper.text()).not.toContain("暂无提交记录");
+  });
 });

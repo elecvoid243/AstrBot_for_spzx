@@ -1089,9 +1089,12 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
 
     <!-- 2026-09-08 (spec §2.6): 已应用「提交名」grep 且无结果 → 专门的
          空态；与下面的 history.empty（未过滤但没有提交）区分。必须同时
-         判定 commits.length === 0，否则 grep 生效且有结果时会误吞列表。 -->
+         判定 commits.length === 0，否则 grep 生效且有结果时会误吞列表。
+         2026-09-08 final-fix: 空态只在请求成功（kind === 'ok'）时成立。
+         失败时 commits 会回退到上一份快照（无快照则为空数组），若仍渲染
+         空态，就会与下方的错误横幅同屏；此时应只显示错误横幅。 -->
     <div
-      v-else-if="commits.length === 0 && hasActiveGrep"
+      v-else-if="state.kind === 'ok' && commits.length === 0 && hasActiveGrep"
       class="git-log-center"
     >
       <v-icon size="32" color="grey">mdi-source-commit-off</v-icon>
@@ -1102,7 +1105,11 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
       </span>
     </div>
 
-    <div v-else-if="commits.length === 0" class="git-log-center">
+    <!-- 同上：失败 / idle 态不要伪造「暂无提交记录」，交给错误横幅或加载态。 -->
+    <div
+      v-else-if="state.kind === 'ok' && commits.length === 0"
+      class="git-log-center"
+    >
       <v-icon size="32" color="grey">mdi-source-commit-off</v-icon>
       <span class="git-log-center-text">
         {{ tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.empty") }}

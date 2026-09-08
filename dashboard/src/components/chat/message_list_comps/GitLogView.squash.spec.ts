@@ -104,7 +104,12 @@ function mountView(props: Record<string, unknown> = {}) {
       statsOpen: false,
       range: null,
       topFilesLimit: 10,
-      branchItems: ["main", "dev"],
+      // 2026-09-08: grouped ref picker (prop renamed from branchItems).
+      refItems: [
+        { title: "当前分支", type: "subheader" },
+        { title: "main", value: "main" },
+        { title: "dev", value: "dev" },
+      ],
       currentBranch: "main",
       activeRef: "HEAD",
       squashResetToken: 0,

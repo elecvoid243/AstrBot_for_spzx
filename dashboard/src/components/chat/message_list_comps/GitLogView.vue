@@ -45,6 +45,13 @@ const { tm } = useModuleI18n("features/chat");
 // "computed reads the wrong field" trap that bit the earlier
 // useTheme().global.name.value attempt.
 
+/** 2026-09-08: Ref 选择器条目。subheader 为分组标题，不可选中。 */
+export interface RefPickerItem {
+  title: string;
+  value?: string;
+  type?: "item" | "subheader";
+}
+
 const props = defineProps<{
   state: LogFetchState;
   hasMore: boolean;
@@ -77,11 +84,9 @@ const props = defineProps<{
    *  new ETag bucket. Forwarded to GitStatsPanel for the live
    *  counter and used by the refresh() calls below. */
   topFilesLimit: number;
-  /** 2026-08-01 branch-picker (spec 2026-08-01-git-history-branch-picker
-   *  §2a): items offered by the ref filter combobox — current branch
-   *  first, then locals, then remotes. Empty array degrades the
-   *  combobox to free input (branches not loaded / non-git dir). */
-  branchItems: string[];
+  /** 2026-09-08 (spec 2026-09-08-git-log-tags-and-filters §2.3):
+   *  Ref 选择器条目 —— 当前分支 / 本地分支 / 远程分支 / 标签四组。 */
+  refItems: RefPickerItem[];
   /** Spec §2b: name of the checked-out branch, or null (detached HEAD /
    *  branches not loaded). Drives the revert ⇄ cherry-pick visibility
    *  split below. */
@@ -701,11 +706,15 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
       <!-- 2026-08-01 branch-picker: v-text-field → v-combobox so the
            ref filter offers known branches (current first, then local,
            then remote) while keeping free input for sha/tag. Apply /
-           Reset flow unchanged. -->
+           Reset flow unchanged.
+           2026-09-08 (spec §2.3): grouped picker — 当前分支 / 本地分支 /
+           远程分支 / 标签 四组, subheader 条目不可选中。 -->
       <v-combobox
         v-model="localFilter.ref"
-        :items="branchItems"
-        :hide-no-data="branchItems.length === 0"
+        :items="refItems"
+        item-title="title"
+        item-value="value"
+        :hide-no-data="refItems.length === 0"
         :list-props="{ density: 'compact', class: 'git-log-branch-list' }"
         :label="
           tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.ref')
@@ -713,6 +722,22 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
         :placeholder="
           tm(
             'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.refPlaceholder',
+          )
+        "
+        density="compact"
+        variant="outlined"
+        hide-details
+        class="git-log-filter-field"
+      />
+      <!-- 2026-09-08 (spec §2.3): 提交名 grep 过滤（忽略大小写）。 -->
+      <v-text-field
+        v-model="localFilter.grep"
+        :label="
+          tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.grep')
+        "
+        :placeholder="
+          tm(
+            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.grepPlaceholder',
           )
         "
         density="compact"
@@ -1447,7 +1472,12 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
    ~600–800px panel this yields ~180–250px per cell. The 数量 cell
    stretches to a full cell on purpose — the compact number input
    filling the cell keeps the grid strictly symmetric (the approved
-   mockup), and the actions cluster is right-aligned in its cell. */
+   mockup), and the actions cluster is right-aligned in its cell.
+
+   2026-09-08 (spec §2.3): the 提交名 (grep) field makes it six
+   fields; the actions row now spans the full width as a third row
+   (grid-column: 1 / -1), keeping the six fields in two symmetric
+   3-column rows. */
 .git-log-filter {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1475,6 +1505,9 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
   justify-content: flex-end;
   align-items: center;
   gap: 4px;
+  /* 2026-09-08 (spec §2.3): six fields above → actions own the
+     full third row instead of sharing a cell with 数量. */
+  grid-column: 1 / -1;
 }
 
 .git-log-center {

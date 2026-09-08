@@ -92,7 +92,10 @@ import GitCherryPickDialog from "@/components/chat/GitCherryPickDialog.vue";
 import GitSquashDialog from "@/components/chat/GitSquashDialog.vue";
 import GitChangelogDialog from "@/components/chat/GitChangelogDialog.vue";
 import { useSpcodeGitSquash } from "@/composables/useSpcodeGitSquash";
-import type { SquashPayloadCommit } from "@/components/chat/message_list_comps/GitLogView.vue";
+import type {
+  SquashPayloadCommit,
+  RefPickerItem,
+} from "@/components/chat/message_list_comps/GitLogView.vue";
 import GitConflictPanel from "@/components/chat/GitConflictPanel.vue";
 import { classifyConflictReason } from "@/composables/parseSpcodeGitConflict";
 import { pluginExtensionApi } from "@/api/v1";
@@ -477,11 +480,30 @@ const currentBranchName = computed(() => {
 // branch first, then locals, then remotes. Reuses the existing
 // branchList computed; empty while branches are not loaded (the
 // combobox then degrades to free input).
-const branchPickerItems = computed<string[]>(() => {
+// 2026-09-08 (spec 2026-09-08-git-log-tags-and-filters §2.3): Ref 选择器
+// 升级为分组条目 —— 当前分支 / 本地分支 / 远程分支 / 标签。
+const refPickerItems = computed<RefPickerItem[]>(() => {
+  const items: RefPickerItem[] = [];
+  const pushGroup = (labelKey: string, names: string[]): void => {
+    if (names.length === 0) return;
+    items.push({
+      title: tm(`spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`),
+      type: "subheader",
+    });
+    for (const name of names) items.push({ title: name, value: name });
+  };
   const cur = branchList.value.filter((b) => b.current && !b.remote);
   const local = branchList.value.filter((b) => !b.current && !b.remote);
   const remote = branchList.value.filter((b) => b.remote);
-  return [...cur, ...local, ...remote].map((b) => b.name);
+  const tags =
+    branchesComposable.state.value.kind === "ok"
+      ? branchesComposable.state.value.snapshot.tags
+      : [];
+  pushGroup("filter.group.current", cur.map((b) => b.name));
+  pushGroup("filter.group.local", local.map((b) => b.name));
+  pushGroup("filter.group.remote", remote.map((b) => b.name));
+  pushGroup("filter.group.tags", tags.map((t) => t.name));
+  return items;
 });
 // Parse git's upstream-track string ("ahead 3" / "behind 1, ahead 2")
 // into structured counts. Returns null when the field is empty (no
@@ -5416,7 +5438,7 @@ watch(
             v-model:stats-open="statsOpen"
             :range="gitStatsRange"
             :top-files-limit="gitStatsTopFilesLimit"
-            :branch-items="branchPickerItems"
+            :ref-items="refPickerItems"
             :current-branch="currentBranchName"
             :active-ref="gitLog.filter.value.ref ?? null"
             :squash-reset-token="squashResetToken"

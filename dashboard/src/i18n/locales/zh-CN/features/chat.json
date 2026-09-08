@@ -1432,7 +1432,15 @@
             "n": "数量",
             "nPlaceholder": "20",
             "apply": "筛选",
-            "reset": "重设筛选条件"
+            "reset": "重设筛选条件",
+            "grep": "提交名",
+            "grepPlaceholder": "包含的文字（忽略大小写）",
+            "group": {
+              "current": "当前分支",
+              "local": "本地分支",
+              "remote": "远程分支",
+              "tags": "标签"
+            }
           },
           "empty": "暂无提交记录",
           "emptyRepository": "仓库还没有任何提交",

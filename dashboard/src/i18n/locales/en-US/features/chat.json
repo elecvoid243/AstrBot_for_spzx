@@ -1432,7 +1432,15 @@
             "n": "Count",
             "nPlaceholder": "20",
             "apply": "Apply",
-            "reset": "Reset"
+            "reset": "Reset",
+            "grep": "Commit message",
+            "grepPlaceholder": "text to match (case-insensitive)",
+            "group": {
+              "current": "Current branch",
+              "local": "Local branches",
+              "remote": "Remote branches",
+              "tags": "Tags"
+            }
           },
           "empty": "No commits",
           "emptyRepository": "Repository has no commits yet",

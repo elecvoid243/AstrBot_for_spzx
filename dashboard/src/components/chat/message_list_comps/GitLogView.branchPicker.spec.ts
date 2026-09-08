@@ -83,8 +83,13 @@ function mountView(props: Record<string, unknown> = {}) {
       statsOpen: false,
       range: null,
       topFilesLimit: 10,
-      // New props under test (spec §2):
-      branchItems: ["main", "dev", "origin/dev"],
+      // New props under test (spec §2 / 2026-09-08 grouped ref picker):
+      refItems: [
+        { title: "当前分支", type: "subheader" },
+        { title: "main", value: "main" },
+        { title: "标签", type: "subheader" },
+        { title: "v1.0.0", value: "v1.0.0" },
+      ],
       currentBranch: "main",
       activeRef: "HEAD",
       ...props,
@@ -100,15 +105,28 @@ describe("GitLogView branch picker (spec 2026-08-01)", () => {
     setActivePinia(createPinia());
   });
 
-  it("passes branchItems through to the ref combobox", () => {
+  it("passes refItems through to the ref combobox", () => {
     const w = mountView();
     const combo = w.findComponent({ name: "v-combobox" });
     expect(combo.exists()).toBe(true);
-    expect(combo.props("items")).toEqual(["main", "dev", "origin/dev"]);
+    expect(combo.props("items")).toEqual([
+      { title: "当前分支", type: "subheader" },
+      { title: "main", value: "main" },
+      { title: "标签", type: "subheader" },
+      { title: "v1.0.0", value: "v1.0.0" },
+    ]);
   });
 
-  it("reverts to free-input combobox when branchItems is empty", () => {
-    const w = mountView({ branchItems: [] });
+  it("renders grouped ref items including tags", () => {
+    const wrapper = mountView();
+    const combo = wrapper.findComponent({ name: "v-combobox" });
+    expect(combo.props("items")).toEqual(
+      expect.arrayContaining([{ title: "标签", type: "subheader" }]),
+    );
+  });
+
+  it("reverts to free-input combobox when refItems is empty", () => {
+    const w = mountView({ refItems: [] });
     const combo = w.findComponent({ name: "v-combobox" });
     expect(combo.exists()).toBe(true);
     expect(combo.props("items")).toEqual([]);

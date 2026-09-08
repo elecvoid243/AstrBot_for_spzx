@@ -117,6 +117,7 @@
       "types": "对话类型",
       "umo": "UMO",
       "umoPlaceholder": "输入完整或部分 UMO",
+      "showWebchat": "显示 webchat 会话",
       "sort": "排序",
       "reset": "清除筛选",
       "close": "关闭筛选",

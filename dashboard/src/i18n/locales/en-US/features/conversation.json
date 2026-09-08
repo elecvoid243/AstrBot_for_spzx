@@ -117,6 +117,7 @@
       "types": "Conversation type",
       "umo": "UMO",
       "umoPlaceholder": "Enter a full or partial UMO",
+      "showWebchat": "Show webchat conversations",
       "sort": "Sort",
       "reset": "Clear filters",
       "close": "Close filters",

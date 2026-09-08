@@ -344,6 +344,91 @@ describe("useSpcodeGitBranches — shell", () => {
     }
   });
 
+  it("switch() keeps the previous tag list when the mutation response omits tags", async () => {
+    mockGet.mockResolvedValueOnce(
+      okEnvelope({
+        loaded: true,
+        directory: "D:/repo",
+        umo: "umo-test",
+        branches: [
+          {
+            name: "main",
+            sha: "a",
+            upstream: "",
+            upstream_track: "",
+            current: true,
+            remote: false,
+          },
+        ],
+        tags: [{ name: "v1.0.0", sha: "a".repeat(40), annotated: false }],
+        total: 1,
+        current: "main",
+        detached: false,
+        reason: null,
+        stderr: "",
+        elapsed_ms: 0,
+      }),
+    );
+    mockPost.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        status: "ok",
+        data: {
+          loaded: true,
+          directory: "D:/repo",
+          umo: "umo-test",
+          switched: true,
+          name: "feat/x",
+          previous: "main",
+          created: false,
+          force: false,
+          detach: false,
+          branches: [
+            {
+              name: "main",
+              sha: "a",
+              upstream: "",
+              upstream_track: "",
+              current: false,
+              remote: false,
+            },
+            {
+              name: "feat/x",
+              sha: "b",
+              upstream: "",
+              upstream_track: "",
+              current: true,
+              remote: false,
+            },
+          ],
+          total: 2,
+          current: "feat/x",
+          detached: false,
+          reason: null,
+          stderr: "",
+          elapsed_ms: 0,
+        },
+      },
+    });
+    const { state, refresh, switch: doSwitch } = withSetup(() =>
+      useSpcodeGitBranches(),
+    );
+    await refresh();
+    if (state.value.kind === "ok") {
+      expect(state.value.snapshot.tags).toEqual([
+        { name: "v1.0.0", sha: "a".repeat(40), annotated: false },
+      ]);
+    }
+    const r = await doSwitch({ name: "feat/x" });
+    expect(r.ok).toBe(true);
+    if (state.value.kind === "ok") {
+      expect(state.value.snapshot.current).toBe("feat/x");
+      expect(state.value.snapshot.tags).toEqual([
+        { name: "v1.0.0", sha: "a".repeat(40), annotated: false },
+      ]);
+    }
+  });
+
   it("switch() failure: returns ok=false with reason and stderr", async () => {
     mockPost.mockResolvedValueOnce({
       status: 200,

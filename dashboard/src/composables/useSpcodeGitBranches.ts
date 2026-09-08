@@ -231,6 +231,11 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
       }
       // Atomically swap state with the refreshed branch list.
       const refreshed = parsed.snapshot.branches;
+      // 2026-09-08: mutation 响应不带 tags(后端仅 GET git-branches 返回),
+      // 故沿用上一份快照的 tag 列表,待下一次轮询刷新;
+      // 若响应意外带了 tags,则优先采用响应里的。
+      const prevTags =
+        state.value.kind === "ok" ? state.value.snapshot.tags : [];
       const rawResponse: SpcodeGitBranchesRawResponse = {
         loaded: parsed.snapshot.meta.loaded,
         directory: parsed.snapshot.meta.directory,
@@ -243,13 +248,13 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
           current: b.current,
           remote: b.remote,
         })),
-        // 2026-09-08: mutation 响应不带 tags(后端仅 GET git-branches 返回);
-        // 从已解析的刷新快照回填,避免原子替换后 tag 列表被清空。
-        tags: refreshed.tags.map((t) => ({
-          name: t.name,
-          sha: t.sha,
-          annotated: t.annotated,
-        })),
+        tags: (refreshed.tags.length > 0 ? refreshed.tags : prevTags).map(
+          (t) => ({
+            name: t.name,
+            sha: t.sha,
+            annotated: t.annotated,
+          }),
+        ),
         total: refreshed.total,
         current: refreshed.current,
         detached: refreshed.detached,

@@ -6,7 +6,7 @@
 // useSpcodeGitDiff.ts. Adds two spcode-specific concerns on top:
 //
 //   1. **ETag 1.5s cache** — keyed by `umo + worktree + ref + path +
-//      author + since + until + n` (spec decision #5 / #25). On a hit
+//      author + grep + since + until + n` (spec decision #5 / #25). On a hit
 //      (status 304) we return the previous successful snapshot and
 //      do not transition to `loading`.
 //
@@ -27,6 +27,7 @@ export type LogFilter = {
   ref?: string;
   path?: string;
   author?: string;
+  grep?: string;
   since?: string;
   until?: string;
   n?: number;
@@ -92,6 +93,7 @@ function etagKey(parts: {
     f.ref ?? "HEAD",
     f.path ?? "",
     f.author ?? "",
+    f.grep ?? "",
     f.since ?? "",
     f.until ?? "",
     String(f.n ?? DEFAULT_N),
@@ -186,6 +188,7 @@ export function useSpcodeGitLog(
           ...(filter.value.ref ? { ref: filter.value.ref } : {}),
           ...(filter.value.path ? { path: filter.value.path } : {}),
           ...(filter.value.author ? { author: filter.value.author } : {}),
+          ...(filter.value.grep ? { grep: filter.value.grep } : {}),
           ...(filter.value.since ? { since: filter.value.since } : {}),
           ...(filter.value.until ? { until: filter.value.until } : {}),
           n: filter.value.n ?? DEFAULT_N,

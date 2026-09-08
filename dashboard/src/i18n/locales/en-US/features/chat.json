@@ -1520,6 +1520,10 @@
               "until": "To",
               "apply": "Apply"
             }
+          },
+          "tags": {
+            "filterBy": "Filter by tag {tag}",
+            "more": "{count} more tags"
           }
         },
         "error": {

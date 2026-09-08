@@ -547,6 +547,13 @@ function onReset(): void {
   emit("reset", { ...localFilter.value });
 }
 
+/** 2026-09-08 (spec §2.4): 点击 tag 徽章 → 以该 tag 为 ref 重新筛选，
+ *  保留作者 / 路径 / 时间 / 数量 / 提交名等其它条件。 */
+function onTagClick(tag: string): void {
+  localFilter.value = { ...localFilter.value, ref: tag };
+  emit("apply", { ...localFilter.value });
+}
+
 // ── Stats panel filter linkage (git-stats heatmap, 2026-07-18) ────
 
 /** Day-cell click → apply the standard filter flow with the clicked
@@ -1134,6 +1141,36 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
           <span class="git-log-item-sha">{{
             c.shaShort || c.sha.slice(0, 7)
           }}</span>
+          <!-- 2026-09-08 (spec §2.4): 最多 2 个 tag 徽章 + “+N” 溢出计数。
+               点击徽章以该 tag 为 ref 重新筛选（@click.stop 阻止触发展开）。 -->
+          <span v-if="c.tags.length" class="git-log-item-tags">
+            <button
+              v-for="t in c.tags.slice(0, 2)"
+              :key="t"
+              type="button"
+              class="git-log-item-tag"
+              :title="t"
+              :aria-label="
+                tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.tags.filterBy', {
+                  tag: t,
+                })
+              "
+              @click.stop="onTagClick(t)"
+            >
+              {{ t }}
+            </button>
+            <v-tooltip
+              v-if="c.tags.length > 2"
+              :text="c.tags.slice(2).join(' · ')"
+              location="top"
+            >
+              <template #activator="{ props: tipProps }">
+                <span v-bind="tipProps" class="git-log-item-tag-more">
+                  +{{ c.tags.length - 2 }}
+                </span>
+              </template>
+            </v-tooltip>
+          </span>
           <span class="git-log-item-subject">{{ c.subject }}</span>
         </button>
         <div class="git-log-item-meta">
@@ -1617,6 +1654,35 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.git-log-item-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.git-log-item-tag {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.git-log-item-tag:hover {
+  background: rgba(var(--v-theme-primary), 0.18);
+}
+.git-log-item-tag-more {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: default;
 }
 .git-log-item-meta {
   display: flex;

@@ -1553,6 +1553,10 @@
               "until": "结束",
               "apply": "应用"
             }
+          },
+          "tags": {
+            "filterBy": "按标签 {tag} 筛选",
+            "more": "还有 {count} 个标签"
           }
         },
         "error": {

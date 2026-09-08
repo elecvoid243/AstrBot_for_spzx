@@ -232,12 +232,13 @@ const effectiveFocusSha = computed(
  *   1. We use a `data-commit-sha` attribute (set on each row)
  *      rather than a Vue template ref. With v-for + function refs,
  *      storing N refs is awkward and the lookup cost is the same.
- *   2. We await TWO `nextTick`s: one for the list to re-render,
- *      one for the freshly fetched `state` to settle into
- *      `commits` (when a deep-link lands, the parent's
- *      `focusCommit` runs a fresh `refresh()` which transitions
- *      through `loading` then `ok`, and we don't want to scroll
- *      on the stale snapshot).
+ *   2. 我们 await 两次 `nextTick`：一次等列表重渲染，一次等新取到的
+ *      `state` 落进 DOM。深链的数据常在 focus 变化之后才到（父组件
+ *      `focusCommit` 的 refresh() 完成），而当 state 已经是 `ok` 时
+ *      不会再经历 loading→ok 的 kind 变化，所以第三个 watch 源专门
+ *      盯「聚焦 SHA 是否已出现在当前 ok 快照的 commits 里」：该布尔值
+ *      false→true 时再触发一次。轮询替换 `props.state` 但 focus / kind /
+ *      该布尔值均不变时不触发，用户不会被拽回高亮行。
  *   3. We auto-expand the focused row (when it isn't already) so
  *      the commit body + changed-files list render in the same
  *      motion as the scroll. This matches the deep-link affordance
@@ -257,7 +258,21 @@ watch(
   // 2026-09-08 fix: 源必须是 getter 数组（逐元素比较）。若写成返回新数组的
   // 单个 getter，Vue 的 hasChanged 对数组做引用比较，恒为 true —— 历史
   // 轮询每 10s 替换一次 props.state，就会把用户重新拽回高亮行。
-  [() => effectiveFocusSha.value, () => props.state.kind],
+  // 2026-09-08 fix (round 2): 第三个源是「聚焦 SHA 是否已出现在当前 ok
+  // 快照的 commits 里」。深链的数据常晚于 focus 到达（且此时 kind 已是
+  // ok，不再变化），只看前两个源会漏掉这一次触发。这里必须用
+  // props.state.snapshot.commits —— 局部 commits 计算属性声明在下方，
+  // watcher 初始化求值时会撞上 TDZ。
+  [
+    () => effectiveFocusSha.value,
+    () => props.state.kind,
+    () =>
+      effectiveFocusSha.value !== null &&
+      props.state.kind === "ok" &&
+      props.state.snapshot.commits.some(
+        (c) => c.sha === effectiveFocusSha.value,
+      ),
+  ],
   async ([sha, kind]) => {
     if (!sha || kind !== "ok") return;
     await nextTick();

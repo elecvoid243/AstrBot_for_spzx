@@ -2,7 +2,7 @@
 // Spec: 2026-09-08-git-log-tags-and-filters §2.4 — tag 徽章渲染与点击筛选。
 // 沿用 GitLogView.branchPicker.spec.ts 的 heavy-stub 策略：只断言徽章与 emit。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount } from "@vue/test-utils";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 
@@ -103,6 +103,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// 2026-09-08 fix: 统一在 afterEach 卸载（替代各用例内的 wrapper.unmount()）。
+// 否则断言失败会提前抛出，残留的 attachTo 节点会让后续用例的
+// document.querySelector(".git-log-view") 命中错误的组件实例。
+enableAutoUnmount(afterEach);
+
 describe("GitLogView tag chips", () => {
   it("renders up to two tag chips and an overflow counter", () => {
     const wrapper = mountLog(["v1.0.0", "v1.1.0", "v1.2.0"]);
@@ -199,7 +204,6 @@ describe("GitLogView hash focus", () => {
     await flushPromises();
 
     expect(scrollSpy).not.toHaveBeenCalled();
-    wrapper.unmount();
   });
 
   it("scrolls when the focused commit genuinely changes", async () => {
@@ -210,7 +214,30 @@ describe("GitLogView hash focus", () => {
     await flushPromises();
 
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    wrapper.unmount();
+  });
+
+  // 2026-09-08 fix (round 2): 真实深链时序 —— 父组件先 pin focus，此时
+  // 列表里还没有该提交（首次 setProps 不得滚动）；随后 refresh() 返回的
+  // 新快照才带上它，此时必须自动展开并滚动一次。旧实现只监听
+  // [focus, kind]，kind 已经是 ok 时数据到达不再触发，深链静默失效。
+  it("auto-scrolls once when the deep-linked commit arrives after focus", async () => {
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView");
+    const target = "a".repeat(40);
+    const stale = makeState([]);
+    stale.snapshot.commits[0].sha = "b".repeat(40);
+    stale.snapshot.commits[0].shaShort = "bbbbbbb";
+    const wrapper = mountLog([], { state: stale as never }, document.body);
+
+    await wrapper.setProps({ focusedCommitSha: target });
+    await flushPromises();
+    expect(scrollSpy).not.toHaveBeenCalled();
+
+    const fresh = makeState([]);
+    fresh.snapshot.commits[0].sha = target;
+    await wrapper.setProps({ state: fresh as never });
+    await flushPromises();
+
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
   });
 });
 

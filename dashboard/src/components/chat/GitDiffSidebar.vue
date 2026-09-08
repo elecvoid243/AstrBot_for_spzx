@@ -777,7 +777,15 @@ const gitStage = useSpcodeGitStage();
 const gitUnstage = useSpcodeGitUnstage();
 const gitCommit = useSpcodeGitCommit();
 const gitCommitAmend = useSpcodeGitCommitAmend();
-const gitLog = useSpcodeGitLog(selectedWorktree);
+// 2026-09-08 (elecvoid243): the second argument gates the worktree-switch
+// refetch on the History tab being visible — switching worktrees from
+// Files / Diff / Docs must not fire a git-log request. The composable
+// still resets its filter on the switch, so entering History afterwards
+// (viewMode watcher below) fetches the default HEAD + 20 view.
+const gitLog = useSpcodeGitLog(
+  selectedWorktree,
+  computed(() => viewMode.value === "history"),
+);
 // 2026-07-17 git-revert: History-view per-commit revert. The sidebar
 // owns the confirm dialog + the write call (mirroring stage/commit).
 const gitRevert = useSpcodeGitRevert();
@@ -2341,6 +2349,12 @@ function onWorktreeChange(path: string | null): void {
   selectedWorktree.value = path;
   selectedScope.value = DEFAULT_SCOPE;
   pendingScope.value = null;
+  // 2026-09-08 (elecvoid243): the History view's focused commit (set by
+  // the file-preview "view this file's history" jump) belongs to the
+  // previous worktree. SHAs are shared across worktrees of the same
+  // repo, so a stale SHA could highlight an unrelated commit in the new
+  // list — clear it together with the filter reset in useSpcodeGitLog.
+  focusedCommitSha.value = null;
 }
 
 // ── Branch management helpers (spec 2026-07-21 §3.3, §3.6, §3.7) ──
@@ -5385,9 +5399,14 @@ watch(
           />
           <!-- Spec 2026-06-24 §6.5:History view 渲染 GitLogView。
              Spec 2026-06-25 §3.1:GitLogView 也接收 gitShow 句柄用于
-             在 commit 展开时拉取 /spcode/git-show 并渲染变更文件列表。 -->
+             在 commit 展开时拉取 /spcode/git-show 并渲染变更文件列表。
+             2026-09-08 (elecvoid243): key on the worktree so a switch
+             remounts the view — this resets its local filter form
+             (the applied filter is reset inside useSpcodeGitLog), the
+             expanded commits and any squash / changelog selection. -->
           <GitLogView
             v-else-if="viewMode === 'history'"
+            :key="selectedWorktree ?? 'main'"
             :state="gitLog.state.value"
             :has-more="logHasMore"
             :is-loading="logIsLoading"

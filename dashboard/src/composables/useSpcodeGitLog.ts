@@ -98,8 +98,21 @@ function etagKey(parts: {
   ].join("|");
 }
 
+/**
+ * Git log (History tab) composable.
+ *
+ * Args:
+ *   worktreeRef: Worktree path the log is scoped to; null = main worktree.
+ *   activeRef: Whether the History view is currently visible. When false,
+ *     a worktree switch resets the filter but does NOT fire a request —
+ *     the sidebar's viewMode watcher owns the fetch on tab entry.
+ *
+ * Returns:
+ *   The log state machine plus refresh / loadMore / polling / ETag helpers.
+ */
 export function useSpcodeGitLog(
   worktreeRef: MaybeRef<string | null> = null,
+  activeRef: MaybeRef<boolean> = true,
 ): UseSpcodeGitLog {
   const state = ref<LogFetchState>({ kind: "idle" });
   const filter = ref<LogFilter>({ ref: "HEAD", n: DEFAULT_N });
@@ -370,10 +383,21 @@ export function useSpcodeGitLog(
   // Re-fetch when worktree changes (or umo changes — handled by caller
   // typically by invalidating ETag then calling refresh). We watch
   // worktree only; the orchestrator owns the umo-change lifecycle.
+  //
+  // 2026-09-08 (elecvoid243): a worktree switch is a new browsing
+  // context, so the filter resets to the default (HEAD + 20) — a
+  // path / ref / author filter carried over from the previous worktree
+  // would otherwise show a misleading empty list. The re-fetch is
+  // gated on `activeRef`: only the History tab consumes this
+  // composable, and firing git-log while the user sits on Files / Diff
+  // / Docs wastes a request (the sidebar's viewMode watcher already
+  // refreshes when the user enters History).
   watch(
     () => toValue(worktreeRef),
     () => {
-      if (isMounted) void refresh();
+      if (!isMounted) return;
+      filter.value = { ref: "HEAD", n: DEFAULT_N };
+      if (toValue(activeRef)) void refresh();
     },
     { flush: "post" },
   );

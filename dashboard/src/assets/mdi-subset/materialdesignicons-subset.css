@@ -496,12 +496,12 @@
   content: "\F1631";
 }
 
-.mdi-database-refresh-outline::before {
-  content: "\F1634";
+.mdi-database-outline::before {
+  content: "\F1632";
 }
 
-.mdi-database-remove-outline::before {
-  content: "\F1635";
+.mdi-database-refresh-outline::before {
+  content: "\F1634";
 }
 
 .mdi-database-search-outline::before {

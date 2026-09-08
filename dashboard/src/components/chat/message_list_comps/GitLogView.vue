@@ -45,7 +45,8 @@ const { tm } = useModuleI18n("features/chat");
 // "computed reads the wrong field" trap that bit the earlier
 // useTheme().global.name.value attempt.
 
-/** 2026-09-08: Ref 选择器条目。subheader 为分组标题，不可选中。 */
+/** 2026-09-08: Ref 选择器条目。subheader 为分组标题 —— 由模板的 #item 插槽
+ *  渲染为 v-list-subheader（Vuetify 3.7 的 combobox 不识别该 type），不可选中。 */
 export interface RefPickerItem {
   title: string;
   value?: string;
@@ -708,12 +709,19 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
            then remote) while keeping free input for sha/tag. Apply /
            Reset flow unchanged.
            2026-09-08 (spec §2.3): grouped picker — 当前分支 / 本地分支 /
-           远程分支 / 标签 四组, subheader 条目不可选中。 -->
+           远程分支 / 标签 四组。
+           注意：Vuetify 3.7 的 VCombobox 不会把 type: "subheader" 的条目
+           渲染成分组标题（VSelect 直接遍历 displayItems 渲染 VListItem），
+           所以下面用 #item 插槽手动分流：分组标题走 v-list-subheader
+           （不绑定 itemProps，因此不可选中），普通条目走 v-list-item。
+           :return-object="false" 保证选中后 v-model 拿到的是字符串 value
+           而不是整个条目对象（VCombobox 默认 returnObject: true）。 -->
       <v-combobox
         v-model="localFilter.ref"
         :items="refItems"
         item-title="title"
         item-value="value"
+        :return-object="false"
         :hide-no-data="refItems.length === 0"
         :list-props="{ density: 'compact', class: 'git-log-branch-list' }"
         :label="
@@ -728,7 +736,14 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
         variant="outlined"
         hide-details
         class="git-log-filter-field"
-      />
+      >
+        <template #item="{ props: itemProps, item }">
+          <v-list-subheader v-if="item.raw.type === 'subheader'">
+            {{ item.title }}
+          </v-list-subheader>
+          <v-list-item v-else v-bind="itemProps" />
+        </template>
+      </v-combobox>
       <!-- 2026-09-08 (spec §2.3): 提交名 grep 过滤（忽略大小写）。 -->
       <v-text-field
         v-model="localFilter.grep"

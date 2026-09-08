@@ -23,8 +23,39 @@ const vuetifyStubs = {
   },
   "v-combobox": {
     name: "v-combobox",
-    props: ["modelValue", "items", "label", "placeholder", "hideNoData"],
-    template: "<div />",
+    props: [
+      "modelValue",
+      "items",
+      "label",
+      "placeholder",
+      "hideNoData",
+      "returnObject",
+      "itemTitle",
+      "itemValue",
+    ],
+    // 2026-09-08: render the #item slot for every entry so the grouped
+    // picker's subheader/item branching is assertable without opening
+    // the portal-rendered menu in jsdom. The payload mirrors Vuetify's
+    // real item slot ({ item: { raw, title, value }, props }).
+    template: `
+      <div>
+        <template v-for="(entry, i) in items" :key="i">
+          <slot
+            name="item"
+            :item="{ raw: entry, title: entry.title, value: entry.value }"
+            :props="{ title: entry.title, value: entry.value }"
+          />
+        </template>
+      </div>
+    `,
+  },
+  "v-list-subheader": {
+    name: "v-list-subheader",
+    template: '<div class="v-list-subheader"><slot /></div>',
+  },
+  "v-list-item": {
+    name: "v-list-item",
+    template: '<div class="v-list-item" />',
   },
   "v-progress-circular": { template: "<i />" },
   GitStatsPanel: { template: "<div />" },
@@ -123,6 +154,23 @@ describe("GitLogView branch picker (spec 2026-08-01)", () => {
     expect(combo.props("items")).toEqual(
       expect.arrayContaining([{ title: "标签", type: "subheader" }]),
     );
+  });
+
+  it("keeps the combobox model a plain string (return-object=false)", () => {
+    const w = mountView();
+    const combo = w.findComponent({ name: "v-combobox" });
+    expect(combo.props("returnObject")).toBe(false);
+  });
+
+  it("renders group headers as v-list-subheader instead of selectable items", () => {
+    const w = mountView();
+    const combo = w.findComponent({ name: "v-combobox" });
+    const headers = combo.findAll(".v-list-subheader");
+    expect(headers.map((h) => h.text())).toEqual(["当前分支", "标签"]);
+    // 4 entries → 2 headers + 2 selectable items: if the headers were
+    // rendered as list items (the 3.7 default), there would be 4 items
+    // and no subheaders at all.
+    expect(combo.findAll(".v-list-item")).toHaveLength(2);
   });
 
   it("reverts to free-input combobox when refItems is empty", () => {

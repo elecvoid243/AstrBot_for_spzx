@@ -32,6 +32,32 @@ export function normalizeCommandSearchText(
   return stripWakePrefix(text.trim(), wakePrefixes).toLowerCase();
 }
 
+/**
+ * Remove the leading wake-prefixed trigger token from the composer text,
+ * keeping whatever the user typed after it.
+ *
+ * The token is the palette QUERY (e.g. "/wr" while picking
+ * "writing-plans"), so it must be removed regardless of whether it equals
+ * the selected name. Text without a wake prefix is returned unchanged.
+ *
+ * Args:
+ *   text: Raw composer text.
+ *   wakePrefixes: Configured wake prefixes (e.g. ["/"]).
+ *
+ * Returns:
+ *   The remaining text ("/" alone yields ""; no prefix yields `text`).
+ */
+export function stripLeadingTriggerToken(
+  text: string,
+  wakePrefixes: string[],
+): string {
+  const trimmed = text.trimStart();
+  const stripped = stripWakePrefix(trimmed, wakePrefixes);
+  if (stripped === trimmed) return text;
+  const match = /^([^\s]+)(\s+)?/.exec(stripped);
+  return match ? stripped.slice(match[0].length) : "";
+}
+
 export interface MergeSuggestionsInput {
   /** Enabled bot commands, already display-prefixed (e.g. "/help"). */
   commands: SuggestionCommand[];

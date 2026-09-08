@@ -9,6 +9,7 @@ import {
   DEFAULT_MAX_SKILLS_WHEN_EMPTY,
   mergeSuggestions,
   normalizeCommandSearchText,
+  stripLeadingTriggerToken,
   stripWakePrefix,
   type MergeSuggestionsInput,
 } from "./suggestionMerge";
@@ -64,6 +65,35 @@ describe("stripWakePrefix / normalizeCommandSearchText", () => {
 
   it("trims and lowercases for matching", () => {
     expect(normalizeCommandSearchText("  /Help ", ["/"])).toBe("help");
+  });
+});
+
+describe("stripLeadingTriggerToken", () => {
+  it("removes the typed query even when it is only a prefix of the picked name", () => {
+    // Selecting "writing-plans" after typing "/wr" must clear "/wr".
+    expect(stripLeadingTriggerToken("/wr", ["/"])).toBe("");
+  });
+
+  it("removes the full command token", () => {
+    expect(stripLeadingTriggerToken("/writing-plans", ["/"])).toBe("");
+  });
+
+  it("keeps text typed after the trigger token", () => {
+    expect(stripLeadingTriggerToken("/wr 帮我想个方案", ["/"])).toBe(
+      "帮我想个方案",
+    );
+  });
+
+  it("clears a bare wake prefix", () => {
+    expect(stripLeadingTriggerToken("/", ["/"])).toBe("");
+  });
+
+  it("leaves text without a wake prefix untouched", () => {
+    expect(stripLeadingTriggerToken("帮我想 /wr", ["/"])).toBe("帮我想 /wr");
+  });
+
+  it("honours a custom wake prefix", () => {
+    expect(stripLeadingTriggerToken("!wr 帮", ["!"])).toBe("帮");
   });
 });
 

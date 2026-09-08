@@ -650,6 +650,7 @@ import CommandSuggestion from "./CommandSuggestion.vue";
 import {
   mergeSuggestions,
   normalizeCommandSearchText as normalizeCommandSearchTextBase,
+  stripLeadingTriggerToken,
   stripWakePrefix as stripWakePrefixBase,
 } from "./suggestionMerge";
 import ProjectLoadMenuItem from "./ProjectLoadMenuItem.vue";
@@ -1390,14 +1391,14 @@ function matchExactSkillToken(text: string): string | null {
   return skill ? skill.effective_command : null;
 }
 
-/** 从输入头部摘掉触发 token，保留用户已输入的正文 */
-function consumeSkillToken(name: string): void {
+/**
+ * 摘掉输入框头部的触发 token（面板查询串，如 "/wr"），保留用户已输入的正文。
+ * 注意不能拿它和完整 skill 名比较——查询串只是前缀匹配片段。
+ */
+function consumeSkillToken(): void {
   const text = currentInputText();
-  if (!hasWakePrefix(text)) return;
-  const stripped = stripWakePrefix(text.trimStart());
-  const match = /^([^\s]+)(\s+)?/.exec(stripped);
-  if (!match || match[1].toLowerCase() !== name.toLowerCase()) return;
-  const rest = stripped.slice(match[0].length);
+  const rest = stripLeadingTriggerToken(text, wakePrefixes.value);
+  if (rest === text) return;
   localPrompt.value = rest;
   nextTick(() => {
     const el = inputField.value;
@@ -1417,7 +1418,7 @@ async function applySkillCommand(displayCommand: string): Promise<void> {
   try {
     const ok = await skillGuide.queueSkill(name);
     if (ok) {
-      consumeSkillToken(name);
+      consumeSkillToken();
     } else {
       toastStore.add({
         message: tm("input.skillGuide.queueFailed", { name }),

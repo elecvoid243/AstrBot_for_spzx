@@ -71,55 +71,67 @@ _NO_WINDOW_KWARGS: dict[str, int] = (
 #   ``_NO_WINDOW_KWARGS`` suppresses the console for the *direct* child of
 #   AstrBot's computer booter (e.g. ``python.exe`` invoked by ``-c``), but
 #   it does NOT propagate into user code. When a user-side script spawns
-#   yet another CUI child via ``subprocess.run`` / ``subprocess.Popen``
-#   without ``creationflags=CREATE_NO_WINDOW``, Windows allocates a brand
-#   new console window because the current ``python.exe`` has no inherited
-#   console to hand out — the nested "弹 cmd 黑框" case.
+#   yet another CUI child, Windows allocates a brand new console window
+#   because the current ``python.exe`` has no inherited console to hand
+#   out — the nested "弹 cmd 黑框" case.
 #
-#   Mitigation: prepend a tiny idempotent snippet to user code that
-#   monkey-patches ``subprocess.Popen`` to default-inject
-#   ``creationflags=CREATE_NO_WINDOW`` AND a ``STARTUPINFO`` with
-#   ``wShowWindow = SW_HIDE``. After this runs in the spawned interpreter
-#   every common entry point (``subprocess.run`` / ``subprocess.call`` /
-#   ``subprocess.check_output`` / direct ``Popen``) routes through the
-#   patched class. The patch is itself flagged via
-#   ``_ab_no_window_patched`` so re-execution (e.g. via ``python -c``
-#   invoked twice) cannot stack-wrap.
+#   Mitigation: prepend a tiny idempotent snippet that patches
+#   ``_winapi.CreateProcess`` — the single Windows entry point used by
+#   ``subprocess`` (run/call/check_output/Popen), ``asyncio``'s subprocess
+#   transport, and ``multiprocessing`` (whose Windows spawner calls
+#   ``_winapi.CreateProcess`` directly, bypassing ``subprocess.Popen``).
+#   The wrapper forces ``CREATE_NO_WINDOW`` (clearing the mutually exclusive
+#   ``CREATE_NEW_CONSOLE``) and a ``STARTUPINFO`` with
+#   ``wShowWindow = SW_HIDE``. It is flagged via ``_ab_no_window_patched``
+#   so re-execution cannot stack-wrap, and exposes ``_ab_no_window_flags()``
+#   so the flag rewriting stays testable without spawning a process.
 #
 #   Naming note: identifiers use a single leading underscore rather than
 #   the dunder form so CPython's name-mangling does NOT rewrite them to
-#   ``_ClassName__name`` when they appear inside the patched class body.
+#   ``_ClassName__name`` when they appear inside a patched class body.
 #
 #   Out-of-scope (not patched, accepted edge cases):
-#     - ``from subprocess import Popen`` captured before this preamble runs.
-#     - Direct ctypes / ``os.spawn*`` / ``os.system`` / ``os.popen`` calls.
+#     - ``os.system`` / ``os.popen`` / ``os.spawn*`` (CRT-level spawn).
+#     - Direct ctypes / Win32 ``CreateProcessW`` calls.
 #   These cover the >95% agent-written spawn paths without a heavy module
 #   rewrite.
 _PYTHON_SUBPROCESS_PREAMBLE: str = (
-    "import subprocess as _ab_sp\n"
     "import sys as _ab_sys\n"
     "if _ab_sys.platform == 'win32':\n"
-    "    _ab_cnw = getattr(_ab_sp, 'CREATE_NO_WINDOW', 0x08000000)\n"
-    "    _ab_orig_popen = getattr(_ab_sp, 'Popen', None)\n"
-    "    if _ab_orig_popen is not None and not getattr(\n"
-    "        _ab_orig_popen, '_ab_no_window_patched', False\n"
+    "    import _winapi as _ab_wapi\n"
+    "    import subprocess as _ab_sp\n"
+    "    _ab_cnw = 0x08000000  # CREATE_NO_WINDOW\n"
+    "    _ab_new_console = 0x00000010  # CREATE_NEW_CONSOLE\n"
+    "    _ab_detached = 0x00000008  # DETACHED_PROCESS\n"
+    "\n"
+    "    def _ab_no_window_flags(flags):\n"
+    "        if flags & _ab_cnw or flags & _ab_detached:\n"
+    "            return flags\n"
+    "        return (flags & ~_ab_new_console) | _ab_cnw\n"
+    "\n"
+    "    if not getattr(\n"
+    "        _ab_wapi.CreateProcess, '_ab_no_window_patched', False\n"
     "    ):\n"
-    "        class _ab_no_window_popen(_ab_orig_popen):\n"
-    "            _ab_no_window_patched = True\n"
+    "        _ab_orig_create_process = _ab_wapi.CreateProcess\n"
     "\n"
-    "            def __init__(self, *args, **kwargs):\n"
-    "                cf = kwargs.get('creationflags') or 0\n"
-    "                if not (cf & _ab_cnw):\n"
-    "                    kwargs['creationflags'] = cf | _ab_cnw\n"
-    "                si = kwargs.get('startupinfo')\n"
-    "                if si is None:\n"
-    "                    si = _ab_sp.STARTUPINFO()\n"
-    "                    kwargs['startupinfo'] = si\n"
-    "                si.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW\n"
-    "                si.wShowWindow = 0  # SW_HIDE\n"
-    "                super().__init__(*args, **kwargs)\n"
+    "        def _ab_no_window_create_process(\n"
+    "            application_name, command_line, process_attributes,\n"
+    "            thread_attributes, inherit_handles, creation_flags,\n"
+    "            new_environment, current_directory, startup_info\n"
+    "        ):\n"
+    "            if startup_info is None:\n"
+    "                startup_info = _ab_sp.STARTUPINFO()\n"
+    "            startup_info.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW\n"
+    "            startup_info.wShowWindow = 0  # SW_HIDE\n"
+    "            return _ab_orig_create_process(\n"
+    "                application_name, command_line, process_attributes,\n"
+    "                thread_attributes, inherit_handles,\n"
+    "                _ab_no_window_flags(creation_flags),\n"
+    "                new_environment, current_directory, startup_info\n"
+    "            )\n"
     "\n"
-    "        _ab_sp.Popen = _ab_no_window_popen\n"
+    "        _ab_no_window_create_process._ab_no_window_patched = True\n"
+    "        _ab_wapi.CreateProcess = _ab_no_window_create_process\n"
 )
 
 

@@ -373,7 +373,7 @@ describe("SubAgentRunBlock rendering order", () => {
     expect(wrapper.find(".task-expand-toggle").exists()).toBe(false);
   });
 
-  it("keeps a sticky collapse button reachable while the card is expanded", async () => {
+  it("starts collapsed while the run is streaming and expands on demand", async () => {
     const part = {
       type: "subagent_run",
       subagent_run_id: "sa_fab",
@@ -398,23 +398,32 @@ describe("SubAgentRunBlock rendering order", () => {
       },
     });
 
-    // A running run auto-expands, so the collapse affordance is present.
+    // jsdom's style object desyncs after display toggles none → "" → none
+    // (cssstyle quirk), and isVisible() trusts getComputedStyle which jsdom
+    // ignores for v-show. Read the serialized attribute instead.
+    function isHidden() {
+      return Boolean(
+        wrapper
+          .find(".subagent-run-body")
+          .element.getAttribute("style")
+          ?.includes("display: none"),
+      );
+    }
+
+    // Default is folded even while streaming: the user opts in to the
+    // detail, and a folded card has nothing to fold back yet.
+    expect(isHidden()).toBe(true);
+    expect(wrapper.find(".subagent-collapse-fab").exists()).toBe(false);
+
+    await wrapper.find(".subagent-run-header").trigger("click");
+
+    expect(isHidden()).toBe(false);
     const fab = wrapper.find(".subagent-collapse-fab");
     expect(fab.exists()).toBe(true);
     expect(fab.attributes("aria-label")).toBe("折叠执行卡片");
-    // isVisible() relies on getComputedStyle, which jsdom does not honour
-    // for v-show; assert the inline display like the sibling tests do.
-    function isHidden() {
-      return (
-        (wrapper.find(".subagent-run-body").element as HTMLElement).style
-          .display === "none"
-      );
-    }
-    expect(isHidden()).toBe(false);
 
+    // The sticky button folds the card again; it leaves with the body.
     await fab.trigger("click");
-
-    // One click collapses the card; the button leaves with the body.
     expect(isHidden()).toBe(true);
     expect(wrapper.find(".subagent-collapse-fab").exists()).toBe(false);
   });
@@ -444,7 +453,7 @@ describe("SubAgentRunBlock rendering order", () => {
       },
     });
 
-    // Finished runs start collapsed: nothing to collapse yet.
+    // Finished runs load folded as well: nothing to collapse yet.
     expect(wrapper.find(".subagent-collapse-fab").exists()).toBe(false);
 
     await wrapper.find(".subagent-run-header").trigger("click");

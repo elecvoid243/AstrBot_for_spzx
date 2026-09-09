@@ -140,14 +140,19 @@ const props = defineProps({
 
 const { tm } = useModuleI18n("features/chat");
 
-const expanded = ref(props.part.status === "running");
+// Folded by default — a streaming subagent run can grow far past the
+// viewport, so the user opts into the detail via the header and folds it
+// back with the sticky button. The card never auto-expands or auto-folds.
+const expanded = ref(false);
 
-// Auto-collapse when the run finishes while the block was auto-expanded.
+// A finished run should not keep its execution timeline open behind the
+// result, so fold that inner section once the run stops running. The card
+// itself stays exactly as the user left it: expansion is user-controlled
+// (the header toggles it, the sticky button folds it back).
 watch(
   () => props.part.status,
   (status, prev) => {
     if (prev === "running" && status !== "running") {
-      expanded.value = false;
       executionSectionExpanded.value = false;
     }
   },

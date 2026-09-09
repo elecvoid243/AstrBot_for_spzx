@@ -75,6 +75,8 @@ function baseProps(tags: string[]) {
     tagItems: [],
     currentBranch: "main",
     activeBranch: "HEAD",
+    // 2026-09-09 head-sha: 快照里只有一条提交，它就是 HEAD。
+    headSha: "a".repeat(40),
   };
 }
 

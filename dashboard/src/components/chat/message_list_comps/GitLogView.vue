@@ -110,6 +110,18 @@ const props = defineProps<{
    *  搜索走独立的 `rev` 过滤（见 useSpcodeGitLog.LogFilter），因此
    *  用 hash 检索提交时按钮可见性不再被误判。 */
   activeBranch: string | null;
+  /** 2026-09-09 (elecvoid243) head-sha: 当前工作树 HEAD 的 SHA，由父组件
+   *  取自 `git worktree list` 的 head_sha（git 权威值）。
+   *
+   *  为什么需要它：历史列表的「第一行」只有在**没有筛选**时才是 HEAD。
+   *  一旦按 SHA / 标签 / 提交名 / 作者 / 路径 / 时间过滤，第一条可能只是
+   *  「最新一条命中结果」，于是 amend / reset / squash 这三个与 HEAD 强
+   *  相关的动作全部错位。这里改为与真实 HEAD SHA 比对。
+   *
+   *  null = 未知（worktree 列表尚未加载 / 请求失败）。未知时一律按
+   *  「不是 HEAD」处理：宁可少给按钮，也不能让用户把分支重置或改写到一个
+   *  错误的提交上。 */
+  headSha: string | null;
   /** 2026-09-08 (spec §2.6): 已应用的「提交名」关键字，用于区分
    *  「过滤无结果」与「仓库暂无提交」两种空态。 */
   appliedGrep?: string;
@@ -224,17 +236,42 @@ const viewingCurrent = computed(() => {
   return !r || r === "HEAD" || r === props.currentBranch;
 });
 
-/** True when the given commit is the displayed list's HEAD row. */
+/** 2026-09-09 (elecvoid243) head-sha: 该提交是否就是当前工作树的 HEAD。
+ *
+ *  以前这里比的是「列表第一行」（commits[0]），只在无筛选时成立；筛选后
+ *  第一行可能是任意命中提交，于是 amend 会出现在错误的行、reset 会从真正
+ *  的 HEAD 行消失。现在与父组件给的 head_sha 比对。
+ *
+ *  比较做了大小写归一 + 前缀容忍：git 在不同端点可能返回短 SHA（
+ *  worktree list 是完整 40 位，日志行也是完整 40 位，但防御性处理）。
+ *  headSha 未知时返回 false —— 见 prop 文档里的「未知即非 HEAD」约定。 */
 function isHeadCommit(c: { sha: string }): boolean {
-  return commits.value.length > 0 && commits.value[0].sha === c.sha;
+  const head = props.headSha?.toLowerCase() ?? "";
+  if (!head) return false;
+  const sha = c.sha.toLowerCase();
+  return sha === head || sha.startsWith(head) || head.startsWith(sha);
 }
+
+/** 2026-09-09 (elecvoid243) head-sha: 当前筛选结果是否以真实 HEAD 开头。
+ *  压缩提交要求选区恰好是 `rev-list HEAD -n N`（后端权威校验），所以
+ *  列表不含 HEAD 时任何选区都不可能有效 —— 用于给出准确的提示文案。 */
+const headInList = computed(
+  () => commits.value.length > 0 && isHeadCommit(commits.value[0]),
+);
+
+/** 2026-09-09 (elecvoid243) head-sha: 是否已知真实 HEAD。
+ *  「重置」按钮的显示条件是「不是 HEAD」，未知时无法判断 → 直接不显示，
+ *  避免把分支重置到一个其实并非 HEAD 的提交上（hard 模式会丢工作区改动）。 */
+const headKnown = computed(() => !!props.headSha);
 
 // Local filter form state. Emitted on Apply; reset on Reset.
 // 2026-09-09 split-ref-filter: `ref` = 分支, `rev` = SHA / 标签覆盖。
 const localFilter = ref<LogFilter>({ ref: "HEAD", rev: "", n: 20 });
 
-/** 2026-09-09 n-buttons: 数量只提供这三个预设值（分段按钮组）。 */
-const N_PRESETS = [10, 20, 50];
+/** 2026-09-09 n-buttons: 数量只提供这三个预设值（独立按钮）。
+ *  2026-09-09 n-presets (用户反馈): 50 → 30 —— 50 行太长；要看更多，
+ *  列表底部的「加载更多」仍会把 n 翻倍（20 → 40 → 80 → 160 → 200）。 */
+const N_PRESETS = [10, 20, 30];
 
 /** 2026-09-09 since-calendar: 起始时间改用原生 date 输入 —— 点击即弹出
  *  日历选择器（与 GitStatsPanel 的自定义区间同款）。原生控件只接受
@@ -409,17 +446,20 @@ function toggleSquashSelection(sha: string): void {
   selectedCommits.value = next;
 }
 
-/** Valid iff the selection is exactly the top N rows (N >= 2) of the
- *  displayed list. Checkboxes only render while viewingCurrent, so
- *  the displayed list is the unfiltered HEAD-first history and
- *  "top N rows" ⇔ "HEAD-anchored contiguous". The backend
- *  re-validates authoritatively via rev-list — this is UX-only. */
+/** Valid iff the displayed list starts at the REAL HEAD and the selection
+ *  is exactly its top N rows (N >= 2).
+ *
+ *  2026-09-09 (elecvoid243) head-sha: 以前这里把「列表第一行」当成 HEAD，
+ *  筛选生效后第一行可能只是最新一条命中结果，于是会把「非 HEAD 开头的
+ *  选区」判为有效，提交后被后端 rev-list 校验拒绝（not_contiguous /
+ *  head_not_selected）。现在先要求 top[0] 就是真实 HEAD。
+ *  后端仍做权威校验 —— 这里只是 UX 层的提前判断。 */
 const squashSelection = computed<"none" | "valid" | "invalid">(() => {
   const n = selectedCommits.value.size;
   if (n === 0) return "none";
   if (n < 2) return "invalid";
   const top = commits.value.slice(0, n);
-  if (top.length < n) return "invalid";
+  if (top.length < n || !isHeadCommit(top[0])) return "invalid";
   return top.every((c) => selectedCommits.value.has(c.sha))
     ? "valid"
     : "invalid";
@@ -804,6 +844,17 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
       {{ tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.truncated") }}
     </div>
 
+    <!-- 2026-09-09 head-sha: 压缩模式已启动、但当前筛选结果不含最新提交。
+         此时任何选区都无法通过 rev-list 校验，直接给一条可见提示（复用
+         .git-log-truncated 的琥珀色告警样式），而不是只把原因藏在
+         按钮 tooltip 里。 -->
+    <div
+      v-if="viewingCurrent && squashSelecting && !headInList"
+      class="git-log-truncated"
+    >
+      {{ tm("spcodeProjectLoad.diffSidebar.squash.headHidden") }}
+    </div>
+
     <!-- Filter bar (spec §6.5.1; search boxes → 12px, buttons → small) -->
     <div class="git-log-filter">
       <!-- 2026-08-01 branch-picker → 2026-09-09 (elecvoid243)
@@ -947,42 +998,47 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
            最左侧 —— 网格回到 6 个字段（2 行），新增的「提交 / 标签」不再
            把操作按钮挤到第 4 行；数量与「筛选」按钮同属"本次查询怎么发"
            这一组，放在一起也更顺。
-           2026-09-09 n-buttons: 数字输入框 → 固定预设值（10 / 20 / 50）的
-           分段按钮组。热力图点某天（n=200）与「加载更多」（n 翻倍到
+           2026-09-09 n-buttons: 数字输入框 → 固定预设值（10 / 20 / 30）的
+           独立按钮。热力图点某天（n=200）与「加载更多」（n 翻倍到
            40 / 80 / 160）仍会写入非预设值，此时按钮组不选中任何一项，
            如实反映状态；用户点一下即回到预设值。 -->
       <div class="git-log-filter-actions">
-        <div class="git-log-filter-n">
+        <!-- 2026-09-09 n-buttons-look: 弃用 v-btn-toggle —— VBtnGroup 会给
+             子按钮注入 height:auto 并共用一圈外框，按钮文字与「数量」标签
+             对不齐。改成独立 v-btn：浅蓝底圆角小方框，选中项实心主色。 -->
+        <div
+          class="git-log-filter-n"
+          role="group"
+          :aria-label="
+            tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.n')
+          "
+        >
           <span class="git-log-filter-n-label">
             {{
               tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.n")
             }}
           </span>
-          <v-btn-toggle
-            v-model="localFilter.n"
-            mandatory
-            divided
-            density="compact"
-            class="git-log-filter-n-toggle"
+          <v-btn
+            v-for="preset in N_PRESETS"
+            :key="preset"
+            class="git-log-filter-n-btn"
+            :class="{ 'is-active': localFilter.n === preset }"
+            :aria-pressed="localFilter.n === preset"
+            height="28"
+            min-width="34"
+            variant="flat"
+            @click="localFilter.n = preset"
           >
-            <!-- 显式 height：VBtnGroup 会给子按钮注入 height:auto，CSS 覆盖
-                 不掉，不传就塌成文字高度（同 TerminalView 的注记）。 -->
-            <v-btn
-              v-for="preset in N_PRESETS"
-              :key="preset"
-              :value="preset"
-              height="28"
-              min-width="48"
-            >
-              {{ preset }}
-            </v-btn>
-          </v-btn-toggle>
+            {{ preset }}
+          </v-btn>
         </div>
         <v-spacer />
+        <!-- 2026-09-09 btn-colors (用户反馈): 筛选 = 浅红（tonal/error），
+             重设 = 实心蓝（flat/primary，即筛选原来的样式）。 -->
         <v-btn
           size="small"
-          variant="flat"
-          color="primary"
+          variant="tonal"
+          color="error"
           :loading="isLoading"
           @click="onApply"
         >
@@ -992,7 +1048,8 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
         </v-btn>
         <v-btn
           size="small"
-          variant="text"
+          variant="flat"
+          color="primary"
           :disabled="isLoading"
           @click="onReset"
         >
@@ -1021,9 +1078,11 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
           color="primary"
           :disabled="squashSelection !== 'valid'"
           :title="
-            squashSelection !== 'valid'
-              ? tm('spcodeProjectLoad.diffSidebar.squash.selectionHint')
-              : tm('spcodeProjectLoad.diffSidebar.squash.toolbarAria')
+            !headInList
+              ? tm('spcodeProjectLoad.diffSidebar.squash.headHidden')
+              : squashSelection !== 'valid'
+                ? tm('spcodeProjectLoad.diffSidebar.squash.selectionHint')
+                : tm('spcodeProjectLoad.diffSidebar.squash.toolbarAria')
           "
           @click="onSquashClick"
         >
@@ -1111,9 +1170,11 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
                 activator="parent"
                 location="start"
                 :text="
-                  squashSelecting && squashSelection !== 'valid'
-                    ? tm('spcodeProjectLoad.diffSidebar.squash.selectionHint')
-                    : tm('spcodeProjectLoad.diffSidebar.squash.toolbarAria')
+                  !headInList
+                    ? tm('spcodeProjectLoad.diffSidebar.squash.headHidden')
+                    : squashSelecting && squashSelection !== 'valid'
+                      ? tm('spcodeProjectLoad.diffSidebar.squash.selectionHint')
+                      : tm('spcodeProjectLoad.diffSidebar.squash.toolbarAria')
                 "
               />
             </v-list-item>
@@ -1427,9 +1488,12 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
           <!-- 2026-09-09 git-reset: per-row reset action (SourceTree-style
                "Reset current branch to this commit"), hover-revealed like
                the revert button beside it. Hidden on the HEAD row —
-               resetting to HEAD is only a roundabout "unstage all". -->
+               resetting to HEAD is only a roundabout "unstage all".
+               2026-09-09 head-sha: HEAD 用真实 SHA 判定；headSha 未知时
+               一律不显示（宁可少给按钮，也不能让用户误把分支重置到一个
+               错误的提交上）。 -->
           <button
-            v-if="viewingCurrent && !isHeadCommit(c)"
+            v-if="viewingCurrent && headKnown && !isHeadCommit(c)"
             type="button"
             class="git-log-item-reset"
             :title="
@@ -1750,24 +1814,40 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
 .git-log-filter-field :deep(.v-label) {
   font-size: 12px;
 }
-/* 2026-09-09 n-buttons: 「数量」从数字输入框改为预设值分段按钮组（标签 +
-   10 / 20 / 50）。住在操作行最左侧，右侧按钮由 v-spacer 推到行尾。 */
+/* 2026-09-09 n-buttons: 「数量」预设值按钮（10 / 20 / 30）住在操作行
+   最左侧，右侧按钮由 v-spacer 推到行尾。 */
 .git-log-filter-n {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .git-log-filter-n-label {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.6);
   white-space: nowrap;
 }
-.git-log-filter-n-toggle :deep(.v-btn) {
-  /* 纯数字按钮不需要文字按钮的 64px 最小宽度（min-width 由模板的 prop
-     给出），这里只统一字号与数字对齐。 */
+/* 2026-09-09 n-buttons-look (用户反馈): 浅蓝底 + 圆角小方框，选中项实心
+   主色。scoped 选择器带 [data-v-*] 属性，特异性高于 Vuetify 的
+   .v-btn--variant-flat，因此能盖掉它默认的 surface 底色。 */
+.git-log-filter-n-btn {
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
   font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
+  box-shadow: none;
+}
+.git-log-filter-n-btn:hover {
+  background: rgba(var(--v-theme-primary), 0.18);
+}
+.git-log-filter-n-btn.is-active,
+.git-log-filter-n-btn.is-active:hover {
+  background: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-on-primary));
 }
 .git-log-filter-actions {
   display: flex;

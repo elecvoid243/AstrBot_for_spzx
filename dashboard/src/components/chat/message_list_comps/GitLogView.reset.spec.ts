@@ -118,6 +118,8 @@ function mountView(props: Record<string, unknown> = {}) {
       tagItems: [],
       currentBranch: "main",
       activeBranch: "HEAD",
+      // 2026-09-09 head-sha: 真实 HEAD = 列表第一行（未筛选场景）。
+      headSha: SHAS[0],
       squashResetToken: 0,
       changelogResetToken: 0,
       ...props,
@@ -153,6 +155,25 @@ describe("GitLogView per-row reset (spec 2026-09-09)", () => {
     // And back on the current branch it reappears (minus the HEAD row).
     await w.setProps({ activeBranch: "HEAD" });
     expect(findResetButtons(w)).toHaveLength(SHAS.length - 1);
+  });
+
+  // 2026-09-09 head-sha 回归：筛选后「列表第一行」只是最新一条命中结果，
+  // 不等于仓库 HEAD。此时第一行也必须给「重置」按钮，而真正的 HEAD 行
+  // （可能根本不在结果里）依旧不给。
+  it("shows reset on the first row when the filter's top row is not HEAD", () => {
+    const w = mountView({ headSha: SHAS[2] });
+    // SHAS[2] 在列表里（最后一行）→ 它不给按钮，其余两行都给。
+    const buttons = findResetButtons(w);
+    expect(buttons).toHaveLength(SHAS.length - 1);
+    const firstRow = w.findAll(".git-log-item")[0];
+    expect(firstRow.find(".git-log-item-reset").exists()).toBe(true);
+    const lastRow = w.findAll(".git-log-item")[SHAS.length - 1];
+    expect(lastRow.find(".git-log-item-reset").exists()).toBe(false);
+  });
+
+  it("hides reset everywhere when the HEAD sha is unknown", () => {
+    const w = mountView({ headSha: null });
+    expect(findResetButtons(w)).toHaveLength(0);
   });
 
   it("emits reset-branch with the row's sha + subject on click", async () => {

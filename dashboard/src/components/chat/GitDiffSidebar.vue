@@ -617,6 +617,16 @@ const hasMultipleWorktrees = computed(() => worktreeList.value.length > 0);
 const mainWorktreePath = computed(
   () => worktreeList.value.find((w) => w.isMain)?.path ?? null,
 );
+// 2026-09-09 (elecvoid243) head-sha: 当前工作树的 HEAD 提交 SHA —— 取自
+// `git worktree list --porcelain` 的 head_sha（git 权威值），而不是历史
+// 列表的第一行（筛选生效后第一行只是「最新一条命中结果」）。
+// amend / reset / squash 的可见性判定全部改用这个值（见 GitLogView 的
+// headSha prop）。null = worktree 列表尚未加载 / 请求失败。
+const currentHeadSha = computed<string | null>(() => {
+  const target = selectedWorktree.value ?? mainWorktreePath.value;
+  if (!target) return null;
+  return worktreeList.value.find((w) => w.path === target)?.headSha || null;
+});
 // 2026-07-22 worktree-tabs-collapse: the row of tab pills shown to
 // the user. When worktreeTabsExpanded is false, hide all but the
 // active worktree so a long row doesn't dominate the sidebar;
@@ -4439,6 +4449,10 @@ function onLogApply(filter: LogFilter): void {
 function onLogRefresh(): void {
   void gitLog.refresh();
   void gitStats.refresh(statsRangeArgs());
+  // 2026-09-09 head-sha: HEAD 判定依赖 worktree 列表里的 head_sha，所以
+  // History 的刷新按钮把它一起刷新（一次 porcelain 调用，很便宜），
+  // 否则外部提交后 amend / reset 的可见性会滞后最多 30s（轮询周期）。
+  void worktreesComposable.refresh();
 }
 function onLogReset(filter: LogFilter): void {
   // 2026-09-08 final-fix: 同 onLogApply —— Reset 也必须让深链聚焦让位，
@@ -5651,6 +5665,7 @@ watch(
             :tag-items="tagPickerItems"
             :current-branch="currentBranchName"
             :active-branch="gitLog.filter.value.ref ?? null"
+            :head-sha="currentHeadSha"
             :applied-grep="gitLog.filter.value.grep ?? ''"
             :squash-reset-token="squashResetToken"
             :changelog-reset-token="changelogResetToken"

@@ -114,6 +114,8 @@ function mountView(props: Record<string, unknown> = {}) {
       tagItems: [],
       currentBranch: "main",
       activeBranch: "HEAD",
+      // 2026-09-09 head-sha: 真实 HEAD = 列表第一行（未筛选场景）。
+      headSha: SHAS[0],
       squashResetToken: 0,
       changelogResetToken: 0,
       ...props,
@@ -208,6 +210,22 @@ describe("GitLogView squash selection (spec 2026-08-03, revised interaction)", (
     await boxes[1].trigger("click");
     await boxes[2].trigger("click");
     expect(findSquashConfirm(w).attributes("disabled")).toBeDefined();
+  });
+
+  // 2026-09-09 head-sha 回归：筛选生效时列表第一行只是最新一条命中结果。
+  // 以前 top-N 被判为有效（后端 rev-list 会拒绝）；现在必须 top[0] 就是
+  // 真实 HEAD，否则一律无效，并给出专门的提示文案。
+  it("top-N selection is invalid when the list does not start at the real HEAD", async () => {
+    const w = mountView({ headSha: SHAS[2] });
+    await findSquashButton(w).trigger("click");
+    const boxes = w.findAll(".git-log-item-select");
+    await boxes[0].trigger("click");
+    await boxes[1].trigger("click");
+    const confirm = findSquashConfirm(w);
+    expect(confirm.attributes("disabled")).toBeDefined();
+    expect(confirm.attributes("title")).toContain("不含最新提交");
+    // 可见提示（复用 .git-log-truncated 的告警样式），不只藏在 tooltip 里。
+    expect(w.find(".git-log-truncated").text()).toContain("不含最新提交");
   });
 
   it("confirm button with a valid selection emits payload oldest → newest", async () => {

@@ -1,5 +1,5 @@
 // Author: elecvoid243 @ 2026-09-09
-// 筛选栏控件：数量（10 / 20 / 50 预设按钮组）+ 起始时间（原生 date 日历）。
+// 筛选栏控件：数量（10 / 20 / 30 预设按钮）+ 起始时间（原生 date 日历）。
 //
 // 沿用 GitLogView.tags.spec.ts 的 heavy-stub 策略：只挂载 GitLogView，
 // 用轻量 stub 替掉 Vuetify 控件与 GitStatsPanel，断言的是「控件收到什么
@@ -55,12 +55,6 @@ const stubs = {
     // 有东西可找（Vuetify 真实实现同理）。
     template: '<div><input type="date" /></div>',
   },
-  "v-btn-toggle": {
-    name: "v-btn-toggle",
-    props: ["modelValue"],
-    emits: ["update:modelValue"],
-    template: "<div><slot /></div>",
-  },
   "v-btn": {
     name: "v-btn",
     props: ["value", "height", "minWidth"],
@@ -92,6 +86,8 @@ function mountView() {
       tagItems: [],
       currentBranch: "main",
       activeBranch: "HEAD",
+      // 2026-09-09 head-sha: 快照里只有一条提交，它就是 HEAD。
+      headSha: "a".repeat(40),
     },
     global: { stubs },
   });
@@ -108,47 +104,47 @@ describe("GitLogView 数量 button group", () => {
     setActivePinia(createPinia());
   });
 
-  it("offers exactly 10 / 20 / 50 and starts on the 20 default", () => {
+  it("offers exactly 10 / 20 / 30 with the 20 default active", () => {
     const w = mountView();
     expect(w.find(".git-log-filter-n-label").text()).toBe("数量");
-    const presets = w
-      .findAllComponents({ name: "v-btn" })
-      .filter((b) => b.props("value") !== undefined);
-    expect(presets.map((b) => b.props("value"))).toEqual([10, 20, 50]);
-    expect(presets.map((b) => b.text())).toEqual(["10", "20", "50"]);
-    expect(w.findComponent({ name: "v-btn-toggle" }).props("modelValue")).toBe(
-      20,
-    );
+    const presets = w.findAll(".git-log-filter-n-btn");
+    expect(presets.map((b) => b.text())).toEqual(["10", "20", "30"]);
+    expect(presets.map((b) => b.attributes("aria-pressed"))).toEqual([
+      "false",
+      "true",
+      "false",
+    ]);
+    expect(presets[1].classes()).toContain("is-active");
   });
 
   it("applies the picked count on 筛选", async () => {
     const w = mountView();
-    w.findComponent({ name: "v-btn-toggle" }).vm.$emit(
-      "update:modelValue",
-      50,
-    );
-    await nextTick();
+    const presets = w.findAll(".git-log-filter-n-btn");
+    await presets[2].trigger("click"); // 30
+    expect(presets[2].classes()).toContain("is-active");
     const applyBtn = w
       .findAll("button")
       .find((b) => b.text().includes("筛选"));
     expect(applyBtn).toBeTruthy();
     await applyBtn!.trigger("click");
     const applied = w.emitted("apply")?.[0]?.[0] as { n: number };
-    expect(applied.n).toBe(50);
+    expect(applied.n).toBe(30);
   });
 
   // 热力图点某天（n=200）/「加载更多」（n 翻倍）会写入非预设值 —— 按钮组
-  // 如实反映（VBtnToggle 的 getIds 找不到匹配值 → 无选中项），不篡改值。
-  it("passes a non-preset count through without rewriting it", async () => {
+  // 如实反映（没有任何一项高亮），不篡改值。
+  it("passes a non-preset count through without highlighting a button", async () => {
     const w = mountView();
     w.findComponent({ name: "GitStatsPanel" }).vm.$emit(
       "filter-path",
       "src/a.ts",
     );
     await nextTick();
-    expect(w.findComponent({ name: "v-btn-toggle" }).props("modelValue")).toBe(
-      200,
-    );
+    const presets = w.findAll(".git-log-filter-n-btn");
+    expect(presets.some((b) => b.classes().includes("is-active"))).toBe(false);
+    // 点一下任意预设值即回到预设状态
+    await presets[0].trigger("click");
+    expect(presets[0].classes()).toContain("is-active");
   });
 });
 

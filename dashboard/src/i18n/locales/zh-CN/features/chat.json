@@ -1097,6 +1097,7 @@
         "toolbar": "压缩提交",
         "toolbarAria": "将选中的连续提交压缩为一个",
         "selectionHint": "仅支持从最新提交起连续选择（至少 2 条）",
+        "headHidden": "当前筛选结果不含最新提交，无法压缩；请先重设筛选条件",
         "rowSelectTitle": "选中以压缩",
         "rowSelectAria": "选中提交 {sha} 以压缩",
         "cancelSelection": "取消",

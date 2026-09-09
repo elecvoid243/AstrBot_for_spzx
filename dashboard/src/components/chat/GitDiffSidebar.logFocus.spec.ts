@@ -55,6 +55,8 @@ const LogViewStub = defineComponent({
   props: {
     focusedCommitSha: { type: String, default: null },
     state: { type: Object, default: null },
+    // 2026-09-09 head-sha: 断言 sidebar 把 worktree 的 head_sha 透传下去。
+    headSha: { type: String, default: null },
   },
   emits: ["apply", "reset"],
   render: () => h("div"),
@@ -113,7 +115,31 @@ beforeEach(() => {
   localStorage.removeItem(VIEW_MODE_STORAGE_KEY);
   getMock.mockReset();
   postMock.mockReset();
-  getMock.mockImplementation(async () => okEnvelope({}));
+  // 2026-09-09 head-sha: worktrees 端点返回一个带 head_sha 的主工作树，
+  // 供「headSha 透传」用例断言；其余端点回空信封。
+  getMock.mockImplementation(async (path: string) => {
+    if (path === "spcode/git-worktrees") {
+      return okEnvelope({
+        loaded: true,
+        directory: "F:/github/testproj",
+        umo: "session:test",
+        worktrees: [
+          {
+            path: "F:/github/testproj",
+            head_sha: SHA,
+            branch: "main",
+            is_main: true,
+            prunable: false,
+            locked: null,
+          },
+        ],
+        reason: null,
+        stderr: "",
+        elapsed_ms: 1,
+      });
+    }
+    return okEnvelope({});
+  });
   const spcodeStatus = useSpcodeProjectStatus();
   spcodeStatus.status.value = {
     loaded: true,
@@ -147,5 +173,12 @@ describe("GitDiffSidebar deep-link focus clearing", () => {
     await flushPromises();
 
     expect(logView.props("focusedCommitSha")).toBeNull();
+  });
+
+  // 2026-09-09 head-sha: amend / reset / squash 的可见性依赖真实 HEAD，
+  // sidebar 必须把当前工作树的 head_sha（来自 git worktree list）透传下去。
+  it("passes the worktree HEAD sha down to GitLogView", async () => {
+    const logView = await mountFocusedSidebar();
+    expect(logView.props("headSha")).toBe(SHA);
   });
 });

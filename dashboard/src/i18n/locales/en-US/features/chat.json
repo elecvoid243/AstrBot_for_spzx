@@ -1097,6 +1097,7 @@
         "toolbar": "Squash",
         "toolbarAria": "Squash the selected contiguous commits into one",
         "selectionHint": "Select a contiguous range starting from the latest commit (at least 2)",
+        "headHidden": "The current filter does not include the latest commit; reset the filters first",
         "rowSelectTitle": "Select for squash",
         "rowSelectAria": "Select commit {sha} for squash",
         "cancelSelection": "Cancel",

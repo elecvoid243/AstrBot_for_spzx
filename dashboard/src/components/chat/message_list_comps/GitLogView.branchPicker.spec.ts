@@ -157,6 +157,8 @@ function mountView(props: Record<string, unknown> = {}) {
       tagItems: TAG_ITEMS,
       currentBranch: "main",
       activeBranch: "HEAD",
+      // 2026-09-09 head-sha: 快照里只有一条提交，它就是 HEAD。
+      headSha: "a".repeat(40),
       ...props,
     },
     global: { stubs: vuetifyStubs },
@@ -254,5 +256,20 @@ describe("GitLogView split ref filter (2026-09-09)", () => {
     expect(w.find(".git-log-item-revert").exists()).toBe(true);
     expect(w.find(".git-log-item-amend").exists()).toBe(true);
     expect(w.find(".git-log-item-cherry-pick").exists()).toBe(false);
+  });
+
+  // 2026-09-09 head-sha 回归：amend 以前挂在「列表第一行」上。筛选后第一行
+  // 可能不是 HEAD，于是编辑信息按钮出现在错误的行、真正 HEAD 行反而没有。
+  it("shows amend on the true HEAD row even when another commit is first", () => {
+    const snap = makeSnapshot();
+    // 模拟筛选结果：第一行是另一条提交，真正的 HEAD 落到第二行。
+    snap.commits.unshift(makeCommit("b".repeat(40)));
+    const w = mountView({
+      state: { kind: "ok", snapshot: snap },
+      headSha: "a".repeat(40),
+    });
+    const rows = w.findAll(".git-log-item");
+    expect(rows[0].find(".git-log-item-amend").exists()).toBe(false);
+    expect(rows[1].find(".git-log-item-amend").exists()).toBe(true);
   });
 });

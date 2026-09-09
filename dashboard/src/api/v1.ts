@@ -191,6 +191,19 @@ export interface ChatSessionListParams {
   username?: string;
 }
 
+/** Serialized kernel standing-goal state (mirrors core GoalState). */
+export interface SessionGoalState {
+  goal: string;
+  status: 'active' | 'paused' | 'done';
+  turns_used: number;
+  max_turns: number;
+  subgoals: string[];
+  last_verdict: string | null;
+  last_reason: string | null;
+  paused_reason: string | null;
+  created_at: string | null;
+}
+
 export interface CronJobListParams {
   type?: string;
 }
@@ -841,6 +854,11 @@ export const chatApi = {
   getMarkers(sessionId: string) {
     return typed<any>(
       openApiV1.getChatSessionMarkers({ path: { session_id: sessionId } }),
+    );
+  },
+  getSessionGoal(sessionId: string) {
+    return typed<{ goal: SessionGoalState | null }>(
+      openApiV1.getChatSessionGoal({ path: { session_id: sessionId } }),
     );
   },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {

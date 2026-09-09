@@ -160,6 +160,15 @@ const chatHeaderSubtitleText = computed(() => {
   return title || subtitle;
 });
 
+// Goal button icon color follows the loop status: active=primary,
+// paused=warning, done=success.
+const goalStatusColor = computed(() => {
+  const status = chatHeader.goalBadge?.status;
+  if (status === "paused") return "warning";
+  if (status === "done") return "success";
+  return "primary";
+});
+
 function toggleChatSidebarFromHeader() {
   customizer.TOGGLE_CHAT_SIDEBAR();
 }
@@ -1158,43 +1167,28 @@ onMounted(async () => {
     </div>
 
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
-      <!-- 2026-08-28: persistent TodoSidebar entry. The floating todo
-           summary bar is not always on screen (it disappears on refresh
-           until the history replay lands, and vanishes after todo_clear),
-           and it was the sidebar's only entry point. This app-bar button
-           stays reachable whenever the session has a todo snapshot; the
-           badge mirrors the bar's done/total + attention indicator.
-           Badge content is pushed from Chat.vue (which owns the
-           useMessages snapshot) via the chatHeader store. -->
+      <!-- 2026-09-09: persistent GoalSidebar entry. Shown only when the
+           active session has a standing-goal record (/goal set, until
+           /goal clear). Badge mirrors the goal status + turn budget;
+           content is pushed from Chat.vue (which fetches the goal state
+           via useSessionGoal) through the chatHeader store. -->
       <v-btn
-        v-if="isChatPath && chatHeader.todoBadge"
-        class="chat-action-btn todo-sidebar-trigger"
+        v-if="isChatPath && chatHeader.goalBadge"
+        class="chat-action-btn goal-sidebar-trigger"
         :class="{
-          'todo-sidebar-trigger--active': chatHeader.todoSidebarOpen,
+          'goal-sidebar-trigger--active': chatHeader.goalSidebarOpen,
         }"
         variant="text"
         size="small"
         rounded="sm"
-        :title="tm('todo.summary')"
-        :aria-label="tm('todo.summary')"
-        @click="chatHeader.TOGGLE_TODO_SIDEBAR"
+        :title="tm('goal.summary')"
+        :aria-label="tm('goal.summary')"
+        @click="chatHeader.TOGGLE_GOAL_SIDEBAR"
       >
-        <v-icon size="18">mdi-format-list-checks</v-icon>
-        <span class="todo-trigger-count">
-          {{ chatHeader.todoBadge.done }}/{{ chatHeader.todoBadge.total }}
+        <v-icon size="18" :color="goalStatusColor">mdi-target</v-icon>
+        <span class="goal-trigger-count">
+          {{ chatHeader.goalBadge.turnsUsed }}/{{ chatHeader.goalBadge.maxTurns }}
         </span>
-        <v-icon
-          v-if="chatHeader.todoBadge.attention > 0"
-          size="10"
-          color="warning"
-          class="todo-trigger-attention"
-          :title="
-            tm('todo.attentionHint', {
-              count: chatHeader.todoBadge.attention,
-            })
-          "
-          >mdi-circle-medium</v-icon
-        >
       </v-btn>
 
       <!--
@@ -2255,25 +2249,21 @@ onMounted(async () => {
   background: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 
-/* 2026-08-28: persistent TodoSidebar entry (see template comment). */
-.todo-sidebar-trigger {
+/* 2026-09-09: persistent GoalSidebar entry (see template comment). */
+.goal-sidebar-trigger {
   color: rgb(var(--v-theme-on-surface));
 }
 
-.todo-sidebar-trigger--active {
+.goal-sidebar-trigger--active {
   background: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 
-.todo-trigger-count {
+.goal-trigger-count {
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
   margin-left: 2px;
   letter-spacing: 0;
-}
-
-.todo-trigger-attention {
-  margin-left: 2px;
 }
 
 .mode-switch-btn {

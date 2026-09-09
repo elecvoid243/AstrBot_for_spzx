@@ -125,7 +125,7 @@ export interface ToolCall {
  * 数据源:spcode 插件 4 个 todo 工具的 `call()` 返回值(经 `unwrap()` 包装成
  * `{"ok": true, "data": {list, stats, attention_items}}`)。前端在 SSE
  * `tool_call_result` 阶段从 tool.result 字符串中解析出来,按 sessionId 缓存,
- * 供 Chat.vue 的 todo summary bar / TodoSidebar 实时消费。
+ * 供 Chat.vue 的 todo summary bar 悬浮菜单实时消费。
  *
  * - `list.items[].attention` 由后端在 `_build_list_state` 时注入,标识需要
  *   关注的 item(stuck/blocked:`in_progress` 且 `notes` 非空)。
@@ -633,8 +633,8 @@ export function useMessages(options: UseMessagesOptions) {
       sessionArchivedFlags[sessionId] = Boolean(payload.archived);
       loadedSessions[sessionId] = true;
       // 2026-08-28 todo summary bar persistence: rebuild the session's
-      // todo snapshot from the persisted history so the summary bar (and
-      // with it the only TodoSidebar entry point) survives a page
+      // todo snapshot from the persisted history so the summary bar
+      // survives a page
       // refresh or a session switch. The fold mirrors the live
       // tool_call_result path exactly (same parser, last successful
       // call wins, todo_clear clears). A snapshot written by a live
@@ -2006,7 +2006,7 @@ export function useMessages(options: UseMessagesOptions) {
     cleanupConnections,
     /**
      * 按 sessionId 隔离的最新 todo 快照。
-     * Chat.vue 通过此字段渲染 todo summary bar 与 TodoSidebar。
+     * Chat.vue 通过此字段渲染 todo summary bar 悬浮菜单。
      * 详见 `parseTodoToolResult` 注释。
      */
     latestTodoSnapshotBySession,

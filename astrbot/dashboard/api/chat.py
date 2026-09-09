@@ -334,6 +334,16 @@ async def get_chat_session_markers(
     return await _run(lambda: service.get_message_markers(auth.username, session_id))
 
 
+@router.get("/chat/sessions/{session_id}/goal")
+async def get_chat_session_goal(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Return the standing-goal state for a session (null when none)."""
+    return await _run(lambda: service.get_session_goal(auth.username, session_id))
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

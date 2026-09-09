@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -2616,6 +2617,50 @@ class ChatService:
             "threads": [serialize_thread(thread) for thread in page_threads],
             "has_more": older_count > 0,
             "next_before_id": oldest_id,
+        }
+
+    async def get_session_goal(self, username: str, session_id: str) -> dict:
+        """Return the standing-goal state for a ChatUI session.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+
+        Returns:
+            ``{"goal": None}`` when the session has no goal record (never
+            set, or removed via /goal clear); otherwise the serialized
+            GoalState for the session's UMO.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        # Function-local import matching app.py: the goal module binds the
+        # kernel Context at star startup and is not needed at module load.
+        from astrbot.core.goal.goal_service import goal_service
+
+        umo = build_webchat_unified_msg_origin(session)
+        state = await goal_service.goals.get(umo)
+        if state is None:
+            return {"goal": None}
+        return {
+            "goal": {
+                "goal": state.goal,
+                "status": state.status,
+                "turns_used": state.turns_used,
+                "max_turns": state.max_turns,
+                "subgoals": state.subgoals,
+                "last_verdict": state.last_verdict,
+                "last_reason": state.last_reason,
+                "paused_reason": state.paused_reason,
+                "created_at": datetime.fromtimestamp(
+                    state.created_at, tz=timezone.utc
+                ).isoformat()
+                if state.created_at
+                else None,
+            }
         }
 
     async def get_message_markers(

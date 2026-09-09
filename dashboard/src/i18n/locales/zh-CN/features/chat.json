@@ -407,6 +407,21 @@
     "expandAll": "展开",
     "collapseAll": "收起"
   },
+  "goal": {
+    "sidebarTitle": "目标",
+    "summary": "Goal 进度",
+    "empty": "当前没有目标。用 /goal set <目标文本> 设定一个",
+    "close": "关闭",
+    "status_active": "进行中",
+    "status_paused": "已暂停",
+    "status_done": "已完成",
+    "turnBudget": "轮次预算",
+    "turnsLine": "{used}/{max} 轮",
+    "subgoalsTitle": "评判标准",
+    "lastReason": "最近评估",
+    "pausedReason": "暂停原因",
+    "setAt": "设定于 {time}"
+  },
   "connection": {
     "title": "连接状态提醒",
     "message": "系统检测到聊天连接需要重新建立。",

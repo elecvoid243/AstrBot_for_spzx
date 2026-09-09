@@ -407,6 +407,21 @@
     "expandAll": "Expand",
     "collapseAll": "Collapse"
   },
+  "goal": {
+    "sidebarTitle": "Goal",
+    "summary": "Goal progress",
+    "empty": "No goal yet. Use /goal set <text> to set one.",
+    "close": "Close",
+    "status_active": "Active",
+    "status_paused": "Paused",
+    "status_done": "Done",
+    "turnBudget": "Turn budget",
+    "turnsLine": "{used}/{max} turns",
+    "subgoalsTitle": "Judge criteria",
+    "lastReason": "Last verdict",
+    "pausedReason": "Paused reason",
+    "setAt": "Set at {time}"
+  },
   "connection": {
     "title": "Connection Status Notice",
     "message": "The system detected that the chat connection needs to be re-established.",

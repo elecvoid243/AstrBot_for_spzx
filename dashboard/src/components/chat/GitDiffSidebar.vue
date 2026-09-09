@@ -6496,8 +6496,8 @@ watch(
   left: 0;
   top: 0;
   bottom: 0;
-  /* 6px constant hit-area. Matches ReasoningSidebar / TodoSidebar
-     so all three sidebars share the same drag-handle feel. Hover
+  /* 6px constant hit-area. Matches ReasoningSidebar / GoalSidebar
+     so all sidebars share the same drag-handle feel. Hover
      only swaps the background colour - no width transition. */
   width: 6px;
   background: var(--chat-border, rgba(var(--v-theme-on-surface), 0.1));
@@ -6508,7 +6508,7 @@ watch(
 
 .git-diff-sidebar-resizer:hover,
 .git-diff-sidebar-resizer:active {
-  /* 0.2 alpha matches ReasoningSidebar / TodoSidebar so all three
+  /* 0.2 alpha matches ReasoningSidebar / GoalSidebar so all
      sidebars share the same hover affordance. */
   background: rgba(var(--v-theme-primary), 0.2);
 }

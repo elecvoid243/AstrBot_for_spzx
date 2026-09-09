@@ -112,7 +112,7 @@ function onMouseMove(e: MouseEvent) {
   if (!isResizing || !sidebarRef.value) return;
   // Use the sidebar's own right edge (not the parent's) as the
   // reference point. The flex layout places any siblings shown to
-  // the right (e.g. TodoSidebar) beyond `selfRect.right`, so the
+  // the right (e.g. GoalSidebar) beyond `selfRect.right`, so the
   // computed width is automatically reduced by their combined
   // width — no need to enumerate sibling sidebars.
   const selfRect = sidebarRef.value.getBoundingClientRect();

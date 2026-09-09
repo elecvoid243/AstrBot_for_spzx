@@ -3,55 +3,89 @@
     <div
       v-if="isOpen"
       ref="sidebarRef"
-      class="todo-sidebar"
+      class="goal-sidebar"
       :style="{ width: sidebarWidth + 'px' }"
     >
       <!-- Left-edge 6px drag handle. Mirrors the ReasoningSidebar /
            GitDiffSidebar pattern: bind mousedown here, listen for
            mousemove/mouseup on document, and unbind on mouseup. -->
-      <div class="todo-sidebar-resizer" @mousedown="startResize" />
+      <div class="goal-sidebar-resizer" @mousedown="startResize" />
 
       <div class="sidebar-header">
         <h3 class="sidebar-title">
-          <v-icon size="17" class="title-icon">mdi-format-list-checks</v-icon>
-          <span>{{ tm("todo.sidebarTitle") }}</span>
+          <v-icon size="17" class="title-icon">mdi-target</v-icon>
+          <span>{{ tm("goal.sidebarTitle") }}</span>
+          <v-chip
+            v-if="goal"
+            size="x-small"
+            label
+            variant="tonal"
+            :color="statusColor"
+            class="status-chip"
+          >
+            {{ tm(`goal.status_${goal.status}`) }}
+          </v-chip>
         </h3>
         <v-btn
           icon="mdi-close"
           size="small"
           variant="text"
-          :aria-label="tm('todo.close')"
+          :aria-label="tm('goal.close')"
           @click="close"
         ></v-btn>
       </div>
 
       <div class="sidebar-body">
-        <!-- Non-empty state.
-             Sidebar acts as a live monitor for the active session's
-             todo snapshot, so per-item collapse is on by default to
-             keep noise low. TodoListResult (tool result echo) keeps
-             the full uncollapsed view via collapsible=false. The
-             sidebar already has its own header, so the panel's raw
-             list title (usually the umo) is hidden. -->
-        <TodoListPanel
-          v-if="list && stats"
-          :list="list"
-          :stats="stats"
-          :attention-items="attentionItems"
-          collapsible
-          :show-header="false"
-        />
+        <template v-if="goal">
+          <!-- Goal text -->
+          <p class="goal-text">{{ goal.goal }}</p>
+
+          <!-- Turn budget -->
+          <div class="budget-block">
+            <div class="budget-meta">
+              <span class="budget-label">{{ tm("goal.turnBudget") }}</span>
+              <span class="budget-count">
+                {{ tm("goal.turnsLine", { used: goal.turns_used, max: goal.max_turns }) }}
+              </span>
+            </div>
+            <v-progress-linear
+              :model-value="budgetPct"
+              rounded
+              height="5"
+              :color="budgetPct >= 100 ? 'warning' : 'primary'"
+            />
+          </div>
+
+          <!-- Subgoals (judge criteria) -->
+          <div v-if="goal.subgoals.length" class="subgoals-block">
+            <div class="block-label">{{ tm("goal.subgoalsTitle") }}</div>
+            <div class="subgoal-item" v-for="(sub, i) in goal.subgoals" :key="i">
+              <span class="subgoal-index">{{ i + 1 }}.</span>
+              <span class="subgoal-text">{{ sub }}</span>
+            </div>
+          </div>
+
+          <!-- Last judge verdict / pause reason -->
+          <div v-if="goal.paused_reason" class="reason-block">
+            <div class="block-label">{{ tm("goal.pausedReason") }}</div>
+            <p class="reason-text">{{ goal.paused_reason }}</p>
+          </div>
+          <div v-else-if="goal.last_reason" class="reason-block">
+            <div class="block-label">{{ tm("goal.lastReason") }}</div>
+            <p class="reason-text">{{ goal.last_reason }}</p>
+          </div>
+        </template>
 
         <!-- Empty state -->
         <div v-else class="empty-state">
-          <v-icon size="40" class="empty-icon">mdi-clipboard-text-outline</v-icon>
-          <div class="empty-text">{{ tm("todo.empty") }}</div>
+          <v-icon size="40" class="empty-icon">mdi-target</v-icon>
+          <div class="empty-text">{{ tm("goal.empty") }}</div>
         </div>
       </div>
 
-      <div v-if="list?.updated_at" class="sidebar-footer">
+      <div v-if="goal?.created_at" class="sidebar-footer">
         <v-icon size="12" class="footer-icon">mdi-clock-outline</v-icon>
-        {{ tm("todo.updatedAt", { time: formatUpdatedAt(list.updated_at) }) }}
+        {{ tm("goal.setAt", { time: formatCreatedAt(goal.created_at) }) }}
       </div>
     </div>
   </transition>
@@ -60,30 +94,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import type { TodoList, TodoStats } from "@/composables/useMessages";
-import TodoListPanel from "./spcode_tools/TodoListPanel.vue";
+import type { SessionGoalState } from "@/api/v1";
 
 /**
- * TodoSidebar - right-side drawer that renders the latest snapshot of
- * the current session's todo_list tool call in real time.
+ * GoalSidebar - right-side drawer that renders the active session's
+ * standing-goal loop state (/goal set / status / subgoals / last verdict).
  *
- * Data is fed by the parent (Chat.vue) from useMessages'
- * latestTodoSnapshotBySession via the currentTodoSnapshot computed
- * that isolates the active session. Mutually exclusive with
- * RefsSidebar: the parent controls the v-model.
+ * Data is fed by the parent (Chat.vue) from useSessionGoal's per-session
+ * cache. Mutually exclusive with RefsSidebar: the parent controls the
+ * v-model.
  */
 const props = withDefaults(
   defineProps<{
     modelValue: boolean;
-    list: TodoList | null;
-    stats: TodoStats | null;
-    attentionItems: number[];
+    goal: SessionGoalState | null;
   }>(),
   {
     modelValue: false,
-    list: null,
-    stats: null,
-    attentionItems: () => [],
+    goal: null,
   },
 );
 
@@ -103,11 +131,24 @@ function close() {
   isOpen.value = false;
 }
 
-/** Render list.updated_at ISO string as a compact time label.
+const statusColor = computed(() => {
+  const status = props.goal?.status;
+  if (status === "paused") return "warning";
+  if (status === "done") return "success";
+  return "primary";
+});
+
+const budgetPct = computed(() => {
+  const goal = props.goal;
+  if (!goal || goal.max_turns <= 0) return 0;
+  return Math.min(100, Math.round((goal.turns_used / goal.max_turns) * 100));
+});
+
+/** Render created_at ISO string as a compact time label.
  *
  *  Format: "HH:MM" (same day) or "MM-DD HH:MM" (other days).
  */
-function formatUpdatedAt(value: string | undefined): string {
+function formatCreatedAt(value: string | undefined): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -168,18 +209,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.todo-sidebar {
+.goal-sidebar {
   /* Width is controlled by the inline :style binding (DEFAULT_WIDTH
      = 380px). On desktop the user can drag between MIN_WIDTH and
      MAX_WIDTH. */
   /* Reserve top space for the absolute v-app-bar (50px), matching
-     ReasoningSidebar / RefsSidebar / ThreadPanel / GitDiffSidebar.
-     --chat-panel-top-offset is defined by the parent .chat-ui. */
+     ReasoningSidebar / ThreadPanel / GitDiffSidebar. --chat-panel-top-offset
+     is defined by the parent .chat-ui. */
   height: calc(100% - var(--chat-panel-top-offset, 0px));
   margin-top: var(--chat-panel-top-offset, 0px);
-  /* Reuse the ChatUI page tokens (same as ReasoningSidebar /
-     RefsSidebar) so the panel blends into the chat surface
-     instead of reading as a foreign card. */
   background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
   border-left: 1px solid var(--chat-border, rgba(var(--v-border-color), 0.16));
   display: flex;
@@ -193,7 +231,7 @@ onBeforeUnmount(() => {
 
 /* Drag handle */
 
-.todo-sidebar-resizer {
+.goal-sidebar-resizer {
   position: absolute;
   left: 0;
   top: 0;
@@ -204,8 +242,8 @@ onBeforeUnmount(() => {
   transition: background 0.15s ease;
 }
 
-.todo-sidebar-resizer:hover,
-.todo-sidebar-resizer:active {
+.goal-sidebar-resizer:hover,
+.goal-sidebar-resizer:active {
   background: rgba(var(--v-theme-primary), 0.2);
 }
 
@@ -247,11 +285,93 @@ onBeforeUnmount(() => {
   color: rgb(var(--v-theme-primary));
 }
 
+.status-chip {
+  font-weight: 500;
+}
+
 .sidebar-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 14px 14px;
+  padding: 10px 16px 14px;
+}
+
+.goal-text {
+  margin: 4px 0 14px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: rgb(var(--v-theme-on-surface));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.block-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-bottom: 6px;
+}
+
+.budget-block {
+  margin-bottom: 14px;
+}
+
+.budget-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.budget-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.budget-count {
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-variant-numeric: tabular-nums;
+}
+
+.subgoals-block {
+  margin-bottom: 14px;
+}
+
+.subgoal-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.subgoal-index {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.subgoal-text {
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  word-break: break-word;
+}
+
+.reason-block {
+  margin-bottom: 14px;
+}
+
+.reason-text {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid rgba(var(--v-theme-primary), 0.35);
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .sidebar-footer {
@@ -292,7 +412,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .todo-sidebar {
+  .goal-sidebar {
     /* !important overrides the inline :style width so the mobile
        drawer always fills the screen. position:absolute + inset:0
        makes margin-top / height irrelevant here. */
@@ -303,7 +423,7 @@ onBeforeUnmount(() => {
     border-left: 0;
   }
 
-  .todo-sidebar-resizer {
+  .goal-sidebar-resizer {
     display: none;
   }
 }

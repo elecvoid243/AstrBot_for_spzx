@@ -12,8 +12,8 @@
 // exercise refresh persistence without spinning up Vite.
 
 /**
- * spcode todo_* tools whose results feed the todo summary bar and
- * TodoSidebar.
+ * spcode todo_* tools whose results feed the todo summary bar
+ * floating menu.
  *
  * v2.2.0 split 4 standalone tools (todo_create / todo_query /
  * todo_modify / todo_clear); v2.12 further split `todo_modify` into

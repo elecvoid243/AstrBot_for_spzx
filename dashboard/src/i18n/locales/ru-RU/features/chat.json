@@ -403,6 +403,21 @@
     "expandAll": "Развернуть",
     "collapseAll": "Свернуть"
   },
+  "goal": {
+    "sidebarTitle": "Цель",
+    "summary": "Прогресс цели",
+    "empty": "Цель не задана. Используйте /goal set <текст>.",
+    "close": "Закрыть",
+    "status_active": "Активна",
+    "status_paused": "Приостановлена",
+    "status_done": "Достигнута",
+    "turnBudget": "Бюджет ходов",
+    "turnsLine": "{used}/{max} ходов",
+    "subgoalsTitle": "Критерии оценки",
+    "lastReason": "Последняя оценка",
+    "pausedReason": "Причина паузы",
+    "setAt": "Установлена в {time}"
+  },
   "connection": {
     "title": "Статус подключения",
     "message": "Системе необходимо переустановить соединение с чатом.",

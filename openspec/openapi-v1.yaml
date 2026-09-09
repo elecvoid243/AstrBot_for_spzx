@@ -1487,6 +1487,18 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/goal:
+    get:
+      tags: [Chat]
+      summary: Return the standing-goal state for a session (null when none)
+      operationId: getChatSessionGoal
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/stop:
     post:
       tags: [Chat]

@@ -36,4 +36,17 @@ describe("TodoSummaryBar and GitDiffSidebar layering contract", () => {
       /\.git-diff-sidebar\.is-fullscreen\s*\{[\s\S]*?z-index:\s*1300;/,
     );
   });
+
+  // 2026-09-09: the expandable floating menu replaced TodoSidebar. It is a
+  // position:fixed sibling of the pill and must obey the same layering
+  // contract: below the pill (so the pill stays clickable) and below the
+  // Git Diff fullscreen layer when that is active.
+  it("keeps the expandable todo menu below the pill and the gitdiff fullscreen layer", () => {
+    const chatSource = readSiblingSource("./Chat.vue");
+
+    expect(chatSource).toMatch(/\.todo-summary-menu\s*\{[\s\S]*?z-index:\s*1390;/);
+    expect(chatSource).toMatch(
+      /\.todo-summary-menu--gitdiff-fullscreen\s*\{[\s\S]*?z-index:\s*1190;/,
+    );
+  });
 });

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable
@@ -378,6 +379,104 @@ class UpdateService:
             raise UpdateServiceError(f"获取公告失败: {e!s}") from e
 
         return UpdateServiceResult(status="success", data=payload)
+
+    @staticmethod
+    def _resolve_feedback_url() -> str | None:
+        """Derive the upstream ``POST /api/feedback`` URL from the update server base URL.
+
+        Mirrors ``_resolve_announcement_url``: reuse ``core_update.release_api_url``
+        and root the feedback path at the scheme+netloc.
+
+        Returns:
+            Absolute upstream URL, or ``None`` if the configured base URL is
+            missing or malformed.
+        """
+        try:
+            base_full = UpdateConfig().get_core_release_api_url()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"读取 update_config 失败，无法解析反馈上游: {e!s}")
+            return None
+
+        parsed = urlparse(base_full)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        return f"{parsed.scheme}://{parsed.netloc}/api/feedback"
+
+    async def submit_feedback(
+        self,
+        content: str,
+        astrbot_version: str = "",
+        dashboard_version: str = "",
+        contact: str = "",
+        attachments: list[tuple[str, bytes]] | None = None,
+    ) -> tuple[int, dict]:
+        """Proxy a dashboard user feedback submission to the update server.
+
+        The update server enforces its own attachment count/size limits and
+        answers with an ``{"status": ..., "message": ...}`` envelope; that
+        status code and payload are passed through to the caller unchanged.
+
+        Args:
+            content: Feedback text (required).
+            astrbot_version: Reported AstrBot version.
+            dashboard_version: Reported dashboard version.
+            contact: Optional user contact info.
+            attachments: ``(filename, bytes)`` pairs already read from the
+                upload (the route layer enforces hard size caps before calling).
+
+        Returns:
+            ``(upstream_http_status, upstream_json_payload)``.
+
+        Raises:
+            UpdateServiceError: base URL missing/malformed, upstream
+                unreachable, or the response body is not JSON.
+        """
+        upstream_url = self._resolve_feedback_url()
+        if not upstream_url:
+            raise UpdateServiceError(
+                "更新服务器 base URL 未配置或格式不合法，无法提交反馈。"
+            )
+
+        form = aiohttp.FormData()
+        form.add_field("content", content)
+        form.add_field("astrbot_version", astrbot_version)
+        form.add_field("dashboard_version", dashboard_version)
+        form.add_field("contact", contact)
+        for filename, data in attachments or []:
+            form.add_field(
+                "files",
+                data,
+                filename=filename,
+                content_type="application/octet-stream",
+            )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    upstream_url,
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=60.0),
+                    headers={"Accept": "application/json"},
+                ) as response:
+                    body = await response.read()
+                    status = response.status
+        except UpdateServiceError:
+            raise
+        except aiohttp.ClientError as e:
+            logger.warning(f"连接更新服务器失败 ({upstream_url}): {e!s}")
+            raise UpdateServiceError(f"无法连接更新服务器: {e!s}") from e
+        except asyncio.TimeoutError as e:
+            logger.warning(f"提交反馈超时 ({upstream_url})")
+            raise UpdateServiceError("提交反馈超时，请稍后重试。") from e
+
+        try:
+            payload = json.loads(body) if body else {}
+        except ValueError as e:
+            logger.warning(f"反馈响应解析失败: HTTP {status} {body[:200]!r}")
+            raise UpdateServiceError(
+                f"更新服务器返回了无法解析的响应: HTTP {status}"
+            ) from e
+        return status, payload
 
     def _init_update_progress(self, progress_id: str, version: str | None) -> None:
         self.update_progress[progress_id] = {

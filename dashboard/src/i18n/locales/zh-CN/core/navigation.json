@@ -54,5 +54,23 @@
     "normal": "普通配置",
     "system": "系统配置"
   },
-  "pluginWebui": "插件页面"
+  "pluginWebui": "插件页面",
+  "feedback": {
+    "button": "问题反馈",
+    "title": "问题反馈",
+    "subtitle": "遇到问题或有改进建议？告诉我们吧。",
+    "contentLabel": "问题描述",
+    "contentPlaceholder": "请描述遇到的问题或建议，可包含复现步骤…",
+    "contactLabel": "联系方式（选填）",
+    "contactPlaceholder": "QQ / 邮箱，方便我们回访",
+    "attachments": "附件（截图 / 日志 / 文档，选填）",
+    "addAttachment": "添加附件",
+    "maxHint": "最多 10 个附件，单个不超过 20 MB",
+    "tooManyFiles": "附件最多 {max} 个",
+    "submit": "提交反馈",
+    "cancel": "取消",
+    "success": "反馈提交成功，感谢你的反馈！",
+    "failed": "反馈提交失败，请稍后重试",
+    "versionInfo": "将自动附带版本信息：{info}"
+  }
 }

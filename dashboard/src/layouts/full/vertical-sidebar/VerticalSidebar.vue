@@ -4,6 +4,7 @@ import { useCustomizerStore } from '../../../stores/customizer';
 import { useI18n } from '@/i18n/composables';
 import sidebarItems, { MORE_GROUP_KEY } from './sidebarItem';
 import NavItem from './NavItem.vue';
+import FeedbackDialog from '@/components/shared/FeedbackDialog.vue';
 import { applySidebarCustomization } from '@/utils/sidebarCustomization';
 import { usePluginSidebarItems } from '@/composables/usePluginSidebarItems';
 
@@ -11,6 +12,9 @@ const { t } = useI18n();
 
 const customizer = useCustomizerStore();
 const { pluginItems } = usePluginSidebarItems();
+
+// 用户反馈弹窗（左下角入口）
+const feedbackDialogRef = ref(null);
 
 function buildSidebarMenu() {
   const base = applySidebarCustomization(sidebarItems);
@@ -169,12 +173,21 @@ function startSidebarResize(event) {
       </v-list>
       <div class="sidebar-footer">
         <v-btn class="sidebar-footer-btn" :class="{ 'sidebar-footer-icon-btn': isRailSidebar }" :size="isRailSidebar ? 'default' : 'small'"
+          variant="text"
+          :prepend-icon="isRailSidebar ? undefined : 'mdi-message-alert'" :aria-label="t('core.navigation.feedback.button')"
+          @click="feedbackDialogRef?.open()">
+          <v-icon v-if="isRailSidebar" icon="mdi-message-alert" />
+          <template v-else>{{ t('core.navigation.feedback.button') }}</template>
+          <v-tooltip v-if="isRailSidebar" activator="parent" location="right" :text="t('core.navigation.feedback.button')" open-delay="180" />
+        </v-btn>
+        <v-btn class="sidebar-footer-btn" :class="{ 'sidebar-footer-icon-btn': isRailSidebar }" :size="isRailSidebar ? 'default' : 'small'"
           variant="text" to="/settings"
           :prepend-icon="isRailSidebar ? undefined : 'mdi-cog'" :aria-label="t('core.navigation.settings')">
           <v-icon v-if="isRailSidebar" icon="mdi-cog" />
           <template v-else>{{ t('core.navigation.settings') }}</template>
           <v-tooltip v-if="isRailSidebar" activator="parent" location="right" :text="t('core.navigation.settings')" open-delay="180" />
         </v-btn>
+        <FeedbackDialog ref="feedbackDialogRef" />
       </div>
     </div>
     

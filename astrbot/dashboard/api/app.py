@@ -84,6 +84,9 @@ from .subagents import legacy_router as legacy_subagents_router
 from .t2i import legacy_router as legacy_t2i_router
 from .tools import legacy_router as legacy_tools_router
 from .updates import (
+    feedback_legacy_router as legacy_feedback_router,
+)
+from .updates import (
     legacy_router as legacy_updates_router,
 )
 from .updates import (
@@ -284,6 +287,7 @@ def create_dashboard_asgi_app(
     app.include_router(legacy_personas_router)
     app.include_router(legacy_updates_router)
     app.include_router(legacy_system_announcement_router)
+    app.include_router(legacy_feedback_router)
     app.include_router(build_api_router())
     app.include_router(static_files_router)
     return app

@@ -54,5 +54,23 @@
     "normal": "Normal Config",
     "system": "System Config"
   },
-  "pluginWebui": "Plugin Pages"
+  "pluginWebui": "Plugin Pages",
+  "feedback": {
+    "button": "Feedback",
+    "title": "Feedback",
+    "subtitle": "Found a problem or have a suggestion? Let us know.",
+    "contentLabel": "Description",
+    "contentPlaceholder": "Describe the issue or suggestion, including steps to reproduce if possible…",
+    "contactLabel": "Contact (optional)",
+    "contactPlaceholder": "QQ / email, so we can follow up",
+    "attachments": "Attachments (screenshots / logs / files, optional)",
+    "addAttachment": "Add Attachment",
+    "maxHint": "Up to 10 attachments, max 20 MB each",
+    "tooManyFiles": "At most {max} attachments",
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "success": "Feedback submitted. Thank you!",
+    "failed": "Failed to submit feedback, please try again later",
+    "versionInfo": "Version info will be attached automatically: {info}"
+  }
 }

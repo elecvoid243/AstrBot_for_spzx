@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from astrbot.core import logger
@@ -31,6 +31,19 @@ system_announcement_legacy_router = APIRouter(
     tags=["Dashboard System"],
     include_in_schema=False,
 )
+# Legacy router for the user feedback proxy endpoint. Same prefix as the
+# announcement router (no path collision); the frontend hard-codes
+# ``/api/system/feedback``.
+feedback_legacy_router = APIRouter(
+    prefix="/api/system",
+    tags=["Dashboard System"],
+    include_in_schema=False,
+)
+
+# Hard caps enforced before proxying, so a runaway upload is rejected without
+# buffering it. The update server applies its own (smaller) limits as well.
+FEEDBACK_MAX_FILE_BYTES = 50 * 1024 * 1024
+FEEDBACK_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
 def get_service(request: Request) -> UpdateService:
@@ -247,3 +260,60 @@ async def dashboard_system_announcement(
     service: UpdateService = Depends(get_service),
 ):
     return await _get_announcement(service)
+
+
+def _feedback_error(exc: UpdateServiceError) -> JSONResponse:
+    """Map feedback proxy errors to 502 (unreachable upstream / bad payload)."""
+    return JSONResponse(
+        {"status": "error", "message": str(exc), "data": None},
+        status_code=502,
+    )
+
+
+@feedback_legacy_router.post("/feedback")
+async def submit_user_feedback(
+    content: str = Form(...),
+    astrbot_version: str = Form(""),
+    dashboard_version: str = Form(""),
+    contact: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
+    _username: str = Depends(require_dashboard_user),
+    service: UpdateService = Depends(get_service),
+):
+    """Proxy dashboard user feedback to the configured update server."""
+    prepared: list[tuple[str, bytes]] = []
+    total = 0
+    for f in files:
+        data = await f.read(FEEDBACK_MAX_FILE_BYTES + 1)
+        if len(data) > FEEDBACK_MAX_FILE_BYTES:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": f"单个附件不能超过 {FEEDBACK_MAX_FILE_BYTES // (1024 * 1024)} MB。",
+                    "data": None,
+                },
+                status_code=413,
+            )
+        total += len(data)
+        if total > FEEDBACK_MAX_TOTAL_BYTES:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": f"附件总大小不能超过 {FEEDBACK_MAX_TOTAL_BYTES // (1024 * 1024)} MB。",
+                    "data": None,
+                },
+                status_code=413,
+            )
+        prepared.append((f.filename or "unnamed", data))
+
+    try:
+        status, payload = await service.submit_feedback(
+            content=content,
+            astrbot_version=astrbot_version,
+            dashboard_version=dashboard_version,
+            contact=contact,
+            attachments=prepared,
+        )
+    except UpdateServiceError as exc:
+        return _feedback_error(exc)
+    return JSONResponse(payload, status_code=status)

@@ -62,6 +62,10 @@
         "title": "缓存",
         "subtitle": "临时目录自动清理阈值。"
       },
+      "goalLoop": {
+        "title": "目标循环",
+        "subtitle": "内置 /goal 常驻目标循环的评判模型与轮次预算。"
+      },
       "t2iRendering": {
         "title": "文本转图像",
         "subtitle": "文本转图像渲染策略、端点和自定义模板。"

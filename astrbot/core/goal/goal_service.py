@@ -27,6 +27,7 @@ from typing import Any
 from astrbot.core import logger, sp
 from astrbot.core.goal.goal_judge import judge_goal
 from astrbot.core.goal.goal_manager import GoalManager
+from astrbot.core.goal.goal_state import GoalState
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
@@ -170,6 +171,23 @@ class GoalService:
         if self._config().get("admin_only", True) and event.role != "admin":
             return "⛔ 仅管理员可以使用 /goal。"
         return None
+
+    async def set_goal(self, umo: str, goal: str) -> GoalState:
+        """Start a standing goal with the turn budget from config.
+
+        Args:
+            umo: Unified message origin of the session.
+            goal: The goal text.
+
+        Returns:
+            The created goal state.
+
+        Raises:
+            ValueError: If the goal text is empty or max_turns is not an int.
+        """
+        return await self.goals.set(
+            umo, goal, max_turns=self._config().get("max_turns")
+        )
 
     async def _notify(self, event: AstrMessageEvent, text: str) -> None:
         """Proactively push a message to the session of ``event``."""
@@ -395,6 +413,7 @@ class GoalService:
                 last_response=r,
                 subgoals=s,
             ),
+            max_parse_failures=self._config().get("max_parse_failures"),
         )
 
         if decision.get("message") and self._config().get("verbose", True):

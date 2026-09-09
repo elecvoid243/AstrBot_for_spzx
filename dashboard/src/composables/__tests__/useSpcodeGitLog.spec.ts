@@ -69,3 +69,39 @@ describe("useSpcodeGitLog grep", () => {
     expect(getMock.mock.calls[1][1].headers["If-None-Match"]).toBeUndefined();
   });
 });
+
+// 2026-09-09 (elecvoid243) split-ref-filter: `rev`（SHA / 标签）与 `ref`
+// （分支）拆开后，线上参数仍只有一个 ref —— rev 非空时覆盖分支，为空时
+// 回落到分支；但 ETag 分桶必须把 rev 纳入，否则同一分支下的不同 SHA
+// 检索会互相 304 复用快照。
+describe("useSpcodeGitLog rev override", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    getMock.mockResolvedValue(okResponse());
+    vi.useFakeTimers();
+  });
+
+  it("sends rev as the wire ref while the branch stays in the filter", async () => {
+    const log = useSpcodeGitLog();
+    await log.refresh({ ref: "main", n: 20, rev: "abc1234" });
+    expect(getMock.mock.calls[0][1].params.ref).toBe("abc1234");
+    expect(log.filter.value.ref).toBe("main");
+    expect(log.filter.value.rev).toBe("abc1234");
+  });
+
+  it("falls back to the branch when rev is empty or null", async () => {
+    const log = useSpcodeGitLog();
+    await log.refresh({ ref: "dev", n: 20, rev: "" });
+    expect(getMock.mock.calls[0][1].params.ref).toBe("dev");
+
+    await log.refresh({ ref: "dev", n: 20, rev: null });
+    expect(getMock.mock.calls[1][1].params.ref).toBe("dev");
+  });
+
+  it("uses a distinct ETag bucket per rev under the same branch", async () => {
+    const log = useSpcodeGitLog();
+    await log.refresh({ ref: "main", n: 20, rev: "aaaaaaa" });
+    await log.refresh({ ref: "main", n: 20, rev: "bbbbbbb" });
+    expect(getMock.mock.calls[1][1].headers["If-None-Match"]).toBeUndefined();
+  });
+});

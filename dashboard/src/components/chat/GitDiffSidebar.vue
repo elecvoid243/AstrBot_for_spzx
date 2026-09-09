@@ -51,6 +51,10 @@ import { useSpcodeGitUnstage } from "@/composables/useSpcodeGitUnstage";
 import { useSpcodeGitCommit } from "@/composables/useSpcodeGitCommit";
 import { useSpcodeGitCommitAmend } from "@/composables/useSpcodeGitCommitAmend";
 import { useSpcodeGitRevert } from "@/composables/useSpcodeGitRevert";
+import {
+  useSpcodeGitReset,
+  type GitResetMode,
+} from "@/composables/useSpcodeGitReset";
 import { useSpcodeFileWrite } from "@/composables/useSpcodeFileWrite";
 import GitIgnoreEditor from "@/components/chat/message_list_comps/GitIgnoreEditor.vue";
 import { useSpcodeGitLog, type LogFilter } from "@/composables/useSpcodeGitLog";
@@ -476,34 +480,59 @@ const currentBranchName = computed(() => {
   return s.snapshot.current;
 });
 // 2026-08-01 branch-picker (spec 2026-08-01-git-history-branch-picker
-// §3): combobox items for the History view's ref filter — current
+// §3): picker items for the History view's branch filter — current
 // branch first, then locals, then remotes. Reuses the existing
-// branchList computed; empty while branches are not loaded (the
-// combobox then degrades to free input).
+// branchList computed; empty while branches are not loaded.
 // 2026-09-08 (spec 2026-09-08-git-log-tags-and-filters §2.3): Ref 选择器
 // 升级为分组条目 —— 当前分支 / 本地分支 / 远程分支 / 标签。
-const refPickerItems = computed<RefPickerItem[]>(() => {
-  const items: RefPickerItem[] = [];
-  const pushGroup = (labelKey: string, names: string[]): void => {
-    if (names.length === 0) return;
+// 2026-09-09 (elecvoid243) split-ref-filter: 一拆为二 —— 分支选择器
+// （HEAD + 当前 / 本地 / 远程分支）与标签联想条目（仅标签分组）。标签
+// 不再属于「分支」，SHA / 标签统一走 GitLogView 的 rev 过滤。
+// 顶部的 HEAD 条目让用户在切走之后仍能回到「跟随当前检出提交」的默认
+// 值（重设筛选条件之外的显式入口，游离 HEAD 时尤其有用）。
+const branchPickerItems = computed<RefPickerItem[]>(() => {
+  const items: RefPickerItem[] = [{ title: "HEAD", value: "HEAD" }];
+  const groups: Array<[string, string[]]> = [
+    [
+      "filter.group.current",
+      branchList.value.filter((b) => b.current && !b.remote).map((b) => b.name),
+    ],
+    [
+      "filter.group.local",
+      branchList.value
+        .filter((b) => !b.current && !b.remote)
+        .map((b) => b.name),
+    ],
+    [
+      "filter.group.remote",
+      branchList.value.filter((b) => b.remote).map((b) => b.name),
+    ],
+  ];
+  for (const [labelKey, names] of groups) {
+    if (names.length === 0) continue;
     items.push({
       title: tm(`spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`),
       type: "subheader",
     });
     for (const name of names) items.push({ title: name, value: name });
-  };
-  const cur = branchList.value.filter((b) => b.current && !b.remote);
-  const local = branchList.value.filter((b) => !b.current && !b.remote);
-  const remote = branchList.value.filter((b) => b.remote);
-  const tags =
-    branchesComposable.state.value.kind === "ok"
-      ? branchesComposable.state.value.snapshot.tags
-      : [];
-  pushGroup("filter.group.current", cur.map((b) => b.name));
-  pushGroup("filter.group.local", local.map((b) => b.name));
-  pushGroup("filter.group.remote", remote.map((b) => b.name));
-  pushGroup("filter.group.tags", tags.map((t) => t.name));
+  }
   return items;
+});
+// 2026-09-09 (elecvoid243) split-ref-filter: 「提交 / 标签」输入框的联想
+// 条目（标签分组）。为空时该框退化为纯 SHA 输入。
+const tagPickerItems = computed<RefPickerItem[]>(() => {
+  const s = branchesComposable.state.value;
+  const tags = s.kind === "ok" ? s.snapshot.tags : [];
+  if (tags.length === 0) return [];
+  return [
+    {
+      title: tm(
+        "spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.group.tags",
+      ),
+      type: "subheader",
+    },
+    ...tags.map((t) => ({ title: t.name, value: t.name })),
+  ];
 });
 // Parse git's upstream-track string ("ahead 3" / "behind 1, ahead 2")
 // into structured counts. Returns null when the field is empty (no
@@ -811,6 +840,9 @@ const gitLog = useSpcodeGitLog(
 // 2026-07-17 git-revert: History-view per-commit revert. The sidebar
 // owns the confirm dialog + the write call (mirroring stage/commit).
 const gitRevert = useSpcodeGitRevert();
+// 2026-09-09 git-reset: History-view per-commit branch reset
+// (SourceTree-style "Reset current branch to this commit").
+const gitReset = useSpcodeGitReset();
 // 2026-08-03 git-squash: History-view multi-commit squash. The
 // sidebar owns the dialog + the write call (mirroring revert).
 const gitSquash = useSpcodeGitSquash();
@@ -987,7 +1019,7 @@ provide<(path: string) => void>(SET_LOG_PATH_FILTER_KEY, setLogPathFilter);
  *      mounts. Already-persisted via the existing
  *      `watch(viewMode, ...)` so the user lands back here next
  *      time.
- *   2. Pins the log's `ref` filter to the clicked SHA. `git log
+ *   2. Pins the log's `rev` filter to the clicked SHA. `git log
  *      <sha>` returns that commit plus its ancestors, which is
  *      exactly what a deep-link to a single commit should show
  *      — the user gets the commit they clicked as the first
@@ -995,6 +1027,10 @@ provide<(path: string) => void>(SET_LOG_PATH_FILTER_KEY, setLogPathFilter);
  *      per-file panel's `path` filter too: the commit of interest
  *      is not guaranteed to touch the picked file in *this*
  *      revision (it might be a renaming or a non-related history).
+ *      2026-09-09 split-ref-filter: the SHA goes into `rev` (the
+ *      dedicated SHA / tag filter) instead of `ref`, so the branch
+ *      context — and therefore the revert / amend / squash / reset
+ *      ⇄ cherry-pick visibility — is preserved.
  *   3. Stashes the SHA in `focusedCommitSha`, which is forwarded
  *      to <GitLogView> as `focused-commit-sha`. GitLogView owns
  *      the highlight + expansion + scrollIntoView; see its
@@ -1009,8 +1045,11 @@ function focusCommit(sha: string): void {
   // until / n) but pin ref+path so the request is scoped to the
   // clicked commit. The explicit assignments after the spread
   // win over anything carried over from `gitLog.filter.value`.
-  const { path: _path, ref: _ref, ...rest } = gitLog.filter.value;
-  void gitLog.refresh({ ...rest, ref: sha, path: undefined });
+  // 2026-09-09 split-ref-filter: 深链只改写 rev（git log 起点），保留
+  // 分支上下文（ref），这样落在历史里的提交按钮可见性仍按当前浏览的
+  // 分支判定，而不是因为一次 SHA 跳转就整体翻转。
+  const { path: _path, rev: _rev, ...rest } = gitLog.filter.value;
+  void gitLog.refresh({ ...rest, rev: sha, path: undefined });
 }
 // Dedicated key: this is a sibling affordance to setLogPathFilter
 // and the two are not interchangeable. Both <FileBrowserView> and
@@ -1030,6 +1069,21 @@ const pendingStageAllCount = ref(0);
 // per-commit revert action.
 const revertDialogOpen = ref(false);
 const pendingRevert = ref<{ sha: string; subject: string } | null>(null);
+// 2026-09-09 git-reset: dialog state. resetMode defaults to "mixed"
+// (SourceTree's default too); resetConfirmSha gates the confirm button —
+// the user must type the target commit's 7-char SHA prefix for ALL
+// modes (user decision: reset moves the branch pointer, so even
+// soft/mixed deserve typed confirmation).
+const resetDialogOpen = ref(false);
+const pendingReset = ref<{ sha: string; subject: string } | null>(null);
+const resetMode = ref<GitResetMode>("mixed");
+const resetConfirmSha = ref("");
+const resetConfirmReady = computed(
+  () =>
+    pendingReset.value !== null &&
+    resetConfirmSha.value.trim().toLowerCase() ===
+      pendingReset.value.sha.slice(0, 7).toLowerCase(),
+);
 // 2026-08-13 git-commit-amend: dialog state for editing the HEAD commit
 // message. pendingAmend carries subject + body so the dialog can prefill.
 const amendDialogOpen = ref(false);
@@ -1574,6 +1628,152 @@ async function onConfirmRevert(): Promise<void> {
     REVERT_REASON_I18N_KEYS[reason] ?? REVERT_REASON_I18N_KEYS.unknown;
   revertDialogOpen.value = false;
   pendingRevert.value = null;
+  showSnackbar(
+    tm(meta.key),
+    meta.color,
+    meta.withStderr ? result.stderr : undefined,
+  );
+}
+
+// ── Reset branch (History view, 2026-09-09) ─────────────────────
+// SourceTree-style "Reset current branch to this commit" — the
+// endpoint moves the branch pointer (no new commit). All three modes
+// require typing the target commit's 7-char SHA prefix before the
+// confirm button unlocks.
+const RESET_REASON_I18N_KEYS: Record<
+  string,
+  { key: string; color: "warning" | "error"; withStderr?: boolean }
+> = {
+  invalid_body: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.invalid_param",
+    color: "error",
+  },
+  invalid_param: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.invalid_param",
+    color: "error",
+  },
+  feature_disabled: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.feature_disabled",
+    color: "warning",
+  },
+  no_project_loaded: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.no_project_loaded",
+    color: "warning",
+  },
+  worktree_invalid: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.worktree_invalid",
+    color: "warning",
+  },
+  directory_missing: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.directory_missing",
+    color: "error",
+  },
+  not_a_git_repo: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.not_a_git_repo",
+    color: "error",
+  },
+  git_unavailable: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.git_unavailable",
+    color: "error",
+  },
+  commit_not_found: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.commit_not_found",
+    color: "error",
+  },
+  operation_in_progress: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.operation_in_progress",
+    color: "warning",
+  },
+  git_error: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.git_error",
+    color: "error",
+    withStderr: true,
+  },
+  network: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.network",
+    color: "error",
+  },
+  unknown: {
+    key: "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetError.reason.unknown",
+    color: "error",
+  },
+};
+
+// Consequence line under the mode radios; keys stay static so i18n
+// tooling can trace them.
+const resetModeHint = computed(() => {
+  if (resetMode.value === "soft") {
+    return tm(
+      "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeHintSoft",
+    );
+  }
+  if (resetMode.value === "hard") {
+    return tm(
+      "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeHintHard",
+    );
+  }
+  return tm(
+    "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeHintMixed",
+  );
+});
+
+// Uncommitted-change count for the hard-mode warning line. 0 when the
+// status snapshot isn't loaded — the warning simply stays hidden.
+const pendingResetDirtyCount = computed(() => {
+  const s = gitStatus.state.value;
+  return s.kind === "ok" ? s.snapshot.summary.total : 0;
+});
+
+function onLogResetRequest(commit: { sha: string; subject: string }): void {
+  pendingReset.value = commit;
+  resetMode.value = "mixed";
+  resetConfirmSha.value = "";
+  resetDialogOpen.value = true;
+}
+
+function onCancelReset(): void {
+  resetDialogOpen.value = false;
+  pendingReset.value = null;
+  resetConfirmSha.value = "";
+}
+
+async function onConfirmReset(): Promise<void> {
+  const target = pendingReset.value;
+  if (!target || !resetConfirmReady.value) return;
+  const result = await gitReset.reset({
+    ref: target.sha,
+    mode: resetMode.value,
+    worktree: selectedWorktree.value,
+    umo: spcodeStatus.status.value.umo,
+  });
+  if (result.ok) {
+    resetDialogOpen.value = false;
+    pendingReset.value = null;
+    resetConfirmSha.value = "";
+    showSnackbar(
+      tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetSuccess", {
+        mode: resetMode.value,
+        sha: result.snapshot.afterSha.slice(0, 7),
+      }),
+      "success",
+    );
+    // The branch pointer moved — and hard additionally rewrote the
+    // worktree/index. Log / status / diff / stats are all stale
+    // (same refresh set as amend).
+    void Promise.all([
+      gitLog.refresh(),
+      gitStatus.refresh(),
+      gitStats.refresh(),
+      composable.refresh(),
+    ]);
+    return;
+  }
+  if (result.reason === "aborted") return;
+  const meta =
+    RESET_REASON_I18N_KEYS[result.reason] ?? RESET_REASON_I18N_KEYS.unknown;
+  resetDialogOpen.value = false;
+  pendingReset.value = null;
+  resetConfirmSha.value = "";
   showSnackbar(
     tm(meta.key),
     meta.color,
@@ -4281,6 +4481,7 @@ onBeforeUnmount(() => {
   gitCommit.dispose();
   gitCommitAmend.dispose();
   gitRevert.dispose();
+  gitReset.dispose();
   gitSquash.dispose();
   gitIgnoreFileWrite.dispose();
   gitLog.dispose();
@@ -5446,9 +5647,10 @@ watch(
             v-model:stats-open="statsOpen"
             :range="gitStatsRange"
             :top-files-limit="gitStatsTopFilesLimit"
-            :ref-items="refPickerItems"
+            :branch-items="branchPickerItems"
+            :tag-items="tagPickerItems"
             :current-branch="currentBranchName"
-            :active-ref="gitLog.filter.value.ref ?? null"
+            :active-branch="gitLog.filter.value.ref ?? null"
             :applied-grep="gitLog.filter.value.grep ?? ''"
             :squash-reset-token="squashResetToken"
             :changelog-reset-token="changelogResetToken"
@@ -5459,6 +5661,7 @@ watch(
             @load-more="onLogLoadMore"
             @refresh="onLogRefresh"
             @revert="onLogRevertRequest"
+            @reset-branch="onLogResetRequest"
             @cherry-pick="onLogCherryPickRequest"
             @amend="onLogAmendRequest"
             @cherry-pick-blank="onToolbarCherryPickRequest"
@@ -5756,6 +5959,123 @@ watch(
                 {{
                   tm(
                     "spcodeProjectLoad.diffSidebar.gitWorkflow.history.revertConfirmAction",
+                  )
+                }}
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
+
+        <!-- 2026-09-09 git-reset: SourceTree-style "Reset current
+             branch to this commit" dialog. Mode radios (soft/mixed/
+             hard) + typed SHA-prefix confirmation for ALL modes —
+             the confirm button stays disabled until the input matches
+             the target commit's first 7 chars (case-insensitive). -->
+        <v-dialog v-model="resetDialogOpen" persistent max-width="480">
+          <v-card>
+            <v-card-title class="text-h6">
+              {{
+                tm(
+                  "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmTitle",
+                )
+              }}
+            </v-card-title>
+            <v-card-text>
+              <div>
+                {{
+                  tm(
+                    "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmMessage",
+                    {
+                      sha: pendingReset?.sha.slice(0, 7) ?? "",
+                      subject: pendingReset?.subject ?? "",
+                    },
+                  )
+                }}
+              </div>
+              <v-radio-group
+                v-model="resetMode"
+                density="compact"
+                hide-details
+                class="mt-3"
+              >
+                <v-radio
+                  value="soft"
+                  :label="
+                    tm(
+                      'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeSoft',
+                    )
+                  "
+                />
+                <v-radio
+                  value="mixed"
+                  :label="
+                    tm(
+                      'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeMixed',
+                    )
+                  "
+                />
+                <v-radio
+                  value="hard"
+                  :label="
+                    tm(
+                      'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetModeHard',
+                    )
+                  "
+                />
+              </v-radio-group>
+              <div class="git-diff-sidebar__revert-hint">
+                {{ resetModeHint }}
+              </div>
+              <div
+                v-if="resetMode === 'hard' && pendingResetDirtyCount > 0"
+                class="text-warning text-caption mt-1"
+              >
+                {{
+                  tm(
+                    "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetHardDirtyWarning",
+                    { count: pendingResetDirtyCount },
+                  )
+                }}
+              </div>
+              <v-text-field
+                v-model="resetConfirmSha"
+                :label="
+                  tm(
+                    'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmShaLabel',
+                    { sha: pendingReset?.sha.slice(0, 7) ?? '' },
+                  )
+                "
+                :hint="
+                  tm(
+                    'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmShaHint',
+                  )
+                "
+                persistent-hint
+                density="compact"
+                autocomplete="off"
+                class="mt-3"
+                @keyup.enter="resetConfirmReady && onConfirmReset()"
+              />
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn variant="text" @click="onCancelReset">
+                {{
+                  tm(
+                    "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmCancel",
+                  )
+                }}
+              </v-btn>
+              <v-btn
+                variant="flat"
+                color="warning"
+                :disabled="!resetConfirmReady"
+                :loading="gitReset.isResetting.value"
+                @click="onConfirmReset"
+              >
+                {{
+                  tm(
+                    "spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetConfirmAction",
                   )
                 }}
               </v-btn>
@@ -6075,7 +6395,9 @@ watch(
           @retry="loadGitIgnore"
         />
 
-        <!-- Spec §6.4: result snackbar (扩展:支持 stderr <pre> 块)。 -->
+        <!-- Spec §6.4: result snackbar (扩展:支持 stderr <pre> 块)。
+             2026-09-09 toast-close: 右侧固定手动关闭按钮,toast 遮住
+             下方操作按钮时用户可立即关掉,不必等 timeout 走完。 -->
         <v-snackbar
           v-model="snackbar.show"
           :color="snackbar.color"
@@ -6083,11 +6405,26 @@ watch(
           location="bottom right"
           multi-line
         >
-          <div v-if="snackbar.stderr" class="spcode-snackbar-stderr">
-            <div class="spcode-snackbar-message">{{ snackbar.message }}</div>
-            <pre class="spcode-snackbar-pre">{{ snackbar.stderr }}</pre>
+          <div class="spcode-snackbar-body">
+            <div class="spcode-snackbar-body__text">
+              <div v-if="snackbar.stderr" class="spcode-snackbar-stderr">
+                <div class="spcode-snackbar-message">
+                  {{ snackbar.message }}
+                </div>
+                <pre class="spcode-snackbar-pre">{{ snackbar.stderr }}</pre>
+              </div>
+              <div v-else>{{ snackbar.message }}</div>
+            </div>
+            <button
+              type="button"
+              class="spcode-snackbar-close"
+              :aria-label="tm('spcodeProjectLoad.diffSidebar.toastClose')"
+              :title="tm('spcodeProjectLoad.diffSidebar.toastClose')"
+              @click="snackbar.show = false"
+            >
+              <v-icon size="16">mdi-close</v-icon>
+            </button>
           </div>
-          <div v-else>{{ snackbar.message }}</div>
         </v-snackbar>
       </aside>
     </transition>
@@ -7020,6 +7357,43 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+/* 2026-09-09 toast-close: 手动关闭按钮。flex 行把关闭按钮钉在右上,
+   文字区域(min-width: 0)负责换行/滚动,不会把按钮挤出去。 */
+.spcode-snackbar-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+.spcode-snackbar-body__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.spcode-snackbar-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: -1px -4px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.spcode-snackbar-close:hover {
+  opacity: 1;
+}
+.spcode-snackbar-close:focus-visible {
+  opacity: 1;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 .spcode-snackbar-message {
   font-weight: 500;

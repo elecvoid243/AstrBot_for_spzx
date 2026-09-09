@@ -1374,6 +1374,36 @@
       },
       "no_proxy": {
         "description": "直连地址列表"
+      },
+      "goal": {
+        "admin_only": {
+          "description": "仅管理员可用",
+          "hint": "开启后，仅管理员可以使用 /goal 与 /subgoal 指令。"
+        },
+        "max_turns": {
+          "description": "轮次预算",
+          "hint": "每个目标的默认轮次预算，耗尽后目标自动暂停，可用 /goal resume 重置。"
+        },
+        "judge_provider_id": {
+          "description": "judge 模型",
+          "hint": "每轮结束后评估目标是否达成的模型。留空时使用当前会话模型；建议选择能严格遵守 JSON 输出格式的模型。"
+        },
+        "judge_timeout": {
+          "description": "judge 超时（秒）",
+          "hint": "单次 judge 模型调用的超时时间，超时按本轮评估失败处理。"
+        },
+        "max_parse_failures": {
+          "description": "解析失败容忍轮数",
+          "hint": "judge 输出连续无法解析达到该轮数后，目标自动暂停。"
+        },
+        "verbose": {
+          "description": "推送每轮进度",
+          "hint": "开启后，每轮 judge 的评估结果会推送到会话。"
+        },
+        "block_tools_during_goal": {
+          "description": "循环中剥离的工具",
+          "hint": "goal 循环的注入轮会从 LLM 工具集中移除这些工具。与内置黑名单（ask_user_choice 等等待用户输入的工具）取并集，只需按需追加。"
+        }
       }
     }
   },

@@ -24,7 +24,18 @@ import {
 } from "./parseSpcodeGitWorkflow";
 
 export type LogFilter = {
+  /** Branch (or HEAD) whose history is listed. 2026-09-09
+   *  (elecvoid243) split-ref-filter: this field is now BRANCH-ONLY —
+   *  the UI's 分支 picker never writes a SHA / tag into it, so the
+   *  revert / amend / squash ⇄ cherry-pick visibility (keyed on the
+   *  applied branch) no longer flips just because the user searched a
+   *  commit by hash. */
   ref?: string;
+  /** 2026-09-09 (elecvoid243) split-ref-filter: free-form rev search
+   *  (SHA / tag) from the dedicated 「提交 / 标签」 input. When set it
+   *  OVERRIDES `ref` as the rev passed to `git log`, while `ref` keeps
+   *  describing the branch context for the action buttons. */
+  rev?: string | null;
   path?: string;
   author?: string;
   grep?: string;
@@ -91,6 +102,11 @@ function etagKey(parts: {
     parts.umo ?? "",
     parts.worktree ?? "",
     f.ref ?? "HEAD",
+    // 2026-09-09 split-ref-filter: the rev override is part of the query
+    // tuple — without it two different SHA searches under the same
+    // branch would share one ETag bucket and 304-replay each other's
+    // snapshot.
+    f.rev ?? "",
     f.path ?? "",
     f.author ?? "",
     f.grep ?? "",
@@ -179,13 +195,18 @@ export function useSpcodeGitLog(
     const worktree = toValue(worktreeRef);
     const key = etagKey({ umo, worktree, filter: filter.value });
     const etag = etagMap.get(key);
+    // 2026-09-09 split-ref-filter: the wire `ref` is the rev override
+    // (SHA / tag) when present, otherwise the branch. The backend's
+    // contract is unchanged — it still receives a single `ref` and
+    // resolves / echoes it.
+    const effectiveRef = filter.value.rev || filter.value.ref;
 
     try {
       const resp = await pluginExtensionApi.get<unknown>("spcode/git-log", {
         params: {
           umo,
           ...(worktree ? { worktree } : {}),
-          ...(filter.value.ref ? { ref: filter.value.ref } : {}),
+          ...(effectiveRef ? { ref: effectiveRef } : {}),
           ...(filter.value.path ? { path: filter.value.path } : {}),
           ...(filter.value.author ? { author: filter.value.author } : {}),
           ...(filter.value.grep ? { grep: filter.value.grep } : {}),

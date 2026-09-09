@@ -173,7 +173,11 @@ class GoalManager:
         return prev
 
     async def evaluate_after_turn(
-        self, umo: str, last_response: str, judge: JudgeFn
+        self,
+        umo: str,
+        last_response: str,
+        judge: JudgeFn,
+        max_parse_failures: int | None = None,
     ) -> dict:
         """Run the judge after a finished turn and decide what happens next.
 
@@ -181,6 +185,8 @@ class GoalManager:
             umo: Unified message origin of the session.
             last_response: The agent's final assistant text for this turn.
             judge: Async callable returning (verdict, reason, parse_failed).
+            max_parse_failures: Parse-failure threshold override; falls back
+                to the constructor default when None or falsy.
 
         Returns:
             Decision dict with keys: status, should_continue,
@@ -209,6 +215,8 @@ class GoalManager:
             state.consecutive_parse_failures + 1 if parse_failed else 0
         )
 
+        parse_limit = int(max_parse_failures or self.max_parse_failures)
+
         if verdict == "done":
             state.status = "done"
             await self._save(umo, state)
@@ -221,7 +229,7 @@ class GoalManager:
                 "message": f"✓ 目标达成：{reason}",
             }
 
-        if state.consecutive_parse_failures >= self.max_parse_failures:
+        if state.consecutive_parse_failures >= parse_limit:
             state.status = "paused"
             state.paused_reason = (
                 f"judge 输出连续 {state.consecutive_parse_failures} 轮无法解析"
@@ -235,8 +243,8 @@ class GoalManager:
                 "reason": reason,
                 "message": (
                     f"⏸ 目标已暂停：judge 模型连续 {state.consecutive_parse_failures} 轮"
-                    "未返回合法 JSON verdict。请在插件配置中为 judge_provider_id "
-                    "指定一个能严格遵守输出格式的模型，然后 /goal resume 继续。"
+                    "未返回合法 JSON verdict。请在管理面板「系统配置 → 目标循环」中为 "
+                    "judge 指定一个能严格遵守输出格式的模型，然后 /goal resume 继续。"
                 ),
             }
 

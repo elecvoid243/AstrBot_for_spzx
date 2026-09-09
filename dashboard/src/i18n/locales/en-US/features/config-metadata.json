@@ -1351,6 +1351,36 @@
       },
       "no_proxy": {
         "description": "Direct Connection Address List"
+      },
+      "goal": {
+        "admin_only": {
+          "description": "Admin Only",
+          "hint": "When enabled, only admins can use the /goal and /subgoal commands."
+        },
+        "max_turns": {
+          "description": "Turn Budget",
+          "hint": "Default per-goal turn budget. The goal auto-pauses when exhausted; /goal resume resets it."
+        },
+        "judge_provider_id": {
+          "description": "Judge Model",
+          "hint": "The model that evaluates whether the goal is achieved after each turn. Leave empty to use the session model; pick one that strictly follows the JSON output format."
+        },
+        "judge_timeout": {
+          "description": "Judge Timeout (s)",
+          "hint": "Timeout for a single judge model call; on timeout the turn is treated as a failed evaluation."
+        },
+        "max_parse_failures": {
+          "description": "Parse Failure Tolerance",
+          "hint": "The goal auto-pauses after this many consecutive unparseable judge outputs."
+        },
+        "verbose": {
+          "description": "Push Per-Turn Progress",
+          "hint": "When enabled, the judge result of each turn is pushed to the session."
+        },
+        "block_tools_during_goal": {
+          "description": "Tools Stripped in Loop",
+          "hint": "These tools are removed from the LLM tool set on goal-loop injected turns. Merged with the built-in blocklist (ask_user_choice and other user-input-blocking tools); only add extras as needed."
+        }
       }
     }
   },

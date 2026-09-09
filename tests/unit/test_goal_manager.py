@@ -104,6 +104,26 @@ async def test_parse_failures_pause_after_threshold(kv):
     assert (await mgr.get("umo1")).status == "paused"
 
 
+async def test_parse_failure_override_threshold(kv):
+    mgr = GoalManager(kv)  # constructor default is 3
+    await mgr.set("umo1", "g")
+    d = await mgr.evaluate_after_turn(
+        "umo1", "resp", judge_parse_fail, max_parse_failures=1
+    )
+    assert d["should_continue"] is False
+    assert (await mgr.get("umo1")).status == "paused"
+
+
+async def test_parse_failure_none_falls_back_to_constructor_default(kv):
+    mgr = GoalManager(kv, max_parse_failures=1)
+    await mgr.set("umo1", "g")
+    d = await mgr.evaluate_after_turn(
+        "umo1", "resp", judge_parse_fail, max_parse_failures=None
+    )
+    assert d["should_continue"] is False
+    assert (await mgr.get("umo1")).status == "paused"
+
+
 async def test_inactive_goal(kv):
     mgr = GoalManager(kv)
     d = await mgr.evaluate_after_turn("umo1", "resp", judge_continue)

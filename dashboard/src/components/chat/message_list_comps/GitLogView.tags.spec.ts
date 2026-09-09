@@ -70,13 +70,15 @@ function baseProps(tags: string[]) {
     statsOpen: false,
     range: { kind: "preset", preset: "1w" } as never,
     topFilesLimit: 10,
-    refItems: [],
+    // 2026-09-09 split-ref-filter: 分支 / 标签拆成两个 props。
+    branchItems: [],
+    tagItems: [],
     currentBranch: "main",
-    activeRef: "HEAD",
+    activeBranch: "HEAD",
   };
 }
 
-/** 2026-09-08: overrides 允许单个用例只替换 state / activeRef /
+/** 2026-09-08: overrides 允许单个用例只替换 state / activeBranch /
  *  appliedGrep 等个别 prop，而不必复制整份 props 样板。
  *  attachTo 供滚动相关用例把组件真正挂到 document 上（watch 回调里
  *  用 document.querySelector 查找根节点）。 */
@@ -116,11 +118,11 @@ describe("GitLogView tag chips", () => {
     expect(wrapper.find(".git-log-item-tag-more").text()).toBe("+1");
   });
 
-  it("clicking a chip applies ref=<tag>", async () => {
+  it("clicking a chip applies rev=<tag>", async () => {
     const wrapper = mountLog(["v1.0.0"]);
     await wrapper.find(".git-log-item-tag").trigger("click");
-    const applied = wrapper.emitted("apply")?.[0]?.[0] as { ref: string };
-    expect(applied.ref).toBe("v1.0.0");
+    const applied = wrapper.emitted("apply")?.[0]?.[0] as { rev: string };
+    expect(applied.rev).toBe("v1.0.0");
   });
 
   // 2026-09-08 fix: 行 header 由 <button> 改为 <div role="button">，
@@ -136,11 +138,13 @@ describe("GitLogView tag chips", () => {
     await wrapper.find(".git-log-item-tag").trigger("click");
     expect(header.attributes("aria-expanded")).toBe("false");
     const applied = wrapper.emitted("apply")?.[0]?.[0] as Record<string, unknown>;
-    expect(applied.ref).toBe("v1.0.0");
-    // 其它筛选字段被保留（apply 载荷是 localFilter 的 spread，而非裸 { ref }）：
+    // 2026-09-09 split-ref-filter: 标签检索写入 rev（分支 ref 保持不动）。
+    expect(applied.rev).toBe("v1.0.0");
+    expect(applied.ref).toBe("HEAD");
+    // 其它筛选字段被保留（apply 载荷是 localFilter 的 spread，而非裸 { rev }）：
     // 默认 n=20 仍在，且没有多出 / 丢失字段。
     expect(applied.n).toBe(20);
-    expect(Object.keys(applied).sort()).toEqual(["n", "ref"]);
+    expect(Object.keys(applied).sort()).toEqual(["n", "ref", "rev"]);
   });
 
   it("toggles the row from the header via keyboard, and chip keys do not toggle", async () => {
@@ -160,27 +164,22 @@ describe("GitLogView tag chips", () => {
 describe("GitLogView hash focus", () => {
   // 2026-09-08 (spec §2.5): 用户输入 hash 时后端回显 resolvedRef，
   // 复用 focusedCommitSha 的 is-focused 链路。
+  // 2026-09-09 split-ref-filter: SHA 现在住在 rev 过滤里（不再是 ref），
+  // 前端不再自行比对过滤值 —— 直接采信后端回显的 resolvedRef。
   // 注意：`is-focused` 类挂在行容器 .git-log-item 上（与 CSS 规则
   // `.git-log-item.is-focused` 一致），不是 header 元素。
-  it("focuses the resolved commit when the applied ref is a hash", () => {
+  it("focuses the resolved commit echoed for a rev search", () => {
     const state = makeState([]);
     state.snapshot.resolvedRef = "a".repeat(40);
-    const wrapper = mountLog([], {
-      state: state as never,
-      activeRef: "aaaaaaaa",
-    });
+    const wrapper = mountLog([], { state: state as never });
     const row = wrapper.find(".git-log-item");
     expect(row.attributes("data-commit-sha")).toBe("a".repeat(40));
     expect(row.classes()).toContain("is-focused");
   });
 
-  it("does not focus anything for a non-hash ref", () => {
+  it("does not focus anything when the snapshot has no resolved ref", () => {
     const state = makeState([]);
-    state.snapshot.resolvedRef = "a".repeat(40);
-    const wrapper = mountLog([], {
-      state: state as never,
-      activeRef: "main",
-    });
+    const wrapper = mountLog([], { state: state as never });
     expect(wrapper.find(".git-log-item").classes()).not.toContain("is-focused");
   });
 
@@ -193,7 +192,7 @@ describe("GitLogView hash focus", () => {
     state.snapshot.resolvedRef = "a".repeat(40);
     const wrapper = mountLog(
       [],
-      { state: state as never, activeRef: "aaaaaaaa" },
+      { state: state as never },
       document.body,
     );
 

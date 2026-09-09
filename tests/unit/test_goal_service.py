@@ -16,6 +16,7 @@ from astrbot.core.goal.goal_service import (
     GoalService,
     build_continuation_event,
 )
+from astrbot.core.goal.goal_state import DEFAULT_MAX_TURNS
 
 # ---------------------------------------------------------------------------
 # test doubles
@@ -140,6 +141,49 @@ def test_check_permission_admin_only_allows_admin():
     event = _StubEvent()
     event.role = "admin"
     assert service.check_permission(event) is None
+
+
+# ---------------------------------------------------------------------------
+# set_goal config wiring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_goal_applies_configured_turn_budget():
+    service = _make_service({"max_turns": 5})
+    state = await service.set_goal("umo1", "write the report")
+    assert state.max_turns == 5
+
+
+@pytest.mark.asyncio
+async def test_set_goal_falls_back_to_default_budget_without_config():
+    service = _make_service()
+    state = await service.set_goal("umo1", "write the report")
+    assert state.max_turns == DEFAULT_MAX_TURNS
+
+
+@pytest.mark.asyncio
+async def test_on_turn_done_applies_configured_parse_failure_limit():
+    """The ``goal.max_parse_failures`` config must reach evaluate_after_turn:
+    with a limit of 1 the goal pauses after a single unparseable judge round
+    and no continuation turn is injected."""
+    service = _make_service({"max_parse_failures": 1})
+
+    async def _garbage_judge_caller(umo, system_prompt, user_prompt):
+        return "sorry, here is my opinion but definitely not the expected JSON"
+
+    service._judge_llm_caller = _garbage_judge_caller
+    await service.goals.set("umo1", "g")
+
+    event = _StubEvent(umo="umo1")
+    event.message_obj.message_id = "m1"
+    response = SimpleNamespace(completion_text="did work")
+
+    await service.on_turn_done(event, response)
+
+    state = await service.goals.get("umo1")
+    assert state.status == "paused"
+    assert service._context.event_queue.qsize() == 0
 
 
 # ---------------------------------------------------------------------------

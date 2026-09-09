@@ -46,7 +46,9 @@ const { tm } = useModuleI18n("features/chat");
 // useTheme().global.name.value attempt.
 
 /** 2026-09-08: Ref 选择器条目。subheader 为分组标题 —— 由模板的 #item 插槽
- *  渲染为 v-list-subheader（Vuetify 3.7 的 combobox 不识别该 type），不可选中。 */
+ *  渲染为 v-list-subheader（Vuetify 3.7 的 combobox 不识别该 type），不可选中。
+ *  2026-09-09 (elecvoid243) split-ref-filter: 现在由两个选择器共用 ——
+ *  分支选择器（branchItems）与标签联想（tagItems）。 */
 export interface RefPickerItem {
   title: string;
   value?: string;
@@ -89,17 +91,25 @@ const props = defineProps<{
    *  counter and used by the refresh() calls below. */
   topFilesLimit: number;
   /** 2026-09-08 (spec 2026-09-08-git-log-tags-and-filters §2.3):
-   *  Ref 选择器条目 —— 当前分支 / 本地分支 / 远程分支 / 标签四组。 */
-  refItems: RefPickerItem[];
+   *  Ref 选择器条目 —— 当前分支 / 本地分支 / 远程分支 / 标签四组。
+   *  2026-09-09 (elecvoid243) split-ref-filter: 拆分为 branchItems
+   *  （HEAD + 三个分支分组）与 tagItems（标签分组）。 */
+  branchItems: RefPickerItem[];
+  /** 2026-09-09 (elecvoid243) split-ref-filter: 标签条目（仅「标签」
+   *  分组），作为「提交 / 标签」输入框的联想来源；SHA 由用户自由输入。 */
+  tagItems: RefPickerItem[];
   /** Spec §2b: name of the checked-out branch, or null (detached HEAD /
    *  branches not loaded). Drives the revert ⇄ cherry-pick visibility
    *  split below. */
   currentBranch: string | null;
-  /** Spec §2b: the APPLIED filter ref (parent passes
+  /** Spec §2b: the APPLIED 分支 filter (parent passes
    *  gitLog.filter.value.ref), NOT the in-progress draft in
    *  localFilter. ""/HEAD/<currentBranch> all mean "viewing the
-   *  current branch". */
-  activeRef: string | null;
+   *  current branch".
+   *  2026-09-09 (elecvoid243) split-ref-filter: 只看分支。SHA / 标签
+   *  搜索走独立的 `rev` 过滤（见 useSpcodeGitLog.LogFilter），因此
+   *  用 hash 检索提交时按钮可见性不再被误判。 */
+  activeBranch: string | null;
   /** 2026-09-08 (spec §2.6): 已应用的「提交名」关键字，用于区分
    *  「过滤无结果」与「仓库暂无提交」两种空态。 */
   appliedGrep?: string;
@@ -161,6 +171,12 @@ const emit = defineEmits<{
   // writes live at the sidebar level); we only surface which
   // commit the user picked.
   (e: "revert", commit: { sha: string; subject: string }): void;
+  // 2026-09-09 git-reset: per-row "重置" affordance (SourceTree-style
+  // "Reset current branch to this commit"). Same split as revert —
+  // the sidebar owns the confirm dialog + the /spcode/git-reset call.
+  // Named "reset-branch" because "reset" is taken by the filter-form
+  // reset above (different payload, would collide in defineEmits).
+  (e: "reset-branch", commit: { sha: string; subject: string }): void;
   // 2026-08-01 git-cherry-pick: per-row affordance mirroring "revert";
   // the sidebar owns the dialog + the /spcode/git-cherry-pick call.
   (e: "cherry-pick", commit: { sha: string; subject: string }): void;
@@ -196,11 +212,15 @@ const { isDark } = storeToRefs(useCustomizerStore());
 
 /** Spec 2026-08-01 §2b: complementary visibility — revert only makes
  *  sense on the current branch's own history; cherry-pick only when
- *  viewing a DIFFERENT ref (another branch, a sha, or a tag). The
- *  comparison uses the APPLIED ref (prop), so typing-but-not-applying
- *  a branch name never flips the buttons prematurely. */
+ *  viewing a DIFFERENT branch. The comparison uses the APPLIED branch
+ *  (prop), so typing-but-not-applying a branch name never flips the
+ *  buttons prematurely.
+ *  2026-09-09 (elecvoid243) split-ref-filter: 只看 `activeBranch`。以前
+ *  这里读的是「Ref」过滤值，用户按 SHA / 标签检索时它就不再等于当前
+ *  分支，导致 revert / amend / squash / reset 集体隐藏（即使该 SHA 就是
+ *  当前分支上的提交）。SHA / 标签现在走独立的 `rev` 过滤，不影响本判定。 */
 const viewingCurrent = computed(() => {
-  const r = props.activeRef;
+  const r = props.activeBranch;
   return !r || r === "HEAD" || r === props.currentBranch;
 });
 
@@ -210,14 +230,46 @@ function isHeadCommit(c: { sha: string }): boolean {
 }
 
 // Local filter form state. Emitted on Apply; reset on Reset.
-const localFilter = ref<LogFilter>({ ref: "HEAD", n: 20 });
+// 2026-09-09 split-ref-filter: `ref` = 分支, `rev` = SHA / 标签覆盖。
+const localFilter = ref<LogFilter>({ ref: "HEAD", rev: "", n: 20 });
 
-/** 2026-09-08 (spec §2.5): 用户输入 hash 时后端回显 resolved_ref，
- *  直接复用 focusedCommitSha 的展开 / 滚动 / 高亮链路。 */
-const HASH_LIKE_RE = /^[0-9a-f]{4,40}$/i;
+/** 2026-09-09 n-buttons: 数量只提供这三个预设值（分段按钮组）。 */
+const N_PRESETS = [10, 20, 50];
+
+/** 2026-09-09 since-calendar: 起始时间改用原生 date 输入 —— 点击即弹出
+ *  日历选择器（与 GitStatsPanel 的自定义区间同款）。原生控件只接受
+ *  YYYY-MM-DD，而热力图点某一天会写入带时间的值
+ *  （"2026-09-08T00:00:00"，为了让 --until 不落在当天零点），所以显示层
+ *  截到日期、写回时只存日期；后端 ISO 校验两者都接受。 */
+const sinceInput = computed({
+  get: (): string => (localFilter.value.since ?? "").slice(0, 10),
+  set: (v: string): void => {
+    localFilter.value = { ...localFilter.value, since: v || undefined };
+  },
+});
+
+/** 2026-09-09 since-calendar: 点击整片字段就弹出日历 —— Chrome / Edge 的
+ *  原生 date 输入默认只在点右侧小图标时才弹出，点中间只会落光标。showPicker()
+ *  要求用户手势，click 处理器满足；浏览器不支持或拒绝时静默回退到原生交互
+ *  （仍可点图标，也仍可键盘输入）。 */
+function onSinceClick(e: MouseEvent): void {
+  const input = (e.currentTarget as HTMLElement | null)?.querySelector("input");
+  if (!(input instanceof HTMLInputElement)) return;
+  if (typeof input.showPicker !== "function") return;
+  try {
+    input.showPicker();
+  } catch {
+    /* 非用户手势 / 浏览器拒绝 → 保持原生交互 */
+  }
+}
+
+/** 2026-09-08 (spec §2.5): 用户输入 hash 时后端回显 resolved_ref，直接
+ *  复用 focusedCommitSha 的展开 / 滚动 / 高亮链路。
+ *  2026-09-09 split-ref-filter: 后端只在「ref 参数看起来像 hash」时回显
+ *  resolved_ref（见 git_log.py 的 rev-parse 归一化），所以这里直接采信
+ *  该字段，不再自己用 HASH_LIKE_RE 比对前端过滤值 —— SHA 现在住在 `rev`
+ *  里，而不是 `ref`。 */
 const hashFocusSha = computed(() => {
-  const r = props.activeRef;
-  if (!r || !HASH_LIKE_RE.test(r)) return null;
   const s = props.state;
   return s.kind === "ok" ? s.snapshot.resolvedRef || null : null;
 });
@@ -581,17 +633,19 @@ function onApply(): void {
 }
 
 function onReset(): void {
-  localFilter.value = { ref: "HEAD", n: 20 };
+  localFilter.value = { ref: "HEAD", rev: "", n: 20 };
   // Distinct from onApply: the parent uses this to invalidate the ETag
   // for this filter tuple and force a loading transition. See the
   // `reset` event JSDoc in defineEmits above.
   emit("reset", { ...localFilter.value });
 }
 
-/** 2026-09-08 (spec §2.4): 点击 tag 徽章 → 以该 tag 为 ref 重新筛选，
- *  保留作者 / 路径 / 时间 / 数量 / 提交名等其它条件。 */
+/** 2026-09-08 (spec §2.4): 点击 tag 徽章 → 以该 tag 重新筛选，保留作者 /
+ *  路径 / 时间 / 数量 / 提交名等其它条件。
+ *  2026-09-09 (elecvoid243) split-ref-filter: 写入独立的 `rev` 字段（不再
+ *  覆盖分支），这样「按标签检索」不会把按钮可见性切到「非当前分支」分支。 */
 function onTagClick(tag: string): void {
-  localFilter.value = { ...localFilter.value, ref: tag };
+  localFilter.value = { ...localFilter.value, rev: tag };
   emit("apply", { ...localFilter.value });
 }
 
@@ -752,32 +806,69 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
 
     <!-- Filter bar (spec §6.5.1; search boxes → 12px, buttons → small) -->
     <div class="git-log-filter">
-      <!-- 2026-08-01 branch-picker: v-text-field → v-combobox so the
-           ref filter offers known branches (current first, then local,
-           then remote) while keeping free input for sha/tag. Apply /
-           Reset flow unchanged.
-           2026-09-08 (spec §2.3): grouped picker — 当前分支 / 本地分支 /
-           远程分支 / 标签 四组。
-           注意：Vuetify 3.7 的 VCombobox 不会把 type: "subheader" 的条目
-           渲染成分组标题（VSelect 直接遍历 displayItems 渲染 VListItem），
-           所以下面用 #item 插槽手动分流：分组标题走 v-list-subheader
-           （不绑定 itemProps，因此不可选中），普通条目走 v-list-item。
-           :return-object="false" 保证选中后 v-model 拿到的是字符串 value
-           而不是整个条目对象（VCombobox 默认 returnObject: true）。 -->
-      <v-combobox
+      <!-- 2026-08-01 branch-picker → 2026-09-09 (elecvoid243)
+           split-ref-filter: 原「Ref」多合一 combobox 拆成两个控件：
+             · 分支（v-autocomplete：仅分支条目，输入用于过滤，不产生
+               自由文本 —— VAutocomplete 只在选中条目时才写回 model）
+             · 提交 / 标签（v-combobox：标签条目作联想，SHA 自由输入）
+           动机：revert / amend / squash / reset ⇄ cherry-pick 的可见性
+           取决于「当前浏览的是哪个分支」。以前 SHA / 标签也写在 ref 里，
+           一按 hash 检索就变成「非当前分支」，按钮集体消失（即使该 SHA
+           就是当前分支上的提交）。现在 SHA / 标签走独立的 rev 过滤。
+           2026-09-08 分组（spec §2.3）保持不变：当前分支 / 本地分支 /
+           远程分支（标签移到右侧「提交 / 标签」栏）。
+           注意：Vuetify 3.7 的 VSelect / VAutocomplete 不会把
+           type: "subheader" 的条目渲染成分组标题（它们直接遍历
+           displayItems 渲染 VListItem），所以下面用 #item 插槽手动分流：
+           分组标题走 v-list-subheader（不绑定 itemProps，因此不可选中），
+           普通条目走 v-list-item。 -->
+      <v-autocomplete
         v-model="localFilter.ref"
-        :items="refItems"
+        :items="branchItems"
         item-title="title"
         item-value="value"
-        :return-object="false"
-        :hide-no-data="refItems.length === 0"
+        :hide-no-data="branchItems.length === 0"
         :list-props="{ density: 'compact', class: 'git-log-branch-list' }"
         :label="
-          tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.ref')
+          tm(
+            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.branch',
+          )
         "
         :placeholder="
           tm(
-            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.refPlaceholder',
+            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.branchPlaceholder',
+          )
+        "
+        density="compact"
+        variant="outlined"
+        hide-details
+        class="git-log-filter-field"
+      >
+        <template #item="{ props: itemProps, item }">
+          <v-list-subheader v-if="item.raw.type === 'subheader'">
+            {{ item.title }}
+          </v-list-subheader>
+          <v-list-item v-else v-bind="itemProps" />
+        </template>
+      </v-autocomplete>
+      <!-- 2026-09-09 split-ref-filter: SHA / 标签检索。非空时作为 git log
+           的起点覆盖「分支」，留空则跟随分支；标签条目仅作联想，SHA 直接
+           键入（v-combobox 会把键入值写进 model，无需回车确认）。 -->
+      <v-combobox
+        v-model="localFilter.rev"
+        :items="tagItems"
+        item-title="title"
+        item-value="value"
+        :return-object="false"
+        hide-no-data
+        clearable
+        :list-props="{ density: 'compact', class: 'git-log-branch-list' }"
+        :label="
+          tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.rev')
+        "
+        :placeholder="
+          tm(
+            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.revPlaceholder',
           )
         "
         density="compact"
@@ -838,40 +929,56 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
         hide-details
         class="git-log-filter-field"
       />
+      <!-- 2026-09-09 since-calendar: 原生 date 输入 → 点击整片字段弹出日历
+           选择器（onSinceClick 调 showPicker），不再要求手敲 "2026-06-01"。 -->
       <v-text-field
-        v-model="localFilter.since"
+        v-model="sinceInput"
+        type="date"
         :label="
           tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.since')
-        "
-        :placeholder="
-          tm(
-            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.sincePlaceholder',
-          )
         "
         density="compact"
         variant="outlined"
         hide-details
         class="git-log-filter-field"
+        @click="onSinceClick"
       />
-      <v-text-field
-        v-model.number="localFilter.n"
-        :label="
-          tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.n')
-        "
-        :placeholder="
-          tm(
-            'spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.nPlaceholder',
-          )
-        "
-        density="compact"
-        variant="outlined"
-        hide-details
-        type="number"
-        min="1"
-        max="200"
-        class="git-log-filter-field git-log-filter-n"
-      />
+      <!-- 2026-09-09 split-ref-filter: 「数量」从 3×2 字段网格移到操作行
+           最左侧 —— 网格回到 6 个字段（2 行），新增的「提交 / 标签」不再
+           把操作按钮挤到第 4 行；数量与「筛选」按钮同属"本次查询怎么发"
+           这一组，放在一起也更顺。
+           2026-09-09 n-buttons: 数字输入框 → 固定预设值（10 / 20 / 50）的
+           分段按钮组。热力图点某天（n=200）与「加载更多」（n 翻倍到
+           40 / 80 / 160）仍会写入非预设值，此时按钮组不选中任何一项，
+           如实反映状态；用户点一下即回到预设值。 -->
       <div class="git-log-filter-actions">
+        <div class="git-log-filter-n">
+          <span class="git-log-filter-n-label">
+            {{
+              tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.n")
+            }}
+          </span>
+          <v-btn-toggle
+            v-model="localFilter.n"
+            mandatory
+            divided
+            density="compact"
+            class="git-log-filter-n-toggle"
+          >
+            <!-- 显式 height：VBtnGroup 会给子按钮注入 height:auto，CSS 覆盖
+                 不掉，不传就塌成文字高度（同 TerminalView 的注记）。 -->
+            <v-btn
+              v-for="preset in N_PRESETS"
+              :key="preset"
+              :value="preset"
+              height="28"
+              min-width="48"
+            >
+              {{ preset }}
+            </v-btn>
+          </v-btn-toggle>
+        </div>
+        <v-spacer />
         <v-btn
           size="small"
           variant="flat"
@@ -1317,6 +1424,29 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
             <v-icon size="13">mdi-undo-variant</v-icon>
             {{ tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.revert") }}
           </button>
+          <!-- 2026-09-09 git-reset: per-row reset action (SourceTree-style
+               "Reset current branch to this commit"), hover-revealed like
+               the revert button beside it. Hidden on the HEAD row —
+               resetting to HEAD is only a roundabout "unstage all". -->
+          <button
+            v-if="viewingCurrent && !isHeadCommit(c)"
+            type="button"
+            class="git-log-item-reset"
+            :title="
+              tm(
+                'spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetTitle',
+              )
+            "
+            :aria-label="
+              tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.resetAria', {
+                sha: c.sha.slice(0, 7),
+              })
+            "
+            @click="emit('reset-branch', { sha: c.sha, subject: c.subject })"
+          >
+            <v-icon size="13">mdi-arrow-collapse-left</v-icon>
+            {{ tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.reset") }}
+          </button>
           <!-- 2026-08-01 git-cherry-pick: per-row action, hover-revealed
                like the revert button beside it. -->
           <button
@@ -1620,17 +1750,33 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
 .git-log-filter-field :deep(.v-label) {
   font-size: 12px;
 }
-/* Intentionally no max-width / justify-self on .git-log-filter-n:
-   the count field is meant to stretch to fill its 1fr cell so the
-   3×2 grid stays perfectly column-symmetric (matches the redesign
-   mockup the reviewer approved). */
+/* 2026-09-09 n-buttons: 「数量」从数字输入框改为预设值分段按钮组（标签 +
+   10 / 20 / 50）。住在操作行最左侧，右侧按钮由 v-spacer 推到行尾。 */
+.git-log-filter-n {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.git-log-filter-n-label {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  white-space: nowrap;
+}
+.git-log-filter-n-toggle :deep(.v-btn) {
+  /* 纯数字按钮不需要文字按钮的 64px 最小宽度（min-width 由模板的 prop
+     给出），这里只统一字号与数字对齐。 */
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 .git-log-filter-actions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 4px;
-  /* 2026-09-08 (spec §2.3): six fields above → actions own the
-     full third row instead of sharing a cell with 数量. */
+  /* 2026-09-08 (spec §2.3): 字段网格之后的独立一行。
+     2026-09-09 split-ref-filter: 该行同时承载「数量」+ 操作按钮（数量靠
+     左、按钮靠右），因此字段网格仍保持 3×2 不增行。 */
   grid-column: 1 / -1;
 }
 
@@ -1795,6 +1941,36 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
 .git-log-item-revert:hover {
   color: rgb(var(--v-theme-primary));
   border-color: rgba(var(--v-theme-primary), 0.4);
+}
+/* 2026-09-09 git-reset: per-row action mirroring .git-log-item-revert
+   (hover-reveal). No margin-left:auto — sits right after the revert
+   button, which pushes the pair to the right edge. Hover tint uses
+   the warning palette: unlike revert (creates a new commit) reset
+   moves the branch pointer, so the affordance hints destructiveness. */
+.git-log-item-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 1px 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.git-log-item:hover .git-log-item-reset,
+.git-log-item-reset:focus-visible {
+  opacity: 1;
+}
+.git-log-item-reset:hover {
+  color: rgb(var(--v-theme-warning));
+  border-color: rgba(var(--v-theme-warning), 0.4);
 }
 /* 2026-08-13 git-commit-amend: per-row action mirroring
    .git-log-item-revert (hover-reveal). Rendered before the revert

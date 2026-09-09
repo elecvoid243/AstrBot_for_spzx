@@ -780,6 +780,15 @@ const systemConfigGroups = computed(() => {
         createGroup('tempStorage', [
             'temp_dir_max_size'
         ]),
+        createGroup('goalLoop', [
+            'goal.admin_only',
+            'goal.max_turns',
+            'goal.judge_provider_id',
+            'goal.judge_timeout',
+            'goal.max_parse_failures',
+            'goal.verbose',
+            'goal.block_tools_during_goal'
+        ]),
         createGroup('t2iRendering', [
             't2i_strategy',
             't2i_endpoint',
@@ -790,7 +799,7 @@ const systemConfigGroups = computed(() => {
 });
 
 const generalSystemConfigGroups = computed(() => systemConfigGroups.value.filter((group) => (
-    group.key === 'runtime' || group.key === 'logs' || group.key === 'tempStorage'
+    group.key === 'runtime' || group.key === 'logs' || group.key === 'tempStorage' || group.key === 'goalLoop'
 )));
 const appearanceSystemConfigGroups = computed(() => systemConfigGroups.value.filter((group) => (
     group.key === 't2iRendering'

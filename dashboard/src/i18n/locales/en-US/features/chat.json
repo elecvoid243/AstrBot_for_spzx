@@ -770,6 +770,7 @@
       "truncated": "⚠ diff truncated (showing first {shown} / {max} bytes, may be incomplete)",
       "binaryFile": "Binary file changed (no text preview)",
       "noContent": "Content truncated or incomplete",
+      "toastClose": "Dismiss notification",
       "worktreeTabs": {
         "label": "Worktrees",
         "ariaLabel": "Select worktree to view diff",
@@ -1431,16 +1432,16 @@
           "tab": "History",
           "tabAria": "Switch to history view",
           "filter": {
-            "ref": "Ref",
-            "refPlaceholder": "HEAD / branch / SHA",
+            "branch": "Branch",
+            "branchPlaceholder": "Type to filter branches",
+            "rev": "Commit / tag",
+            "revPlaceholder": "SHA or tag name",
             "author": "Author",
             "authorPlaceholder": "name or email",
             "path": "Path",
             "pathPlaceholder": "repo-relative path",
             "since": "Since",
-            "sincePlaceholder": "2026-06-01",
             "n": "Count",
-            "nPlaceholder": "20",
             "apply": "Apply",
             "reset": "Reset",
             "grep": "Commit message",
@@ -1535,6 +1536,39 @@
           "tags": {
             "filterBy": "Filter by tag {tag}",
             "more": "{count} more tags"
+          },
+          "reset": "Reset",
+          "resetTitle": "Reset current branch to this commit",
+          "resetAria": "Reset current branch to commit {sha}",
+          "resetConfirmTitle": "Reset current branch",
+          "resetConfirmMessage": "The current branch will be reset to {sha} ({subject}).",
+          "resetModeSoft": "Soft",
+          "resetModeMixed": "Mixed (default)",
+          "resetModeHard": "Hard",
+          "resetModeHintSoft": "After the reset, changes from commits after the target return to the staging area, ready to commit again.",
+          "resetModeHintMixed": "After the reset, changes from commits after the target stay in the working tree (unstaged).",
+          "resetModeHintHard": "All commits and changes after the target commit are discarded.",
+          "resetHardDirtyWarning": "⚠ {count} uncommitted change(s) in the working tree will also be discarded by a hard reset.",
+          "resetConfirmShaLabel": "Type the first 7 chars of the target SHA ({sha}) to confirm",
+          "resetConfirmShaHint": "The confirm button stays disabled until the input matches",
+          "resetConfirmCancel": "Cancel",
+          "resetConfirmAction": "Reset",
+          "resetSuccess": "Reset ({mode}) to {sha}",
+          "resetError": {
+            "reason": {
+              "invalid_param": "Reset failed: invalid parameters",
+              "feature_disabled": "Reset failed: the plugin feature is disabled",
+              "no_project_loaded": "Reset failed: no project loaded",
+              "worktree_invalid": "Reset failed: invalid worktree path",
+              "directory_missing": "Reset failed: the project directory no longer exists",
+              "not_a_git_repo": "Reset failed: the current directory is not a Git repository",
+              "git_unavailable": "Reset failed: git executable not found",
+              "commit_not_found": "Reset failed: the commit does not exist",
+              "operation_in_progress": "Reset failed: a merge / revert / cherry-pick / rebase is in progress — finish or abort it first",
+              "git_error": "Reset failed: git error",
+              "network": "Reset failed: network error",
+              "unknown": "Reset failed: unknown error"
+            }
           }
         },
         "error": {

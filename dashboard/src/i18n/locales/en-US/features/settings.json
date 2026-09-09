@@ -62,6 +62,10 @@
         "title": "Cache",
         "subtitle": "Automatic cleanup threshold for the temporary directory."
       },
+      "goalLoop": {
+        "title": "Goal Loop",
+        "subtitle": "Judge model and turn budget for the built-in /goal standing goal loop."
+      },
       "t2iRendering": {
         "title": "Text-to-Image",
         "subtitle": "Rendering strategy, endpoint, and custom templates for text-to-image."

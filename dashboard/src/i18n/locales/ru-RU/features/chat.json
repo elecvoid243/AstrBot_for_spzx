@@ -756,6 +756,7 @@
       "truncated": "⚠ diff обрезан (показано первые {shown} / {max} байт, возможно неполный)",
       "binaryFile": "Бинарный файл изменён (без предпросмотра)",
       "noContent": "Содержимое обрезано или неполное",
+      "toastClose": "Закрыть уведомление",
       "worktreeTabs": {
         "label": "Рабочие деревья",
         "ariaLabel": "Выберите worktree для просмотра diff",
@@ -1302,16 +1303,16 @@
           "tab": "История",
           "tabAria": "Переключиться на историю",
           "filter": {
-            "ref": "Ref",
-            "refPlaceholder": "HEAD / ветка / SHA",
+            "branch": "Ветка",
+            "branchPlaceholder": "Введите для фильтрации веток",
+            "rev": "Коммит / тег",
+            "revPlaceholder": "SHA или имя тега",
             "author": "Автор",
             "authorPlaceholder": "имя или email",
             "path": "Путь",
             "pathPlaceholder": "путь относительно репозитория",
             "since": "С даты",
-            "sincePlaceholder": "2026-06-01",
             "n": "Кол-во",
-            "nPlaceholder": "20",
             "apply": "Применить",
             "reset": "Сброс",
             "grep": "Сообщение коммита",
@@ -1406,6 +1407,39 @@
           "tags": {
             "filterBy": "Фильтр по тегу {tag}",
             "more": "ещё тегов: {count}"
+          },
+          "reset": "Сбросить",
+          "resetTitle": "Сбросить текущую ветку к этому коммиту",
+          "resetAria": "Сбросить текущую ветку к коммиту {sha}",
+          "resetConfirmTitle": "Сбросить текущую ветку",
+          "resetConfirmMessage": "Текущая ветка будет сброшена к {sha} ({subject}).",
+          "resetModeSoft": "Soft (мягкий)",
+          "resetModeMixed": "Mixed (смешанный, по умолчанию)",
+          "resetModeHard": "Hard (жёсткий)",
+          "resetModeHintSoft": "После сброса изменения коммитов после целевого вернутся в индекс — можно закоммитить заново.",
+          "resetModeHintMixed": "После сброса изменения коммитов после целевого останутся в рабочем каталоге (не проиндексированы).",
+          "resetModeHintHard": "Все коммиты и изменения после целевого будут отброшены.",
+          "resetHardDirtyWarning": "⚠ Жёсткий сброс также отбросит незафиксированные изменения ({count}).",
+          "resetConfirmShaLabel": "Введите первые 7 символов SHA ({sha}) для подтверждения",
+          "resetConfirmShaHint": "Кнопка подтверждения останется неактивной, пока ввод не совпадёт",
+          "resetConfirmCancel": "Отмена",
+          "resetConfirmAction": "Сбросить",
+          "resetSuccess": "Ветка сброшена ({mode}) к {sha}",
+          "resetError": {
+            "reason": {
+              "invalid_param": "Сбой сброса: недопустимые параметры",
+              "feature_disabled": "Сбой сброса: функция плагина отключена",
+              "no_project_loaded": "Сбой сброса: проект не загружен",
+              "worktree_invalid": "Сбой сброса: недопустимый путь worktree",
+              "directory_missing": "Сбой сброса: каталог проекта больше не существует",
+              "not_a_git_repo": "Сбой сброса: текущий каталог не является репозиторием Git",
+              "git_unavailable": "Сбой сброса: исполняемый файл git не найден",
+              "commit_not_found": "Сбой сброса: коммит не существует",
+              "operation_in_progress": "Сбой сброса: выполняется merge / revert / cherry-pick / rebase — сначала завершите или прервите его",
+              "git_error": "Сбой сброса: ошибка выполнения Git",
+              "network": "Сбой сброса: ошибка сети",
+              "unknown": "Сбой сброса: неизвестная ошибка"
+            }
           }
         },
         "error": {

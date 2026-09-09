@@ -46,7 +46,7 @@ class Main(star.Star):
             return
         umo = event.unified_msg_origin
         try:
-            state = await goal_service.goals.set(umo, (text or "").strip())
+            state = await goal_service.set_goal(umo, (text or "").strip())
         except ValueError as e:
             yield event.plain_result(f"目标无效：{e}")
             return

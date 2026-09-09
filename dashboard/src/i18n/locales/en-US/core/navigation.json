@@ -61,8 +61,6 @@
     "subtitle": "Found a problem or have a suggestion? Let us know.",
     "contentLabel": "Description",
     "contentPlaceholder": "Describe the issue or suggestion, including steps to reproduce if possible…",
-    "contactLabel": "Contact (optional)",
-    "contactPlaceholder": "QQ / email, so we can follow up",
     "attachments": "Attachments (screenshots / logs / files, optional)",
     "addAttachment": "Add Attachment",
     "maxHint": "Up to 10 attachments, max 20 MB each",

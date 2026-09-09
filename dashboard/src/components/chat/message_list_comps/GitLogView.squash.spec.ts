@@ -104,14 +104,16 @@ function mountView(props: Record<string, unknown> = {}) {
       statsOpen: false,
       range: null,
       topFilesLimit: 10,
-      // 2026-09-08: grouped ref picker (prop renamed from branchItems).
-      refItems: [
+      // 2026-09-09 split-ref-filter: 分支 / 标签拆成两个 props。
+      branchItems: [
+        { title: "HEAD", value: "HEAD" },
         { title: "当前分支", type: "subheader" },
         { title: "main", value: "main" },
         { title: "dev", value: "dev" },
       ],
+      tagItems: [],
       currentBranch: "main",
-      activeRef: "HEAD",
+      activeBranch: "HEAD",
       squashResetToken: 0,
       changelogResetToken: 0,
       ...props,
@@ -167,15 +169,15 @@ describe("GitLogView squash selection (spec 2026-08-03, revised interaction)", (
   });
 
   it("hides everything when viewing another ref", async () => {
-    const w = mountView({ activeRef: "dev" });
+    const w = mountView({ activeBranch: "dev" });
     expect(w.findAll(".git-log-item-select")).toHaveLength(0);
     expect(findSquashButton(w).exists()).toBe(false);
     // Arming first, then switching refs, also tears the mode down.
-    await w.setProps({ activeRef: "HEAD" });
+    await w.setProps({ activeBranch: "HEAD" });
     await findSquashButton(w).trigger("click");
     expect(w.findAll(".git-log-item-select")).toHaveLength(SHAS.length);
-    await w.setProps({ activeRef: "dev" });
-    await w.setProps({ activeRef: "HEAD" });
+    await w.setProps({ activeBranch: "dev" });
+    await w.setProps({ activeBranch: "HEAD" });
     expect(w.findAll(".git-log-item-select")).toHaveLength(0);
     expect(findSquashConfirm(w).exists()).toBe(false);
   });
@@ -264,7 +266,7 @@ describe("GitLogView changelog selection (spec 2026-08-09)", () => {
   });
 
   it("menu item is always visible, even when viewing another ref", () => {
-    const w = mountView({ activeRef: "dev" });
+    const w = mountView({ activeBranch: "dev" });
     expect(findChangelogItem(w).exists()).toBe(true);
   });
 

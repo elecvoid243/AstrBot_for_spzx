@@ -42,6 +42,8 @@ _DEFAULT_STDIO_COMMAND_ALLOWLIST = frozenset(
         "deno",
         "uv",
         "uvx",
+        "vivado-mcp",
+        "mcp3",
     }
 )
 _DENIED_STDIO_COMMANDS = frozenset(

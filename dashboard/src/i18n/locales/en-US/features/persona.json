@@ -89,7 +89,6 @@
     "deleteConfirm": "Are you sure you want to delete persona \"{id}\"? This action cannot be undone.",
     "deleteSuccess": "Deleted successfully",
     "deleteError": "Delete failed",
-    "exportConfirm": "Export includes the system prompt, preset dialogs, and the configured tool and Skill names. Continue?",
     "exportSuccess": "Exported successfully",
     "exportError": "Export failed: {error}",
     "importSuccess": "Persona imported successfully",

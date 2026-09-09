@@ -127,10 +127,6 @@
 <script lang="ts">
 import { defineComponent, type PropType } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import {
-  askForConfirmation as askForConfirmationDialog,
-  useConfirmDialog,
-} from "@/utils/confirmDialog";
 
 interface Persona {
   persona_id: string;
@@ -156,8 +152,7 @@ export default defineComponent({
   emits: ["view", "edit", "move", "delete", "export"],
   setup() {
     const { tm } = useModuleI18n("features/persona");
-    const confirmDialog = useConfirmDialog();
-    return { tm, confirmDialog };
+    return { tm };
   },
   data() {
     return {
@@ -198,13 +193,7 @@ export default defineComponent({
       if (!dateString) return "";
       return new Date(dateString).toLocaleString();
     },
-    async exportPersona() {
-      const confirmed = await askForConfirmationDialog(
-        this.tm("messages.exportConfirm"),
-        this.confirmDialog,
-      );
-      if (!confirmed) return;
-
+    exportPersona() {
       try {
         // Export identity, prompt, preset dialogs and tool/skill names.
         // tools/skills keep the three-state semantics: null = all, [] = none.

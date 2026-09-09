@@ -89,7 +89,6 @@
     "deleteConfirm": "确定要删除人格 \"{id}\" 吗？此操作不可撤销。",
     "deleteSuccess": "删除成功",
     "deleteError": "删除失败",
-    "exportConfirm": "导出将包含系统提示词、预设对话以及工具和技能的名称配置。是否继续导出？",
     "exportSuccess": "导出成功",
     "exportError": "导出失败：{error}",
     "importSuccess": "人格导入成功",

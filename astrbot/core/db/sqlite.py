@@ -245,6 +245,15 @@ class SQLiteDatabase(BaseDatabase):
                     "ADD COLUMN spcode_no_codegraph BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+        # 2026-09-09：ProjectDialog 的加载步骤改成正向 chip 后新增
+        # no_agentsmd（跳过 AGENTS.md 子步骤），同样需要给老库补列。
+        if "spcode_no_agentsmd" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE chatui_projects "
+                    "ADD COLUMN spcode_no_agentsmd BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
 
     async def _ensure_session_project_relation_position_column(self, conn) -> None:
         """Add and backfill the explicit ``position`` ordering column.
@@ -2425,6 +2434,7 @@ class SQLiteDatabase(BaseDatabase):
         workspace_path: str | None = None,
         spcode_auto_load: bool = True,
         spcode_force: bool = False,
+        spcode_no_agentsmd: bool = False,
         spcode_no_codegraph: bool = False,
     ) -> ChatUIProject:
         """Create a new ChatUI project.
@@ -2436,9 +2446,10 @@ class SQLiteDatabase(BaseDatabase):
             description: Description of the project.
             workspace_type: Workspace mode (session, project, or custom).
             workspace_path: Custom workspace path.
-            spcode_auto_load: 若 True,该 project 下的会话被打开/创建时,
-                前端会静默 POST /spcode/project-load(...).
+            spcode_auto_load: Legacy 静默加载开关(2026-09-09 起前端不再读写,
+                custom 工作区项目一律静默加载)。
             spcode_force: 静默 load 时若 umo 已加载其他项目,是否强制覆盖。
+            spcode_no_agentsmd: 挂载时跳过 AGENTS.md 子步骤。
             spcode_no_codegraph: 挂载时跳过 codegraph(只 load AGENTS.md)。
         """
         async with self.get_db() as session:
@@ -2453,6 +2464,7 @@ class SQLiteDatabase(BaseDatabase):
                     workspace_path=workspace_path,
                     spcode_auto_load=spcode_auto_load,
                     spcode_force=spcode_force,
+                    spcode_no_agentsmd=spcode_no_agentsmd,
                     spcode_no_codegraph=spcode_no_codegraph,
                 )
                 session.add(project)
@@ -2500,6 +2512,7 @@ class SQLiteDatabase(BaseDatabase):
         workspace_path: str | None = None,
         spcode_auto_load: bool | None = None,
         spcode_force: bool | None = None,
+        spcode_no_agentsmd: bool | None = None,
         spcode_no_codegraph: bool | None = None,
     ) -> None:
         """Update a ChatUI project.
@@ -2513,10 +2526,11 @@ class SQLiteDatabase(BaseDatabase):
             workspace_path: New workspace path, or None to leave unchanged.
                 Note: when workspace_type is not None, this is written
                 unconditionally (see pre-existing behavior).
-            spcode_auto_load: 若 True,该 project 下的会话被打开/创建时,
-                前端会静默 POST /spcode/project-load(...). None 表示不变。
+            spcode_auto_load: Legacy 静默加载开关(2026-09-09 起前端不再读写)。
+                None 表示不变。
             spcode_force: 静默 load 时若 umo 已加载其他项目,是否强制覆盖。
                 None 表示不变。
+            spcode_no_agentsmd: 挂载时跳过 AGENTS.md 子步骤。None 表示不变。
             spcode_no_codegraph: 挂载时跳过 codegraph(只 load AGENTS.md)。
                 None 表示不变。
         """
@@ -2537,6 +2551,8 @@ class SQLiteDatabase(BaseDatabase):
                     values["spcode_auto_load"] = spcode_auto_load
                 if spcode_force is not None:
                     values["spcode_force"] = spcode_force
+                if spcode_no_agentsmd is not None:
+                    values["spcode_no_agentsmd"] = spcode_no_agentsmd
                 if spcode_no_codegraph is not None:
                     values["spcode_no_codegraph"] = spcode_no_codegraph
 

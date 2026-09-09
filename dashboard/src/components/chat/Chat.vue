@@ -2148,7 +2148,6 @@ async function tryAutoLoadSpcodeForSession(
   const project = resolveProjectForAutoLoad(sessionId);
   if (!project) return;
   if (project.workspace_type !== "custom") return;
-  if (project.spcode_auto_load === false) return;
   if (!project.workspace_path) return;
 
   // Dirty tag fast path (2026-09-01): if this session already completed a
@@ -3096,7 +3095,7 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_auto_load,
+        formData.spcode_no_agentsmd,
         formData.spcode_no_codegraph,
       );
     } else {
@@ -3106,7 +3105,7 @@ async function saveProject(formData: ProjectFormData, projectId?: string) {
         formData.description,
         formData.workspace_type,
         formData.workspace_path,
-        formData.spcode_auto_load,
+        formData.spcode_no_agentsmd,
         formData.spcode_no_codegraph,
       );
     }

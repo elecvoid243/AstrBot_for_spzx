@@ -108,6 +108,7 @@ class ChatProjectRequest(OpenModel):
     )
     spcode_auto_load: bool | None = None
     spcode_force: bool | None = None
+    spcode_no_agentsmd: bool | None = None
     spcode_no_codegraph: bool | None = None
 
 

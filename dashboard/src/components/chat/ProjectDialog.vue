@@ -38,15 +38,72 @@
                     v-model="browserOpen"
                     @select="onBrowserSelect"
                 />
+                <!--
+                    Recent custom paths, shared with the ChatInput
+                    project-load dialog through useProjectPathHistory
+                    (same localStorage key), so a path picked in either
+                    dialog shows up as recent in the other.
+                -->
+                <div
+                    v-if="form.workspace_type === 'custom' && recentPaths.length"
+                    class="mt-3"
+                >
+                    <div class="text-caption text-medium-emphasis mb-1">
+                        {{ tm('spcodeProjectLoad.dialog.historyLabel') }}
+                    </div>
+                    <v-list density="compact" class="history-list pa-0">
+                        <v-list-item
+                            v-for="item in recentPaths"
+                            :key="item"
+                            class="history-item"
+                            rounded="md"
+                            @click="form.workspace_path = item"
+                        >
+                            <template #prepend>
+                                <v-icon icon="mdi-history" size="x-small" />
+                            </template>
+                            <v-list-item-title class="text-body-2">
+                                {{ item }}
+                            </v-list-item-title>
+                            <template #append>
+                                <!-- @click.stop keeps the row's own click (fill the path) from firing. -->
+                                <v-btn
+                                    icon="mdi-close"
+                                    variant="text"
+                                    size="x-small"
+                                    density="compact"
+                                    :aria-label="tm('spcodeProjectLoad.dialog.removeFromHistory')"
+                                    @click.stop="removeFromPathHistory(item)"
+                                />
+                            </template>
+                        </v-list-item>
+                    </v-list>
+                </div>
                 <v-divider v-if="form.workspace_type === 'custom'" class="my-4" />
                 <div v-if="form.workspace_type === 'custom'" class="spcode-section">
                     <div class="spcode-section-title">{{ tm('project.spcode.sectionTitle') }}</div>
-                    <v-switch v-model="form.spcode_auto_load" :label="tm('project.spcode.autoLoad')" color="primary"
-                        density="comfortable" hide-details class="mb-2" />
-                    <div class="spcode-section-hint">{{ tm('project.spcode.autoLoadHint') }}</div>
-                    <v-switch v-model="form.spcode_no_codegraph" :label="tm('project.spcode.noCodegraph')" color="primary"
-                        density="comfortable" hide-details class="mb-2 mt-3" />
-                    <div class="spcode-section-hint">{{ tm('project.spcode.noCodegraphHint') }}</div>
+                    <!--
+                        Same pill chips as the ChatInput project-load
+                        dialog. The switches for "silent load on session
+                        open" and "AGENTS.md only" were removed
+                        (2026-09-09): silent loading is now always on and
+                        its parameters follow these two chips.
+                    -->
+                    <div class="spcode-chips">
+                        <SpToggleChip
+                            v-model="loadAgentsMd"
+                            icon="mdi-file-document-outline"
+                            :label="tm('spcodeProjectLoad.dialog.loadAgentsMd')"
+                        />
+                        <SpToggleChip
+                            v-model="loadCodegraph"
+                            icon="mdi-graph-outline"
+                            :label="tm('spcodeProjectLoad.dialog.loadCodegraph')"
+                        />
+                        <span class="spcode-chips__hint">
+                            {{ tm('spcodeProjectLoad.dialog.loadAutoCreateHint') }}
+                        </span>
+                    </div>
                 </div>
                 <v-alert
                     v-if="props.errorMessage"
@@ -70,7 +127,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useI18n, useModuleI18n } from '@/i18n/composables';
+import { useProjectPathHistory } from '@/composables/useProjectPathHistory';
 import ProjectDirectoryBrowser from './ProjectDirectoryBrowser.vue';
+import SpToggleChip from './SpToggleChip.vue';
 
 export type WorkspaceType = 'session' | 'project' | 'custom';
 
@@ -82,7 +141,7 @@ export interface Project {
     workspace_type?: WorkspaceType;
     workspace_path?: string | null;
     resolved_workspace_path?: string | null;
-    spcode_auto_load?: boolean;
+    spcode_no_agentsmd?: boolean;
     spcode_no_codegraph?: boolean;
     created_at: string;
     updated_at: string;
@@ -94,8 +153,17 @@ export interface ProjectFormData {
     description: string;
     workspace_type: WorkspaceType;
     workspace_path: string;
-    spcode_auto_load?: boolean;
-    spcode_no_codegraph?: boolean;
+    /**
+     * Inverse flags, matching the API/DB naming: true = skip that load
+     * step. The chips in the template speak in positive terms via the
+     * loadAgentsMd / loadCodegraph writable computeds below.
+     *
+     * Silent loading on session open is always on and no longer has a
+     * user-visible switch (2026-09-09), so there is no spcode_auto_load
+     * field here any more.
+     */
+    spcode_no_agentsmd: boolean;
+    spcode_no_codegraph: boolean;
 }
 
 interface Props {
@@ -131,8 +199,28 @@ const form = ref<ProjectFormData>({
     description: '',
     workspace_type: 'project',
     workspace_path: '',
-    spcode_auto_load: true,
+    spcode_no_agentsmd: false,
     spcode_no_codegraph: false,
+});
+
+// Shared recent-path history (localStorage singleton) — the same store
+// the ChatInput project-load dialog uses.
+const { recentPaths, addToPathHistory, removeFromPathHistory } =
+    useProjectPathHistory();
+
+// Positive-facing views of the two inverse flags so the template can
+// bind the chips with plain v-model.
+const loadAgentsMd = computed({
+    get: () => !form.value.spcode_no_agentsmd,
+    set: (value: boolean) => {
+        form.value.spcode_no_agentsmd = !value;
+    },
+});
+const loadCodegraph = computed({
+    get: () => !form.value.spcode_no_codegraph,
+    set: (value: boolean) => {
+        form.value.spcode_no_codegraph = !value;
+    },
 });
 const workspaceTypeItems = computed(() => [
     { label: tm('project.workspace.project'), value: 'project' },
@@ -160,7 +248,7 @@ watch(() => props.modelValue, (newVal) => {
                 description: props.project.description || '',
                 workspace_type: props.project.workspace_type || 'session',
                 workspace_path: props.project.workspace_path || '',
-                spcode_auto_load: props.project.spcode_auto_load !== false,
+                spcode_no_agentsmd: props.project.spcode_no_agentsmd === true,
                 spcode_no_codegraph: props.project.spcode_no_codegraph === true,
             };
         } else {
@@ -171,7 +259,7 @@ watch(() => props.modelValue, (newVal) => {
                 description: '',
                 workspace_type: 'project',
                 workspace_path: '',
-                spcode_auto_load: true,
+                spcode_no_agentsmd: false,
                 spcode_no_codegraph: false,
             };
         }
@@ -212,14 +300,19 @@ function handleSave() {
 
     // Only the custom mode carries a path; session/project workspaces
     // are auto-allocated by the backend, so submit an empty path.
-    const workspacePath =
-        form.value.workspace_type === 'custom'
-            ? form.value.workspace_path.trim()
-            : '';
+    const isCustom = form.value.workspace_type === 'custom';
+    const workspacePath = isCustom ? form.value.workspace_path.trim() : '';
+    if (workspacePath) {
+        addToPathHistory(workspacePath);
+    }
 
     emit('save', {
         ...form.value,
-        workspace_path: workspacePath
+        workspace_path: workspacePath,
+        // The spcode load steps only apply to custom workspaces; clear
+        // stale selections when the project no longer has a path.
+        spcode_no_agentsmd: isCustom ? form.value.spcode_no_agentsmd : false,
+        spcode_no_codegraph: isCustom ? form.value.spcode_no_codegraph : false,
     }, props.project?.project_id);
 }
 
@@ -241,11 +334,36 @@ function handleSave() {
     color: rgba(var(--v-theme-on-surface), 0.78);
     margin-bottom: 8px;
 }
-.spcode-section-hint {
+
+/*
+ * Load-step chips row (SpToggleChip). Unlike the ChatInput dialog this
+ * row sits under outlined text fields rather than radios, so it needs no
+ * inline-start inset — it lines up with the section title above it.
+ */
+.spcode-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.spcode-chips__hint {
+    margin-inline-start: auto;
     font-size: 12px;
     color: rgba(var(--v-theme-on-surface), 0.56);
-    margin-top: -4px;
-    margin-bottom: 4px;
-    line-height: 1.4;
+}
+
+/* Recent-path list — mirrors the ChatInput project-load dialog. */
+.history-list {
+    max-height: 160px;
+    overflow-y: auto;
+    background: transparent;
+}
+
+.history-item :deep(.v-list-item-title) {
+    font-family: "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    word-break: break-all;
+    white-space: normal;
 }
 </style>

@@ -241,7 +241,7 @@ def test_session_workspace_unchanged_by_project_branch(tmp_path, monkeypatch):
 
 
 def test_serialize_project_emits_spcode_fields():
-    """_serialize_project must include spcode_auto_load / spcode_force / spcode_no_codegraph."""
+    """_serialize_project must include all spcode_* integration fields."""
     from types import SimpleNamespace
 
     project = SimpleNamespace(
@@ -254,6 +254,7 @@ def test_serialize_project_emits_spcode_fields():
         workspace_path=None,
         spcode_auto_load=True,
         spcode_force=False,
+        spcode_no_agentsmd=True,
         spcode_no_codegraph=True,
         created_at=None,
         updated_at=None,
@@ -263,6 +264,7 @@ def test_serialize_project_emits_spcode_fields():
 
     assert result["spcode_auto_load"] is True
     assert result["spcode_force"] is False
+    assert result["spcode_no_agentsmd"] is True
     assert result["spcode_no_codegraph"] is True
 
 
@@ -287,6 +289,7 @@ def test_serialize_project_uses_defaults_when_fields_missing():
 
     assert result["spcode_auto_load"] is True  # default
     assert result["spcode_force"] is False  # default
+    assert result["spcode_no_agentsmd"] is False  # default
     assert result["spcode_no_codegraph"] is False  # default
 
 
@@ -369,6 +372,7 @@ async def test_api_key_project_defaults_to_managed_project_workspace():
         workspace_path=None,
         spcode_auto_load=True,
         spcode_force=False,
+        spcode_no_agentsmd=False,
         spcode_no_codegraph=False,
     )
 

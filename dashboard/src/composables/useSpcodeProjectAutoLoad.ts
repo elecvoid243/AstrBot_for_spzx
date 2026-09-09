@@ -6,8 +6,11 @@
 //
 // Behavior contract (mirrors spcode endpoint spec):
 //   - workspace_type !== "custom"  -> return null (no-op)
-//   - spcode_auto_load === false    -> return null (no-op)
 //   - missing workspace_path        -> return null (no-op)
+//   - the AGENTS.md / Codegraph load steps follow the project's
+//     spcode_no_agentsmd / spcode_no_codegraph flags (same chips the
+//     project dialog shows). Silent loading itself is always on since
+//     2026-09-09 — the legacy spcode_auto_load switch is no longer read.
 //   - same (project, umo) concurrent calls share one in-flight promise
 //   - response success -> return data
 //   - response reason "no_project_loaded" + previous_directory matches
@@ -172,6 +175,7 @@ async function postLoad(
         directory: req.project.workspace_path!,
         umo: req.umo,
         force,
+        no_agentsmd: req.project.spcode_no_agentsmd || undefined,
         no_codegraph: req.project.spcode_no_codegraph || undefined,
       },
       { signal: controller.signal },
@@ -225,8 +229,10 @@ export function useSpcodeProjectAutoLoad() {
     // custom's workspace_path is the session cwd AND the spcode mount
     // target, which is the only coherent binding. "project"-type paths
     // never affect cwd, so spcode no longer attaches to them.
+    //
+    // Silent loading is always on (2026-09-09): the spcode_auto_load
+    // switch was removed from the UI and is no longer read here.
     if (project.workspace_type !== "custom") return null;
-    if (project.spcode_auto_load === false) return null;
     if (!project.workspace_path) return null;
 
     const key = inflightKey(project, umo);

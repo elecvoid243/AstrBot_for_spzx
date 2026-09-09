@@ -6269,7 +6269,13 @@ components:
           type: boolean
           nullable: true
           default: true
+          deprecated: true
+          description: Legacy silent-load switch. Since 2026-09-09 custom-workspace projects always load silently; the field is kept for backward compatibility only.
         spcode_force:
+          type: boolean
+          nullable: true
+          default: false
+        spcode_no_agentsmd:
           type: boolean
           nullable: true
           default: false

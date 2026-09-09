@@ -571,10 +571,12 @@ class ChatUIProject(TimestampMixin, SQLModel, table=True):
     workspace_path: str | None = Field(default=None, max_length=1024)
     """Custom workspace path"""
     spcode_auto_load: bool = Field(default=True, nullable=False)
-    """若 True,该 project 下的会话被打开/创建时,前端会静默
-    POST /spcode/project-load(directory=workspace_path, umo=...)"""
+    """Legacy:静默加载开关。2026-09-09 起前端不再提供该选项,
+    custom 工作区项目一律静默加载,该字段仅为兼容旧数据保留。"""
     spcode_force: bool = Field(default=False, nullable=False)
     """静默 load 时若 umo 已加载其他项目,是否强制覆盖。"""
+    spcode_no_agentsmd: bool = Field(default=False, nullable=False)
+    """挂载时跳过 AGENTS.md 子步骤(不注入项目说明文件)。"""
     spcode_no_codegraph: bool = Field(default=False, nullable=False)
     """挂载时跳过 codegraph(只 load AGENTS.md,适合轻量场景)。"""
 

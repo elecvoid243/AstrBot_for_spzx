@@ -46,6 +46,7 @@ class ChatUIProjectService:
         description = payload.get("description")
         spcode_auto_load = bool(payload.get("spcode_auto_load", True))
         spcode_force = bool(payload.get("spcode_force", False))
+        spcode_no_agentsmd = bool(payload.get("spcode_no_agentsmd", False))
         spcode_no_codegraph = bool(payload.get("spcode_no_codegraph", False))
         workspace_type, workspace_path = self._normalize_workspace_config(payload)
 
@@ -61,6 +62,7 @@ class ChatUIProjectService:
             workspace_path=workspace_path,
             spcode_auto_load=spcode_auto_load,
             spcode_force=spcode_force,
+            spcode_no_agentsmd=spcode_no_agentsmd,
             spcode_no_codegraph=spcode_no_codegraph,
         )
         return self._serialize_project(project)
@@ -122,6 +124,7 @@ class ChatUIProjectService:
             workspace_path=workspace_path,
             spcode_auto_load=payload.get("spcode_auto_load"),
             spcode_force=payload.get("spcode_force"),
+            spcode_no_agentsmd=payload.get("spcode_no_agentsmd"),
             spcode_no_codegraph=payload.get("spcode_no_codegraph"),
         )
 
@@ -475,6 +478,7 @@ class ChatUIProjectService:
             "resolved_workspace_path": resolved_workspace_path,
             "spcode_auto_load": bool(getattr(project, "spcode_auto_load", True)),
             "spcode_force": bool(getattr(project, "spcode_force", False)),
+            "spcode_no_agentsmd": bool(getattr(project, "spcode_no_agentsmd", False)),
             "spcode_no_codegraph": bool(getattr(project, "spcode_no_codegraph", False)),
             "created_at": to_utc_isoformat(project.created_at),
             "updated_at": to_utc_isoformat(project.updated_at),

@@ -156,8 +156,13 @@ export type ChatProjectRequest = {
      * Dashboard-only custom workspace path. API key callers cannot set this field.
      */
     workspace_path?: string;
+    /**
+     * Legacy silent-load switch. Since 2026-09-09 custom-workspace projects always load silently; the field is kept for backward compatibility only.
+     * @deprecated
+     */
     spcode_auto_load?: (boolean) | null;
     spcode_force?: (boolean) | null;
+    spcode_no_agentsmd?: (boolean) | null;
     spcode_no_codegraph?: (boolean) | null;
 };
 

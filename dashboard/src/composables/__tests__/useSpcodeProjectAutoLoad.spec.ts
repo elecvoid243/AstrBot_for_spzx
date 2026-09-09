@@ -22,6 +22,7 @@ const baseProject: Project = {
   workspace_type: "custom",
   workspace_path: "/abs/repo",
   spcode_auto_load: true,
+  spcode_no_agentsmd: false,
   spcode_no_codegraph: false,
   created_at: "",
   updated_at: "",
@@ -95,14 +96,41 @@ describe("useSpcodeProjectAutoLoad", () => {
     expect(pluginExtensionApi.post).not.toHaveBeenCalled();
   });
 
-  it("FT-2: returns null when spcode_auto_load=false", async () => {
+  it("FT-2: loads even when the legacy spcode_auto_load flag is false", async () => {
+    // Silent loading is always on since 2026-09-09; the switch was
+    // removed from the UI and the composable no longer reads it.
+    mockPost(successPayload());
     const { silentLoad } = useSpcodeProjectAutoLoad();
     const r = await silentLoad({
       project: { ...baseProject, spcode_auto_load: false },
       umo: "u1",
     });
-    expect(r).toBeNull();
-    expect(pluginExtensionApi.post).not.toHaveBeenCalled();
+    expect(r?.loaded).toBe(true);
+    expect(pluginExtensionApi.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("FT-2b: forwards no_agentsmd / no_codegraph from the project config", async () => {
+    mockPost(successPayload());
+    const { silentLoad } = useSpcodeProjectAutoLoad();
+    await silentLoad({
+      project: {
+        ...baseProject,
+        spcode_no_agentsmd: true,
+        spcode_no_codegraph: true,
+      },
+      umo: "u1",
+    });
+    expect(pluginExtensionApi.post).toHaveBeenCalledWith(
+      "spcode/project-load",
+      {
+        directory: "/abs/repo",
+        umo: "u1",
+        force: false,
+        no_agentsmd: true,
+        no_codegraph: true,
+      },
+      expect.anything(),
+    );
   });
 
   it("FT-3: success returns data and posts exactly once", async () => {

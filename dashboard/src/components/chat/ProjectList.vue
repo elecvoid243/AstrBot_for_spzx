@@ -306,7 +306,9 @@ export interface Project {
   workspace_type?: "session" | "project" | "custom";
   workspace_path?: string | null;
   resolved_workspace_path?: string | null;
+  /** Legacy silent-load switch; always on since 2026-09-09 (not read). */
   spcode_auto_load?: boolean;
+  spcode_no_agentsmd?: boolean;
   spcode_no_codegraph?: boolean;
   created_at: string;
   updated_at: string;

@@ -28,6 +28,7 @@ import { useProjectPathHistory } from "@/composables/useProjectPathHistory";
 import { useConfirmDialog } from "@/utils/confirmDialog";
 import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
 import SpSegmentedControl from "./SpSegmentedControl.vue";
+import SpToggleChip from "./SpToggleChip.vue";
 
 /**
  * Compose the final chat input text for the load/set command.
@@ -429,31 +430,40 @@ function onUnload(): void {
                   :label="tm('spcodeProjectLoad.dialog.kindPlain')"
                 />
               </v-radio-group>
-              <div class="load-options d-flex flex-wrap ga-6">
-                <v-checkbox
+              <div class="text-caption text-medium-emphasis mb-1">
+                {{ tm("spcodeProjectLoad.dialog.loadStepsLabel") }}
+              </div>
+              <!--
+                Load-step toggles are pill chips instead of native
+                checkboxes (2026-09-09): Vuetify's compact selection
+                control centres a 24px glyph inside a 28px wrapper, and
+                the old 18px wrapper override here shifted the checkbox
+                glyph 5px left of the radio glyphs above. See
+                SpToggleChip for the chip itself.
+              -->
+              <div class="load-chips">
+                <SpToggleChip
                   v-model="loadAgentsMd"
+                  icon="mdi-file-document-outline"
                   :label="tm('spcodeProjectLoad.dialog.loadAgentsMd')"
-                  density="compact"
-                  hide-details
-                  class="text-body-2 flex-grow-0"
                 />
-                <v-checkbox
+                <SpToggleChip
                   v-model="loadCodegraph"
+                  icon="mdi-graph-outline"
                   :label="tm('spcodeProjectLoad.dialog.loadCodegraph')"
-                  density="compact"
-                  hide-details
-                  class="text-body-2 flex-grow-0"
                 />
+                <!-- Hint sits on the chip row, right-aligned. -->
+                <span class="load-chips__hint">
+                  {{ tm("spcodeProjectLoad.dialog.loadAutoCreateHint") }}
+                </span>
               </div>
             </template>
 
-            <div v-else class="load-options">
-              <v-checkbox
+            <div v-else class="load-chips">
+              <SpToggleChip
                 v-model="autoInitGit"
+                icon="mdi-source-branch"
                 :label="tm('spcodeProjectLoad.dialog.autoInitGit')"
-                density="compact"
-                hide-details
-                class="text-body-2"
               />
             </div>
           </template>
@@ -550,26 +560,25 @@ function onUnload(): void {
 }
 
 /*
- * Compact rendering for the always-visible option checkboxes so they
- * read at the same size as the "Recent" rows (font-size: 12px, checkbox
- * box ~18px) instead of Vuetify's default 24px checkbox and 14px label.
+ * Row wrapper for the load-step chips (see SpToggleChip for the chip
+ * itself). The 4px inline start aligns the chip border with the visible
+ * radio circle: MDI's radiobox ink is inset 2px inside the 24px icon
+ * box, which is itself inset 2px inside Vuetify's 28px compact wrapper.
+ * (The old 18px wrapper override put the checkbox ink at 0px, i.e. 4px
+ * left of the radios.) The hint is pushed to the end of the same row so
+ * it reads as part of the toggle group.
  */
-.load-options :deep(.v-selection-control) {
-  min-height: 24px;
+.load-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-inline-start: 4px;
 }
 
-.load-options :deep(.v-label) {
+.load-chips__hint {
+  margin-inline-start: auto;
   font-size: 12px;
-  line-height: 1.2;
-}
-
-.load-options :deep(.v-selection-control__wrapper) {
-  width: 18px;
-  height: 18px;
-}
-
-.load-options :deep(input[type="checkbox"]) {
-  width: 18px;
-  height: 18px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 </style>

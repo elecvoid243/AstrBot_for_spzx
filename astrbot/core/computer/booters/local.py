@@ -67,74 +67,6 @@ _NO_WINDOW_KWARGS: dict[str, int] = (
 )
 
 
-# WHY ``_PYTHON_SUBPROCESS_PREAMBLE``:
-#   ``_NO_WINDOW_KWARGS`` suppresses the console for the *direct* child of
-#   AstrBot's computer booter (e.g. ``python.exe`` invoked by ``-c``), but
-#   it does NOT propagate into user code. When a user-side script spawns
-#   yet another CUI child, Windows allocates a brand new console window
-#   because the current ``python.exe`` has no inherited console to hand
-#   out — the nested "弹 cmd 黑框" case.
-#
-#   Mitigation: prepend a tiny idempotent snippet that patches
-#   ``_winapi.CreateProcess`` — the single Windows entry point used by
-#   ``subprocess`` (run/call/check_output/Popen), ``asyncio``'s subprocess
-#   transport, and ``multiprocessing`` (whose Windows spawner calls
-#   ``_winapi.CreateProcess`` directly, bypassing ``subprocess.Popen``).
-#   The wrapper forces ``CREATE_NO_WINDOW`` (clearing the mutually exclusive
-#   ``CREATE_NEW_CONSOLE``) and a ``STARTUPINFO`` with
-#   ``wShowWindow = SW_HIDE``. It is flagged via ``_ab_no_window_patched``
-#   so re-execution cannot stack-wrap, and exposes ``_ab_no_window_flags()``
-#   so the flag rewriting stays testable without spawning a process.
-#
-#   Naming note: identifiers use a single leading underscore rather than
-#   the dunder form so CPython's name-mangling does NOT rewrite them to
-#   ``_ClassName__name`` when they appear inside a patched class body.
-#
-#   Out-of-scope (not patched, accepted edge cases):
-#     - ``os.system`` / ``os.popen`` / ``os.spawn*`` (CRT-level spawn).
-#     - Direct ctypes / Win32 ``CreateProcessW`` calls.
-#   These cover the >95% agent-written spawn paths without a heavy module
-#   rewrite.
-_PYTHON_SUBPROCESS_PREAMBLE: str = (
-    "import sys as _ab_sys\n"
-    "if _ab_sys.platform == 'win32':\n"
-    "    import _winapi as _ab_wapi\n"
-    "    import subprocess as _ab_sp\n"
-    "    _ab_cnw = 0x08000000  # CREATE_NO_WINDOW\n"
-    "    _ab_new_console = 0x00000010  # CREATE_NEW_CONSOLE\n"
-    "    _ab_detached = 0x00000008  # DETACHED_PROCESS\n"
-    "\n"
-    "    def _ab_no_window_flags(flags):\n"
-    "        if flags & _ab_cnw or flags & _ab_detached:\n"
-    "            return flags\n"
-    "        return (flags & ~_ab_new_console) | _ab_cnw\n"
-    "\n"
-    "    if not getattr(\n"
-    "        _ab_wapi.CreateProcess, '_ab_no_window_patched', False\n"
-    "    ):\n"
-    "        _ab_orig_create_process = _ab_wapi.CreateProcess\n"
-    "\n"
-    "        def _ab_no_window_create_process(\n"
-    "            application_name, command_line, process_attributes,\n"
-    "            thread_attributes, inherit_handles, creation_flags,\n"
-    "            new_environment, current_directory, startup_info\n"
-    "        ):\n"
-    "            if startup_info is None:\n"
-    "                startup_info = _ab_sp.STARTUPINFO()\n"
-    "            startup_info.dwFlags |= 0x00000001  # STARTF_USESHOWWINDOW\n"
-    "            startup_info.wShowWindow = 0  # SW_HIDE\n"
-    "            return _ab_orig_create_process(\n"
-    "                application_name, command_line, process_attributes,\n"
-    "                thread_attributes, inherit_handles,\n"
-    "                _ab_no_window_flags(creation_flags),\n"
-    "                new_environment, current_directory, startup_info\n"
-    "            )\n"
-    "\n"
-    "        _ab_no_window_create_process._ab_no_window_patched = True\n"
-    "        _ab_wapi.CreateProcess = _ab_no_window_create_process\n"
-)
-
-
 def _is_safe_command(command: str) -> bool:
     cmd = f" {command.strip().lower()} "
     return not any(pat in cmd for pat in _BLOCKED_COMMAND_PATTERNS)
@@ -1059,28 +991,28 @@ class LocalPythonComponent(PythonComponent):
         silent: bool = False,
         cwd: str | None = None,
     ) -> dict[str, Any]:
-        # Prepend a tiny monkey-patch of ``subprocess.Popen`` so that any
-        # user-side ``subprocess.run`` / ``subprocess.Popen`` nested call
-        # inside the spawned interpreter also suppresses its own console
-        # window. Without this, a user ``subprocess.run(['cmd.exe', ...])``
-        # would still flash a black console even though the parent
-        # ``python.exe`` was already launched with ``CREATE_NO_WINDOW``.
-        # See ``_PYTHON_SUBPROCESS_PREAMBLE`` for the patch details.
-        wrapped_code = _PYTHON_SUBPROCESS_PREAMBLE + code
+        # The child interpreter must be the console-subsystem ``python.exe``:
+        # together with ``CREATE_NO_WINDOW`` below it gets a windowless
+        # console that every nested CUI child spawned by user code
+        # (subprocess / os.system / multiprocessing) inherits, so no console
+        # window ever flashes even when AstrBot itself runs under
+        # ``pythonw.exe`` (GUI subsystem, no console to inherit).
+        python_exe = os.environ.get("PYTHON", sys.executable)
+        if sys.platform == "win32" and Path(python_exe).name.lower() == "pythonw.exe":
+            sibling_console_exe = Path(python_exe).with_name("python.exe")
+            if sibling_console_exe.exists():
+                python_exe = str(sibling_console_exe)
 
         def _run() -> dict[str, Any]:
             try:
                 working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
                 result = subprocess.run(
-                    [
-                        os.environ.get("PYTHON", sys.executable),
-                        "-c",
-                        wrapped_code,
-                    ],
+                    [python_exe, "-c", code],
                     timeout=timeout,
                     capture_output=True,
                     cwd=working_dir,
-                    # pythonw.exe 启动下抑制 python.exe 子进程黑窗;非 Windows 上为 {}
+                    # Windowless console for the direct child; nested CUI
+                    # children inherit it. Non-Windows passes no extra flags.
                     **_NO_WINDOW_KWARGS,
                 )
                 stdout = "" if silent else _decode_shell_output(result.stdout)

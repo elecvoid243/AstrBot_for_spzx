@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import ctypes
 import os
+import sys
+from ctypes import wintypes
+from pathlib import Path
 
 import pytest
 
@@ -11,9 +16,28 @@ pytestmark = pytest.mark.skipif(
     reason="Console-window suppression is Windows-only.",
 )
 
-CREATE_NO_WINDOW = 0x08000000
-CREATE_NEW_CONSOLE = 0x00000010
-DETACHED_PROCESS = 0x00000008
+_CONSOLE_WINDOW_CLASSES = {
+    "ConsoleWindowClass",  # conhost.exe
+    "CASCADIA_HOSTING_WINDOW_CLASS",  # Windows Terminal
+}
+
+
+def _visible_console_hwnds() -> set[int]:
+    """Return the handles of all visible top-level console windows."""
+    hwnds: set[int] = set()
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def on_window(hwnd, _lparam):
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(64)
+            ctypes.windll.user32.GetClassNameW(hwnd, buf, 64)
+            if buf.value in _CONSOLE_WINDOW_CLASSES:
+                hwnds.add(hwnd)
+        return True
+
+    keep_alive = callback_type(on_window)  # prevent GC of the callback
+    ctypes.windll.user32.EnumWindows(keep_alive, 0)
+    return hwnds
 
 
 async def _run_python(code: str) -> str:
@@ -25,33 +49,19 @@ async def _run_python(code: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_create_process_patch_covers_subprocess_and_multiprocessing():
+async def test_python_env_pointing_to_pythonw_is_redirected_to_console_python(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.exists():
+        pytest.skip("pythonw.exe not found next to the test interpreter")
+    monkeypatch.setenv("PYTHON", str(pythonw))
+
     output = await _run_python(
-        "import _winapi\n"
-        "import multiprocessing.popen_spawn_win32 as spawn\n"
-        "print(\n"
-        "    getattr(_winapi.CreateProcess, '_ab_no_window_patched', False),\n"
-        "    spawn._winapi.CreateProcess is _winapi.CreateProcess,\n"
-        ")\n"
+        "import os, sys; print(os.path.basename(sys.executable))"
     )
 
-    assert output == "True True"
-
-
-@pytest.mark.parametrize(
-    ("flags", "expected"),
-    [
-        (0, CREATE_NO_WINDOW),
-        (CREATE_NEW_CONSOLE, CREATE_NO_WINDOW),
-        (DETACHED_PROCESS, DETACHED_PROCESS),
-        (CREATE_NO_WINDOW, CREATE_NO_WINDOW),
-    ],
-)
-@pytest.mark.asyncio
-async def test_flag_rewriting(flags, expected):
-    output = await _run_python(f"print(_ab_no_window_flags({flags}))\n")
-
-    assert output == str(expected)
+    assert output == "python.exe"
 
 
 @pytest.mark.asyncio
@@ -66,6 +76,36 @@ async def test_subprocess_child_has_no_console_window():
     )
 
     assert output == "0"
+
+
+@pytest.mark.asyncio
+async def test_nested_console_spawn_flashes_no_window():
+    before = _visible_console_hwnds()
+    flashed: set[int] = set()
+    finished = asyncio.Event()
+
+    async def watch():
+        while not finished.is_set():
+            flashed.update(_visible_console_hwnds() - before)
+            await asyncio.sleep(0.2)
+
+    watcher = asyncio.create_task(watch())
+    try:
+        output = await _run_python(
+            "import subprocess\n"
+            "done = subprocess.run(\n"
+            "    ['ping', '-n', '3', '127.0.0.1'],\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "print(done.returncode)\n"
+        )
+    finally:
+        finished.set()
+        await watcher
+
+    assert output == "0"
+    assert flashed == set(), f"a console window flashed during nested spawn: {flashed}"
 
 
 @pytest.mark.asyncio

@@ -344,10 +344,6 @@
   content: "\F10D5";
 }
 
-.mdi-clipboard-text-outline::before {
-  content: "\F0A38";
-}
-
 .mdi-clock-fast::before {
   content: "\F0152";
 }
@@ -1414,6 +1410,10 @@
 
 .mdi-sync::before {
   content: "\F04E6";
+}
+
+.mdi-target::before {
+  content: "\F04FE";
 }
 
 .mdi-text::before {

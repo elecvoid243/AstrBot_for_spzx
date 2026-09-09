@@ -400,6 +400,15 @@
       @error="showError"
     />
 
+    <!-- 导入时缺失工具/技能警告对话框 -->
+    <ImportMissingDialog
+      :model-value="showImportMissingDialog"
+      :missing-tools="importMissingTools"
+      :missing-skills="importMissingSkills"
+      @update:model-value="onImportMissingDialogToggle"
+      @confirm="resolveImportMissing(true)"
+    />
+
     <!-- 删除文件夹确认对话框 -->
     <v-dialog v-model="showDeleteFolderDialog" max-width="450px">
       <v-card>
@@ -454,7 +463,7 @@
 import { defineComponent } from "vue";
 import { useI18n, useModuleI18n } from "@/i18n/composables";
 import { usePersonaStore } from "@/stores/personaStore";
-import { personaApi } from "@/api/v1";
+import { personaApi, skillApi, toolApi } from "@/api/v1";
 import { mapState, mapActions } from "pinia";
 
 import FolderTree from "./FolderTree.vue";
@@ -464,6 +473,7 @@ import PersonaCard from "./PersonaCard.vue";
 import PersonaForm from "@/components/shared/PersonaForm.vue";
 import CreateFolderDialog from "./CreateFolderDialog.vue";
 import MoveToFolderDialog from "./MoveToFolderDialog.vue";
+import ImportMissingDialog from "./ImportMissingDialog.vue";
 import {
   askForConfirmation as askForConfirmationDialog,
   useConfirmDialog,
@@ -499,6 +509,7 @@ export default defineComponent({
     PersonaForm,
     CreateFolderDialog,
     MoveToFolderDialog,
+    ImportMissingDialog,
   },
   setup() {
     const { t } = useI18n();
@@ -527,6 +538,12 @@ export default defineComponent({
       showMoveDialog: false,
       moveDialogType: "persona" as "persona" | "folder",
       moveDialogItem: null as Persona | Folder | null,
+
+      // 导入缺失警告对话框
+      showImportMissingDialog: false,
+      importMissingTools: [] as string[],
+      importMissingSkills: [] as string[],
+      importMissingResolve: null as ((confirmed: boolean) => void) | null,
 
       // 消息提示
       showMessage: false,
@@ -780,14 +797,74 @@ export default defineComponent({
           return;
         }
 
-        // 检查 persona_id 是否已存在
-        let personaId = data.persona_id || "imported_persona";
-        const listRes = await personaApi.list();
+        // Preserve the three-state semantics: null = all, [] = none, [names] = allowlist
+        const importedTools = Array.isArray(data.tools)
+          ? data.tools.filter((name: any) => typeof name === "string")
+          : null;
+        const importedSkills = Array.isArray(data.skills)
+          ? data.skills.filter((name: any) => typeof name === "string")
+          : null;
+
+        // Load existing personas (rename check) and available tools/skills (missing check) in parallel
+        const [listRes, toolsRes, skillsRes] = await Promise.all([
+          personaApi.list(),
+          toolApi.list(),
+          skillApi.list(),
+        ]);
         const existingIds =
           listRes.data.status === "ok"
             ? (listRes.data.data || []).map((p: any) => p.persona_id)
             : [];
 
+        const skillsPayload =
+          skillsRes.data.status === "ok" ? skillsRes.data.data || [] : [];
+        const skillsList = Array.isArray(skillsPayload)
+          ? skillsPayload
+          : skillsPayload.skills || [];
+        // A null set means the list failed to load; keep exported names as-is
+        // (fail-open) instead of wrongly filtering everything out.
+        const toolNames =
+          toolsRes.data.status === "ok"
+            ? new Set<string>(
+                (toolsRes.data.data || []).map((t: any) => t.name),
+              )
+            : null;
+        const skillNames =
+          skillsRes.data.status === "ok"
+            ? new Set<string>(skillsList.map((s: any) => s.name))
+            : null;
+
+        // Drop names that do not exist on this instance
+        const missingTools = toolNames
+          ? (importedTools || []).filter((name: string) => !toolNames.has(name))
+          : [];
+        const missingSkills = skillNames
+          ? (importedSkills || []).filter(
+              (name: string) => !skillNames.has(name),
+            )
+          : [];
+        const keptTools =
+          importedTools && toolNames
+            ? importedTools.filter((name: string) => toolNames.has(name))
+            : importedTools;
+        const keptSkills =
+          importedSkills && skillNames
+            ? importedSkills.filter((name: string) => skillNames.has(name))
+            : importedSkills;
+
+        // Ask for confirmation before creating a persona with missing items dropped
+        if (missingTools.length > 0 || missingSkills.length > 0) {
+          const confirmed = await new Promise<boolean>((resolve) => {
+            this.importMissingResolve = resolve;
+            this.importMissingTools = missingTools;
+            this.importMissingSkills = missingSkills;
+            this.showImportMissingDialog = true;
+          });
+          if (!confirmed) return;
+        }
+
+        // 检查 persona_id 是否已存在
+        let personaId = data.persona_id || "imported_persona";
         let renamed = false;
         if (existingIds.includes(personaId)) {
           personaId = `${personaId}_imported`;
@@ -805,8 +882,8 @@ export default defineComponent({
           persona_id: personaId,
           system_prompt: data.system_prompt,
           begin_dialogs: data.begin_dialogs || [],
-          tools: null, // 默认使用所有工具
-          skills: null, // 默认使用所有 Skills
+          tools: keptTools, // null = all tools, [] = no tools
+          skills: keptSkills, // null = all skills, [] = no skills
           folder_id: this.currentFolderId,
         };
 
@@ -830,6 +907,18 @@ export default defineComponent({
           }),
         );
       }
+    },
+
+    onImportMissingDialogToggle(value: boolean) {
+      this.showImportMissingDialog = value;
+      // Closed without confirming (cancel button, Esc or outside click)
+      if (!value) this.resolveImportMissing(false);
+    },
+
+    resolveImportMissing(confirmed: boolean) {
+      const resolve = this.importMissingResolve;
+      this.importMissingResolve = null;
+      resolve?.(confirmed);
     },
 
     // 辅助方法

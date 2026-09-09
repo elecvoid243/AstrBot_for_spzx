@@ -89,14 +89,19 @@
     "deleteConfirm": "确定要删除人格 \"{id}\" 吗？此操作不可撤销。",
     "deleteSuccess": "删除成功",
     "deleteError": "删除失败",
-    "exportConfirm": "导出仅包含系统提示词和预设对话，不包含工具和技能配置。是否继续导出？",
+    "exportConfirm": "导出将包含系统提示词、预设对话以及工具和技能的名称配置。是否继续导出？",
     "exportSuccess": "导出成功",
     "exportError": "导出失败：{error}",
-    "importSuccess": "人格导入成功，请手动配置工具和技能",
+    "importSuccess": "人格导入成功",
     "importError": "导入失败：{error}",
     "importFormatError": "文件格式错误，请选择有效的人格导出文件",
     "importMissingPrompt": "文件内容不完整，缺少系统提示词",
-    "importIdExists": "人格名称已存在，已重命名为 \"{id}\""
+    "importIdExists": "人格名称已存在，已重命名为 \"{id}\"",
+    "importMissingTitle": "部分工具或技能不存在",
+    "importMissingHint": "以下工具或技能在当前实例中不存在，导入时将被忽略，其余配置将正常导入。",
+    "importMissingTools": "缺失的工具",
+    "importMissingSkills": "缺失的技能",
+    "importMissingConfirm": "仍然导入"
   },
   "persona": {
     "personasTitle": "人格",

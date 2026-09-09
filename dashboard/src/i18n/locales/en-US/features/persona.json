@@ -89,14 +89,19 @@
     "deleteConfirm": "Are you sure you want to delete persona \"{id}\"? This action cannot be undone.",
     "deleteSuccess": "Deleted successfully",
     "deleteError": "Delete failed",
-    "exportConfirm": "Export only includes system prompt and preset dialogs, not tools and Skills config. Continue?",
+    "exportConfirm": "Export includes the system prompt, preset dialogs, and the configured tool and Skill names. Continue?",
     "exportSuccess": "Exported successfully",
     "exportError": "Export failed: {error}",
-    "importSuccess": "Persona imported successfully, please configure tools and Skills manually",
+    "importSuccess": "Persona imported successfully",
     "importError": "Import failed: {error}",
     "importFormatError": "Invalid file format, please select a valid persona export file",
     "importMissingPrompt": "Incomplete file content, missing system prompt",
-    "importIdExists": "Persona name already exists, renamed to \"{id}\""
+    "importIdExists": "Persona name already exists, renamed to \"{id}\"",
+    "importMissingTitle": "Some tools or Skills are missing",
+    "importMissingHint": "The following tools or Skills do not exist on this instance and will be dropped during import. The rest of the configuration will be imported normally.",
+    "importMissingTools": "Missing tools",
+    "importMissingSkills": "Missing Skills",
+    "importMissingConfirm": "Import anyway"
   },
   "persona": {
     "personasTitle": "Personas",

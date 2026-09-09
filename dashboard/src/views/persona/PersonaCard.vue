@@ -199,7 +199,6 @@ export default defineComponent({
       return new Date(dateString).toLocaleString();
     },
     async exportPersona() {
-      // 确认提示：告知用户导出仅包含系统提示词和预设对话
       const confirmed = await askForConfirmationDialog(
         this.tm("messages.exportConfirm"),
         this.confirmDialog,
@@ -207,11 +206,14 @@ export default defineComponent({
       if (!confirmed) return;
 
       try {
-        // 仅导出 persona_id, system_prompt, begin_dialogs
+        // Export identity, prompt, preset dialogs and tool/skill names.
+        // tools/skills keep the three-state semantics: null = all, [] = none.
         const exportData = {
           persona_id: this.persona.persona_id,
           system_prompt: this.persona.system_prompt,
           begin_dialogs: this.persona.begin_dialogs || [],
+          tools: this.persona.tools ?? null,
+          skills: this.persona.skills ?? null,
         };
 
         const jsonStr = JSON.stringify(exportData, null, 2);
@@ -228,7 +230,7 @@ export default defineComponent({
         // 通过事件通知父组件显示成功消息
         this.$emit("export", this.tm("messages.exportSuccess"));
       } catch (error: any) {
-        console.error("导出人格失败:", error);
+        console.error("Failed to export persona:", error);
         // 通过事件通知父组件显示错误消息
         this.$emit(
           "export",

@@ -35,8 +35,28 @@
             </div>
 
             <template v-else>
+              <button
+                v-if="agentWorkPillVisible(msg, msgIndex)"
+                class="agent-work-pill"
+                :class="{
+                  'agent-work-pill--expanded': agentWorkExpanded(msg, msgIndex),
+                }"
+                type="button"
+                :aria-expanded="agentWorkExpanded(msg, msgIndex)"
+                @click="toggleAgentWork(msg, msgIndex)"
+              >
+                <span class="agent-work-pill-badge">
+                  <v-icon size="11">mdi-check</v-icon>
+                </span>
+                <span class="agent-work-pill-label">{{
+                  agentWorkLabel(msg)
+                }}</span>
+                <v-icon class="agent-work-pill-chevron" size="14">
+                  mdi-chevron-right
+                </v-icon>
+              </button>
               <template
-                v-for="(block, blockIndex) in renderBlocks(msg)"
+                v-for="(block, blockIndex) in visibleBlocks(msg, msgIndex)"
                 :key="`${msgIndex}-block-${blockIndex}-${block.kind}`"
               >
                 <ReasoningBlock
@@ -46,7 +66,10 @@
                   :initial-expanded="false"
                   :is-streaming="isMessageStreaming(msgIndex)"
                   :has-non-reasoning-content="
-                    hasFollowingContentBlock(msg, blockIndex)
+                    hasFollowingContentBlock(
+                      visibleBlocks(msg, msgIndex),
+                      blockIndex,
+                    )
                   "
                 />
 
@@ -307,6 +330,7 @@ import {
 import {
   displayParts as displayMessageParts,
   messageBlocks as buildMessageBlocks,
+  splitAgentWork,
   type MessageDisplayBlock,
 } from "@/composables/useMessages";
 import type {
@@ -371,10 +395,68 @@ function renderBlocks(message: ChatRecord): MessageDisplayBlock[] {
   return buildMessageBlocks(messageContent(message));
 }
 
-function hasFollowingContentBlock(message: ChatRecord, blockIndex: number) {
-  return renderBlocks(message)
-    .slice(blockIndex + 1)
-    .some((block) => block.kind === "content");
+function hasFollowingContentBlock(
+  blocks: MessageDisplayBlock[],
+  blockIndex: number,
+) {
+  return blocks.slice(blockIndex + 1).some((block) => block.kind === "content");
+}
+
+// --- Agent work collapse -------------------------------------------------
+// While the agent is still working (streaming, no final reply yet) every
+// block renders live. Once the turn finishes, the work produced before the
+// final reply (thinking / tool calls / intermediate outputs) collapses into
+// a single "worked for ..." pill; the user can expand it again.
+
+const expandedAgentWork = ref(new Set<string>());
+
+function agentWorkKey(message: ChatRecord, messageIndex: number) {
+  return message.id != null ? String(message.id) : `idx-${messageIndex}`;
+}
+
+function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
+  return (
+    !isUserMessage(message) &&
+    !messageContent(message).isLoading &&
+    !isMessageStreaming(messageIndex) &&
+    splitAgentWork(messageContent(message)) !== null
+  );
+}
+
+function agentWorkExpanded(message: ChatRecord, messageIndex: number) {
+  return expandedAgentWork.value.has(agentWorkKey(message, messageIndex));
+}
+
+function visibleBlocks(
+  message: ChatRecord,
+  messageIndex: number,
+): MessageDisplayBlock[] {
+  const blocks = renderBlocks(message);
+  if (
+    isUserMessage(message) ||
+    !agentWorkPillVisible(message, messageIndex) ||
+    agentWorkExpanded(message, messageIndex)
+  ) {
+    return blocks;
+  }
+  return splitAgentWork(messageContent(message))?.finalBlocks ?? blocks;
+}
+
+function toggleAgentWork(message: ChatRecord, messageIndex: number) {
+  const key = agentWorkKey(message, messageIndex);
+  const next = new Set(expandedAgentWork.value);
+  if (!next.delete(key)) {
+    next.add(key);
+  }
+  expandedAgentWork.value = next;
+}
+
+function agentWorkLabel(message: ChatRecord) {
+  const stats = messageContent(message).agentStats;
+  const duration = stats ? agentDuration(stats) : "";
+  return duration
+    ? tm("agentWork.workedFor", { duration })
+    : tm("agentWork.worked");
 }
 
 function partUrl(part: MessagePart) {
@@ -837,6 +919,92 @@ function formatDuration(seconds: number) {
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* Collapsed agent-work toggle: a quiet capsule that mirrors the chat's
+   hairline-chip language (ReasoningBlock file chips) with a small
+   primary-tinted "done" badge. Expanding rotates the chevron and lifts the
+   fill slightly so the row reads as an interactive group header. */
+.agent-work-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 999px;
+  padding: 3px 9px 3px 4px;
+  margin: 2px 0 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.1s ease;
+}
+
+.agent-work-pill:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  border-color: rgba(var(--v-theme-on-surface), 0.22);
+  color: rgba(var(--v-theme-on-surface), 0.86);
+}
+
+.agent-work-pill:active {
+  transform: scale(0.98);
+}
+
+.agent-work-pill:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
+  outline-offset: 1px;
+}
+
+.agent-work-pill-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-primary), 0.16);
+  color: rgb(var(--v-theme-primary));
+}
+
+.agent-work-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-work-pill-chevron {
+  flex-shrink: 0;
+  margin-left: -1px;
+  opacity: 0.65;
+  transition:
+    transform 0.18s ease,
+    opacity 0.16s ease;
+}
+
+.agent-work-pill:hover .agent-work-pill-chevron {
+  opacity: 1;
+}
+
+.agent-work-pill--expanded {
+  background: rgba(var(--v-theme-on-surface), 0.055);
+  border-color: rgba(var(--v-theme-on-surface), 0.18);
+  color: rgba(var(--v-theme-on-surface), 0.74);
+}
+
+.agent-work-pill--expanded .agent-work-pill-chevron {
+  transform: rotate(90deg);
 }
 
 .message-meta {

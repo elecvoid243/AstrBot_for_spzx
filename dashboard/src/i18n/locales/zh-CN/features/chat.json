@@ -313,6 +313,10 @@
     "reply": "回复",
     "toolUsed": "使用工具"
   },
+  "agentWork": {
+    "worked": "已工作",
+    "workedFor": "已工作 {duration}"
+  },
   "reply": {
     "replyTo": "引用",
     "notFound": "无法定位消息"

@@ -313,6 +313,10 @@
     "reply": "Reply",
     "toolUsed": "Using Tool"
   },
+  "agentWork": {
+    "worked": "Worked",
+    "workedFor": "Worked for {duration}"
+  },
   "reply": {
     "replyTo": "Reply to",
     "notFound": "Message not found"

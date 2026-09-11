@@ -309,6 +309,10 @@
     "reply": "Ответ",
     "toolUsed": "Использование инструмента"
   },
+  "agentWork": {
+    "worked": "Работал",
+    "workedFor": "Работал {duration}"
+  },
   "reply": {
     "replyTo": "В ответ на",
     "notFound": "Сообщение не найдено"

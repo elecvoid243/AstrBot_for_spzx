@@ -616,6 +616,40 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 )
                 inherit_mode = "normal"
                 use_fork_context = False
+            else:
+                # Same provider, but the fork can still miss: provider prefix
+                # caches are namespaced per model. The main agent may pin a
+                # model for this turn (req.model) while the forked subagent
+                # always runs the provider default model, so fall back to
+                # normal mode whenever the effective models diverge. When the
+                # models cannot be determined, keep fork.
+                main_model = getattr(getattr(main_runner, "req", None), "model", None)
+                if isinstance(main_model, str) and main_model:
+                    sub_model = None
+                    try:
+                        sub_provider = await ctx.provider_manager.get_provider_by_id(
+                            prov_id
+                        )
+                        sub_model = (
+                            sub_provider.get_model()
+                            if sub_provider is not None
+                            else None
+                        )
+                    except Exception:
+                        sub_model = None
+                    if (
+                        isinstance(sub_model, str)
+                        and sub_model
+                        and sub_model != main_model
+                    ):
+                        logger.info(
+                            "[SubAgent:Fork] main agent model %s != subagent model %s; "
+                            "fork prefix cache cannot hit, falling back to normal mode",
+                            main_model,
+                            sub_model,
+                        )
+                        inherit_mode = "normal"
+                        use_fork_context = False
 
         if use_fork_context:
             # Fork mode: byte-identical inheritance of the main agent's message

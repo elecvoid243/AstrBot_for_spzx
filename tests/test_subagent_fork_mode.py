@@ -348,6 +348,87 @@ async def test_fork_mode_keeps_fork_on_matching_provider(mock_ctx, mock_event):
 
 
 @pytest.mark.asyncio
+async def test_fork_mode_falls_back_to_normal_on_model_mismatch(mock_ctx, mock_event):
+    """Same provider but a different effective model is equally hopeless.
+
+    Provider prefix caches are namespaced per model: the main agent pinned
+    ``req.model="model-a"`` for this turn while the forked subagent always
+    runs the provider default (``get_model()`` -> "model-b"), so the handoff
+    must fall back to normal mode even with the inherit mode forced to
+    "fork".
+    """
+    SubAgentManager._context_inherit_mode = "fork"
+    main_provider = MagicMock()
+    main_provider.provider_config = {"id": "provider-1"}
+    main_runner = _FakeMainRunner(ToolSet(), provider=main_provider)
+    main_runner.req.model = "model-a"
+    sub_provider = mock_ctx.provider_manager.get_provider_by_id.return_value
+    sub_provider.get_model.return_value = "model-b"
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": main_runner},
+    )
+
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["system_prompt"].startswith("# Role")
+    assert kwargs["prompt"] == "do research"
+    # The fork prompt (and the inherited message prefix) must NOT be used.
+    assert not kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
+
+
+@pytest.mark.asyncio
+async def test_fork_mode_keeps_fork_on_matching_model(mock_ctx, mock_event):
+    """A pinned main model equal to the subagent provider default keeps fork."""
+    SubAgentManager._context_inherit_mode = "fork"
+    main_provider = MagicMock()
+    main_provider.provider_config = {"id": "provider-1"}
+    main_runner = _FakeMainRunner(ToolSet(), provider=main_provider)
+    main_runner.req.model = "model-same"
+    sub_provider = mock_ctx.provider_manager.get_provider_by_id.return_value
+    sub_provider.get_model.return_value = "model-same"
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": main_runner},
+    )
+
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
+    assert kwargs["system_prompt"] == ""
+
+
+@pytest.mark.asyncio
+async def test_fork_mode_keeps_fork_when_model_unresolvable(mock_ctx, mock_event):
+    """Non-string / unresolvable models must not break fork (keep-fork stance).
+
+    Mirrors the provider guard: when the effective models cannot be
+    determined, keep fork instead of conservatively downgrading.
+    """
+    SubAgentManager._context_inherit_mode = "fork"
+    main_provider = MagicMock()
+    main_provider.provider_config = {"id": "provider-1"}
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": _FakeMainRunner(ToolSet(), provider=main_provider)},
+    )
+
+    # _FakeMainRunner.req.model is a MagicMock (non-string) and
+    # mock_provider.get_model() also returns a MagicMock — the guard must
+    # skip the comparison entirely.
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
+    assert kwargs["system_prompt"] == ""
+
+
+@pytest.mark.asyncio
 async def test_subagent_cannot_call_management_tool(mock_ctx, mock_event):
     handler = AsyncMock(return_value="secret")
     tool = FunctionTool(

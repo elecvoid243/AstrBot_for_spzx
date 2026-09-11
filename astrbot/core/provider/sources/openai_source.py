@@ -396,7 +396,7 @@ class ProviderOpenAIOfficial(Provider):
         model = provider_config.get("model", "unknown")
         self.set_model(model)
 
-        self.reasoning_key = "reasoning_content"
+        self.reasoning_key = "reasoning"
 
     def _ollama_disable_thinking_enabled(self) -> bool:
         value = self.provider_config.get("ollama_disable_thinking", False)

@@ -393,7 +393,8 @@
     "ttft": "Time to First Token"
   },
   "tokenUsage": {
-    "tooltip": "{used} / {limit} tokens ({percent}%)"
+    "tooltip": "{used} / {limit} tokens ({percent}%)",
+    "tooltipWithCache": "{used} / {limit} tokens ({percent}%) · cache hit {cachePercent}%"
   },
   "refs": {
     "title": "References",

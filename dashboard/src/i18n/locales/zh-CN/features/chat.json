@@ -393,7 +393,8 @@
     "ttft": "首字时间"
   },
   "tokenUsage": {
-    "tooltip": "{used} / {limit} tokens（{percent}%）"
+    "tooltip": "{used} / {limit} tokens（{percent}%）",
+    "tooltipWithCache": "{used} / {limit} tokens（{percent}%）· 缓存命中率 {cachePercent}%"
   },
   "refs": {
     "title": "引用",

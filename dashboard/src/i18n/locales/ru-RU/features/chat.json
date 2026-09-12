@@ -389,7 +389,8 @@
     "ttft": "Время до первого токена"
   },
   "tokenUsage": {
-    "tooltip": "{used} / {limit} токенов ({percent}%)"
+    "tooltip": "{used} / {limit} токенов ({percent}%)",
+    "tooltipWithCache": "{used} / {limit} токенов ({percent}%) · попаданий в кэш {cachePercent}%"
   },
   "refs": {
     "title": "Ссылки",

@@ -2004,24 +2004,39 @@ const currentTokenMetadata = computed(() => {
   const model = currentTokenProvider.value?.model;
   return model ? tokenModelMetadata.value[model] || null : null;
 });
-const latestContextTokens = computed(() => {
+const latestTokenStats = computed(() => {
   for (let index = activeMessages.value.length - 1; index >= 0; index -= 1) {
     const message = activeMessages.value[index];
     if (isUserMessage(message)) continue;
     const stats = message.content?.agentStats;
     if (!stats) continue;
-    if (stats.current_context_tokens != null) {
-      return readTokenCount(stats.current_context_tokens);
-    }
     const usage = stats.token_usage;
+    if (stats.current_context_tokens != null) {
+      return {
+        used: readTokenCount(stats.current_context_tokens),
+        usage: usage || null,
+      };
+    }
     if (!usage) continue;
-    return (
-      readTokenCount(usage.input_other) +
-      readTokenCount(usage.input_cached) +
-      readTokenCount(usage.output)
-    );
+    return {
+      used:
+        readTokenCount(usage.input_other) +
+        readTokenCount(usage.input_cached) +
+        readTokenCount(usage.output),
+      usage,
+    };
   }
-  return 0;
+  return { used: 0, usage: null };
+});
+const latestContextTokens = computed(() => latestTokenStats.value.used);
+const tokenCacheHitPercent = computed(() => {
+  const usage = latestTokenStats.value.usage;
+  if (!usage) return null;
+  const cached = readTokenCount(usage.input_cached);
+  // Only show the hit rate when the provider actually reports cached
+  // tokens; providers without cache support leave input_cached at 0.
+  if (cached <= 0) return null;
+  return (cached / (cached + readTokenCount(usage.input_other))) * 100;
 });
 const tokenUsageIndicator = computed(() => {
   const used = latestContextTokens.value;
@@ -2032,15 +2047,23 @@ const tokenUsageIndicator = computed(() => {
   if (used <= 0 || limit <= 0) return null;
 
   const percent = (used / limit) * 100;
+  const cacheHitPercent = tokenCacheHitPercent.value;
+  const tooltipParams = {
+    used: formatTokenCount(used),
+    limit: formatTokenCount(limit),
+    percent: formatUsagePercent(percent),
+  };
   return {
     used,
     limit,
     percent: Math.min(100, Math.max(0, percent)),
-    tooltip: tm("tokenUsage.tooltip", {
-      used: formatTokenCount(used),
-      limit: formatTokenCount(limit),
-      percent: formatUsagePercent(percent),
-    }),
+    tooltip:
+      cacheHitPercent != null
+        ? tm("tokenUsage.tooltipWithCache", {
+            ...tooltipParams,
+            cachePercent: formatUsagePercent(cacheHitPercent),
+          })
+        : tm("tokenUsage.tooltip", tooltipParams),
   };
 });
 

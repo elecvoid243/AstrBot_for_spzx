@@ -2,13 +2,13 @@
 // Date: 2026-06-24
 // Spec: docs/superpowers/specs/2026-06-24-chatui-git-workflow-controls-design.md §3-5
 //
-// Pure parser for the 4 git workflow endpoints (git-stage / git-unstage /
-// git-commit / git-log). No Vue / no axios — importable by node --test
-// (see tests/parseSpcodeGitWorkflow.test.mjs). Mirrors the existing
+// Pure parser for the 5 git workflow endpoints (git-stage / git-unstage /
+// git-commit / git-log / git-tag-create). No Vue / no axios — importable by
+// node --test (see tests/parseSpcodeGitWorkflow.test.mjs). Mirrors the existing
 // parseSpcodeFileRestore.ts + parseSpcodeGitDiff.ts split.
 
 // ─── Endpoint id union ────────────────────────────────────────────
-export type GitWorkflowEndpoint = "stage" | "unstage" | "commit" | "log";
+export type GitWorkflowEndpoint = "stage" | "unstage" | "commit" | "log" | "tag_create";
 
 // ─── Stage / Unstage snapshot ─────────────────────────────────────
 export interface SpcodeStageRawData {
@@ -95,6 +95,35 @@ export interface SpcodeAmendSnapshot {
   afterSha: string;
   subject: string;
   message: string;
+}
+
+// ─── Tag create snapshot (2026-09-12 提交对话框顺带打 tag) ────────
+export interface SpcodeTagCreateRawData {
+  success: boolean;
+  reason: string | null;
+  stderr: string;
+  elapsed_ms: number;
+  umo: string;
+  worktree: string;
+  directory: string;
+  created: boolean;
+  tag: string;
+  rev: string;
+  sha: string;
+}
+
+export interface SpcodeTagCreateSnapshot {
+  success: boolean;
+  reason: string | null;
+  stderr: string;
+  elapsedMs: number;
+  umo: string;
+  worktree: string;
+  directory: string;
+  created: boolean;
+  tag: string;
+  rev: string;
+  sha: string;
 }
 
 // ─── Log snapshot ─────────────────────────────────────────────────
@@ -287,6 +316,29 @@ export function parseSpcodeGitCommitAmend(
   };
 }
 
+/** Parse the envelope from POST /spcode/git-tag-create. */
+export function parseSpcodeGitTagCreate(
+  raw: unknown,
+): ParseResult<SpcodeTagCreateSnapshot> {
+  const d = unwrapEnvelope(raw) as Partial<SpcodeTagCreateRawData>;
+  return {
+    kind: "ok",
+    snapshot: {
+      success: deriveSuccess(d),
+      reason: d.reason ?? null,
+      stderr: asString(d.stderr),
+      elapsedMs: asNumber(d.elapsed_ms),
+      umo: asString(d.umo),
+      worktree: asString(d.worktree),
+      directory: asString(d.directory),
+      created: asBoolean(d.created),
+      tag: asString(d.tag),
+      rev: asString(d.rev),
+      sha: asString(d.sha),
+    },
+  };
+}
+
 /** Parse the envelope from GET /spcode/git-log. */
 export function parseSpcodeGitLog(raw: unknown): ParseResult<SpcodeLogSnapshot> {
   const d = unwrapEnvelope(raw) as Partial<SpcodeLogRawData>;
@@ -378,6 +430,9 @@ export const GIT_WORKFLOW_REASON_CODES: Record<string, ReasonMeta> = {
   nothing_to_commit: { i18nKey: "error.reason.nothing_to_commit", color: "warning" },
   hook_rejected: { i18nKey: "error.reason.hook_rejected", color: "warning", withStderr: true },
   identity_not_set: { i18nKey: "error.reason.identity_not_set", color: "warning" },
+  // tag create(2026-09-12)
+  tag_already_exists: { i18nKey: "error.reason.tag_already_exists", color: "warning" },
+  ref_not_found: { i18nKey: "error.reason.ref_not_found", color: "error" },
   // 前端
   network: { i18nKey: "error.reason.network", color: "error" },
   unknown: { i18nKey: "error.reason.unknown", color: "error", withReason: true },
@@ -436,6 +491,19 @@ export const ALLOWED_REASONS: Record<GitWorkflowEndpoint, readonly string[]> = {
     "git_unavailable",
     "invalid_param",
     "path_unsafe",
+    "git_error",
+  ],
+  tag_create: [
+    "feature_disabled",
+    "no_project_loaded",
+    "worktree_invalid",
+    "directory_missing",
+    "not_a_git_repo",
+    "git_unavailable",
+    "invalid_body",
+    "invalid_param",
+    "tag_already_exists",
+    "ref_not_found",
     "git_error",
   ],
 };

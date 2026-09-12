@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 388 icons */
+/* Auto-generated MDI subset – 389 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -1410,6 +1410,10 @@
 
 .mdi-sync::before {
   content: "\F04E6";
+}
+
+.mdi-tag-outline::before {
+  content: "\F04FC";
 }
 
 .mdi-target::before {

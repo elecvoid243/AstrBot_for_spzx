@@ -1431,9 +1431,14 @@
               "unknown": "生成失败，请重试",
               "provider_not_found": "所选 provider 不存在，请切换回自动",
               "provider_type_invalid": "所选 provider 不是聊天类型，请切换回自动"
-            }
+            },
+            "tagLabel": "标签（可选）",
+            "tagPlaceholder": "例如 v1.0.0",
+            "tagInvalid": "tag 名不能包含空格"
           },
           "success": "已提交 {sha}",
+          "successWithTag": "已提交 {sha}，已创建 tag {tag}",
+          "tagCreateFailed": "已提交 {sha}，但创建 tag 失败：{reason}",
           "failureHint": "提交失败，请修改 message 或修复错误后重试"
         },
         "gitignore": {
@@ -1647,7 +1652,8 @@
             "empty_repository": "仓库还没有任何提交",
             "ref_not_found": "找不到该 commit",
             "ref_ambiguous": "引用有歧义：该缩写匹配多个对象",
-            "commit_too_large": "该 commit 过大，请使用 diff 端点查看完整 patch"
+            "commit_too_large": "该 commit 过大，请使用 diff 端点查看完整 patch",
+            "tag_already_exists": "同名 tag 已存在"
           }
         }
       },

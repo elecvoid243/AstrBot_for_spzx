@@ -37,22 +37,32 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
-  (e: "confirm", payload: { message: string }): void;
+  (e: "confirm", payload: { message: string; tag?: string }): void;
   (e: "cancel"): void;
 }>();
 
 // Spec §6.4.2: 8192 char cap; 7000 is the warning threshold (P1-6 fix).
 const MAX_MESSAGE = 8192;
 const WARN_MESSAGE = 7000;
+// Mirrors the backend cap (git_tag_create.MAX_TAG_LENGTH).
+const MAX_TAG = 256;
 
 const message = ref<string>("");
+// 2026-09-12: optional tag created on the new commit right after a
+// successful git-commit (empty → no tag). Whitespace is rejected
+// client-side (the only failure mode the user can't self-diagnose
+// from a reason toast); the rest is left to git's own validation.
+const tag = ref<string>("");
+const trimmedTag = computed(() => tag.value.trim());
+const tagRejected = computed(() => /\s/.test(trimmedTag.value));
 
-// Reset message + lastError + generate error every time the dialog opens.
+// Reset message + tag + lastError + generate error every time the dialog opens.
 watch(
   () => props.modelValue,
   (open) => {
     if (open) {
       message.value = "";
+      tag.value = "";
       void loadProviders();
       generateErrorKey.value = null;
     }
@@ -228,7 +238,11 @@ const rawLength = computed(() => message.value.length);
 const overWarn = computed(() => rawLength.value > WARN_MESSAGE);
 const overMax = computed(() => rawLength.value > MAX_MESSAGE);
 const canSubmit = computed(
-  () => trimmedLength.value > 0 && !overMax.value && !props.isCommitting,
+  () =>
+    trimmedLength.value > 0 &&
+    !overMax.value &&
+    !tagRejected.value &&
+    !props.isCommitting,
 );
 
 function charCounterClass(): string {
@@ -239,7 +253,10 @@ function charCounterClass(): string {
 
 function onSubmit(): void {
   if (!canSubmit.value) return;
-  emit("confirm", { message: message.value });
+  emit("confirm", {
+    message: message.value,
+    ...(trimmedTag.value ? { tag: trimmedTag.value } : {}),
+  });
 }
 
 function onCancel(): void {
@@ -341,6 +358,30 @@ function onKeydown(e: KeyboardEvent): void {
           {{ tm(`spcodeProjectLoad.diffSidebar.gitWorkflow.commit.dialog.generateError.${generateErrorKey}`) }}
         </div>
 
+        <!-- 2026-09-12: optional tag created on this commit. The input
+             is disabled while committing; whitespace is rejected inline
+             (red underline + hint), everything else is validated by git
+             itself and reported through the reason snackbar. -->
+        <div class="commit-tag-row">
+          <label class="commit-tag-label">
+            {{ tm("spcodeProjectLoad.diffSidebar.gitWorkflow.commit.dialog.tagLabel") }}
+          </label>
+          <v-text-field
+            v-model="tag"
+            class="commit-tag-input"
+            density="compact"
+            variant="outlined"
+            hide-details="auto"
+            maxlength="256"
+            prepend-inner-icon="mdi-tag-outline"
+            :placeholder="tm('spcodeProjectLoad.diffSidebar.gitWorkflow.commit.dialog.tagPlaceholder')"
+            :error="tagRejected"
+            :error-messages="tagRejected ? [tm('spcodeProjectLoad.diffSidebar.gitWorkflow.commit.dialog.tagInvalid')] : []"
+            :disabled="isCommitting"
+            @keydown="onKeydown"
+          />
+        </div>
+
         <div class="commit-staged-title">
           {{
             tm(
@@ -427,6 +468,24 @@ function onKeydown(e: KeyboardEvent): void {
   margin-top: 4px;
   font-size: 12px;
   color: rgb(var(--v-theme-error));
+}
+.commit-tag-row {
+  margin-top: 10px;
+}
+.commit-tag-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+  margin-bottom: 4px;
+}
+.commit-tag-input {
+  font-size: 13px;
+}
+.commit-tag-input :deep(.v-field) {
+  font-size: 13px;
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 .commit-generating-hint {
   display: flex;

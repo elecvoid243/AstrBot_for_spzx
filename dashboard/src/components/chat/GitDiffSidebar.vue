@@ -50,6 +50,7 @@ import { useSpcodeGitStage } from "@/composables/useSpcodeGitStage";
 import { useSpcodeGitUnstage } from "@/composables/useSpcodeGitUnstage";
 import { useSpcodeGitCommit } from "@/composables/useSpcodeGitCommit";
 import { useSpcodeGitCommitAmend } from "@/composables/useSpcodeGitCommitAmend";
+import { useSpcodeGitTag } from "@/composables/useSpcodeGitTag";
 import { useSpcodeGitRevert } from "@/composables/useSpcodeGitRevert";
 import {
   useSpcodeGitReset,
@@ -839,6 +840,8 @@ const gitStage = useSpcodeGitStage();
 const gitUnstage = useSpcodeGitUnstage();
 const gitCommit = useSpcodeGitCommit();
 const gitCommitAmend = useSpcodeGitCommitAmend();
+// 2026-09-12: optional tag created on the commit made by the dialog.
+const gitTag = useSpcodeGitTag();
 // 2026-09-08 (elecvoid243): the second argument gates the worktree-switch
 // refetch on the History tab being visible — switching worktrees from
 // Files / Diff / Docs must not fire a git-log request. The composable
@@ -3957,7 +3960,7 @@ function isAborted(result: { ok: boolean; reason?: string }): boolean {
 }
 
 function reasonKey(
-  endpoint: "stage" | "unstage" | "commit",
+  endpoint: "stage" | "unstage" | "commit" | "tag_create",
   reason: string,
 ): string {
   // classifyReason 把 reason 字符串归一化到 ReasonMeta.i18nKey(已在
@@ -3967,7 +3970,7 @@ function reasonKey(
 }
 
 function reasonMeta(
-  endpoint: "stage" | "unstage" | "commit",
+  endpoint: "stage" | "unstage" | "commit" | "tag_create",
   reason: string,
 ): { color: "error" | "warning"; withStderr: boolean; withReason: boolean } {
   const meta = classifyReason(reason, endpoint);
@@ -4323,7 +4326,10 @@ function onRepoInitCancel(): void {
   repoInitLastError.value = null;
 }
 
-async function onConfirmCommit(payload: { message: string }): Promise<void> {
+async function onConfirmCommit(payload: {
+  message: string;
+  tag?: string;
+}): Promise<void> {
   const umo = spcodeStatus.status.value.umo;
   const worktree = selectedWorktree.value;
   // 进入提交前清空 lastError(spec §3.3.4)
@@ -4339,6 +4345,26 @@ async function onConfirmCommit(payload: { message: string }): Promise<void> {
     return;
   }
   if (result.ok) {
+    // 2026-09-12 optional tag: pin it to the exact SHA this commit call
+    // created, so HEAD movements between the two requests can't retarget
+    // it onto the wrong commit. A tag failure never rolls the commit
+    // back — the dialog still closes and the snackbar downgrades to a
+    // warning with the classified reason.
+    let tagFailed: { reason: string; stderr?: string } | null = null;
+    if (payload.tag) {
+      const tagResult = await gitTag.createTag({
+        tag: payload.tag,
+        rev: result.snapshot.sha || undefined,
+        worktree,
+        umo,
+      });
+      // Abort (sidebar unmounted mid-request) leaves the outcome
+      // unknown; the commit itself succeeded, so fall through to the
+      // plain success toast.
+      if (!isAborted(tagResult) && !tagResult.ok) {
+        tagFailed = { reason: tagResult.reason, stderr: tagResult.stderr };
+      }
+    }
     // 成功:覆盖 stagedFiles(后端响应),refresh diff+status,可
     // 选 refresh log。git-status 也要刷新:commit 后工作区清空,
     // 文件从 untracked/unstaged/staged 三个集合中全部消失。
@@ -4350,12 +4376,37 @@ async function onConfirmCommit(payload: { message: string }): Promise<void> {
       await gitLog.refresh();
     }
     const shortSha = (result.snapshot.sha || "").slice(0, 7) || "?";
-    showSnackbar(
-      tm("spcodeProjectLoad.diffSidebar.gitWorkflow.commit.success", {
-        sha: shortSha,
-      }),
-      "success",
-    );
+    if (payload.tag && !tagFailed) {
+      showSnackbar(
+        tm("spcodeProjectLoad.diffSidebar.gitWorkflow.commit.successWithTag", {
+          sha: shortSha,
+          tag: payload.tag,
+        }),
+        "success",
+      );
+    } else if (tagFailed) {
+      const meta = reasonMeta("tag_create", tagFailed.reason);
+      const reasonText = meta.withReason
+        ? tm(reasonKey("tag_create", tagFailed.reason), {
+            reason: tagFailed.reason,
+          })
+        : tm(reasonKey("tag_create", tagFailed.reason));
+      showSnackbar(
+        tm("spcodeProjectLoad.diffSidebar.gitWorkflow.commit.tagCreateFailed", {
+          sha: shortSha,
+          reason: reasonText,
+        }),
+        "warning",
+        tagFailed.stderr,
+      );
+    } else {
+      showSnackbar(
+        tm("spcodeProjectLoad.diffSidebar.gitWorkflow.commit.success", {
+          sha: shortSha,
+        }),
+        "success",
+      );
+    }
   } else {
     // 失败:保持 dialog 打开,显示 stderr 块(spec §3.3.4 DIALOG_OPEN_KEEP_ERROR)
     const meta = reasonMeta("commit", result.reason);
@@ -4495,6 +4546,7 @@ onBeforeUnmount(() => {
   gitUnstage.dispose();
   gitCommit.dispose();
   gitCommitAmend.dispose();
+  gitTag.dispose();
   gitRevert.dispose();
   gitReset.dispose();
   gitSquash.dispose();

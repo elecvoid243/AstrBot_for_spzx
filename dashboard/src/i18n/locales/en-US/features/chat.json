@@ -1431,9 +1431,14 @@
               "unknown": "Generation failed, please retry",
               "provider_not_found": "Selected provider was not found. Switch back to Auto.",
               "provider_type_invalid": "Selected provider is not a chat provider. Switch back to Auto."
-            }
+            },
+            "tagLabel": "Tag (optional)",
+            "tagPlaceholder": "e.g. v1.0.0",
+            "tagInvalid": "Tag name cannot contain spaces"
           },
           "success": "Committed {sha}",
+          "successWithTag": "Committed {sha}, created tag {tag}",
+          "tagCreateFailed": "Committed {sha}, but failed to create tag: {reason}",
           "failureHint": "Commit failed. Please fix the message or errors and retry."
         },
         "gitignore": {
@@ -1614,7 +1619,8 @@
             "empty_repository": "Repository has no commits yet",
             "ref_not_found": "Commit not found",
             "ref_ambiguous": "Ambiguous ref: the short hash matches multiple objects",
-            "commit_too_large": "Commit is too large; use the diff endpoint to view the full patch"
+            "commit_too_large": "Commit is too large; use the diff endpoint to view the full patch",
+            "tag_already_exists": "A tag with the same name already exists"
           }
         }
       },

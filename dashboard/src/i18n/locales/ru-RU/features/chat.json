@@ -620,6 +620,9 @@
         "diff": "Git Diff"
       },
       "breadcrumbRoot": "Корень проекта",
+      "openFolder": "Открыть папку",
+      "folderOpened": "Открыта папка {name}",
+      "folderOpenFailed": "Не удалось открыть папку: {message}",
       "pathInputPlaceholder": "Введите путь относительно проекта и нажмите Enter",
       "pathInputTooltip": "Нажмите, чтобы ввести путь относительно проекта",
       "pathInput": {

@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 
 const { getMock, postMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
@@ -112,6 +113,8 @@ async function mountFocusedSidebar() {
 }
 
 beforeEach(() => {
+  // GitDiffSidebar 的 useOpenOnDisk → useToast 需要 active pinia。
+  setActivePinia(createPinia());
   localStorage.removeItem(VIEW_MODE_STORAGE_KEY);
   getMock.mockReset();
   postMock.mockReset();

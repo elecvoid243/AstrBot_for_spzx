@@ -107,6 +107,7 @@ import { useModuleI18n } from "@/i18n/composables";
 import GitDiffBodyContent from "@/components/chat/message_list_comps/GitDiffBodyContent.vue";
 import FileBrowserView from "@/components/chat/message_list_comps/FileBrowserView.vue";
 import { useRecentFiles } from "@/composables/useRecentFiles";
+import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import GitCommitBar from "@/components/chat/message_list_comps/GitCommitBar.vue";
 import GitCommitDialog from "@/components/chat/message_list_comps/GitCommitDialog.vue";
 import GitCommitAmendDialog from "@/components/chat/message_list_comps/GitCommitAmendDialog.vue";
@@ -4615,6 +4616,17 @@ const currentRoot = computed<string | null>(() => {
 // "open on disk" action without threading props through every layer.
 provide("openOnDiskRoot", currentRoot);
 
+// 2026-09-12 open-folder: the path strip shows the effective root in
+// every view mode; reveal that folder in the host file manager via
+// the shared POST /api/v1/chat/open-folder action (useOpenOnDisk).
+const { opening: openingFolder, openFolder: openFolderOnDisk } = useOpenOnDisk(
+  "spcodeProjectLoad.fileBrowser",
+);
+
+function openWorkspaceFolder(): void {
+  if (currentRoot.value) void openFolderOnDisk(currentRoot.value);
+}
+
 // 2026-08-27 recent-files-split: per-worktree bucket scoped to the
 // Files view ("files"). The docs view (DocumentManager) keeps its own
 // "docs" bucket, so the two pages no longer share a list. Keyed on
@@ -4744,6 +4756,25 @@ watch(
               >mdi-folder-outline</v-icon
             >
             <span class="git-diff-sidebar-path-text">{{ currentRoot }}</span>
+            <!-- 2026-09-12 open-folder: reveal the workspace root in the
+                 host file manager, same infra as the file rows'
+                 open-on-disk action. -->
+            <v-tooltip location="bottom" :open-delay="200">
+              <template #activator="{ props: tipProps }">
+                <v-btn
+                  v-bind="tipProps"
+                  class="git-diff-sidebar-path-open"
+                  size="x-small"
+                  variant="text"
+                  :aria-label="tm('spcodeProjectLoad.fileBrowser.openFolder')"
+                  :loading="openingFolder"
+                  @click="openWorkspaceFolder"
+                >
+                  <v-icon size="14">mdi-folder-open-outline</v-icon>
+                </v-btn>
+              </template>
+              {{ tm("spcodeProjectLoad.fileBrowser.openFolder") }}
+            </v-tooltip>
           </div>
           <div
             v-if="selectedWorktree && worktreeList.length > 0"
@@ -6600,6 +6631,18 @@ watch(
   text-overflow: ellipsis;
   direction: rtl; /* keep the END (project root) visible on overflow */
   text-align: left;
+}
+
+/* 2026-09-12 open-folder: keep the button from being crushed by the
+   truncating path text, and match the strip's muted tone. */
+.git-diff-sidebar-path-open {
+  flex-shrink: 0;
+  opacity: 0.72;
+  transition: opacity 0.2s ease;
+}
+
+.git-diff-sidebar-path-open:hover {
+  opacity: 1;
 }
 
 .git-diff-sidebar-path-sub {

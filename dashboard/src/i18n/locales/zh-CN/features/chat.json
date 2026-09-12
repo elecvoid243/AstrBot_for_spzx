@@ -624,6 +624,9 @@
         "diff": "Git 变更"
       },
       "breadcrumbRoot": "项目根",
+      "openFolder": "打开文件夹",
+      "folderOpened": "已打开 {name}",
+      "folderOpenFailed": "打开文件夹失败：{message}",
       "pathInputPlaceholder": "输入项目相对路径跳转（仅支持相对路径），Enter 确认",
       "pathInputTooltip": "点击输入项目相对路径跳转",
       "pathInput": {

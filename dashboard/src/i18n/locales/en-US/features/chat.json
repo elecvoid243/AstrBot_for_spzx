@@ -624,6 +624,9 @@
         "diff": "Git Diff"
       },
       "breadcrumbRoot": "Project root",
+      "openFolder": "Open folder",
+      "folderOpened": "Opened {name}",
+      "folderOpenFailed": "Failed to open folder: {message}",
       "pathInputPlaceholder": "Enter a project-relative path to jump, then press Enter",
       "pathInputTooltip": "Click to enter a project-relative path",
       "pathInput": {

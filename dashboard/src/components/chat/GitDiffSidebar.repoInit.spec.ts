@@ -9,6 +9,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 
 const { getMock, postMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
@@ -100,6 +101,8 @@ async function mountSidebar() {
 
 describe("GitDiffSidebar repo-init prompt", () => {
   beforeEach(() => {
+    // GitDiffSidebar 的 useOpenOnDisk → useToast 需要 active pinia。
+    setActivePinia(createPinia());
     getMock.mockReset();
     postMock.mockReset();
     getMock.mockImplementation(async (path: string) => {

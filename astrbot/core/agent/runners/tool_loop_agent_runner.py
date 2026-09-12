@@ -123,10 +123,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         "{follow_up_lines}"
     )
     MAX_STEPS_REACHED_PROMPT = (
-        "Maximum tool call limit reached. "
+        "Maximum tool call limit reached. All tools are now disabled. "
         "Stop calling tools, and based on the information you have gathered, "
         "summarize your task and findings, and reply to the user directly."
     )
+    MAX_STEP_DENIAL_RECOVERY_ROUNDS = 2
+    """Extra steps granted after the forced final round when the model keeps
+    calling denied tools. Each denial returns a tool-result error the model
+    can see; these rounds let it fold that feedback into the final summary.
+    Every round is a pure payload append, so the prefix cache is unaffected."""
     SKILLS_LIKE_REQUERY_INSTRUCTION_TEMPLATE = (
         "You have decided to call tool(s): {tool_names}. Now call the tool(s) "
         "with required arguments using the tool schema, and follow the existing "
@@ -1109,9 +1114,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             logger.warning(
                 f"Agent reached max steps ({max_step}), forcing a final response."
             )
-            # 拔掉所有工具
-            if self.req:
-                self.req.func_tool = None
+            # 拔掉所有工具的执行权限，但不在 payload 中移除工具 schema：
+            # 工具段保持字节不变，provider 侧前缀缓存不被破坏；模型若仍
+            # 尝试调用，会收到一条可感知的拒绝错误。
+            if self.req and self.req.func_tool:
+                self.req.denied_tools = set(self.req.func_tool.names())
             # 注入提示词
             self.run_context.messages.append(
                 Message(
@@ -1122,6 +1129,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 再执行最后一步
             async for resp in self.step():
                 yield resp
+            # 若模型在收尾轮仍尝试调用已禁用的工具（每轮都会收到拒绝错误），
+            # 给它有限的额外轮次基于拒绝反馈完成总结。
+            recovery = 0
+            while not self.done() and recovery < self.MAX_STEP_DENIAL_RECOVERY_ROUNDS:
+                recovery += 1
+                async for resp in self.step():
+                    yield resp
 
     async def _handle_function_tools(
         self,
@@ -1147,6 +1161,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if _trace is None and _agent_ctx is not None:
             _event = getattr(_agent_ctx, "event", None)
             _trace = getattr(_event, "trace", None)
+
+        # 合并两个作用域的工具禁用集合：请求级（max_step 强制收尾轮、插件
+        # plan 模式通过 req.denied_tools 设置）与代理级（subagent 通过
+        # AstrAgentContext.extra 播种编排类工具）。被禁工具的 schema 仍然
+        # 序列化进 payload（前缀缓存友好），仅在执行时拒绝。
+        denied_tools: set[str] = set(req.denied_tools or ())
+        _context_extra = getattr(_agent_ctx, "extra", None) or {}
+        denied_tools.update(_context_extra.get("denied_tools") or ())
 
         # 执行函数调用
         for func_tool_name, func_tool_args, func_tool_id in zip(
@@ -1177,6 +1199,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 记录工具调用追踪
             if _trace:
                 _trace.record("agent_tool_call", tool_name=func_tool_name)
+            # 工具对 LLM 可见但执行被禁：返回一条可感知的错误结果，让模型
+            # 知道它已无法再使用该工具。放在 func_tool 判空之前，即使工具
+            # 段不存在，幻觉出的调用也能拿到协议完整的错误结果。
+            if func_tool_name in denied_tools:
+                logger.info(f"[Permission] 工具 {func_tool_name} 已被禁用，拒绝调用。")
+                _append_tool_call_result(
+                    func_tool_id,
+                    f"error: Permission denied. Tool `{func_tool_name}` is no "
+                    "longer available to you in the current state. Do not retry "
+                    "it; continue your task with the information you already "
+                    "have.",
+                )
+                continue
             try:
                 if not req.func_tool:
                     return

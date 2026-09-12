@@ -101,6 +101,14 @@ class ProviderRequest:
     """额外的用户消息内容部分列表，用于在用户消息后添加额外的内容块（如系统提醒、指令等）。支持 dict 或 ContentPart 对象"""
     func_tool: ToolSet | None = None
     """可用的函数工具"""
+    denied_tools: set[str] = field(default_factory=set)
+    """本请求内禁止 Agent 实际调用的工具名集合。
+
+    这些工具的 schema 仍会正常序列化进 payload（对 LLM 可见），但 Agent
+    调用时会收到一条 Permission denied 的工具结果错误。执法在 agent runner
+    而非序列化层，因此工具段保持字节不变，不会破坏 provider 侧的前缀缓存。
+    典型用途：max_step 强制收尾轮、plan 只读模式、subagent 编排类工具。
+    """
     contexts: list[dict] = field(default_factory=list)
     """
     OpenAI 格式上下文列表。

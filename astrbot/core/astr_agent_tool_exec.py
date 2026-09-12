@@ -198,36 +198,6 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             AsyncGenerator[None | mcp.types.CallToolResult, None]
 
         """
-        # Subagents inherit the main agent's tool schema in fork mode (and as
-        # defense-in-depth in normal mode). Orchestration tools stay visible
-        # for prefix-cache consistency, but any call from a subagent context is
-        # rejected here without executing anything.
-        subagent_context_extra = getattr(run_context.context, "extra", None) or {}
-        if subagent_context_extra.get("is_subagent") and (
-            getattr(tool, "name", "") in SubAgentManager.get_main_agent_only_tools()
-            or isinstance(tool, HandoffTool)
-        ):
-            blocked_tool_name = getattr(tool, "name", "")
-            logger.info(
-                "[SubAgent:Permission] Rejected main-agent-only tool `%s` called from subagent `%s`",
-                blocked_tool_name,
-                subagent_context_extra.get("subagent_name", "unknown"),
-            )
-            yield mcp.types.CallToolResult(
-                content=[
-                    mcp.types.TextContent(
-                        type="text",
-                        text=(
-                            f"error: Permission denied. Tool `{blocked_tool_name}` is a "
-                            "main-agent-only orchestration tool and is not available to "
-                            "subagents. Do not retry; continue your assigned task with "
-                            "other tools."
-                        ),
-                    )
-                ]
-            )
-            return
-
         # 防止subagent的名字叫"subagent"造成工具歧义（在create中已经不会发生，此处用于兜底）
         if (
             isinstance(tool, FunctionTool)
@@ -759,13 +729,25 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         # 用于存储本轮的完整历史上下文
         runner_messages = []
 
-        # Mark the subagent's agent context so FunctionToolExecutor can reject
-        # main-agent-only orchestration tools called from within a subagent.
+        # Mark the subagent's agent context so the agent runner denies
+        # orchestration and handoff tool calls from within a subagent. Their
+        # schemas stay visible in the payload (fork mode needs byte-identical
+        # tool segments for prefix-cache consistency); execution is rejected
+        # with a tool-result error the subagent can perceive.
+        denied_subagent_tools = SubAgentManager.get_main_agent_only_tools()
+        if toolset:
+            denied_subagent_tools |= {
+                t.name for t in toolset.tools if isinstance(t, HandoffTool)
+            }
         subagent_agent_context = AstrAgentContext(
             context=ctx,
             event=event,
             trace_span=subagent_trace,
-            extra={"is_subagent": True, "subagent_name": agent_name},
+            extra={
+                "is_subagent": True,
+                "subagent_name": agent_name,
+                "denied_tools": denied_subagent_tools,
+            },
         )
 
         # 构建 tool_loop_agent 协程

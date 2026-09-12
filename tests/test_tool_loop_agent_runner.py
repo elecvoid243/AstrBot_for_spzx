@@ -518,9 +518,8 @@ async def test_max_step_limit_functionality(
 
     # 设置模拟provider，让它总是返回工具调用
     mock_provider.should_call_tools = True
-    mock_provider.max_calls_before_normal_response = (
-        100  # 设置一个很大的值，确保不会自然结束
-    )
+    # 前 3 次调用返回工具调用，第 4 次（强制收尾轮）返回正常响应
+    mock_provider.max_calls_before_normal_response = 3
 
     # 初始化runner
     await runner.reset(
@@ -543,8 +542,11 @@ async def test_max_step_limit_functionality(
     # 验证结果
     assert runner.done(), "代理应该在达到最大步数后完成"
 
-    # 验证工具被禁用（这是最重要的验证点）
-    assert runner.req.func_tool is None, "达到最大步数后工具应该被禁用"
+    # 验证工具 schema 保留但执行被禁（前缀缓存友好的收尾方式）
+    assert runner.req.func_tool is not None, "达到最大步数后工具 schema 应保留"
+    assert runner.req.denied_tools == {t.name for t in runner.req.func_tool.tools}, (
+        "达到最大步数后所有工具应被禁止执行"
+    )
 
     # 验证有最终响应
     final_responses = [r for r in responses if r.type == "llm_result"]
@@ -583,6 +585,75 @@ async def test_max_step_final_request_includes_limit_prompt(
     final_contexts = provider.received_contexts[-1]
     assert final_contexts[-1].role == "user"
     assert final_contexts[-1].content == runner.MAX_STEPS_REACHED_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_denied_tool_call_returns_error_without_execution(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """被禁工具的 schema 仍对 LLM 可见，但调用返回 Permission denied 且不执行。"""
+    provider = CapturingToolLoopProvider("test_tool")
+    provider_request.denied_tools = {"test_tool"}
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    async def snapshot_context_manager(messages, trusted_token_usage=0):
+        return list(messages)
+
+    runner.request_context_manager.process = snapshot_context_manager
+
+    async for _ in runner.step_until_done(5):
+        pass
+
+    assert runner.done(), "拒绝结果反馈给模型后应正常完成"
+    # 第二次 provider 调用的上下文应包含配对的拒绝错误结果
+    tool_messages = [msg for msg in provider.received_contexts[1] if msg.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].tool_call_id == "call_context_refresh"
+    assert "Permission denied" in tool_messages[0].content
+    assert "test_tool" in tool_messages[0].content
+    # 工具未被真正执行，on_tool_start 也未触发
+    assert not mock_hooks.tool_start_called
+
+
+@pytest.mark.asyncio
+async def test_context_scoped_denied_tools_are_enforced(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """代理级禁用集合（context.extra）与请求级合并生效。"""
+    provider = CapturingToolLoopProvider("test_tool")
+    # Runner 只从 context 读取 extra，SimpleNamespace 足以模拟。
+    agent_context = SimpleNamespace(extra={"denied_tools": {"test_tool"}})
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=agent_context),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    async def snapshot_context_manager(messages, trusted_token_usage=0):
+        return list(messages)
+
+    runner.request_context_manager.process = snapshot_context_manager
+
+    async for _ in runner.step_until_done(5):
+        pass
+
+    assert runner.done()
+    tool_messages = [msg for msg in provider.received_contexts[1] if msg.role == "tool"]
+    assert len(tool_messages) == 1
+    assert "Permission denied" in tool_messages[0].content
+    assert not mock_hooks.tool_start_called
 
 
 @pytest.mark.asyncio
@@ -781,7 +852,8 @@ async def test_max_step_with_streaming(
 
     # 设置模拟provider
     mock_provider.should_call_tools = True
-    mock_provider.max_calls_before_normal_response = 100
+    # 前 2 次调用返回工具调用，第 3 次（强制收尾轮）返回正常响应
+    mock_provider.max_calls_before_normal_response = 2
 
     # 初始化runner，启用流式响应
     await runner.reset(
@@ -808,8 +880,11 @@ async def test_max_step_with_streaming(
     streaming_responses = [r for r in responses if r.type == "streaming_delta"]
     assert len(streaming_responses) > 0, "应该有流式响应"
 
-    # 验证工具被禁用
-    assert runner.req.func_tool is None, "达到最大步数后工具应该被禁用"
+    # 验证工具 schema 保留但执行被禁（前缀缓存友好的收尾方式）
+    assert runner.req.func_tool is not None, "达到最大步数后工具 schema 应保留"
+    assert runner.req.denied_tools == {t.name for t in runner.req.func_tool.tools}, (
+        "达到最大步数后所有工具应被禁止执行"
+    )
 
     # 验证最后一条消息是assistant的最终回答
     last_message = runner.run_context.messages[-1]
@@ -884,7 +959,8 @@ async def test_hooks_called_with_max_step(
 
     # 设置模拟provider
     mock_provider.should_call_tools = True
-    mock_provider.max_calls_before_normal_response = 100
+    # 前 2 次调用返回工具调用，第 3 次（强制收尾轮）返回正常响应
+    mock_provider.max_calls_before_normal_response = 2
 
     # 初始化runner
     await runner.reset(
@@ -1267,9 +1343,7 @@ async def test_same_tool_streak_resets_after_switching_tools(
 
 
 @pytest.mark.asyncio
-async def test_repeated_tool_notice_disabled(
-    runner, mock_tool_executor, mock_hooks
-):
+async def test_repeated_tool_notice_disabled(runner, mock_tool_executor, mock_hooks):
     """enable=False 时，_build_repeated_tool_call_guidance 应始终返回空字符串。"""
     tool = FunctionTool(
         name="test_tool",

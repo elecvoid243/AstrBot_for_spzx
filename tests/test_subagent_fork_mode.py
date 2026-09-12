@@ -7,6 +7,7 @@ import pytest
 from astrbot.core.agent.agent import Agent
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.handoff import HandoffTool
+from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import Message
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
@@ -14,7 +15,12 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-from astrbot.core.provider.entities import LLMResponse
+from astrbot.core.provider.entities import (
+    LLMResponse,
+    ProviderRequest,
+    TokenUsage,
+)
+from astrbot.core.provider.provider import Provider
 from astrbot.core.star.context import Context
 from astrbot.core.subagent_manager import SubAgentManager
 
@@ -428,6 +434,75 @@ async def test_fork_mode_keeps_fork_when_model_unresolvable(mock_ctx, mock_event
     assert kwargs["system_prompt"] == ""
 
 
+class _SingleToolCallProvider(Provider):
+    """First call returns a tool call, second call returns a final response."""
+
+    def __init__(self, tool_name: str):
+        super().__init__({}, {})
+        self.tool_name = tool_name
+        self.call_count = 0
+        self.received_contexts = []
+
+    def get_current_key(self) -> str:
+        return "test_key"
+
+    def set_key(self, key: str):
+        pass
+
+    async def get_models(self) -> list[str]:
+        return ["test_model"]
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.call_count += 1
+        self.received_contexts.append(list(kwargs.get("contexts") or []))
+        if self.call_count == 1:
+            return LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=[self.tool_name],
+                tools_call_args=[{"input": "x"}],
+                tools_call_ids=["call_sub_1"],
+                usage=TokenUsage(input_other=10, output=5),
+            )
+        return LLMResponse(
+            role="assistant",
+            completion_text="done",
+            usage=TokenUsage(input_other=10, output=5),
+        )
+
+
+async def _run_tool_via_subagent(mock_ctx, mock_event, tool, denied_tools):
+    """Drive the runner once with a subagent context and a denied tool set."""
+    provider = _SingleToolCallProvider(tool.name)
+    request = ProviderRequest(
+        prompt="x",
+        func_tool=ToolSet(tools=[tool]),
+        contexts=[],
+    )
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        [],
+        extra={
+            "is_subagent": True,
+            "subagent_name": "child",
+            "denied_tools": denied_tools,
+        },
+    )
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=request,
+        run_context=run_context,
+        tool_executor=FunctionToolExecutor,
+        agent_hooks=BaseAgentRunHooks(),
+        streaming=False,
+    )
+    async for _ in runner.step_until_done(5):
+        pass
+    return provider, runner
+
+
 @pytest.mark.asyncio
 async def test_subagent_cannot_call_management_tool(mock_ctx, mock_event):
     handler = AsyncMock(return_value="secret")
@@ -437,22 +512,19 @@ async def test_subagent_cannot_call_management_tool(mock_ctx, mock_event):
         parameters={"type": "object", "properties": {}},
         handler=handler,
     )
-    run_context = make_run_context(
+    provider, runner = await _run_tool_via_subagent(
         mock_ctx,
         mock_event,
-        [],
-        extra={"is_subagent": True, "subagent_name": "child"},
+        tool,
+        SubAgentManager.get_main_agent_only_tools(),
     )
 
-    results = [
-        r
-        async for r in FunctionToolExecutor.execute(
-            tool=tool, run_context=run_context, input="x"
-        )
-    ]
-    handler.assert_not_called()
-    assert len(results) == 1
-    text = results[0].content[0].text
+    handler.assert_not_awaited()
+    assert runner.done()
+    # 第二次 provider 调用的上下文应包含配对的拒绝错误结果
+    tool_messages = [msg for msg in provider.received_contexts[1] if msg.role == "tool"]
+    assert len(tool_messages) == 1
+    text = tool_messages[0].content
     assert "Permission denied" in text
     assert "create_subagent" in text
 
@@ -460,22 +532,14 @@ async def test_subagent_cannot_call_management_tool(mock_ctx, mock_event):
 @pytest.mark.asyncio
 async def test_subagent_cannot_call_handoff_tool(mock_ctx, mock_event):
     handoff_tool = make_handoff_tool(name="inner")
-    run_context = make_run_context(
-        mock_ctx,
-        mock_event,
-        [],
-        extra={"is_subagent": True, "subagent_name": "child"},
+    provider, runner = await _run_tool_via_subagent(
+        mock_ctx, mock_event, handoff_tool, {handoff_tool.name}
     )
 
-    results = [
-        r
-        async for r in FunctionToolExecutor.execute(
-            tool=handoff_tool, run_context=run_context, input="x"
-        )
-    ]
-    assert len(results) == 1
-    assert "Permission denied" in results[0].content[0].text
-    mock_ctx.tool_loop_agent.assert_not_called()
+    assert runner.done()
+    tool_messages = [msg for msg in provider.received_contexts[1] if msg.role == "tool"]
+    assert len(tool_messages) == 1
+    assert "Permission denied" in tool_messages[0].content
 
 
 @pytest.mark.asyncio

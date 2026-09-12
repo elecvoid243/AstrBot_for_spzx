@@ -22,6 +22,11 @@ from astrbot.core.provider.provider import TTSProvider
 
 AgentRunner = ToolLoopAgentRunner[AstrAgentContext]
 
+MAX_STEP_DENIED_RECOVERY_ROUNDS = 2
+"""Extra steps granted after the forced final round when the model keeps
+calling denied tools (it sees a Permission denied tool-result each round).
+Mirrors ``ToolLoopAgentRunner.MAX_STEP_DENIAL_RECOVERY_ROUNDS``."""
+
 
 def _should_stop_agent(astr_event) -> bool:
     return astr_event.is_stopped() or bool(astr_event.get_extra("agent_stop_requested"))
@@ -122,6 +127,7 @@ async def run_agent(
     buffer_intermediate_messages: bool = False,
 ) -> AsyncGenerator[MessageChain | None, None]:
     step_idx = 0
+    forced_final_round = False
     astr_event = agent_runner.run_context.context.event
     tool_name_by_call_id: dict[str, str] = {}
     buffered_llm_chains: list[MessageChain] = []
@@ -130,22 +136,27 @@ async def run_agent(
         stream_to_general,
         agent_runner,
     )
-    while step_idx < max_step + 1:
+    while step_idx < max_step + 1 + MAX_STEP_DENIED_RECOVERY_ROUNDS:
         step_idx += 1
 
-        if step_idx == max_step + 1:
+        if step_idx == max_step + 1 and not forced_final_round:
+            forced_final_round = True
             logger.warning(
                 f"Agent reached max steps ({max_step}), forcing a final response."
             )
             if not agent_runner.done():
-                # 拔掉所有工具
-                if agent_runner.req:
-                    agent_runner.req.func_tool = None
+                # 拔掉所有工具的执行权限，但不在 payload 中移除工具 schema：
+                # 工具段保持字节不变，provider 侧前缀缓存在本轮与下一轮都
+                # 不被破坏；模型若仍尝试调用，会收到一条可感知的拒绝错误。
+                if agent_runner.req and agent_runner.req.func_tool:
+                    agent_runner.req.denied_tools = set(
+                        agent_runner.req.func_tool.names()
+                    )
                 # 注入提示词
                 agent_runner.run_context.messages.append(
                     Message(
                         role="user",
-                        content="工具调用次数已达到上限，请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复用户。",
+                        content="工具调用次数已达到上限，所有工具已被禁用。请停止使用工具，并根据已经收集到的信息，对你的任务和发现进行总结，然后直接回复用户。",
                     )
                 )
 

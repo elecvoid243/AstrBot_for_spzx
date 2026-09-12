@@ -3651,8 +3651,69 @@ function scrollToMessage(messageId?: string | number) {
     (message) => String(message.id) === String(messageId),
   );
   if (index < 0) return;
+  // Same intent as a marker jump: the viewport is about to leave the
+  // bottom, so live stick-to-bottom snaps must not fight the animation.
+  shouldStickToBottom.value = false;
   const rows = messagesContainer.value?.querySelectorAll(".message-row");
   rows?.[index]?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Jump scroll lock: a marker jump animates the viewport away from the
+// bottom and (when paging older history) prepends pages mid-flight. Both
+// would otherwise be fought by the stick-to-bottom snaps and the
+// scroll-top auto-load. The lock is released once the scroll animation
+// has actually settled (no scroll events for a moment) — a fixed delay
+// released it mid-animation on long jumps and deflected the landing.
+const JUMP_SCROLL_SETTLE_MS = 160;
+const JUMP_SCROLL_MAX_LOCK_MS = 2500;
+let jumpScrollSettleTimer = 0;
+let jumpScrollCapTimer = 0;
+let jumpScrollContainer: HTMLElement | null = null;
+let jumpScrollOnScroll: (() => void) | null = null;
+
+function endJumpScrollLock() {
+  if (jumpScrollOnScroll && jumpScrollContainer) {
+    jumpScrollContainer.removeEventListener("scroll", jumpScrollOnScroll);
+  }
+  window.clearTimeout(jumpScrollSettleTimer);
+  window.clearTimeout(jumpScrollCapTimer);
+  jumpScrollOnScroll = null;
+  jumpScrollContainer = null;
+  suppressHistoryAutoLoad.value = false;
+}
+
+function beginJumpScrollLock(container: HTMLElement) {
+  endJumpScrollLock();
+  suppressHistoryAutoLoad.value = true;
+  jumpScrollContainer = container;
+  jumpScrollOnScroll = () => {
+    window.clearTimeout(jumpScrollSettleTimer);
+    jumpScrollSettleTimer = window.setTimeout(() => {
+      // Never release while the paging loop is still running — page
+      // fetches can be quiet for longer than the settle window.
+      if (jumpInProgress.value) {
+        jumpScrollOnScroll?.();
+        return;
+      }
+      endJumpScrollLock();
+    }, JUMP_SCROLL_SETTLE_MS);
+  };
+  container.addEventListener("scroll", jumpScrollOnScroll);
+  jumpScrollOnScroll();
+  // Hard cap: image loads above the viewport can keep nudging the scroll
+  // position; never hold the auto-load off longer than this. Like the
+  // settle timer, it waits out the paging loop — which always terminates
+  // (guard counter, hasMore, no-progress bail).
+  jumpScrollCapTimer = window.setTimeout(() => {
+    if (jumpInProgress.value) {
+      jumpScrollCapTimer = window.setTimeout(
+        endJumpScrollLock,
+        JUMP_SCROLL_MAX_LOCK_MS,
+      );
+      return;
+    }
+    endJumpScrollLock();
+  }, JUMP_SCROLL_MAX_LOCK_MS);
 }
 
 /** Smooth-scroll to the row whose absolute data-message-index is target. */
@@ -3661,12 +3722,7 @@ function scrollToMessageIndex(targetIndex: number) {
     `[data-message-index="${targetIndex}"]`,
   ) as HTMLElement | null;
   if (!row) return false;
-  // Keep the scroll-top auto-load from canceling the animation mid-flight.
-  suppressHistoryAutoLoad.value = true;
   row.scrollIntoView({ behavior: "smooth", block: "center" });
-  window.setTimeout(() => {
-    suppressHistoryAutoLoad.value = false;
-  }, 600);
   return true;
 }
 
@@ -3680,29 +3736,42 @@ async function jumpToIndex(targetIndex: number): Promise<boolean> {
   const sessionId = currSessionId.value;
   if (!sessionId || jumpInProgress.value) return false;
   const offsetNow = historyOffsetBySession[sessionId] ?? 0;
-  if (targetIndex >= offsetNow) {
-    return scrollToMessageIndex(targetIndex);
-  }
-  jumpInProgress.value = true;
+  shouldStickToBottom.value = false;
+  const container = messagesContainer.value;
+  if (container) beginJumpScrollLock(container);
+  let scrolled = false;
   try {
-    let guard = 0;
-    while (guard++ < 100) {
-      if (currSessionId.value !== sessionId) return false;
-      const paging = historyPagingBySession[sessionId];
-      const offset = historyOffsetBySession[sessionId] ?? 0;
-      if (targetIndex >= offset) break;
-      if (!paging?.hasMore) return false;
-      if (paging.loadingOlder) {
-        await new Promise((r) => setTimeout(r, 120));
-        continue;
-      }
-      await loadOlderMessages(sessionId);
-      // No progress (e.g. failed request) — stop instead of spinning.
-      if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
+    if (targetIndex >= offsetNow) {
+      scrolled = scrollToMessageIndex(targetIndex);
+      return scrolled;
     }
-    return scrollToMessageIndex(targetIndex);
+    jumpInProgress.value = true;
+    try {
+      let guard = 0;
+      while (guard++ < 100) {
+        if (currSessionId.value !== sessionId) return false;
+        const paging = historyPagingBySession[sessionId];
+        const offset = historyOffsetBySession[sessionId] ?? 0;
+        if (targetIndex >= offset) break;
+        if (!paging?.hasMore) return false;
+        if (paging.loadingOlder) {
+          await new Promise((r) => setTimeout(r, 120));
+          continue;
+        }
+        await loadOlderMessages(sessionId);
+        // No progress (e.g. failed request) — stop instead of spinning.
+        if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
+      }
+      scrolled = scrollToMessageIndex(targetIndex);
+      return scrolled;
+    } finally {
+      jumpInProgress.value = false;
+    }
   } finally {
-    jumpInProgress.value = false;
+    // On success the lock is owned by the settle listener; a failed
+    // attempt (row missing, history exhausted, session switched) must
+    // release it right away.
+    if (!scrolled) endJumpScrollLock();
   }
 }
 
@@ -4401,6 +4470,10 @@ function scrollToBottom() {
   nextTick(() => {
     const container = messagesContainer.value;
     if (!container) return;
+    // Re-check: a snap scheduled before the flag flipped (e.g. by a marker
+    // jump taking over the viewport) must not fire and cancel the jump
+    // animation.
+    if (!shouldStickToBottom.value) return;
     container.scrollTop = container.scrollHeight;
     shouldStickToBottom.value = true;
   });

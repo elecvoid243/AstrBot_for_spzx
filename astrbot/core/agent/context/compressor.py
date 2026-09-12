@@ -20,6 +20,8 @@ else:
 if TYPE_CHECKING:
     from astrbot.core.provider.provider import Provider
 
+    from ..tool import ToolSet
+
 from ..context.truncator import ContextTruncator
 
 
@@ -45,11 +47,20 @@ class ContextCompressor(Protocol):
         """
         ...
 
-    async def __call__(self, messages: list[Message]) -> list[Message]:
+    async def __call__(
+        self,
+        messages: list[Message],
+        func_tool: "ToolSet | None" = None,
+    ) -> list[Message]:
         """Compress the message list.
 
         Args:
             messages: The original message list.
+            func_tool: Optional tool set attached to the summary request so
+                its payload prefix (tools + system + history) stays identical
+                to previous chat requests (provider prefix cache hits). The
+                summary is a one-shot call with no execution loop, so the
+                schema is visible but tools cannot actually run.
 
         Returns:
             The compressed message list.
@@ -108,7 +119,20 @@ class TruncateByTurnsCompressor:
         usage_rate = current_tokens / max_tokens
         return usage_rate > self.compression_threshold
 
-    async def __call__(self, messages: list[Message]) -> list[Message]:
+    async def __call__(
+        self,
+        messages: list[Message],
+        func_tool: "ToolSet | None" = None,
+    ) -> list[Message]:
+        """Truncate the message list by dropping turns.
+
+        Args:
+            messages: The message list to truncate.
+            func_tool: Ignored; truncation involves no LLM request.
+
+        Returns:
+            The truncated message list.
+        """
         truncator = ContextTruncator()
         if (
             self.max_tokens > 0
@@ -234,12 +258,26 @@ class LLMSummaryCompressor:
 
         return rounds[:recent_start], rounds[recent_start:]
 
-    async def __call__(self, messages: list[Message]) -> list[Message]:
+    async def __call__(
+        self,
+        messages: list[Message],
+        func_tool: "ToolSet | None" = None,
+    ) -> list[Message]:
         """Use LLM to generate a summary of the conversation history.
 
         Uses round-based splitting to preserve user-assistant turn boundaries.
         On LLM failure, returns the original messages unchanged (caller should
         fall back to truncation).
+
+        Args:
+            messages: The original message list.
+            func_tool: Tool set attached to the summary request so the payload
+                prefix (tools + system + history) matches previous chat
+                requests byte-for-byte (provider prefix cache hits). The
+                summary is a one-shot call with no tool-execution loop, so
+                the schema is visible but tools cannot run; if the model
+                still answers with a tool call (empty text), the request is
+                retried once without tools.
         """
         from .round_utils import split_into_rounds
 
@@ -306,8 +344,22 @@ class LLMSummaryCompressor:
         try:
             response = await self.provider.text_chat(
                 contexts=sanitized_summary_contexts,
+                func_tool=func_tool,
             )
             summary_content = (response.completion_text or "").strip()
+            if not summary_content and func_tool is not None:
+                # The model answered with a tool call instead of a summary.
+                # Retry without tools so the reply cannot be a tool call;
+                # the retry is rare and gives up prefix-cache parity for
+                # correctness.
+                logger.info(
+                    "Summary request with tools returned empty completion; "
+                    "retrying without tools.",
+                )
+                response = await self.provider.text_chat(
+                    contexts=sanitized_summary_contexts,
+                )
+                summary_content = (response.completion_text or "").strip()
         except Exception as e:
             logger.error(f"Failed to generate summary: {e}")
             return messages

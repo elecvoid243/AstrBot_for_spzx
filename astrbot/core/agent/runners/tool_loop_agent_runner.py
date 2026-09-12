@@ -850,6 +850,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self.request_context_manager.process(
                 self.run_context.messages,
                 trusted_token_usage=token_usage,
+                # Same tool set the chat requests send, so the summary
+                # request's payload prefix (tools + system + history) stays
+                # byte-identical and hits the provider prefix cache. The
+                # summary is a one-shot call: the schema is visible but
+                # nothing executes the tools.
+                func_tool=self._func_tool_for_provider(),
             )
         )
         if processed_messages is None:

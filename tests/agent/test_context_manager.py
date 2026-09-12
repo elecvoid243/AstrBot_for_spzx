@@ -579,7 +579,7 @@ class TestContextManager:
 
         first_check = mock_compressor.should_compress.call_args_list[0]
         assert first_check.args == (messages, 83, 100)
-        mock_compressor.assert_awaited_once_with(messages)
+        mock_compressor.assert_awaited_once_with(messages, func_tool=None)
         assert result == compressed
 
     @pytest.mark.asyncio
@@ -959,8 +959,8 @@ class TestContextManager:
 
         result = await manager._run_compression(messages, prev_tokens=100)
 
-        # Compressor __call__ should be invoked
-        mock_compressor.assert_called_once_with(messages)
+        # Compressor __call__ should be invoked (func_tool threaded through)
+        mock_compressor.assert_called_once_with(messages, func_tool=None)
         assert result == compressed
 
     @pytest.mark.asyncio
@@ -1096,3 +1096,109 @@ class TestContextManager:
         assert rounds[0][0] is messages[0]
         assert rounds[1][0] is messages[1]
         assert rounds[2][0] is messages[3]
+
+
+# ==================== Summary request cache parity ====================
+
+
+@pytest.mark.asyncio
+async def test_llm_compressor_passes_func_tool_to_summary_request():
+    """The summary request must carry the chat tool set so the payload
+    prefix (tools + system + history) matches previous chat requests and
+    hits the provider prefix cache."""
+    from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+    provider = MockProvider()
+    provider.text_chat = AsyncMock(
+        return_value=LLMResponse(role="assistant", completion_text="summary")
+    )
+    compressor = LLMSummaryCompressor(provider=provider, keep_recent_ratio=0.01)  # type: ignore[arg-type]
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+    ]
+    toolset = MagicMock(name="chat_toolset")
+
+    await compressor(messages, func_tool=toolset)  # type: ignore[arg-type]
+
+    provider.text_chat.assert_awaited_once()
+    kwargs = provider.text_chat.await_args.kwargs
+    assert kwargs["func_tool"] is toolset
+
+
+@pytest.mark.asyncio
+async def test_llm_compressor_retries_without_tools_on_empty_completion():
+    """A tool-call reply (empty completion) triggers one retry without
+    tools so the summary can still be produced."""
+    from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+    provider = MockProvider()
+    tool_call_response = LLMResponse(role="assistant", completion_text="")
+    tool_call_response.tool_calls = ["generate_summary"]
+    provider.text_chat = AsyncMock(
+        side_effect=[
+            tool_call_response,
+            LLMResponse(role="assistant", completion_text="recovered summary"),
+        ]
+    )
+    compressor = LLMSummaryCompressor(provider=provider, keep_recent_ratio=0.01)  # type: ignore[arg-type]
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+    ]
+    toolset = MagicMock(name="chat_toolset")
+
+    result = await compressor(messages, func_tool=toolset)  # type: ignore[arg-type]
+
+    assert provider.text_chat.await_count == 2
+    first_kwargs = provider.text_chat.await_args_list[0].kwargs
+    second_kwargs = provider.text_chat.await_args_list[1].kwargs
+    assert first_kwargs["func_tool"] is toolset
+    assert "func_tool" not in second_kwargs or second_kwargs["func_tool"] is None
+    # Summary pair replaced the old rounds (system preserved).
+    assert result[0].role == "system"
+    assert any(m.role == "user" and "summary" in str(m.content) for m in result)
+
+
+@pytest.mark.asyncio
+async def test_llm_compressor_no_retry_when_tools_absent():
+    """Without tools an empty completion is final — no extra request."""
+    from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+    provider = MockProvider()
+    provider.text_chat = AsyncMock(
+        return_value=LLMResponse(role="assistant", completion_text="")
+    )
+    compressor = LLMSummaryCompressor(provider=provider, keep_recent_ratio=0.01)  # type: ignore[arg-type]
+    messages = [
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+    ]
+
+    result = await compressor(messages)  # type: ignore[arg-type]
+
+    provider.text_chat.assert_awaited_once()
+    assert result == messages
+
+
+@pytest.mark.asyncio
+async def test_context_manager_threads_func_tool_into_compression():
+    """process() forwards func_tool to the compressor's summary request."""
+    config = ContextConfig(
+        max_context_tokens=100,
+    )
+    manager = ContextManager(config)
+    messages = [Message(role="user", content=f"msg {i}") for i in range(6)]
+    mock_compressor = AsyncMock(return_value=messages)
+    mock_compressor.should_compress = MagicMock(side_effect=[True, False])
+    manager.compressor = mock_compressor
+    toolset = MagicMock(name="chat_toolset")
+
+    await manager.process(messages, trusted_token_usage=95, func_tool=toolset)
+
+    mock_compressor.assert_awaited_once_with(messages, func_tool=toolset)

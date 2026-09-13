@@ -19,8 +19,8 @@
     "thinkingEffort": "Интенсивность мышления",
     "thinkingEffortOptions": {
       "low": "Низкая",
-      "medium": "Средняя",
-      "high": "Высокая"
+      "high": "Высокая",
+      "max": "Максимальная"
     },
     "editThinkingEffortLevels": "Уровни мышления",
     "thinkingEffortLevelsHint": "Пользовательские значения действуют только для OpenAI-совместимых API (например max, xhigh, none). Anthropic / Gemini по-прежнему используют low / medium / high / off.",

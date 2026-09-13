@@ -136,8 +136,8 @@ function removeLevel(index: number) {
 function restoreDefaults() {
   localLevels.value = [
     { name: tm("input.thinkingEffortOptions.low"), value: "low" },
-    { name: tm("input.thinkingEffortOptions.medium"), value: "medium" },
     { name: tm("input.thinkingEffortOptions.high"), value: "high" },
+    { name: tm("input.thinkingEffortOptions.max"), value: "max" },
   ];
 }
 

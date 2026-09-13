@@ -19,8 +19,8 @@
     "thinkingEffort": "思考强度",
     "thinkingEffortOptions": {
       "low": "低",
-      "medium": "中",
-      "high": "高"
+      "high": "高",
+      "max": "最高"
     },
     "editThinkingEffortLevels": "编辑档位",
     "thinkingEffortLevelsHint": "自定义档位的值仅对 OpenAI 兼容接口生效（如 max、xhigh、none）。Anthropic / Gemini 仍使用低 / 中 / 高 / 关闭。",

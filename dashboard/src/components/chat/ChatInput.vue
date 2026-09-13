@@ -806,14 +806,14 @@ const isDragging = ref(false);
 // Per-message "thinking effort" (reasoning intensity) override, sent with
 // each chat request. Persisted locally. Every level is user-defined
 // (name + raw value) and stored in localStorage "thinkingEffortLevels"
-// (e.g. { name: "深度", value: "max" }); the shipped defaults are
-// low / medium / high.
-const DEFAULT_EFFORT = "medium";
+// (e.g. { name: "深度", value: "xhigh" }); the shipped defaults are
+// low / high / max, with max preselected.
+const DEFAULT_EFFORT = "max";
 
 const defaultThinkingEffortLevels = computed<ThinkingEffortLevel[]>(() => [
   { name: tm("input.thinkingEffortOptions.low"), value: "low" },
-  { name: tm("input.thinkingEffortOptions.medium"), value: "medium" },
   { name: tm("input.thinkingEffortOptions.high"), value: "high" },
+  { name: tm("input.thinkingEffortOptions.max"), value: "max" },
 ]);
 
 function loadStoredEffortLevels(): ThinkingEffortLevel[] | null {

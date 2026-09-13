@@ -19,8 +19,8 @@
     "thinkingEffort": "Thinking Effort",
     "thinkingEffortOptions": {
       "low": "Low",
-      "medium": "Medium",
-      "high": "High"
+      "high": "High",
+      "max": "Max"
     },
     "editThinkingEffortLevels": "Edit Levels",
     "thinkingEffortLevelsHint": "Custom values only apply to OpenAI-compatible APIs (e.g. max, xhigh, none). Anthropic / Gemini still use low / medium / high / off.",

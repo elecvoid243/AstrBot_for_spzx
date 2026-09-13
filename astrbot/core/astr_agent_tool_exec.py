@@ -634,12 +634,25 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 agent_name, subagent_system_prompt, input_
             )
             system_prompt = ""
+            # Inherit the main agent's per-request LLM params (e.g.
+            # thinking_effort). Providers map them onto request fields such as
+            # reasoning_effort that some backends render into the prompt, so a
+            # fork request without them would diverge from the cached prefix at
+            # token 0. Shallow-copied because the main runner keeps running
+            # while a background handoff executes.
+            main_llm_params = getattr(
+                getattr(main_runner, "req", None), "llm_params", None
+            )
+            fork_llm_params = (
+                dict(main_llm_params) if isinstance(main_llm_params, dict) else {}
+            )
         else:
             # Build handoff toolset from registered tools plus runtime computer tools.
             toolset = cls._build_handoff_toolset(run_context, tool.agent.tools)
             fork_schema_mode = None
             prompt_text = input_
             system_prompt = subagent_system_prompt
+            fork_llm_params = {}
 
             # prepare begin dialogs
             contexts = None
@@ -769,6 +782,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 response_sink=sink,
                 agent_context=subagent_agent_context,
                 **({"tool_schema_mode": fork_schema_mode} if fork_schema_mode else {}),
+                **({"llm_params": fork_llm_params} if fork_llm_params else {}),
             )
 
         # 添加执行超时控制

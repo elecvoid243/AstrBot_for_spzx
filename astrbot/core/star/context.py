@@ -249,6 +249,8 @@ class Context:
                 response_sink: Callable[[AgentResponse], Awaitable[None]] | None - optional
                     observer invoked with every AgentResponse produced by the runner
                     (used to stream subagent progress to webchat).
+                llm_params: dict - per-request LLM parameter overrides (e.g.
+                    {"thinking_effort": "high"}), applied by the provider adapter.
 
                 other kwargs will be DIRECTLY passed to the runner.reset() method
 
@@ -280,6 +282,7 @@ class Context:
             else:
                 context_.append(msg)
 
+        llm_params = kwargs.pop("llm_params", None)
         request = ProviderRequest(
             prompt=prompt,
             image_urls=image_urls or [],
@@ -288,6 +291,7 @@ class Context:
             contexts=context_,
             system_prompt=system_prompt or "",
             extra_user_content_parts=kwargs.get("extra_user_content_parts", []),
+            llm_params=llm_params or {},
         )
         if agent_context is None:
             agent_context = AstrAgentContext(

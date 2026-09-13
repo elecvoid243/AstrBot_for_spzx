@@ -164,6 +164,39 @@ async def test_fork_mode_inherits_main_context(mock_ctx, mock_event):
 
 
 @pytest.mark.asyncio
+async def test_fork_mode_inherits_main_llm_params(mock_ctx, mock_event):
+    SubAgentManager._context_inherit_mode = "fork"
+
+    main_runner = _FakeMainRunner(ToolSet())
+    main_runner.req.llm_params = {"thinking_effort": "high"}
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": main_runner},
+    )
+
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    # The main agent's per-request LLM params ride along so provider fields
+    # derived from them (e.g. reasoning_effort) stay part of the cached prefix.
+    assert kwargs["llm_params"] == {"thinking_effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_fork_mode_without_llm_params_omits_key(mock_ctx, mock_event):
+    SubAgentManager._context_inherit_mode = "fork"
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    # No main runner / no params -> the key is not passed at all, so the
+    # request payload stays unchanged from the pre-inheritance behavior.
+    assert "llm_params" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_fork_mode_falls_back_without_main_runner(mock_ctx, mock_event):
     SubAgentManager._context_inherit_mode = "fork"
 
@@ -196,6 +229,8 @@ async def test_normal_mode_keeps_existing_behavior(mock_ctx, mock_event):
     assert kwargs["prompt"] == "do research"
     assert kwargs["contexts"] is None
     assert kwargs["tools"] is not toolset
+    # llm_params inheritance is fork-only: normal-mode payloads are unchanged.
+    assert "llm_params" not in kwargs
     assert kwargs["agent_context"].extra["is_subagent"] is True
 
 

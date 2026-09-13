@@ -1075,6 +1075,10 @@ import {
 import { useFileComments } from "@/composables/useFileComments";
 import { useFileReferences } from "@/composables/useFileReferences";
 import { useInlineAnnotations } from "@/composables/useInlineAnnotations";
+import {
+  NEW_CHAT_DRAFT_KEY,
+  useChatDrafts,
+} from "@/composables/useChatDrafts";
 import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import { resolveSessionUmo } from "@/utils/resolveSessionUmo";
 import {
@@ -1267,6 +1271,16 @@ const projectSessionsById = ref<Record<string, Session[]>>({});
 const loadingProjectSessionIds = ref<string[]>([]);
 const loadingSessions = ref(false);
 const draft = ref("");
+// Per-session draft persistence (2026-09-13): every edit is mirrored into
+// the session-keyed store (localStorage-backed) and selectSession swaps in
+// the target session's saved draft, so unsent text is isolated per session
+// and survives page navigation / reload. Text typed while no session
+// exists yet is kept under NEW_CHAT_DRAFT_KEY and adopted by the session
+// created on send / "new chat".
+const chatDrafts = useChatDrafts();
+watch(draft, (text) => {
+  chatDrafts.setDraft(currSessionId.value || NEW_CHAT_DRAFT_KEY, text);
+});
 const tokenProviderConfigs = ref<TokenProviderConfig[]>([]);
 const tokenModelMetadata = ref<Record<string, ProviderModelMetadata>>({});
 const selectedTokenProviderId = ref("");
@@ -2164,6 +2178,10 @@ onMounted(async () => {
     } else if (routeSessionId) {
       await selectSession(routeSessionId, false);
       await scrollToMessageFromQuery();
+    } else {
+      // Fresh "/chat" landing: restore the no-session draft slot so a
+      // half-typed message survives a reload.
+      draft.value = chatDrafts.draftFor(NEW_CHAT_DRAFT_KEY);
     }
   } finally {
     loadingSessions.value = false;
@@ -2207,6 +2225,10 @@ watch(
     } else if (!routeSessionId && currSessionId.value) {
       showChatWorkspace();
       currSessionId.value = "";
+      // No-session landing: show the fresh-chat draft slot, not the
+      // previous session's text — otherwise editing here would live-save
+      // that session's text into the new-chat slot.
+      draft.value = chatDrafts.draftFor(NEW_CHAT_DRAFT_KEY);
     }
   },
 );
@@ -2597,6 +2619,11 @@ async function startNewChat() {
   if (!isCurrentSessionEmpty) {
     await newSession();
     await getSessions();
+    // The text currently in the composer becomes the new session's draft
+    // (today's behavior: it stays visible), and the no-session slot is
+    // consumed so it cannot reappear on the landing view.
+    chatDrafts.setDraft(currSessionId.value, draft.value);
+    chatDrafts.clearDraft(NEW_CHAT_DRAFT_KEY);
   }
   closeMobileSidebar();
   await focusChatInput();
@@ -3254,6 +3281,10 @@ async function createProjectSession() {
   if (!projectId) return;
   try {
     const sessionId = await newSession();
+    // The composer text visible in the project compose view becomes the
+    // new session's draft (behavior parity with the "new chat" button).
+    chatDrafts.setDraft(sessionId, draft.value);
+    chatDrafts.clearDraft(NEW_CHAT_DRAFT_KEY);
     // Refresh the flat session list first, otherwise the new session briefly
     // shows up in the "conversations" sidebar and then disappears.
     await getSessions();
@@ -3357,6 +3388,9 @@ async function selectSession(sessionId: string, pushRoute = true) {
   clearChoiceAttention(sessionId);
   selectedProjectId.value = null;
   currSessionId.value = sessionId;
+  // Per-session drafts: swap in the target session's saved composer text
+  // ("" when it has none) — unsent text never leaks across sessions.
+  draft.value = chatDrafts.draftFor(sessionId);
   replyTarget.value = null;
   if (pushRoute && route.path !== `${basePath()}/${sessionId}`) {
     await router.push(`${basePath()}/${sessionId}`);
@@ -3403,6 +3437,9 @@ async function sendCurrentMessage() {
       sessionId = await newSession();
       // 关联项目后再刷新，否则新会话会短暂出现在"对话"列表
       await getSessions();
+      // The text being sent was typed in the no-session state and lives in
+      // the fresh-chat draft slot — consumed by this send, so clear it.
+      chatDrafts.clearDraft(NEW_CHAT_DRAFT_KEY);
     }
     // 2026-09-01 (elecvoid243): the "new chat" button now creates the
     // session immediately, so `sessionId` may already exist by the time

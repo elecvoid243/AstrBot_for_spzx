@@ -185,6 +185,7 @@ class LLMSummaryCompressor:
         instruction_text: str | None = None,
         compression_threshold: float = 0.82,
         token_counter: TokenCounter | None = None,
+        llm_params: dict | None = None,
     ) -> None:
         """Initialize the LLM summary compressor.
 
@@ -194,11 +195,17 @@ class LLMSummaryCompressor:
                 exact context. Clamped to 0-0.3.
             instruction_text: Custom instruction for summary generation.
             compression_threshold: The compression trigger threshold (default: 0.82).
+            token_counter: Custom token counter. Defaults to EstimateTokenCounter.
+            llm_params: Per-request LLM parameters (e.g. thinking_effort) sent
+                with the summary request so provider fields derived from them
+                (such as reasoning_effort) stay identical to the chat requests
+                the prefix cache was built from.
         """
         self.provider = provider
         self.keep_recent_ratio = min(max(float(keep_recent_ratio), 0.0), 0.3)
         self.compression_threshold = compression_threshold
         self.token_counter = token_counter or EstimateTokenCounter()
+        self.llm_params = llm_params or {}
 
         self.instruction_text = instruction_text or (
             "Based on our full conversation history, produce a concise summary of key takeaways and/or project progress.\n"
@@ -345,6 +352,7 @@ class LLMSummaryCompressor:
             response = await self.provider.text_chat(
                 contexts=sanitized_summary_contexts,
                 func_tool=func_tool,
+                llm_params=self.llm_params or None,
             )
             summary_content = (response.completion_text or "").strip()
             if not summary_content and func_tool is not None:
@@ -358,6 +366,7 @@ class LLMSummaryCompressor:
                 )
                 response = await self.provider.text_chat(
                     contexts=sanitized_summary_contexts,
+                    llm_params=self.llm_params or None,
                 )
                 summary_content = (response.completion_text or "").strip()
         except Exception as e:

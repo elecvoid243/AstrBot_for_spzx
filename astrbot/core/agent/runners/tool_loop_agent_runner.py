@@ -262,6 +262,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             llm_compress_provider=self.llm_compress_provider,
             custom_token_counter=self.custom_token_counter,
             custom_compressor=self.custom_compressor,
+            # Same per-request LLM params the chat requests send, so the
+            # summary request's provider fields (e.g. reasoning_effort) stay
+            # byte-identical and the provider prefix cache still hits.
+            llm_params=self.req.llm_params,
         )
         self.request_context_manager = ContextManager(
             self.request_context_manager_config

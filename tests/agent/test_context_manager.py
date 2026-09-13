@@ -1202,3 +1202,52 @@ async def test_context_manager_threads_func_tool_into_compression():
     await manager.process(messages, trusted_token_usage=95, func_tool=toolset)
 
     mock_compressor.assert_awaited_once_with(messages, func_tool=toolset)
+
+
+@pytest.mark.asyncio
+async def test_llm_compressor_sends_llm_params_with_summary_request():
+    """The summary request carries the chat requests' llm_params so provider
+    fields derived from them (e.g. reasoning_effort) stay byte-identical and
+    the provider prefix cache still hits."""
+    from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+    provider = MockProvider()
+    compressor = LLMSummaryCompressor(
+        provider=provider,
+        keep_recent_ratio=0.01,
+        llm_params={"thinking_effort": "high"},
+    )  # type: ignore[arg-type]
+    messages = [
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+    ]
+
+    await compressor(messages)  # type: ignore[arg-type]
+
+    assert provider.last_text_chat_kwargs is not None
+    assert provider.last_text_chat_kwargs["llm_params"] == {"thinking_effort": "high"}
+
+    # Without llm_params the kwarg stays None so the payload is unchanged.
+    provider_default = MockProvider()
+    compressor_default = LLMSummaryCompressor(
+        provider=provider_default,
+        keep_recent_ratio=0.01,
+    )  # type: ignore[arg-type]
+    await compressor_default(messages)  # type: ignore[arg-type]
+    assert provider_default.last_text_chat_kwargs["llm_params"] is None
+
+
+def test_context_config_llm_params_reach_llm_compressor():
+    """ContextManager wires config.llm_params into the LLM summary compressor."""
+    from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+    provider = MockProvider()
+    config = ContextConfig(
+        llm_compress_provider=provider,  # type: ignore[arg-type]
+        llm_params={"thinking_effort": "high"},
+    )
+    manager = ContextManager(config)
+
+    assert isinstance(manager.compressor, LLMSummaryCompressor)
+    assert manager.compressor.llm_params == {"thinking_effort": "high"}

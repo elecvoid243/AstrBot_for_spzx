@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .compressor import ContextCompressor
@@ -42,3 +42,8 @@ class ContextConfig:
     """Custom token counting method. If None, the default method is used."""
     custom_compressor: ContextCompressor | None = None
     """Custom context compression method. If None, the default method is used."""
+    llm_params: dict = field(default_factory=dict)
+    """Per-request LLM parameters (e.g. thinking_effort) attached to the LLM
+    summary request so provider fields derived from them (such as
+    reasoning_effort) stay identical to the chat requests the provider prefix
+    cache was built from."""

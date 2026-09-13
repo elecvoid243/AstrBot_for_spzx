@@ -2041,8 +2041,12 @@ class TestBuildMainAgent:
             )
 
         assert result is not None
+        # System-reminder injections (e.g. the workspace path) ride along in
+        # extra_user_content_parts; the attachment note is the only other part.
         assert [
-            part.text for part in result.provider_request.extra_user_content_parts
+            part.text
+            for part in result.provider_request.extra_user_content_parts
+            if not str(getattr(part, "text", "")).startswith("<system_reminder>")
         ] == [f"[Video Attachment: name video.mp4, path {video_path}]"]
 
     @pytest.mark.asyncio

@@ -1913,22 +1913,36 @@ async def build_main_agent(
             else TOOL_CALL_PROMPT_SKILLS_LIKE_MODE
         )
 
-        if config.computer_use_runtime == "local":
-            workspace_root = await _get_workspace_path_for_umo(
-                event.unified_msg_origin,
-                plugin_context,
-            )
-            tool_prompt += (
-                f"\nCurrent workspace: `{workspace_root}`. "
-                "`astrbot_execute_shell` and `astrbot_execute_python` use it as "
-                "their working directory. `astrbot_file_read_tool`, "
-                "`astrbot_file_write_tool`, `astrbot_file_edit_tool`, and "
-                "`astrbot_grep_tool` resolve relative paths from it. Prefer relative "
-                "paths within the workspace; do not assume this behavior for other "
-                "tools.\n"
-            )
-
         req.system_prompt += f"\n{tool_prompt}\n"
+
+    if req.func_tool and req.func_tool.tools and config.computer_use_runtime == "local":
+        # The workspace root is session identity: keeping it in the system
+        # prompt makes branched sessions (new umo -> new default workspace)
+        # diverge from the source session's cached prefix at the front of the
+        # payload. Inject it as a system-reminder on the current user message
+        # instead. The reminder persists with the message (like the datetime
+        # reminder) so later requests re-send the exact bytes the provider
+        # already cached, and the fresh copy in every new user message always
+        # carries the current path.
+        workspace_root = await _get_workspace_path_for_umo(
+            event.unified_msg_origin,
+            plugin_context,
+        )
+        req.extra_user_content_parts.append(
+            TextPart(
+                text=(
+                    "<system_reminder>\n"
+                    f"Current workspace: `{workspace_root}`. "
+                    "`astrbot_execute_shell` and `astrbot_execute_python` use it as "
+                    "their working directory. `astrbot_file_read_tool`, "
+                    "`astrbot_file_write_tool`, `astrbot_file_edit_tool`, and "
+                    "`astrbot_grep_tool` resolve relative paths from it. Prefer relative "
+                    "paths within the workspace; do not assume this behavior for other "
+                    "tools.\n"
+                    "</system_reminder>"
+                )
+            )
+        )
 
     action_type = event.get_extra("action_type")
     if action_type == "live":

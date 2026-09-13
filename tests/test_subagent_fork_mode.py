@@ -158,9 +158,48 @@ async def test_fork_mode_inherits_main_context(mock_ctx, mock_event):
     assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
     assert "# Role" in kwargs["prompt"]
     assert "do research" in kwargs["prompt"]
+    # The toolset carries no main-agent-only tools, so there is no denied
+    # tools section to announce.
+    assert "## Denied Tools" not in kwargs["prompt"]
     # The subagent's agent context is marked for permission isolation.
     assert kwargs["agent_context"].extra["is_subagent"] is True
     assert kwargs["agent_context"].extra["subagent_name"] == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_fork_prompt_lists_visible_denied_tools(mock_ctx, mock_event):
+    """Main-agent-only tools present in the inherited toolset are announced
+    in the fork prompt (intersection, sorted); tools the main agent does not
+    have are invisible to the fork and must not be listed."""
+    SubAgentManager._context_inherit_mode = "fork"
+
+    toolset = ToolSet()
+    for name in ("create_subagent", "transfer_to_subagent", "main_tool"):
+        toolset.add_tool(
+            FunctionTool(
+                name=name,
+                description="d",
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": _FakeMainRunner(toolset)},
+    )
+
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    prompt = kwargs["prompt"]
+
+    assert "## Denied Tools" in prompt
+    assert "`create_subagent`" in prompt
+    assert "`transfer_to_subagent`" in prompt
+    # orchestrate_tasks is not in the main toolset -> invisible -> not listed
+    assert "orchestrate_tasks" not in prompt
+    # non-denied tools are never listed
+    assert "`main_tool`" not in prompt
 
 
 @pytest.mark.asyncio

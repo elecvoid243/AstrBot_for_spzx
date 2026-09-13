@@ -640,8 +640,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             # agent.
             contexts = [msg.model_dump() for msg in run_context.messages]
             toolset, fork_schema_mode = cls._build_fork_toolset(run_context, tool)
+            # Fork 子代理可见但被禁的工具 = 主 agent 专用工具 ∩ 继承工具集:
+            # 在 fork 提示词里预告,避免子代理浪费一轮试错才发现拒绝。仅列
+            # 实际存在于工具段的名字(主 agent 本就没有的工具不可见,无需提)。
             prompt_text = cls._build_fork_prompt(
-                agent_name, subagent_system_prompt, input_
+                agent_name,
+                subagent_system_prompt,
+                input_,
+                denied_tools=sorted(
+                    name
+                    for name in SubAgentManager.get_main_agent_only_tools()
+                    if toolset is not None and toolset.get_tool(name)
+                ),
             )
             system_prompt = ""
             # Inherit the main agent's per-request LLM params (e.g.
@@ -1365,7 +1375,10 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
     @staticmethod
     def _build_fork_prompt(
-        agent_name: str, subagent_system_prompt: str, input_: T.Any
+        agent_name: str,
+        subagent_system_prompt: str,
+        input_: T.Any,
+        denied_tools: list[str] | None = None,
     ) -> str:
         """Build the fork-mode instruction appended after the inherited prefix.
 
@@ -1373,17 +1386,32 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             agent_name: Name of the forked subagent.
             subagent_system_prompt: The subagent's own instruction block.
             input_: The delegated task text from the handoff tool call.
+            denied_tools: Tools visible in the inherited payload but denied to
+                subagents (main-agent-only tools present in the main agent's
+                toolset). Rendered as a "Denied Tools" section so the fork
+                does not waste a round discovering the rejection.
 
         Returns:
             The user message text appended after the inherited context.
         """
+        denied_section = ""
+        if denied_tools:
+            denied_section = (
+                "\n## Denied Tools\n"
+                "The following tools are NOT available to you as a subagent — "
+                "calls will be rejected: "
+                + ", ".join(f"`{name}`" for name in denied_tools)
+                + "\nDo not call them; work with the inherited context and the "
+                "remaining tools.\n"
+            )
         return (
             "[SUBAGENT MODE: FORK] You are now acting as the subagent "
             f'"{agent_name}", forked from the orchestrating agent.\n'
             "The conversation above is inherited from the orchestrator. "
             "Do not re-answer it; focus only on the task below.\n"
-            f"{subagent_system_prompt}\n\n"
-            f"## Your Task\n{input_ if input_ is not None else ''}"
+            f"{subagent_system_prompt}\n"
+            f"{denied_section}"
+            f"\n## Your Task\n{input_ if input_ is not None else ''}"
         )
 
     @classmethod

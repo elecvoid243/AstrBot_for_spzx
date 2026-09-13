@@ -96,8 +96,10 @@
       at the next tool-call boundary (the backend injects it into that
       tool's result — the legacy follow-up timing) or on stream end.
     -->
-    <div
+    <transition-group
       v-if="props.sessionId && pendingFollowUpItems.length"
+      tag="div"
+      name="followup"
       class="pending-follow-ups"
     >
       <div
@@ -135,6 +137,9 @@
           </div>
         </template>
         <template v-else>
+          <div class="pending-follow-up-card__badge">
+            <v-icon size="14">mdi-clock-outline</v-icon>
+          </div>
           <span class="pending-follow-up-card__text" :title="item.text">
             {{ item.text }}
           </span>
@@ -165,7 +170,7 @@
           </div>
         </template>
       </div>
-    </div>
+    </transition-group>
     <div
       class="input-container"
       :class="{
@@ -524,7 +529,7 @@
                 />
               </span>
             </template>
-            <span>{{ props.tokenUsage?.tooltip }}</span>
+            <span class="token-usage-tooltip">{{ props.tokenUsage?.tooltip }}</span>
           </v-tooltip>
           <!-- <v-btn @click="$emit('openLiveMode')"
                         icon
@@ -2220,6 +2225,12 @@ defineExpose({
   color: var(--token-usage-color);
 }
 
+/* Token usage tooltip carries an explicit newline before the cache-hit
+   line; pre-line is what makes it render as a second line. */
+.token-usage-tooltip {
+  white-space: pre-line;
+}
+
 .token-usage-progress {
   color: currentColor;
 }
@@ -3018,7 +3029,9 @@ defineExpose({
 .pending-follow-ups {
   width: var(--chat-content-width, 76%);
   max-width: var(--chat-content-max-width, 760px);
-  margin: 0 auto 8px;
+  /* No bottom margin: the queue sits flush on the composer so the two
+     read as one stacked cluster (2026-09-13). */
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3027,11 +3040,53 @@ defineExpose({
 .pending-follow-up-card {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 12px;
+  gap: 10px;
+  padding: 7px 8px 7px 10px;
   border: 1px solid var(--sp-chip-border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--sp-chip-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+/* Queued-state badge: a small clock in a primary-tinted disc so the row
+   reads as "held for later", matching the accent language of the skill
+   chips above the composer. */
+.pending-follow-up-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+}
+
+.input-area.is-dark .pending-follow-up-card {
+  box-shadow: none;
+}
+
+/* Keep the queue aligned with the composer's mobile width so the flush
+   stack stays visually centered. */
+@media (max-width: 768px) {
+  .pending-follow-ups {
+    width: calc(100% - 20px);
+  }
+}
+
+/* Enter/leave/move transitions for queue items (transition-group). */
+.followup-enter-active,
+.followup-leave-active,
+.followup-move {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+.followup-enter-from,
+.followup-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 
 .pending-follow-up-card__text {

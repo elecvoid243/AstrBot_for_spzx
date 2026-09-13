@@ -199,7 +199,7 @@ async function submitPayload(
 ): Promise<Record<string, unknown>> {
   await wrapper.get('[data-testid="project-path"]').setValue(path);
   // last=true: a codegraph sub-page tab and its submit button can share a
-  // label ("设为默认目录"), and the submit button renders after the tabs.
+  // label ("设置默认目录"), and the submit button renders after the tabs.
   await buttonByText(wrapper, buttonText, true).trigger("click");
   await nextTick();
   return wrapper.emitted("submit")!.at(-1)![0] as Record<string, unknown>;
@@ -435,11 +435,11 @@ describe("ProjectLoadDialog load-step options", () => {
     const wrapper = mountDialog("codegraph");
     await openDialog(wrapper);
 
-    await clickOption(wrapper, "设为默认目录");
+    await clickOption(wrapper, "设置默认目录");
     const payload = await submitPayload(
       wrapper,
       "C:/projects/demo",
-      "设为默认目录",
+      "设置默认目录",
     );
     expect(payload).toMatchObject({
       mode: "codegraph",

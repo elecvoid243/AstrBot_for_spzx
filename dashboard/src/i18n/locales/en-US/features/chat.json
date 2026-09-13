@@ -394,7 +394,7 @@
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens ({percent}%)",
-    "tooltipWithCache": "{used} / {limit} tokens ({percent}%) · cache hit {cachePercent}%"
+    "tooltipWithCache": "{used} / {limit} tokens ({percent}%)\ncache hit {cachePercent}%"
   },
   "refs": {
     "title": "References",

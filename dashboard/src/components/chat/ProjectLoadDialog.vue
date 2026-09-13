@@ -115,7 +115,7 @@ const dialogTitle = computed(() =>
 
 // ── Codegraph 管理双子页(2026-09-08) ───────────────────────────────────
 // "初始化 / 更新" → POST /spcode/codegraph-init（codegraph init，已初始化
-// 时后端自动 --force 重建）；"设为默认目录" → POST /spcode/codegraph-set
+// 时后端自动 --force 重建）；"设置默认目录" → POST /spcode/codegraph-set
 // （原有行为）。两页共用下方的路径输入 + 历史列表。
 const codegraphTab = ref<string>("init");
 const codegraphSegments = computed(() => [
@@ -342,7 +342,7 @@ function onUnload(): void {
           <!--
             Codegraph 管理双子页(2026-09-08):"初始化 / 更新" 对指定目录
             执行 codegraph init(已初始化时后端自动 --force 重建索引);
-            "设为默认目录" 执行 codegraph set(会重启 MCP)。两页共用下方
+            "设置默认目录" 执行 codegraph set(会重启 MCP)。两页共用下方
             路径输入 + 历史列表。
           -->
           <template v-if="props.commandMode === 'codegraph'">

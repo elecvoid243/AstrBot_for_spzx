@@ -394,7 +394,7 @@
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens（{percent}%）",
-    "tooltipWithCache": "{used} / {limit} tokens（{percent}%）· 缓存命中率 {cachePercent}%"
+    "tooltipWithCache": "{used} / {limit} tokens（{percent}%）\n缓存命中率 {cachePercent}%"
   },
   "refs": {
     "title": "引用",
@@ -491,11 +491,11 @@
       "title": "加载项目目录",
       "codegraphTitle": "Codegraph 管理",
       "codegraphTabInit": "初始化 / 更新",
-      "codegraphTabSet": "设为默认目录",
+      "codegraphTabSet": "设置默认目录",
       "codegraphInitHint": "对指定目录执行 codegraph init，建立或更新语义索引（目录已初始化时自动 --force 重建）。",
       "codegraphSetHint": "把指定目录设为 codegraph 默认项目，后续查询默认在此目录下；MCP 运行中会重启以应用新路径。",
       "codegraphInitSubmit": "初始化 / 更新",
-      "codegraphSetSubmit": "设为默认目录",
+      "codegraphSetSubmit": "设置默认目录",
       "pathLabel": "项目路径",
       "pathPlaceholder": "例如 /Users/me/projects/my-app",
       "browse": "浏览目录…",

@@ -390,7 +390,7 @@
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} токенов ({percent}%)",
-    "tooltipWithCache": "{used} / {limit} токенов ({percent}%) · попаданий в кэш {cachePercent}%"
+    "tooltipWithCache": "{used} / {limit} токенов ({percent}%)\nпопаданий в кэш {cachePercent}%"
   },
   "refs": {
     "title": "Ссылки",

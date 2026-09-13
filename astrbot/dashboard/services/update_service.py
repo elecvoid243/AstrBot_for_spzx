@@ -13,7 +13,7 @@ import aiohttp
 
 from astrbot.core import logger, pip_installer
 from astrbot.core.config.default import VERSION
-from astrbot.core.config.update_config import UpdateConfig
+from astrbot.core.config.update_config import DEFAULT_CONFIG, UpdateConfig
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.dashboard_assets import get_dashboard_version
 from astrbot.core.desktop_runtime import (
@@ -209,25 +209,44 @@ class UpdateService:
                 progress_callback=observe_update,
             )
 
-            self._set_update_stage(
-                progress_id,
-                "dependencies",
-                "running",
-                "正在更新依赖...",
-                92,
-            )
-            logger.info("Updating dependencies...")
-            try:
-                await self.pip_install(requirements_path="requirements.txt")
-            except Exception as exc:
-                logger.error(f"Failed to update dependencies: {exc}")
-            self._set_update_stage(
-                progress_id,
-                "dependencies",
-                "done",
-                "依赖更新完成。",
-                96,
-            )
+            # Non-official (e.g. intranet) update sources ship with dependencies
+            # pre-installed, so updating them from requirements.txt is skipped.
+            release_api_url = UpdateConfig().get_core_release_api_url()
+            if (
+                release_api_url.rstrip("/")
+                != DEFAULT_CONFIG["core_update"]["release_api_url"]
+            ):
+                logger.info(
+                    "Skipping dependency update because the release API "
+                    f"({release_api_url}) is not the official one."
+                )
+                self._set_update_stage(
+                    progress_id,
+                    "dependencies",
+                    "done",
+                    "已跳过依赖更新（自定义更新源）。",
+                    96,
+                )
+            else:
+                self._set_update_stage(
+                    progress_id,
+                    "dependencies",
+                    "running",
+                    "正在更新依赖...",
+                    92,
+                )
+                logger.info("Updating dependencies...")
+                try:
+                    await self.pip_install(requirements_path="requirements.txt")
+                except Exception as exc:
+                    logger.error(f"Failed to update dependencies: {exc}")
+                self._set_update_stage(
+                    progress_id,
+                    "dependencies",
+                    "done",
+                    "依赖更新完成。",
+                    96,
+                )
 
             if reboot:
                 self._set_update_stage(

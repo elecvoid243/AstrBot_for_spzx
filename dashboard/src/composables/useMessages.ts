@@ -592,13 +592,21 @@ export function useMessages(options: UseMessagesOptions) {
       void loadSessionMarkers(sessionId);
       // Live records (system stream / run resume) may have arrived while the
       // history snapshot was in flight; the snapshot then overwrote them.
-      // Re-append anything not present in the snapshot so no message is lost.
-      // System-stream records (`system-${run_id}`, goal-loop / collab turns)
-      // are special: an in-flight orphan turn is not in the snapshot (it is
-      // persisted only on completion) and is re-seeded by the freshly
+      // Re-append anything the snapshot cannot cover so no live message is
+      // lost. System-stream records (`system-${run_id}`, goal-loop / collab
+      // turns) are special: an in-flight orphan turn is not in the snapshot
+      // (it is persisted only on completion) and is re-seeded by the freshly
       // re-subscribed system stream's run_snapshot — keep it. A finished one
       // is superseded by the persisted record now in the snapshot — drop the
       // frozen partial, otherwise both would render.
+      //
+      // Windowed history: the snapshot only covers the newest window, so
+      // "absent from the snapshot" no longer implies "live". Persisted
+      // records at or below the window are either duplicated by it or belong
+      // to older pages loaded before this reload — both are dropped, the
+      // window resets together with the paging state above. Records that
+      // postdate the snapshot (persisted while the fetch was in flight, so
+      // newer than everything in it) are kept.
       const existing = messagesBySession[sessionId] || [];
       messagesBySession[sessionId] = records;
       if (existing.length) {
@@ -610,11 +618,26 @@ export function useMessages(options: UseMessagesOptions) {
             .filter((r: ActiveChatRun) => !r.llm_checkpoint_id)
             .map((r: ActiveChatRun) => `system-${r.run_id}`),
         );
+        const snapshotNumericIds = records
+          .map((r: ChatRecord) => Number(r.id))
+          .filter((n) => Number.isFinite(n));
+        const newestSnapshotId = snapshotNumericIds.length
+          ? Math.max(...snapshotNumericIds)
+          : null;
         const live = existing.filter((r: ChatRecord) => {
           const recordId = String(r.id || "");
           if (recordId.startsWith("system-")) {
             return activeOrphanIds.has(recordId);
           }
+          if (!recordId) return true;
+          const numericId = Number(recordId);
+          if (Number.isFinite(numericId)) {
+            return (
+              newestSnapshotId === null || numericId > newestSnapshotId
+            );
+          }
+          // Temp ids (`local-*`, `active-run-*`, ...) are in-flight bubbles
+          // the snapshot cannot contain yet.
           return !historyIds.has(recordId);
         });
         if (live.length) {

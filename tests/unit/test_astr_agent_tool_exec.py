@@ -1,7 +1,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import mcp
 import pytest
@@ -12,10 +12,12 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.message.components import Image
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.func_tool_manager import (
     FunctionToolManager,
     _PermissionGuardedTool,
 )
+from astrbot.core.star.context import Context
 
 
 class _DummyEvent:
@@ -231,20 +233,25 @@ async def test_execute_handoff_skips_renormalize_when_image_urls_prepared(
     def _boom(_items):
         raise RuntimeError("normalize should not be called")
 
-    async def _fake_get_current_chat_provider_id(_umo):
-        return "provider-id"
-
     async def _fake_tool_loop_agent(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(completion_text="ok")
 
-    context = SimpleNamespace(
-        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
-        tool_loop_agent=_fake_tool_loop_agent,
-        get_config=lambda **_kwargs: {"provider_settings": {}},
+    # AstrAgentContext built inside _execute_handoff validates context/event
+    # via isinstance, so spec'd MagicMocks are required over SimpleNamespace.
+    context = MagicMock(spec=Context)
+    context.get_current_chat_provider_id = AsyncMock(return_value="provider-id")
+    context.tool_loop_agent = _fake_tool_loop_agent
+    context.get_config = lambda **_kwargs: {"provider_settings": {}}
+    event = MagicMock(spec=AstrMessageEvent)
+    event.unified_msg_origin = "webchat:FriendMessage:webchat!user!session"
+    event.get_platform_name.return_value = "test_platform"
+    event.get_sender_name.return_value = "tester"
+    event.trace = None
+    event.message_obj = SimpleNamespace(message=[])
+    run_context = ContextWrapper(
+        context=SimpleNamespace(event=event, context=context, extra={})
     )
-    event = _DummyEvent([])
-    run_context = ContextWrapper(context=SimpleNamespace(event=event, context=context))
     tool = SimpleNamespace(
         name="transfer_to_subagent",
         provider_id=None,
@@ -329,21 +336,22 @@ async def test_execute_handoff_passes_tool_call_timeout_to_tool_loop_agent(
 ):
     captured: dict = {}
 
-    async def _fake_get_current_chat_provider_id(_umo):
-        return "provider-id"
-
     async def _fake_tool_loop_agent(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(completion_text="ok")
 
-    context = SimpleNamespace(
-        get_current_chat_provider_id=_fake_get_current_chat_provider_id,
-        tool_loop_agent=_fake_tool_loop_agent,
-        get_config=lambda **_kwargs: {"provider_settings": {}},
-    )
-    event = _DummyEvent([])
+    context = MagicMock(spec=Context)
+    context.get_current_chat_provider_id = AsyncMock(return_value="provider-id")
+    context.tool_loop_agent = _fake_tool_loop_agent
+    context.get_config = lambda **_kwargs: {"provider_settings": {}}
+    event = MagicMock(spec=AstrMessageEvent)
+    event.unified_msg_origin = "webchat:FriendMessage:webchat!user!session"
+    event.get_platform_name.return_value = "test_platform"
+    event.get_sender_name.return_value = "tester"
+    event.trace = None
+    event.message_obj = SimpleNamespace(message=[])
     run_context = ContextWrapper(
-        context=SimpleNamespace(event=event, context=context),
+        context=SimpleNamespace(event=event, context=context, extra={}),
         tool_call_timeout=120,
     )
     tool = SimpleNamespace(

@@ -537,11 +537,28 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         umo = event.unified_msg_origin
         agent_name = getattr(tool.agent, "name", "unknown")
 
-        # Use per-subagent provider override if configured; otherwise fall back
-        # to the current/default provider resolution.
-        prov_id = getattr(
-            tool, "provider_id", None
-        ) or await ctx.get_current_chat_provider_id(umo)
+        # The main runner's actual provider for this turn. Its config ID is
+        # both the fork prefix-parity anchor (see the fork check below) and
+        # the preferred fallback for an unspecified subagent provider.
+        main_runner = (run_context.context.extra or {}).get("main_agent_runner")
+        main_provider = getattr(main_runner, "provider", None)
+        main_provider_id = (
+            str(main_provider.provider_config.get("id") or "")
+            if main_provider is not None
+            else ""
+        )
+
+        # Use per-subagent provider override if configured; otherwise prefer
+        # the main agent's provider so the documented "empty = the main
+        # agent's provider" behavior holds even when the session preference
+        # chain would resolve to a different entry (the webchat per-request
+        # model picker is not persisted into the session preference); finally
+        # fall back to the current/default provider resolution.
+        prov_id = (
+            getattr(tool, "provider_id", None)
+            or main_provider_id
+            or await ctx.get_current_chat_provider_id(umo)
+        )
 
         config = ctx.get_config(umo=umo)
         prov_settings: dict = config.get("provider_settings", {})
@@ -570,13 +587,6 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             # both forced "fork" and auto-resolved fork. When the main
             # runner (or its provider) cannot be determined, keep fork —
             # that matches the existing toolset fallback path.
-            main_runner = (run_context.context.extra or {}).get("main_agent_runner")
-            main_provider = getattr(main_runner, "provider", None)
-            main_provider_id = (
-                str(main_provider.provider_config.get("id") or "")
-                if main_provider is not None
-                else ""
-            )
             if main_provider_id and prov_id != main_provider_id:
                 logger.info(
                     "[SubAgent:Fork] subagent provider %s != main agent provider %s; "

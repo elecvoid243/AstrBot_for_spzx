@@ -380,12 +380,45 @@ async def test_fork_mode_keeps_fork_on_matching_provider(mock_ctx, mock_event):
         extra={"main_agent_runner": _FakeMainRunner(ToolSet(), provider=main_provider)},
     )
 
-    # tool.provider_id unset -> prov_id falls back to the session's current
-    # provider ("provider-1" from the mock ctx), matching the main runner.
+    # tool.provider_id unset -> prov_id resolves to the main runner's
+    # provider ("provider-1"), identical to the session-chain mock value.
     await run_handoff(make_handoff_tool(), run_context)
     kwargs = get_tool_loop_agent_kwargs(mock_ctx)
     assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
     assert kwargs["system_prompt"] == ""
+
+
+@pytest.mark.asyncio
+async def test_fork_mode_unspecified_provider_uses_main_runner_provider(
+    mock_ctx, mock_event
+):
+    """An unspecified subagent provider resolves to the main runner's provider.
+
+    The session preference chain (``get_current_chat_provider_id``) can
+    disagree with the provider the main agent actually runs on — e.g. the
+    webchat per-request model picker is never persisted into the session
+    preference. Resolving through that chain used to make the fork check
+    see a provider mismatch and silently downgrade to normal mode, so the
+    main runner's provider must win when no explicit provider is set.
+    """
+    SubAgentManager._context_inherit_mode = "fork"
+    main_provider = MagicMock()
+    main_provider.provider_config = {"id": "provider-main"}
+    run_context = make_run_context(
+        mock_ctx,
+        mock_event,
+        make_main_messages(),
+        extra={"main_agent_runner": _FakeMainRunner(ToolSet(), provider=main_provider)},
+    )
+
+    # tool.provider_id unset and the session chain returns "provider-1"
+    # (mock_ctx), but the main runner actually runs on "provider-main".
+    await run_handoff(make_handoff_tool(), run_context)
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
+    assert kwargs["system_prompt"] == ""
+    # The subagent actually executes on the main agent's provider.
+    assert kwargs["chat_provider_id"] == "provider-main"
 
 
 @pytest.mark.asyncio

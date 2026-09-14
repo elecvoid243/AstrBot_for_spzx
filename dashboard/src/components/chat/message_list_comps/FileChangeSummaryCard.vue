@@ -322,17 +322,21 @@ watch(
 </script>
 
 <style scoped>
+/* Visual contract: content cards (code blocks, file previews) stay neutral
+   gray; this is an ACTION card, so it carries a primary-color tint to pull
+   the eye. All colors derive from the theme, so dark mode adapts for free. */
 .fcs-card {
-  margin-top: 6px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  margin-top: 8px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
   border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.02);
+  background: rgba(var(--v-theme-primary), 0.045);
   overflow: hidden;
   font-size: 13px;
 }
 
 .fcs-card--dark {
-  border-color: rgba(var(--v-theme-on-surface), 0.18);
+  border-color: rgba(var(--v-theme-primary), 0.38);
+  background: rgba(var(--v-theme-primary), 0.07);
 }
 
 .fcs-head {
@@ -340,7 +344,8 @@ watch(
   align-items: center;
   gap: 8px;
   padding: 7px 12px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
+  background: rgba(var(--v-theme-primary), 0.08);
+  border-bottom: 1px solid rgba(var(--v-theme-primary), 0.14);
 }
 
 .fcs-head-icon {
@@ -350,7 +355,7 @@ watch(
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: rgba(var(--v-theme-primary), 0.12);
+  background: rgba(var(--v-theme-primary), 0.16);
   color: rgb(var(--v-theme-primary));
   flex: none;
 }
@@ -389,7 +394,7 @@ watch(
 .fcs-row + .fcs-row,
 .fcs-row + .fcs-body,
 .fcs-body + .fcs-row {
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  border-top: 1px solid rgba(var(--v-theme-primary), 0.12);
 }
 
 .fcs-row:hover {

@@ -46,7 +46,7 @@ class OpenApiWebSocketChatBridge:
     create_attachment_from_file: Callable[[str, str], Awaitable[Any]]
     extract_web_search_refs: Callable[[str, list], dict]
     insert_user_message: Callable[[str, str, list], Awaitable[None]]
-    save_bot_message: Callable[[str, list, dict, dict], Awaitable[Any]]
+    save_bot_message: Callable[..., Awaitable[Any]]
 
 
 class OpenApiService:
@@ -456,6 +456,7 @@ class OpenApiService:
 
             message_accumulator = BotMessageAccumulator()
             agent_stats = {}
+            file_changes = {}
             refs = {}
             while True:
                 try:
@@ -487,6 +488,17 @@ class OpenApiService:
                         pass
                     continue
 
+                # 2026-09-13 file change summary: forward the event but
+                # keep it out of the accumulator so the JSON blob never
+                # becomes a literal plain-text part on the saved message.
+                if chain_type == "file_changes":
+                    try:
+                        file_changes = json.loads(result_text)
+                    except Exception:
+                        file_changes = {}
+                    await send_json({"type": "file_changes", "data": file_changes})
+                    continue
+
                 await send_json(result)
 
                 if msg_type == "plain":
@@ -506,7 +518,10 @@ class OpenApiService:
                 should_save = False
                 if msg_type == "end":
                     should_save = bool(
-                        message_accumulator.has_content() or refs or agent_stats
+                        message_accumulator.has_content()
+                        or refs
+                        or agent_stats
+                        or file_changes
                     )
                 elif (streaming and msg_type == "complete") or not streaming:
                     if chain_type not in ("tool_call", "tool_call_result"):
@@ -535,6 +550,7 @@ class OpenApiService:
                         message_parts_to_save,
                         agent_stats,
                         refs,
+                        file_changes=file_changes,
                     )
                     if saved_record:
                         await send_json(
@@ -551,6 +567,7 @@ class OpenApiService:
                         )
                     message_accumulator = BotMessageAccumulator()
                     agent_stats = {}
+                    file_changes = {}
                     refs = {}
                 if msg_type == "end":
                     break

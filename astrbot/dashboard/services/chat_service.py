@@ -305,6 +305,7 @@ def build_bot_history_content(
     message_parts: list[dict],
     *,
     agent_stats: dict | None = None,
+    file_changes: dict | None = None,
     refs: dict | None = None,
     include_reasoning_field: bool = True,
 ) -> dict[str, Any]:
@@ -315,6 +316,8 @@ def build_bot_history_content(
         content["reasoning"] = reasoning
     if agent_stats:
         content["agent_stats"] = agent_stats
+    if file_changes:
+        content["file_changes"] = file_changes
     if refs:
         content["refs"] = refs
     return content
@@ -359,6 +362,10 @@ class BotMessageAccumulator:
         # run_id -> the SAME dict object appended to self.parts, mutated
         # in place as further events arrive.
         self.subagent_runs: dict[str, dict] = {}
+        # 2026-09-13 file change summary: system-stream path routes
+        # `chain_type="file_changes"` payloads through `add_plain`, so the
+        # accumulator needs its own slot (mirrors `pending_agent_stats`).
+        self.pending_file_changes: dict = {}
 
     def has_content(self) -> bool:
         # Author: elecvoid243
@@ -375,6 +382,7 @@ class BotMessageAccumulator:
             or self.pending_text
             or self.pending_tool_calls
             or self.pending_agent_stats
+            or self.pending_file_changes
             or self.subagent_runs
         )
 
@@ -440,6 +448,18 @@ class BotMessageAccumulator:
                 # `json.JSONDecodeError` handling in
                 # `_consume_chat_run` (run.agent_stats = {} on failure).
                 self.pending_agent_stats = {}
+            return
+
+        # 2026-09-13 file change summary: same rationale as the
+        # `agent_stats` branch — parse the JSON blob into a dict instead of
+        # letting it fall through as a literal-JSON plain text part.
+        if chain_type == "file_changes":
+            try:
+                self.pending_file_changes = (
+                    json.loads(result_text) if result_text else {}
+                )
+            except (TypeError, json.JSONDecodeError):
+                self.pending_file_changes = {}
             return
 
         if streaming:
@@ -1000,6 +1020,7 @@ class ChatRunState:
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     message_parts: list[dict] = field(default_factory=list)
     agent_stats: dict = field(default_factory=dict)
+    file_changes: dict = field(default_factory=dict)
     refs: dict = field(default_factory=dict)
     revision: int = 0
     status: str = "running"
@@ -1246,6 +1267,7 @@ class ChatService:
         refs: dict,
         llm_checkpoint_id: str | None = None,
         platform_history_id: str = "webchat",
+        file_changes: dict | None = None,
     ):
         return await self.platform_history_mgr.insert(
             platform_id=platform_history_id,
@@ -1253,6 +1275,7 @@ class ChatService:
             content=build_bot_history_content(
                 message_parts,
                 agent_stats=agent_stats,
+                file_changes=file_changes,
                 refs=refs,
             ),
             sender_id="bot",
@@ -1284,6 +1307,7 @@ class ChatService:
                     "content": build_bot_history_content(
                         deepcopy(run.message_parts),
                         agent_stats=deepcopy(run.agent_stats),
+                        file_changes=deepcopy(run.file_changes),
                         refs=deepcopy(run.refs),
                     ),
                 }
@@ -1382,6 +1406,7 @@ class ChatService:
                 "content": build_bot_history_content(
                     deepcopy(run.message_parts),
                     agent_stats=deepcopy(run.agent_stats),
+                    file_changes=deepcopy(run.file_changes),
                     refs=deepcopy(run.refs),
                 ),
             }
@@ -1511,12 +1536,17 @@ class ChatService:
         pending_accumulator = BotMessageAccumulator()
         display_accumulator = BotMessageAccumulator()
         pending_agent_stats = {}
+        pending_file_changes = {}
         pending_refs = {}
 
         async def flush_pending_bot_message():
             nonlocal pending_accumulator, pending_agent_stats, pending_refs
+            nonlocal pending_file_changes
             if not (
-                pending_accumulator.has_content() or pending_refs or pending_agent_stats
+                pending_accumulator.has_content()
+                or pending_refs
+                or pending_agent_stats
+                or pending_file_changes
             ):
                 return None
 
@@ -1544,9 +1574,11 @@ class ChatService:
                 extracted_refs,
                 run.llm_checkpoint_id,
                 run.platform_history_id,
+                file_changes=pending_file_changes,
             )
             pending_accumulator = BotMessageAccumulator()
             pending_agent_stats = {}
+            pending_file_changes = {}
             pending_refs = {}
             return saved_record
 
@@ -1574,6 +1606,18 @@ class ChatService:
                     self._publish_chat_run(
                         run,
                         {"type": "agent_stats", "data": run.agent_stats},
+                    )
+                    continue
+
+                if chain_type == "file_changes":
+                    try:
+                        run.file_changes = json.loads(result_text)
+                    except (TypeError, json.JSONDecodeError):
+                        run.file_changes = {}
+                    pending_file_changes = run.file_changes
+                    self._publish_chat_run(
+                        run,
+                        {"type": "file_changes", "data": run.file_changes},
                     )
                     continue
 
@@ -1646,6 +1690,7 @@ class ChatService:
                         pending_accumulator.has_content()
                         or pending_refs
                         or pending_agent_stats
+                        or pending_file_changes
                     )
                 elif (streaming and msg_type == "complete") or not streaming:
                     if chain_type not in ("tool_call", "tool_call_result"):
@@ -1790,6 +1835,7 @@ class ChatService:
                     {},
                     None,
                     "webchat",
+                    file_changes=acc.pending_file_changes,
                 )
             except Exception as exc:
                 logger.error(

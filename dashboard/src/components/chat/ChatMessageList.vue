@@ -663,7 +663,9 @@ const emit = defineEmits<{
     selection: RegenerateModelSelection,
   ];
   branch: [message: ChatRecord];
-  branchToggle: [];
+  /** Payload: the new collapsed state after the toggle, so the parent can
+   * sync the scroll strip (inherited markers hidden while collapsed). */
+  branchToggle: [collapsed: boolean];
   selectBotText: [event: MouseEvent, message: ChatRecord];
   openThread: [thread: ChatThread];
   openReasoning: [
@@ -1142,8 +1144,9 @@ function toggleBranchCollapsed() {
     });
   }
   // Notify the parent so scroll markers can be recomputed against the new
-  // row geometry (the toggle only changes v-show, not `props.messages`).
-  emit("branchToggle");
+  // row geometry and collapsed state (the toggle only changes v-show, not
+  // `props.messages`).
+  emit("branchToggle", branchCollapsed.value);
 }
 
 const branchDividerIndex = computed(() =>

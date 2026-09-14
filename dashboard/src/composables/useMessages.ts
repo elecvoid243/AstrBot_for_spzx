@@ -66,6 +66,10 @@ type SessionMarker = {
   id: number;
   index: number;
   snippet: string;
+  /** True when the message was inherited from a branched source session
+   * (older than the branch_info divider) — rendered red and hidden while
+   * the inherited history is collapsed. */
+  inherited: boolean;
 };
 
 /** Session message-marker index, loaded lazily alongside the history. */
@@ -758,6 +762,7 @@ export function useMessages(options: UseMessagesOptions) {
           id: Number(m.id),
           index: Number(m.index),
           snippet: String(m.snippet || ""),
+          inherited: Boolean(m.inherited),
         })),
         totalMessages: Number(payload.total_messages || 0),
         truncated: Boolean(payload.truncated),

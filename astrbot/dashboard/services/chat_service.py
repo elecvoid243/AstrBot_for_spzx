@@ -2680,6 +2680,9 @@ class ChatService:
             Ascending marker list plus the total record count and a
             truncation flag. Indices are 1:1 positions in the full ascending
             history, matching the absolute index space the ChatUI renders.
+            Markers older than a ``branch_info`` divider carry
+            ``inherited=True`` so the ChatUI can color them red and hide
+            them while the inherited history is collapsed.
         """
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:
@@ -2697,6 +2700,7 @@ class ChatService:
         truncated = False
         cursor = None
         position_from_newest = 0
+        inherited = False
         while True:
             page = await self.platform_history_mgr.get(
                 platform_id=platform_id,
@@ -2713,18 +2717,26 @@ class ChatService:
             finished = False
             for record in reversed(page):
                 content = record.content
-                if isinstance(content, dict) and content.get("type") == "user":
-                    if len(markers) >= cap:
-                        truncated = True
-                        finished = True
-                        break
-                    markers.append(
-                        {
-                            "id": record.id,
-                            "index": total - 1 - position_from_newest,
-                            "snippet": extract_platform_message_text(content)[:40],
-                        }
-                    )
+                if isinstance(content, dict):
+                    # The branch divider sits between the inherited records
+                    # and the session's own ones, so in this newest-first
+                    # walk everything below it belongs to the source
+                    # conversation.
+                    if content.get("type") == "branch_info":
+                        inherited = True
+                    elif content.get("type") == "user":
+                        if len(markers) >= cap:
+                            truncated = True
+                            finished = True
+                            break
+                        markers.append(
+                            {
+                                "id": record.id,
+                                "index": total - 1 - position_from_newest,
+                                "snippet": extract_platform_message_text(content)[:40],
+                                "inherited": inherited,
+                            }
+                        )
                 position_from_newest += 1
             if finished:
                 break

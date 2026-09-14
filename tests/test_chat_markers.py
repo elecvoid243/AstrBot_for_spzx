@@ -113,6 +113,33 @@ async def test_markers_iterate_all_history_in_absolute_order(tmp_path):
     assert result["truncated"] is False
 
 
+@pytest.mark.asyncio
+async def test_markers_flag_inherited_before_branch_divider():
+    """branch_info 分隔记录之前的用户消息标记为 inherited，之后的不是。"""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=6)
+    # Ascending history: two inherited records, the divider, then the
+    # session's own messages.
+    service.platform_history_mgr.get = AsyncMock(
+        return_value=[
+            _record(1, "user"),
+            _record(2, "bot"),
+            _record(3, "user"),
+            _record(4, "branch_info"),
+            _record(5, "user"),
+            _record(6, "bot"),
+        ]
+    )
+
+    result = await service.get_message_markers("alice", SRC_SESSION_ID)
+
+    assert [(m["id"], m["index"], m["inherited"]) for m in result["markers"]] == [
+        (1, 0, True),
+        (3, 2, True),
+        (5, 4, False),
+    ]
+
+
 # ---------------------------------------------------------------
 # Service: cursor pass-through, truncation, permission
 # ---------------------------------------------------------------

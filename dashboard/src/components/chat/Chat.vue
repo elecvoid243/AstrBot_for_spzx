@@ -1355,6 +1355,9 @@ const stripRightOffset = ref(0); // scrollbar width (px) so the yellow strip sit
 // A marker jump that has to page older history is in flight — suppress
 // duplicate clicks and show the strip loading hint.
 const jumpInProgress = ref(false);
+// Mirror of ChatMessageList's collapsed branch history (default collapsed
+// there too): inherited scroll markers stay hidden while collapsed.
+const branchHistoryCollapsed = ref(true);
 // While a programmatic scroll animation runs, keep the scroll-top auto-load
 // from firing mid-animation (it would prepend + anchor and cancel the
 // smooth scroll, leaving the viewport off the target).
@@ -3964,19 +3967,23 @@ function updateScrollMarkers() {
   }
   // Session-wide marker index: one dot per user message, positioned by its
   // absolute index so the strip covers the whole session even while the
-  // history window only holds the newest pages.
+  // history window only holds the newest pages. Inherited (branched-source)
+  // markers render red and are hidden while the branch history is
+  // collapsed — matching the visible rows.
   const markerIndex = currSessionId.value
     ? sessionMarkersBySession[currSessionId.value]
     : null;
   if (markerIndex?.loaded && markerIndex.markers.length) {
     const total = Math.max(1, markerIndex.totalMessages);
-    scrollMarkers.value = markerIndex.markers.map((m) => ({
-      id: m.id,
-      index: m.index,
-      topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
-      preview: m.snippet || "…",
-      inherited: false,
-    }));
+    scrollMarkers.value = markerIndex.markers
+      .filter((m) => !m.inherited || !branchHistoryCollapsed.value)
+      .map((m) => ({
+        id: m.id,
+        index: m.index,
+        topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
+        preview: m.snippet || "…",
+        inherited: m.inherited,
+      }));
     return;
   }
   // Fallback: measure the loaded rows (marker index failed to load).
@@ -4010,11 +4017,12 @@ function updateScrollMarkers() {
   scrollMarkers.value = markers;
 }
 
-function onBranchToggle() {
+function onBranchToggle(collapsed: boolean) {
   // Branch history expand/collapse only toggles v-show inside
   // ChatMessageList, so neither the messages watcher nor the container
-  // ResizeObserver fires. Recompute markers explicitly after the layout
-  // settles.
+  // ResizeObserver fires. Track the state for the marker filter and
+  // recompute markers after the layout settles.
+  branchHistoryCollapsed.value = collapsed;
   nextTick(() => updateScrollMarkers());
 }
 

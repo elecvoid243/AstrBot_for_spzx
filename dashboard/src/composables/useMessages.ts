@@ -2253,17 +2253,14 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
   }
   // No final reply, or nothing produced before it — nothing to collapse.
   if (finalStart <= 0) return null;
-  const workBlocks = blocks.slice(0, finalStart);
-  // Interactive choices need user input — they must never hide behind the
-  // collapsed work group.
-  if (
-    workBlocks.some((block) =>
-      block.parts.some((part) => part.type === "interactive_choice"),
-    )
-  ) {
-    return null;
-  }
-  return { workBlocks, finalBlocks: blocks.slice(finalStart) };
+  // Interactive choices collapse like any other work: a pending choice
+  // always trails the message (the run pauses there), so a choice inside
+  // the work group is already resolved history. Expanding the pill renders
+  // it through the same InteractiveChoiceBox path, review options included.
+  return {
+    workBlocks: blocks.slice(0, finalStart),
+    finalBlocks: blocks.slice(finalStart),
+  };
 }
 
 function partToPayload(part: MessagePart) {

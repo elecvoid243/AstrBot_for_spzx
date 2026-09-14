@@ -1,8 +1,9 @@
 // Tests for splitAgentWork — the helper behind the collapsed "worked for
 // ..." pill in the chat message lists. While the agent is working, all
 // blocks render live; once the final reply exists, everything produced
-// before it (thinking / tool-call blocks, intermediate outputs) collapses
-// into an expandable group and only the final reply stays visible.
+// before it (thinking / tool-call blocks, intermediate outputs, resolved
+// interactive choices) collapses into an expandable group and only the
+// final reply stays visible.
 //
 // Block model (see messageBlocks/isThinkingPart): `think` AND `tool_call`
 // parts group into "thinking" blocks (the "thought N times, used M tools"
@@ -84,7 +85,7 @@ describe("splitAgentWork", () => {
     expect(split!.workBlocks).toHaveLength(2);
   });
 
-  it("returns null when an interactive choice sits in the work group", () => {
+  it("collapses a resolved interactive choice into the work group", () => {
     const split = splitAgentWork(
       content([
         THINK,
@@ -93,9 +94,17 @@ describe("splitAgentWork", () => {
         TEXT("final answer"),
       ]),
     );
-    // Interactive choices require user input — they must never hide behind
-    // the collapsed work group.
-    expect(split).toBeNull();
+    // A choice inside the work group is resolved history (a pending choice
+    // always trails the message) — it collapses like any other work and the
+    // expanded pill renders it via the normal choice-box path.
+    expect(split).not.toBeNull();
+    const workTypes = split!.workBlocks.flatMap((block) =>
+      block.parts.map((part) => part.type),
+    );
+    expect(workTypes).toContain("interactive_choice");
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("final answer"),
+    ]);
   });
 
   it("keeps an interactive choice in the final region visible", () => {

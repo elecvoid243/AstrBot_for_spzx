@@ -179,3 +179,64 @@ def test_summary_missing_baseline_degrades(tmp_path: Path):
     assert summary[0]["diff_available"] is False
     assert summary[0]["adds"] is None
     assert len(summary[0]["sha256"]) == 64
+
+
+def test_summary_remove(tmp_path: Path):
+    """Removed files: no content reads, no stats, card renders a removal row."""
+    target = tmp_path / "gone.txt"
+    target.write_text("x\n", encoding="utf-8")
+    summary = asyncio.run(
+        build_turn_change_summary(
+            [
+                {
+                    "path": str(target),
+                    "kind": "remove",
+                    "runtime": "local",
+                    "backup_id": "",
+                    "ts": 1.0,
+                },
+            ]
+        )
+    )
+    assert len(summary) == 1
+    assert summary[0]["kind"] == "remove"
+    assert summary[0]["adds"] is None
+    assert summary[0]["dels"] is None
+    assert summary[0]["sha256"] == ""
+    assert summary[0]["diff_available"] is False
+
+
+def test_summary_edit_then_remove_upgrades_kind(
+    tmp_path: Path, history: EditHistoryManager
+):
+    """An edit followed by a removal must surface as a removal row."""
+    target = tmp_path / "e.txt"
+    target.write_text("v1\n", encoding="utf-8")
+    entry = history.save_backup(str(target), target.read_bytes())
+    target.write_text("v1\nv2\n", encoding="utf-8")
+
+    summary = asyncio.run(
+        build_turn_change_summary(
+            [
+                {
+                    "path": str(target),
+                    "kind": "edit",
+                    "runtime": "local",
+                    "backup_id": entry.id,
+                    "ts": 1.0,
+                },
+                {
+                    "path": str(target),
+                    "kind": "remove",
+                    "runtime": "local",
+                    "backup_id": "",
+                    "ts": 2.0,
+                },
+            ],
+            history=history,
+        )
+    )
+    assert len(summary) == 1
+    assert summary[0]["kind"] == "remove"
+    assert summary[0]["backup_id"] == ""
+    assert summary[0]["diff_available"] is False

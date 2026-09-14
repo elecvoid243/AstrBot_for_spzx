@@ -488,13 +488,20 @@ async def build_turn_change_summary(
         if not isinstance(entry, dict):
             continue
         path = str(entry.get("path") or "")
-        if not path or path in by_path:
+        if not path:
             continue
         try:
             ts = float(entry.get("ts") or 0.0)
         except (TypeError, ValueError):
             ts = 0.0
         if since_ts and ts < since_ts:
+            continue
+        if path in by_path:
+            # The file ended up deleted later in the turn: the summary row
+            # must reflect the removal, not the earlier edit.
+            if entry.get("kind") == "remove":
+                by_path[path]["kind"] = "remove"
+                by_path[path]["backup_id"] = ""
             continue
         by_path[path] = entry
 
@@ -512,6 +519,11 @@ async def build_turn_change_summary(
             "diff_available": False,
         }
         if runtime != "local":
+            summaries.append(summary)
+            continue
+        if summary["kind"] == "remove":
+            # The file no longer exists: nothing to hash or diff. The card
+            # renders a removal row and offers recycle-bin restore.
             summaries.append(summary)
             continue
         try:

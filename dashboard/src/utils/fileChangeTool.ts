@@ -271,7 +271,7 @@ export function collectFileChanges(
  * `file_changes` event (net diff vs the turn's baseline backup). */
 export interface FileChangeSummaryFile {
     path: string;
-    kind: "edit" | "write" | "created" | "rollback";
+    kind: "edit" | "write" | "created" | "rollback" | "remove";
     adds: number | null;
     dels: number | null;
     backup_id: string;

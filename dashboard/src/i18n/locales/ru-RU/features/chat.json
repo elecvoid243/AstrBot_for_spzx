@@ -180,6 +180,7 @@
     "undoConfirm": "Нажмите ещё раз для подтверждения",
     "undoDone": "Изменения {name} отменены",
     "reverted": "Изменения отменены",
+    "removed": "Удалено",
     "undoFailed": "Не удалось отменить: {message}",
     "diffLoadFailed": "Не удалось загрузить diff: {message}",
     "diffTruncated": "Diff слишком большой, показана часть",

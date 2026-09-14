@@ -184,6 +184,7 @@
     "undoConfirm": "Click again to confirm",
     "undoDone": "Reverted {name}",
     "reverted": "Changes reverted",
+    "removed": "Deleted",
     "undoFailed": "Undo failed: {message}",
     "diffLoadFailed": "Failed to load diff: {message}",
     "diffTruncated": "Diff too large; showing partial content",

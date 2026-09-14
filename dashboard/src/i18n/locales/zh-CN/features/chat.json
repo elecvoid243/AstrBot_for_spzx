@@ -184,6 +184,7 @@
     "undoConfirm": "再次点击确认撤销",
     "undoDone": "已撤销对 {name} 的更改",
     "reverted": "已撤销更改",
+    "removed": "已删除",
     "undoFailed": "撤销失败：{message}",
     "diffLoadFailed": "加载 diff 失败：{message}",
     "diffTruncated": "diff 过大，仅显示部分内容",

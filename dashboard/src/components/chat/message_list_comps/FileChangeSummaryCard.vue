@@ -59,6 +59,9 @@
             <v-icon size="11">mdi-check</v-icon>
             {{ tm("fileChanges.reverted") }}
           </span>
+          <span v-else-if="file.kind === 'remove'" class="fcs-muted">
+            {{ tm("fileChanges.removed") }}
+          </span>
           <template v-else-if="file.diff_available && file.adds !== null">
             <span class="stat-adds">+{{ file.adds }}</span>
             <span class="stat-dels">−{{ file.dels }}</span>
@@ -82,7 +85,7 @@
 
         <div class="fcs-actions">
           <v-btn
-            v-if="file.runtime === 'local'"
+            v-if="canOpenFile(file)"
             icon="mdi-open-in-new"
             size="x-small"
             variant="text"
@@ -139,7 +142,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import DiffPreview from "./DiffPreview.vue";
-import { chatApi } from "@/api/v1";
+import { chatApi, pluginExtensionApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import { useToast } from "@/utils/toast";
@@ -186,6 +189,7 @@ function basename(path: string): string {
 
 function kindIcon(kind: string): string {
   if (kind === "created") return "mdi-file-plus-outline";
+  if (kind === "remove") return "mdi-delete-outline";
   if (kind === "rollback") return "mdi-restore";
   return "mdi-file-edit-outline";
 }
@@ -198,7 +202,16 @@ function canExpand(file: FileChangeSummaryFile): boolean {
   return file.diff_available && !isReverted(file);
 }
 
+/** Removals have no file to open (only the parent folder survives). */
+function canOpenFile(file: FileChangeSummaryFile): boolean {
+  return file.runtime === "local" && file.kind !== "remove";
+}
+
 function canUndo(file: FileChangeSummaryFile): boolean {
+  if (file.kind === "remove") {
+    // Recycle-bin restore does not depend on a baseline backup.
+    return file.runtime === "local" && !statusPending.value;
+  }
   return (
     file.runtime === "local" &&
     !!file.backup_id &&
@@ -254,16 +267,25 @@ async function undoFile(file: FileChangeSummaryFile) {
   confirmingPath.value = "";
   restoringPath.value = file.path;
   try {
-    const resp = await chatApi.restoreFileChange(
-      file.path,
-      file.backup_id,
-      file.sha256,
-    );
-    const envelope = resp.data;
-    if (envelope?.status === "error") {
-      toast.error(
-        tm("fileChanges.undoFailed", { message: envelope.message || "" }),
+    let envelope: any;
+    if (file.kind === "remove") {
+      // Removals are undone via the spcode plugin's recycle-bin restore.
+      const resp = await pluginExtensionApi.post("spcode/file-remove/restore", {
+        path: file.path,
+      });
+      envelope = resp.data;
+    } else {
+      const resp = await chatApi.restoreFileChange(
+        file.path,
+        file.backup_id,
+        file.sha256,
       );
+      envelope = resp.data;
+    }
+    if (envelope?.status === "error" || envelope?.data?.success === false) {
+      const message =
+        envelope?.data?.stderr || envelope?.message || envelope?.data?.reason || "";
+      toast.error(tm("fileChanges.undoFailed", { message }));
     } else {
       toast.success(
         tm("fileChanges.undoDone", { name: basename(file.path) }),
@@ -431,6 +453,10 @@ watch(
 
 .fcs-kind--created {
   color: rgb(var(--v-theme-success));
+}
+
+.fcs-kind--remove {
+  color: rgb(var(--v-theme-error));
 }
 
 .fcs-kind--rollback {

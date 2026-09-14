@@ -394,6 +394,12 @@
                     </template>
                   </template>
                 </template>
+
+                <FileChangeSummaryCard
+                  v-if="messageContent(msg).fileChangeSummary?.length"
+                  :files="messageContent(msg).fileChangeSummary || []"
+                  :is-dark="isDark"
+                />
               </template>
             </div>
 
@@ -561,6 +567,7 @@ import RegenerateMenu, {
 } from "@/components/chat/RegenerateMenu.vue";
 import ThreadedMarkdownMessagePart from "@/components/chat/ThreadedMarkdownMessagePart.vue";
 import ReasoningBlock from "@/components/chat/message_list_comps/ReasoningBlock.vue";
+import FileChangeSummaryCard from "@/components/chat/message_list_comps/FileChangeSummaryCard.vue";
 import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue";
 import SubAgentRunBlock from "@/components/chat/message_list_comps/SubAgentRunBlock.vue";
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";

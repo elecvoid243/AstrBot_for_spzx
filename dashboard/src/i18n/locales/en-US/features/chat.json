@@ -175,6 +175,19 @@
     "folderOpened": "Opened the folder containing {name}",
     "folderOpenFailed": "Failed to open folder: {message}"
   },
+  "fileChanges": {
+    "title": "{count} files changed",
+    "sandboxHint": "Sandbox file; diff and undo are unavailable",
+    "noStat": "no stats",
+    "viewDiff": "View diff",
+    "undo": "Undo",
+    "undoConfirm": "Click again to confirm",
+    "undoDone": "Reverted {name}",
+    "undoFailed": "Undo failed: {message}",
+    "diffLoadFailed": "Failed to load diff: {message}",
+    "diffTruncated": "Diff too large; showing partial content",
+    "restoring": "Undoing…"
+  },
   "shellSession": {
     "headers": {
       "list": "Shell sessions ({count})",

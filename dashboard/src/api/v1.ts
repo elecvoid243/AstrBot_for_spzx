@@ -914,6 +914,28 @@ export const chatApi = {
   openLocalFolder(path: string) {
     return typed<any>(openApiV1.openChatLocalFolder({ body: { path } }));
   },
+  fileChangeDiff(path: string, backupId: string, expectSha256: string) {
+    return typed<any>(
+      openApiV1.chatFileChangeDiff({
+        body: {
+          path,
+          backup_id: backupId,
+          expect_sha256: expectSha256,
+        },
+      }),
+    );
+  },
+  restoreFileChange(path: string, backupId: string, expectSha256: string) {
+    return typed<any>(
+      openApiV1.chatFileChangeRestore({
+        body: {
+          path,
+          backup_id: backupId,
+          expect_sha256: expectSha256,
+        },
+      }),
+    );
+  },
   updateMessage(
     sessionId: string,
     messageId: string | number,

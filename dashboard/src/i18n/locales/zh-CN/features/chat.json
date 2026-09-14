@@ -175,6 +175,19 @@
     "folderOpened": "已打开 {name} 所在文件夹",
     "folderOpenFailed": "打开文件夹失败：{message}"
   },
+  "fileChanges": {
+    "title": "{count} 个文件已更改",
+    "sandboxHint": "沙箱文件，暂不支持查看与撤销",
+    "noStat": "无统计",
+    "viewDiff": "查看 diff",
+    "undo": "撤销",
+    "undoConfirm": "再次点击确认撤销",
+    "undoDone": "已撤销对 {name} 的更改",
+    "undoFailed": "撤销失败：{message}",
+    "diffLoadFailed": "加载 diff 失败：{message}",
+    "diffTruncated": "diff 过大，仅显示部分内容",
+    "restoring": "撤销中…"
+  },
   "shellSession": {
     "headers": {
       "list": "Shell 会话（{count}）",

@@ -171,6 +171,19 @@
     "folderOpened": "Открыта папка с файлом {name}",
     "folderOpenFailed": "Не удалось открыть папку: {message}"
   },
+  "fileChanges": {
+    "title": "Изменено файлов: {count}",
+    "sandboxHint": "Файл в песочнице: просмотр и отмена недоступны",
+    "noStat": "нет статистики",
+    "viewDiff": "Открыть diff",
+    "undo": "Отменить",
+    "undoConfirm": "Нажмите ещё раз для подтверждения",
+    "undoDone": "Изменения {name} отменены",
+    "undoFailed": "Не удалось отменить: {message}",
+    "diffLoadFailed": "Не удалось загрузить diff: {message}",
+    "diffTruncated": "Diff слишком большой, показана часть",
+    "restoring": "Отмена…"
+  },
   "shellSession": {
     "headers": {
       "list": "Shell-сессии ({count})",

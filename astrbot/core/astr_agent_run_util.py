@@ -198,6 +198,15 @@ async def run_agent(
                         await astr_event.send(resp.data["chain"])
                     continue
 
+                # End-of-turn file change summary: same dispatch as
+                # agent_stats. Without this branch the streaming-mode
+                # fall-through would silently drop the response and the
+                # ChatUI would never receive the summary card payload.
+                if resp.type == "file_changes":
+                    if astr_event.get_platform_name() == "webchat":
+                        await astr_event.send(resp.data["chain"])
+                    continue
+
                 if resp.type == "tool_call_result":
                     msg_chain = resp.data["chain"]
 

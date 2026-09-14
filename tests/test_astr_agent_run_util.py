@@ -95,3 +95,80 @@ async def test_simulated_stream_tts_leaves_audio_for_deferred_cleanup(tmp_path):
     assert await audio_queue.get() == ("hello", b"audio")
     assert await audio_queue.get() is None
     assert audio_path.exists()
+
+
+class _WebchatEvent(_FakeEvent):
+    """Webchat variant that records chains sent via ``send()``."""
+
+    def __init__(self) -> None:
+        self.sent_chains: list[MessageChain] = []
+
+    def get_platform_name(self) -> str:
+        return "webchat"
+
+    async def send(self, chain: MessageChain) -> None:
+        self.sent_chains.append(chain)
+
+
+class _FileChangesRunner:
+    """Streaming runner that finishes with a single file_changes response."""
+
+    streaming = True
+    req = None
+
+    def __init__(self, event: _WebchatEvent) -> None:
+        self.finished = False
+        self.run_context = SimpleNamespace(context=SimpleNamespace(event=event))
+
+    async def step(self):
+        self.finished = True
+        yield AgentResponse(
+            type="file_changes",
+            data={
+                "chain": MessageChain(
+                    type="file_changes",
+                    chain=[],
+                ).message("payload")
+            },
+        )
+
+    def done(self) -> bool:
+        return self.finished
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_file_changes_on_webchat():
+    """file_changes must reach the webchat event instead of being dropped.
+
+    Mirrors the agent_stats dispatch: without an explicit branch the
+    streaming-mode fall-through silently discards the response, so the
+    ChatUI never receives the end-of-turn file change summary.
+    """
+    event = _WebchatEvent()
+    runner = _FileChangesRunner(event)
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert len(event.sent_chains) == 1
+    assert event.sent_chains[0].type == "file_changes"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_drops_file_changes_off_webchat():
+    """Non-webchat platforms have no summary UI: drop silently."""
+
+    class _OtherPlatformEvent(_FakeEvent):
+        def __init__(self) -> None:
+            self.sent_chains: list[MessageChain] = []
+
+        async def send(self, chain: MessageChain) -> None:
+            self.sent_chains.append(chain)
+
+    event = _OtherPlatformEvent()
+    runner = _FileChangesRunner(event)  # type: ignore[arg-type]
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert event.sent_chains == []

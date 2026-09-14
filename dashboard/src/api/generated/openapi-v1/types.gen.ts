@@ -117,6 +117,15 @@ export type ChatFileChangeRestoreRequest = {
     expect_sha256?: string;
 };
 
+export type ChatFileChangeStatusItem = {
+    path: string;
+    backup_id?: string;
+};
+
+export type ChatFileChangeStatusRequest = {
+    files?: Array<ChatFileChangeStatusItem>;
+};
+
 /**
  * Per-request ChatUI feature flags. A value here takes priority over its legacy top-level field, followed by the documented default.
  */
@@ -1654,6 +1663,14 @@ export type ChatFileChangeRestoreData = {
 export type ChatFileChangeRestoreResponse = (SuccessEnvelope);
 
 export type ChatFileChangeRestoreError = unknown;
+
+export type ChatFileChangeStatusData = {
+    body: ChatFileChangeStatusRequest;
+};
+
+export type ChatFileChangeStatusResponse = (SuccessEnvelope);
+
+export type ChatFileChangeStatusError = unknown;
 
 export type ResumeChatRunData = {
     path: {

@@ -936,6 +936,11 @@ export const chatApi = {
       }),
     );
   },
+  fileChangeStatus(files: { path: string; backup_id: string }[]) {
+    return typed<any>(
+      openApiV1.chatFileChangeStatus({ body: { files } }),
+    );
+  },
   updateMessage(
     sessionId: string,
     messageId: string | number,

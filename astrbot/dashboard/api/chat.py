@@ -25,6 +25,7 @@ from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.schemas import (
     ChatFileChangeDiffRequest,
     ChatFileChangeRestoreRequest,
+    ChatFileChangeStatusRequest,
     ChatMessagePatchRequest,
     ChatMessageRegenerateRequest,
     ChatOpenFileRequest,
@@ -565,6 +566,40 @@ async def chat_file_change_restore(
     except OSError as exc:
         return error(f"Failed to restore file: {exc}")
     return ok({"path": raw_path, "restored_to": payload.backup_id})
+
+
+@router.post("/chat/file-changes/status")
+async def chat_file_change_status(
+    payload: ChatFileChangeStatusRequest,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    """Report which turn-changed files already match their baseline.
+
+    Backs the "changes reverted" badge on the file change summary card: a
+    file whose current bytes equal its pre-turn baseline is reported as
+    reverted, no matter how it got that way (card undo, the LLM's own
+    rollback tool, or a manual revert). Derived per request, so the badge
+    survives reloads and never goes stale.
+    """
+    history = get_history_manager()
+    result: list[dict] = []
+    for item in payload.files[:50]:
+        path = item.path.strip()
+        reverted = False
+        if path and item.backup_id:
+            try:
+                _, baseline_bytes = await asyncio.to_thread(
+                    history.read_backup, path, item.backup_id
+                )
+                current_bytes = await asyncio.to_thread(Path(path).read_bytes)
+                reverted = (
+                    hashlib.sha256(baseline_bytes).hexdigest()
+                    == hashlib.sha256(current_bytes).hexdigest()
+                )
+            except (ValueError, FileNotFoundError, OSError):
+                reverted = False
+        result.append({"path": path, "reverted": reverted})
+    return ok({"files": result})
 
 
 @router.get("/chat/runs/{run_id}/stream")

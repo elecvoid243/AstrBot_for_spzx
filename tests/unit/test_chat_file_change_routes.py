@@ -112,3 +112,43 @@ async def test_restore_route_ok(seeded, monkeypatch):
     # The pre-restore content must have been snapshotted before overwriting.
     entries = history.list_backups(str(target))
     assert any("[pre-restore snapshot]" == e.diff_preview for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_status_route_reports_reverted(seeded, monkeypatch):
+    """A file whose content matches its baseline is reported as reverted."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    target, history, backup_id = seeded
+    monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
+    target.write_bytes(b"v1\n")  # Simulate a revert.
+    payload = chat_api.ChatFileChangeStatusRequest(
+        files=[chat_api.ChatFileChangeStatusItem(path=str(target), backup_id=backup_id)]
+    )
+
+    resp = await chat_api.chat_file_change_status(payload, None)
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["files"] == [{"path": str(target), "reverted": True}]
+
+
+@pytest.mark.asyncio
+async def test_status_route_reports_active_change(seeded, monkeypatch):
+    from astrbot.dashboard.api import chat as chat_api
+
+    target, history, backup_id = seeded
+    monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
+    payload = chat_api.ChatFileChangeStatusRequest(
+        files=[
+            chat_api.ChatFileChangeStatusItem(path=str(target), backup_id=backup_id),
+            chat_api.ChatFileChangeStatusItem(path=str(target), backup_id="bogus"),
+        ]
+    )
+
+    resp = await chat_api.chat_file_change_status(payload, None)
+
+    assert resp["status"] == "ok"
+    files = resp["data"]["files"]
+    # File still differs from the baseline → active; bogus backup → not reverted.
+    assert files[0]["reverted"] is False
+    assert files[1]["reverted"] is False

@@ -171,6 +171,7 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/file-access-mode/roots` | — |
 | `POST` | `/api/v1/chat/file-changes/diff` | — |
 | `POST` | `/api/v1/chat/file-changes/restore` | — |
+| `POST` | `/api/v1/chat/file-changes/status` | — |
 | `POST` | `/api/v1/chat/open-file` | — |
 | `POST` | `/api/v1/chat/open-folder` | — |
 | `GET` | `/api/v1/chat/projects` | — |

@@ -1575,6 +1575,22 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/file-changes/status:
+    post:
+      tags: [Chat]
+      summary: Report which files already match their pre-turn baseline content
+      operationId: chatFileChangeStatus
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatFileChangeStatusRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/runs/{run_id}/stream:
     get:
       tags: [Chat]
@@ -6253,6 +6269,25 @@ components:
           type: string
         expect_sha256:
           type: string
+      additionalProperties: false
+
+    ChatFileChangeStatusItem:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        backup_id:
+          type: string
+      additionalProperties: false
+
+    ChatFileChangeStatusRequest:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatFileChangeStatusItem"
       additionalProperties: false
 
     ChatMessagePatchRequest:

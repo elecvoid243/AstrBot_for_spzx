@@ -159,6 +159,19 @@ class ChatFileChangeRestoreRequest(OpenModel):
     expect_sha256: str = ""
 
 
+class ChatFileChangeStatusItem(OpenModel):
+    """One file to check against its pre-turn baseline backup."""
+
+    path: str
+    backup_id: str = ""
+
+
+class ChatFileChangeStatusRequest(OpenModel):
+    """Batch request checking which turn-changed files match their baseline."""
+
+    files: list[ChatFileChangeStatusItem] = []
+
+
 class ChatMessagePatchRequest(OpenModel):
     content: dict[str, Any]
 

@@ -137,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import DiffPreview from "./DiffPreview.vue";
 import { chatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -155,8 +155,12 @@ const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
 const toast = useToast();
 
 const expanded = reactive(new Set<string>());
-/** Paths reverted during this mount: collapse the row, badge it, lock actions. */
+/** Paths known to match their baseline: collapsed, badged, actions locked.
+ * Seeded by the end-of-turn undo and re-derived from the backend on load,
+ * so the badge survives refreshes and covers LLM/manual reverts too. */
 const reverted = reactive(new Set<string>());
+/** True while the backend revert-status check has not answered yet. */
+const statusPending = ref(false);
 const diffs = reactive<Record<string, { diff: string; truncated: boolean }>>(
   {},
 );
@@ -195,7 +199,12 @@ function canExpand(file: FileChangeSummaryFile): boolean {
 }
 
 function canUndo(file: FileChangeSummaryFile): boolean {
-  return file.runtime === "local" && !!file.backup_id && !isReverted(file);
+  return (
+    file.runtime === "local" &&
+    !!file.backup_id &&
+    !isReverted(file) &&
+    !statusPending.value
+  );
 }
 
 function toggleRow(file: FileChangeSummaryFile) {
@@ -260,9 +269,7 @@ async function undoFile(file: FileChangeSummaryFile) {
         tm("fileChanges.undoDone", { name: basename(file.path) }),
       );
       // File reverted: collapse the row, drop the cached diff and badge it.
-      delete diffs[file.path];
-      expanded.delete(file.path);
-      reverted.add(file.path);
+      markReverted(file.path);
     }
   } catch (error) {
     console.error("undo request failed:", error);
@@ -270,6 +277,48 @@ async function undoFile(file: FileChangeSummaryFile) {
     restoringPath.value = "";
   }
 }
+
+function markReverted(path: string) {
+  delete diffs[path];
+  expanded.delete(path);
+  reverted.add(path);
+}
+
+/** Derive the reverted badge from backend truth: a local file whose
+ * current bytes equal its baseline backup is reverted, however that
+ * happened (our undo, the LLM's rollback tool, or a manual revert). */
+async function refreshRevertStatus() {
+  const candidates = props.files.filter(
+    (f) => f.runtime === "local" && f.backup_id && !reverted.has(f.path),
+  );
+  if (!candidates.length) return;
+  statusPending.value = true;
+  try {
+    const resp = await chatApi.fileChangeStatus(
+      candidates.map((f) => ({ path: f.path, backup_id: f.backup_id })),
+    );
+    const envelope = resp.data;
+    if (envelope?.status === "ok" && Array.isArray(envelope.data?.files)) {
+      for (const item of envelope.data.files) {
+        if (item?.reverted && typeof item.path === "string") {
+          markReverted(item.path);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("file change status request failed:", error);
+  } finally {
+    statusPending.value = false;
+  }
+}
+
+watch(
+  () => props.files,
+  (files) => {
+    if (files.length) void refreshRevertStatus();
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>

@@ -143,6 +143,22 @@ class ChatOpenFileRequest(OpenModel):
     path: str
 
 
+class ChatFileChangeDiffRequest(OpenModel):
+    """Request the net diff for one file changed during an agent turn."""
+
+    path: str
+    backup_id: str = ""
+    expect_sha256: str = ""
+
+
+class ChatFileChangeRestoreRequest(OpenModel):
+    """Request to undo one file changed during an agent turn."""
+
+    path: str
+    backup_id: str
+    expect_sha256: str = ""
+
+
 class ChatMessagePatchRequest(OpenModel):
     content: dict[str, Any]
 

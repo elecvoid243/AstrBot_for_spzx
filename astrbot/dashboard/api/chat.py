@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from astrbot import logger
 from astrbot.core.tools import fs_access
+from astrbot.core.tools.computer_tools.edit_history import (
+    get_history_manager,
+    render_unified_diff,
+)
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
     get_astrbot_temp_path,
@@ -18,6 +23,8 @@ from astrbot.core.utils.astrbot_path import (
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.schemas import (
+    ChatFileChangeDiffRequest,
+    ChatFileChangeRestoreRequest,
     ChatMessagePatchRequest,
     ChatMessageRegenerateRequest,
     ChatOpenFileRequest,
@@ -465,6 +472,99 @@ async def open_chat_local_folder(
     except OSError as exc:
         return error(f"Failed to open folder: {exc}")
     return ok({"path": str(folder)})
+
+
+@router.post("/chat/file-changes/diff")
+async def chat_file_change_diff(
+    payload: ChatFileChangeDiffRequest,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    """Unified diff between a turn's baseline backup and the current file.
+
+    Backs the ChatUI end-of-turn file change summary card. When
+    ``backup_id`` is empty (files created during the turn), the caller must
+    prove knowledge of the content hash recorded at the end of the run —
+    otherwise this endpoint would be an arbitrary file-read primitive.
+    """
+    raw_path = payload.path.strip()
+    if not raw_path:
+        return error("Missing file path")
+    target = Path(raw_path)
+    if not target.is_file():
+        return error(f"File not found: {raw_path}")
+    history = get_history_manager()
+    if payload.backup_id:
+        try:
+            _, baseline_bytes = await asyncio.to_thread(
+                history.read_backup, raw_path, payload.backup_id
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return error(str(exc))
+        except OSError as exc:
+            return error(f"Failed to read backup: {exc}")
+    else:
+        if not payload.expect_sha256:
+            return error("expect_sha256 is required when backup_id is empty")
+        try:
+            probe = await asyncio.to_thread(target.read_bytes)
+        except OSError as exc:
+            return error(f"Failed to read file: {exc}")
+        if hashlib.sha256(probe).hexdigest() != payload.expect_sha256:
+            return error("File content does not match the recorded checksum")
+        baseline_bytes = b""
+    try:
+        current_bytes = await asyncio.to_thread(target.read_bytes)
+    except OSError as exc:
+        return error(f"Failed to read file: {exc}")
+    return ok(render_unified_diff(baseline_bytes, current_bytes, raw_path))
+
+
+@router.post("/chat/file-changes/restore")
+async def chat_file_change_restore(
+    payload: ChatFileChangeRestoreRequest,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    """Restore a file to its pre-turn baseline backup (undo one file).
+
+    Mirrors the tool-level rollback safety: the current content is saved as
+    a pre-restore snapshot before overwriting, and a checksum mismatch
+    (file changed after the agent run) aborts the restore.
+    """
+    raw_path = payload.path.strip()
+    if not raw_path:
+        return error("Missing file path")
+    target = Path(raw_path)
+    if not target.is_file():
+        return error(f"File not found: {raw_path}")
+    history = get_history_manager()
+    try:
+        _, baseline_bytes = await asyncio.to_thread(
+            history.read_backup, raw_path, payload.backup_id
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        return error(str(exc))
+    except OSError as exc:
+        return error(f"Failed to read backup: {exc}")
+    try:
+        current_bytes = await asyncio.to_thread(target.read_bytes)
+    except OSError as exc:
+        return error(f"Failed to read file: {exc}")
+    if payload.expect_sha256 and (
+        hashlib.sha256(current_bytes).hexdigest() != payload.expect_sha256
+    ):
+        return error("File has been modified since the agent run; restore aborted.")
+    try:
+        await asyncio.to_thread(
+            history.save_backup,
+            raw_path,
+            current_bytes,
+            runtime="local",
+            diff_preview="[pre-restore snapshot]",
+        )
+        await asyncio.to_thread(target.write_bytes, baseline_bytes)
+    except OSError as exc:
+        return error(f"Failed to restore file: {exc}")
+    return ok({"path": raw_path, "restored_to": payload.backup_id})
 
 
 @router.get("/chat/runs/{run_id}/stream")

@@ -1808,6 +1808,114 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/file-access-mode": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Get the effective file access mode for a session",
+        "operationId": "getFileAccessMode",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "name": "umo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Set the file access mode for a session",
+        "operationId": "setFileAccessMode",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "umo",
+                  "mode"
+                ],
+                "properties": {
+                  "umo": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "readonly",
+                      "workspace"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/file-access-mode/roots": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Replace a session's custom workspace whitelist roots",
+        "operationId": "setFileAccessRoots",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "umo",
+                  "roots"
+                ],
+                "properties": {
+                  "umo": {
+                    "type": "string"
+                  },
+                  "roots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/sessions/new": {
       "get": {
         "tags": [
@@ -1852,6 +1960,149 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/batch-archive": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Archive multiple webchat sessions",
+        "operationId": "batchArchiveChatSessions",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/batch-unarchive": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Restore multiple archived webchat sessions",
+        "operationId": "batchUnarchiveChatSessions",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionBatchDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/archived": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "List archived webchat sessions",
+        "operationId": "listArchivedChatSessions",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "name": "platform_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/archive": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Archive a webchat session",
+        "operationId": "archiveChatSession",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/unarchive": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Restore an archived webchat session",
+        "operationId": "unarchiveChatSession",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
@@ -1929,6 +2180,88 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/sessions/{session_id}/history": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Page one batch of history older than before_id for a session",
+        "operationId": "getChatSessionHistory",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "name": "before_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Exclusive cursor; only records with a smaller id are returned."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50
+            },
+            "description": "Page size."
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/markers": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Return the user-message marker index for a session",
+        "operationId": "getChatSessionMarkers",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/goal": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Return the standing-goal state for a session (null when none)",
+        "operationId": "getChatSessionGoal",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/sessions/{session_id}/stop": {
       "post": {
         "tags": [
@@ -1942,6 +2275,110 @@
             "$ref": "#/components/parameters/SessionId"
           }
         ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/open-file": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Open a local file on the AstrBot host with the OS default application",
+        "operationId": "openChatLocalFile",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatOpenFileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/open-folder": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Open the folder containing a local file on the AstrBot host",
+        "operationId": "openChatLocalFolder",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatOpenFileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/file-changes/diff": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Unified diff between a file-change baseline backup and the current file",
+        "operationId": "chatFileChangeDiff",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFileChangeDiffRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/file-changes/restore": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Restore a file to its pre-turn baseline backup",
+        "operationId": "chatFileChangeRestore",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFileChangeRestoreRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
@@ -2079,7 +2516,8 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        }
+        },
+        "description": "**Required scope:** `chat`"
       }
     },
     "/api/v1/chat/configs": {
@@ -2490,6 +2928,15 @@
           },
           {
             "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "name": "position",
+            "in": "query",
+            "required": false,
+            "description": "0-based insertion index in the project session list (omitted prepends to top)",
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -3410,53 +3857,6 @@
         ],
         "summary": "Set plugin log level",
         "description": "Set the log level of a plugin. Pass null to follow the global log level.\n\n**Required scope:** `plugin`",
-        "operationId": "updatePluginLogLevel",
-        "x-astrbot-scope": "plugin",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/PluginId"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "level": {
-                    "type": "string",
-                    "nullable": true,
-                    "enum": [
-                      "DEBUG",
-                      "INFO",
-                      "WARNING",
-                      "ERROR",
-                      "CRITICAL",
-                      null
-                    ],
-                    "description": "Log level name, or null to follow the global level."
-                  }
-                },
-                "additionalProperties": true
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/Ok"
-          }
-        }
-      }
-    },
-    "/api/v1/plugins/{plugin_id}/log-level": {
-      "put": {
-        "tags": [
-          "Plugins"
-        ],
-        "summary": "Set plugin log level",
-        "description": "Set the log level of a plugin. Pass null to follow the global log level.",
         "operationId": "updatePluginLogLevel",
         "x-astrbot-scope": "plugin",
         "parameters": [
@@ -6759,6 +7159,551 @@
         },
         "description": "**Required scope:** `config`"
       }
+    },
+    "/api/v1/agent_teams": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "List agent teams owned by the current user",
+        "operationId": "listAgentTeams",
+        "x-astrbot-scope": "chat",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Create a team and all member sessions",
+        "operationId": "createAgentTeam",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamCreatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Get one team",
+        "operationId": "getAgentTeam",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "patch": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Update team name/coordinator/config",
+        "operationId": "updateAgentTeam",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamUpdatePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "delete": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Delete a team (member sessions are preserved)",
+        "operationId": "deleteAgentTeam",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}/members": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Add a member (creates its WebChat session server-side)",
+        "operationId": "addAgentTeamMember",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamMemberPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}/members/{member_id}": {
+      "delete": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Remove a member",
+        "operationId": "removeAgentTeamMember",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/MemberIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}/workflows": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "List the team's workflow templates",
+        "operationId": "listAgentTeamWorkflows",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Create a workflow template",
+        "operationId": "createAgentTeamWorkflow",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamWorkflowPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}/workflows/{workflow_id}": {
+      "put": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Update a workflow template (graph + layout, server-validated)",
+        "operationId": "updateAgentTeamWorkflow",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/WorkflowIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamWorkflowPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "delete": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Delete a workflow template",
+        "operationId": "deleteAgentTeamWorkflow",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/WorkflowIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/{team_id}/runs": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "List the team's run history (full rows incl. graph/node_states)",
+        "operationId": "listAgentTeamRuns",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Start a run (409 when the team already has an active run)",
+        "operationId": "startAgentTeamRun",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TeamIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentTeamRunStartPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/active": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "List the user's active runs with snapshots",
+        "operationId": "listActiveAgentTeamRuns",
+        "x-astrbot-scope": "chat",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/pause": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Pause a run",
+        "operationId": "pauseAgentTeamRun",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/resume": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Resume a paused or interrupted run",
+        "operationId": "resumeAgentTeamRun",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/stop": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Stop a run",
+        "operationId": "stopAgentTeamRun",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/retry": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Retry a failed node",
+        "operationId": "retryAgentTeamNode",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/NodeIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/skip": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Skip a failed node and cascade-skip its successors",
+        "operationId": "skipAgentTeamNode",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/NodeIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/members/{member_id}/interrupt": {
+      "post": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Interrupt one member's in-flight turn",
+        "operationId": "interruptAgentTeamMember",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/MemberIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/members/{member_id}/transcript": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Page one member's transcript rows chronologically",
+        "operationId": "getAgentTeamMemberTranscript",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/MemberIdPath"
+          },
+          {
+            "name": "before_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Exclusive cursor; only rows with a smaller id are returned."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50
+            },
+            "description": "Page size."
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/agent_teams/runs/{run_id}/stream": {
+      "get": {
+        "tags": [
+          "AgentTeams"
+        ],
+        "summary": "Server-sent events for one run (full history replay, then live, heartbeats)",
+        "operationId": "streamAgentTeamRun",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent run event stream or an error envelope",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
     }
   },
   "components": {
@@ -6781,6 +7726,16 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/SuccessEnvelope"
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Standard AstrBot error response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
             }
           }
         }
@@ -6968,6 +7923,46 @@
         "schema": {
           "type": "string"
         }
+      },
+      "TeamIdPath": {
+        "name": "team_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "MemberIdPath": {
+        "name": "member_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "WorkflowIdPath": {
+        "name": "workflow_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RunIdPath": {
+        "name": "run_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "NodeIdPath": {
+        "name": "node_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
       }
     },
     "schemas": {
@@ -6981,6 +7976,24 @@
           "status": {
             "type": "string",
             "const": "ok"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {}
+        },
+        "additionalProperties": false
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "status",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "error"
           },
           "message": {
             "type": "string"
@@ -7291,6 +8304,55 @@
         },
         "additionalProperties": false
       },
+      "ChatOpenFileRequest": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatFileChangeDiffRequest": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "backup_id": {
+            "type": "string"
+          },
+          "expect_sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatFileChangeRestoreRequest": {
+        "type": "object",
+        "required": [
+          "path",
+          "backup_id"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "backup_id": {
+            "type": "string"
+          },
+          "expect_sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "ChatMessagePatchRequest": {
         "type": "object",
         "required": [
@@ -7413,6 +8475,28 @@
           "workspace_path": {
             "type": "string",
             "description": "Dashboard-only custom workspace path. API key callers cannot set this field."
+          },
+          "spcode_auto_load": {
+            "type": "boolean",
+            "nullable": true,
+            "default": true,
+            "deprecated": true,
+            "description": "Legacy silent-load switch. Since 2026-09-09 custom-workspace projects always load silently; the field is kept for backward compatibility only."
+          },
+          "spcode_force": {
+            "type": "boolean",
+            "nullable": true,
+            "default": false
+          },
+          "spcode_no_agentsmd": {
+            "type": "boolean",
+            "nullable": true,
+            "default": false
+          },
+          "spcode_no_codegraph": {
+            "type": "boolean",
+            "nullable": true,
+            "default": false
           }
         },
         "additionalProperties": false
@@ -8139,6 +9223,171 @@
           }
         },
         "additionalProperties": true
+      },
+      "AgentTeamMemberPayload": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "persona_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentTeamCreatePayload": {
+        "type": "object",
+        "required": [
+          "name",
+          "members",
+          "coordinator"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentTeamMemberPayload"
+            }
+          },
+          "coordinator": {
+            "type": "string"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "AgentTeamUpdatePayload": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "WorkflowNode": {
+        "type": "object",
+        "required": [
+          "id",
+          "member_id",
+          "task"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "member_id": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WorkflowEdge": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkflowGraph": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowNode"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEdge"
+            }
+          }
+        }
+      },
+      "AgentTeamWorkflowPayload": {
+        "type": "object",
+        "required": [
+          "name",
+          "graph"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/WorkflowGraph"
+          },
+          "layout": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "AgentTeamRunStartPayload": {
+        "type": "object",
+        "required": [
+          "mode",
+          "input"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "dag"
+            ]
+          },
+          "input": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       }
     }
   }

@@ -105,6 +105,18 @@ export type BotRegistrationRequest = {
 
 export type action = 'start' | 'poll';
 
+export type ChatFileChangeDiffRequest = {
+    path: string;
+    backup_id?: string;
+    expect_sha256?: string;
+};
+
+export type ChatFileChangeRestoreRequest = {
+    path: string;
+    backup_id: string;
+    expect_sha256?: string;
+};
+
 /**
  * Per-request ChatUI feature flags. A value here takes priority over its legacy top-level field, followed by the documented default.
  */
@@ -1626,6 +1638,22 @@ export type OpenChatLocalFolderData = {
 export type OpenChatLocalFolderResponse = (SuccessEnvelope);
 
 export type OpenChatLocalFolderError = unknown;
+
+export type ChatFileChangeDiffData = {
+    body: ChatFileChangeDiffRequest;
+};
+
+export type ChatFileChangeDiffResponse = (SuccessEnvelope);
+
+export type ChatFileChangeDiffError = unknown;
+
+export type ChatFileChangeRestoreData = {
+    body: ChatFileChangeRestoreRequest;
+};
+
+export type ChatFileChangeRestoreResponse = (SuccessEnvelope);
+
+export type ChatFileChangeRestoreError = unknown;
 
 export type ResumeChatRunData = {
     path: {

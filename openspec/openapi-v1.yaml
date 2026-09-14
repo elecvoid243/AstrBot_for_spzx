@@ -1543,6 +1543,38 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/file-changes/diff:
+    post:
+      tags: [Chat]
+      summary: Unified diff between a file-change baseline backup and the current file
+      operationId: chatFileChangeDiff
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatFileChangeDiffRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/file-changes/restore:
+    post:
+      tags: [Chat]
+      summary: Restore a file to its pre-turn baseline backup
+      operationId: chatFileChangeRestore
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatFileChangeRestoreRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/runs/{run_id}/stream:
     get:
       tags: [Chat]
@@ -6196,6 +6228,30 @@ components:
       required: [path]
       properties:
         path:
+          type: string
+      additionalProperties: false
+
+    ChatFileChangeDiffRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        backup_id:
+          type: string
+        expect_sha256:
+          type: string
+      additionalProperties: false
+
+    ChatFileChangeRestoreRequest:
+      type: object
+      required: [path, backup_id]
+      properties:
+        path:
+          type: string
+        backup_id:
+          type: string
+        expect_sha256:
           type: string
       additionalProperties: false
 

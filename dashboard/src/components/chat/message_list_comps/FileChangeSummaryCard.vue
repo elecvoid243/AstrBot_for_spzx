@@ -11,102 +11,106 @@
   Row actions: expand → lazily fetch the unified diff
   (POST /chat/file-changes/diff), open on disk (existing
   useOpenOnDisk composable), two-click inline undo
-  (POST /chat/file-changes/restore).
+  (POST /chat/file-changes/restore). A reverted row collapses, shows
+  a "changes reverted" badge and disables further diff/undo actions.
 
   Author: elecvoid243 | 2026-09-13
 -->
 <template>
   <div
-    class="file-change-summary"
-    :class="{ 'file-change-summary--dark': isDark }"
+    class="fcs-card"
+    :class="{ 'fcs-card--dark': isDark }"
   >
-    <div class="file-change-summary-head">
-      <v-icon size="14">mdi-file-edit-outline</v-icon>
-      <span class="file-change-summary-title">
+    <div class="fcs-head">
+      <span class="fcs-head-icon">
+        <v-icon size="13">mdi-file-edit-outline</v-icon>
+      </span>
+      <span class="fcs-title">
         {{ tm("fileChanges.title", { count: files.length }) }}
       </span>
-      <span v-if="totalAdds !== null" class="file-change-summary-total">
+      <span v-if="totalAdds !== null" class="fcs-total">
         <span class="stat-adds">+{{ totalAdds }}</span>
         <span class="stat-dels">−{{ totalDels }}</span>
       </span>
     </div>
 
-    <div
-      v-for="file in files"
-      :key="file.path"
-      class="file-change-summary-row"
-    >
-      <button
-        type="button"
-        class="file-change-summary-file"
-        :disabled="!file.diff_available"
-        :title="file.diff_available ? tm('fileChanges.viewDiff') : undefined"
-        @click="toggleRow(file)"
+    <template v-for="file in files" :key="file.path">
+      <div
+        class="fcs-row"
+        :class="{ 'fcs-row--reverted': isReverted(file) }"
       >
-        <v-icon size="14">{{ kindIcon(file.kind) }}</v-icon>
-        <span class="file-change-summary-name" :title="file.path">
-          {{ basename(file.path) }}
-        </span>
-        <template v-if="file.diff_available && file.adds !== null">
-          <span class="stat-adds">+{{ file.adds }}</span>
-          <span class="stat-dels">−{{ file.dels }}</span>
-        </template>
-        <span v-else class="file-change-summary-muted">
-          {{
-            file.runtime === "sandbox"
-              ? tm("fileChanges.sandboxHint")
-              : tm("fileChanges.noStat")
-          }}
-        </span>
-        <v-icon
-          v-if="file.diff_available"
-          size="16"
-          class="file-change-summary-chevron"
-          :class="{ expanded: expanded.has(file.path) }"
+        <button
+          type="button"
+          class="fcs-file"
+          :disabled="!canExpand(file)"
+          @click="toggleRow(file)"
         >
-          mdi-chevron-right
-        </v-icon>
-      </button>
+          <v-icon size="15" class="fcs-kind" :class="`fcs-kind--${file.kind}`">
+            {{ kindIcon(file.kind) }}
+          </v-icon>
+          <span class="fcs-name" :title="file.path">
+            {{ basename(file.path) }}
+          </span>
+          <span
+            v-if="isReverted(file)"
+            class="fcs-reverted-badge"
+          >
+            <v-icon size="11">mdi-check</v-icon>
+            {{ tm("fileChanges.reverted") }}
+          </span>
+          <template v-else-if="file.diff_available && file.adds !== null">
+            <span class="stat-adds">+{{ file.adds }}</span>
+            <span class="stat-dels">−{{ file.dels }}</span>
+          </template>
+          <span v-else class="fcs-muted">
+            {{
+              file.runtime === "sandbox"
+                ? tm("fileChanges.sandboxHint")
+                : tm("fileChanges.noStat")
+            }}
+          </span>
+          <v-icon
+            v-if="canExpand(file)"
+            size="15"
+            class="fcs-chevron"
+            :class="{ expanded: expanded.has(file.path) }"
+          >
+            mdi-chevron-right
+          </v-icon>
+        </button>
 
-      <div class="file-change-summary-actions">
-        <v-btn
-          v-if="file.runtime === 'local'"
-          icon="mdi-open-in-new"
-          size="x-small"
-          variant="text"
-          :title="tm('fileChange.openOnDisk')"
-          @click.stop="openOnDisk(file.path, basename(file.path))"
-        />
-        <v-btn
-          v-if="canUndo(file)"
-          icon="mdi-undo"
-          size="x-small"
-          variant="text"
-          :color="confirmingPath === file.path ? 'error' : undefined"
-          :loading="restoringPath === file.path"
-          :title="
-            confirmingPath === file.path
-              ? tm('fileChanges.undoConfirm')
-              : tm('fileChanges.undo')
-          "
-          @click.stop="undoFile(file)"
-        />
+        <div class="fcs-actions">
+          <v-btn
+            v-if="file.runtime === 'local'"
+            icon="mdi-open-in-new"
+            size="x-small"
+            variant="text"
+            :title="tm('fileChange.openOnDisk')"
+            @click.stop="openOnDisk(file.path, basename(file.path))"
+          />
+          <v-btn
+            v-if="canUndo(file)"
+            icon="mdi-undo"
+            size="x-small"
+            variant="text"
+            :color="confirmingPath === file.path ? 'error' : undefined"
+            :loading="restoringPath === file.path"
+            :title="
+              confirmingPath === file.path
+                ? tm('fileChanges.undoConfirm')
+                : tm('fileChanges.undo')
+            "
+            @click.stop="undoFile(file)"
+          />
+        </div>
       </div>
-    </div>
 
-    <template v-for="file in files" :key="`body-${file.path}`">
-      <div v-if="expanded.has(file.path)" class="file-change-summary-body">
-        <div
-          v-if="loadingPath === file.path"
-          class="file-change-summary-loading"
-        >
+      <div v-if="expanded.has(file.path)" class="fcs-body">
+        <div v-if="loadingPath === file.path" class="fcs-loading">
           <v-progress-circular indeterminate size="14" width="2" />
         </div>
         <template v-else-if="diffs[file.path]">
-          <div
-            v-if="diffs[file.path].truncated"
-            class="file-change-summary-muted file-change-summary-truncated"
-          >
+          <div v-if="diffs[file.path].truncated" class="fcs-muted fcs-truncated">
             {{ tm("fileChanges.diffTruncated") }}
           </div>
           <DiffPreview
@@ -142,6 +146,8 @@ const { openOnDisk } = useOpenOnDisk("fileChange");
 const toast = useToast();
 
 const expanded = reactive(new Set<string>());
+/** Paths reverted during this mount: collapse the row, badge it, lock actions. */
+const reverted = reactive(new Set<string>());
 const diffs = reactive<Record<string, { diff: string; truncated: boolean }>>(
   {},
 );
@@ -171,12 +177,20 @@ function kindIcon(kind: string): string {
   return "mdi-file-edit-outline";
 }
 
+function isReverted(file: FileChangeSummaryFile): boolean {
+  return reverted.has(file.path);
+}
+
+function canExpand(file: FileChangeSummaryFile): boolean {
+  return file.diff_available && !isReverted(file);
+}
+
 function canUndo(file: FileChangeSummaryFile): boolean {
-  return file.runtime === "local" && !!file.backup_id;
+  return file.runtime === "local" && !!file.backup_id && !isReverted(file);
 }
 
 function toggleRow(file: FileChangeSummaryFile) {
-  if (!file.diff_available) return;
+  if (!canExpand(file)) return;
   if (expanded.has(file.path)) {
     expanded.delete(file.path);
     return;
@@ -236,9 +250,10 @@ async function undoFile(file: FileChangeSummaryFile) {
       toast.success(
         tm("fileChanges.undoDone", { name: basename(file.path) }),
       );
-      // File reverted: invalidate the shown diff and collapse the row.
+      // File reverted: collapse the row, drop the cached diff and badge it.
       delete diffs[file.path];
       expanded.delete(file.path);
+      reverted.add(file.path);
     }
   } catch (error) {
     console.error("undo request failed:", error);
@@ -249,100 +264,213 @@ async function undoFile(file: FileChangeSummaryFile) {
 </script>
 
 <style scoped>
-.file-change-summary {
+.fcs-card {
   margin-top: 6px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 8px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
   overflow: hidden;
   font-size: 13px;
 }
 
-.file-change-summary--dark {
-  border-color: rgba(var(--v-theme-on-surface), 0.2);
+.fcs-card--dark {
+  border-color: rgba(var(--v-theme-on-surface), 0.18);
 }
 
-.file-change-summary-head,
-.file-change-summary-row {
+.fcs-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-}
-
-.file-change-summary-head {
+  gap: 8px;
+  padding: 7px 12px;
   background: rgba(var(--v-theme-on-surface), 0.04);
 }
 
-.file-change-summary-title {
-  font-weight: 500;
+.fcs-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  flex: none;
 }
 
-.file-change-summary-total,
-.file-change-summary-file .stat-adds,
-.file-change-summary-file .stat-dels {
+.fcs-title {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.fcs-total {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: monospace;
   font-size: 12px;
+  font-weight: 600;
 }
 
 .stat-adds {
-  color: #2e7d32;
-  margin-right: 4px;
+  color: rgb(var(--v-theme-success));
 }
 
 .stat-dels {
-  color: #c62828;
+  color: rgb(var(--v-theme-error));
 }
 
-.file-change-summary-file {
+.fcs-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  padding: 3px 8px 3px 12px;
+  transition: background 0.12s ease;
+}
+
+.fcs-row + .fcs-row,
+.fcs-row + .fcs-body,
+.fcs-body + .fcs-row {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.fcs-row:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.fcs-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   flex: 1;
   min-width: 0;
   background: none;
   border: none;
-  padding: 2px 0;
+  padding: 3px 0;
   cursor: pointer;
   color: inherit;
   text-align: left;
 }
 
-.file-change-summary-file:disabled {
+.fcs-file:disabled {
   cursor: default;
 }
 
-.file-change-summary-name {
+.fcs-kind {
+  flex: none;
+}
+
+/* Git-status color coding: modified amber, added green, reverted blue. */
+.fcs-kind--edit,
+.fcs-kind--write {
+  color: rgb(var(--v-theme-warning));
+}
+
+.fcs-kind--created {
+  color: rgb(var(--v-theme-success));
+}
+
+.fcs-kind--rollback {
+  color: rgb(var(--v-theme-info));
+}
+
+.fcs-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
 }
 
-.file-change-summary-actions {
-  display: flex;
+.fcs-file:not(:disabled):hover .fcs-name {
+  color: rgb(var(--v-theme-primary));
+}
+
+.stat-adds,
+.stat-dels,
+.fcs-file .fcs-reverted-badge {
+  font-family: inherit;
+}
+
+.fcs-file > .stat-adds,
+.fcs-file > .stat-dels {
+  font-family: monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  flex: none;
+}
+
+.fcs-reverted-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: rgb(var(--v-theme-success));
+  background: rgba(var(--v-theme-success), 0.12);
+  border-radius: 999px;
+  padding: 3px 8px;
+  flex: none;
 }
 
-.file-change-summary-muted {
+.fcs-muted {
   color: rgba(var(--v-theme-on-surface), 0.5);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
-.file-change-summary-chevron {
+.fcs-chevron {
   margin-left: auto;
-  transition: transform 0.15s;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  transition: transform 0.15s ease;
+  flex: none;
 }
 
-.file-change-summary-chevron.expanded {
+.fcs-chevron.expanded {
   transform: rotate(90deg);
 }
 
-.file-change-summary-body {
-  padding: 0 10px 8px;
+.fcs-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
 }
 
-.file-change-summary-loading,
-.file-change-summary-truncated {
-  padding: 4px 0;
+.fcs-row:hover .fcs-actions,
+.fcs-row:focus-within .fcs-actions {
+  opacity: 1;
+}
+
+/* Touch devices have no hover: keep the actions always visible. */
+@media (hover: none) {
+  .fcs-actions {
+    opacity: 1;
+  }
+}
+
+.fcs-row--reverted .fcs-name {
+  text-decoration: line-through;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.fcs-row--reverted .fcs-actions {
+  opacity: 1;
+}
+
+.fcs-body {
+  padding: 6px 12px 10px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+
+.fcs-loading {
+  padding: 6px 0;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.fcs-truncated {
+  padding: 2px 0 6px;
+  font-size: 11.5px;
 }
 </style>

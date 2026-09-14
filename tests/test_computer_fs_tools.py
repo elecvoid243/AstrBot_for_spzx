@@ -1132,3 +1132,107 @@ async def test_shell_session_blocked_in_readonly_mode(
         assert "readonly" in result
     finally:
         fs_access.reset()
+
+
+class TestChangedFilesRecording:
+    """File tools must record touches into AstrAgentContext.extra.
+
+    Backs the ChatUI end-of-turn file change summary: the agent runner
+    aggregates these entries into the ``file_changes`` event.
+    """
+
+    def _isolate_history(self, monkeypatch, tmp_path):
+        from astrbot.core.tools.computer_tools.edit_history import (
+            EditHistoryManager,
+        )
+
+        manager = EditHistoryManager(base_dir=tmp_path / "history")
+        monkeypatch.setattr(fs_tools, "get_history_manager", lambda: manager)
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_write_new_file_records_created(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+        self._isolate_history(monkeypatch, tmp_path)
+        target = workspace / "brand_new.txt"
+        ctx = _make_context()
+        ctx.context.extra = {}
+
+        result = await fs_tools.FileWriteTool().call(
+            context=ctx, path=str(target), content="hello\nworld\n"
+        )
+
+        assert "File written successfully" in result
+        entries = ctx.context.extra["changed_files"]
+        assert len(entries) == 1
+        assert entries[0]["kind"] == "created"
+        assert entries[0]["backup_id"] == ""
+        assert entries[0]["path"] == str(target)
+
+    @pytest.mark.asyncio
+    async def test_write_existing_file_saves_backup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+        manager = self._isolate_history(monkeypatch, tmp_path)
+        target = workspace / "exists.txt"
+        # Binary write keeps bytes platform-stable (no CRLF translation).
+        target.write_bytes(b"old\n")
+        ctx = _make_context()
+        ctx.context.extra = {}
+
+        await fs_tools.FileWriteTool().call(
+            context=ctx, path=str(target), content="new\n"
+        )
+
+        entries = ctx.context.extra["changed_files"]
+        assert entries[0]["kind"] == "write"
+        assert entries[0]["backup_id"] != ""
+        _, baseline = manager.read_backup(str(target), entries[0]["backup_id"])
+        assert baseline == b"old\n"
+
+    @pytest.mark.asyncio
+    async def test_failed_write_records_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        _setup_local_fs_tools(monkeypatch, tmp_path)
+        self._isolate_history(monkeypatch, tmp_path)
+        tool = fs_tools.FileWriteTool()
+        # Unique umo so global fs_access overrides from other tests
+        # cannot leak READONLY/WORKSPACE state into this context.
+        readonly_ctx = _make_context(
+            umo="qq:friend:fc-readonly",
+            file_access_default_mode="readonly",
+        )
+        readonly_ctx.context.extra = {}
+
+        await tool.call(
+            context=readonly_ctx,
+            path=str(tmp_path / "nope.txt"),
+            content="x",
+        )
+
+        assert readonly_ctx.context.extra.get("changed_files", []) == []
+
+    @pytest.mark.asyncio
+    async def test_edit_records_touch(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+        manager = self._isolate_history(monkeypatch, tmp_path)
+        target = workspace / "edit_me.txt"
+        # Binary write keeps bytes platform-stable (no CRLF translation).
+        target.write_bytes(b"alpha\n")
+        ctx = _make_context()
+        ctx.context.extra = {}
+
+        result = await fs_tools.FileEditTool().call(
+            context=ctx, path=str(target), old="alpha", new="beta"
+        )
+
+        assert "Edited" in result
+        entries = ctx.context.extra["changed_files"]
+        assert entries[0]["kind"] == "edit"
+        assert entries[0]["backup_id"] != ""
+        _, baseline = manager.read_backup(str(target), entries[0]["backup_id"])
+        assert baseline == b"alpha\n"

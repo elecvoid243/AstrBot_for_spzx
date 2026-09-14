@@ -47,6 +47,7 @@ import locale
 import os
 import stat
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -526,6 +527,30 @@ class FileWriteTool(FunctionTool):
             )
             if not normalized_path:
                 raise ValueError("`path` must be a non-empty string.")
+            # Backup-before-write for existing local files so overwrite
+            # writes get a net-diff baseline and undo, mirroring the edit
+            # tool. New files get no backup; they are recorded as "created".
+            backup_id = ""
+            existed_before = False
+            if local_env:
+                existed_before = Path(normalized_path).exists()
+                if existed_before:
+                    try:
+                        pre_bytes = await asyncio.to_thread(
+                            _read_file_bytes, normalized_path
+                        )
+                        entry = await asyncio.to_thread(
+                            get_history_manager().save_backup,
+                            normalized_path,
+                            pre_bytes,
+                            runtime="local",
+                        )
+                        backup_id = entry.id
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to save pre-write backup for "
+                            f"{normalized_path}: {exc}"
+                        )
             # Accept friendly aliases before handing the name to open().
             encoding_name = (encoding or "utf-8").strip().lower()
             if encoding_name in ("utf-8", "utf8"):
@@ -563,6 +588,13 @@ class FileWriteTool(FunctionTool):
                     "Error writing file: "
                     f"{error_detail or 'unknown filesystem write error'}"
                 )
+            _record_changed_file(
+                context,
+                normalized_path,
+                "created" if (local_env and not existed_before) else "write",
+                "local" if local_env else "sandbox",
+                backup_id,
+            )
             return f"File written successfully: {normalized_path} (encoding: {encoding_name})"
         except PermissionError as exc:
             return f"Error: {exc}"
@@ -662,6 +694,41 @@ def _validate_python_ast(content: str) -> SyntaxError | None:
     except SyntaxError as exc:
         return exc
     return None
+
+
+def _record_changed_file(
+    context: ContextWrapper[AstrAgentContext],
+    path: str,
+    kind: str,
+    runtime: str,
+    backup_id: str,
+) -> None:
+    """Record one successful file mutation for the turn summary.
+
+    Entries land in ``AstrAgentContext.extra["changed_files"]``; the agent
+    runner aggregates them into the end-of-turn ``file_changes`` event.
+    Defensive ``getattr`` keeps lightweight test contexts (which lack
+    ``extra``) working unchanged.
+
+    Args:
+        context: Tool execution context.
+        path: Normalized absolute path that was modified.
+        kind: One of ``edit`` / ``write`` / ``created`` / ``rollback``.
+        runtime: ``local`` or ``sandbox``.
+        backup_id: Id of the pre-change backup; empty when none exists.
+    """
+    extra = getattr(context.context, "extra", None)
+    if not isinstance(extra, dict):
+        return
+    extra.setdefault("changed_files", []).append(
+        {
+            "path": path,
+            "kind": kind,
+            "runtime": runtime,
+            "backup_id": backup_id,
+            "ts": time.time(),
+        }
+    )
 
 
 def _format_result(
@@ -925,9 +992,10 @@ class FileEditTool(FunctionTool):
         lock = get_file_lock(normalized_path)
         async with lock:
             # Save current file state as pre-rollback snapshot (issue #5 fix)
+            snapshot_entry = None
             try:
                 current_bytes = await read_fn()
-                await asyncio.to_thread(
+                snapshot_entry = await asyncio.to_thread(
                     history_mgr.save_backup,
                     normalized_path,
                     current_bytes,
@@ -942,6 +1010,13 @@ class FileEditTool(FunctionTool):
             # Write the backup content to restore the file
             await write_fn(backup_bytes)
 
+        _record_changed_file(
+            context,
+            normalized_path,
+            "rollback",
+            "local" if local_env else "sandbox",
+            snapshot_entry.id if snapshot_entry else "",
+        )
         return (
             f"Successfully rolled back {normalized_path} to backup "
             f"{entry.id} ({entry.timestamp}, {entry.size} bytes)."
@@ -1032,8 +1107,9 @@ class FileEditTool(FunctionTool):
                     )
 
             # 3. Save backup (only after successful validation, async)
+            backup_entry = None
             try:
-                await asyncio.to_thread(
+                backup_entry = await asyncio.to_thread(
                     history_mgr.save_backup,
                     normalized_path,
                     raw_bytes,
@@ -1049,6 +1125,14 @@ class FileEditTool(FunctionTool):
                 await write_fn(write_bytes)
             except OSError as exc:
                 return f"Error editing file: {exc}"
+
+            _record_changed_file(
+                context,
+                normalized_path,
+                "edit",
+                "local" if local_env else "sandbox",
+                backup_entry.id if backup_entry else "",
+            )
 
         return _format_result(
             normalized_path,

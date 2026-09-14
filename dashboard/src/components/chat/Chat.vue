@@ -3887,46 +3887,47 @@ function scrollToMessageIndex(targetIndex: number) {
 
 /**
  * Jump to an absolute history index. When the target sits outside the loaded
- * window, page older history until it is covered, then scroll once.
+ * window, page older history until it is covered, then scroll once. Both
+ * directions wait out an in-flight older-page load first: its prepend
+ * re-anchors scrollTop and re-keys the rows, which would cancel or deflect
+ * a smooth scroll started before it.
  *
  * @returns True when the target row was found and scrolled to.
  */
 async function jumpToIndex(targetIndex: number): Promise<boolean> {
   const sessionId = currSessionId.value;
   if (!sessionId || jumpInProgress.value) return false;
-  const offsetNow = historyOffsetBySession[sessionId] ?? 0;
   shouldStickToBottom.value = false;
   const container = messagesContainer.value;
   if (container) beginJumpScrollLock(container);
   let scrolled = false;
+  jumpInProgress.value = true;
   try {
-    if (targetIndex >= offsetNow) {
-      scrolled = scrollToMessageIndex(targetIndex);
-      return scrolled;
-    }
-    jumpInProgress.value = true;
-    try {
-      let guard = 0;
-      while (guard++ < 100) {
-        if (currSessionId.value !== sessionId) return false;
-        const paging = historyPagingBySession[sessionId];
-        const offset = historyOffsetBySession[sessionId] ?? 0;
-        if (targetIndex >= offset) break;
-        if (!paging?.hasMore) return false;
-        if (paging.loadingOlder) {
-          await new Promise((r) => setTimeout(r, 120));
-          continue;
-        }
-        await loadOlderMessages(sessionId);
-        // No progress (e.g. failed request) — stop instead of spinning.
-        if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
+    let guard = 0;
+    while (guard++ < 100) {
+      if (currSessionId.value !== sessionId) return false;
+      const paging = historyPagingBySession[sessionId];
+      const offset = historyOffsetBySession[sessionId] ?? 0;
+      if (paging?.loadingOlder) {
+        await new Promise((r) => setTimeout(r, 120));
+        continue;
       }
-      scrolled = scrollToMessageIndex(targetIndex);
-      return scrolled;
-    } finally {
-      jumpInProgress.value = false;
+      if (targetIndex >= offset) {
+        // Let the post-prepend re-render flush so data-message-index
+        // attributes match the new offsets before querying the row.
+        await nextTick();
+        scrolled = scrollToMessageIndex(targetIndex);
+        return scrolled;
+      }
+      if (!paging?.hasMore) return false;
+      await loadOlderMessages(sessionId);
+      // No progress (e.g. failed request) — stop instead of spinning.
+      if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
     }
+    scrolled = scrollToMessageIndex(targetIndex);
+    return scrolled;
   } finally {
+    jumpInProgress.value = false;
     // On success the lock is owned by the settle listener; a failed
     // attempt (row missing, history exhausted, session switched) must
     // release it right away.

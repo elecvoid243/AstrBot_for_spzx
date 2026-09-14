@@ -273,7 +273,9 @@
     "archivedToast": "会话已归档",
     "unarchiveToast": "会话已恢复",
     "archiveFailed": "归档会话失败",
-    "unarchiveFailed": "恢复会话失败"
+    "unarchiveFailed": "恢复会话失败",
+    "markUnread": "标为未读",
+    "markRead": "标为已读"
   },
   "modes": {
     "darkMode": "切换到夜间模式",

@@ -273,7 +273,9 @@
     "archivedToast": "Conversation archived",
     "unarchiveToast": "Conversation restored",
     "archiveFailed": "Failed to archive conversation",
-    "unarchiveFailed": "Failed to restore conversation"
+    "unarchiveFailed": "Failed to restore conversation",
+    "markUnread": "Mark as Unread",
+    "markRead": "Mark as Read"
   },
   "modes": {
     "darkMode": "Switch to Dark Mode",

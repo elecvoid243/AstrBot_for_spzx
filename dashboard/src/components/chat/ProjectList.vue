@@ -92,7 +92,7 @@
                   ),
                   'has-finished-run':
                     !choiceAttention.hasAttention(session.session_id) &&
-                    finishedAttention.hasFinished(session.session_id),
+                    sessionHasUnreadMarker(session.session_id),
                   'has-branch-meta':
                     !selectionMode &&
                     (Boolean(session.branches?.length) ||
@@ -109,6 +109,9 @@
                 tabindex="0"
                 :draggable="!selectionMode"
                 @click="handleSessionRowClick(session.session_id)"
+                @contextmenu.prevent="
+                  openSessionContextMenu(project.project_id, session, $event)
+                "
                 @keydown.enter="handleSessionRowClick(session.session_id)"
                 @keydown.space.prevent="
                   handleSessionRowClick(session.session_id)
@@ -151,9 +154,7 @@
                   aria-hidden="true"
                 />
                 <span
-                  v-else-if="
-                    finishedAttention.hasFinished(session.session_id)
-                  "
+                  v-else-if="sessionHasUnreadMarker(session.session_id)"
                   class="project-session-finished-dot"
                   aria-hidden="true"
                 />
@@ -277,17 +278,102 @@
         </Transition>
       </div>
     </div>
+
+    <!-- 2026-09-14 (elecvoid243): right-click menu on a project session
+       row; opened with pointer coordinates from openSessionContextMenu(). -->
+    <StyledMenu
+      v-model="sessionContextMenu.show"
+      :target="sessionContextMenu.target"
+      location="end"
+    >
+      <v-list-item
+        class="styled-menu-item"
+        rounded="md"
+        @click="
+          $emit(
+            'editSessionTitle',
+            sessionContextMenu.session!.session_id,
+            sessionContextMenu.session!.display_name || '',
+          )
+        "
+      >
+        <template #prepend>
+          <Pencil :size="16" />
+        </template>
+        <v-list-item-title>
+          {{ tm("conversation.editDisplayName") }}
+        </v-list-item-title>
+      </v-list-item>
+      <v-list-item
+        class="styled-menu-item"
+        rounded="md"
+        @click="
+          $emit(
+            'archiveSession',
+            sessionContextMenu.session!.session_id,
+            sessionContextMenu.projectId,
+          )
+        "
+      >
+        <template #prepend>
+          <Archive :size="16" />
+        </template>
+        <v-list-item-title>
+          {{ tm("conversation.archive") }}
+        </v-list-item-title>
+      </v-list-item>
+      <v-list-item
+        class="styled-menu-item text-error"
+        rounded="md"
+        @click="
+          handleDeleteSession(
+            sessionContextMenu.projectId,
+            sessionContextMenu.session!,
+          )
+        "
+      >
+        <template #prepend>
+          <Trash2 :size="16" />
+        </template>
+        <v-list-item-title>
+          {{ tm("actions.deleteChat") }}
+        </v-list-item-title>
+      </v-list-item>
+      <v-divider class="my-1" />
+      <v-list-item
+        class="styled-menu-item"
+        rounded="md"
+        @click="toggleSessionUnread(sessionContextMenu.session!.session_id)"
+      >
+        <template #prepend>
+          <MailOpen
+            v-if="sessionHasUnreadMarker(sessionContextMenu.session!.session_id)"
+            :size="16"
+          />
+          <Mail v-else :size="16" />
+        </template>
+        <v-list-item-title>
+          {{
+            sessionHasUnreadMarker(sessionContextMenu.session!.session_id)
+              ? tm("conversation.markRead")
+              : tm("conversation.markUnread")
+          }}
+        </v-list-item-title>
+      </v-list-item>
+    </StyledMenu>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { reactive, ref, watch } from "vue";
 import {
   Archive,
   ChevronDown,
   ChevronRight,
   CornerUpLeft,
   GitBranch,
+  Mail,
+  MailOpen,
   Pencil,
   Plus,
   Trash2,
@@ -297,6 +383,7 @@ import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import { useInteractiveChoiceAttentionStore } from "@/stores/interactiveChoiceAttention";
 import { useRunFinishedAttentionStore } from "@/stores/runFinishedAttention";
+import { useSessionUnreadStore } from "@/stores/sessionUnread";
 
 export interface Project {
   project_id: string;
@@ -397,6 +484,49 @@ const choiceAttention = useInteractiveChoiceAttentionStore();
 // Same story for the calmer run-finished marker: project sessions would
 // never show it unless this component consumes the store itself.
 const finishedAttention = useRunFinishedAttentionStore();
+// Manual "mark as unread" from the context menu shares the finished
+// marker's visual state, so it is consumed here too.
+const unreadAttention = useSessionUnreadStore();
+
+/** A session shows the green unread marker when its run finished unseen
+ * or the user marked it unread — both share one visual state. */
+function sessionHasUnreadMarker(sessionId: string): boolean {
+  return (
+    finishedAttention.hasFinished(sessionId) ||
+    unreadAttention.isUnread(sessionId)
+  );
+}
+
+/** Context-menu read/unread toggle: follows the visible marker, so
+ * "mark read" also acknowledges an unseen run-finished flag. */
+function toggleSessionUnread(sessionId: string) {
+  if (sessionHasUnreadMarker(sessionId)) {
+    unreadAttention.markRead(sessionId);
+    finishedAttention.clear(sessionId);
+  } else {
+    unreadAttention.markUnread(sessionId);
+  }
+}
+
+// 2026-09-14 (elecvoid243): right-click context menu on project session
+// rows, mirroring the flat session list menu in Chat.vue.
+const sessionContextMenu = reactive({
+  show: false,
+  target: [0, 0] as [number, number],
+  projectId: "",
+  session: null as ProjectSession | null,
+});
+
+function openSessionContextMenu(
+  projectId: string,
+  session: ProjectSession,
+  event: MouseEvent,
+) {
+  sessionContextMenu.target = [event.clientX, event.clientY];
+  sessionContextMenu.projectId = projectId;
+  sessionContextMenu.session = session;
+  sessionContextMenu.show = true;
+}
 
 const expandedProjectIds = ref<Set<string>>(readExpandedProjectIds());
 
@@ -813,7 +943,9 @@ function onSessionRowDrop(
 
 /* 2026-09-01 (elecvoid243): run-finished marker for project session rows,
    mirroring the flat session list in Chat.vue — steady green dot + faint
-   tint, distinct from the pulsing amber pending-choice highlight. */
+   tint, distinct from the pulsing amber pending-choice highlight. Since
+   2026-09-14 it also covers sessions manually marked unread from the
+   sidebar context menu. */
 .project-session-row.has-finished-run {
   background: rgba(16, 185, 129, 0.1);
 }

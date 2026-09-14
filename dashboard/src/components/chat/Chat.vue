@@ -258,7 +258,7 @@
               'needs-choice': choiceAttention.hasAttention(session.session_id),
               'has-finished-run':
                 !choiceAttention.hasAttention(session.session_id) &&
-                finishedAttention.hasFinished(session.session_id),
+                sessionHasUnreadMarker(session.session_id),
               'has-branch-meta':
                 !selectionMode &&
                 (Boolean(session.branches?.length) ||
@@ -268,6 +268,7 @@
             tabindex="0"
             :draggable="!selectionMode"
             @click="handleSidebarSessionClick(session.session_id)"
+            @contextmenu.prevent="openSessionContextMenu(session, $event)"
             @dragstart="onSidebarSessionDragStart(session.session_id, $event)"
             @dragend="onSessionDragEnd"
             @keydown.enter="handleSidebarSessionClick(session.session_id)"
@@ -289,7 +290,7 @@
               aria-hidden="true"
             />
             <span
-              v-else-if="finishedAttention.hasFinished(session.session_id)"
+              v-else-if="sessionHasUnreadMarker(session.session_id)"
               class="session-finished-dot"
               aria-hidden="true"
             />
@@ -392,6 +393,79 @@
               width="2"
             />
           </div>
+
+          <!-- 2026-09-14 (elecvoid243): right-click menu on a sidebar
+             session row; opened with pointer coordinates from
+             openSessionContextMenu(). -->
+          <StyledMenu
+            v-model="sessionContextMenu.show"
+            :target="sessionContextMenu.target"
+            location="end"
+          >
+            <v-list-item
+              class="styled-menu-item"
+              rounded="md"
+              @click="editSidebarSessionTitle(sessionContextMenu.session!)"
+            >
+              <template #prepend>
+                <Pencil :size="16" />
+              </template>
+              <v-list-item-title>
+                {{ tm("conversation.editDisplayName") }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-list-item
+              class="styled-menu-item"
+              rounded="md"
+              @click="archiveSidebarSession(sessionContextMenu.session!)"
+            >
+              <template #prepend>
+                <Archive :size="16" />
+              </template>
+              <v-list-item-title>
+                {{ tm("conversation.archive") }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-list-item
+              class="styled-menu-item text-error"
+              rounded="md"
+              @click="deleteSidebarSession(sessionContextMenu.session!)"
+            >
+              <template #prepend>
+                <Trash2 :size="16" />
+              </template>
+              <v-list-item-title>
+                {{ tm("actions.deleteChat") }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-divider class="my-1" />
+            <v-list-item
+              class="styled-menu-item"
+              rounded="md"
+              @click="
+                toggleSessionUnread(sessionContextMenu.session!.session_id)
+              "
+            >
+              <template #prepend>
+                <MailOpen
+                  v-if="
+                    sessionHasUnreadMarker(
+                      sessionContextMenu.session!.session_id,
+                    )
+                  "
+                  :size="16"
+                />
+                <Mail v-else :size="16" />
+              </template>
+              <v-list-item-title>
+                {{
+                  sessionHasUnreadMarker(sessionContextMenu.session!.session_id)
+                    ? tm("conversation.markRead")
+                    : tm("conversation.markUnread")
+                }}
+              </v-list-item-title>
+            </v-list-item>
+          </StyledMenu>
         </section>
       </div>
 
@@ -1022,6 +1096,8 @@ import {
   GitBranch,
   Languages,
   ListChecks,
+  Mail,
+  MailOpen,
   Moon,
   PanelLeft,
   Pencil,
@@ -1113,6 +1189,7 @@ import {
 import { useToast } from "@/utils/toast";
 import { useInteractiveChoiceAttentionStore } from "@/stores/interactiveChoiceAttention";
 import { useRunFinishedAttentionStore } from "@/stores/runFinishedAttention";
+import { useSessionUnreadStore } from "@/stores/sessionUnread";
 import {
   clearChoiceAttention,
   markChoiceAttention,
@@ -1161,6 +1238,29 @@ const choiceAttention = useInteractiveChoiceAttentionStore();
 // Sessions whose run finished while the user was elsewhere — calmer
 // steady-dot marker, cleared as soon as the session is opened.
 const finishedAttention = useRunFinishedAttentionStore();
+// Sessions the user manually marked unread from the sidebar context menu —
+// renders with the same green marker as `finishedAttention`.
+const unreadAttention = useSessionUnreadStore();
+
+/** A session shows the green unread marker when its run finished unseen
+ * or the user marked it unread — both share one visual state. */
+function sessionHasUnreadMarker(sessionId: string): boolean {
+  return (
+    finishedAttention.hasFinished(sessionId) ||
+    unreadAttention.isUnread(sessionId)
+  );
+}
+
+/** Context-menu read/unread toggle: follows the visible marker, so
+ * "mark read" also acknowledges an unseen run-finished flag. */
+function toggleSessionUnread(sessionId: string) {
+  if (sessionHasUnreadMarker(sessionId)) {
+    unreadAttention.markRead(sessionId);
+    finishedAttention.clear(sessionId);
+  } else {
+    unreadAttention.markUnread(sessionId);
+  }
+}
 const { languageOptions, currentLanguage, switchLanguage, locale } =
   useLanguageSwitcher();
 const {
@@ -1900,8 +2000,12 @@ watch(currSessionId, (newId, oldId) => {
 
 // 2026-09-01 (elecvoid243): opening a session acknowledges its
 // run-finished marker — the output is right there in the message list.
+// 2026-09-14: it reads the session, so a manual unread mark (context
+// menu) is dropped the same way.
 watch(currSessionId, (sessionId) => {
-  if (sessionId) finishedAttention.clear(sessionId);
+  if (!sessionId) return;
+  finishedAttention.clear(sessionId);
+  unreadAttention.markRead(sessionId);
 });
 
 const transportMode = ref<TransportMode>(
@@ -2958,6 +3062,21 @@ async function saveSessionTitleDialog() {
 
 function editSidebarSessionTitle(session: Session) {
   openSessionTitleDialog(session.session_id, session.display_name || "");
+}
+
+// 2026-09-14 (elecvoid243): right-click context menu on sidebar session
+// rows — rename / archive / delete / mark-unread, mirroring the hover
+// actions so they stay reachable without hovering the row first.
+const sessionContextMenu = reactive({
+  show: false,
+  target: [0, 0] as [number, number],
+  session: null as Session | null,
+});
+
+function openSessionContextMenu(session: Session, event: MouseEvent) {
+  sessionContextMenu.target = [event.clientX, event.clientY];
+  sessionContextMenu.session = session;
+  sessionContextMenu.show = true;
 }
 
 // 2026-08-09 sidebar batch delete (elecvoid243): selection mode lets the
@@ -5132,7 +5251,8 @@ function toggleTheme() {
 /* 2026-09-01 (elecvoid243): calmer marker for sessions whose run finished
    while the user was elsewhere — steady green dot + faint tint, visually
    distinct from the pulsing amber pending-choice highlight. Cleared as
-   soon as the user opens the session. */
+   soon as the user opens the session. Since 2026-09-14 it also covers
+   sessions manually marked unread from the sidebar context menu. */
 .session-item.has-finished-run {
   background: rgba(16, 185, 129, 0.1);
 }

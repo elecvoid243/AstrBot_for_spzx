@@ -23,6 +23,8 @@ Design decisions:
 
 from __future__ import annotations
 
+import asyncio
+import difflib
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -382,6 +384,168 @@ class EditHistoryManager:
                     pass
 
         return total_removed
+
+
+# ---------------------------------------------------------------------------
+# Turn-level net diff computation (file change summary, 2026-09-13)
+# ---------------------------------------------------------------------------
+
+
+def count_unified_diff_changes(old_text: str, new_text: str) -> tuple[int, int]:
+    """Count added/deleted lines between two text versions.
+
+    Args:
+        old_text: Baseline text (e.g. pre-turn backup content).
+        new_text: Current text.
+
+    Returns:
+        Tuple of (added_lines, deleted_lines).
+    """
+    adds = 0
+    dels = 0
+    for line in difflib.unified_diff(
+        old_text.splitlines(), new_text.splitlines(), lineterm=""
+    ):
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            adds += 1
+        elif line.startswith("-"):
+            dels += 1
+    return adds, dels
+
+
+def render_unified_diff(
+    old_bytes: bytes,
+    new_bytes: bytes,
+    path: str,
+    max_chars: int = 200_000,
+) -> dict[str, Any]:
+    """Render a unified diff between two file versions.
+
+    Args:
+        old_bytes: Baseline file bytes.
+        new_bytes: Current file bytes.
+        path: Display path used in the diff headers.
+        max_chars: Hard cap for the diff text; longer diffs are truncated
+            and the ``truncated`` flag is set.
+
+    Returns:
+        Dict with keys ``path``, ``diff``, ``adds``, ``dels``, ``truncated``.
+    """
+    old_text = old_bytes.decode("utf-8", errors="replace")
+    new_text = new_bytes.decode("utf-8", errors="replace")
+    diff_text = "".join(
+        difflib.unified_diff(
+            old_text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=f"a/{Path(path).name}",
+            tofile=f"b/{Path(path).name}",
+        )
+    )
+    truncated = False
+    if len(diff_text) > max_chars:
+        diff_text = diff_text[:max_chars]
+        truncated = True
+    adds, dels = count_unified_diff_changes(old_text, new_text)
+    return {
+        "path": path,
+        "diff": diff_text,
+        "adds": adds,
+        "dels": dels,
+        "truncated": truncated,
+    }
+
+
+async def build_turn_change_summary(
+    entries: list[dict],
+    *,
+    since_ts: float = 0.0,
+    history: EditHistoryManager | None = None,
+) -> list[dict]:
+    """Aggregate per-file net changes recorded by the file tools in one turn.
+
+    The first recorded entry of each path provides the baseline backup id,
+    so multiple edits of the same file collapse into one net diff.
+
+    Args:
+        entries: ``changed_files`` entries recorded by the file tools, each
+            ``{"path", "kind", "runtime", "backup_id", "ts"}``.
+        since_ts: Only entries with ``ts >= since_ts`` are included. This
+            scopes the summary to the current turn when the agent context
+            outlives a single turn.
+        history: Backup manager to read baselines from; defaults to the
+            module singleton. Injectable for tests.
+
+    Returns:
+        One summary dict per touched path in first-touch order. Sandbox
+        files and files whose baseline is unavailable get
+        ``diff_available=False`` and ``None`` line counts.
+    """
+    history = history or get_history_manager()
+    by_path: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path") or "")
+        if not path or path in by_path:
+            continue
+        try:
+            ts = float(entry.get("ts") or 0.0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if since_ts and ts < since_ts:
+            continue
+        by_path[path] = entry
+
+    summaries: list[dict] = []
+    for path, entry in by_path.items():
+        runtime = str(entry.get("runtime") or "local")
+        summary = {
+            "path": path,
+            "kind": str(entry.get("kind") or "edit"),
+            "adds": None,
+            "dels": None,
+            "backup_id": str(entry.get("backup_id") or ""),
+            "sha256": "",
+            "runtime": runtime,
+            "diff_available": False,
+        }
+        if runtime != "local":
+            summaries.append(summary)
+            continue
+        try:
+            current_bytes = await asyncio.to_thread(Path(path).read_bytes)
+        except OSError:
+            summaries.append(summary)
+            continue
+        summary["sha256"] = hashlib.sha256(current_bytes).hexdigest()
+        if summary["kind"] == "created":
+            current_text = current_bytes.decode("utf-8", errors="replace")
+            summary["adds"] = len(current_text.splitlines())
+            summary["dels"] = 0
+            summary["diff_available"] = True
+            summaries.append(summary)
+            continue
+        if not summary["backup_id"]:
+            summaries.append(summary)
+            continue
+        try:
+            _, baseline_bytes = await asyncio.to_thread(
+                history.read_backup, path, summary["backup_id"]
+            )
+        except (ValueError, FileNotFoundError, OSError):
+            summaries.append(summary)
+            continue
+        adds, dels = count_unified_diff_changes(
+            baseline_bytes.decode("utf-8", errors="replace"),
+            current_bytes.decode("utf-8", errors="replace"),
+        )
+        summary["adds"] = adds
+        summary["dels"] = dels
+        summary["diff_available"] = True
+        summaries.append(summary)
+    return summaries
 
 
 # ---------------------------------------------------------------------------

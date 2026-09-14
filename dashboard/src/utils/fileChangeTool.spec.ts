@@ -12,6 +12,7 @@ import {
   fileBasename,
   fileChangeTone,
   isFileChangeToolName,
+  parseFileChangesPayload,
   parseFileEditResult,
   stripWriteEncodingMarker,
   type FileChangeEntry,
@@ -389,5 +390,28 @@ describe("collectFileChanges", () => {
       { type: "tool_call", tool_calls: [failed] },
     ]);
     expect(changes[0].status).toBe("error");
+  });
+});
+
+describe("parseFileChangesPayload", () => {
+  it("parses object payloads and returns files", () => {
+    const files = parseFileChangesPayload({
+      files: [{ path: "/x/a.py", kind: "edit", adds: 3, dels: 1 }],
+    });
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe("/x/a.py");
+  });
+
+  it("parses JSON string payloads (raw chain_type form)", () => {
+    const files = parseFileChangesPayload(
+      JSON.stringify({ files: [{ path: "/x/b.py", kind: "created" }] }),
+    );
+    expect(files[0].kind).toBe("created");
+  });
+
+  it("drops entries without a path and non-list payloads", () => {
+    expect(parseFileChangesPayload({ files: [{ kind: "edit" }] })).toEqual([]);
+    expect(parseFileChangesPayload("garbage")).toEqual([]);
+    expect(parseFileChangesPayload(null)).toEqual([]);
   });
 });

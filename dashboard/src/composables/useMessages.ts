@@ -1,7 +1,8 @@
 import { computed, onBeforeUnmount, reactive, ref, watch, type Ref } from "vue";
 import { chatApi, fileApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
-import { collectFileChanges } from "@/utils/fileChangeTool";
+import { collectFileChanges, parseFileChangesPayload } from "@/utils/fileChangeTool";
+import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
 import { useInteractiveChoiceStore } from "@/stores/interactiveChoice";
 import {
   createSystemStreamState,
@@ -181,6 +182,10 @@ export interface ChatContent {
   reasoning?: string;
   isLoading?: boolean;
   agentStats?: any;
+  /** Aggregated end-of-turn file change summary (net diff per file),
+   * delivered via the `file_changes` stream event and persisted as
+   * `content.file_changes`. */
+  fileChangeSummary?: FileChangeSummaryFile[];
   refs?: any;
 }
 
@@ -1152,6 +1157,9 @@ export function useMessages(options: UseMessagesOptions) {
         content.reasoning || "",
       ),
       agentStats: content.agentStats || content.agent_stats,
+      fileChangeSummary:
+        (content.fileChangeSummary as FileChangeSummaryFile[] | undefined) ||
+        (content.file_changes?.files as FileChangeSummaryFile[] | undefined),
       refs: content.refs,
     };
 
@@ -1780,6 +1788,14 @@ export function useMessages(options: UseMessagesOptions) {
     if (msgType === "agent_stats" || chainType === "agent_stats") {
       markMessageStarted(botRecord);
       messageContent(botRecord).agentStats = data;
+      return;
+    }
+    if (msgType === "file_changes" || chainType === "file_changes") {
+      markMessageStarted(botRecord);
+      const files = parseFileChangesPayload(data);
+      if (files.length) {
+        messageContent(botRecord).fileChangeSummary = files;
+      }
       return;
     }
     if (msgType === "error") {

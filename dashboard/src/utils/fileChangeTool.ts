@@ -266,3 +266,39 @@ export function collectFileChanges(
 
     return entries;
 }
+
+/** One aggregated file entry from the backend end-of-turn
+ * `file_changes` event (net diff vs the turn's baseline backup). */
+export interface FileChangeSummaryFile {
+    path: string;
+    kind: "edit" | "write" | "created" | "rollback";
+    adds: number | null;
+    dels: number | null;
+    backup_id: string;
+    sha256: string;
+    runtime: string;
+    diff_available: boolean;
+}
+
+/** Parse the `data` field of a `file_changes` event (object or raw JSON
+ * string) into a validated file list. */
+export function parseFileChangesPayload(
+    data: unknown,
+): FileChangeSummaryFile[] {
+    let parsed: unknown = data;
+    if (typeof parsed === "string") {
+        try {
+            parsed = JSON.parse(parsed);
+        } catch {
+            return [];
+        }
+    }
+    const files = (parsed as { files?: unknown } | null)?.files;
+    if (!Array.isArray(files)) return [];
+    return files.filter(
+        (f): f is FileChangeSummaryFile =>
+            !!f &&
+            typeof f === "object" &&
+            typeof (f as FileChangeSummaryFile).path === "string",
+    );
+}

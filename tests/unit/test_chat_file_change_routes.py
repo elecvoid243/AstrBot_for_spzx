@@ -118,12 +118,16 @@ async def test_restore_route_ok(seeded, monkeypatch):
 async def test_status_route_reports_reverted(seeded, monkeypatch):
     """A file whose content matches its baseline is reported as reverted."""
     from astrbot.dashboard.api import chat as chat_api
+    from astrbot.dashboard.schemas import (
+        ChatFileChangeStatusItem,
+        ChatFileChangeStatusRequest,
+    )
 
     target, history, backup_id = seeded
     monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
     target.write_bytes(b"v1\n")  # Simulate a revert.
-    payload = chat_api.ChatFileChangeStatusRequest(
-        files=[chat_api.ChatFileChangeStatusItem(path=str(target), backup_id=backup_id)]
+    payload = ChatFileChangeStatusRequest(
+        files=[ChatFileChangeStatusItem(path=str(target), backup_id=backup_id)]
     )
 
     resp = await chat_api.chat_file_change_status(payload, None)
@@ -135,13 +139,17 @@ async def test_status_route_reports_reverted(seeded, monkeypatch):
 @pytest.mark.asyncio
 async def test_status_route_reports_active_change(seeded, monkeypatch):
     from astrbot.dashboard.api import chat as chat_api
+    from astrbot.dashboard.schemas import (
+        ChatFileChangeStatusItem,
+        ChatFileChangeStatusRequest,
+    )
 
     target, history, backup_id = seeded
     monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
-    payload = chat_api.ChatFileChangeStatusRequest(
+    payload = ChatFileChangeStatusRequest(
         files=[
-            chat_api.ChatFileChangeStatusItem(path=str(target), backup_id=backup_id),
-            chat_api.ChatFileChangeStatusItem(path=str(target), backup_id="bogus"),
+            ChatFileChangeStatusItem(path=str(target), backup_id=backup_id),
+            ChatFileChangeStatusItem(path=str(target), backup_id="bogus"),
         ]
     )
 

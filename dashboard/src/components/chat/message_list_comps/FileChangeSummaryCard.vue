@@ -9,10 +9,11 @@
   `content.file_changes`.
 
   Row actions: expand → lazily fetch the unified diff
-  (POST /chat/file-changes/diff), open on disk (existing
-  useOpenOnDisk composable), two-click inline undo
-  (POST /chat/file-changes/restore). A reverted row collapses, shows
-  a "changes reverted" badge and disables further diff/undo actions.
+  (POST /chat/file-changes/diff), open on disk or reveal the
+  containing folder (existing useOpenOnDisk composable), two-click
+  inline undo (POST /chat/file-changes/restore). A reverted row
+  collapses, shows a "changes reverted" badge and disables further
+  diff/undo actions.
 
   Author: elecvoid243 | 2026-09-13
 -->
@@ -89,6 +90,14 @@
             @click.stop="openOnDisk(file.path, basename(file.path))"
           />
           <v-btn
+            v-if="file.runtime === 'local'"
+            icon="mdi-folder-open-outline"
+            size="x-small"
+            variant="text"
+            :title="tm('fileChange.openFolder')"
+            @click.stop="openFolder(file.path, basename(file.path))"
+          />
+          <v-btn
             v-if="canUndo(file)"
             icon="mdi-undo"
             size="x-small"
@@ -142,7 +151,7 @@ const props = defineProps<{
 }>();
 
 const { tm } = useModuleI18n("features/chat");
-const { openOnDisk } = useOpenOnDisk("fileChange");
+const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
 const toast = useToast();
 
 const expanded = reactive(new Set<string>());

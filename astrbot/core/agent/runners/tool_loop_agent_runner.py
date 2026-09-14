@@ -206,6 +206,47 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             logger.error(f"Error in on_agent_done hook: {e}", exc_info=True)
         self._resolve_unconsumed_follow_ups()
 
+    async def _build_file_changes_response(self) -> AgentResponse | None:
+        """Build the end-of-turn file change summary event.
+
+        Reads the entries that file tools appended to
+        ``AstrAgentContext.extra["changed_files"]`` during this run and
+        aggregates them into a per-file net diff via the edit-history
+        backup engine. Imported lazily: the runner is agent-generic
+        machinery and must not import computer tools at module load.
+
+        Returns:
+            The ``file_changes`` AgentResponse, or None when the run
+            touched no files or summary computation failed.
+        """
+        agent_ctx = getattr(self.run_context, "context", None)
+        extra = getattr(agent_ctx, "extra", None) or {}
+        entries = extra.get("changed_files") or []
+        if not entries:
+            return None
+        try:
+            from astrbot.core.tools.computer_tools.edit_history import (
+                build_turn_change_summary,
+            )
+
+            files = await build_turn_change_summary(
+                entries, since_ts=self.stats.start_time
+            )
+        except Exception:
+            logger.warning("Failed to build file change summary", exc_info=True)
+            return None
+        if not files:
+            return None
+        return AgentResponse(
+            type="file_changes",
+            data=AgentResponseData(
+                chain=MessageChain(
+                    type="file_changes",
+                    chain=[Json(data={"files": files})],
+                )
+            ),
+        )
+
     @override
     async def reset(
         self,
@@ -993,6 +1034,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 ),
             )
 
+        if not llm_resp.tools_call_name:
+            file_changes_resp = await self._build_file_changes_response()
+            if file_changes_resp:
+                yield file_changes_resp
+
         # 如果有工具调用，还需处理工具调用
         if llm_resp.tools_call_name:
             if self.tool_schema_mode == "skills_like":
@@ -1028,6 +1074,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
 
                     await self._complete_with_assistant_response(llm_resp)
+                    file_changes_resp = await self._build_file_changes_response()
+                    if file_changes_resp:
+                        yield file_changes_resp
                     return
                 else:
                     llm_resp.tools_call_name = requery_resp.tools_call_name

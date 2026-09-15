@@ -1396,16 +1396,24 @@ const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 // Per-session viewport state (2026-09-15, elecvoid243): every conversation
 // renders into the same `.messages-panel` node, so the browser preserves its
 // scrollTop across a session switch and the target silently opens at the
-// outgoing session's offset. Both the stick-to-bottom intent and the last
-// scroll offset are therefore keyed by session id — see
-// restoreSessionViewport().
+// outgoing session's offset. Both the stick-to-bottom intent and the viewport
+// anchor are therefore keyed by session id — see restoreSessionViewport().
 const shouldStickToBottomBySession = new Map<string, boolean>();
-const scrollTopBySession = new Map<string, number>();
-// True from the moment a switch flips currSessionId until the target
-// session's viewport is installed. Scroll events in that window still carry
-// the outgoing conversation's geometry, so they must not be recorded against
-// (or auto-page older history for) the incoming one.
-let sessionSwitchInFlight = false;
+// Anchor: the absolute `data-message-index` of the row under the middle of the
+// viewport. Deliberately not a pixel offset. The history window resets to the
+// newest page on every open (see loadSessionMessages), so on return the same
+// scrollTop describes a shorter document — the assignment clamped, and the
+// viewport stopped at the bottom of the loaded window instead of the position
+// the conversation was left at. An index survives that reset, and re-centring
+// the row it names re-pages whatever the fresh window dropped.
+const viewportAnchorBySession = new Map<string, number>();
+// The conversation whose viewport is still being installed ("" when idle).
+// Scroll events in that window still carry the outgoing conversation's
+// geometry, so they must not be recorded against (or auto-page older history
+// for) the incoming one. Keyed by session rather than a bare flag: a restore
+// can still be paging history when the user switches again, and it must not
+// release the gate the newer switch has taken over in the meantime.
+let pendingViewportSessionId = "";
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
@@ -3537,20 +3545,15 @@ async function selectSession(sessionId: string, pushRoute = true) {
   selectedProjectId.value = null;
   // Capture the outgoing conversation's viewport before currSessionId flips:
   // from that point on the container renders the incoming session's content,
-  // so this is the last trustworthy reading of the outgoing offset.
+  // so this is the last trustworthy reading of where the outgoing one was.
   const outgoingSessionId = currSessionId.value;
-  const outgoingContainer = messagesContainer.value;
-  if (
-    outgoingSessionId &&
-    outgoingSessionId !== sessionId &&
-    outgoingContainer
-  ) {
-    scrollTopBySession.set(outgoingSessionId, outgoingContainer.scrollTop);
+  if (outgoingSessionId && outgoingSessionId !== sessionId) {
+    recordViewportAnchor(outgoingSessionId);
   }
   // The incoming session owns the viewport from here: a landing that is
   // still settling would otherwise keep gliding the outgoing row.
   endJumpLanding();
-  sessionSwitchInFlight = true;
+  pendingViewportSessionId = sessionId;
   currSessionId.value = sessionId;
   // Per-session drafts: swap in the target session's saved composer text
   // ("" when it has none) — unsent text never leaks across sessions.
@@ -3577,10 +3580,11 @@ async function selectSession(sessionId: string, pushRoute = true) {
   }
   // Replaces the old unconditional scrollToBottom(): that call was gated by
   // the shared stick flag, so a session left scrolled-up blocked the snap and
-  // this session kept the previous one's offset. The restore below decides
-  // per session — bottom when it was following the bottom, remembered offset
-  // otherwise.
-  restoreSessionViewport(sessionId);
+  // this session kept the previous one's offset. The restore below decides per
+  // session — bottom when it was following the bottom, its recorded anchor
+  // otherwise — and is not awaited: it may page history, and neither the
+  // sidebar nor the focus work below depends on where the viewport lands.
+  void restoreSessionViewport(sessionId);
   closeMobileSidebar();
   await focusChatInput();
 }
@@ -4811,14 +4815,15 @@ function handleMessagesScroll() {
   // events belong to neither session: recording them would overwrite the
   // incoming session's remembered offset, and the auto-load below would page
   // older history for the incoming session from the outgoing position.
-  if (sessionSwitchInFlight) return;
+  if (pendingViewportSessionId) return;
   const sessionId = currSessionId.value;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
   setStickToBottom(sessionId, distance < 80);
-  // Remember where the conversation is being left, so switching back restores
-  // it instead of the neighbouring session's offset.
-  if (sessionId) scrollTopBySession.set(sessionId, container.scrollTop);
+  // Keep the conversation's anchor fresh so switching back restores it instead
+  // of the neighbouring session's offset. The rect reads share the layout pass
+  // this handler already forces above.
+  if (sessionId) recordViewportAnchor(sessionId);
   // History windowing: reached the top boundary while older history exists
   // → load the next page (the loadOlderHistory anchor keeps the viewport).
   // Suppressed while a programmatic jump scrolls (see suppressHistoryAutoLoad).
@@ -4897,30 +4902,67 @@ function scrollToBottom() {
 }
 
 /**
+ * Remember where a conversation is being left: the absolute index of the row
+ * under the middle of the viewport.
+ *
+ * An index rather than a pixel offset, because the panel resets to the newest
+ * history window on every open — a scrollTop measured before a switch does not
+ * describe the same content when the session is reopened (see the anchor note
+ * at the declaration). `restoreSessionViewport` replays this by re-centring the
+ * row, which re-pages the history the fresh window dropped.
+ *
+ * @param sessionId: Conversation whose viewport is being recorded.
+ */
+function recordViewportAnchor(sessionId: string) {
+  const container = messagesContainer.value;
+  if (!sessionId || !container) return;
+  const center =
+    container.getBoundingClientRect().top + container.clientHeight / 2;
+  for (const row of container.querySelectorAll<HTMLElement>(".message-row")) {
+    const rect = row.getBoundingClientRect();
+    // A collapsed branch row reports a zero rect: it cannot anchor anything.
+    if (rect.width === 0 && rect.height === 0) continue;
+    if (rect.bottom < center) continue;
+    const index = Number(row.dataset.messageIndex);
+    if (Number.isFinite(index)) viewportAnchorBySession.set(sessionId, index);
+    return;
+  }
+  // Nothing addressable on screen (empty session, or every row hidden).
+  viewportAnchorBySession.delete(sessionId);
+}
+
+/**
  * Install the viewport of the conversation that just became active.
  *
  * The messages panel keeps its DOM node across a switch, so the browser
  * preserves the outgoing session's scrollTop and the incoming one would
- * silently open at that offset. A session that was following the bottom snaps
- * down again; otherwise its remembered scrollTop is replayed, clamped by the
- * browser if the incoming history is shorter.
+ * silently open at that offset. A session that was following the bottom
+ * reopens at the bottom; otherwise its anchor row is re-centred through the
+ * jump path, which re-pages the history the fresh window dropped and holds the
+ * row in place while the rows around it settle.
  *
  * @param sessionId: Conversation just loaded into the messages panel.
  */
-function restoreSessionViewport(sessionId: string) {
-  nextTick(() => {
-    // Released here rather than in selectSession so the suppression also
-    // covers the render between the currSessionId flip and this callback.
-    sessionSwitchInFlight = false;
-    const container = messagesContainer.value;
-    if (!container) return;
-    if (shouldStickToBottom(sessionId)) {
-      setStickToBottom(sessionId, true);
-      container.scrollTop = container.scrollHeight;
+async function restoreSessionViewport(sessionId: string) {
+  try {
+    const anchorIndex = viewportAnchorBySession.get(sessionId);
+    if (shouldStickToBottom(sessionId) || anchorIndex == null) {
+      // No memory (never scrolled, or nothing addressable was on screen):
+      // opening at the newest message is the only sane default, and it still
+      // beats inheriting the leftover offset of the previous conversation.
+      await nextTick();
+      if (currSessionId.value !== sessionId) return;
+      const container = messagesContainer.value;
+      if (container) container.scrollTop = container.scrollHeight;
       return;
     }
-    container.scrollTop = scrollTopBySession.get(sessionId) ?? 0;
-  });
+    await jumpToIndex(anchorIndex);
+  } finally {
+    // Released last, so the jump above runs while the panel still holds
+    // pre-restore geometry, and only if this restore still owns the gate: a
+    // newer switch may have taken it over while this one was paging.
+    if (pendingViewportSessionId === sessionId) pendingViewportSessionId = "";
+  }
 }
 
 async function focusChatInput() {

@@ -480,10 +480,15 @@ async def build_turn_change_summary(
     Returns:
         One summary dict per touched path in first-touch order. Sandbox
         files and files whose baseline is unavailable get
-        ``diff_available=False`` and ``None`` line counts.
+        ``diff_available=False`` and ``None`` line counts. Paths the turn
+        created and that no longer exist are omitted entirely.
     """
     history = history or get_history_manager()
     by_path: dict[str, dict] = {}
+    # 2026-09-15: paths removed during this turn. `file_remove` records the
+    # directory it deleted rather than each file inside it, so these anchor the
+    # "vanished under a removed directory" upgrade further down.
+    removed_dirs: list[Path] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -496,6 +501,8 @@ async def build_turn_change_summary(
             ts = 0.0
         if since_ts and ts < since_ts:
             continue
+        if entry.get("kind") == "remove":
+            removed_dirs.append(Path(path))
         if path in by_path:
             # The file ended up deleted later in the turn: the summary row
             # must reflect the removal, not the earlier edit.
@@ -528,7 +535,24 @@ async def build_turn_change_summary(
             continue
         try:
             current_bytes = await asyncio.to_thread(Path(path).read_bytes)
-        except OSError:
+        except OSError as exc:
+            if isinstance(exc, FileNotFoundError):
+                # A path the turn *created* and that is already gone was a
+                # transient artifact — scratch files the agent cleaned up before
+                # answering — so the card drops the row instead of showing a
+                # statless "created" entry.
+                if summary["kind"] == "created":
+                    continue
+                # The path is gone and it lived under a directory this turn
+                # removed. `file_remove` only recorded the directory, so the row
+                # is a removal — not a statless edit of a file that still looks
+                # like it is there.
+                gone = Path(path)
+                if any(gone.is_relative_to(item) for item in removed_dirs):
+                    summary["kind"] = "remove"
+                    summary["backup_id"] = ""
+            # Any other failure (unreadable-but-present, permissions) keeps the
+            # row unchanged.
             summaries.append(summary)
             continue
         summary["sha256"] = hashlib.sha256(current_bytes).hexdigest()

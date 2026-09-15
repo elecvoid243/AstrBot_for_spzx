@@ -54,7 +54,7 @@
               :title="tm('project.createSession')"
               @click="handleCreateSession(project.project_id)"
             >
-              <SquarePen :size="15" />
+              <CirclePlus :size="15" />
             </v-btn>
             <v-btn
               icon
@@ -384,13 +384,13 @@ import {
   Archive,
   ChevronDown,
   ChevronRight,
+  CirclePlus,
   CornerUpLeft,
   GitBranch,
   Mail,
   MailOpen,
   Pencil,
   Plus,
-  SquarePen,
   Trash2,
 } from "@lucide/vue";
 import { useModuleI18n } from "@/i18n/composables";

@@ -489,6 +489,9 @@ async def build_turn_change_summary(
     # directory it deleted rather than each file inside it, so these anchor the
     # "vanished under a removed directory" upgrade further down.
     removed_dirs: list[Path] = []
+    # 2026-09-16: paths the turn itself created. Create-then-remove is a net
+    # no-op for the card, which reports net changes per path.
+    created_paths: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -509,7 +512,13 @@ async def build_turn_change_summary(
             if entry.get("kind") == "remove":
                 by_path[path]["kind"] = "remove"
                 by_path[path]["backup_id"] = ""
+            elif by_path[path]["kind"] == "remove" and path in created_paths:
+                # Removed and then written again, so the file is back and the
+                # removal no longer describes the net change.
+                by_path[path]["kind"] = "created"
             continue
+        if entry.get("kind") == "created":
+            created_paths.add(path)
         by_path[path] = entry
 
     summaries: list[dict] = []
@@ -530,7 +539,13 @@ async def build_turn_change_summary(
             continue
         if summary["kind"] == "remove":
             # The file no longer exists: nothing to hash or diff. The card
-            # renders a removal row and offers recycle-bin restore.
+            # renders a removal row and offers recycle-bin restore — unless the
+            # turn is the one that created it, in which case create-then-remove
+            # is a net no-op (a scratch file used and cleaned up) and the row is
+            # dropped. The existence check keeps a removed-then-recreated file
+            # listed.
+            if path in created_paths and not await asyncio.to_thread(Path(path).exists):
+                continue
             summaries.append(summary)
             continue
         try:

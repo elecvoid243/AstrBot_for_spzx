@@ -134,9 +134,9 @@ def test_summary_write_then_gone_keeps_row(tmp_path: Path):
     assert summary[0]["adds"] is None
 
 
-def test_summary_created_then_removed_keeps_removal_row(tmp_path: Path):
-    """An explicit removal later in the turn upgrades the row to `remove`, so
-    the drop rule must not swallow it."""
+def test_summary_created_then_removed_drops_row(tmp_path: Path):
+    """Created and removed inside one turn nets out to nothing (a scratch file
+    the agent used and cleaned up), so the card lists neither state."""
     target = tmp_path / "tmp.cjs"
     target.write_text("x = 1\n", encoding="utf-8")
     target.unlink()
@@ -161,8 +161,50 @@ def test_summary_created_then_removed_keeps_removal_row(tmp_path: Path):
             ]
         )
     )
+    assert summary == []
+
+
+def test_summary_recreated_after_removal_keeps_created_row(tmp_path: Path):
+    """Removed and written again in the same turn: the file does exist at the
+    end, so the removal no longer describes the net change and the row must
+    survive as a creation."""
+    target = tmp_path / "again.txt"
+    target.write_text("v1\n", encoding="utf-8")
+    target.unlink()
+    target.write_text("v2\nv3\n", encoding="utf-8")
+
+    summary = asyncio.run(
+        build_turn_change_summary(
+            [
+                {
+                    "path": str(target),
+                    "kind": "created",
+                    "runtime": "local",
+                    "backup_id": "",
+                    "ts": 1.0,
+                },
+                {
+                    "path": str(target),
+                    "kind": "remove",
+                    "runtime": "local",
+                    "backup_id": "",
+                    "ts": 2.0,
+                },
+                {
+                    "path": str(target),
+                    "kind": "created",
+                    "runtime": "local",
+                    "backup_id": "",
+                    "ts": 3.0,
+                },
+            ]
+        )
+    )
     assert len(summary) == 1
-    assert summary[0]["kind"] == "remove"
+    assert summary[0]["kind"] == "created"
+    assert summary[0]["adds"] == 2
+    assert summary[0]["dels"] == 0
+    assert summary[0]["diff_available"] is True
 
 
 def test_summary_created_but_unreadable_keeps_row(tmp_path: Path):

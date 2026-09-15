@@ -98,7 +98,6 @@ const selectedTypes = ref<string[]>([]);
 const umoQuery = ref(
   typeof initialUmoQuery === "string" ? initialUmoQuery : "",
 );
-const includeWebchat = ref(false);
 const sortValue = ref("updated_at:desc");
 const groupBySession = ref(false);
 const mobileFiltersOpen = ref(false);
@@ -134,7 +133,6 @@ const hasFilters = computed(
   () =>
     Boolean(keyword.value.trim()) ||
     Boolean(umoQuery.value.trim()) ||
-    includeWebchat.value ||
     selectedBotIds.value.length > 0 ||
     selectedTypes.value.length > 0 ||
     sortValue.value !== "updated_at:desc",
@@ -285,7 +283,7 @@ const formattedMessages = computed(() => {
     });
 });
 
-watch([keyword, umoQuery, includeWebchat], () => {
+watch([keyword, umoQuery], () => {
   listAbortController.value?.abort();
   scheduleFetch();
 });
@@ -425,7 +423,6 @@ async function fetchConversations() {
     params.umo = umoQuery.value.trim();
   } else {
     params.exclude_ids = "astrbot";
-    if (!includeWebchat.value) params.exclude_platforms = "webchat";
   }
   if (selectedBotIds.value.length) {
     params.platforms = selectedBotIds.value.join(",");
@@ -484,7 +481,6 @@ function resetFilters() {
   cancelScheduledFetch();
   keyword.value = "";
   clearUmoQuery();
-  includeWebchat.value = false;
   selectedBotIds.value = [];
   selectedTypes.value = [];
   sortValue.value = "updated_at:desc";
@@ -953,22 +949,6 @@ function changePage(nextPage: number) {
               </button>
             </template>
           </v-text-field>
-        </div>
-
-        <div class="filter-block">
-          <div class="filter-switch-row">
-            <label class="filter-label" for="conversation-include-webchat">
-              {{ tm("workspace.filters.showWebchat") }}
-            </label>
-            <v-switch
-              id="conversation-include-webchat"
-              v-model="includeWebchat"
-              color="primary"
-              density="compact"
-              hide-details
-              inset
-            />
-          </div>
         </div>
 
         <div class="filter-block filter-block--last">
@@ -1581,17 +1561,6 @@ function changePage(nextPage: number) {
   font-size: 0.75rem;
   font-weight: 600;
   margin-bottom: 8px;
-}
-
-.filter-switch-row {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-
-.filter-switch-row .filter-label {
-  margin-bottom: 0;
 }
 
 .filter-panel :deep(.v-field) {

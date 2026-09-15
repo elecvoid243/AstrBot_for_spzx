@@ -2,9 +2,13 @@
 
 Author: elecvoid243
 Date: 2026-09-07
+Updated: 2026-09-15 — window is opt-in (legacy callers keep the full page),
+cursor paging follows insertion order, and route defaults are pinned.
 """
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -12,7 +16,12 @@ import pytest
 
 from astrbot.core.db.po import PlatformMessageHistory, WebChatThread
 from astrbot.core.db.sqlite import SQLiteDatabase
-from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
+from astrbot.dashboard.api.chat import get_chat_session, get_chat_session_history
+from astrbot.dashboard.services.chat_service import (
+    HISTORY_WINDOW_SIZE,
+    ChatService,
+    ChatServiceError,
+)
 
 SRC_SESSION_ID = "src-session"
 
@@ -89,7 +98,6 @@ async def test_db_cursor_before_id_returns_older_rows(tmp_path):
         "webchat", SRC_SESSION_ID, page=1, page_size=3
     )
     assert [r.content["message"][0]["text"] for r in page] == ["m4", "m3", "m2"]
-    assert [r.content["message"][0]["text"] for r in page] == ["m4", "m3", "m2"]
 
     older = await db.get_platform_message_history(
         "webchat",
@@ -99,6 +107,54 @@ async def test_db_cursor_before_id_returns_older_rows(tmp_path):
         before_id=page[-1].id,
     )
     assert [r.content["message"][0]["text"] for r in older] == ["m1", "m0"]
+
+
+@pytest.mark.asyncio
+async def test_db_cursor_paging_follows_id_order_not_timestamps(tmp_path):
+    """游标页按 id 排序：created_at 与插入顺序相反时也不跳行/重复。
+
+    回填/导入的会话（created_at 被写成与 id 不一致的值）下，若 ORDER BY 用
+    created_at 而游标用 id，翻页会重复返回已看过的行、永远走不到更旧的一页。
+    """
+    db = SQLiteDatabase(str(tmp_path / "history.db"))
+    await db.initialize()
+    for i in range(5):
+        await db.insert_platform_message_history(
+            platform_id="webchat",
+            user_id=SRC_SESSION_ID,
+            content={"type": "user", "message": [{"type": "text", "text": f"m{i}"}]},
+            sender_id="alice",
+            sender_name="alice",
+        )
+
+    # 反转 created_at 相对 id 的顺序（在库层面改写，模拟显式时间戳的回填）。
+    conn = sqlite3.connect(str(tmp_path / "history.db"))
+    rows = conn.execute(
+        "SELECT id, created_at FROM platform_message_history ORDER BY id"
+    ).fetchall()
+    stamps = [row[1] for row in rows]
+    for (record_id, _), stamp in zip(rows, reversed(stamps)):
+        conn.execute(
+            "UPDATE platform_message_history SET created_at = ? WHERE id = ?",
+            (stamp, record_id),
+        )
+    conn.commit()
+    conn.close()
+
+    # 用游标一直翻到最旧一页：每一行必须恰好出现一次。
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):  # 5 行 / 每页 2 条 = 3 页；余量给足同时防止死循环
+        page = await db.get_platform_message_history(
+            "webchat", SRC_SESSION_ID, page=1, page_size=2, before_id=cursor
+        )
+        if not page:
+            break
+        seen.extend(r.content["message"][0]["text"] for r in page)
+        assert len(seen) == len(set(seen)), f"cursor paging repeated rows: {seen}"
+        cursor = page[-1].id
+
+    assert seen == ["m4", "m3", "m2", "m1", "m0"]
 
 
 @pytest.mark.asyncio
@@ -134,8 +190,32 @@ async def test_db_count_platform_message_history_before_cursor(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_session_returns_recent_window_only():
-    """打开会话只取最近的窗口，并返回总数与 has_more。"""
+async def test_get_session_returns_recent_window_when_limit_given():
+    """ChatUI 显式请求窗口时只取最近的 N 条，并返回总数与 has_more。"""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=120)
+    service.platform_history_mgr.get = AsyncMock(
+        return_value=[_record(i) for i in range(71, 121)]
+    )
+
+    result = await service.get_session("alice", SRC_SESSION_ID, limit=50)
+
+    get_kwargs = service.platform_history_mgr.get.await_args.kwargs
+    assert get_kwargs["page_size"] == 50
+    assert len(result["history"]) == 50
+    assert result["history"][0]["id"] == 71
+    assert result["history"][-1]["id"] == 120
+    assert result["total_messages"] == 120
+    assert result["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_without_limit_keeps_legacy_full_page():
+    """不传 limit 时保持历史行为（整页 1000），避免静默截断。
+
+    v1 dashboard query 路由与归档会话预览都走这条无参路径，它们不会翻页，
+    因此默认值必须是旧的全量页而不是 ChatUI 的 50 条窗口。
+    """
     service = _make_service()
     service.db.count_platform_message_history = AsyncMock(return_value=120)
     service.platform_history_mgr.get = AsyncMock(
@@ -145,12 +225,31 @@ async def test_get_session_returns_recent_window_only():
     result = await service.get_session("alice", SRC_SESSION_ID)
 
     get_kwargs = service.platform_history_mgr.get.await_args.kwargs
-    assert get_kwargs["page_size"] == 50
-    assert len(result["history"]) == 50
-    assert result["history"][0]["id"] == 71
-    assert result["history"][-1]["id"] == 120
+    assert get_kwargs["page_size"] == 1000
     assert result["total_messages"] == 120
     assert result["has_more"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_clamps_window_limit():
+    """limit 被夹到 [1, 1000]，服务层不会收到离谱的窗口。"""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=0)
+
+    await service.get_session("alice", SRC_SESSION_ID, limit=9999)
+    assert service.platform_history_mgr.get.await_args.kwargs["page_size"] == 1000
+
+    await service.get_session("alice", SRC_SESSION_ID, limit=0)
+    assert service.platform_history_mgr.get.await_args.kwargs["page_size"] == 1
+
+
+def test_session_routes_pin_default_window():
+    """路由层默认值：会话路由 opt-in（None），游标路由固定 50。"""
+    assert signature(get_chat_session).parameters["limit"].default.default is None
+    assert (
+        signature(get_chat_session_history).parameters["limit"].default
+        == HISTORY_WINDOW_SIZE
+    )
 
 
 @pytest.mark.asyncio

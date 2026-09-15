@@ -838,9 +838,12 @@ export const chatApi = {
       }),
     );
   },
-  getSession(sessionId: string) {
+  getSession(sessionId: string, params?: { limit?: number }) {
     return typed<any>(
-      openApiV1.getChatSession({ path: { session_id: sessionId } }),
+      openApiV1.getChatSession({
+        path: { session_id: sessionId },
+        query: generatedQuery(params),
+      }),
     );
   },
   getHistory(sessionId: string, params?: { before_id?: number; limit?: number }) {

@@ -37,9 +37,15 @@ from astrbot.core.utils.media_utils import (
 
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
-# ChatUI history windowing: opening a session fetches only the most recent
-# messages; older pages are loaded on demand via /chat/sessions/{id}/history.
+# ChatUI history windowing: the dashboard chat asks for the most recent
+# HISTORY_WINDOW_SIZE records and loads older pages on demand via
+# /chat/sessions/{id}/history. The window is opt-in (`limit` query param)
+# because the same service call also backs the v1 dashboard query route and the
+# archived-session preview, which must keep the legacy full page instead of
+# being silently truncated.
 HISTORY_WINDOW_SIZE = 50
+LEGACY_HISTORY_PAGE_SIZE = 1000
+MAX_HISTORY_WINDOW_SIZE = 1000
 MAX_HISTORY_PAGE_SIZE = 200
 # Message marker index (user-message dots on the ChatUI scroll strip):
 # capped scan pages so a pathological session cannot run away.
@@ -2521,7 +2527,37 @@ class ChatService:
     ) -> list[dict]:
         return await self.get_sessions(username, platform_id)
 
-    async def get_session(self, username: str, session_id: str) -> dict:
+    async def get_session(
+        self,
+        username: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict:
+        """Get one session together with its newest history window.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: Session identifier.
+            limit: Newest-window size. ``None`` keeps the legacy page size so
+                callers that do not page stay complete; the ChatUI passes
+                ``HISTORY_WINDOW_SIZE`` and cursors the rest through
+                ``get_history_before``.
+
+        Returns:
+            Session metadata, the newest history window, and the
+            ``total_messages`` / ``has_more`` cursor state.
+
+        Raises:
+            ChatServiceError: If the session is missing or owned by another
+                user.
+        """
+        # `None` keeps the legacy page so non-paging callers (the v1 dashboard
+        # query route, the archived-session preview) are not truncated.
+        window_size = (
+            LEGACY_HISTORY_PAGE_SIZE
+            if limit is None
+            else max(1, min(limit, MAX_HISTORY_WINDOW_SIZE))
+        )
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:
             raise ChatServiceError(f"Session {session_id} not found")
@@ -2532,13 +2568,13 @@ class ChatService:
         project_info = await self.db.get_project_by_session(
             session_id=session_id, creator=username
         )
-        # Only the most recent window is loaded; older history is paged via
+        # Only the newest window is loaded; older history is paged via
         # get_history_before triggered by the ChatUI scroll-to-top or button.
         history_ls = await self.platform_history_mgr.get(
             platform_id=platform_id,
             user_id=session_id,
             page=1,
-            page_size=HISTORY_WINDOW_SIZE,
+            page_size=window_size,
         )
         threads = await self.db.get_webchat_threads_by_parent_session(
             parent_session_id=session_id,

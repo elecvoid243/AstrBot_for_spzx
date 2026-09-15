@@ -37,6 +37,7 @@ from astrbot.dashboard.schemas import (
     FileAccessRootsSetRequest,
 )
 from astrbot.dashboard.services.chat_service import (
+    MAX_HISTORY_WINDOW_SIZE,
     ChatService,
     ChatServiceError,
 )
@@ -307,10 +308,20 @@ async def unarchive_chat_session(
 @router.get("/chat/sessions/{session_id}")
 async def get_chat_session(
     session_id: str,
+    limit: int | None = Query(default=None, ge=1, le=MAX_HISTORY_WINDOW_SIZE),
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
-    return await _run(lambda: service.get_session(auth.username, session_id))
+    """Return a session with its newest history window.
+
+    ``limit`` is opt-in: omitting it keeps the legacy full page so callers that
+    do not page (the v1 dashboard query route, archived-session previews,
+    third-party clients) are not silently truncated, while the ChatUI asks for
+    the recent window and cursors the rest via ``/history``.
+    """
+    return await _run(
+        lambda: service.get_session(auth.username, session_id, limit=limit)
+    )
 
 
 @router.get("/chat/sessions/{session_id}/history")

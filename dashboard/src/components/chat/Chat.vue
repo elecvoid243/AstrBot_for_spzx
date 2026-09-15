@@ -823,6 +823,7 @@
               :messages="activeMessages"
               :history-has-more="Boolean(historyPaging?.hasMore)"
               :history-loading-older="Boolean(historyPaging?.loadingOlder)"
+              :history-error="historyPaging?.error || null"
               :history-offset="historyOffset"
               :current-umo="currentUmo ?? undefined"
               :is-dark="isDark"
@@ -857,7 +858,7 @@
               @open-thread="openThreadPanel"
               @open-reasoning="openReasoningPanel"
               @open-refs="openRefsSidebar"
-              @load-older="loadOlderHistory"
+              @load-older="loadOlderHistory(true)"
             />
           </div>
 
@@ -3919,7 +3920,9 @@ async function jumpToIndex(targetIndex: number): Promise<boolean> {
         scrolled = scrollToMessageIndex(targetIndex);
         return scrolled;
       }
-      if (!paging?.hasMore) return false;
+      // A page that already failed stays paused: jumping further would only
+      // re-request it and bail out of the no-progress check below.
+      if (!paging?.hasMore || paging?.error) return false;
       await loadOlderMessages(sessionId);
       // No progress (e.g. failed request) — stop instead of spinning.
       if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
@@ -4610,7 +4613,10 @@ function handleMessagesScroll() {
     container.scrollTop < 80 &&
     !suppressHistoryAutoLoad.value &&
     paging?.hasMore &&
-    !paging.loadingOlder
+    !paging.loadingOlder &&
+    // A failed page stays paused until the user retries (see
+    // loadOlderMessages) — otherwise every scroll event re-fires it.
+    !paging.error
   ) {
     void loadOlderHistory();
   }
@@ -4619,12 +4625,16 @@ function handleMessagesScroll() {
 /**
  * Prepend an older history page, anchoring the scroll height so the
  * viewport does not jump after the prepend.
+ *
+ * @param retry Clear a previous failure and request the page again — used by
+ *   the "load older" button. The automatic scroll path leaves a failed page
+ *   paused instead.
  */
-async function loadOlderHistory() {
+async function loadOlderHistory(retry = false) {
   if (!currSessionId.value) return;
   const container = messagesContainer.value;
   const prevHeight = container ? container.scrollHeight : null;
-  await loadOlderMessages(currSessionId.value);
+  await loadOlderMessages(currSessionId.value, { retry });
   if (container && prevHeight !== null) {
     await nextTick();
     container.scrollTop += container.scrollHeight - prevHeight;

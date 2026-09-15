@@ -84,6 +84,8 @@
   },
   "history": {
     "loadOlder": "Load older messages",
+    "retry": "Retry",
+    "loadFailed": "Failed to load older messages",
     "jumpLoading": "Loading older messages…"
   },
   "actions": {

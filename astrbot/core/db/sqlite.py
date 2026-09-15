@@ -950,6 +950,9 @@ class SQLiteDatabase(BaseDatabase):
     ):
         """Get platform message history records.
 
+        Records come back newest-first by ``id`` (insertion order); callers
+        reverse them when they need ascending order.
+
         Args:
             platform_id: Platform instance ID.
             user_id: Unified message origin for the group.
@@ -960,21 +963,29 @@ class SQLiteDatabase(BaseDatabase):
         """
         async with self.get_db() as session:
             session: AsyncSession
-            offset = (page - 1) * page_size
+            # Cursor column and ORDER BY column must agree, otherwise the page
+            # boundaries skip or repeat rows whenever `created_at` order drifts
+            # from insertion order (which would also drift the absolute indices
+            # `get_message_markers` derives from those boundaries). Ordering by
+            # `id` additionally lets the (platform_id, user_id, id) index serve
+            # a cursor page as a range scan instead of sort + offset.
             query = (
                 select(PlatformMessageHistory)
                 .where(
                     PlatformMessageHistory.platform_id == platform_id,
                     PlatformMessageHistory.user_id == user_id,
                 )
-                .order_by(
-                    desc(PlatformMessageHistory.created_at),
-                    desc(PlatformMessageHistory.id),
-                )
+                .order_by(desc(PlatformMessageHistory.id))
             )
             if before_id is not None:
-                query = query.where(PlatformMessageHistory.id < before_id)
-            result = await session.execute(query.offset(offset).limit(page_size))
+                # Exclusive and self-anchored: `page` carries no meaning here,
+                # so the offset is deliberately not applied.
+                result = await session.execute(
+                    query.where(PlatformMessageHistory.id < before_id).limit(page_size)
+                )
+            else:
+                offset = (page - 1) * page_size
+                result = await session.execute(query.offset(offset).limit(page_size))
             return result.scalars().all()
 
     async def count_platform_message_history(

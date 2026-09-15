@@ -1555,6 +1555,12 @@ export type GetChatSessionData = {
     path: {
         session_id: string;
     };
+    query?: {
+        /**
+         * Newest-window size. Omit it to keep the legacy full page; the dashboard chat asks for the recent window and cursors older messages through /chat/sessions/{session_id}/history.
+         */
+        limit?: number;
+    };
 };
 
 export type GetChatSessionResponse = (SuccessEnvelope);

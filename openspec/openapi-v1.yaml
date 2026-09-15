@@ -1423,6 +1423,14 @@ paths:
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+          description: >-
+            Newest-window size. Omit it to keep the legacy full page; the
+            dashboard chat asks for the recent window and cursors older
+            messages through /chat/sessions/{session_id}/history.
       responses:
         "200":
           $ref: "#/components/responses/Ok"

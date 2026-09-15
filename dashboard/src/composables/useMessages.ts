@@ -49,7 +49,9 @@ import {
 
 export type TransportMode = "sse" | "websocket";
 
-// History windowing: opening a session loads only the most recent messages;
+// History windowing: opening a session asks for the most recent
+// HISTORY_PAGE_SIZE records — the server default stays at the legacy full page
+// for callers that do not page (v1 dashboard query, archived previews) — and
 // older pages are fetched on demand with a `before_id` cursor (ChatUI
 // scroll-to-top or the "load older" button).
 const HISTORY_PAGE_SIZE = 50;
@@ -60,6 +62,12 @@ type HistoryPaging = {
   oldestLoadedId: number | null;
   totalMessages: number;
   loadingOlder: boolean;
+  /**
+   * Message of the last failed "load older" request. While set, the automatic
+   * scroll-to-top loading stays paused (retrying a broken request on every
+   * scroll event would spin); the explicit button clears it and retries.
+   */
+  error: string | null;
 };
 
 /** One user message in the session-wide marker index (ChatUI strip). */
@@ -575,7 +583,11 @@ export function useMessages(options: UseMessagesOptions) {
     // replay below.
     const todoReplayCutoff = Date.now();
     try {
-      const response = await chatApi.getSession(sessionId);
+      // The newest window is opt-in: the server keeps the legacy full page for
+      // callers that do not page, so the ChatUI asks for its window explicitly.
+      const response = await chatApi.getSession(sessionId, {
+        limit: HISTORY_PAGE_SIZE,
+      });
       const payload = response.data?.data || {};
       const history = payload.history || [];
       const records: ChatRecord[] = history.map(normalizeHistoryRecord);
@@ -591,6 +603,7 @@ export function useMessages(options: UseMessagesOptions) {
         oldestLoadedId: oldestRecord ? Number(oldestRecord.id) : null,
         totalMessages,
         loadingOlder: false,
+        error: null,
       };
       historyOffsetBySession[sessionId] = Math.max(
         0,
@@ -700,11 +713,21 @@ export function useMessages(options: UseMessagesOptions) {
    * Prepends one page of older history for a session (before_id cursor).
    * The caller is responsible for preserving the scroll position across the
    * prepend (scroll-height anchoring) — see Chat.vue load older flow.
+   *
+   * @param options.retry Explicit retry (the "load older" / "retry" button)
+   *   runs the request even after a failure; the automatic scroll-to-top path
+   *   leaves a failed page paused instead of hammering it on every scroll
+   *   event.
    */
-  async function loadOlderMessages(sessionId: string) {
+  async function loadOlderMessages(
+    sessionId: string,
+    options: { retry?: boolean } = {},
+  ) {
     const paging = historyPagingBySession[sessionId];
     if (!paging || paging.loadingOlder || !paging.hasMore) return;
+    if (paging.error && !options.retry) return;
     paging.loadingOlder = true;
+    paging.error = null;
     try {
       const response = await chatApi.getHistory(sessionId, {
         before_id: paging.oldestLoadedId ?? undefined,
@@ -739,6 +762,10 @@ export function useMessages(options: UseMessagesOptions) {
       );
     } catch (error) {
       console.error("Failed to load older messages:", error);
+      // Pause automatic loading until the user retries explicitly.
+      paging.error = String(
+        (error as Error)?.message ?? error ?? "unknown error",
+      );
     } finally {
       paging.loadingOlder = false;
     }

@@ -6,9 +6,13 @@
   >
     <div class="messages-list">
       <div v-if="historyHasMore" class="history-load-more">
+        <span v-if="historyError" class="history-load-error" role="alert">
+          {{ tm("history.loadFailed") }}
+        </span>
         <button
           type="button"
           class="history-load-more-btn"
+          :class="{ 'is-error': Boolean(historyError) }"
           :disabled="historyLoadingOlder"
           @click="emit('loadOlder')"
         >
@@ -18,6 +22,7 @@
             size="16"
             width="2"
           />
+          <span v-else-if="historyError">{{ tm("history.retry") }}</span>
           <span v-else>{{ tm("history.loadOlder") }}</span>
         </button>
       </div>
@@ -637,6 +642,8 @@ const props = withDefaults(
      */
     historyHasMore?: boolean;
     historyLoadingOlder?: boolean;
+    /** Last "load older" failure; turns the button into an explicit retry. */
+    historyError?: string | null;
     historyOffset?: number;
   }>(),
   {
@@ -655,6 +662,7 @@ const props = withDefaults(
     currentUmo: "",
     historyHasMore: false,
     historyLoadingOlder: false,
+    historyError: null,
     historyOffset: 0,
   },
 );
@@ -1574,8 +1582,15 @@ function formatDuration(seconds: number) {
 
 .history-load-more {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   padding: 8px 0 4px;
+}
+
+.history-load-error {
+  font-size: 12px;
+  color: rgb(var(--v-theme-error));
 }
 
 .history-load-more-btn {
@@ -1588,6 +1603,11 @@ function formatDuration(seconds: number) {
   color: rgba(var(--v-theme-on-surface), 0.65);
   cursor: pointer;
   white-space: nowrap;
+}
+
+.history-load-more-btn.is-error {
+  color: rgb(var(--v-theme-error));
+  border: 1px solid rgba(var(--v-theme-error), 0.4);
 }
 
 .history-load-more-btn:hover:not(:disabled) {

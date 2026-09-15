@@ -4087,14 +4087,19 @@ function runJumpLanding(
  * Glide a row to the centre of the messages panel, then hold it there.
  *
  * @param row: Target row, already rendered in the messages panel.
+ * @param animate: Glide to the row; false lands on it immediately, which is
+ *   what a restored viewport wants — the target is where the conversation
+ *   already was, not a place the user asked to travel to.
  */
-function scrollRowToCenter(row: HTMLElement) {
-  runJumpLanding((container) =>
-    // The row can leave the document while the glide runs — a session reload
-    // replaces the window, an edit truncates it. A detached row reports a zero
-    // rect, which would aim the glide at a meaningless offset, so abandon the
-    // landing rather than fly somewhere arbitrary.
-    row.isConnected ? centerScrollTopFor(container, row) : null,
+function scrollRowToCenter(row: HTMLElement, animate = true) {
+  runJumpLanding(
+    (container) =>
+      // The row can leave the document while the glide runs — a session reload
+      // replaces the window, an edit truncates it. A detached row reports a zero
+      // rect, which would aim the glide at a meaningless offset, so abandon the
+      // landing rather than fly somewhere arbitrary.
+      row.isConnected ? centerScrollTopFor(container, row) : null,
+    animate,
   );
 }
 
@@ -4124,31 +4129,41 @@ function scrollToBottomAndHold() {
 }
 
 /**
- * Glide to the row whose absolute `data-message-index` is target and hold it
- * centred while the freshly inserted rows settle (see `scrollRowToCenter`).
+ * Bring the row whose absolute `data-message-index` is target to the centre and
+ * hold it there while the freshly inserted rows settle (see
+ * `scrollRowToCenter`).
  *
  * @param targetIndex: Absolute history index of the target row.
+ * @param animate: Glide across the travel instead of landing on it. False for
+ *   viewport restoration, which should be as immediate as the switch allows.
  * @returns True when the row was found and the landing was started.
  */
-function scrollToMessageIndex(targetIndex: number) {
+function scrollToMessageIndex(targetIndex: number, animate = true) {
   const row = messagesContainer.value?.querySelector(
     `[data-message-index="${targetIndex}"]`,
   ) as HTMLElement | null;
   if (!row) return false;
-  scrollRowToCenter(row);
+  scrollRowToCenter(row, animate);
   return true;
 }
 
 /**
  * Jump to an absolute history index. When the target sits outside the loaded
- * window, page older history until it is covered, then glide the row to the
+ * window, page older history until it is covered, then bring the row to the
  * centre. Both directions wait out an in-flight older-page load first: its
  * prepend re-anchors scrollTop and re-keys the rows, which would otherwise
  * deflect a landing started before it.
  *
+ * @param targetIndex: Absolute history index to land on.
+ * @param animate: Glide across the travel instead of landing on it. False when
+ *   the call restores a viewport rather than answering a navigation request —
+ *   switching conversations should feel immediate.
  * @returns True when the target row was found and the landing was started.
  */
-async function jumpToIndex(targetIndex: number): Promise<boolean> {
+async function jumpToIndex(
+  targetIndex: number,
+  animate = true,
+): Promise<boolean> {
   const sessionId = currSessionId.value;
   if (!sessionId || jumpInProgress.value) return false;
   setStickToBottom(sessionId, false);
@@ -4172,7 +4187,7 @@ async function jumpToIndex(targetIndex: number): Promise<boolean> {
         // only guarantees the row exists, not that it is laid out —
         // scrollRowToCenter() is what absorbs the layout that follows.
         await nextTick();
-        scrolled = scrollToMessageIndex(targetIndex);
+        scrolled = scrollToMessageIndex(targetIndex, animate);
         return scrolled;
       }
       // A page that already failed stays paused: jumping further would only
@@ -4182,7 +4197,7 @@ async function jumpToIndex(targetIndex: number): Promise<boolean> {
       // No progress (e.g. failed request) — stop instead of spinning.
       if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
     }
-    scrolled = scrollToMessageIndex(targetIndex);
+    scrolled = scrollToMessageIndex(targetIndex, animate);
     return scrolled;
   } finally {
     jumpInProgress.value = false;
@@ -4985,6 +5000,10 @@ function recordViewportAnchor(sessionId: string) {
  * jump path, which re-pages the history the fresh window dropped and holds the
  * row in place while the rows around it settle.
  *
+ * Both landings are deliberately unanimated: this restores a viewport rather
+ * than travelling somewhere the user asked for, so it should be over as soon
+ * as the switch is.
+ *
  * @param sessionId: Conversation just loaded into the messages panel.
  */
 async function restoreSessionViewport(sessionId: string) {
@@ -4999,7 +5018,7 @@ async function restoreSessionViewport(sessionId: string) {
       scrollToBottomAndHold();
       return;
     }
-    await jumpToIndex(anchorIndex);
+    await jumpToIndex(anchorIndex, false);
   } finally {
     // Released last, so the jump above runs while the panel still holds
     // pre-restore geometry, and only if this restore still owns the gate: a

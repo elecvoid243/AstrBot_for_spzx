@@ -380,6 +380,15 @@ DEFAULT_CONFIG = {
         "admin_only": True,
         "verbose": True,
     },
+    # MCP stdio launcher policy. Empty lists fall back to the built-in
+    # allow/deny lists in astrbot/core/agent/mcp_client.py; a non-empty list
+    # replaces the built-in one entirely. The
+    # ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS environment variable takes precedence
+    # over "stdio_allowlist".
+    "mcp_settings": {
+        "stdio_allowlist": [],
+        "stdio_denylist": [],
+    },
     "t2i": False,
     "t2i_word_threshold": 150,
     "t2i_strategy": "remote",
@@ -5098,6 +5107,18 @@ CONFIG_METADATA_3_SYSTEM = {
                         "type": "list",
                         "items": {"type": "string"},
                         "hint": "goal 循环的注入轮会从 LLM 工具集中移除这些工具。与内置黑名单（ask_user_choice 等等待用户输入的工具）取并集，只需按需追加。",
+                    },
+                    "mcp_settings.stdio_allowlist": {
+                        "description": "MCP stdio 允许启动的命令",
+                        "type": "list",
+                        "items": {"type": "string"},
+                        "hint": "用于启动 stdio 类型 MCP 服务器的可执行文件，填写命令名即可（如 `uv`、`npx`；匹配时自动忽略路径、`.exe` 等扩展名与大小写）。留空表示沿用内置默认列表，填写后将**整体替换**内置列表。环境变量 `ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS` 优先级更高。",
+                    },
+                    "mcp_settings.stdio_denylist": {
+                        "description": "MCP stdio 禁止启动的命令",
+                        "type": "list",
+                        "items": {"type": "string"},
+                        "hint": "此处的命令无论是否出现在上方白名单中都会被拒绝（黑名单优先）。留空表示沿用内置默认列表（`bash`、`powershell`、`curl` 等），填写后将**整体替换**内置列表，请谨慎操作。",
                     },
                 },
             },

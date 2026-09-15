@@ -97,6 +97,12 @@ _DENIED_DOCKER_ARGS = frozenset(
     }
 )
 _STDIO_ALLOWLIST_ENV = "ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS"
+# User overrides live in the core config and are editable from
+# Dashboard -> Settings -> Security. An environment variable still wins so
+# container/CI deployments keep their pinned policy.
+_MCP_STDIO_SETTINGS_KEY = "mcp_settings"
+_STDIO_ALLOWLIST_CONFIG_KEY = "stdio_allowlist"
+_STDIO_DENYLIST_CONFIG_KEY = "stdio_denylist"
 
 try:
     import anyio
@@ -149,16 +155,76 @@ def _normalize_stdio_command_name(command: str) -> str:
     return command_name
 
 
+def _get_stdio_policy_overrides() -> dict:
+    """Read the ``mcp_settings`` section of the running AstrBot config.
+
+    Returns:
+        The ``mcp_settings`` mapping, or an empty dict when the config cannot
+        be read (e.g. very early import order).
+    """
+    try:
+        from astrbot.core import astrbot_config
+    except Exception as exc:  # pragma: no cover - defensive, config is normally loaded
+        logger.debug(f"MCP stdio policy config unavailable: {exc}")
+        return {}
+    settings = astrbot_config.get(_MCP_STDIO_SETTINGS_KEY, {})
+    return settings if isinstance(settings, dict) else {}
+
+
+def _normalize_stdio_command_names(value: object) -> set[str]:
+    """Normalize a configured command list into comparable command names.
+
+    Args:
+        value: Raw config value. A list/tuple/set of strings, or a single
+            comma-separated string, are both accepted.
+
+    Returns:
+        Normalized command names. Empty when the value is unusable or blank.
+    """
+    if isinstance(value, str):
+        raw_items: list[object] = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw_items = list(value)
+    else:
+        return set()
+
+    names = {_normalize_stdio_command_name(str(item)) for item in raw_items}
+    return {name for name in names if name}
+
+
 def _get_stdio_command_allowlist() -> set[str]:
-    allowed = set(_DEFAULT_STDIO_COMMAND_ALLOWLIST)
+    """Resolve the launchers allowed to spawn a stdio MCP server.
+
+    Precedence: ``ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS`` env >
+    ``mcp_settings.stdio_allowlist`` config > built-in defaults. A non-empty
+    higher-priority list replaces the lower-priority one.
+
+    Returns:
+        Normalized command names allowed to launch a stdio MCP server.
+    """
     configured = os.environ.get(_STDIO_ALLOWLIST_ENV, "")
     if configured.strip():
-        allowed = {
-            _normalize_stdio_command_name(item)
-            for item in configured.split(",")
-            if item.strip()
-        }
-    return allowed
+        return _normalize_stdio_command_names(configured)
+
+    allowed = _normalize_stdio_command_names(
+        _get_stdio_policy_overrides().get(_STDIO_ALLOWLIST_CONFIG_KEY, []),
+    )
+    return allowed or set(_DEFAULT_STDIO_COMMAND_ALLOWLIST)
+
+
+def _get_stdio_command_denylist() -> set[str]:
+    """Resolve the launchers that may never spawn a stdio MCP server.
+
+    ``mcp_settings.stdio_denylist`` replaces the built-in list when non-empty;
+    otherwise the built-in list applies.
+
+    Returns:
+        Normalized command names denied for stdio MCP servers.
+    """
+    denied = _normalize_stdio_command_names(
+        _get_stdio_policy_overrides().get(_STDIO_DENYLIST_CONFIG_KEY, []),
+    )
+    return denied or set(_DENIED_STDIO_COMMANDS)
 
 
 def _is_stdio_config(config: dict) -> bool:
@@ -229,7 +295,7 @@ def validate_mcp_stdio_config(config: dict) -> None:
         raise ValueError("MCP stdio command contains unsafe shell metacharacters.")
 
     command_name = _normalize_stdio_command_name(command)
-    if command_name in _DENIED_STDIO_COMMANDS:
+    if command_name in _get_stdio_command_denylist():
         raise ValueError(f"MCP stdio command `{command_name}` is not allowed.")
 
     allowed = _get_stdio_command_allowlist()
@@ -238,7 +304,8 @@ def validate_mcp_stdio_config(config: dict) -> None:
         raise ValueError(
             f"MCP stdio command `{command_name}` is not allowed. "
             f"Allowed commands: {allowed_display}. "
-            f"Set {_STDIO_ALLOWLIST_ENV} to override this list if you trust another launcher."
+            f"Add it under Dashboard -> Settings -> Security, or set "
+            f"{_STDIO_ALLOWLIST_ENV} to override this list if you trust another launcher."
         )
 
     _validate_stdio_args(command_name, cfg.get("args"))

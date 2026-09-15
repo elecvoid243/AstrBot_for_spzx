@@ -1454,6 +1454,16 @@
       },
       "no_proxy": {
         "description": "プロキシを使用しないアドレス一覧"
+      },
+      "mcp_settings": {
+        "stdio_allowlist": {
+          "description": "MCP stdio 許可コマンド",
+          "hint": "stdio 型 MCP サーバーの起動を許可する実行ファイル。コマンド名のみを入力します（例: `uv`、`npx`）。照合時はパス、`.exe` などの拡張子、大文字小文字を無視します。空欄の場合は組み込みの既定リストを使用し、入力すると既定リストを**丸ごと置き換え**ます。環境変数 `ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS` の方が優先されます。"
+        },
+        "stdio_denylist": {
+          "description": "MCP stdio 拒否コマンド",
+          "hint": "ここに記載したコマンドは、上の許可リストに含まれていても拒否されます（拒否リスト優先）。空欄の場合は組み込みの既定リスト（`bash`、`powershell`、`curl` など）を使用し、入力すると既定リストを**丸ごと置き換え**ますのでご注意ください。"
+        }
       }
     }
   },

@@ -69,6 +69,10 @@
       "t2iRendering": {
         "title": "文本转图像",
         "subtitle": "文本转图像渲染策略、端点和自定义模板。"
+      },
+      "mcpStdio": {
+        "title": "MCP 命令策略",
+        "subtitle": "stdio 类型 MCP 服务器的启动命令白名单与黑名单。"
       }
     },
     "timePreview": {

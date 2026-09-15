@@ -69,6 +69,10 @@
       "t2iRendering": {
         "title": "Text-to-Image",
         "subtitle": "Rendering strategy, endpoint, and custom templates for text-to-image."
+      },
+      "mcpStdio": {
+        "title": "MCP Command Policy",
+        "subtitle": "Allowlist and denylist for stdio MCP server launchers."
       }
     },
     "timePreview": {

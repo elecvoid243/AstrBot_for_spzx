@@ -768,6 +768,10 @@ const systemConfigGroups = computed(() => {
             'dashboard.auth_rate_limit.max_burst',
             'dashboard.totp.enable'
         ]),
+        createGroup('mcpStdio', [
+            'mcp_settings.stdio_allowlist',
+            'mcp_settings.stdio_denylist'
+        ]),
         createGroup('logs', [
             'log_level',
             'log_file_enable',
@@ -808,7 +812,7 @@ const networkSystemConfigGroups = computed(() => systemConfigGroups.value.filter
     group.key === 'network'
 )));
 const securitySystemConfigGroups = computed(() => systemConfigGroups.value.filter((group) => (
-    group.key === 'webuiSecurity'
+    group.key === 'webuiSecurity' || group.key === 'mcpStdio'
 )));
 
 watch(

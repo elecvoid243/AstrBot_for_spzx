@@ -65,6 +65,10 @@
       "t2iRendering": {
         "title": "長文の画像化",
         "subtitle": "長文を画像としてレンダリングする際の方式、エンドポイント、カスタムテンプレート。"
+      },
+      "mcpStdio": {
+        "title": "MCP コマンドポリシー",
+        "subtitle": "stdio 型 MCP サーバーの起動コマンドの許可リストと拒否リスト。"
       }
     },
     "timePreview": {

@@ -1430,6 +1430,16 @@
           "description": "Tools Stripped in Loop",
           "hint": "These tools are removed from the LLM tool set on goal-loop injected turns. Merged with the built-in blocklist (ask_user_choice and other user-input-blocking tools); only add extras as needed."
         }
+      },
+      "mcp_settings": {
+        "stdio_allowlist": {
+          "description": "Allowed MCP stdio Commands",
+          "hint": "Executables allowed to launch stdio MCP servers. Use the bare command name (e.g. `uv`, `npx`); matching ignores the path, extensions such as `.exe`, and letter case. Leave empty to keep the built-in default list; a non-empty list **replaces** it. The `ASTRBOT_MCP_STDIO_ALLOWED_COMMANDS` environment variable takes precedence."
+        },
+        "stdio_denylist": {
+          "description": "Denied MCP stdio Commands",
+          "hint": "Commands listed here are rejected even when they appear in the allowlist above (the denylist wins). Leave empty to keep the built-in default list (`bash`, `powershell`, `curl`, ...); a non-empty list **replaces** it, so edit with care."
+        }
       }
     }
   },

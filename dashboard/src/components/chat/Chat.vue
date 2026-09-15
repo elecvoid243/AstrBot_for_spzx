@@ -3547,6 +3547,9 @@ async function selectSession(sessionId: string, pushRoute = true) {
   ) {
     scrollTopBySession.set(outgoingSessionId, outgoingContainer.scrollTop);
   }
+  // The incoming session owns the viewport from here: a landing that is
+  // still settling would otherwise keep pinning the outgoing row.
+  endJumpPin();
   sessionSwitchInFlight = true;
   currSessionId.value = sessionId;
   // Per-session drafts: swap in the target session's saved composer text
@@ -3855,24 +3858,41 @@ function scrollToMessage(messageId?: string | number) {
   );
   if (index < 0) return;
   // Same intent as a marker jump: the viewport is about to leave the
-  // bottom, so live stick-to-bottom snaps must not fight the animation.
+  // bottom, so live stick-to-bottom snaps must not fight the landing.
   setStickToBottom(currSessionId.value, false);
   const rows = messagesContainer.value?.querySelectorAll(".message-row");
-  rows?.[index]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const row = rows?.[index] as HTMLElement | undefined;
+  if (row) pinRowToCenter(row);
 }
 
-// Jump scroll lock: a marker jump animates the viewport away from the
-// bottom and (when paging older history) prepends pages mid-flight. Both
-// would otherwise be fought by the stick-to-bottom snaps and the
-// scroll-top auto-load. The lock is released once the scroll animation
-// has actually settled (no scroll events for a moment) — a fixed delay
-// released it mid-animation on long jumps and deflected the landing.
+// Jump scroll lock: a marker jump moves the viewport away from the bottom
+// and (when paging older history) prepends pages mid-flight. Both would
+// otherwise be fought by the stick-to-bottom snaps and the scroll-top
+// auto-load. The lock is released once the landing has actually settled (no
+// scroll events for a moment) — a fixed delay released it mid-settle on long
+// jumps and deflected the landing. The re-pin loop emits those scroll events,
+// so this keeps tracking the real end of the jump.
 const JUMP_SCROLL_SETTLE_MS = 160;
 const JUMP_SCROLL_MAX_LOCK_MS = 2500;
 let jumpScrollSettleTimer = 0;
 let jumpScrollCapTimer = 0;
 let jumpScrollContainer: HTMLElement | null = null;
 let jumpScrollOnScroll: (() => void) | null = null;
+
+// Landing re-pin (see pinRowToCenter). The settle window is time-based, not
+// frame-based, so the stop condition does not shift with the display refresh
+// rate; the cap bounds a jump whose target row keeps being pushed around by
+// media still loading above it.
+const JUMP_PIN_STABLE_MS = 120;
+const JUMP_PIN_MAX_MS = 1000;
+// Gestures that hand the viewport back to the user. `pointerdown` covers a
+// native scrollbar drag, which fires no `wheel` event.
+const JUMP_PIN_CANCEL_EVENTS = ["wheel", "touchstart", "pointerdown"] as const;
+// Generation counter: bumped by endJumpPin() so a queued frame of a
+// superseded loop returns instead of re-applying a stale target.
+let jumpPinToken = 0;
+let jumpPinContainer: HTMLElement | null = null;
+let jumpPinOnUserScroll: (() => void) | null = null;
 
 function endJumpScrollLock() {
   if (jumpScrollOnScroll && jumpScrollContainer) {
@@ -3887,6 +3907,10 @@ function endJumpScrollLock() {
 
 function beginJumpScrollLock(container: HTMLElement) {
   endJumpScrollLock();
+  // A new jump supersedes a landing that may still be settling: if this
+  // attempt ends up failing, that older loop must not keep pulling the
+  // viewport back to its own target.
+  endJumpPin();
   suppressHistoryAutoLoad.value = true;
   jumpScrollContainer = container;
   jumpScrollOnScroll = () => {
@@ -3919,24 +3943,105 @@ function beginJumpScrollLock(container: HTMLElement) {
   }, JUMP_SCROLL_MAX_LOCK_MS);
 }
 
-/** Smooth-scroll to the row whose absolute data-message-index is target. */
+/**
+ * Stop the landing re-pin: detach its gesture listeners and invalidate the
+ * frame it may already have queued. The token check inside the loop is what
+ * actually stops it.
+ */
+function endJumpPin() {
+  jumpPinToken += 1;
+  if (jumpPinOnUserScroll && jumpPinContainer) {
+    for (const type of JUMP_PIN_CANCEL_EVENTS) {
+      jumpPinContainer.removeEventListener(type, jumpPinOnUserScroll);
+    }
+  }
+  jumpPinOnUserScroll = null;
+  jumpPinContainer = null;
+}
+
+/**
+ * Centre a row and hold it centred while the rows around it settle.
+ *
+ * `scrollIntoView` derives its target offset from the layout of one instant.
+ * A marker jump inserts its own rows (up to 20 pages) immediately before
+ * scrolling, and those rows keep growing afterwards — image decode, Shiki
+ * highlighting, agent-work pills — so the target slides away from the centre
+ * it was pinned to, the further the more content is still in flight. Nothing
+ * re-measures the landing, which is why a jump toward unloaded history used
+ * to stop at a position that no longer matched the requested message.
+ *
+ * Re-applying the pin frame by frame is deliberately blind to *why* the
+ * layout moved: it stops once the container height has held still for
+ * `JUMP_PIN_STABLE_MS`, and is bounded by `JUMP_PIN_MAX_MS` so a page that
+ * keeps loading media can never hold the viewport hostage.
+ *
+ * @param row: Target row, already rendered in the messages panel.
+ */
+function pinRowToCenter(row: HTMLElement) {
+  const container = messagesContainer.value;
+  if (!container) return;
+  endJumpPin();
+  const token = jumpPinToken;
+  const startedAt = performance.now();
+  let lastChangeAt = startedAt;
+  let lastHeight = container.scrollHeight;
+  // A scroll gesture is authoritative: the user owns the viewport from that
+  // moment, so the pin drops instead of fighting them back to its target.
+  // `pointerdown` is what catches a native scrollbar drag — that gesture
+  // fires no `wheel` event, so without it the pin would yank the viewport
+  // back mid-drag.
+  jumpPinContainer = container;
+  jumpPinOnUserScroll = () => endJumpPin();
+  for (const type of JUMP_PIN_CANCEL_EVENTS) {
+    container.addEventListener(type, jumpPinOnUserScroll, { passive: true });
+  }
+  const step = () => {
+    if (token !== jumpPinToken) return;
+    // `auto`, never `smooth`: the next frame would cancel an animation anyway,
+    // and a landing that stays put matters more than the travel effect.
+    row.scrollIntoView({ behavior: "auto", block: "center" });
+    const now = performance.now();
+    const height = container.scrollHeight;
+    if (height !== lastHeight) {
+      lastHeight = height;
+      lastChangeAt = now;
+    }
+    if (
+      now - lastChangeAt >= JUMP_PIN_STABLE_MS ||
+      now - startedAt >= JUMP_PIN_MAX_MS
+    ) {
+      endJumpPin();
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/**
+ * Scroll to the row whose absolute `data-message-index` is target and keep it
+ * centred while the freshly inserted rows settle (see `pinRowToCenter`).
+ *
+ * @param targetIndex: Absolute history index of the target row.
+ * @returns True when the row was found and the pin was started.
+ */
 function scrollToMessageIndex(targetIndex: number) {
   const row = messagesContainer.value?.querySelector(
     `[data-message-index="${targetIndex}"]`,
   ) as HTMLElement | null;
   if (!row) return false;
-  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  pinRowToCenter(row);
   return true;
 }
 
 /**
  * Jump to an absolute history index. When the target sits outside the loaded
- * window, page older history until it is covered, then scroll once. Both
- * directions wait out an in-flight older-page load first: its prepend
- * re-anchors scrollTop and re-keys the rows, which would cancel or deflect
- * a smooth scroll started before it.
+ * window, page older history until it is covered, then pin the row centred.
+ * Both directions wait out an in-flight older-page load first: its prepend
+ * re-anchors scrollTop and re-keys the rows, which would otherwise deflect a
+ * landing started before it.
  *
- * @returns True when the target row was found and scrolled to.
+ * @returns True when the target row was found and the landing was pinned.
  */
 async function jumpToIndex(targetIndex: number): Promise<boolean> {
   const sessionId = currSessionId.value;
@@ -3958,7 +4063,9 @@ async function jumpToIndex(targetIndex: number): Promise<boolean> {
       }
       if (targetIndex >= offset) {
         // Let the post-prepend re-render flush so data-message-index
-        // attributes match the new offsets before querying the row.
+        // attributes match the new offsets before querying the row. This
+        // only guarantees the row exists, not that it is laid out —
+        // pinRowToCenter() is what absorbs the layout that follows.
         await nextTick();
         scrolled = scrollToMessageIndex(targetIndex);
         return scrolled;

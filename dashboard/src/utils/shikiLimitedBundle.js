@@ -92,6 +92,7 @@ export const LIMITED_SHIKI_LANGUAGE_ALIASES = {
   "c++": "cpp",
   cc: "cpp",
   cjs: "javascript",
+  cxx: "cpp",
   console: "bash",
   cs: "csharp",
   cts: "typescript",
@@ -170,6 +171,7 @@ export function normalizeLimitedShikiLanguage(language) {
   const normalized = String(language || "text")
     .trim()
     .split(/\s+/, 1)[0]
+    .split(":", 1)[0]
     .toLowerCase();
 
   if (!normalized) return "text";

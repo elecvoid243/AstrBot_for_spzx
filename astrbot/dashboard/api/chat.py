@@ -286,6 +286,8 @@ async def get_archived_chat_sessions(
 @router.post("/chat/sessions/{session_id}/archive")
 async def archive_chat_session(
     session_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=1000, ge=1, le=1000),
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):

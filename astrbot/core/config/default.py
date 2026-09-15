@@ -1,6 +1,7 @@
 """如需修改配置，请在 `data/cmd_config.json` 中修改或者在管理面板中可视化修改。"""
 
 import os
+import platform
 import textwrap
 
 from astrbot import __version__
@@ -8,6 +9,32 @@ from astrbot.core.computer.booters.cua_defaults import CUA_DEFAULT_CONFIG
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .agent_runner import get_agent_runner_config_default
+
+
+def get_local_permission_defaults(system: str | None = None) -> dict:
+    """Return fresh Local permission defaults for the operating system.
+
+    Args:
+        system: Operating system name, or None to use the current system.
+
+    Returns:
+        Per-role policies. Windows disables member access and gives admins
+        unrestricted access because workspace isolation is unavailable.
+    """
+    windows = (system or platform.system()).lower() == "windows"
+    return {
+        "member": {
+            "allow_execution": False,
+            "allow_network": False,
+            "filesystem_scope": "none" if windows else "workspace",
+        },
+        "admin": {
+            "allow_execution": True,
+            "allow_network": True,
+            "filesystem_scope": "host" if windows else "workspace",
+        },
+    }
+
 
 VERSION = __version__
 
@@ -204,6 +231,7 @@ DEFAULT_CONFIG = {
             "add_cron_tools": True,
         },
         "computer_use_runtime": "none",
+        "computer_use_local_permissions": get_local_permission_defaults(),
         "computer_use_require_admin": True,
         "file_access_default_mode": "full",
         "file_access_extra_roots": [],
@@ -454,6 +482,7 @@ CONFIG_METADATA_2 = {
                         "secret": "",
                         "enable_group_c2c": True,
                         "enable_guild_direct_message": True,
+                        "use_markdown": True,
                     },
                     "QQ 官方机器人(Webhook)": {
                         "id": "default",
@@ -461,6 +490,7 @@ CONFIG_METADATA_2 = {
                         "enable": True,
                         "appid": "",
                         "secret": "",
+                        "use_markdown": True,
                         "is_sandbox": False,
                         "unified_webhook_mode": True,
                         "webhook_uuid": "",
@@ -1051,6 +1081,11 @@ CONFIG_METADATA_2 = {
                         "type": "bool",
                         "hint": "启用后，机器人可以接收到频道的私聊消息。",
                     },
+                    "use_markdown": {
+                        "description": "主动消息使用 Markdown",
+                        "type": "bool",
+                        "hint": "启用后，机器人主动发送消息默认以 Markdown 模式发送；插件显式调用 use_markdown() 指定行为时不受此配置影响。",
+                    },
                     "ws_reverse_host": {
                         "description": "反向 Websocket 主机",
                         "type": "string",
@@ -1480,7 +1515,7 @@ CONFIG_METADATA_2 = {
                         "api_base": "https://api.kimi.com/coding",
                         "timeout": 120,
                         "proxy": "",
-                        "custom_headers": {"User-Agent": "claude-code/0.1.0"},
+                        "custom_headers": {},
                         "anth_thinking_config": {"type": "", "budget": 0, "effort": ""},
                     },
                     "Moonshot": {
@@ -1517,7 +1552,7 @@ CONFIG_METADATA_2 = {
                         "api_base": "https://api.minimaxi.com/anthropic",
                         "timeout": 120,
                         "proxy": "",
-                        "custom_headers": {"User-Agent": "claude-code/0.1.0"},
+                        "custom_headers": {},
                         "anth_thinking_config": {"type": "", "budget": 0, "effort": ""},
                     },
                     "Xiaomi": {
@@ -1542,7 +1577,7 @@ CONFIG_METADATA_2 = {
                         "api_base": "https://token-plan-cn.xiaomimimo.com/anthropic",
                         "timeout": 120,
                         "proxy": "",
-                        "custom_headers": {"User-Agent": "claude-code/0.1.0"},
+                        "custom_headers": {},
                         "anth_thinking_config": {"type": "", "budget": 0, "effort": ""},
                     },
                     "xAI": {
@@ -1614,6 +1649,18 @@ CONFIG_METADATA_2 = {
                         "key": [],
                         "timeout": 120,
                         "api_base": "https://aihubmix.com/v1",
+                        "proxy": "",
+                        "custom_headers": {},
+                    },
+                    "MiraRouter": {
+                        "id": "mirarouter",
+                        "provider": "mirarouter",
+                        "type": "mirarouter_chat_completion",
+                        "provider_type": "chat_completion",
+                        "enable": True,
+                        "key": [],
+                        "timeout": 120,
+                        "api_base": "https://api.mirarouter.com/v1",
                         "proxy": "",
                         "custom_headers": {},
                     },
@@ -3105,6 +3152,9 @@ CONFIG_METADATA_2 = {
             "provider_settings": {
                 "type": "object",
                 "items": {
+                    "image_compress_enabled": {
+                        "type": "bool",
+                    },
                     "enable": {
                         "type": "bool",
                     },
@@ -3359,12 +3409,13 @@ CONFIG_METADATA_2 = {
 
 
 """
-v4.7.0 之后，name, description, hint 等字段已经实现 i18n 国际化。国际化资源文件位于：
+Since v4.7.0, fields such as name, description, and hint support i18n.
+Their resources are stored in:
 
-- dashboard/src/i18n/locales/en-US/features/config-metadata.json
-- dashboard/src/i18n/locales/zh-CN/features/config-metadata.json
+- dashboard/src/i18n/locales/<locale>/features/config-metadata.json
 
-如果在此文件中添加了新的配置字段，请务必同步更新上述两个国际化资源文件。
+When adding configuration fields here, update this file for every supported
+Dashboard locale.
 """
 CONFIG_METADATA_3 = {
     "ai_group": {
@@ -3870,13 +3921,53 @@ CONFIG_METADATA_3 = {
                         "description": "Computer Use Runtime",
                         "type": "string",
                         "options": ["none", "local", "sandbox"],
-                        "labels": ["无", "本地", "沙箱"],
+                        "labels": [
+                            "不允许任何环境",
+                            "本机环境",
+                            "第三方沙箱环境",
+                        ],
                         "hint": "选择 Computer Use 运行环境。",
                     },
+                    "provider_settings.computer_use_local_permissions": {
+                        "description": "本地权限策略",
+                        "type": "object",
+                        "_special": "local_permission_matrix",
+                        "full_width": True,
+                        "items": {
+                            "member": {
+                                "type": "object",
+                                "items": {
+                                    "allow_execution": {"type": "bool"},
+                                    "allow_network": {"type": "bool"},
+                                    "filesystem_scope": {
+                                        "type": "string",
+                                        "options": ["none", "workspace", "host"],
+                                    },
+                                },
+                            },
+                            "admin": {
+                                "type": "object",
+                                "items": {
+                                    "allow_execution": {"type": "bool"},
+                                    "allow_network": {"type": "bool"},
+                                    "filesystem_scope": {
+                                        "type": "string",
+                                        "options": ["none", "workspace", "host"],
+                                    },
+                                },
+                            },
+                        },
+                        "condition": {
+                            "provider_settings.computer_use_runtime": "local",
+                        },
+                    },
                     "provider_settings.computer_use_require_admin": {
-                        "description": "需要 AstrBot 管理员权限",
+                        "description": "沙箱能力需要 AstrBot 管理员权限",
                         "type": "bool",
-                        "hint": "开启后，需要 AstrBot 管理员权限才能调用使用电脑能力。在平台配置->管理员中可添加管理员。使用 /sid 指令查看管理员 ID。",
+                        "hint": "开启后，需要 AstrBot 管理员权限才能调用远程沙箱能力。在平台配置->管理员中可添加管理员。使用 /sid 指令查看管理员 ID。",
+                        "condition": {
+                            "provider_settings.computer_use_runtime": "sandbox",
+                        },
                     },
                     "provider_settings.file_access_default_mode": {
                         "description": "默认文件访问模式",
@@ -4331,12 +4422,12 @@ CONFIG_METADATA_3 = {
                     "provider_settings.image_compress_enabled": {
                         "description": "启用图片压缩",
                         "type": "bool",
-                        "hint": "启用后，发送给多模态模型前会先压缩本地大图片。",
+                        "hint": "默认开启。发送给多模态模型前按需压缩转换图片：合规的 JPEG/PNG 原样发送，动图生成拼图预览。",
                     },
                     "provider_settings.image_compress_options.max_size": {
                         "description": "最大边长",
                         "type": "int",
-                        "hint": "压缩后图片的最长边，单位为像素。超过该尺寸时会按比例缩放。",
+                        "hint": "压缩后图片的最长边，单位为像素，超出则按比例缩放。CUA 沙箱下输入图片不缩放，大图可能超出服务商上传限制。",
                         "condition": {
                             "provider_settings.image_compress_enabled": True,
                         },
@@ -4433,9 +4524,9 @@ CONFIG_METADATA_3 = {
                         "items": {"type": "string"},
                     },
                     "platform_settings.unique_session": {
-                        "description": "隔离会话",
+                        "description": "隔离对话",
                         "type": "bool",
-                        "hint": "启用后，群成员的上下文独立。",
+                        "hint": "启用后，支持隔离的渠道会为每位群成员使用独立上下文。指令权限请在「管理行为 → 指令」中设置。",
                     },
                     "wake_prefix": {
                         "description": "唤醒词",

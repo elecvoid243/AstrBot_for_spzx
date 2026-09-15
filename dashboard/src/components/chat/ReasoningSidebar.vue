@@ -136,10 +136,12 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .reasoning-sidebar {
-  width: 380px;
+  --chat-side-panel-width: 380px;
+  width: var(--chat-side-panel-width);
   height: calc(100% - var(--chat-panel-top-offset, 0px));
   margin-top: var(--chat-panel-top-offset, 0px);
-  border-left: 1px solid var(--chat-border, rgba(var(--v-theme-on-surface), 0.1));
+  border-left: 1px solid
+    var(--chat-border, rgba(var(--v-theme-on-surface), 0.1));
   background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
   color: rgb(var(--v-theme-on-surface));
   display: flex;
@@ -232,7 +234,8 @@ onBeforeUnmount(() => {
   .reasoning-sidebar-header {
     min-height: 52px;
     padding: calc(10px + env(safe-area-inset-top)) 12px 8px;
-    border-bottom: 1px solid var(--chat-border, rgba(var(--v-border-color), 0.12));
+    border-bottom: 1px solid
+      var(--chat-border, rgba(var(--v-border-color), 0.12));
   }
 
   .reasoning-sidebar-body {

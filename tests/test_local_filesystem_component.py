@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from astrbot.core.computer import process_sandbox
 from astrbot.core.computer.booters import local as local_booter
 from astrbot.core.computer.booters.local import LocalFileSystemComponent
 
@@ -218,6 +220,10 @@ def test_local_file_system_component_preserves_python_ripgrep_before_314(monkeyp
     ]
 
 
+@pytest.mark.skipif(
+    sys.version_info >= (3, 14),
+    reason="python-ripgrep is only used before Python 3.14",
+)
 def test_local_file_system_component_handles_search_timeout(monkeypatch):
     def fake_run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])

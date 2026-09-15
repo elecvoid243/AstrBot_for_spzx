@@ -11,6 +11,29 @@ from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
 
 
 @pytest.mark.asyncio
+async def test_gemini_thinking_level_is_serialized_on_every_request():
+    model = "gemini-3.7-flash"
+    provider = ProviderGoogleGenAI.__new__(ProviderGoogleGenAI)
+    provider.provider_config = {"gm_thinking_config": {"level": "HIGH"}}
+    provider.provider_settings = {}
+    provider.model_name = model
+    provider.safety_settings = []
+
+    first_config = await provider._prepare_query_config({"model": model})
+    second_config = await provider._prepare_query_config({"model": model})
+
+    assert first_config.thinking_config is not None
+    assert second_config.thinking_config is not None
+    assert first_config.thinking_config.model_dump(exclude_none=True) == {
+        "thinking_level": types.ThinkingLevel.HIGH,
+    }
+    assert second_config.thinking_config.model_dump(exclude_none=True) == {
+        "thinking_level": types.ThinkingLevel.HIGH,
+    }
+
+
+
+@pytest.mark.asyncio
 async def test_gemini_prepare_conversation_removes_leading_model_content():
     provider = ProviderGoogleGenAI.__new__(ProviderGoogleGenAI)
 
@@ -129,6 +152,42 @@ def test_gemini_reasoning_only_output_is_allowed():
         response_id="resp_reasoning",
         finish_reason="STOP",
     )
+
+
+def test_gemini_extract_usage_excludes_cached_tokens_from_input_other():
+    provider = ProviderGoogleGenAI.__new__(ProviderGoogleGenAI)
+
+    usage_metadata = SimpleNamespace(
+        prompt_token_count=100,
+        cached_content_token_count=30,
+        candidates_token_count=50,
+    )
+
+    usage = provider._extract_usage(usage_metadata)
+
+    # prompt_token_count already includes cached tokens; input_other must
+    # exclude them so input (input_other + input_cached) is not inflated.
+    assert usage.input_other == 70
+    assert usage.input_cached == 30
+    assert usage.input == 100
+    assert usage.output == 50
+
+
+def test_gemini_extract_usage_without_cache_keeps_full_prompt_tokens():
+    provider = ProviderGoogleGenAI.__new__(ProviderGoogleGenAI)
+
+    usage_metadata = SimpleNamespace(
+        prompt_token_count=100,
+        cached_content_token_count=0,
+        candidates_token_count=20,
+    )
+
+    usage = provider._extract_usage(usage_metadata)
+
+    assert usage.input_other == 100
+    assert usage.input_cached == 0
+    assert usage.input == 100
+    assert usage.output == 20
 
 
 @pytest.mark.asyncio

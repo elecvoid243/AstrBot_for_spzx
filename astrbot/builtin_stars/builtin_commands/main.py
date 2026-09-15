@@ -42,9 +42,14 @@ class Main(star.Star):
         await self.name_c.name(event, alias)
 
     @filter.command("reset")
+    @filter.permission_type(filter.PermissionType.SHARED_GROUP_ADMIN)
     async def reset(self, message: AstrMessageEvent) -> None:
-        """重置对话历史"""
-        await self.conversation_c.reset(message)
+        """开始新对话，保留之前的历史。
+
+        Args:
+            message: 命令事件，标识会话与发送者。
+        """
+        await self.conversation_c.new_conv(message)
 
     @filter.command("stop")
     async def stop(self, message: AstrMessageEvent) -> None:
@@ -52,8 +57,13 @@ class Main(star.Star):
         await self.conversation_c.stop(message)
 
     @filter.command("new")
+    @filter.permission_type(filter.PermissionType.SHARED_GROUP_ADMIN)
     async def new_conv(self, message: AstrMessageEvent) -> None:
-        """创建新对话"""
+        """开始新对话，保留之前的历史。
+
+        Args:
+            message: 命令事件，标识会话与发送者。
+        """
         await self.conversation_c.new_conv(message)
 
     @filter.command("stats")

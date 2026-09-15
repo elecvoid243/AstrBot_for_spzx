@@ -1512,6 +1512,7 @@ function formatDuration(seconds: number) {
 
 <style scoped>
 .chat-message-list {
+  container: chat-messages / inline-size;
   --chat-border: rgba(var(--v-border-color), 0.16);
   --chat-muted: rgba(var(--v-theme-on-surface), 0.62);
   width: 100%;
@@ -1748,10 +1749,6 @@ function formatDuration(seconds: number) {
   user-select: none;
 }
 
-.bot-streaming-spinner {
-  margin-top: -4px;
-}
-
 .bot-avatar-symbol {
   display: inline-flex;
   align-items: center;
@@ -1775,8 +1772,8 @@ function formatDuration(seconds: number) {
   padding: 12px 18px;
   font-size: 15px;
   max-width: 100%;
-  border-radius: 1.5rem;
-  background: rgba(var(--v-theme-primary), 0.12);
+  border-radius: 16px;
+  background: rgba(var(--v-theme-primary), 0.16);
 }
 
 .message-bubble.bot {
@@ -1821,14 +1818,6 @@ function formatDuration(seconds: number) {
   min-height: 34px;
   padding: 0 14px;
   border-radius: 14px;
-}
-
-.loading-message {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-  color: var(--chat-muted);
 }
 
 .chat-message-list :deep(.markdown-content p) {
@@ -2068,6 +2057,14 @@ function formatDuration(seconds: number) {
   align-items: center;
 }
 
+.from-bot .message-meta :deep(> .v-btn:first-child) {
+  margin-inline-start: -6px;
+}
+
+.from-bot .message-time:not(:first-child) {
+  margin-inline-start: 6px;
+}
+
 .message-thread-meta {
   min-height: 24px;
   display: inline-flex;
@@ -2102,6 +2099,19 @@ function formatDuration(seconds: number) {
 
 .from-user .message-meta {
   justify-content: flex-end;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .from-user .message-meta {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .from-user:hover .message-meta,
+  .from-user:focus-within .message-meta {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .stats-card {
@@ -2184,6 +2194,16 @@ function formatDuration(seconds: number) {
   border: 0;
   background: transparent;
   padding-left: 12px;
+}
+
+@container chat-messages (max-width: 600px) {
+  .message-row.from-bot .bot-avatar {
+    display: none;
+  }
+
+  .message-bubble.bot {
+    padding-inline: 0;
+  }
 }
 
 @media (max-width: 760px) {

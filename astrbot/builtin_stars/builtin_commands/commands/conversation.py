@@ -17,8 +17,6 @@ from astrbot.core.db.po import ProviderStat
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.llm_metadata import LLM_METADATAS
 
-from .utils.rst_scene import RstScene
-
 THIRD_PARTY_AGENT_RUNNER_KEY = {
     "dify": "dify_conversation_id",
     "coze": "coze_conversation_id",
@@ -114,98 +112,6 @@ class ConversationCommands:
             return None
         return conv.persona_id
 
-    async def reset(self, message: AstrMessageEvent) -> None:
-        """重置 LLM 会话"""
-        umo = message.unified_msg_origin
-        cfg = self.context.get_config(umo=message.unified_msg_origin)
-        is_unique_session = cfg["platform_settings"]["unique_session"]
-        is_group = bool(message.get_group_id())
-
-        scene = RstScene.get_scene(is_group, is_unique_session)
-
-        alter_cmd_cfg = await sp.get_async("global", "global", "alter_cmd", {})
-        plugin_config = alter_cmd_cfg.get("astrbot", {})
-        reset_cfg = plugin_config.get("reset", {})
-
-        required_perm = reset_cfg.get(
-            scene.key,
-            "admin" if is_group and not is_unique_session else "member",
-        )
-
-        if required_perm == "admin" and message.role != "admin":
-            message.set_result(
-                MessageEventResult().message(
-                    f"在{scene.name}场景下，重置命令需要管理员权限，"
-                    f"您 (ID {message.get_sender_id()}) 不是管理员，无法执行此操作。",
-                ),
-            )
-            return
-
-        agent_runner_type = cfg["agent_runner"]["runner_type"]
-        if agent_runner_type in THIRD_PARTY_AGENT_RUNNER_KEY:
-            active_event_registry.stop_all(umo, exclude=message)
-            await _clear_third_party_agent_runner_state(
-                self.context,
-                umo,
-                agent_runner_type,
-            )
-            message.set_result(MessageEventResult().message("✅ 会话重置成功。"))
-            return
-
-        if not await self.context.get_using_provider_async(umo):
-            message.set_result(
-                MessageEventResult().message("😕 未找到任何 LLM Provider，请先配置。"),
-            )
-            return
-
-        cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
-
-        if not cid:
-            message.set_result(
-                MessageEventResult().message(
-                    "😕 您当前不在任何会话中，请使用 /new 创建一个。",
-                ),
-            )
-            return
-
-        active_event_registry.stop_all(umo, exclude=message)
-
-        await self.context.conversation_manager.update_conversation(
-            umo,
-            cid,
-            [],
-        )
-
-        ret = "✅ 会话重置成功。"
-
-        # 清理该会话下的所有 subagent
-        try:
-            from astrbot.core.subagent_manager import SubAgentManager
-
-            cleanup_result = await SubAgentManager.cleanup_session(umo)
-            if cleanup_result["status"] == "cleaned":
-                cleaned_count = len(cleanup_result["cleaned_agents"])
-                if cleaned_count > 0:
-                    ret += f" 🧹 同时清理了 {cleaned_count} 个子智能体: {', '.join(cleanup_result['cleaned_agents'])}。"
-        except Exception as e:
-            logger.warning(f"[SubAgent] Failed to cleanup subagents on /reset: {e}")
-
-        # 清理该会话下的所有 subagent
-        try:
-            from astrbot.core.subagent_manager import SubAgentManager
-
-            cleanup_result = await SubAgentManager.cleanup_session(umo)
-            if cleanup_result["status"] == "cleaned":
-                cleaned_count = len(cleanup_result["cleaned_agents"])
-                if cleaned_count > 0:
-                    ret += f" 🧹 Also cleaned {cleaned_count} subagent(s): {', '.join(cleanup_result['cleaned_agents'])}."
-        except Exception as e:
-            logger.warning(f"[SubAgent] Failed to cleanup subagents on /reset: {e}")
-
-        message.set_extra("_clean_group_context_session", True)
-
-        message.set_result(MessageEventResult().message(ret))
-
     async def stop(self, message: AstrMessageEvent) -> None:
         """停止当前会话正在运行的 Agent"""
         cfg = self.context.get_config(umo=message.unified_msg_origin)
@@ -233,7 +139,11 @@ class ConversationCommands:
         )
 
     async def new_conv(self, message: AstrMessageEvent) -> None:
-        """创建新对话"""
+        """Start a new conversation without clearing the previous history.
+
+        Args:
+            message: Command event identifying the session and sender.
+        """
         cfg = self.context.get_config(umo=message.unified_msg_origin)
         agent_runner_type = cfg["agent_runner"]["runner_type"]
         if agent_runner_type in THIRD_PARTY_AGENT_RUNNER_KEY:
@@ -257,7 +167,9 @@ class ConversationCommands:
         message.set_extra("_clean_group_context_session", True)
 
         message.set_result(
-            MessageEventResult().message(f"✅ 已切换到新对话: {cid[:4]}。"),
+            MessageEventResult().message(
+                f"✅ 已切换到新对话: {cid[:4]}。"
+            ),
         )
 
     async def cmd_context(self, message: AstrMessageEvent) -> None:

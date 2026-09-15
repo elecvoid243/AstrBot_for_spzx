@@ -51,6 +51,8 @@ class _FakeGenAIClient:
         self.kwargs = kwargs
         # the source uses genai.Client(...).aio as the async client handle
         self.aio = self
+        # ...and drops the SDK's own user-agent header through the transport
+        self._api_client = SimpleNamespace(_http_options=SimpleNamespace(headers={}))
 
     async def close(self):
         return None

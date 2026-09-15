@@ -25,6 +25,7 @@ import { computed, inject, type Ref, useAttrs } from "vue";
 import { MarkdownCodeBlockNode } from "markstream-vue";
 import DiffPreview from "@/components/chat/message_list_comps/DiffPreview.vue";
 import { copyToClipboard } from "@/utils/clipboard";
+import { LIMITED_SHIKI_LANGUAGES, LIMITED_SHIKI_LANGUAGE_ALIASES } from "@/utils/shikiLimitedBundle";
 
 defineOptions({
   inheritAttrs: false,
@@ -65,6 +66,10 @@ const attrs = useAttrs();
 const forwardedBindings = computed(() => ({
   ...attrs,
   ...props,
+  langs: Array.from(new Set([
+    ...LIMITED_SHIKI_LANGUAGES.map((language) => language.name),
+    ...Object.values(LIMITED_SHIKI_LANGUAGE_ALIASES),
+  ])),
   isDark: effectiveIsDark.value,
 }));
 const themeRenderKey = computed(() => (effectiveIsDark.value ? "dark" : "light"));

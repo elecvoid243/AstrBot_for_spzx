@@ -85,6 +85,7 @@ class ProviderGoogleGenAI(Provider):
         """初始化Gemini客户端"""
         proxy = self.provider_config.get("proxy", "")
         http_options = types.HttpOptions(
+            headers=self.request_headers,
             base_url=self.api_base,
             timeout=self.timeout * 1000,  # 毫秒
         )
@@ -114,6 +115,8 @@ class ProviderGoogleGenAI(Provider):
             api_key=self.chosen_api_key,
             http_options=http_options,
         ).aio
+        # The SDK adds its own lower-case UA alongside our explicit header.
+        self.client._api_client._http_options.headers.pop("user-agent", None)
 
     def _init_safety_settings(self) -> None:
         """初始化安全设置"""
@@ -466,10 +469,17 @@ class ProviderGoogleGenAI(Provider):
     def _extract_usage(
         self, usage_metadata: types.GenerateContentResponseUsageMetadata
     ) -> TokenUsage:
-        """Extract usage from candidate"""
+        """Extract usage from response metadata.
+
+        `prompt_token_count` includes tokens served from cache, so subtract
+        `cached_content_token_count` to avoid double-counting cached input
+        (matching the OpenAI provider's TokenUsage accounting).
+        """
+        prompt_tokens = usage_metadata.prompt_token_count or 0
+        cached = usage_metadata.cached_content_token_count or 0
         return TokenUsage(
-            input_other=usage_metadata.prompt_token_count or 0,
-            input_cached=usage_metadata.cached_content_token_count or 0,
+            input_other=prompt_tokens - cached,
+            input_cached=cached,
             output=usage_metadata.candidates_token_count or 0,
         )
 

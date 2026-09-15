@@ -77,7 +77,11 @@
     </div>
 
     <transition :name="previewTransitionName" mode="out-in">
-      <div v-if="showStreamingPreview" :key="previewKey" class="reasoning-preview">
+      <div
+        v-if="showStreamingPreview"
+        :key="previewKey"
+        class="reasoning-preview"
+      >
         {{ previewText }}
       </div>
     </transition>
@@ -92,6 +96,7 @@ import {
   type MessagePart,
 } from "@/composables/useMessages";
 import { useModuleI18n } from "@/i18n/composables";
+import ThinkingIndicator from "@/components/chat/ThinkingIndicator.vue";
 import ReasoningTimeline from "@/components/chat/message_list_comps/ReasoningTimeline.vue";
 import {
   collectFileChanges,
@@ -292,6 +297,7 @@ onBeforeUnmount(() => {
 }
 
 .reasoning-header {
+  width: fit-content;
   max-width: 100%;
   border: 0;
   padding: 0;
@@ -299,10 +305,12 @@ onBeforeUnmount(() => {
   color: inherit;
   cursor: pointer;
   user-select: none;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   font: inherit;
+  font-size: 1rem;
+  line-height: 1.7;
   text-align: left;
 }
 
@@ -426,6 +434,22 @@ onBeforeUnmount(() => {
   transition: transform 0.2s ease;
   flex-shrink: 0;
   align-self: center;
+}
+
+.reasoning-icon--thinking {
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-icon--thinking {
+    color: rgba(var(--v-theme-on-surface), 0.6);
+  }
+}
+
+@media (forced-colors: active) {
+  .reasoning-icon--thinking {
+    color: CanvasText;
+  }
 }
 
 .reasoning-title {

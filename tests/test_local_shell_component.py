@@ -411,6 +411,42 @@ async def test_managed_shell_returns_completed_output_without_open_session():
 
 
 @pytest.mark.asyncio
+async def test_managed_shell_accepts_two_minute_yield_cap(tmp_path):
+    """The 120s yield cap is accepted by both call sites and 120001 is rejected."""
+    shell = LocalShellComponent()
+    access = {
+        "owner_id": "owner-a",
+        "creator_id": "user-a",
+        "creator_is_admin": False,
+        "sandboxed": False,
+        "cwd": str(tmp_path),
+    }
+
+    result = await shell.exec_managed(
+        _python_command("print('done')"),
+        yield_time_ms=120_000,
+        **access,
+    )
+
+    assert result["status"] == "completed"
+    assert result["stdout"].strip() == "done"
+    with pytest.raises(ValueError, match="between 0 and 120000"):
+        await shell.exec_managed(
+            _python_command("print('done')"),
+            yield_time_ms=120_001,
+            **access,
+        )
+    with pytest.raises(ValueError, match="between 0 and 120000"):
+        await shell.poll_session(
+            owner_id="owner-a",
+            requester_id="user-a",
+            requester_is_admin=False,
+            session_id="sh_missing",
+            yield_time_ms=120_001,
+        )
+
+
+@pytest.mark.asyncio
 async def test_managed_shell_allows_creator_and_conversation_admin():
     shell = LocalShellComponent()
     result = await shell.exec_managed(

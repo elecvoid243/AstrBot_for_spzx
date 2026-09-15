@@ -207,7 +207,7 @@ class LocalExecuteShellTool(ExecuteShellTool):
                     "description": "Maximum time to wait for completion before returning a managed shell session. This does not stop the process.",
                     "default": 10000,
                     "minimum": 0,
-                    "maximum": 30000,
+                    "maximum": 120000,
                 },
                 "timeout": {
                     "type": "integer",
@@ -305,7 +305,7 @@ class ShellSessionTool(FunctionTool):
                     "description": "Maximum time poll or interrupt waits for output or exit.",
                     "default": 5000,
                     "minimum": 0,
-                    "maximum": 30000,
+                    "maximum": 120000,
                 },
                 "max_output_chars": {
                     "type": "integer",

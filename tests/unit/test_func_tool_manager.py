@@ -104,6 +104,15 @@ def test_local_execute_shell_schema_replaces_background_with_yield():
     assert "background" not in inspect.signature(tool.call).parameters
 
 
+def test_shell_yield_time_schema_advertises_two_minute_cap():
+    """Both shell tool schemas must expose the cap the backend enforces."""
+    exec_schema = LocalExecuteShellTool().parameters["properties"]["yield_time_ms"]
+    session_schema = ShellSessionTool().parameters["properties"]["yield_time_ms"]
+
+    assert exec_schema["maximum"] == 120_000
+    assert session_schema["maximum"] == 120_000
+
+
 def test_shell_session_schema_supports_line_writes():
     tool = ShellSessionTool()
 

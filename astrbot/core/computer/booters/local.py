@@ -383,8 +383,8 @@ class LocalShellComponent(ShellComponent):
             raise PermissionError(
                 "Blocked: refusing to terminate the AstrBot host process."
             )
-        if yield_time_ms < 0 or yield_time_ms > 30_000:
-            raise ValueError("`yield_time_ms` must be between 0 and 30000.")
+        if yield_time_ms < 0 or yield_time_ms > 120_000:
+            raise ValueError("`yield_time_ms` must be between 0 and 120000.")
         if timeout is not None and timeout <= 0:
             raise ValueError("`timeout` must be greater than 0 when provided.")
         if max_output_chars < 1:
@@ -620,8 +620,8 @@ class LocalShellComponent(ShellComponent):
         Raises:
             ValueError: If the session is unavailable or an argument is invalid.
         """
-        if yield_time_ms < 0 or yield_time_ms > 30_000:
-            raise ValueError("`yield_time_ms` must be between 0 and 30000.")
+        if yield_time_ms < 0 or yield_time_ms > 120_000:
+            raise ValueError("`yield_time_ms` must be between 0 and 120000.")
         if max_output_chars < 1:
             raise ValueError("`max_output_chars` must be greater than 0.")
 

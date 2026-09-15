@@ -3993,30 +3993,37 @@ function centerScrollTopFor(container: HTMLElement, row: HTMLElement): number {
 }
 
 /**
- * Glide a row to the centre of the messages panel, then hold it there.
+ * Drive the panel to a live target offset, then hold it there.
  *
- * Two phases share one loop. During the glide the target offset is recomputed
- * from live rects every frame, so rows that grow mid-flight — image decode,
- * Shiki highlighting, collapsed agent-work pills — retarget the glide instead
- * of leaving it aimed at an offset measured before they settled. Once the
- * glide is over the loop keeps re-applying the offset until the target stops
- * moving, which covers content that only finishes settling after the travel;
- * without that second phase a jump toward unloaded history landed wherever
- * the half-laid-out page happened to leave the row.
+ * Two phases share one loop. During the glide the target is recomputed every
+ * frame, so content that grows mid-flight — image decode, Shiki highlighting,
+ * collapsed agent-work pills — retargets the glide instead of leaving it aimed
+ * at an offset measured before it settled. Once the glide is over the loop
+ * keeps re-applying the offset until the target stops moving, which covers
+ * content that only finishes settling after the travel; without that second
+ * phase a jump toward unloaded history landed wherever the half-laid-out page
+ * happened to leave the row.
  *
  * Yields to the user and is bounded, so a page that keeps loading media can
  * never hold the viewport hostage.
  *
- * @param row: Target row, already rendered in the messages panel.
+ * @param resolveTarget: Live target scrollTop, re-evaluated every frame.
+ *   Returning null abandons the landing because its target is gone.
+ * @param animate: Glide to the target instead of jumping straight at it. Off
+ *   for callers where the travel distance carries no meaning.
  */
-function scrollRowToCenter(row: HTMLElement) {
+function runJumpLanding(
+  resolveTarget: (container: HTMLElement) => number | null,
+  animate = true,
+) {
   const container = messagesContainer.value;
   if (!container) return;
   endJumpLanding();
   const token = jumpLandingToken;
   const startTop = container.scrollTop;
   const startedAt = performance.now();
-  const initialTarget = centerScrollTopFor(container, row);
+  const initialTarget = resolveTarget(container);
+  if (initialTarget == null) return;
   // Duration follows the distance: a hop inside the viewport should not crawl
   // for a full second, while a jump across the session takes the full glide.
   const span = Math.min(
@@ -4026,9 +4033,10 @@ function scrollRowToCenter(row: HTMLElement) {
   const reduceMotion =
     typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const duration = reduceMotion
-    ? 0
-    : JUMP_GLIDE_MIN_MS + (JUMP_GLIDE_MS - JUMP_GLIDE_MIN_MS) * span;
+  const duration =
+    !animate || reduceMotion
+      ? 0
+      : JUMP_GLIDE_MIN_MS + (JUMP_GLIDE_MS - JUMP_GLIDE_MIN_MS) * span;
   let lastTarget = initialTarget;
   let lastChangeAt = startedAt;
   // A scroll gesture is authoritative: the user owns the viewport from that
@@ -4043,11 +4051,8 @@ function scrollRowToCenter(row: HTMLElement) {
   }
   const step = () => {
     if (token !== jumpLandingToken) return;
-    // The row can leave the document while the glide runs — a session reload
-    // replaces the window, an edit truncates it. A detached row reports a
-    // zero rect, which would aim the glide at a meaningless offset, so drop
-    // the landing instead of flying somewhere arbitrary.
-    if (!row.isConnected) {
+    const target = resolveTarget(container);
+    if (target == null) {
       endJumpLanding();
       return;
     }
@@ -4060,7 +4065,6 @@ function scrollRowToCenter(row: HTMLElement) {
       progress < 0.5
         ? 4 * progress * progress * progress
         : 1 - Math.pow(-2 * progress + 2, 3) / 2;
-    const target = centerScrollTopFor(container, row);
     container.scrollTop = startTop + (target - startTop) * eased;
     if (Math.abs(target - lastTarget) >= 1) {
       lastTarget = target;
@@ -4077,6 +4081,46 @@ function scrollRowToCenter(row: HTMLElement) {
     requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+}
+
+/**
+ * Glide a row to the centre of the messages panel, then hold it there.
+ *
+ * @param row: Target row, already rendered in the messages panel.
+ */
+function scrollRowToCenter(row: HTMLElement) {
+  runJumpLanding((container) =>
+    // The row can leave the document while the glide runs — a session reload
+    // replaces the window, an edit truncates it. A detached row reports a zero
+    // rect, which would aim the glide at a meaningless offset, so abandon the
+    // landing rather than fly somewhere arbitrary.
+    row.isConnected ? centerScrollTopFor(container, row) : null,
+  );
+}
+
+/**
+ * Snap the panel to the newest message and hold it there while the rows settle.
+ *
+ * Not animated: this runs when a conversation is opened, where the leftover
+ * offset of the outgoing one makes the travel distance meaningless and the only
+ * goal is to land on the newest message.
+ *
+ * The hold is the point of it. A one-shot `scrollTop = scrollHeight` is
+ * evaluated against a single layout, so rows that grow afterwards — media
+ * decoding into elements that had no intrinsic height yet — push the newest
+ * message back under the fold while the offset stays put, and none of the other
+ * re-snap paths catch that: they fire on message changes and stream chunks, not
+ * on a pure layout change.
+ */
+function scrollToBottomAndHold() {
+  // The bottom as an actual scroll offset (the container may be shorter than
+  // its viewport, where the only valid offset is 0) so the target stays
+  // comparable frame to frame.
+  runJumpLanding(
+    (container) =>
+      Math.max(0, container.scrollHeight - container.clientHeight),
+    false,
+  );
 }
 
 /**
@@ -4952,8 +4996,7 @@ async function restoreSessionViewport(sessionId: string) {
       // beats inheriting the leftover offset of the previous conversation.
       await nextTick();
       if (currSessionId.value !== sessionId) return;
-      const container = messagesContainer.value;
-      if (container) container.scrollTop = container.scrollHeight;
+      scrollToBottomAndHold();
       return;
     }
     await jumpToIndex(anchorIndex);

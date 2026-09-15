@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 388 icons */
+/* Auto-generated MDI subset – 390 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -1386,6 +1386,14 @@
 
 .mdi-star-outline::before {
   content: "\F04D2";
+}
+
+.mdi-stop::before {
+  content: "\F04DB";
+}
+
+.mdi-stop-circle::before {
+  content: "\F0666";
 }
 
 .mdi-stop-circle-outline::before {

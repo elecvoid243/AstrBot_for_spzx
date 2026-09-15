@@ -16,7 +16,13 @@
         :class="isUserMessage(msg) ? 'from-user' : 'from-bot'"
       >
         <v-avatar v-if="!isUserMessage(msg)" class="bot-avatar" size="48">
-          <span class="bot-avatar-symbol" aria-hidden="true">✦</span>
+          <v-progress-circular
+            v-if="isMessageStreaming(msgIndex)"
+            indeterminate
+            size="22"
+            width="2"
+          />
+          <span v-else class="bot-avatar-symbol" aria-hidden="true">✦</span>
         </v-avatar>
 
         <div class="message-stack">
@@ -212,7 +218,7 @@
                   </template>
                 </template>
               </template>
-            </MessageContentTransition>
+            </template>
           </div>
 
           <div v-if="showMessageMeta(msg, msgIndex)" class="message-meta">
@@ -302,7 +308,6 @@
 </template>
 
 <script setup lang="ts">
-import MessageContentTransition from "@/components/chat/MessageContentTransition.vue";
 import { computed, nextTick, reactive, ref } from "vue";
 import axios from "axios";
 import {
@@ -685,7 +690,6 @@ function formatDuration(seconds: number) {
 
 <style scoped>
 .message-list-root {
-  container: chat-messages / inline-size;
   --chat-border: rgba(var(--v-border-color), 0.16);
   --chat-muted: rgba(var(--v-theme-on-surface), 0.62);
   width: 100%;
@@ -779,6 +783,14 @@ function formatDuration(seconds: number) {
 
 .plain-content {
   white-space: pre-wrap;
+}
+
+.loading-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--chat-muted);
 }
 
 .reply-quote {
@@ -1047,16 +1059,6 @@ function formatDuration(seconds: number) {
   max-height: 88vh;
   border-radius: 8px;
   object-fit: contain;
-}
-
-@container chat-messages (max-width: 600px) {
-  .message-row.from-bot .bot-avatar {
-    display: none;
-  }
-
-  .message-bubble.bot {
-    padding-inline: 0;
-  }
 }
 
 @media (max-width: 760px) {

@@ -1393,7 +1393,19 @@ const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
 const composerShell = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
-const shouldStickToBottom = ref(true);
+// Per-session viewport state (2026-09-15, elecvoid243): every conversation
+// renders into the same `.messages-panel` node, so the browser preserves its
+// scrollTop across a session switch and the target silently opens at the
+// outgoing session's offset. Both the stick-to-bottom intent and the last
+// scroll offset are therefore keyed by session id — see
+// restoreSessionViewport().
+const shouldStickToBottomBySession = new Map<string, boolean>();
+const scrollTopBySession = new Map<string, number>();
+// True from the moment a switch flips currSessionId until the target
+// session's viewport is installed. Scroll events in that window still carry
+// the outgoing conversation's geometry, so they must not be recorded against
+// (or auto-page older history for) the incoming one.
+let sessionSwitchInFlight = false;
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
@@ -1894,7 +1906,7 @@ const {
     );
   },
   onStreamUpdate: (sessionId) => {
-    if (sessionId === currSessionId.value && shouldStickToBottom.value) {
+    if (sessionId === currSessionId.value && shouldStickToBottom(sessionId)) {
       scrollToBottom();
     }
   },
@@ -2266,7 +2278,7 @@ onMounted(async () => {
       if (!entry || !container) return;
       const height = Math.ceil(entry.target.getBoundingClientRect().height);
       container.style.setProperty("--chat-composer-height", `${height}px`);
-      if (shouldStickToBottom.value) scrollToBottom();
+      if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
     });
     if (composerShell.value) {
       composerResizeObserver.observe(composerShell.value);
@@ -2362,7 +2374,7 @@ watch(
 watch(
   activeMessages,
   () => {
-    if (shouldStickToBottom.value) {
+    if (shouldStickToBottom(currSessionId.value)) {
       scrollToBottom();
     }
     nextTick(() => updateScrollMarkers());
@@ -3523,6 +3535,19 @@ async function selectSession(sessionId: string, pushRoute = true) {
   showChatWorkspace();
   clearChoiceAttention(sessionId);
   selectedProjectId.value = null;
+  // Capture the outgoing conversation's viewport before currSessionId flips:
+  // from that point on the container renders the incoming session's content,
+  // so this is the last trustworthy reading of the outgoing offset.
+  const outgoingSessionId = currSessionId.value;
+  const outgoingContainer = messagesContainer.value;
+  if (
+    outgoingSessionId &&
+    outgoingSessionId !== sessionId &&
+    outgoingContainer
+  ) {
+    scrollTopBySession.set(outgoingSessionId, outgoingContainer.scrollTop);
+  }
+  sessionSwitchInFlight = true;
   currSessionId.value = sessionId;
   // Per-session drafts: swap in the target session's saved composer text
   // ("" when it has none) — unsent text never leaks across sessions.
@@ -3547,7 +3572,12 @@ async function selectSession(sessionId: string, pushRoute = true) {
     const umo = resolveCurrentUmo(sessionId);
     if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
   }
-  scrollToBottom();
+  // Replaces the old unconditional scrollToBottom(): that call was gated by
+  // the shared stick flag, so a session left scrolled-up blocked the snap and
+  // this session kept the previous one's offset. The restore below decides
+  // per session — bottom when it was following the bottom, remembered offset
+  // otherwise.
+  restoreSessionViewport(sessionId);
   closeMobileSidebar();
   await focusChatInput();
 }
@@ -3826,7 +3856,7 @@ function scrollToMessage(messageId?: string | number) {
   if (index < 0) return;
   // Same intent as a marker jump: the viewport is about to leave the
   // bottom, so live stick-to-bottom snaps must not fight the animation.
-  shouldStickToBottom.value = false;
+  setStickToBottom(currSessionId.value, false);
   const rows = messagesContainer.value?.querySelectorAll(".message-row");
   rows?.[index]?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -3911,7 +3941,7 @@ function scrollToMessageIndex(targetIndex: number) {
 async function jumpToIndex(targetIndex: number): Promise<boolean> {
   const sessionId = currSessionId.value;
   if (!sessionId || jumpInProgress.value) return false;
-  shouldStickToBottom.value = false;
+  setStickToBottom(sessionId, false);
   const container = messagesContainer.value;
   if (container) beginJumpScrollLock(container);
   let scrolled = false;
@@ -4613,9 +4643,18 @@ function handleMessagesScroll() {
   threadSelection.visible = false;
   const container = messagesContainer.value;
   if (!container) return;
+  // A switch in flight still renders the outgoing conversation. Its scroll
+  // events belong to neither session: recording them would overwrite the
+  // incoming session's remembered offset, and the auto-load below would page
+  // older history for the incoming session from the outgoing position.
+  if (sessionSwitchInFlight) return;
+  const sessionId = currSessionId.value;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
-  shouldStickToBottom.value = distance < 80;
+  setStickToBottom(sessionId, distance < 80);
+  // Remember where the conversation is being left, so switching back restores
+  // it instead of the neighbouring session's offset.
+  if (sessionId) scrollTopBySession.set(sessionId, container.scrollTop);
   // History windowing: reached the top boundary while older history exists
   // → load the next page (the loadOlderHistory anchor keeps the viewport).
   // Suppressed while a programmatic jump scrolls (see suppressHistoryAutoLoad).
@@ -4654,6 +4693,31 @@ async function loadOlderHistory(retry = false) {
   }
 }
 
+/**
+ * Stick-to-bottom intent of a conversation.
+ *
+ * Keyed per session because the messages panel is a single DOM node shared by
+ * every conversation: one global flag leaked the scrolled-up state of the
+ * session being left into the session being opened, which made
+ * scrollToBottom() bail out while switching back.
+ *
+ * @param sessionId: Conversation whose intent is queried.
+ * @returns Whether live updates should keep snapping this one to the bottom.
+ */
+function shouldStickToBottom(sessionId: string): boolean {
+  return shouldStickToBottomBySession.get(sessionId) ?? true;
+}
+
+/**
+ * Record the stick-to-bottom intent of a conversation.
+ *
+ * @param sessionId: Conversation the intent belongs to.
+ * @param stick: New intent value.
+ */
+function setStickToBottom(sessionId: string, stick: boolean): void {
+  if (sessionId) shouldStickToBottomBySession.set(sessionId, stick);
+}
+
 function scrollToBottom() {
   nextTick(() => {
     const container = messagesContainer.value;
@@ -4661,9 +4725,37 @@ function scrollToBottom() {
     // Re-check: a snap scheduled before the flag flipped (e.g. by a marker
     // jump taking over the viewport) must not fire and cancel the jump
     // animation.
-    if (!shouldStickToBottom.value) return;
+    const sessionId = currSessionId.value;
+    if (!shouldStickToBottom(sessionId)) return;
     container.scrollTop = container.scrollHeight;
-    shouldStickToBottom.value = true;
+    setStickToBottom(sessionId, true);
+  });
+}
+
+/**
+ * Install the viewport of the conversation that just became active.
+ *
+ * The messages panel keeps its DOM node across a switch, so the browser
+ * preserves the outgoing session's scrollTop and the incoming one would
+ * silently open at that offset. A session that was following the bottom snaps
+ * down again; otherwise its remembered scrollTop is replayed, clamped by the
+ * browser if the incoming history is shorter.
+ *
+ * @param sessionId: Conversation just loaded into the messages panel.
+ */
+function restoreSessionViewport(sessionId: string) {
+  nextTick(() => {
+    // Released here rather than in selectSession so the suppression also
+    // covers the render between the currSessionId flip and this callback.
+    sessionSwitchInFlight = false;
+    const container = messagesContainer.value;
+    if (!container) return;
+    if (shouldStickToBottom(sessionId)) {
+      setStickToBottom(sessionId, true);
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+    container.scrollTop = scrollTopBySession.get(sessionId) ?? 0;
   });
 }
 

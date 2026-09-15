@@ -3,7 +3,9 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import bash from "shiki/langs/bash.mjs";
 import c from "shiki/langs/c.mjs";
 import cpp from "shiki/langs/cpp.mjs";
+import csharp from "shiki/langs/csharp.mjs";
 import css from "shiki/langs/css.mjs";
+import dart from "shiki/langs/dart.mjs";
 import diff from "shiki/langs/diff.mjs";
 import dockerfile from "shiki/langs/dockerfile.mjs";
 import go from "shiki/langs/go.mjs";
@@ -13,12 +15,19 @@ import java from "shiki/langs/java.mjs";
 import javascript from "shiki/langs/javascript.mjs";
 import json from "shiki/langs/json.mjs";
 import jsx from "shiki/langs/jsx.mjs";
+import kotlin from "shiki/langs/kotlin.mjs";
+import lua from "shiki/langs/lua.mjs";
 import markdown from "shiki/langs/markdown.mjs";
 import matlab from "shiki/langs/matlab.mjs";
+import php from "shiki/langs/php.mjs";
 import powershell from "shiki/langs/powershell.mjs";
 import python from "shiki/langs/python.mjs";
+import r from "shiki/langs/r.mjs";
+import ruby from "shiki/langs/ruby.mjs";
 import rust from "shiki/langs/rust.mjs";
+import scala from "shiki/langs/scala.mjs";
 import sql from "shiki/langs/sql.mjs";
+import swift from "shiki/langs/swift.mjs";
 import systemVerilog from "shiki/langs/system-verilog.mjs";
 import tsx from "shiki/langs/tsx.mjs";
 import typescript from "shiki/langs/typescript.mjs";
@@ -35,7 +44,9 @@ export const LIMITED_SHIKI_LANGUAGES = [
   ...bash,
   ...c,
   ...cpp,
+  ...csharp,
   ...css,
+  ...dart,
   ...diff,
   ...dockerfile,
   ...go,
@@ -45,12 +56,19 @@ export const LIMITED_SHIKI_LANGUAGES = [
   ...javascript,
   ...json,
   ...jsx,
+  ...kotlin,
+  ...lua,
   ...markdown,
   ...matlab,
+  ...php,
   ...powershell,
   ...python,
+  ...r,
+  ...ruby,
   ...rust,
+  ...scala,
   ...sql,
+  ...swift,
   ...systemVerilog,
   ...tsx,
   ...typescript,
@@ -75,14 +93,19 @@ export const LIMITED_SHIKI_LANGUAGE_ALIASES = {
   cc: "cpp",
   cjs: "javascript",
   console: "bash",
+  cs: "csharp",
   cts: "typescript",
   cxx: "cpp",
   docker: "dockerfile",
   golang: "go",
   h: "c",
+  "h++": "cpp",
+  hh: "cpp",
   hpp: "cpp",
   htm: "html",
   js: "javascript",
+  kt: "kotlin",
+  kts: "kotlin",
   md: "markdown",
   mjs: "javascript",
   mts: "typescript",

@@ -42,6 +42,20 @@
             <ChevronRight v-else :size="16" class="project-chevron" />
           </span>
           <span class="project-actions" @click.stop>
+            <!-- 2026-09-15 (elecvoid243): quick-create shortcut — runs the
+                 same flow as the "create new session" button on the project
+                 page, so a session can be started inside a project without
+                 opening it first. -->
+            <v-btn
+              icon
+              size="x-small"
+              variant="text"
+              class="project-action-btn"
+              :title="tm('project.createSession')"
+              @click="handleCreateSession(project.project_id)"
+            >
+              <SquarePen :size="15" />
+            </v-btn>
             <v-btn
               icon
               size="x-small"
@@ -376,6 +390,7 @@ import {
   MailOpen,
   Pencil,
   Plus,
+  SquarePen,
   Trash2,
 } from "@lucide/vue";
 import { useModuleI18n } from "@/i18n/composables";
@@ -450,6 +465,9 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   selectProject: [projectId: string];
   createProject: [];
+  /** 2026-09-15 (elecvoid243): quick-create from a project row — Chat.vue
+   * creates a fresh session already linked to this project. */
+  createSession: [projectId: string];
   editProject: [project: Project];
   deleteProject: [projectId: string];
   toggleProject: [projectId: string, expanded: boolean];
@@ -591,6 +609,15 @@ function handleProjectClick(project: Project) {
   const nextExpanded = !isProjectExpanded(project.project_id);
   setProjectExpanded(project.project_id, nextExpanded);
   emit("selectProject", project.project_id);
+}
+
+/** 2026-09-15 (elecvoid243): expand the project before handing the request
+ * to Chat.vue so the newly linked session is visible in the sidebar right
+ * away — entering a project expands its row too, and the project page
+ * create button only ever runs with the row already expanded. */
+function handleCreateSession(projectId: string) {
+  setProjectExpanded(projectId, true);
+  emit("createSession", projectId);
 }
 
 function projectSessionList(projectId: string) {
@@ -751,7 +778,7 @@ function onSessionRowDrop(
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 56px 4px 10px;
+  padding: 4px 88px 4px 10px;
   position: relative;
   box-sizing: border-box;
   cursor: pointer;
@@ -759,7 +786,9 @@ function onSessionRowDrop(
 }
 
 /* 2026-08-13: project session rows gained an archive action (3 hover
-   buttons), so they need more right padding than project rows. */
+   buttons), so they need more right padding than project rows.
+   2026-09-15 (elecvoid243): project rows gained a quick-create action and
+   now carry 3 buttons as well, so both share the same inset. */
 .project-session-row {
   padding-right: 88px;
 }

@@ -201,6 +201,7 @@
           :drag-over-session-id="dragOverSessionId"
           :drag-insert-before="dragInsertBefore"
           @create-project="openCreateProjectDialog"
+          @create-session="createProjectSession"
           @edit-project="openEditProjectDialog"
           @delete-project="handleDeleteProject"
           @toggle-project="handleProjectToggle"
@@ -3395,13 +3396,21 @@ async function selectProjectSession(sessionId: string) {
   await selectSession(sessionId);
 }
 
-/** 2026-09-01 (elecvoid243): project page "create new session" button —
- * creates a session immediately, links it to the current project and jumps
+/** 2026-09-01 (elecvoid243): project "create new session" action —
+ * creates a session immediately, links it to the target project and jumps
  * into the new conversation. Mirrors the send-message creation path so the
- * reverse map / spcode auto-load behave identically. */
-async function createProjectSession() {
-  const projectId = selectedProjectId.value;
+ * reverse map / spcode auto-load behave identically.
+ *
+ * 2026-09-15 (elecvoid243): also reached from the sidebar quick-create
+ * button (ProjectList), which passes its row's project id instead of the
+ * currently opened project — the parameter is optional so the project page
+ * button keeps sending none. */
+async function createProjectSession(projectId = selectedProjectId.value) {
   if (!projectId) return;
+  // The sidebar shortcut is reachable while the provider workspace is open;
+  // leaving `activeWorkspace` on "providers" would create the session without
+  // ever showing it. Same reset as `startNewChat` / `selectProject`.
+  showChatWorkspace();
   try {
     const sessionId = await newSession();
     // The composer text visible in the project compose view becomes the
@@ -3417,7 +3426,11 @@ async function createProjectSession() {
       ) ?? false;
     if (!alreadyLinked) {
       await addSessionToProject(sessionId, projectId);
-      const targetProject = selectedProject.value;
+      // Resolve by id instead of `selectedProject`: the sidebar shortcut
+      // can target a project row that is not the currently opened project.
+      const targetProject =
+        projects.value.find((project) => project.project_id === projectId) ||
+        null;
       sessionProjects[sessionId] = targetProject
         ? {
             project_id: targetProject.project_id,

@@ -23,6 +23,13 @@ vi.mock("@/api/v1", () => ({
 // Real composables run against the mocked api — only the transport is
 // faked. The status singleton is seeded directly by the test.
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+// 2026-09-15 (elecvoid243): hoisted out of mountSidebar(). The
+// `await import()` used to compile this ~300KB SFC inside whichever test
+// ran first, billing that work to the test's 5s timeout (measured 3.8s,
+// so it tripped intermittently under full-suite load and failed the whole
+// file with "Test timed out"). A static import moves the compile into the
+// collection phase, outside every test's timeout budget.
+import GitDiffSidebar from "./GitDiffSidebar.vue";
 
 // Axios response carrying the plugin envelope for
 // GET /spcode/git-repo-check on a non-git directory.
@@ -90,7 +97,6 @@ const STUBS = {
 };
 
 async function mountSidebar() {
-  const { default: GitDiffSidebar } = await import("./GitDiffSidebar.vue");
   const w = mount(GitDiffSidebar, {
     props: { modelValue: true },
     global: { stubs: STUBS },

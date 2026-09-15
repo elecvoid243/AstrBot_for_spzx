@@ -6,8 +6,9 @@
 // are stubbed to a no-op div. The point of these tests is to assert
 // the fullscreen state behavior, not to render the full tree.
 
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import { nextTick, ref } from "vue";
 import DocumentManager from "./DocumentManager.vue";
 
@@ -28,6 +29,12 @@ const stubs = {
 };
 
 describe("DocumentManager fullscreen state", () => {
+  beforeEach(() => {
+    // 2026-09-15 (elecvoid243): DocumentManager 的 useOpenOnDisk →
+    // useToast 需要 active pinia（与 GitDiffSidebar.*.spec.ts 同一处理）。
+    setActivePinia(createPinia());
+  });
+
   it("toggles isFullscreen when the fullscreen button is clicked", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const wrapper = mount(DocumentManager as any, {

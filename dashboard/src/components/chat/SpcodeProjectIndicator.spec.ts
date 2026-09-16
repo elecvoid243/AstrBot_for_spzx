@@ -127,6 +127,7 @@ describe("SpcodeProjectIndicator progress states", () => {
 
   it("shows only the basename of a loaded project path", () => {
     useSpcodeProjectStatus().setLoaded(
+      "webchat:FriendMessage:webchat!astrbot!cid-indicator",
       "F:/project/python/pycharm/testproj1",
     );
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
@@ -140,7 +141,10 @@ describe("SpcodeProjectIndicator progress states", () => {
   });
 
   it("strips trailing separators before taking the basename", () => {
-    useSpcodeProjectStatus().setLoaded("C:\\proj\\demo\\");
+    useSpcodeProjectStatus().setLoaded(
+      "webchat:FriendMessage:webchat!astrbot!cid-indicator",
+      "C:\\proj\\demo\\",
+    );
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     const badgeText = wrapper.find(".sp-status-badge").text();
     expect(badgeText).toContain("demo");

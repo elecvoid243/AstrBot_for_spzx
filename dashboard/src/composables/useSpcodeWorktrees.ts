@@ -283,6 +283,12 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
       const resp = await pluginExtensionApi.post<unknown>(
         "spcode/git-worktree-add",
         {
+          // umo belongs in the BODY: the backend's _wrap adapter reads
+          // POST umo from the JSON body (see the activate() note below).
+          // Passing it only as ?umo= made the handler fall back to the
+          // most-recently-loaded project across ALL sessions, so the
+          // worktree could land in another conversation's repo.
+          umo,
           path: params.path,
           branch: params.branch,
           create: params.create,
@@ -344,7 +350,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     try {
       const resp = await pluginExtensionApi.post<unknown>(
         "spcode/git-worktree-remove",
-        { path: params.path, force: params.force },
+        { umo, path: params.path, force: params.force },
         {
           signal: ctrl.signal,
           params: { umo, worktree: params.worktree ?? undefined },
@@ -391,7 +397,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     try {
       const resp = await pluginExtensionApi.post<unknown>(
         "spcode/git-worktree-lock",
-        { path: params.path, reason: params.reason },
+        { umo, path: params.path, reason: params.reason },
         {
           signal: ctrl.signal,
           params: { umo, worktree: params.worktree ?? undefined },
@@ -436,7 +442,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     try {
       const resp = await pluginExtensionApi.post<unknown>(
         "spcode/git-worktree-unlock",
-        { path: params.path },
+        { umo, path: params.path },
         {
           signal: ctrl.signal,
           params: { umo, worktree: params.worktree ?? undefined },

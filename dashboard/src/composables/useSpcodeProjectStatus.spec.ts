@@ -28,7 +28,7 @@ describe("useSpcodeProjectStatus null-umo guard", () => {
 
   it("refresh(null) resets to the empty state without hitting the API", async () => {
     const { status, refresh, setLoaded } = useSpcodeProjectStatus();
-    setLoaded("C:/proj/demo");
+    setLoaded(UMO, "C:/proj/demo");
     expect(status.value.loaded).toBe(true);
     expect(status.value.directory).toBe("C:/proj/demo");
 
@@ -43,7 +43,7 @@ describe("useSpcodeProjectStatus null-umo guard", () => {
 
   it("refresh(undefined) behaves like refresh(null)", async () => {
     const { status, refresh, setLoaded } = useSpcodeProjectStatus();
-    setLoaded("C:/proj/demo");
+    setLoaded(UMO, "C:/proj/demo");
 
     await refresh(undefined);
 
@@ -263,5 +263,30 @@ describe("useSpcodeProjectStatus session scoping", () => {
     const result = await refresh(UMO_B);
 
     expect(result.directory).toBe("C:/proj/b");
+  });
+
+  it("setLoaded(umo, dir) writes umo and directory atomically", async () => {
+    const { setLoaded, setActiveUmo, status, statusFor } =
+      useSpcodeProjectStatus();
+    setActiveUmo(UMO_A);
+
+    setLoaded(UMO_A, "C:/proj/a");
+
+    expect(status.value.umo).toBe(UMO_A);
+    expect(status.value.directory).toBe("C:/proj/a");
+    expect(statusFor(UMO_A).value.directory).toBe("C:/proj/a");
+  });
+
+  it("setLoaded() for a non-active umo never mixes the shared ref", async () => {
+    const { refresh, setActiveUmo, setLoaded, status } =
+      useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+    setActiveUmo(UMO_A);
+
+    setLoaded(UMO_B, "C:/proj/b");
+
+    expect(status.value.umo).toBe(UMO_A); // 不再是 {umo:A, directory:B}
+    expect(status.value.directory).toBe("C:/proj/a");
   });
 });

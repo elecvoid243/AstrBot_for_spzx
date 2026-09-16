@@ -1525,6 +1525,13 @@ async function fetchCommands() {
  *   text: The exact command string submitted to the chat.
  */
 function applyOptimisticProjectStatus(text: string): void {
+  // Session identity is required to write optimistically; without it
+  // (brand-new chat) there is nothing to attach the state to.
+  if (!props.currentSession) return;
+  const umo = buildWebchatUmoDetails(
+    props.currentSession.session_id,
+    Boolean(props.currentSession.is_group),
+  ).umo;
   const trimmed = text.trim();
   // load: <prefix>project load <path...>
   const loadMatch = trimmed.match(/^\S+\s+project\s+load\s+(\S[\s\S]*)$/);
@@ -1534,13 +1541,13 @@ function applyOptimisticProjectStatus(text: string): void {
       path = path.slice(1, -1);
     }
     if (path) {
-      spcodeStatus.setLoaded(path);
+      spcodeStatus.setLoaded(umo, path);
     }
     return;
   }
   // unload: <prefix>project unload (optionally followed by an arg)
   if (/^\S+\s+project\s+unload(?:\s|$)/.test(trimmed)) {
-    spcodeStatus.setUnloaded();
+    spcodeStatus.setUnloaded(umo);
   }
 }
 

@@ -132,31 +132,42 @@ export function useSpcodeProjectStatus() {
   }
 
   /**
-   * Optimistically mark the current session as having a project loaded.
-   * Used right after the dashboard dispatches a `/project load` command
-   * so the chip updates immediately rather than waiting for the bot to
-   * respond and the next refresh tick to fire.
+   * Optimistically mark `umo` as having a project loaded. Writes the umo
+   * and the directory together so the pair can never mix sessions
+   * (2026-09-16, elecvoid243).
    */
-  function setLoaded(directory: string, loadedAt: number = Date.now() / 1000) {
-    status.value = {
-      ...status.value,
+  function setLoaded(
+    umo: string,
+    directory: string,
+    loadedAt: number = Date.now() / 1000,
+  ) {
+    const base = entries.get(umo) ?? status.value;
+    const next: SpcodeProjectStatus = {
+      ...base,
       loaded: true,
       directory,
       loadedAt,
+      umo,
       fetchedAt: Date.now(),
     };
+    entries.set(umo, next);
+    if (shouldMirror(umo)) status.value = next;
   }
 
-  /** Optimistically mark the current session as having no project loaded. */
-  function setUnloaded() {
-    status.value = {
+  /** Optimistically mark `umo` (default: the displayed session) as unloaded. */
+  function setUnloaded(umo?: string | null) {
+    const target = umo ?? (pinned ? activeUmo : status.value.umo);
+    const base = target ? (entries.get(target) ?? status.value) : status.value;
+    const next: SpcodeProjectStatus = {
       ...EMPTY_STATUS,
-      umo: status.value.umo,
-      allLoadedCount: Math.max(0, status.value.allLoadedCount - 1),
+      umo: target,
+      allLoadedCount: Math.max(0, base.allLoadedCount - 1),
       fetchedAt: Date.now(),
       // backend identity is session-independent: keep it (only refresh updates)
-      bootId: status.value.bootId,
+      bootId: base.bootId,
     };
+    if (target) entries.set(target, next);
+    if (!target || shouldMirror(target)) status.value = next;
   }
 
   /**

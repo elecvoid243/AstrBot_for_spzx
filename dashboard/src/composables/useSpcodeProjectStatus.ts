@@ -1,4 +1,11 @@
-import { ref } from "vue";
+import {
+  computed,
+  reactive,
+  ref,
+  toValue,
+  type ComputedRef,
+  type MaybeRefOrGetter,
+} from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import { EMPTY_STATUS, type SpcodeProjectStatus } from "./parseSpcodeStatus";
 
@@ -6,6 +13,20 @@ import { EMPTY_STATUS, type SpcodeProjectStatus } from "./parseSpcodeStatus";
 export type { SpcodeProjectStatus } from "./parseSpcodeStatus";
 
 const status = ref<SpcodeProjectStatus>({ ...EMPTY_STATUS });
+
+// 2026-09-16 (elecvoid243): per-umo entries. The shared `status` ref is a
+// mirror of the ACTIVE session's entry, so a refresh for another session
+// can no longer overwrite what the sidebar/chip display. Kept unpinned by
+// default (= legacy "last writer wins") so standalone callers and specs
+// that never call setActiveUmo() behave exactly as before.
+const entries = reactive(new Map<string, SpcodeProjectStatus>());
+let activeUmo: string | null = null;
+let pinned = false;
+
+/** Whether a write for `umo` may update the shared ref. */
+function shouldMirror(umo: string): boolean {
+  return !pinned || umo === activeUmo;
+}
 
 // 2026-09-01 (elecvoid243): in-flight refresh dedup, keyed by umo.
 // The session-switch watcher and the spcode auto-load fast path may
@@ -77,7 +98,7 @@ export function useSpcodeProjectStatus() {
           // Soft-fail: keep the last known state.
           return;
         }
-        status.value = {
+        const next: SpcodeProjectStatus = {
           loaded: Boolean(data.loaded),
           directory: data.directory ?? null,
           loadedAt: typeof data.loaded_at === "number" ? data.loaded_at : null,
@@ -90,6 +111,11 @@ export function useSpcodeProjectStatus() {
           // 2026-09-01: backend boot id, drives dirty-tag invalidation.
           bootId: data.boot_id ?? null,
         };
+        entries.set(umo, next);
+        // Only the ACTIVE session may drive the shared ref; a response that
+        // arrives after a session switch is cached (for that session's own
+        // consumers) but must not overwrite the chip/sidebar display.
+        if (shouldMirror(umo)) status.value = { ...next };
       } catch (err) {
         // Network or auth error: keep previous state, do not throw to callers.
         console.warn("[useSpcodeProjectStatus] refresh failed:", err);
@@ -132,9 +158,37 @@ export function useSpcodeProjectStatus() {
   }
 
   /**
+   * Pin the shared ref to `umo`'s entry. Called by Chat.vue on every
+   * session switch — after this, only that session's writes may change
+   * the shared ref.
+   */
+  function setActiveUmo(umo: string | null): void {
+    pinned = true;
+    activeUmo = umo;
+    status.value = umo
+      ? { ...(entries.get(umo) ?? EMPTY_STATUS) }
+      : { ...EMPTY_STATUS };
+  }
+
+  /** Reactive read-only accessor for a specific session's status. */
+  function statusFor(
+    umo: MaybeRefOrGetter<string | null>,
+  ): ComputedRef<SpcodeProjectStatus> {
+    return computed(
+      () =>
+        entries.get(toValue(umo) ?? "") ??
+        (EMPTY_STATUS as SpcodeProjectStatus),
+    );
+  }
+
+  /**
    * Reset the status to the empty state (e.g. on logout or session switch).
+   * Unpins as well, so callers that never re-pin fall back to the legacy
+   * "last writer wins" mirroring.
    */
   function reset() {
+    pinned = false;
+    activeUmo = null;
     status.value = {
       ...EMPTY_STATUS,
       // keep bootId so the dirty tag stays valid across session switches;
@@ -145,9 +199,12 @@ export function useSpcodeProjectStatus() {
 
   return {
     status,
+    entries,
     refresh,
     setLoaded,
     setUnloaded,
     reset,
+    setActiveUmo,
+    statusFor,
   };
 }

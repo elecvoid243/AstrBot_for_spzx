@@ -137,3 +137,95 @@ describe("useSpcodeProjectStatus null-umo guard", () => {
     expect(status.value.bootId).toBe("4000-abc");
   });
 });
+
+// 会话级重构（2026-09-16, elecvoid243）：共享 ref 只表示"活跃会话"。
+// 未钉定（pinned=false）时保持旧语义（最后写入者获胜），因此既有 spec 不受影响。
+const UMO_A = "webchat:FriendMessage:webchat!astrbot!cid-A";
+const UMO_B = "webchat:FriendMessage:webchat!astrbot!cid-B";
+
+function statusPayload(umo: string, directory: string) {
+  return {
+    data: {
+      data: {
+        loaded: true,
+        directory,
+        loaded_at: 1,
+        umo,
+        all_loaded_count: 1,
+        boot_id: "4000-abc",
+      },
+    },
+  } as never;
+}
+
+describe("useSpcodeProjectStatus session scoping", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    useSpcodeProjectStatus().reset();
+  });
+
+  it("statusFor() reads each umo's own entry", async () => {
+    const { refresh, statusFor } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+
+    expect(statusFor(UMO_A).value.directory).toBe("C:/proj/a");
+    expect(statusFor(UMO_B).value.directory).toBeNull();
+    expect(statusFor(UMO_B).value.loaded).toBe(false);
+  });
+
+  it("setActiveUmo() pins the shared ref to that umo's entry", async () => {
+    const { refresh, setActiveUmo, status } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+    getMock.mockResolvedValue(statusPayload(UMO_B, "C:/proj/b"));
+    await refresh(UMO_B);
+
+    setActiveUmo(UMO_A);
+
+    expect(status.value.umo).toBe(UMO_A);
+    expect(status.value.directory).toBe("C:/proj/a");
+  });
+
+  it("once pinned, another umo's refresh must not hijack the shared ref", async () => {
+    const { refresh, setActiveUmo, statusFor, status } =
+      useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+    setActiveUmo(UMO_A);
+
+    getMock.mockResolvedValue(statusPayload(UMO_B, "C:/proj/b"));
+    await refresh(UMO_B);
+
+    expect(status.value.umo).toBe(UMO_A); // 共享 ref 未被劫持
+    expect(status.value.directory).toBe("C:/proj/a");
+    expect(statusFor(UMO_B).value.directory).toBe("C:/proj/b"); // 但进入缓存
+  });
+
+  it("reset() unpins and restores the legacy mirroring", async () => {
+    const { refresh, setActiveUmo, reset, status } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+    setActiveUmo(UMO_A);
+
+    reset();
+    getMock.mockResolvedValue(statusPayload(UMO_B, "C:/proj/b"));
+    await refresh(UMO_B);
+
+    expect(status.value.umo).toBe(UMO_B);
+  });
+
+  // The brief's Interfaces section declares the per-umo table as part of
+  // this task's public surface (Task 2 consumes it), so assert its
+  // observable behaviour instead of shipping an unverified export.
+  it("entries holds each refreshed umo's status", async () => {
+    const umo = "webchat:FriendMessage:webchat!astrbot!cid-entries-only";
+    const { refresh, entries } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(umo, "C:/proj/entries"));
+
+    await refresh(umo);
+
+    expect(entries.get(umo)?.directory).toBe("C:/proj/entries");
+    expect(entries.get(umo)?.loaded).toBe(true);
+  });
+});

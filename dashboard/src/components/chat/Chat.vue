@@ -2465,6 +2465,10 @@ watch(
     // umo yet. Reset to the empty state in that window.
     const resolvedUmo = resolveCurrentUmo(next);
     if (resolvedUmo) {
+      // 2026-09-16 (elecvoid243): pin the shared status to THIS session
+      // before refreshing, so a late response for another session can
+      // no longer overwrite the chip / sidebar state.
+      spcodeStatus.setActiveUmo(resolvedUmo);
       await spcodeStatus.refresh(resolvedUmo);
     } else {
       spcodeStatus.reset();
@@ -2538,12 +2542,12 @@ async function tryAutoLoadSpcodeForSession(
   // watcher, so normally this costs zero extra requests). Without it a
   // backend restarted between the two switches would keep the stale
   // boot id and wrongly skip the reload.
-  await spcodeStatus.refresh(umo);
+  const statusBeforeLoad = await spcodeStatus.refresh(umo);
   if (
     isSessionLoadedTag(
       sessionId,
       project.project_id,
-      spcodeStatus.status.value.bootId,
+      statusBeforeLoad.bootId,
     )
   ) {
     return;
@@ -2553,11 +2557,11 @@ async function tryAutoLoadSpcodeForSession(
     operationProgress.startPolling(umo);
     const data = await silentLoad({ project, umo });
     if (data?.loaded) {
-      await spcodeStatus.refresh(umo);
+      const statusAfterLoad = await spcodeStatus.refresh(umo);
       markSessionLoadedTag(
         sessionId,
         project.project_id,
-        spcodeStatus.status.value.bootId,
+        statusAfterLoad.bootId,
       );
     }
   } catch (err) {

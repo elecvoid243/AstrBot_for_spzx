@@ -1112,6 +1112,7 @@ import {
 import { chatApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { provideSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   useSpcodeProjectAutoLoad,
   ProjectLoadError,
@@ -2647,6 +2648,17 @@ function resolveCurrentUmo(sessionId: string): string | null {
  * `resolveCurrentUmo()` does the actual construction.
  */
 const currentUmo = computed(() => resolveCurrentUmo(currSessionId.value));
+
+// 2026-09-16 (elecvoid243): the git-diff sidebar subtree acts on the
+// ACTIVE conversation's repository. Provide its identity + project root
+// explicitly instead of letting every consumer read the shared status
+// (which another session's late response could have written).
+provideSpcodeSession({
+  umo: currentUmo,
+  directory: computed(
+    () => spcodeStatus.statusFor(currentUmo).value.directory,
+  ),
+});
 
 function getRouteSessionId() {
   const raw = route.params.conversationId;

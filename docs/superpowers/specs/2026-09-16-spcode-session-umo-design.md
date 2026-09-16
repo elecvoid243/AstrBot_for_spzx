@@ -50,7 +50,7 @@ R1/R2 是"共享状态可能装错会话"的直接成因；R3 决定了**一旦�
 
 - **G1 身份显式**：侧边栏子树及其驱动的 composable，其 `umo` 来自"该侧边栏所属会话"，不再隐式读全局单例。
 - **G2 写操作绝不猜**（开关 A）：身份不可解析（`resolveCurrentUmo()` 返回 null）时，写操作以 `no_project_loaded` 失败，绝不回落到别会话项目。
-- **G3 共享状态收敛**（开关 B）：共享 ref 恒等于**活跃会话**的条目；乱序响应被丢弃；`setLoaded` 原子写入 umo + directory。
+- **G3 共享状态收敛**（开关 B）：共享 ref 恒等于**活跃会话**的条目（钉定后）；会话切换后到达的过期响应只进缓存、不改写共享 ref；`setLoaded` 原子写入 umo + directory。
 - **G4 零接口扩散**：composable 签名不变（走环境上下文），既有 13 个依赖单例的 spec **不需要改写**。
 - **G5 不变量有测试**：把"单例被污染成 B、侧边栏属于 A → 请求仍带 A"钉成回归测试。
 
@@ -77,17 +77,19 @@ R1/R2 是"共享状态可能装错会话"的直接成因；R3 决定了**一旦�
 ```ts
 // 每个 umo 一个条目；共享 ref 仅镜像"活跃会话"那一条
 const entries = reactive(new Map<string, SpcodeProjectStatus>())
-const status = ref<SpcodeProjectStatus>({ ...EMPTY_STATUS })   // = entries[activeUmo]
+const status = ref<SpcodeProjectStatus>({ ...EMPTY_STATUS })
 let activeUmo: string | null = null
-const requestSeq = new Map<string, number>()                    // 乱序守卫
+let pinned = false            // setActiveUmo() 之前保持旧的"最后写入者获胜"语义
+
+function shouldMirror(umo: string): boolean { return !pinned || umo === activeUmo }
 
 function setActiveUmo(umo: string | null): void
-  // Chat.vue 会话切换时调用；同步 status.value = entries[umo] ?? EMPTY
+  // Chat.vue 会话切换时调用；pinned = true，同步 status.value = entries[umo] ?? EMPTY
 
 async function refresh(umo: string | null): Promise<SpcodeProjectStatus>
   // - umo 为空 → 不请求，写 EMPTY（保持 2026-08-15 的 null-umo 加固语义）
-  // - seq = ++requestSeq[umo]；await 后若 seq !== requestSeq[umo] → 丢弃本次响应
-  // - 结果写 entries[umo]；仅当 umo === activeUmo 时镜像到共享 ref
+  // - 结果写 entries[umo]；仅当 shouldMirror(umo) 时镜像到共享 ref
+  //   （会话切换后到达的响应只进缓存，不改写侧边栏/chip 显示的内容）
   // - 返回该条目（供 auto-load 等调用方直接消费，不再读共享 ref）
 
 function statusFor(umo: MaybeRefOrGetter<string | null>): ComputedRef<SpcodeProjectStatus>
@@ -95,9 +97,14 @@ function statusFor(umo: MaybeRefOrGetter<string | null>): ComputedRef<SpcodeProj
 
 function setLoaded(umo: string, directory: string, loadedAt?: number): void
   // 原子写 { umo, directory, loaded: true }，消除 R2 的混合态
-function setUnloaded(umo: string | null): void
-function reset(): void   // 清 activeUmo + 共享 ref（不动 entries 缓存）
+function setUnloaded(umo?: string | null): void
+function reset(): void   // 解钉 + 清共享 ref（不动 entries 缓存）
 ```
+
+**与初版设计的两处收敛**（实施时确认，见 plan §"与 spec 的两处实现细化"）：
+
+1. **`pinned` 默认关闭**：只有 `setActiveUmo()` 才把共享 ref 钉到某个 umo；未钉定时镜像行为与今天完全一致 → 除本文件自身的 spec 外，其余 15 个保险丝 spec 无需改写（强化 §2.1 G4）。
+2. **不引入 `requestSeq` 序号表**：同一 umo 的并发已被 `inflightRefresh` 去重（任一时刻至多一个在飞），跨 umo 的过期响应由 `shouldMirror()` 拦下。序号表在当前架构下不可达，按仓库 KISS/YAGNI 规则省略；§2.1 G3 的"乱序响应丢弃"由 `shouldMirror` 等价实现。
 
 现状锚点（改造前）：`refresh()`（`:55`）返回 `void`、去重表 `inflightRefresh`（`:14`）存 `Promise<void>`、`setLoaded`（`:112`）签名无 umo、`setUnloaded`（`:123`）保留旧 umo。
 

@@ -32,7 +32,7 @@ function shouldMirror(umo: string): boolean {
 // The session-switch watcher and the spcode auto-load fast path may
 // both call refresh(umo) for the same session at the same tick; sharing
 // the promise avoids a duplicate GET and keeps the boot id coherent.
-const inflightRefresh = new Map<string, Promise<void>>();
+const inflightRefresh = new Map<string, Promise<SpcodeProjectStatus>>();
 
 /**
  * Shared state holder for the spcode "currently loaded project" chip.
@@ -73,15 +73,15 @@ export function useSpcodeProjectStatus() {
    * the resolved umo of the active session; when there is none the
    * correct display is the empty state.
    */
-  async function refresh(umo?: string | null): Promise<void> {
+  async function refresh(umo?: string | null): Promise<SpcodeProjectStatus> {
     if (!umo) {
       status.value = { ...EMPTY_STATUS };
-      return;
+      return status.value;
     }
     // dedup: multiple callers in the same tick share one network request
     const existing = inflightRefresh.get(umo);
     if (existing) return existing;
-    const promise = (async (): Promise<void> => {
+    const promise = (async (): Promise<SpcodeProjectStatus> => {
       try {
         const res = await pluginExtensionApi.get<{
           loaded: boolean;
@@ -95,8 +95,8 @@ export function useSpcodeProjectStatus() {
         });
         const data = res.data?.data;
         if (!data) {
-          // Soft-fail: keep the last known state.
-          return;
+          // Soft-fail: keep the last known state for this umo.
+          return entries.get(umo) ?? { ...EMPTY_STATUS };
         }
         const next: SpcodeProjectStatus = {
           loaded: Boolean(data.loaded),
@@ -116,14 +116,16 @@ export function useSpcodeProjectStatus() {
         // arrives after a session switch is cached (for that session's own
         // consumers) but must not overwrite the chip/sidebar display.
         if (shouldMirror(umo)) status.value = { ...next };
+        return next;
       } catch (err) {
         // Network or auth error: keep previous state, do not throw to callers.
         console.warn("[useSpcodeProjectStatus] refresh failed:", err);
+        return entries.get(umo) ?? { ...EMPTY_STATUS };
       }
     })();
     inflightRefresh.set(umo, promise);
     try {
-      await promise;
+      return await promise;
     } finally {
       inflightRefresh.delete(umo);
     }

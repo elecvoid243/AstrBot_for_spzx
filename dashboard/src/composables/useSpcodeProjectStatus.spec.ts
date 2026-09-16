@@ -239,4 +239,29 @@ describe("useSpcodeProjectStatus session scoping", () => {
     expect(statusFor(untouched).value.loaded).toBe(false);
     expect(statusFor(untouched).value.directory).toBeNull();
   });
+
+  // refresh() returns the entry it just wrote, so callers (Chat.vue's
+  // auto-load boot-id check) can consume the result directly instead of
+  // re-reading the shared ref, which may belong to another session.
+  it("refresh() returns the fetched status for that umo", async () => {
+    const { refresh } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+
+    const result = await refresh(UMO_A);
+
+    expect(result.directory).toBe("C:/proj/a");
+    expect(result.bootId).toBe("4000-abc");
+  });
+
+  it("a refresh for a non-active umo still returns its own status", async () => {
+    const { refresh, setActiveUmo } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(UMO_A, "C:/proj/a"));
+    await refresh(UMO_A);
+    setActiveUmo(UMO_A);
+
+    getMock.mockResolvedValue(statusPayload(UMO_B, "C:/proj/b"));
+    const result = await refresh(UMO_B);
+
+    expect(result.directory).toBe("C:/proj/b");
+  });
 });

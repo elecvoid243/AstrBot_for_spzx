@@ -215,17 +215,28 @@ describe("useSpcodeProjectStatus session scoping", () => {
     expect(status.value.umo).toBe(UMO_B);
   });
 
-  // The brief's Interfaces section declares the per-umo table as part of
-  // this task's public surface (Task 2 consumes it), so assert its
-  // observable behaviour instead of shipping an unverified export.
-  it("entries holds each refreshed umo's status", async () => {
-    const umo = "webchat:FriendMessage:webchat!astrbot!cid-entries-only";
-    const { refresh, entries } = useSpcodeProjectStatus();
-    getMock.mockResolvedValue(statusPayload(umo, "C:/proj/entries"));
+  // The plan's code block deliberately keeps the per-umo table private, so
+  // verify the same isolation semantics through the public statusFor()
+  // accessor instead of exporting internals.
+  it("refresh() populates only its own session's entry", async () => {
+    const refreshed = "webchat:FriendMessage:webchat!astrbot!cid-status-for";
+    const untouched = "webchat:FriendMessage:webchat!astrbot!cid-untouched";
+    const { status, refresh, statusFor } = useSpcodeProjectStatus();
+    getMock.mockResolvedValue(statusPayload(refreshed, "C:/proj/status-for"));
 
-    await refresh(umo);
+    // A session with no cached entry reads as empty, even before refresh.
+    expect(statusFor(refreshed).value.loaded).toBe(false);
+    expect(statusFor(refreshed).value.directory).toBeNull();
 
-    expect(entries.get(umo)?.directory).toBe("C:/proj/entries");
-    expect(entries.get(umo)?.loaded).toBe(true);
+    await refresh(refreshed);
+
+    expect(statusFor(refreshed).value.directory).toBe("C:/proj/status-for");
+    expect(statusFor(refreshed).value.loaded).toBe(true);
+    // statusFor() reads the per-umo table, NOT the (last-writer-wins
+    // mirror) shared ref: the untouched session stays empty even though
+    // the mirror is populated.
+    expect(status.value.directory).toBe("C:/proj/status-for");
+    expect(statusFor(untouched).value.loaded).toBe(false);
+    expect(statusFor(untouched).value.directory).toBeNull();
   });
 });

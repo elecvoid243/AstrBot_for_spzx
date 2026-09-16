@@ -199,7 +199,6 @@ export function useSpcodeProjectStatus() {
 
   return {
     status,
-    entries,
     refresh,
     setLoaded,
     setUnloaded,

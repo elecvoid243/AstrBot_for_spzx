@@ -151,7 +151,9 @@ export function useSpcodeProjectStatus() {
       fetchedAt: Date.now(),
     };
     entries.set(umo, next);
-    if (shouldMirror(umo)) status.value = next;
+    // Mirror a copy: the shared ref must never alias a cache entry, or a
+    // later write through one would silently mutate the other.
+    if (shouldMirror(umo)) status.value = { ...next };
   }
 
   /** Optimistically mark `umo` (default: the displayed session) as unloaded. */
@@ -167,7 +169,8 @@ export function useSpcodeProjectStatus() {
       bootId: base.bootId,
     };
     if (target) entries.set(target, next);
-    if (!target || shouldMirror(target)) status.value = next;
+    // Mirror a copy for the same no-alias reason as setLoaded() above.
+    if (!target || shouldMirror(target)) status.value = { ...next };
   }
 
   /**

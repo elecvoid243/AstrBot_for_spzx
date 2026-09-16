@@ -8,7 +8,7 @@
 
 import { ref, watch, toValue, type MaybeRef, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeConflictStatus,
   parseSpcodeConflictResolve,
@@ -53,7 +53,7 @@ export function useSpcodeGitConflict(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeGitConflict {
   const state = ref<ConflictFetchState>({ kind: "idle" });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let abortController: AbortController | null = null;
   let mutationAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -62,13 +62,13 @@ export function useSpcodeGitConflict(
   const prevSnapshotMap = new Map<string, ConflictSnapshot>();
 
   function etagKey(): string {
-    const umo = spcodeStatus.status.value.umo ?? "null";
+    const umo = session.umo.value ?? "null";
     return `conflict|${umo}|${toValue(worktreeRef) ?? "null"}`;
   }
 
   async function refresh(): Promise<void> {
     if (!isMounted) return;
-    const umo = spcodeStatus.status.value.umo ?? null;
+    const umo = session.umo.value ?? null;
     if (!umo) {
       state.value = { kind: "error", reason: "no_project_loaded" };
       return;
@@ -117,7 +117,7 @@ export function useSpcodeGitConflict(
   }
 
   watch(
-    [() => spcodeStatus.status.value.umo, () => toValue(worktreeRef)],
+    [() => session.umo.value, () => toValue(worktreeRef)],
     () => {
       if (!isMounted) return;
       etagMap.clear();
@@ -146,7 +146,7 @@ export function useSpcodeGitConflict(
     parser: (raw: unknown) => SpcodeResolveResult | SpcodeConflictActionResult,
   ): Promise<SpcodeResolveResult | SpcodeConflictActionResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = spcodeStatus.status.value.umo ?? null;
+    const umo = session.umo.value ?? null;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     mutationAbort?.abort();
     mutationAbort = new AbortController();

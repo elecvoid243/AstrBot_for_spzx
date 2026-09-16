@@ -19,7 +19,7 @@ import {
   type MaybeRef,
 } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitStatus,
   type SpcodeGitStatusSnapshot,
@@ -46,14 +46,14 @@ export function useSpcodeGitStatus(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeGitStatus {
   const state = ref<GitStatusFetchState>({ kind: "idle" });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let abortController: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let isMounted = true;
 
   async function refresh(): Promise<void> {
     if (!isMounted) return;
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       const prev = state.value.kind === "ok" ? state.value.snapshot : undefined;
       state.value = {
@@ -125,7 +125,7 @@ export function useSpcodeGitStatus(
   // "idle" on first open when no (additional) worktrees exist,
   // causing diffBodyState to skip the untracked-files merge.
   watch(
-    () => spcodeStatus.status.value.umo,
+    () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return;
       if (newUmo && newUmo !== oldUmo) {
@@ -134,10 +134,10 @@ export function useSpcodeGitStatus(
     },
   );
   watch(
-    () => spcodeStatus.status.value.directory,
+    () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return;
-      if (newDir && newDir !== oldDir && spcodeStatus.status.value.umo) {
+      if (newDir && newDir !== oldDir && session.umo.value) {
         void refresh();
       }
     },

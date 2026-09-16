@@ -7,7 +7,7 @@
 
 import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
 export type FileWriteResult = { ok: true } | { ok: false; reason: string };
 
@@ -20,7 +20,7 @@ export interface UseSpcodeFileWrite {
 export function useSpcodeFileWrite(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileWrite {
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const isSaving = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;
@@ -39,7 +39,7 @@ export function useSpcodeFileWrite(
         {
           path: params.path,
           content: params.content,
-          umo: spcodeStatus.status.value.umo ?? undefined,
+          umo: session.umo.value ?? undefined,
           worktree: toValue(worktreeRef) ?? undefined,
         },
         { signal: ctrl.signal },

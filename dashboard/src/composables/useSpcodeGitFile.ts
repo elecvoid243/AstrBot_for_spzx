@@ -22,7 +22,7 @@ import {
   type MaybeRef,
 } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
 export interface GitFileData {
   sha: string;
@@ -67,7 +67,7 @@ function etagKey(parts: {
 export function useSpcodeGitFile(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeGitFile {
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const dataMap = ref<Map<string, GitFileData>>(new Map());
   const stateMap = ref<Map<string, FileRevisionState>>(new Map());
   const etagMap = new Map<string, string>();
@@ -93,7 +93,7 @@ export function useSpcodeGitFile(
     const current = stateMap.value.get(key);
     if (current?.kind === "ok") return;
 
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       setState(key, { kind: "error", reason: "no_project_loaded" });
       return;
@@ -202,7 +202,7 @@ export function useSpcodeGitFile(
   }
 
   watch(
-    [() => toValue(worktreeRef), () => spcodeStatus.status.value.umo],
+    [() => toValue(worktreeRef), () => session.umo.value],
     () => etagMap.clear(),
     { flush: "post" },
   );

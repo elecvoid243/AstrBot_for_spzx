@@ -14,7 +14,7 @@
 
 import { ref, toValue, type MaybeRef, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeStashDrop,
   parseSpcodeStashList,
@@ -79,7 +79,7 @@ export function useSpcodeGitStash(
   const isStashing = ref(false);
   const popping = ref<string | null>(null);
   const dropping = ref<string | null>(null);
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let listAbort: AbortController | null = null;
   let pushAbort: AbortController | null = null;
   let popAbort: AbortController | null = null;
@@ -94,7 +94,7 @@ export function useSpcodeGitStash(
 
   async function refreshList(): Promise<void> {
     if (!isMounted) return;
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       listState.value = { kind: "error", reason: "no_project_loaded" };
       return;

@@ -8,7 +8,7 @@
 
 import { ref, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitMerge,
   parseSpcodeCherryPick,
@@ -40,7 +40,7 @@ function classifyThrown(err: unknown): string {
 export function useSpcodeGitMerge(): UseSpcodeGitMerge {
   const isMerging = ref(false);
   const isCherryPicking = ref(false);
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let mergeAbort: AbortController | null = null;
   let pickAbort: AbortController | null = null;
   let isMounted = true;
@@ -48,7 +48,7 @@ export function useSpcodeGitMerge(): UseSpcodeGitMerge {
   async function merge(params: SpcodeMergeParams): Promise<SpcodeMergeResult> {
     if (!isMounted)
       return { ok: false, reason: "aborted", conflict: false, conflictedFiles: [] };
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo)
       return {
         ok: false,
@@ -87,7 +87,7 @@ export function useSpcodeGitMerge(): UseSpcodeGitMerge {
   ): Promise<SpcodeCherryPickResult> {
     if (!isMounted)
       return { ok: false, reason: "aborted", conflict: false, conflictedFiles: [] };
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo)
       return {
         ok: false,

@@ -7,7 +7,7 @@
 
 import { ref, watch, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitBranches,
   type SpcodeGitBranchesSnapshot,
@@ -77,7 +77,7 @@ const DEFAULT_POLL_MS = 30_000;
 
 export function useSpcodeGitBranches(): UseSpcodeGitBranches {
   const state = ref<BranchesFetchState>({ kind: "idle" });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let abortController: AbortController | null = null;
   let mutationAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -95,8 +95,8 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
 
   async function refresh(): Promise<void> {
     if (!isMounted) return;
-    const umo = spcodeStatus.status.value.umo ?? null;
-    const directory = spcodeStatus.status.value.directory ?? null;
+    const umo = session.umo.value ?? null;
+    const directory = session.directory.value ?? null;
     if (!umo) {
       state.value = {
         kind: "error",
@@ -154,7 +154,7 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
   }
 
   watch(
-    () => spcodeStatus.status.value.umo,
+    () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return;
       // 2026-08-13: project switches defer the fetch ~500ms instead of
@@ -211,7 +211,7 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
     parser: (raw: unknown) => ParsedBranchResponse,
   ): Promise<BranchMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = spcodeStatus.status.value.umo ?? null;
+    const umo = session.umo.value ?? null;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();

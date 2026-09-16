@@ -7,7 +7,7 @@
 
 import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
 export type FileRemoveResult = { ok: true } | { ok: false; reason: string };
 
@@ -20,7 +20,7 @@ export interface UseSpcodeFileRemove {
 export function useSpcodeFileRemove(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileRemove {
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const isRemoving = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;
@@ -35,7 +35,7 @@ export function useSpcodeFileRemove(
         "spcode/file-remove",
         {
           path: params.path,
-          umo: spcodeStatus.status.value.umo ?? undefined,
+          umo: session.umo.value ?? undefined,
           worktree: toValue(worktreeRef) ?? undefined,
         },
         { signal: ctrl.signal },

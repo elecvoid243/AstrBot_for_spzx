@@ -7,7 +7,7 @@
 
 import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
 export type FileRenameResult = { ok: true } | { ok: false; reason: string };
 
@@ -23,7 +23,7 @@ export interface UseSpcodeFileRename {
 export function useSpcodeFileRename(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileRename {
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const isRenaming = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;
@@ -42,7 +42,7 @@ export function useSpcodeFileRename(
         {
           path: params.path,
           new_name: params.newName,
-          umo: spcodeStatus.status.value.umo ?? undefined,
+          umo: session.umo.value ?? undefined,
           worktree: toValue(worktreeRef) ?? undefined,
         },
         { signal: ctrl.signal },

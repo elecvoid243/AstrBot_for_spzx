@@ -4,7 +4,7 @@
 
 import { ref, watch, type Ref } from 'vue'
 import { pluginExtensionApi } from '@/api/v1'
-import { useSpcodeProjectStatus } from '@/composables/useSpcodeProjectStatus'
+import { useSpcodeSession } from '@/composables/useSpcodeSession'
 import {
   parseSpcodeGitWorktrees,
   type SpcodeGitWorktreesSnapshot,
@@ -163,7 +163,7 @@ const DEFAULT_POLL_MS = 30_000
  */
 export function useSpcodeWorktrees(): UseSpcodeWorktrees {
   const state = ref<WorktreesFetchState>({ kind: 'idle' })
-  const spcodeStatus = useSpcodeProjectStatus()
+  const session = useSpcodeSession()
   let abortController: AbortController | null = null
   // Single-flight guard for mutation methods (separate from the read
   // path's `abortController` so a read in progress doesn't cancel a
@@ -180,7 +180,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     // Sending umo=null avoids the timing gap where setLoaded() has
     // already flipped `loaded=true` (showing the "查看工作区" button)
     // but the authoritative umo hasn't arrived yet via onStreamEnd.
-    const umo = spcodeStatus.status.value.umo ?? null
+    const umo = session.umo.value ?? null
 
     abortController?.abort()
     abortController = new AbortController()
@@ -221,7 +221,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
   // soon as umo becomes available; the same hook also covers project
   // switches (directory change) so the tabs refresh on `/project load`.
   watch(
-    () => spcodeStatus.status.value.umo,
+    () => session.umo.value,
     (newUmo, oldUmo) => {
       if (!isMounted) return
       if (newUmo && newUmo !== oldUmo) {
@@ -230,7 +230,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     },
   )
   watch(
-    () => spcodeStatus.status.value.directory,
+    () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return
       // Re-fetch when the directory changes. We no longer require umo
@@ -274,7 +274,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
 
   async function add(params: WorktreeAddParams): Promise<WorktreeMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = params.umo ?? spcodeStatus.status.value.umo;
+    const umo = params.umo ?? session.umo.value;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();
@@ -342,7 +342,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
 
   async function remove(params: WorktreeRemoveParams): Promise<WorktreeMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = params.umo ?? spcodeStatus.status.value.umo;
+    const umo = params.umo ?? session.umo.value;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();
@@ -389,7 +389,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
 
   async function lock(params: WorktreeLockParams): Promise<WorktreeMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = params.umo ?? spcodeStatus.status.value.umo;
+    const umo = params.umo ?? session.umo.value;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();
@@ -434,7 +434,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
 
   async function unlock(params: WorktreeMgmtParams): Promise<WorktreeMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = params.umo ?? spcodeStatus.status.value.umo;
+    const umo = params.umo ?? session.umo.value;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();
@@ -481,7 +481,7 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
     params: WorktreeActivateParams,
   ): Promise<WorktreeMgmtResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
-    const umo = params.umo ?? spcodeStatus.status.value.umo;
+    const umo = params.umo ?? session.umo.value;
     if (!umo) return { ok: false, reason: "no_project_loaded" };
     const ctrl = new AbortController();
     mutationAbort?.abort();

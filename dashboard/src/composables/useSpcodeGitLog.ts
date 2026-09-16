@@ -16,7 +16,7 @@
 
 import { ref, watch, toValue, type Ref, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitLog,
   type SpcodeLogSnapshot,
@@ -134,7 +134,7 @@ export function useSpcodeGitLog(
 ): UseSpcodeGitLog {
   const state = ref<LogFetchState>({ kind: "idle" });
   const filter = ref<LogFilter>({ ref: "HEAD", n: DEFAULT_N });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const etagMap = new Map<string, string>();
   // 2026-07-15 fix: prevSnapshot is now keyed by the same etagKey
   // as etagMap. Previously this was a single `let prevSnapshot` —
@@ -164,7 +164,7 @@ export function useSpcodeGitLog(
       // overrides from "Apply" should reset the entire query.
       filter.value = { ref: "HEAD", n: DEFAULT_N, ...override };
     }
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       // no_project_loaded fires before the request is made, so there
       // is no current etagKey to scope `previousSnapshot` to. The
@@ -388,7 +388,7 @@ export function useSpcodeGitLog(
   /** Drop the ETag entry for exactly the given filter tuple (others are
    *  preserved). See the matching JSDoc on the public interface. */
   function invalidateEtagFor(target: LogFilter): void {
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     const worktree = toValue(worktreeRef);
     const key = etagKey({ umo, worktree, filter: target });
     etagMap.delete(key);

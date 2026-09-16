@@ -14,7 +14,7 @@
 
 import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
 export type DocsWriteResult =
   | { ok: true }
@@ -96,7 +96,7 @@ function networkReason(err: unknown): string {
 export function useSpcodeDocs(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeDocs {
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   const isSaving = ref(false);
   const isDeleting = ref(false);
   const isRenaming = ref(false);
@@ -107,7 +107,7 @@ export function useSpcodeDocs(
 
   function commonParams() {
     return {
-      umo: spcodeStatus.status.value.umo ?? undefined,
+      umo: session.umo.value ?? undefined,
       worktree: toValue(worktreeRef) ?? undefined,
     };
   }

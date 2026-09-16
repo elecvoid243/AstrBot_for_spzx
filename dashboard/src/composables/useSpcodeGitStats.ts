@@ -10,7 +10,7 @@
 
 import { ref, toValue, type MaybeRef, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitStats,
   type GitStatsData,
@@ -40,7 +40,7 @@ export function useSpcodeGitStats(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeGitStats {
   const state = ref<GitStatsFetchState>({ kind: "idle" });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   // ETag + previous snapshot keyed by umo|worktree|topFiles so a
   // user changing the hot-files cap in the panel gets a fresh fetch
   // instead of replaying the previous cap's snapshot.
@@ -66,7 +66,7 @@ export function useSpcodeGitStats(
     topFiles?: number;
   }): Promise<void> {
     if (!isMounted) return;
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       state.value = { kind: "error", reason: "no_project_loaded" };
       return;

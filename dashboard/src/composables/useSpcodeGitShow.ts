@@ -30,7 +30,7 @@ import {
   type MaybeRef,
 } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitShow,
   type GitShowData,
@@ -127,7 +127,7 @@ export function useSpcodeGitShow(
   const patchEtagMap = new Map<string, string>();
   const patchInflight = new Map<string, AbortController>();
   let isMounted = true;
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
 
   function setState(refName: string, next: GitShowFetchState): void {
     const m = new Map(stateMap.value);
@@ -181,7 +181,7 @@ export function useSpcodeGitShow(
     const current = stateMap.value.get(refName);
     if (current?.kind === "ok") return;
 
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       setState(refName, { kind: "error", reason: "no_project_loaded" });
       return;
@@ -282,7 +282,7 @@ export function useSpcodeGitShow(
     const current = fileStateMap.value.get(key);
     if (current?.kind === "ok") return;
 
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       setFileState(key, { kind: "error", reason: "no_project_loaded" });
       return;
@@ -379,7 +379,7 @@ export function useSpcodeGitShow(
     const current = patchStateMap.value.get(refName);
     if (current?.kind === "ok") return;
 
-    const umo = spcodeStatus.status.value.umo;
+    const umo = session.umo.value;
     if (!umo) {
       setPatchState(refName, { kind: "error", reason: "no_project_loaded" });
       return;
@@ -523,7 +523,7 @@ export function useSpcodeGitShow(
   // same trade-off useSpcodeGitLog makes: prevSnapshot is dropped
   // on invalidateEtag to avoid replaying 304 against a stale snapshot.
   watch(
-    [() => toValue(worktreeRef), () => spcodeStatus.status.value.umo],
+    [() => toValue(worktreeRef), () => session.umo.value],
     () => {
       invalidateEtag();
     },

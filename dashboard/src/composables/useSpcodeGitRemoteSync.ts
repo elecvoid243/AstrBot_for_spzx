@@ -9,7 +9,7 @@
 
 import { ref, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import {
   parseSpcodeGitPull,
   parseSpcodeGitPush,
@@ -79,7 +79,7 @@ export function useSpcodeGitRemoteSync(): UseSpcodeGitRemoteSync {
   const isSettingRemote = ref(false);
   const isListingRemotes = ref(false);
   const isRemovingRemote = ref(false);
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let pullAbort: AbortController | null = null;
   let pushAbort: AbortController | null = null;
   let remoteAbort: AbortController | null = null;
@@ -88,7 +88,7 @@ export function useSpcodeGitRemoteSync(): UseSpcodeGitRemoteSync {
   let isMounted = true;
 
   function currentUmo(): string | null {
-    return spcodeStatus.status.value.umo;
+    return session.umo.value;
   }
 
   async function pull(params: SpcodePullParams): Promise<SpcodePullResult> {

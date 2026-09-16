@@ -15,7 +15,7 @@
 
 import { ref, watch, type Ref } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { parseSpcodeGitRepoProbe, type GitRepoProbeParseResult } from "./parseSpcodeGitRepoProbe";
 
 export type GitRepoProbeState =
@@ -53,14 +53,14 @@ export interface UseSpcodeGitRepoProbe {
 /** Composable for the "is this a Git repo?" probe + init mutation. */
 export function useSpcodeGitRepoProbe(): UseSpcodeGitRepoProbe {
   const state = ref<GitRepoProbeState>({ kind: "idle" });
-  const spcodeStatus = useSpcodeProjectStatus();
+  const session = useSpcodeSession();
   let abortController: AbortController | null = null;
   let initAbort: AbortController | null = null;
   let isMounted = true;
 
   async function refresh(): Promise<void> {
     if (!isMounted) return;
-    const directory = spcodeStatus.status.value.directory;
+    const directory = session.directory.value;
     if (!directory) {
       state.value = { kind: "idle" };
       return;
@@ -165,7 +165,7 @@ export function useSpcodeGitRepoProbe(): UseSpcodeGitRepoProbe {
   // pure function of `path`, so we only need to watch `directory` (not
   // `umo`). This covers both initial project load and project switches.
   watch(
-    () => spcodeStatus.status.value.directory,
+    () => session.directory.value,
     (newDir, oldDir) => {
       if (!isMounted) return;
       if (newDir && newDir !== oldDir) {

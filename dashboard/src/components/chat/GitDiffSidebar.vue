@@ -36,6 +36,7 @@ import {
   type WorktreeLockParams,
 } from "@/composables/useSpcodeWorktrees";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useSpcodeGitRepoProbe } from "@/composables/useSpcodeGitRepoProbe";
 import GitRepoInitPrompt from "@/components/chat/message_list_comps/GitRepoInitPrompt.vue";
 import {
@@ -649,7 +650,7 @@ const visibleWorktreeList = computed(() => {
 // fallback, fileBrowserCurrentPath would collapse to "" and
 // useSpcodeFileBrowser's watcher would skip the fetch
 // (`if (!path) return`), leaving the Files view empty.
-const projectRoot = computed(() => spcodeStatus.status.value.directory);
+const projectRoot = computed(() => session.directory.value);
 
 // Persist viewMode / selectedScope / selectedWorktree on every change.
 // fileBrowserCurrentPath uses persistCurrentPath (300ms debounce).
@@ -679,15 +680,18 @@ watch(
 // unambiguous; Vue's `<script setup>` does not hoist `let`.
 let prevWorktreePaths: ReadonlySet<string> | null = null;
 
-// Singleton spcode project status. Declared HERE — before the
-// immediate worktree-list watcher below — because that watcher's
-// callback reads `projectRoot` (→ `spcodeStatus`) on its immediate
-// tick. Instantiating it further down (its natural home next to the
-// other composables) puts the binding in TDZ during the immediate
-// tick; production swallows the resulting ReferenceError with a bare
-// console.error and silently skips the watcher's non-git hydration
-// branch on every mount.
+// Singleton spcode project status + this sidebar's session identity.
+// Both are declared HERE — before the immediate worktree-list watcher
+// below — because that watcher's callback reads `projectRoot`
+// (→ `session`) on its immediate tick. Instantiating them further down
+// (their natural home next to the other composables) puts the bindings
+// in TDZ during the immediate tick; production swallows the resulting
+// ReferenceError with a bare console.error and silently skips the
+// watcher's non-git hydration branch on every mount.
 const spcodeStatus = useSpcodeProjectStatus();
+// Session identity for every spcode call below: the sidebar acts on the
+// conversation it belongs to, not on whatever the shared singleton holds.
+const session = useSpcodeSession();
 
 // When the worktree list first loads, validate the persisted worktree
 // AND cross-validate the persisted currentPath against the new root.
@@ -709,7 +713,7 @@ watch(
       // into a Git repo. projectRoot comes from /spcode/project-status
       // (independent of git) and is guaranteed non-empty by the time
       // this fires: the worktree request that drives this watcher is
-      // itself triggered by spcodeStatus.directory/umo becoming
+      // itself triggered by session.directory/umo becoming
       // available, so directory (hence projectRoot) is already set. The
       // non-empty guard keeps the `immediate` tick (state=idle,
       // projectRoot still "") a no-op. validateCurrentPath preserves a
@@ -1609,7 +1613,7 @@ async function onConfirmRevert(): Promise<void> {
   const result = await gitRevert.revert({
     ref: target.sha,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (result.ok) {
     revertDialogOpen.value = false;
@@ -1758,7 +1762,7 @@ async function onConfirmReset(): Promise<void> {
     ref: target.sha,
     mode: resetMode.value,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (result.ok) {
     resetDialogOpen.value = false;
@@ -1870,7 +1874,7 @@ async function onAmendSubmit(p: {
   const result = await gitCommitAmend.amend({
     message: p.message,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (result.ok) {
     amendDialogOpen.value = false;
@@ -1916,7 +1920,7 @@ async function onSquashSubmit(p: {
     shas: p.shas,
     message: p.message,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (result.ok) {
     squashDialogOpen.value = false;
@@ -2530,7 +2534,7 @@ watch(
   },
 );
 watch(
-  () => spcodeStatus.status.value.directory,
+  () => session.directory.value,
   () => {
     selectedWorktree.value = null;
   },
@@ -2693,7 +2697,7 @@ async function onBranchMenuItemClick(b: {
   // Async dirty pre-check; if it fails, the dialog still opens
   // with dirtyCount=0 (assume clean) and the backend will reject
   // a real dirty switch.
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   if (umo) {
     try {
       // pluginExtensionApi.get<InnerShape>(...) returns
@@ -2994,7 +2998,7 @@ async function onStashSubmit(params: { message: string }): Promise<void> {
   const result = await gitStash.stash({
     message: params.message || undefined,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (isAborted(result)) return;
   if (result.ok) {
@@ -3030,7 +3034,7 @@ async function onStashPop(params: { index: number; ref: string }): Promise<void>
     index: params.index,
     ref: params.ref,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (isAborted(result)) return;
   if (result.ok) {
@@ -3066,7 +3070,7 @@ async function onStashDrop(params: { index: number; ref: string }): Promise<void
     index: params.index,
     ref: params.ref,
     worktree: selectedWorktree.value,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   if (isAborted(result)) return;
   if (result.ok) {
@@ -3398,7 +3402,7 @@ async function onLockSubmit(reason: string | null): Promise<void> {
   isLocking.value = true;
   const params: WorktreeLockParams = {
     path: target.path,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   };
   if (reason) params.reason = reason;
   const result = await worktreesComposable.lock(params);
@@ -3445,7 +3449,7 @@ function onRemoveClick(wt: SpcodeGitWorktree): void {
 }
 
 async function loadDirtyFor(wt: SpcodeGitWorktree): Promise<void> {
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   if (!umo) return;
   try {
     // Backend body is { status, data: { files, summary: { total } } };
@@ -3470,7 +3474,7 @@ async function onConfirmRemove(force: boolean): Promise<void> {
   const result = await worktreesComposable.remove({
     path: target.path,
     force,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   isRemoving.value = false;
   if (isAborted(result)) {
@@ -3514,7 +3518,7 @@ async function onConfirmUnlock(): Promise<void> {
   isUnlocking.value = true;
   const result = await worktreesComposable.unlock({
     path,
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   });
   isUnlocking.value = false;
   if (isAborted(result)) {
@@ -3767,7 +3771,7 @@ async function onConfirmRestore(): Promise<void> {
     confirmTargetPath.value = null;
   });
   restoringFile.value = path;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result: RestoreResult = await fileRestore.restore({
     file: path,
@@ -3829,7 +3833,7 @@ async function onConfirmRestorePaths(): Promise<void> {
   // shorten the iteration.
   const toRestore = paths.slice();
   pendingRestorePaths.value = [];
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   isBulkRestoring.value = true;
   let successCount = 0;
@@ -3917,7 +3921,7 @@ async function onDiscardHunk(params: {
   scope: GitDiffScope;
 }): Promise<void> {
   const { file, hunkIndex, patchText, scope } = params;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   if (!umo) return;
   const worktree = selectedWorktree.value;
   const result: DiscardHunkResult = await fileDiscardHunk.discard({
@@ -3983,7 +3987,7 @@ function reasonMeta(
 
 async function onStageFile(path: string): Promise<void> {
   if (gitStage.isStaging.value.has(path)) return;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitStage.stage({ files: [path], worktree, umo });
   if (isAborted(result)) return;
@@ -4020,7 +4024,7 @@ async function onStageFile(path: string): Promise<void> {
 // reason-keyed i18n message + stderr in the snackbar's <pre> block.
 async function onStagePaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitStage.stage({ files: paths, worktree, umo });
   if (isAborted(result)) return;
@@ -4062,7 +4066,7 @@ async function onStagePaths(paths: string[]): Promise<void> {
 
 async function onUnstageFile(path: string): Promise<void> {
   if (gitUnstage.isUnstaging.value.has(path)) return;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitUnstage.unstage({ files: [path], worktree, umo });
   if (isAborted(result)) return;
@@ -4137,7 +4141,7 @@ function onCancelStageAll(): void {
 
 async function onConfirmStageAll(): Promise<void> {
   confirmStageAllOpen.value = false;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitStage.stageAll({ worktree, umo });
   if (isAborted(result)) return;
@@ -4189,7 +4193,7 @@ function onCancelUnstageAll(): void {
 
 async function onConfirmUnstageAll(): Promise<void> {
   confirmUnstageAllOpen.value = false;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitUnstage.unstageAll({ worktree, umo });
   if (isAborted(result)) return;
@@ -4228,7 +4232,7 @@ async function onConfirmUnstageAll(): Promise<void> {
 // UI #3: bulk-unstage handler. Mirrors onStagePaths.
 async function onUnstagePaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   const result = await gitUnstage.unstage({ files: paths, worktree, umo });
   if (isAborted(result)) return;
@@ -4330,7 +4334,7 @@ async function onConfirmCommit(payload: {
   message: string;
   tag?: string;
 }): Promise<void> {
-  const umo = spcodeStatus.status.value.umo;
+  const umo = session.umo.value;
   const worktree = selectedWorktree.value;
   // 进入提交前清空 lastError(spec §3.3.4)
   commitLastError.value = null;
@@ -4430,7 +4434,7 @@ async function onConfirmCommit(payload: {
 // 监听 selectedWorktree 和 umo,变更时调用 gitLog.invalidateEtag()。
 watch(selectedWorktree, () => gitLog.invalidateEtag());
 watch(
-  () => spcodeStatus.status.value.umo,
+  () => session.umo.value,
   (newUmo, oldUmo) => {
     if (newUmo !== oldUmo) {
       gitLog.invalidateEtag();
@@ -4449,7 +4453,7 @@ watch(
   },
 );
 watch(
-  () => spcodeStatus.status.value.directory,
+  () => session.directory.value,
   () => {
     // 目录变了 → 视作切了项目(decision #23)。
     stagedFiles.value = new Set<string>();
@@ -5688,7 +5692,7 @@ watch(
             :is-dark="!!isDark"
             :root-path="currentRoot"
             :scroll-to-line="fileSearchScrollToLine"
-            :umo="spcodeStatus.status.value.umo"
+            :umo="session.umo.value"
             :worktree="selectedWorktree"
             :git-log="gitLog"
             :git-show="gitShow"
@@ -5785,7 +5789,7 @@ watch(
           <DocumentManager
             v-else-if="viewMode === 'docs'"
             :worktree="selectedWorktree"
-            :umo="spcodeStatus.status.value.umo"
+            :umo="session.umo.value"
             :project-root="currentRoot"
             :is-dark="!!isDark"
             :git-log="gitLog"
@@ -5794,7 +5798,7 @@ watch(
           <!-- 2026-09-01 terminal:终端子页面 body。 -->
           <TerminalView
             v-else-if="viewMode === 'terminal'"
-            :umo="spcodeStatus.status.value.umo"
+            :umo="session.umo.value"
             :project-root="currentRoot"
             :is-dark="!!isDark"
           />
@@ -6472,7 +6476,7 @@ watch(
           :staged-files="Array.from(stagedFiles)"
           :is-committing="gitCommit.isCommitting.value"
           :last-error="commitLastError ?? undefined"
-          :umo="spcodeStatus.status.value.umo"
+          :umo="session.umo.value"
           :worktree="selectedWorktree"
           @confirm="onConfirmCommit"
           @cancel="onCancelCommit"

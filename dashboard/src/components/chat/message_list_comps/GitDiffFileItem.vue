@@ -18,6 +18,7 @@ import type {
 } from "@/composables/parseSpcodeGitDiff";
 import { useModuleI18n } from "@/i18n/composables";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import { absoluteFromSelectedDoc } from "@/composables/pathUtils";
 import DiffPreview from "@/components/chat/message_list_comps/DiffPreview.vue";
@@ -131,12 +132,13 @@ const displayName = computed(() => {
 });
 
 const spcodeStatus = useSpcodeProjectStatus();
+const session = useSpcodeSession();
 /** Spec §6.2: button visible only when project is loaded + umo present. */
 const showRestoreButton = computed(() => {
   return Boolean(
     props.onRestore &&
       spcodeStatus.status.value.loaded &&
-      spcodeStatus.status.value.umo,
+      session.umo.value,
   );
 });
 

@@ -6,11 +6,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import type { WorktreeAddParams } from "@/composables/useSpcodeWorktrees";
 
 const { tm } = useModuleI18n("features/chat");
-const spcodeStatus = useSpcodeProjectStatus();
+const session = useSpcodeSession();
 
 const props = defineProps<{
   modelValue: boolean;
@@ -58,7 +58,7 @@ watch(
 );
 
 const projectRoot = computed(
-  () => spcodeStatus.status.value.directory ?? "",
+  () => session.directory.value ?? "",
 );
 
 // Branch sanitization for default path suggestion.
@@ -119,7 +119,7 @@ function onSubmit(): void {
   if (!canSubmit.value) return;
   const params: WorktreeAddParams = {
     path: path.value.trim(),
-    umo: spcodeStatus.status.value.umo,
+    umo: session.umo.value,
   };
   if (createMode.value !== "detach") {
     params.branch = branch.value.trim();

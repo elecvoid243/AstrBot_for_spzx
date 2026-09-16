@@ -26,6 +26,7 @@ import {
   type DiffSection,
 } from "@/composables/parseDirectorySections";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useModuleI18n } from "@/i18n/composables";
 import GitDiffFileItem from "@/components/chat/message_list_comps/GitDiffFileItem.vue";
 import DiffDirectoryNode from "@/components/chat/message_list_comps/DiffDirectoryNode.vue";
@@ -100,17 +101,18 @@ const emit = defineEmits<{
 }>();
 
 const spcodeStatus = useSpcodeProjectStatus();
+const session = useSpcodeSession();
 // Spec §6.2.3: scope 派生按钮显隐(项目必须已加载 + scope=unstaged 显示 ↑)
 const showStageButton = computed(() => {
   if (!props.onStage) return false;
   if (!spcodeStatus.status.value.loaded) return false;
-  if (!spcodeStatus.status.value.umo) return false;
+  if (!session.umo.value) return false;
   return props.selectedScope === "unstaged";
 });
 const showUnstageButton = computed(() => {
   if (!props.onUnstage) return false;
   if (!spcodeStatus.status.value.loaded) return false;
-  if (!spcodeStatus.status.value.umo) return false;
+  if (!session.umo.value) return false;
   return props.selectedScope === "staged";
 });
 // Bulk restore (toolbar + per-file / per-section checkboxes) is
@@ -123,7 +125,7 @@ const showUnstageButton = computed(() => {
 const showRestoreButton = computed(() => {
   if (!props.onRestore) return false;
   if (!spcodeStatus.status.value.loaded) return false;
-  if (!spcodeStatus.status.value.umo) return false;
+  if (!session.umo.value) return false;
   return true;
 });
 // UI #3: bulk stage / unstage of selected files is only meaningful
@@ -151,7 +153,7 @@ function discardableFor(file: SpcodeGitDiffFile): boolean {
   if (props.newFilePaths?.has(file.path)) return false;
   if (file.isBinary) return false;
   if (!spcodeStatus.status.value.loaded) return false;
-  if (!spcodeStatus.status.value.umo) return false;
+  if (!session.umo.value) return false;
   return true;
 }
 

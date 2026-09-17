@@ -239,6 +239,14 @@ export type ChatSessionBatchDeleteRequest = {
     session_ids: Array<(string)>;
 };
 
+export type ChatSessionImportConfirmRequest = {
+    import_id: string;
+};
+
+export type ChatSessionImportRequest = {
+    file?: (Blob | File);
+};
+
 export type ChatSessionPatchRequest = {
     display_name?: string;
 };
@@ -1684,6 +1692,32 @@ export type GetChatSessionGoalData = {
 export type GetChatSessionGoalResponse = (SuccessEnvelope);
 
 export type GetChatSessionGoalError = unknown;
+
+export type ExportChatSessionData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type ExportChatSessionResponse = ((Blob | File));
+
+export type ExportChatSessionError = unknown;
+
+export type ImportChatSessionsData = {
+    body: ChatSessionImportRequest;
+};
+
+export type ImportChatSessionsResponse = (SuccessEnvelope);
+
+export type ImportChatSessionsError = unknown;
+
+export type ConfirmImportChatSessionsData = {
+    body: ChatSessionImportConfirmRequest;
+};
+
+export type ConfirmImportChatSessionsResponse = (SuccessEnvelope);
+
+export type ConfirmImportChatSessionsError = unknown;
 
 export type StopChatSessionData = {
     path: {

@@ -1507,6 +1507,59 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/export:
+    get:
+      tags: [Chat]
+      summary: Export a ChatUI session as a zip package
+      operationId: exportChatSession
+      x-astrbot-scope: chat
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session export package
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/chat/sessions/import:
+    post:
+      tags: [Chat]
+      summary: Upload a ChatUI session package and pre-check it
+      operationId: importChatSessions
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ChatSessionImportRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/sessions/import/confirm:
+    post:
+      tags: [Chat]
+      summary: Confirm a staged ChatUI session import
+      operationId: confirmImportChatSessions
+      x-astrbot-scope: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatSessionImportConfirmRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/stop:
     post:
       tags: [Chat]
@@ -7020,6 +7073,20 @@ components:
           enum: [json, markdown]
           default: json
       additionalProperties: false
+
+    ChatSessionImportRequest:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+
+    ChatSessionImportConfirmRequest:
+      type: object
+      required: [import_id]
+      properties:
+        import_id:
+          type: string
 
     CronJobRequest:
       type: object

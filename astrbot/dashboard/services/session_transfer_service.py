@@ -12,6 +12,7 @@ import hashlib
 import json
 import posixpath
 import re
+import time
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+from astrbot import logger
+from astrbot.core.backup.importer import _get_major_version
 from astrbot.core.config.default import VERSION
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
@@ -26,6 +29,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
 )
 from astrbot.core.utils.datetime_utils import to_utc_isoformat
+from astrbot.core.utils.version_comparator import VersionComparator
 from astrbot.dashboard.services.chat_service import extract_attachment_ids
 
 EXPORT_KIND = "astrbot-chatui-export"
@@ -432,3 +436,175 @@ class SessionTransferService:
             file_obj=buffer,
             filename=f"astrbot_chatui_export_{timestamp}.zip",
         )
+
+    def _drop_pending(self, import_id: str) -> None:
+        """Forget a staged import and delete its temporary zip.
+
+        Args:
+            import_id: Identifier returned by ``stage_import``.
+        """
+        pending = self.pending_imports.pop(import_id, None)
+        if pending is None:
+            return
+        try:
+            pending.zip_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"Failed to delete staged import {import_id}: {exc!s}")
+
+    def _pending(self, import_id: str) -> _PendingImport:
+        """Look up a staged import, enforcing the TTL.
+
+        Args:
+            import_id: Identifier returned by ``stage_import``.
+
+        Returns:
+            The staged import record.
+
+        Raises:
+            SessionTransferError: If the id is unknown or has expired.
+        """
+        pending = self.pending_imports.get(import_id)
+        if pending is None:
+            raise SessionTransferError("Import preview expired, please upload again")
+        if time.monotonic() - pending.created_at > IMPORT_ID_TTL_SECONDS:
+            self._drop_pending(import_id)
+            raise SessionTransferError("Import preview expired, please upload again")
+        return pending
+
+    @staticmethod
+    def _verify_zip_safety(zf: zipfile.ZipFile) -> None:
+        """Reject zips that could exhaust disk or expand beyond limits.
+
+        Args:
+            zf: Open zip archive.
+
+        Raises:
+            SessionTransferError: If the entry count or uncompressed size
+                exceeds the configured limits.
+        """
+        infos = zf.infolist()
+        if len(infos) > MAX_ZIP_ENTRIES:
+            raise SessionTransferError(
+                f"Package has too many entries (> {MAX_ZIP_ENTRIES})"
+            )
+        total = 0
+        for info in infos:
+            if info.file_size > MAX_ENTRY_BYTES:
+                raise SessionTransferError(f"Entry too large: {info.filename}")
+            total += info.file_size
+        if total > MAX_TOTAL_UNCOMPRESSED_BYTES:
+            raise SessionTransferError("Package expands beyond the size limit")
+
+    def _read_package(self, zip_path: Path) -> tuple[dict, dict]:
+        """Read and validate a staged import zip.
+
+        Args:
+            zip_path: Path of the temporary zip on disk.
+
+        Returns:
+            ``(manifest, payload)`` parsed from the archive.
+
+        Raises:
+            SessionTransferError: If the zip is malformed, of an unexpected
+                kind/format version, or built by an incompatible AstrBot.
+        """
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                self._verify_zip_safety(zf)
+                names = set(zf.namelist())
+                if MANIFEST_NAME not in names or EXPORT_DATA_NAME not in names:
+                    raise SessionTransferError("Package is missing required entries")
+                manifest = json.loads(zf.read(MANIFEST_NAME))
+                payload = json.loads(zf.read(EXPORT_DATA_NAME))
+        except zipfile.BadZipFile as exc:
+            raise SessionTransferError("Uploaded file is not a valid zip") from exc
+        except json.JSONDecodeError as exc:
+            raise SessionTransferError("Package metadata is not valid JSON") from exc
+
+        if not isinstance(manifest, dict) or manifest.get("kind") != EXPORT_KIND:
+            raise SessionTransferError("Unsupported package: wrong kind")
+        if manifest.get("format_version") != EXPORT_FORMAT_VERSION:
+            raise SessionTransferError(
+                f"Unsupported package format_version: {manifest.get('format_version')}"
+            )
+        exported_version = str(manifest.get("astrbot_version") or "")
+        if _get_major_version(exported_version) != _get_major_version(VERSION):
+            raise SessionTransferError(
+                f"Incompatible AstrBot version: package {exported_version}, "
+                f"current {VERSION}"
+            )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("sessions"), list
+        ):
+            raise SessionTransferError("Package payload is malformed")
+        return manifest, payload
+
+    async def stage_import(self, upload) -> dict:
+        """Persist an uploaded package and return its pre-check preview.
+
+        Args:
+            upload: UploadFileAdapter carrying the export zip.
+
+        Returns:
+            Preview dict with ``import_id``, per-session stats, the version
+            status and whether the package can be imported.
+
+        Raises:
+            SessionTransferError: If the upload is missing, too large, or
+                fails any package validation.
+        """
+        if upload is None or not getattr(upload, "filename", None):
+            raise SessionTransferError("Missing key: file")
+        if upload.content_length and upload.content_length > MAX_UPLOAD_BYTES:
+            raise SessionTransferError("Uploaded package is too large")
+
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        import_id = str(uuid.uuid4())
+        zip_path = self.temp_dir / f"session_import_{import_id}.zip"
+        await upload.save(str(zip_path))
+
+        try:
+            if zip_path.stat().st_size > MAX_UPLOAD_BYTES:
+                raise SessionTransferError("Uploaded package is too large")
+            manifest, payload = self._read_package(zip_path)
+        except SessionTransferError:
+            zip_path.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            zip_path.unlink(missing_ok=True)
+            raise SessionTransferError(f"Failed to store upload: {exc!s}") from exc
+
+        warnings = list(manifest.get("warnings") or [])
+        sessions = []
+        for entry in manifest.get("sessions") or []:
+            sessions.append(
+                {
+                    "display_name": entry.get("display_name"),
+                    "original_creator": entry.get("original_creator"),
+                    "stats": entry.get("stats") or {},
+                }
+            )
+        version_status = {
+            "compatible": True,
+            "package_version": str(manifest.get("astrbot_version") or ""),
+            "current_version": VERSION,
+            "upgrade_advised": VersionComparator.compare_version(
+                str(manifest.get("astrbot_version") or "0.0.0"), VERSION
+            )
+            != 0,
+        }
+        preview = {
+            "import_id": import_id,
+            "sessions": sessions,
+            "version_status": version_status,
+            "can_import": bool(payload.get("sessions")),
+            "warnings": warnings,
+        }
+        self.pending_imports[import_id] = _PendingImport(
+            zip_path=zip_path,
+            manifest=manifest,
+            payload=payload,
+            preview=preview,
+            created_at=time.monotonic(),
+        )
+        return preview

@@ -40,6 +40,11 @@ ATTACHMENTS_PREFIX = "files/attachments/"
 WEBCHAT_PLATFORM_ID = "webchat"
 THREAD_PLATFORM_ID = "webchat_thread"
 
+# Preferences whose stored value is a conversation id. When one of these is
+# imported, a pointer that cannot be mapped onto a conversation the import
+# created must be dropped rather than left aiming at a foreign/dead row.
+CONVERSATION_POINTER_PREFERENCE_KEYS = frozenset({"sel_conv_id"})
+
 # Import guards (zip bomb / oversized upload defence).
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_ZIP_ENTRIES = 20000
@@ -747,11 +752,21 @@ class SessionTransferService:
             )
             created_files.append(target)
 
-        # LLM conversations (session + threads share the same shape).
+        # LLM conversations (session + threads share the same shape). The
+        # exported id -> new id map matters beyond the conversation rows:
+        # the runtime's `sel_conv_id` preference still points at the exported
+        # id and must be rewritten with it.
+        conversation_id_map: dict[str, str] = {}
+        exported_conversation_ids: set[str] = set()
         for conversation in entry.get("conversations") or []:
+            old_conversation_id = conversation.get("conversation_id")
+            new_conversation_id = str(uuid.uuid4())
+            if old_conversation_id:
+                conversation_id_map[old_conversation_id] = new_conversation_id
+                exported_conversation_ids.add(old_conversation_id)
             dbsession.add(
                 db_po.ConversationV2(
-                    conversation_id=str(uuid.uuid4()),
+                    conversation_id=new_conversation_id,
                     platform_id=WEBCHAT_PLATFORM_ID,
                     user_id=session_umo,
                     content=conversation.get("content") or [],
@@ -784,6 +799,13 @@ class SessionTransferService:
         # Threads: drop the ones whose parent message was not imported.
         for thread_entry in entry.get("threads") or []:
             thread_data = thread_entry.get("thread") or {}
+            # Record the thread's exported conversation ids even when the
+            # thread is dropped: a preference still pointing at one of them is
+            # a dead pointer and must be skipped, not repointed at a foreign id.
+            for conversation in thread_entry.get("conversations") or []:
+                old_conversation_id = conversation.get("conversation_id")
+                if old_conversation_id:
+                    exported_conversation_ids.add(old_conversation_id)
             parent_id = resolve_parent_message_id(
                 thread_data.get("parent_message_id"), history_id_map
             )
@@ -813,9 +835,13 @@ class SessionTransferService:
                 )
             ] = thread_umo
             for conversation in thread_entry.get("conversations") or []:
+                old_conversation_id = conversation.get("conversation_id")
+                new_conversation_id = str(uuid.uuid4())
+                if old_conversation_id:
+                    conversation_id_map[old_conversation_id] = new_conversation_id
                 dbsession.add(
                     db_po.ConversationV2(
-                        conversation_id=str(uuid.uuid4()),
+                        conversation_id=new_conversation_id,
                         platform_id=WEBCHAT_PLATFORM_ID,
                         user_id=thread_umo,
                         content=conversation.get("content") or [],
@@ -846,12 +872,44 @@ class SessionTransferService:
         # (scope, scope_id, key), rolling back the whole session.
         for preference in entry.get("preferences") or []:
             exported_scope_id = preference.get("scope_id") or ""
+            # A scope the import did not reissue belongs to an entity that was
+            # dropped (e.g. a thread whose parent message was missing).
+            # Re-homing its rows onto the session UMO would collide on
+            # (scope, scope_id, key) and roll back the entire session.
+            if exported_scope_id and exported_scope_id not in umo_map:
+                warnings.append(
+                    f"Preference {preference.get('key')!r}: scope "
+                    f"{exported_scope_id} was not imported"
+                )
+                continue
+            key = preference.get("key") or ""
+            value = preference.get("value") or {}
+            if isinstance(value, dict) and isinstance(value.get("val"), str):
+                pointed_conversation_id = value["val"]
+                if pointed_conversation_id in conversation_id_map:
+                    value = {
+                        **value,
+                        "val": conversation_id_map[pointed_conversation_id],
+                    }
+                elif pointed_conversation_id and (
+                    pointed_conversation_id in exported_conversation_ids
+                    or key in CONVERSATION_POINTER_PREFERENCE_KEYS
+                ):
+                    # The pointed conversation exists in the package but was
+                    # not imported, or the key only ever holds a conversation
+                    # id and that id is foreign. Either way the pointer would
+                    # be dead: skip the row rather than leave it dangling.
+                    warnings.append(
+                        f"Preference {key!r}: conversation "
+                        f"{pointed_conversation_id} was not imported"
+                    )
+                    continue
             dbsession.add(
                 db_po.Preference(
                     scope=preference.get("scope") or "umo",
                     scope_id=umo_map.get(exported_scope_id, session_umo),
-                    key=preference.get("key") or "",
-                    value=preference.get("value") or {},
+                    key=key,
+                    value=value,
                 )
             )
 

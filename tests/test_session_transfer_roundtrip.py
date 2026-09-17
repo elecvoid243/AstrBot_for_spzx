@@ -5,6 +5,9 @@ Date: 2026-09-17
 Spec: docs/superpowers/specs/2026-09-13-chatui-session-export-import-design.md
 """
 
+import json
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +16,10 @@ import pytest
 from astrbot.core.conversation_mgr import ConversationManager
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
-from astrbot.dashboard.services.session_transfer_service import SessionTransferService
+from astrbot.dashboard.services.session_transfer_service import (
+    EXPORT_DATA_NAME,
+    SessionTransferService,
+)
 
 
 class _Upload:
@@ -75,7 +81,7 @@ async def _seed(tmp_path):
         llm_checkpoint_id="ck-1",
     )
     source_umo = f"webchat:FriendMessage:webchat!alice!{session.session_id}"
-    await conv_mgr.new_conversation(
+    session_conversation_id = await conv_mgr.new_conversation(
         unified_msg_origin=source_umo,
         platform_id="webchat",
         content=[{"role": "user", "content": "hi"}],
@@ -88,6 +94,14 @@ async def _seed(tmp_path):
         scope_id=source_umo,
         key="provider",
         value={"provider": "openai"},
+    )
+    # The runtime's pointer at this session's LLM context. It names the
+    # *exported* conversation id, so the import must rewrite it.
+    await db.insert_preference_or_update(
+        scope="umo",
+        scope_id=source_umo,
+        key="sel_conv_id",
+        value={"val": session_conversation_id},
     )
 
     # A side thread that re-uses the SAME attachment id, so the thread branch
@@ -117,7 +131,7 @@ async def _seed(tmp_path):
         sender_name="alice",
         llm_checkpoint_id="ck-thr-1",
     )
-    await conv_mgr.new_conversation(
+    thread_conversation_id = await conv_mgr.new_conversation(
         unified_msg_origin=thread_umo,
         platform_id="webchat",
         content=[{"role": "user", "content": "thread hi"}],
@@ -129,12 +143,34 @@ async def _seed(tmp_path):
         key="provider",
         value={"provider": "anthropic"},
     )
-    return service, db, session, attachment, thread
+    await db.insert_preference_or_update(
+        scope="umo",
+        scope_id=thread_umo,
+        key="sel_conv_id",
+        value={"val": thread_conversation_id},
+    )
+    return (
+        service,
+        db,
+        session,
+        attachment,
+        thread,
+        session_conversation_id,
+        thread_conversation_id,
+    )
 
 
 @pytest.mark.asyncio
 async def test_export_import_round_trip_migrates_session_to_another_user(tmp_path):
-    service, db, session, attachment, thread = await _seed(tmp_path)
+    (
+        service,
+        db,
+        session,
+        attachment,
+        thread,
+        session_conversation_id,
+        thread_conversation_id,
+    ) = await _seed(tmp_path)
 
     export = await service.export_session("alice", session.session_id)
     preview = await service.stage_import(_Upload(export.file_obj.getvalue()))
@@ -214,16 +250,42 @@ async def test_export_import_round_trip_migrates_session_to_another_user(tmp_pat
 
     # The thread conversation follows the new thread UMO as well.
     new_thread_umo = f"webchat:FriendMessage:webchat!bob!{new_thread_id}"
-    assert len(await db.get_conversations(user_id=new_thread_umo)) == 1
+    thread_conversations = await db.get_conversations(user_id=new_thread_umo)
+    assert len(thread_conversations) == 1
 
-    # Preferences keep the scope they were exported from: the session row lands
-    # on the new session UMO, the thread row on the NEW THREAD UMO. Both carry
-    # the key "provider", so collapsing them onto one UMO would also violate
-    # the (scope, scope_id, key) uniqueness and roll the whole session back.
-    session_preferences = await db.get_preferences(scope="umo", scope_id=new_umo)
-    assert [row.value for row in session_preferences] == [{"provider": "openai"}]
-    thread_preferences = await db.get_preferences(scope="umo", scope_id=new_thread_umo)
-    assert [row.value for row in thread_preferences] == [{"provider": "anthropic"}]
+    # Preferences keep the scope they were exported from: the session rows land
+    # on the new session UMO, the thread rows on the NEW THREAD UMO. Both
+    # scopes carry the key "provider", so collapsing them onto one UMO would
+    # also violate the (scope, scope_id, key) uniqueness and roll the whole
+    # session back.
+    session_preferences = {
+        row.key: row.value
+        for row in await db.get_preferences(scope="umo", scope_id=new_umo)
+    }
+    assert session_preferences["provider"] == {"provider": "openai"}
+    thread_preferences = {
+        row.key: row.value
+        for row in await db.get_preferences(scope="umo", scope_id=new_thread_umo)
+    }
+    assert thread_preferences["provider"] == {"provider": "anthropic"}
+
+    # The runtime's `sel_conv_id` pointer must name a conversation the import
+    # created: the exported conversation ids were all reissued, so keeping the
+    # exported value would aim the imported session at alice's LLM context
+    # (same DB) or at nothing at all (other DB).
+    new_session_conv_id = session_preferences["sel_conv_id"]["val"]
+    assert new_session_conv_id == conversations[0].conversation_id
+    assert new_session_conv_id != session_conversation_id
+    pointed = await db.get_conversation_by_id(new_session_conv_id)
+    assert pointed is not None
+    assert pointed.user_id == new_umo
+
+    new_thread_conv_id = thread_preferences["sel_conv_id"]["val"]
+    assert new_thread_conv_id == thread_conversations[0].conversation_id
+    assert new_thread_conv_id != thread_conversation_id
+    pointed_thread = await db.get_conversation_by_id(new_thread_conv_id)
+    assert pointed_thread is not None
+    assert pointed_thread.user_id == new_thread_umo
 
     # The source session is untouched.
     source_history = await service.platform_history_mgr.get(
@@ -232,3 +294,86 @@ async def test_export_import_round_trip_migrates_session_to_another_user(tmp_pat
     assert len(source_history) == 1
     source_attachment = await db.get_attachment_by_id(attachment.attachment_id)
     assert source_attachment is not None
+
+
+def _rewrite_export(blob: bytes, mutate) -> bytes:
+    """Rewrite ``export.json`` inside an export zip, keeping other entries."""
+    with zipfile.ZipFile(BytesIO(blob)) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    payload = json.loads(entries[EXPORT_DATA_NAME])
+    mutate(payload)
+    entries[EXPORT_DATA_NAME] = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_import_skips_preferences_for_a_dropped_thread(tmp_path):
+    """Preferences of a dropped entity are skipped, never re-homed.
+
+    The thread's parent message never reaches the import, so the thread (and
+    its UMO) is dropped. Its ``provider`` preference carries the same key as
+    the session's, so re-homing it onto the session UMO would violate
+    ``UniqueConstraint(scope, scope_id, key)`` and roll back the whole
+    session. The session-scope ``sel_conv_id`` is repointed at the dropped
+    thread's conversation to prove a dead pointer is dropped rather than
+    copied with its exported value.
+    """
+    (
+        service,
+        db,
+        session,
+        _attachment,
+        thread,
+        _session_conversation_id,
+        thread_conversation_id,
+    ) = await _seed(tmp_path)
+    export = await service.export_session("alice", session.session_id)
+    source_umo = f"webchat:FriendMessage:webchat!alice!{session.session_id}"
+
+    def mutate(payload):
+        entry = payload["sessions"][0]
+        # Drop every history row: the thread's parent message cannot resolve,
+        # so the importer drops the whole thread branch (thread + conversation).
+        entry["history"] = []
+        for preference in entry["preferences"]:
+            if (
+                preference["scope_id"] == source_umo
+                and preference["key"] == "sel_conv_id"
+            ):
+                preference["value"] = {"val": thread_conversation_id}
+
+    blob = _rewrite_export(export.file_obj.getvalue(), mutate)
+    preview = await service.stage_import(_Upload(blob))
+    result = await service.confirm_import("bob", preview["import_id"])
+
+    # Skipping the rows is what keeps the session importable at all.
+    assert result["errors"] == []
+    assert len(result["created"]) == 1
+    new_session_id = result["created"][0]["new_session_id"]
+    assert (
+        await db.get_webchat_threads_by_parent_session(new_session_id, creator="bob")
+        == []
+    )
+    assert any("parent message missing" in w for w in result["warnings"])
+    assert any(
+        "scope" in warning and "was not imported" in warning
+        for warning in result["warnings"]
+    )
+    assert any(
+        "conversation" in warning and "was not imported" in warning
+        for warning in result["warnings"]
+    )
+
+    new_umo = f"webchat:FriendMessage:webchat!bob!{new_session_id}"
+    preferences = {
+        row.key: row.value
+        for row in await db.get_preferences(scope="umo", scope_id=new_umo)
+    }
+    # Only the session's own preference survived; neither the dropped thread's
+    # row (same key!) nor the dead sel_conv_id pointer reached the new session.
+    assert preferences == {"provider": {"provider": "openai"}}

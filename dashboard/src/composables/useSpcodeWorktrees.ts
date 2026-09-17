@@ -163,7 +163,7 @@ const DEFAULT_POLL_MS = 30_000
  */
 export function useSpcodeWorktrees(): UseSpcodeWorktrees {
   const state = ref<WorktreesFetchState>({ kind: 'idle' })
-  const session = useSpcodeSession()
+  const session = useSpcodeSession({ requireScoped: true })
   let abortController: AbortController | null = null
   // Single-flight guard for mutation methods (separate from the read
   // path's `abortController` so a read in progress doesn't cancel a

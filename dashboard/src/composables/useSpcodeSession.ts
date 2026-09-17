@@ -10,6 +10,7 @@
 // and injectable, while keeping composable signatures unchanged.
 import {
   computed,
+  getCurrentInstance,
   hasInjectionContext,
   inject,
   provide,
@@ -43,7 +44,10 @@ export function provideSpcodeSession(ctx: {
  *
  * Args:
  *   options.requireScoped: set by composables that mutate a repository —
- *     a dev warning then flags the (unexpected) fallback path.
+ *     a dev warning then flags the (unexpected) fallback path. The
+ *     warning fires only INSIDE a component instance (a real "someone
+ *     forgot to provide" mistake); callers outside a component (specs,
+ *     standalone utilities) stay silent on purpose.
  *
  * Returns:
  *   The injected context, or a shared-status-backed fallback.
@@ -58,7 +62,17 @@ export function useSpcodeSession(
   if (injected) return injected;
 
   const { status } = useSpcodeProjectStatus();
-  if (options.requireScoped && import.meta.env.DEV) {
+  // The warning targets a component tree that forgot to provide. Specs
+  // are excluded via MODE: several existing suites mount a throwaway
+  // component (getCurrentInstance() !== null) purely to host the
+  // composable, and warning there would spam test output without any
+  // real misuse to report.
+  if (
+    options.requireScoped &&
+    import.meta.env.DEV &&
+    import.meta.env.MODE !== "test" &&
+    getCurrentInstance() !== null
+  ) {
     console.warn(
       "[useSpcodeSession] no session context: a repository operation will " +
         "fall back to the shared status. Render this composable inside the " +

@@ -79,7 +79,7 @@ export function useSpcodeGitRemoteSync(): UseSpcodeGitRemoteSync {
   const isSettingRemote = ref(false);
   const isListingRemotes = ref(false);
   const isRemovingRemote = ref(false);
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   let pullAbort: AbortController | null = null;
   let pushAbort: AbortController | null = null;
   let remoteAbort: AbortController | null = null;

@@ -23,7 +23,7 @@ export interface UseSpcodeFileRename {
 export function useSpcodeFileRename(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileRename {
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   const isRenaming = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;

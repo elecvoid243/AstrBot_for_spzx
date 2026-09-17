@@ -40,7 +40,7 @@ function classifyThrown(err: unknown): string {
 export function useSpcodeGitMerge(): UseSpcodeGitMerge {
   const isMerging = ref(false);
   const isCherryPicking = ref(false);
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   let mergeAbort: AbortController | null = null;
   let pickAbort: AbortController | null = null;
   let isMounted = true;

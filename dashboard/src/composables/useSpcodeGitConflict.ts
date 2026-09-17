@@ -53,7 +53,7 @@ export function useSpcodeGitConflict(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeGitConflict {
   const state = ref<ConflictFetchState>({ kind: "idle" });
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   let abortController: AbortController | null = null;
   let mutationAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;

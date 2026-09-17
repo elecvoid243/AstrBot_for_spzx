@@ -20,7 +20,7 @@ export interface UseSpcodeFileWrite {
 export function useSpcodeFileWrite(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileWrite {
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   const isSaving = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;

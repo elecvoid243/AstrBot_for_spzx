@@ -77,7 +77,7 @@ const DEFAULT_POLL_MS = 30_000;
 
 export function useSpcodeGitBranches(): UseSpcodeGitBranches {
   const state = ref<BranchesFetchState>({ kind: "idle" });
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   let abortController: AbortController | null = null;
   let mutationAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;

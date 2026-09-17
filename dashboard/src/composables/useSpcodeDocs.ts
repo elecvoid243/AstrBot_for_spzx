@@ -96,7 +96,7 @@ function networkReason(err: unknown): string {
 export function useSpcodeDocs(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeDocs {
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   const isSaving = ref(false);
   const isDeleting = ref(false);
   const isRenaming = ref(false);

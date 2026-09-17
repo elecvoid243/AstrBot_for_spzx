@@ -79,7 +79,7 @@ export function useSpcodeGitStash(
   const isStashing = ref(false);
   const popping = ref<string | null>(null);
   const dropping = ref<string | null>(null);
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   let listAbort: AbortController | null = null;
   let pushAbort: AbortController | null = null;
   let popAbort: AbortController | null = null;

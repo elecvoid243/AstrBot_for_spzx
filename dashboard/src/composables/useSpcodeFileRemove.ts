@@ -20,7 +20,7 @@ export interface UseSpcodeFileRemove {
 export function useSpcodeFileRemove(
   worktreeRef: MaybeRef<string | null> = null,
 ): UseSpcodeFileRemove {
-  const session = useSpcodeSession();
+  const session = useSpcodeSession({ requireScoped: true });
   const isRemoving = ref(false);
   let ctrl: AbortController | null = null;
   let isMounted = true;

@@ -237,6 +237,10 @@
                   class="project-session-actions"
                   @click.stop
                 >
+                  <SessionExportButton
+                    :session-id="session.session_id"
+                    @export="(id) => $emit('exportSession', id)"
+                  />
                   <v-btn
                     icon
                     size="x-small"
@@ -396,6 +400,7 @@ import {
 import { useModuleI18n } from "@/i18n/composables";
 import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
+import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import { useInteractiveChoiceAttentionStore } from "@/stores/interactiveChoiceAttention";
 import { useRunFinishedAttentionStore } from "@/stores/runFinishedAttention";
 import { useSessionUnreadStore } from "@/stores/sessionUnread";
@@ -473,6 +478,8 @@ const emit = defineEmits<{
   toggleProject: [projectId: string, expanded: boolean];
   selectSession: [sessionId: string];
   editSessionTitle: [sessionId: string, title: string];
+  /** 2026-09-17 session export: a project session row asked to export. */
+  exportSession: [sessionId: string];
   deleteSession: [sessionId: string, projectId: string];
   toggleSessionChecked: [sessionId: string];
   /** 2026-08-13 session archive: a project session row asked to archive. */

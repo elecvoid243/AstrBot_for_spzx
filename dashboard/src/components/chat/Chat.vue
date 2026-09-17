@@ -208,6 +208,7 @@
           @select-project="selectProject"
           @select-session="selectProjectSession"
           @edit-session-title="editProjectSessionTitle"
+          @export-session="exportSidebarSession"
           @delete-session="deleteProjectSession"
           @toggle-session-checked="toggleSessionChecked"
           @archive-session="archiveProjectSession"
@@ -352,6 +353,10 @@
               </v-btn>
             </div>
             <div v-if="!selectionMode" class="session-actions" @click.stop>
+              <SessionExportButton
+                :session-id="session.session_id"
+                @export="exportSidebarSession"
+              />
               <v-btn
                 icon
                 size="x-small"
@@ -415,6 +420,12 @@
                 {{ tm("conversation.editDisplayName") }}
               </v-list-item-title>
             </v-list-item>
+            <SessionExportButton
+              :session-id="sessionContextMenu.session!.session_id"
+              variant="menu-item"
+              :size="16"
+              @export="exportSidebarSession"
+            />
             <v-list-item
               class="styled-menu-item"
               rounded="md"
@@ -1136,6 +1147,7 @@ import ProjectDialog, {
   type ProjectFormData,
 } from "@/components/chat/ProjectDialog.vue";
 import ProjectList, { type Project } from "@/components/chat/ProjectList.vue";
+import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
@@ -3451,6 +3463,29 @@ async function deleteSidebarSession(session: Session) {
   if (wasCurrent) {
     selectedProjectId.value = null;
     await router.push(basePath());
+  }
+}
+
+/**
+ * 2026-09-17 session export: download one ChatUI session package.
+ * Mirrors the conversation export flow in ConversationWorkspacePage.
+ */
+async function exportSidebarSession(sessionId: string) {
+  try {
+    const response = await chatApi.exportSession(sessionId);
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    link.setAttribute("download", `astrbot_chatui_export_${timestamp}.zip`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    toast.success(tm("conversation.exportSuccess"));
+  } catch (error: any) {
+    console.error("Failed to export session:", error);
+    toast.error(error?.response?.data?.message || tm("conversation.exportFailed"));
   }
 }
 

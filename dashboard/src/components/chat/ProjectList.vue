@@ -239,6 +239,8 @@
                 >
                   <SessionExportButton
                     :session-id="session.session_id"
+                    variant="project-icon"
+                    action-class="project-action-btn"
                     @export="(id) => $emit('exportSession', id)"
                   />
                   <v-btn

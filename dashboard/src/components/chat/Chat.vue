@@ -136,6 +136,15 @@
             <Search :size="16" />
             <span>{{ tm("search.title") }}</span>
           </button>
+          <button
+            type="button"
+            class="sidebar-top-action-btn"
+            :title="tm('import.entry')"
+            @click="importDialogOpen = true"
+          >
+            <Upload :size="16" />
+            <span>{{ tm("import.entry") }}</span>
+          </button>
         </div>
       </div>
 
@@ -1086,6 +1095,10 @@
     @delete="onArchivedDeleted"
     @open="openArchivedSession"
   />
+  <ImportSessionsDialog
+    v-model="importDialogOpen"
+    @imported="onSessionsImported"
+  />
 </template>
 
 <script setup lang="ts">
@@ -1123,6 +1136,7 @@ import {
   SquarePen,
   Sun,
   Trash2,
+  Upload,
 } from "@lucide/vue";
 import { chatApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
@@ -1162,6 +1176,7 @@ import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/Tod
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
+import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
 import {
   useSessions,
   type ArchivedSession,
@@ -1351,6 +1366,7 @@ const projectDialogError = ref("");
 const savingProject = ref(false);
 const sessionTitleDialogOpen = ref(false);
 const searchDialogOpen = ref(false);
+const importDialogOpen = ref(false);
 const sessionTitleDraft = ref("");
 const editingSessionTitleId = ref("");
 const refreshProjectSessionsAfterTitleSave = ref(false);
@@ -3411,6 +3427,18 @@ async function onArchivedRestored(session?: ArchivedSession) {
 async function onArchivedDeleted(session?: ArchivedSession) {
   await getSessions();
   await refreshArchivedAffectedProjects(session);
+}
+
+/**
+ * 2026-09-17 session import: refresh the sidebar and open the first
+ * imported session so the user lands on the migrated conversation.
+ */
+async function onSessionsImported(newSessionIds: string[]) {
+  await getSessions();
+  const first = newSessionIds[0];
+  if (first) {
+    await selectSession(first);
+  }
 }
 
 /** Batch operations emit without a session; refresh every loaded project. */

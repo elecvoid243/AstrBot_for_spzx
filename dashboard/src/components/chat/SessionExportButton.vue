@@ -11,10 +11,15 @@ const props = withDefaults(
     sessionId: string;
     /** Icon size; the context menu uses 16, the row actions 15. */
     size?: number;
-    /** Row actions use `session-action-btn`, the menu uses `styled-menu-item`. */
-    variant?: "icon" | "menu-item";
+    /**
+     * Row actions get the host's own row-button class so hover/colour match
+     * their siblings; the context menu uses the styled menu item.
+     */
+    variant?: "icon" | "project-icon" | "menu-item";
+    /** Row-button class forwarded by the host (e.g. `project-action-btn`). */
+    actionClass?: string;
   }>(),
-  { size: 15, variant: "icon" },
+  { size: 15, variant: "icon", actionClass: "session-action-btn" },
 );
 
 const emit = defineEmits<{ export: [sessionId: string] }>();
@@ -29,11 +34,11 @@ function onActivate(event: MouseEvent | KeyboardEvent) {
 
 <template>
   <v-btn
-    v-if="variant === 'icon'"
+    v-if="variant !== 'menu-item'"
     icon
     size="x-small"
     variant="text"
-    class="session-action-btn"
+    :class="actionClass"
     :title="tm('conversation.export')"
     @click="onActivate"
   >

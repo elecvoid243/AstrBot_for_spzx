@@ -1986,5 +1986,20 @@
       "kind_project": "项目",
       "kind_worktree": "工作树"
     }
+  },
+  "import": {
+    "entry": "导入会话",
+    "title": "导入会话",
+    "description": "选择由 ChatUI 导出的会话包（zip）。导入会在你的账户下创建新会话，不会覆盖已有会话。",
+    "selectFile": "选择会话包",
+    "confirm": "确认导入",
+    "close": "关闭",
+    "done": "导入完成",
+    "empty": "该会话包中没有可导入的会话",
+    "uploadFailed": "上传会话包失败",
+    "confirmFailed": "导入会话失败",
+    "messageCount": "{count} 条消息",
+    "attachmentCount": "{count} 个附件",
+    "versionMismatch": "会话包来自不同的小版本，导入后部分内容可能显示异常。"
   }
 }

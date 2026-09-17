@@ -871,7 +871,7 @@
           "pathHint": "绝对路径,父目录必须存在",
           "pathRequired": "请输入路径",
           "base": "起始点",
-          "baseHint": "仅创建新分支模式生效,默认 main",
+          "baseHint": "仅创建新分支模式生效；默认当前分支，可从列表选择或直接输入 ref",
           "submit": "创建",
           "cancel": "取消",
           "success": "已创建 worktree {branch}"

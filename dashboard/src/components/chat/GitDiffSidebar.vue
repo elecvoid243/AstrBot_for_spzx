@@ -482,6 +482,14 @@ const currentBranchName = computed(() => {
   if (s.kind !== "ok") return null;
   return s.snapshot.current;
 });
+// 2026-09-17: the worktree-create dialog offers these as combobox items so the
+// start point / branch can be picked instead of typed. A typed start point
+// that does not exist used to reach git as `fatal: invalid reference: <ref>`.
+const branchNameList = computed(() => branchList.value.map((b) => b.name));
+const tagNameList = computed(() => {
+  const s = branchesComposable.state.value;
+  return s.kind === "ok" ? s.snapshot.tags.map((t) => t.name) : [];
+});
 // 2026-08-01 branch-picker (spec 2026-08-01-git-history-branch-picker
 // §3): picker items for the History view's branch filter — current
 // branch first, then locals, then remotes. Reuses the existing
@@ -6314,6 +6322,9 @@ watch(
         <WorktreeCreateDialog
           v-model="createDialogOpen"
           :is-submitting="isCreating"
+          :branches="branchNameList"
+          :tags="tagNameList"
+          :current-branch="currentBranchName"
           @submit="onCreateSubmit"
           @cancel="createDialogOpen = false"
         />

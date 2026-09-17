@@ -871,7 +871,7 @@
           "pathHint": "Absolute path; parent directory must exist",
           "pathRequired": "Path is required",
           "base": "Base ref",
-          "baseHint": "Only used in create mode; defaults to main",
+          "baseHint": "Only used in create mode; defaults to the current branch - pick from the list or type a ref",
           "submit": "Create",
           "cancel": "Cancel",
           "success": "Created worktree {branch}"

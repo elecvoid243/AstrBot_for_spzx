@@ -5019,13 +5019,26 @@ function recordViewportAnchor(sessionId: string) {
  */
 async function restoreSessionViewport(sessionId: string) {
   try {
+    // A conversation that is producing output has no useful remembered
+    // position: what the user came back for is the reply being written, and
+    // the in-flight record is appended at the end of the list. Restoring an
+    // anchor taken further up left the viewport parked in history while the
+    // output streamed in below the fold — the "shows only history, no live
+    // message" report.
+    const running =
+      isSessionRunning(sessionId) || hasLiveSystemRecord(sessionId);
     const anchorIndex = viewportAnchorBySession.get(sessionId);
-    if (shouldStickToBottom(sessionId) || anchorIndex == null) {
+    if (shouldStickToBottom(sessionId) || anchorIndex == null || running) {
       // No memory (never scrolled, or nothing addressable was on screen):
       // opening at the newest message is the only sane default, and it still
       // beats inheriting the leftover offset of the previous conversation.
       await nextTick();
       if (currSessionId.value !== sessionId) return;
+      // Landing at the bottom means following it. Without re-arming the intent
+      // a session whose follow was switched off earlier (a marker jump, a
+      // scroll up before the switch) would open at the bottom and then let the
+      // output grow straight back out of view.
+      setStickToBottom(sessionId, true);
       scrollToBottomAndHold();
       return;
     }

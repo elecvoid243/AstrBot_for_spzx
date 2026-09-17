@@ -1430,6 +1430,21 @@ const viewportAnchorBySession = new Map<string, number>();
 // can still be paging history when the user switches again, and it must not
 // release the gate the newer switch has taken over in the meantime.
 let pendingViewportSessionId = "";
+// Scroll causation. `handleMessagesScroll` derives the stick-to-bottom intent
+// from the panel's geometry, but geometry cannot tell a reader's scroll from our
+// own follow snap: while a reply streams in the snap runs a tick behind the
+// growing content, so between chunks the panel reads as "scrolled away" (80px is
+// a few lines, one chunk clears it) and the intent switched itself off. Nothing
+// followed the output after that, and switching back restored a position the
+// reader had already left.
+//
+// Caused by us is decided by comparing the offset the panel reports with the one
+// we last wrote: our snap leaves the offset where we put it (content growing
+// underneath does not move it), so its echo is recognisable and carries no
+// opinion. A drag or a wheel moves the offset somewhere else, which is the
+// reader speaking. Timing is deliberately not involved — a gesture marker can be
+// out-raced by the next snap and then the follow fights the drag.
+let selfScrollTop = -1;
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
@@ -4113,6 +4128,9 @@ function runJumpLanding(
         ? 4 * progress * progress * progress
         : 1 - Math.pow(-2 * progress + 2, 3) / 2;
     container.scrollTop = startTop + (target - startTop) * eased;
+    // Read back: the write is clamped, and the echo compared against later is
+    // the clamped value (see the declaration note).
+    selfScrollTop = container.scrollTop;
     if (Math.abs(target - lastTarget) >= 1) {
       lastTarget = target;
       lastChangeAt = now;
@@ -4928,7 +4946,13 @@ function handleMessagesScroll() {
   const sessionId = currSessionId.value;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
-  setStickToBottom(sessionId, distance < 80);
+  // The reading of that distance is only the reader's when their scroll is what
+  // moved the panel. Our snap leaves the offset where we put it, so its echo is
+  // recognisable and must not be able to switch the intent off (see the note at
+  // the declaration).
+  if (Math.abs(container.scrollTop - selfScrollTop) > 1) {
+    setStickToBottom(sessionId, distance < 80);
+  }
   // Keep the conversation's anchor fresh so switching back restores it instead
   // of the neighbouring session's offset. The rect reads share the layout pass
   // this handler already forces above.
@@ -5006,6 +5030,9 @@ function scrollToBottom() {
     const sessionId = currSessionId.value;
     if (!shouldStickToBottom(sessionId)) return;
     container.scrollTop = container.scrollHeight;
+    // Read back: the write is clamped to the scrollable range and the echo this
+    // later compares against is the clamped value (see the declaration note).
+    selfScrollTop = container.scrollTop;
     setStickToBottom(sessionId, true);
   });
 }

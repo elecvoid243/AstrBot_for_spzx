@@ -106,7 +106,7 @@
   },
   "updateSource": {
     "title": "更新源地址",
-    "subtitle": "设置 AstrBot 检查更新与下载安装包时使用的地址，适用于内网部署或使用镜像源的场景。修改保存后立即生效，无需重启。其余更细的地址（GitHub 归档、Harbour 等）仍可在 data/update_config.json 中手工配置。",
+    "subtitle": "设置 AstrBot 检查更新与下载安装包时使用的地址，适用于内网部署或使用镜像源的场景。修改保存后立即生效，无需重启。其余更细的地址（管理面板 GitHub 回落模板、Harbour 等）仍可在 data/update_config.json 中手工配置。",
     "defaultHint": "内置地址：{value}",
     "envLocked": "已被环境变量 {name} 覆盖，此处修改不会生效。",
     "actions": {

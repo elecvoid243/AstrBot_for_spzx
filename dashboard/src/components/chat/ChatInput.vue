@@ -163,8 +163,7 @@
             </v-btn>
             <v-btn
               size="small"
-              variant="text"
-              color="warning"
+              variant="tonal"
               class="pending-follow-up-card__interrupt"
               @click="emit('interruptPending')"
             >
@@ -3151,6 +3150,22 @@ defineExpose({
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+}
+
+/* Force-interrupt action (2026-09-17): shares the send button's neutral
+   tonal chip — same variant, own `color` left inherited — but recolours its
+   label and icon dark red so the destructive exit reads as such without the
+   saturated warning tint it used to carry. Vuetify paints the tonal surface
+   with `currentColor` at 12%, so recolouring the button itself would tint
+   the background too; the label subtree is the only safe target. */
+.pending-follow-up-card__interrupt :deep(.v-btn__content) {
+  color: #8b1a1a;
+}
+
+/* Dark theme: the same dark red would drop below the contrast floor on the
+   dark card surface, so it lightens to a muted brick while staying red. */
+.input-area.is-dark .pending-follow-up-card__interrupt :deep(.v-btn__content) {
+  color: #e08a8a;
 }
 
 /* Long custom text keeps the card compact; the full text is one edit

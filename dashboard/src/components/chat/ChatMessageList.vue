@@ -645,6 +645,14 @@ const props = withDefaults(
     /** Last "load older" failure; turns the button into an explicit retry. */
     historyError?: string | null;
     historyOffset?: number;
+    /**
+     * Absolute history index whose message must arrive with its agent-work
+     * capsule opened. A message-search jump sets it because the matched text
+     * often sits in the work trail the capsule hides (thinking / tool calls /
+     * intermediate output), which leaves the user unable to tell which
+     * message matched. Null = nothing to reveal.
+     */
+    revealWorkIndex?: number | null;
   }>(),
   {
     isDark: false,
@@ -664,6 +672,7 @@ const props = withDefaults(
     historyLoadingOlder: false,
     historyError: null,
     historyOffset: 0,
+    revealWorkIndex: null,
   },
 );
 
@@ -1261,6 +1270,41 @@ function toggleAgentWork(message: ChatRecord, messageIndex: number) {
   }
   expandedAgentWork.value = next;
 }
+
+// A search hit can sit inside the work trail the capsule hides, so a jump
+// from the message-search dialog hands over the target's absolute history
+// index. The row may still be missing when the request arrives (the jump
+// pages older history first), so the reveal waits for it and is then adopted
+// into expandedAgentWork — from that point the capsule is an ordinary
+// expansion the user can collapse again. The parent clears the index once the
+// landing is done, which re-arms the next jump, even to the same index.
+const adoptedRevealIndex = ref<number | null>(null);
+
+watch(
+  [
+    () => props.revealWorkIndex,
+    () => props.messages,
+    () => props.historyOffset,
+  ],
+  () => {
+    const target = props.revealWorkIndex;
+    if (target == null) {
+      adoptedRevealIndex.value = null;
+      return;
+    }
+    if (adoptedRevealIndex.value === target) return;
+    const localIndex = target - props.historyOffset;
+    const message = props.messages[localIndex];
+    if (!message) return;
+    adoptedRevealIndex.value = target;
+    const key = agentWorkKey(message, localIndex);
+    if (expandedAgentWork.value.has(key)) return;
+    const next = new Set(expandedAgentWork.value);
+    next.add(key);
+    expandedAgentWork.value = next;
+  },
+  { immediate: true },
+);
 
 function agentWorkLabel(message: ChatRecord) {
   const stats = messageContent(message).agentStats;

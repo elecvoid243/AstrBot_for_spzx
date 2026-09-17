@@ -365,3 +365,91 @@ def test_interactive_choice_and_ask_user_choice_tool_call_yield_only_interactive
     assert len(parts) == 1
     assert parts[0]["type"] == "interactive_choice"
     assert parts[0]["request_id"] == "req-1"
+
+
+# Author: elecvoid243
+# Date: 2026-09-17
+# The flush boundary: `_consume_chat_run` retires `pending_accumulator` when
+# the `interactive_choice` event saves the record it lands in, which happens
+# strictly between the ask_user_choice `tool_call` and its `tool_call_result`
+# (that result only exists once the user answered the box). The run therefore
+# hands both accumulators one suppression set (and carries the un-resulted
+# calls into the next one) — an instance-scoped set is empty by the time the
+# result arrives and produced the "已使用 tool 工具" card.
+
+
+def _next_segment(accumulator: BotMessageAccumulator) -> BotMessageAccumulator:
+    """Retire one accumulator the way a mid-turn flush does."""
+    return BotMessageAccumulator(
+        filtered_tool_call_ids=accumulator._filtered_tool_call_ids,
+        pending_tool_calls=accumulator.pending_tool_calls,
+    )
+
+
+def test_flush_boundary_does_not_revive_the_ask_user_choice_result() -> None:
+    """The result arriving after the flush must still be recognised."""
+    suppressed_ids: set[str] = set()
+    accumulator = BotMessageAccumulator(filtered_tool_call_ids=suppressed_ids)
+    accumulator.add_plain(
+        _tool_call_envelope("call-abc"),
+        chain_type="tool_call",
+        streaming=False,
+    )
+
+    # Mid-turn flush (the interactive_choice event) retires the accumulator.
+    accumulator = _next_segment(accumulator)
+    accumulator.add_plain(
+        _tool_call_result_envelope("call-abc", "User selected: A (id=A)"),
+        chain_type="tool_call_result",
+        streaming=False,
+    )
+
+    assert accumulator.build_message_parts() == []
+
+
+def test_suppression_set_is_not_consumed_by_the_first_accumulator() -> None:
+    """Two accumulators share one set: dropping the result in the first must
+    not hand the second the name-less fallback."""
+    suppressed_ids: set[str] = set()
+    first = BotMessageAccumulator(filtered_tool_call_ids=suppressed_ids)
+    second = BotMessageAccumulator(filtered_tool_call_ids=suppressed_ids)
+    tool_call_envelope = _tool_call_envelope("call-abc")
+    result_envelope = _tool_call_result_envelope("call-abc", "User selected: A")
+
+    for accumulator in (first, second):
+        accumulator.add_plain(
+            tool_call_envelope, chain_type="tool_call", streaming=False
+        )
+        accumulator.add_plain(
+            result_envelope, chain_type="tool_call_result", streaming=False
+        )
+
+    assert first.build_message_parts() == []
+    assert second.build_message_parts() == []
+
+
+def test_carried_pending_call_still_matches_its_result() -> None:
+    """A real tool call straddling the flush keeps its name: the mid-turn save
+    does not freeze it, the next segment resolves it."""
+    accumulator = BotMessageAccumulator()
+    accumulator.add_plain(
+        _tool_call_envelope("call-xyz", name="astrbot_file_read_tool"),
+        chain_type="tool_call",
+        streaming=False,
+    )
+
+    # The mid-turn save must not write the result-less call into the record,
+    # and the call has to survive into the next segment.
+    assert accumulator.build_message_parts(include_pending_tool_calls=False) == []
+    assert "call-xyz" in accumulator.pending_tool_calls
+
+    accumulator = _next_segment(accumulator)
+    accumulator.add_plain(
+        _tool_call_result_envelope("call-xyz", "file contents"),
+        chain_type="tool_call_result",
+        streaming=False,
+    )
+
+    [part] = accumulator.build_message_parts()
+    assert part["tool_calls"][0]["name"] == "astrbot_file_read_tool"
+    assert part["tool_calls"][0]["result"] == "file contents"

@@ -302,16 +302,17 @@ def test_multi_entry_part_empties_when_all_entries_match() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_keeps_anonymous_result_without_paired_ask_args() -> None:
-    """An anonymous result part whose id has NO matching ask_user_choice
-    args entry in the same message must be preserved (the runtime always
-    sends ``name``, but a defensive read path must not nuke a tool call
-    whose name was lost for any other reason)."""
+def test_drops_anonymous_result_without_paired_ask_args() -> None:
+    """An anonymous result part is the accumulator's synthesised fallback and
+    is dropped even when no ask_user_choice args entry shares the message: the
+    choice event flushes the record it lands in, so the box lives in the
+    previous record and pairing never matches. 56 such orphans in one live
+    database rendered as "已使用 tool 工具"."""
     parts = [_anonymous_result_part("call-orphan")]
 
     sanitized = _sanitize_ask_user_choice_tool_call_parts(parts)
 
-    assert sanitized == parts
+    assert sanitized == []
 
 
 def test_empty_list_is_a_no_op() -> None:

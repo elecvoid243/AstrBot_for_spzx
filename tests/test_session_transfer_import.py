@@ -98,6 +98,66 @@ def _make_service():
     return SessionTransferService(db, core_lifecycle)
 
 
+class _FakeDbTransaction:
+    """Stand-in for ``AsyncSession.begin()``; can fail on exit (commit)."""
+
+    def __init__(self, fail_commit=False):
+        self._fail_commit = fail_commit
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._fail_commit:
+            raise RuntimeError("commit failed")
+        return False
+
+
+class _FakeDbSession:
+    """Stand-in for the AsyncSession that ``_import_one_session`` writes to.
+
+    Autoincrement ids are emulated for ``PlatformMessageHistory`` only:
+    ``PlatformSession`` / ``Attachment`` / ``ConversationV2`` carry their own
+    ``inner_*`` primary keys and reject a stray ``id`` (pydantic raises).
+    """
+
+    def __init__(self, added, fail_commit=False):
+        self._added = added
+        self._fail_commit = fail_commit
+
+    async def flush(self):
+        for index, row in enumerate(self._added):
+            if row.__class__.__name__ != "PlatformMessageHistory":
+                continue
+            if row.id is None:
+                row.id = 900 + index
+
+    def add(self, row):
+        self._added.append(row)
+
+    def begin(self):
+        return _FakeDbTransaction(self._fail_commit)
+
+
+class _FakeDbContext:
+    """Stand-in for ``db.get_db()``: one fresh session per call."""
+
+    def __init__(self, added, fail_commit=False):
+        self._added = added
+        self._fail_commit = fail_commit
+
+    async def __aenter__(self):
+        return _FakeDbSession(self._added, self._fail_commit)
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _install_fake_db(service, added, fail_commit=False):
+    """Route ``service.db.get_db`` into a session collecting rows into ``added``."""
+    service.db.get_db = lambda: _FakeDbContext(added, fail_commit)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_temp_dir(tmp_path, monkeypatch):
     """Stage packages under tmp_path, never the real ``data/temp`` directory.
@@ -341,39 +401,7 @@ async def test_confirm_import_remaps_ids_and_ownership(tmp_path):
     preview = await service.stage_import(_FakeUpload(package.getvalue()))
 
     added = []
-
-    class _FakeSession:
-        async def flush(self):
-            # Emulate autoincrement assignment for history rows only:
-            # PlatformSession / Attachment / ConversationV2 carry their own
-            # inner_* primary keys and reject a stray ``id`` (pydantic raises).
-            for index, row in enumerate(added):
-                if row.__class__.__name__ != "PlatformMessageHistory":
-                    continue
-                if row.id is None:
-                    row.id = 900 + index
-
-        def add(self, row):
-            added.append(row)
-
-        class _Begin:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-        def begin(self):
-            return _FakeSession._Begin()
-
-    class _DbCtx:
-        async def __aenter__(self):
-            return _FakeSession()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    service.db.get_db = lambda: _DbCtx()
+    _install_fake_db(service, added)
     service.db.get_attachments = AsyncMock(return_value=[])
     service.db.get_platform_session_by_id = AsyncMock(return_value=None)
 
@@ -415,38 +443,7 @@ async def test_confirm_import_reissues_colliding_attachment_id(tmp_path):
     )
 
     added = []
-
-    class _FakeSession:
-        async def flush(self):
-            # Same history-only id emulation as the first confirm test; see the
-            # comment there for why other rows must not receive an ``id``.
-            for index, row in enumerate(added):
-                if row.__class__.__name__ != "PlatformMessageHistory":
-                    continue
-                if row.id is None:
-                    row.id = 900 + index
-
-        def add(self, row):
-            added.append(row)
-
-        class _Begin:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-        def begin(self):
-            return _FakeSession._Begin()
-
-    class _DbCtx:
-        async def __aenter__(self):
-            return _FakeSession()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    service.db.get_db = lambda: _DbCtx()
+    _install_fake_db(service, added)
     service.db.get_platform_session_by_id = AsyncMock(return_value=None)
 
     await service.confirm_import("bob", preview["import_id"])
@@ -473,38 +470,7 @@ async def test_confirm_import_drops_thread_without_parent(tmp_path):
     preview = await service.stage_import(_FakeUpload(package.getvalue()))
 
     added = []
-
-    class _FakeSession:
-        async def flush(self):
-            # Same history-only id emulation as the first confirm test; see the
-            # comment there for why other rows must not receive an ``id``.
-            for index, row in enumerate(added):
-                if row.__class__.__name__ != "PlatformMessageHistory":
-                    continue
-                if row.id is None:
-                    row.id = 900 + index
-
-        def add(self, row):
-            added.append(row)
-
-        class _Begin:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *exc):
-                return False
-
-        def begin(self):
-            return _FakeSession._Begin()
-
-    class _DbCtx:
-        async def __aenter__(self):
-            return _FakeSession()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    service.db.get_db = lambda: _DbCtx()
+    _install_fake_db(service, added)
     service.db.get_attachments = AsyncMock(return_value=[])
 
     result = await service.confirm_import("bob", preview["import_id"])
@@ -513,6 +479,55 @@ async def test_confirm_import_drops_thread_without_parent(tmp_path):
     assert result["errors"] == []
     assert not [row for row in added if row.__class__.__name__ == "WebChatThread"]
     assert any("parent message missing" in warning for warning in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_confirm_import_ignores_a_session_whose_commit_fails(tmp_path):
+    """A commit-time failure must never be reported as a created session.
+
+    ``created.append`` runs only after ``begin()`` exits, so a session whose
+    transaction rolled back is not handed to Tasks 5/8 as importable.
+    """
+    service = _make_service()
+    service.attachments_dir = tmp_path
+    package = build_package_bytes(sessions=_seed_export_sessions())
+    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+
+    added = []
+    _install_fake_db(service, added, fail_commit=True)
+    service.db.get_attachments = AsyncMock(return_value=[])
+
+    result = await service.confirm_import("bob", preview["import_id"])
+
+    # The import itself ran (rows were staged), only the commit failed.
+    assert any(row.__class__.__name__ == "PlatformSession" for row in added)
+    assert result["created"] == []
+    assert len(result["errors"]) == 1
+    assert "commit failed" in result["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_confirm_import_reports_a_non_dict_session_entry(tmp_path):
+    """A malformed element is reported, not raised out of the route.
+
+    ``entry.get`` inside the error handler would raise ``AttributeError`` and
+    escape as a 500, hiding the failure of the other sessions.
+    """
+    service = _make_service()
+    service.attachments_dir = tmp_path
+    package = build_package_bytes(sessions=[_EXPORTED_SESSION, "not-a-dict"])
+    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    assert preview["can_import"] is True
+
+    added = []
+    _install_fake_db(service, added)
+    service.db.get_attachments = AsyncMock(return_value=[])
+
+    result = await service.confirm_import("bob", preview["import_id"])
+
+    assert len(result["created"]) == 1
+    assert len(result["errors"]) == 1
+    assert "Malformed session entry" in result["errors"][0]
 
 
 @pytest.mark.asyncio

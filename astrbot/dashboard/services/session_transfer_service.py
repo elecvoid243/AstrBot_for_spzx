@@ -680,6 +680,17 @@ class SessionTransferService:
         is_group = int(session_data.get("is_group") or 0)
         new_session_id = str(uuid.uuid4())
         session_umo = new_umo(WEBCHAT_PLATFORM_ID, is_group, username, new_session_id)
+        # Exported preference rows carry the ORIGINAL scope ids, so the import
+        # needs the old-UMO -> new-UMO mapping to place each row correctly.
+        original_creator = session_data.get("creator") or username
+        umo_map = {
+            new_umo(
+                WEBCHAT_PLATFORM_ID,
+                is_group,
+                original_creator,
+                session_data.get("session_id") or "",
+            ): session_umo
+        }
 
         new_session = db_po.PlatformSession(
             session_id=new_session_id,
@@ -793,6 +804,14 @@ class SessionTransferService:
                 )
             )
             thread_umo = new_umo(WEBCHAT_PLATFORM_ID, 0, username, new_thread_id)
+            umo_map[
+                new_umo(
+                    WEBCHAT_PLATFORM_ID,
+                    0,
+                    original_creator,
+                    thread_data.get("thread_id") or "",
+                )
+            ] = thread_umo
             for conversation in thread_entry.get("conversations") or []:
                 dbsession.add(
                     db_po.ConversationV2(
@@ -819,17 +838,18 @@ class SessionTransferService:
                     )
                 )
 
-        # Session-scoped preferences follow the session into the new UMO.
+        # Preferences follow their original scope into the new account.
+        # The exporter collects rows for the session UMO *and* every thread
+        # UMO (spec §5.1), so each row must be remapped through the UMO it
+        # actually belonged to — collapsing them all onto the session UMO
+        # would misassign thread-scoped config AND could collide on
+        # (scope, scope_id, key), rolling back the whole session.
         for preference in entry.get("preferences") or []:
+            exported_scope_id = preference.get("scope_id") or ""
             dbsession.add(
                 db_po.Preference(
                     scope=preference.get("scope") or "umo",
-                    scope_id=new_umo(
-                        WEBCHAT_PLATFORM_ID,
-                        int(preference.get("is_group") or is_group),
-                        username,
-                        new_session_id,
-                    ),
+                    scope_id=umo_map.get(exported_scope_id, session_umo),
                     key=preference.get("key") or "",
                     value=preference.get("value") or {},
                 )
@@ -876,23 +896,35 @@ class SessionTransferService:
             for entry in pending.payload.get("sessions") or []:
                 mark = len(created_files)
                 try:
+                    if not isinstance(entry, dict):
+                        raise SessionTransferError("Malformed session entry")
                     async with self.db.get_db() as dbsession:
                         async with dbsession.begin():
-                            created.append(
-                                await self._import_one_session(
-                                    dbsession,
-                                    entry,
-                                    username,
-                                    warnings,
-                                    created_files,
-                                    pending.zip_path,
-                                )
+                            imported = await self._import_one_session(
+                                dbsession,
+                                entry,
+                                username,
+                                warnings,
+                                created_files,
+                                pending.zip_path,
                             )
+                    # Appended only after `begin()` exits: a failure at
+                    # commit time must never leave a phantom "created"
+                    # session that Tasks 5/8 would render or link.
+                    created.append(imported)
                 except Exception as exc:
                     logger.error(f"Session import failed: {exc!s}", exc_info=True)
-                    errors.append(
-                        f"{entry.get('session', {}).get('session_id')}: {exc!s}"
+                    # The entry may not even be a dict: reporting the failure
+                    # must not raise a second time and escape as a 500.
+                    entry_session = (
+                        entry.get("session") if isinstance(entry, dict) else None
                     )
+                    session_id = (
+                        entry_session.get("session_id")
+                        if isinstance(entry_session, dict)
+                        else None
+                    )
+                    errors.append(f"{session_id}: {exc!s}")
                     # Drop the files this session wrote before its tx rolled back.
                     for path in created_files[mark:]:
                         try:

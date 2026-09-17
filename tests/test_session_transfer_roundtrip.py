@@ -31,7 +31,7 @@ class _Upload:
 
 
 async def _seed(tmp_path):
-    """Create a webchat session for alice with one attachment and one LLM turn."""
+    """Create a webchat session for alice with one thread and one attachment."""
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()
     history_mgr = PlatformMessageHistoryManager(db)
@@ -56,7 +56,7 @@ async def _seed(tmp_path):
         path=str(attachment_path), type="image", mime_type="image/png"
     )
 
-    await history_mgr.insert(
+    parent_history = await history_mgr.insert(
         platform_id="webchat",
         user_id=session.session_id,
         content={
@@ -81,12 +81,60 @@ async def _seed(tmp_path):
         content=[{"role": "user", "content": "hi"}],
         title="t",
     )
-    return service, db, session, attachment
+    # The session preference shares its key with the thread preference below:
+    # per-UMO keys are independent, so both rows must survive the import.
+    await db.insert_preference_or_update(
+        scope="umo",
+        scope_id=source_umo,
+        key="provider",
+        value={"provider": "openai"},
+    )
+
+    # A side thread that re-uses the SAME attachment id, so the thread branch
+    # of the importer (thread history + thread attachment rewrite) is exercised.
+    thread = await db.create_webchat_thread(
+        creator="alice",
+        parent_session_id=session.session_id,
+        parent_message_id=parent_history.id,
+        base_checkpoint_id="ck-1",
+        selected_text="hi",
+    )
+    thread_umo = f"webchat:FriendMessage:webchat!alice!{thread.thread_id}"
+    await history_mgr.insert(
+        platform_id="webchat_thread",
+        user_id=thread.thread_id,
+        content={
+            "type": "user",
+            "message": [
+                {
+                    "type": "image",
+                    "attachment_id": attachment.attachment_id,
+                    "filename": "src-image.png",
+                }
+            ],
+        },
+        sender_id="alice",
+        sender_name="alice",
+        llm_checkpoint_id="ck-thr-1",
+    )
+    await conv_mgr.new_conversation(
+        unified_msg_origin=thread_umo,
+        platform_id="webchat",
+        content=[{"role": "user", "content": "thread hi"}],
+        title="thr-t",
+    )
+    await db.insert_preference_or_update(
+        scope="umo",
+        scope_id=thread_umo,
+        key="provider",
+        value={"provider": "anthropic"},
+    )
+    return service, db, session, attachment, thread
 
 
 @pytest.mark.asyncio
 async def test_export_import_round_trip_migrates_session_to_another_user(tmp_path):
-    service, db, session, attachment = await _seed(tmp_path)
+    service, db, session, attachment, thread = await _seed(tmp_path)
 
     export = await service.export_session("alice", session.session_id)
     preview = await service.stage_import(_Upload(export.file_obj.getvalue()))
@@ -123,6 +171,59 @@ async def test_export_import_round_trip_migrates_session_to_another_user(tmp_pat
     new_umo = f"webchat:FriendMessage:webchat!bob!{new_session_id}"
     conversations = await db.get_conversations(user_id=new_umo)
     assert len(conversations) == 1
+
+    # The side thread survived, re-owned and re-pointed at the new session and
+    # the new main-history row.
+    imported_threads = await db.get_webchat_threads_by_parent_session(
+        new_session_id, creator="bob"
+    )
+    assert len(imported_threads) == 1
+    new_thread_id = imported_threads[0].thread_id
+    assert new_thread_id != thread.thread_id
+    imported_thread = await db.get_webchat_thread_by_id(new_thread_id)
+    assert imported_thread is not None
+    assert imported_thread.creator == "bob"
+    assert imported_thread.parent_session_id == new_session_id
+    assert imported_thread.parent_message_id == imported_history[0].id
+    assert imported_thread.base_checkpoint_id == "ck-1"
+    assert imported_thread.selected_text == "hi"
+
+    # The thread's stream lives under the THREAD platform scope keyed by the
+    # NEW thread id (never the session id) and its image was re-described to
+    # the same reissued attachment as the session stream.
+    thread_history = await service.platform_history_mgr.get(
+        platform_id="webchat_thread",
+        user_id=new_thread_id,
+        page=1,
+        page_size=100,
+    )
+    assert len(thread_history) == 1
+    assert thread_history[0].llm_checkpoint_id == "ck-thr-1"
+    thread_image_part = thread_history[0].content["message"][0]
+    assert thread_image_part["attachment_id"] == image_part["attachment_id"]
+    assert thread_image_part["attachment_id"] != attachment.attachment_id
+    assert (
+        await service.platform_history_mgr.get(
+            platform_id="webchat_thread",
+            user_id=new_session_id,
+            page=1,
+            page_size=100,
+        )
+        == []
+    )
+
+    # The thread conversation follows the new thread UMO as well.
+    new_thread_umo = f"webchat:FriendMessage:webchat!bob!{new_thread_id}"
+    assert len(await db.get_conversations(user_id=new_thread_umo)) == 1
+
+    # Preferences keep the scope they were exported from: the session row lands
+    # on the new session UMO, the thread row on the NEW THREAD UMO. Both carry
+    # the key "provider", so collapsing them onto one UMO would also violate
+    # the (scope, scope_id, key) uniqueness and roll the whole session back.
+    session_preferences = await db.get_preferences(scope="umo", scope_id=new_umo)
+    assert [row.value for row in session_preferences] == [{"provider": "openai"}]
+    thread_preferences = await db.get_preferences(scope="umo", scope_id=new_thread_umo)
+    assert [row.value for row in thread_preferences] == [{"provider": "anthropic"}]
 
     # The source session is untouched.
     source_history = await service.platform_history_mgr.get(

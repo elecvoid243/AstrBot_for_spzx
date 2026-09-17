@@ -225,6 +225,41 @@ async def test_stage_import_rejects_corrupt_zip():
 
 
 @pytest.mark.asyncio
+async def test_read_package_converts_escaped_archive_errors(tmp_path):
+    """A corrupted archive must surface as SessionTransferError, never raw.
+
+    zipfile's read path can raise zlib.error (bad deflate stream), EOFError
+    (``_read2``) or NotImplementedError (unsupported compression / zip
+    version) — none of which are OSError, so an enumerated except chain lets
+    them escape as a generic 500 *and* skips the staged-file cleanup. Sweeping
+    every byte of a real package asserts the normalisation holds for all three
+    families and that a failing attempt never leaves a staged zip behind.
+    """
+    original = build_package_bytes().getvalue()
+    saw_a_failure = False
+
+    for offset in range(len(original)):
+        corrupted = bytearray(original)
+        corrupted[offset] ^= 0xFF
+        # A fresh service per offset keeps each attempt's temp dir isolated,
+        # so a leftover from one attempt cannot mask a leak in the next.
+        service = _make_service()
+        service.temp_dir = tmp_path / f"corrupt-{offset}"
+        try:
+            await service.stage_import(_FakeUpload(bytes(corrupted)))
+        except SessionTransferError:
+            saw_a_failure = True
+            assert service.pending_imports == {}, f"pending leak at {offset}"
+            assert not list(service.temp_dir.glob("session_import_*.zip")), (
+                f"staged zip leaked on disk at offset {offset}"
+            )
+        except Exception as exc:  # noqa: BLE001 - the point of this test
+            pytest.fail(f"raw {type(exc).__name__} escaped at offset {offset}: {exc!s}")
+
+    assert saw_a_failure, "no corruption broke the package - test is vacuous"
+
+
+@pytest.mark.asyncio
 async def test_stage_import_rejects_package_missing_required_entries():
     service = _make_service()
     buffer = BytesIO()

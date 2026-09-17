@@ -471,17 +471,18 @@ class SessionTransferService:
         return pending
 
     @staticmethod
-    def _verify_zip_safety(zf: zipfile.ZipFile) -> None:
-        """Reject zips that could exhaust disk or expand beyond limits.
+    def _verify_zip_safety(archive) -> None:
+        """Reject archives that could exhaust disk or expand beyond limits.
 
         Args:
-            zf: Open zip archive.
+            archive: Open zip archive, or any object exposing ``infolist()``
+                (tests drive this with a duck-typed stand-in).
 
         Raises:
             SessionTransferError: If the entry count or uncompressed size
                 exceeds the configured limits.
         """
-        infos = zf.infolist()
+        infos = archive.infolist()
         if len(infos) > MAX_ZIP_ENTRIES:
             raise SessionTransferError(
                 f"Package has too many entries (> {MAX_ZIP_ENTRIES})"
@@ -519,6 +520,18 @@ class SessionTransferService:
             raise SessionTransferError("Uploaded file is not a valid zip") from exc
         except json.JSONDecodeError as exc:
             raise SessionTransferError("Package metadata is not valid JSON") from exc
+        except SessionTransferError:
+            raise
+        except Exception as exc:
+            # A corrupted archive escapes the two classes above in three other
+            # ways (zlib.error on a bad deflate stream, EOFError from
+            # zipfile._read2, NotImplementedError for an unsupported
+            # compression method / zip version). Convert at this boundary so
+            # the service keeps its error contract and the caller's cleanup
+            # runs, instead of a generic 500 plus a leaked staged file.
+            raise SessionTransferError(
+                f"Package archive is unreadable: {exc!s}"
+            ) from exc
 
         if not isinstance(manifest, dict) or manifest.get("kind") != EXPORT_KIND:
             raise SessionTransferError("Unsupported package: wrong kind")
@@ -565,11 +578,14 @@ class SessionTransferService:
             if zip_path.stat().st_size > MAX_UPLOAD_BYTES:
                 raise SessionTransferError("Uploaded package is too large")
             manifest, payload = self._read_package(zip_path)
-        except SessionTransferError:
+        except Exception as exc:
+            # Cleanup is unconditional and the error family is normalised here
+            # rather than enumerated: any non-service failure must still become
+            # a SessionTransferError so the route maps it, and must still
+            # remove the staged file so nothing is left untracked in data/temp.
             zip_path.unlink(missing_ok=True)
-            raise
-        except OSError as exc:
-            zip_path.unlink(missing_ok=True)
+            if isinstance(exc, SessionTransferError):
+                raise
             raise SessionTransferError(f"Failed to stage upload: {exc!s}") from exc
 
         warnings = list(manifest.get("warnings") or [])

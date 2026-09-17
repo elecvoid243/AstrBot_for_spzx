@@ -205,6 +205,8 @@
   },
   "fileChanges": {
     "title": "{count} files changed",
+    "collapse": "Collapse the file list",
+    "expand": "Expand the file list",
     "sandboxHint": "Sandbox file; diff and undo are unavailable",
     "noStat": "no stats",
     "viewDiff": "View diff",

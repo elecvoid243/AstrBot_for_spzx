@@ -205,6 +205,8 @@
   },
   "fileChanges": {
     "title": "{count} 个文件已更改",
+    "collapse": "折叠文件列表",
+    "expand": "展开文件列表",
     "sandboxHint": "沙箱文件，暂不支持查看与撤销",
     "noStat": "无统计",
     "viewDiff": "查看 diff",

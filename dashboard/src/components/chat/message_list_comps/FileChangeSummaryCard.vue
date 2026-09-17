@@ -15,12 +15,18 @@
   collapses, shows a "changes reverted" badge and disables further
   diff/undo actions.
 
+  Whole-card collapse (2026-09-17): a chevron button at the right end
+  of the header hides the file rows and leaves the count + totals
+  visible, so a long list can be folded away once reviewed. The state
+  is per-card-instance and starts expanded; the per-row expand set and
+  cached diffs survive a collapse, so re-expanding costs no refetch.
+
   Author: elecvoid243 | 2026-09-13
 -->
 <template>
   <div
     class="fcs-card"
-    :class="{ 'fcs-card--dark': isDark }"
+    :class="{ 'fcs-card--dark': isDark, 'fcs-card--collapsed': collapsed }"
   >
     <div class="fcs-head">
       <span class="fcs-head-icon">
@@ -33,10 +39,22 @@
         <span class="stat-adds">+{{ totalAdds }}</span>
         <span class="stat-dels">−{{ totalDels }}</span>
       </span>
+      <v-btn
+        class="fcs-toggle"
+        :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'"
+        size="x-small"
+        variant="text"
+        density="comfortable"
+        :title="toggleLabel"
+        :aria-label="toggleLabel"
+        :aria-expanded="!collapsed"
+        @click="collapsed = !collapsed"
+      />
     </div>
 
     <template v-for="file in files" :key="file.path">
       <div
+        v-if="!collapsed"
         class="fcs-row"
         :class="{ 'fcs-row--reverted': isReverted(file) }"
       >
@@ -117,7 +135,10 @@
         </div>
       </div>
 
-      <div v-if="expanded.has(file.path)" class="fcs-body">
+      <div
+        v-if="!collapsed && expanded.has(file.path)"
+        class="fcs-body"
+      >
         <div v-if="loadingPath === file.path" class="fcs-loading">
           <v-progress-circular indeterminate size="14" width="2" />
         </div>
@@ -157,6 +178,11 @@ const { tm } = useModuleI18n("features/chat");
 const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
 const toast = useToast();
 
+/** Whole-card collapse (2026-09-17): hides the file rows, keeps the
+ * header (count + totals) visible. Per-instance and expanded by default
+ * — a fresh card rendered by a history reload starts open again. */
+const collapsed = ref(false);
+
 const expanded = reactive(new Set<string>());
 /** Paths known to match their baseline: collapsed, badged, actions locked.
  * Seeded by the end-of-turn undo and re-derived from the backend on load,
@@ -180,6 +206,11 @@ const totalDels = computed(() =>
   props.files.every((f) => f.dels !== null)
     ? props.files.reduce((sum, f) => sum + (f.dels || 0), 0)
     : null,
+);
+
+/** Tooltip / aria label of the header toggle, describing the NEXT state. */
+const toggleLabel = computed(() =>
+  tm(collapsed.value ? "fileChanges.expand" : "fileChanges.collapse"),
 );
 
 function basename(path: string): string {
@@ -395,6 +426,19 @@ watch(
   font-family: monospace;
   font-size: 12px;
   font-weight: 600;
+}
+
+/* Header collapse toggle. The negative margins absorb the button's hit
+   area (taller than the 22px title icon) so the header row keeps its
+   36px rhythm, and pull the chevron towards the card edge. */
+.fcs-toggle {
+  flex: none;
+  margin: -5px -6px -5px 0;
+}
+
+/* Collapsed card: nothing follows the header, so its divider goes too. */
+.fcs-card--collapsed .fcs-head {
+  border-bottom: none;
 }
 
 .stat-adds {

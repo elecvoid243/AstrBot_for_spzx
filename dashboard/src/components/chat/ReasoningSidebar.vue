@@ -208,6 +208,23 @@ onBeforeUnmount(() => {
   line-height: 1.62;
 }
 
+/* 2026-09-17:思考内容字号下调一档。
+   markstream 的正文字号由它自己的 ``.markstream-vue`` 规则决定
+   (font-size: var(--ms-text-body)),而 chatMarkdown.css 把该变量设为
+   桌面 0.9375rem / 移动 1rem —— 所以单写 font-size 会被盖掉,必须覆盖
+   变量本身;又要压过 ``.chat-markdown.markstream-vue`` 的 specificity,
+   故带上 .reasoning-sidebar-body 前缀(:deep 穿透 scoped)。
+   只作用于侧栏:消息列表里复用的内联 ReasoningBlock 保持原字号。 */
+.reasoning-sidebar-body :deep(.chat-markdown.markstream-vue) {
+  --ms-text-body: 0.9375rem; /* 移动端:1rem 下调一档 */
+}
+
+@media (min-width: 761px) {
+  .reasoning-sidebar-body :deep(.chat-markdown.markstream-vue) {
+    --ms-text-body: 0.875rem; /* 桌面端:0.9375rem 下调一档 */
+  }
+}
+
 .reasoning-sidebar-empty {
   padding: 12px 2px;
   color: rgba(var(--v-theme-on-surface), 0.54);

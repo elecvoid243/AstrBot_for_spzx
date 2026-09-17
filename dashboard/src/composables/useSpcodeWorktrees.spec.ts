@@ -9,6 +9,8 @@
 // across ALL sessions", so creating a worktree in conversation A could
 // create it inside conversation B's repo.
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { computed, defineComponent, h } from "vue";
+import { mount } from "@vue/test-utils";
 
 vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get: vi.fn(), post: vi.fn() },
@@ -16,11 +18,15 @@ vi.mock("@/api/v1", () => ({
 
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeProjectStatus } from "./useSpcodeProjectStatus";
+import { provideSpcodeSession } from "./useSpcodeSession";
 import { useSpcodeWorktrees } from "./useSpcodeWorktrees";
 
 const postMock = vi.mocked(pluginExtensionApi.post);
+const getMock = vi.mocked(pluginExtensionApi.get);
 
 const UMO = "webchat:FriendMessage:webchat!astrbot!cid-123";
+const UMO_A = "webchat:FriendMessage:webchat!astrbot!cid-A";
+const UMO_B = "webchat:FriendMessage:webchat!astrbot!cid-B";
 const ROOT = "C:/proj/demo";
 
 /** Minimal success envelope ({ status: "ok", data: {...} }) for the 4
@@ -57,6 +63,10 @@ function configOf(call = 0): { params?: Record<string, unknown> } {
 describe("useSpcodeWorktrees POST umo contract", () => {
   beforeEach(() => {
     postMock.mockReset();
+    // mount() below runs useSpcodeWorktrees inside a component; make the
+    // GET side resolvable so an internal load cannot reject unpredictably.
+    getMock.mockReset();
+    getMock.mockResolvedValue(okEnvelope());
     useSpcodeProjectStatus().reset();
   });
 
@@ -120,5 +130,58 @@ describe("useSpcodeWorktrees POST umo contract", () => {
 
     expect(postMock.mock.calls[0][0]).toBe("spcode/git-worktree-unlock");
     expect(bodyOf()).toMatchObject({ umo: UMO, path: `${ROOT}/.worktrees/x` });
+  });
+
+  it("mutations carry the session umo even when the shared status holds another session", async () => {
+    // Session B owns the shared status (e.g. the user was looking at it a
+    // moment ago).
+    getMock.mockResolvedValue({
+      data: {
+        data: {
+          loaded: true,
+          directory: "C:/proj/b",
+          loaded_at: 1,
+          umo: UMO_B,
+          all_loaded_count: 1,
+          boot_id: "4000-b",
+        },
+      },
+    } as never);
+    const spcodeStatus = useSpcodeProjectStatus();
+    await spcodeStatus.refresh(UMO_B);
+    spcodeStatus.setActiveUmo(UMO_B);
+
+    // The sidebar belongs to session A. The composable must run in a
+    // CHILD of the provider: `provide()` is not visible to the providing
+    // component's own `inject()`, only to its descendants — which is
+    // exactly the real tree (Chat.vue provides, the sidebar subtree
+    // consumes).
+    let api!: ReturnType<typeof useSpcodeWorktrees>;
+    const Child = defineComponent({
+      setup() {
+        api = useSpcodeWorktrees();
+        return () => h("div");
+      },
+    });
+    const Host = defineComponent({
+      setup() {
+        provideSpcodeSession({
+          umo: computed(() => UMO_A),
+          directory: computed(() => "C:/proj/a"),
+        });
+        return () => h(Child);
+      },
+    });
+    mount(Host);
+    postMock.mockResolvedValue(okEnvelope({ created: { path: "C:/proj/a/.worktrees/feat-x" } }));
+
+    await api.add({
+      path: "C:/proj/a/.worktrees/feat-x",
+      branch: "feat-x",
+      create: true,
+    });
+
+    expect(bodyOf().umo).toBe(UMO_A);
+    expect(configOf().params?.umo).toBe(UMO_A);
   });
 });

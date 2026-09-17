@@ -106,7 +106,7 @@
   },
   "updateSource": {
     "title": "Download sources",
-    "subtitle": "Set the addresses AstrBot uses to check for updates and download packages — useful for intranet deployments or mirrors. Changes apply right after saving; no restart is needed. The remaining fine-grained addresses (GitHub archive, Harbour, ...) can still be edited by hand in data/update_config.json.",
+    "subtitle": "Set the addresses AstrBot uses to check for updates and download packages — useful for intranet deployments or mirrors. Changes apply right after saving; no restart is needed. The remaining fine-grained addresses (Dashboard GitHub fallback template, Harbour, ...) can still be edited by hand in data/update_config.json.",
     "defaultHint": "Built-in: {value}",
     "envLocked": "Overridden by the {name} environment variable, so edits here have no effect.",
     "actions": {

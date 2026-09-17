@@ -21,28 +21,32 @@ logger = logging.getLogger("astrbot")
 UPDATE_CONFIG_PATH = os.path.join(get_astrbot_data_path(), "update_config.json")
 
 # Environment variable name mapping.
+# Only fields with a live consumer are listed; see the note above DEFAULT_CONFIG.
 ENV_VAR_MAP = {
     "core_update.release_api_url": "ASTRBOT_CORE_RELEASE_API_URL",
-    "core_update.github_archive_url_template": "ASTRBOT_GITHUB_ARCHIVE_URL",
     "core_update.package_base_url": "ASTRBOT_CORE_PACKAGE_BASE_URL",
     "dashboard_update.registry_url_template": "ASTRBOT_DASHBOARD_REGISTRY_URL",
-    "dashboard_update.github_release_api_url": "ASTRBOT_DASHBOARD_GITHUB_RELEASE_API_URL",
     "dashboard_update.github_release_download_url_template": "ASTRBOT_DASHBOARD_GITHUB_RELEASE_DOWNLOAD_URL",
     "dashboard_update.harbour_url_template": "ASTRBOT_DASHBOARD_HARBOUR_URL",
     "proxy.enabled": "ASTRBOT_UPDATE_PROXY_ENABLED",
     "proxy.url": "ASTRBOT_UPDATE_PROXY_URL",
 }
 
+# Only fields with a live consumer are declared here.
+# Upstream #9493 (simplify updater architecture) removed the call sites of two
+# fields, so they are no longer configurable:
+# - core_update.github_archive_url_template: the commit-hash core package URL is
+#   now built by GitHubRepository.revision_archive_url() (github.com hardcoded).
+# - dashboard_update.github_release_api_url: the Dashboard fallback no longer
+#   queries the GitHub latest API; it interpolates the download template below.
 DEFAULT_CONFIG: dict[str, Any] = {
     "update_config_version": 1,
     "core_update": {
         "release_api_url": "https://api.soulter.top/releases",
-        "github_archive_url_template": "https://github.com/AstrBotDevs/AstrBot/archive/{version}.zip",
         "package_base_url": "https://astrbot-registry.soulter.top/download/astrbot-core",
     },
     "dashboard_update": {
         "registry_url_template": "https://astrbot-registry.soulter.top/download/astrbot-dashboard/{version}/dist.zip",
-        "github_release_api_url": "https://api.github.com/repos/AstrBotDevs/AstrBot/releases/latest",
         "github_release_download_url_template": "https://github.com/AstrBotDevs/AstrBot/releases/download/{tag}/AstrBot-{tag}-dashboard.zip",
         "harbour_url_template": "https://github.com/AstrBotDevs/astrbot-release-harbour/releases/download/release-{version}/dist.zip",
     },
@@ -213,18 +217,6 @@ class UpdateConfig(dict):
             DEFAULT_CONFIG["core_update"]["release_api_url"],
         )
 
-    def get_github_archive_url(self, version: str) -> str:
-        """获取 GitHub 归档下载地址.
-
-        Args:
-            version: 版本号或 commit hash
-        """
-        template = self._get_value(
-            "core_update.github_archive_url_template",
-            DEFAULT_CONFIG["core_update"]["github_archive_url_template"],
-        )
-        return template.format(version=version)
-
     def get_core_package_base_url(self) -> str:
         """Get the base URL prefix for hosted core package downloads.
 
@@ -253,13 +245,6 @@ class UpdateConfig(dict):
             DEFAULT_CONFIG["dashboard_update"]["registry_url_template"],
         )
         return template.format(version=version)
-
-    def get_dashboard_github_release_api_url(self) -> str:
-        """获取 Dashboard GitHub Release API 地址."""
-        return self._get_value(
-            "dashboard_update.github_release_api_url",
-            DEFAULT_CONFIG["dashboard_update"]["github_release_api_url"],
-        )
 
     def get_dashboard_github_release_download_url(self, tag: str) -> str:
         """获取 Dashboard GitHub Release 下载地址.

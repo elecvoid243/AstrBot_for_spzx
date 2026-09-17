@@ -296,6 +296,9 @@
     "llmService": "LLM Service",
     "speechToText": "Speech to Text",
     "editDisplayName": "Edit Session Name",
+    "export": "Export session",
+    "exportSuccess": "Session exported",
+    "exportFailed": "Failed to export session",
     "displayName": "Session Name",
     "displayNameUpdated": "Session name updated",
     "displayNameUpdateFailed": "Failed to update session name",
@@ -1954,5 +1957,20 @@
       "kind_project": "Project",
       "kind_worktree": "Worktree"
     }
+  },
+  "import": {
+    "entry": "Import session",
+    "title": "Import sessions",
+    "description": "Pick a session package exported from ChatUI (zip). Importing creates new sessions under your account and never overwrites existing ones.",
+    "selectFile": "Select package",
+    "confirm": "Confirm import",
+    "close": "Close",
+    "done": "Import finished",
+    "empty": "This package contains no importable session",
+    "uploadFailed": "Failed to upload the package",
+    "confirmFailed": "Failed to import sessions",
+    "messageCount": "{count} messages",
+    "attachmentCount": "{count} attachments",
+    "versionMismatch": "The package comes from a different minor version; some content may not render as expected."
   }
 }

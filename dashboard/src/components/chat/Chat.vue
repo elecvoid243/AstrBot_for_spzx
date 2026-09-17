@@ -136,6 +136,15 @@
             <Search :size="16" />
             <span>{{ tm("search.title") }}</span>
           </button>
+          <button
+            type="button"
+            class="sidebar-top-action-btn"
+            :title="tm('import.entry')"
+            @click="importDialogOpen = true"
+          >
+            <Upload :size="16" />
+            <span>{{ tm("import.entry") }}</span>
+          </button>
         </div>
       </div>
 
@@ -208,6 +217,7 @@
           @select-project="selectProject"
           @select-session="selectProjectSession"
           @edit-session-title="editProjectSessionTitle"
+          @export-session="exportSidebarSession"
           @delete-session="deleteProjectSession"
           @toggle-session-checked="toggleSessionChecked"
           @archive-session="archiveProjectSession"
@@ -361,6 +371,10 @@
               </v-btn>
             </div>
             <div v-if="!selectionMode" class="session-actions" @click.stop>
+              <SessionExportButton
+                :session-id="session.session_id"
+                @export="exportSidebarSession"
+              />
               <v-btn
                 icon
                 size="x-small"
@@ -443,6 +457,12 @@
                 }}
               </v-list-item-title>
             </v-list-item>
+            <SessionExportButton
+              :session-id="sessionContextMenu.session!.session_id"
+              variant="menu-item"
+              :size="16"
+              @export="exportSidebarSession"
+            />
             <v-list-item
               class="styled-menu-item"
               rounded="md"
@@ -1104,6 +1124,10 @@
     @delete="onArchivedDeleted"
     @open="openArchivedSession"
   />
+  <ImportSessionsDialog
+    v-model="importDialogOpen"
+    @imported="onSessionsImported"
+  />
 </template>
 
 <script setup lang="ts">
@@ -1143,6 +1167,7 @@ import {
   StarOff,
   Sun,
   Trash2,
+  Upload,
 } from "@lucide/vue";
 import { chatApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
@@ -1167,6 +1192,7 @@ import ProjectDialog, {
   type ProjectFormData,
 } from "@/components/chat/ProjectDialog.vue";
 import ProjectList, { type Project } from "@/components/chat/ProjectList.vue";
+import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
@@ -1181,6 +1207,7 @@ import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/Tod
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
+import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
 import {
   useSessions,
   type ArchivedSession,
@@ -1393,6 +1420,7 @@ const projectDialogError = ref("");
 const savingProject = ref(false);
 const sessionTitleDialogOpen = ref(false);
 const searchDialogOpen = ref(false);
+const importDialogOpen = ref(false);
 const sessionTitleDraft = ref("");
 const editingSessionTitleId = ref("");
 const refreshProjectSessionsAfterTitleSave = ref(false);
@@ -3474,6 +3502,18 @@ async function onArchivedDeleted(session?: ArchivedSession) {
   await refreshArchivedAffectedProjects(session);
 }
 
+/**
+ * 2026-09-17 session import: refresh the sidebar and open the first
+ * imported session so the user lands on the migrated conversation.
+ */
+async function onSessionsImported(newSessionIds: string[]) {
+  await getSessions();
+  const first = newSessionIds[0];
+  if (first) {
+    await selectSession(first);
+  }
+}
+
 /** Batch operations emit without a session; refresh every loaded project. */
 async function refreshArchivedAffectedProjects(session?: ArchivedSession) {
   if (session?.project_id) {
@@ -3524,6 +3564,48 @@ async function deleteSidebarSession(session: Session) {
   if (wasCurrent) {
     selectedProjectId.value = null;
     await router.push(basePath());
+  }
+}
+
+/**
+ * 2026-09-18 I2: blob responses carry a Blob on the error path too, so the
+ * server's message has to be decoded before it can be shown.
+ */
+async function exportErrorMessage(error: any): Promise<string | null> {
+  const data = error?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text());
+      return parsed?.message || null;
+    } catch {
+      return null;
+    }
+  }
+  return data?.message || error?.message || null;
+}
+
+/**
+ * 2026-09-17 session export: download one ChatUI session package.
+ * Mirrors the conversation export flow in ConversationWorkspacePage.
+ */
+async function exportSidebarSession(sessionId: string) {
+  try {
+    const response = await chatApi.exportSession(sessionId);
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    link.setAttribute("download", `astrbot_chatui_export_${timestamp}.zip`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    toast.success(tm("conversation.exportSuccess"));
+  } catch (error: any) {
+    console.error("Failed to export session:", error);
+    toast.error(
+      (await exportErrorMessage(error)) || tm("conversation.exportFailed"),
+    );
   }
 }
 

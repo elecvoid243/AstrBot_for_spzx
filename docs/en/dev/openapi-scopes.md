@@ -191,11 +191,14 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/sessions/batch-archive` | — |
 | `POST` | `/api/v1/chat/sessions/batch-delete` | — |
 | `POST` | `/api/v1/chat/sessions/batch-unarchive` | — |
+| `POST` | `/api/v1/chat/sessions/import` | — |
+| `POST` | `/api/v1/chat/sessions/import/confirm` | — |
 | `GET` | `/api/v1/chat/sessions/new` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}` | — |
 | `PATCH` | `/api/v1/chat/sessions/{session_id}` | — |
 | `DELETE` | `/api/v1/chat/sessions/{session_id}` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/archive` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/export` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/goal` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/history` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/markers` | — |

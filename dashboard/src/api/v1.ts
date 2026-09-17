@@ -909,6 +909,26 @@ export const chatApi = {
       openApiV1.deleteChatSession({ path: { session_id: sessionId } }),
     );
   },
+  exportSession(sessionId: string) {
+    return openApiV1.exportChatSession({
+      path: { session_id: sessionId },
+      responseType: 'blob',
+    }) as Promise<AxiosResponse<Blob>>;
+  },
+  importSessions(formData: FormData) {
+    return typed<any>(
+      // `generatedFormData` is the repo's established wrapper for multipart
+      // endpoints (see fileApi.upload / uploadBackup): the generated client
+      // serialises `body` itself, so passing a raw FormData would spread to
+      // zero entries and send an empty multipart body.
+      openApiV1.importChatSessions({ body: generatedFormData(formData) }),
+    );
+  },
+  confirmImportSessions(importId: string) {
+    return typed<any>(
+      openApiV1.confirmImportChatSessions({ body: { import_id: importId } }),
+    );
+  },
   listArchivedSessions(params?: {
     platform_id?: string;
     page?: number;

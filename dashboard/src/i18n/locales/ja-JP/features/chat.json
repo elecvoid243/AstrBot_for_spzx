@@ -108,6 +108,9 @@
     "llmService": "LLM サービス",
     "speechToText": "音声認識",
     "editDisplayName": "セッション名を編集",
+    "export": "セッションをエクスポート",
+    "exportSuccess": "セッションをエクスポートしました",
+    "exportFailed": "セッションのエクスポートに失敗しました",
     "displayName": "セッション名",
     "displayNameUpdated": "セッション名を更新しました",
     "displayNameUpdateFailed": "セッション名の更新に失敗しました",
@@ -254,5 +257,20 @@
     "exit": "終了",
     "partialFailure": "{total} 件の会話のうち {failed} 件を削除できませんでした",
     "requestFailed": "会話の削除に失敗しました。もう一度お試しください。"
+  },
+  "import": {
+    "entry": "セッションをインポート",
+    "title": "セッションのインポート",
+    "description": "ChatUI からエクスポートしたセッションパッケージ（zip）を選択してください。インポートするとあなたのアカウントに新しいセッションが作成され、既存のセッションは上書きされません。",
+    "selectFile": "パッケージを選択",
+    "confirm": "インポートを実行",
+    "close": "閉じる",
+    "done": "インポートが完了しました",
+    "empty": "このパッケージにインポート可能なセッションがありません",
+    "uploadFailed": "パッケージのアップロードに失敗しました",
+    "confirmFailed": "セッションのインポートに失敗しました",
+    "messageCount": "{count} 件のメッセージ",
+    "attachmentCount": "{count} 件の添付ファイル",
+    "versionMismatch": "パッケージは別のマイナーバージョンで作成されています。一部の内容が正しく表示されない可能性があります。"
   }
 }

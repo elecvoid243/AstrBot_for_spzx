@@ -299,8 +299,9 @@ class SessionTransferService:
         """
         # Exports are reclaimed by mtime, not by the route's BackgroundTask
         # alone (see `_sweep_stale_imports`), so sweep here too: residue from
-        # a killed download is otherwise only collected after an import.
-        self._sweep_stale_imports()
+        # a killed download is otherwise only collected after an import. The
+        # sweep globs, stats and unlinks, so keep it off the event loop.
+        await asyncio.to_thread(self._sweep_stale_imports)
 
         session = await self._owned_webchat_session(username, session_id)
         session_umo = new_umo(
@@ -424,7 +425,16 @@ class SessionTransferService:
                 warnings,
             )
         except Exception:
-            archive_path.unlink(missing_ok=True)
+            # The cleanup itself can fail (a Windows file lock or AV scan
+            # holding the just-written archive); that must not replace the
+            # writer's error with a bare PermissionError and a generic 500.
+            # A file left behind is reclaimable by `_sweep_stale_imports`.
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    f"Failed to delete partial export archive {archive_path}: {exc!s}"
+                )
             raise
 
         # A package larger than the import cap can never be imported by anyone,
@@ -490,6 +500,17 @@ class SessionTransferService:
         # budget starts from the same two entries `_verify_zip_safety` sees.
         entry_count = 2
         uncompressed_bytes = len(data_bytes)
+        # `export.json` is validated per entry on import like any attachment,
+        # so an attachment-free session can still breach `MAX_ENTRY_BYTES` on
+        # this one entry. Checking it up front keeps the promise that the
+        # exporter never hands out a package the importer would reject with
+        # "Entry too large: export.json".
+        self._verify_export_size_limits(
+            entry_count,
+            uncompressed_bytes,
+            entry_name=EXPORT_DATA_NAME,
+            entry_bytes=len(data_bytes),
+        )
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(EXPORT_DATA_NAME, data_bytes)
@@ -545,10 +566,13 @@ class SessionTransferService:
             manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode(
                 "utf-8"
             )
-            # The manifest is an entry too: count it before writing it so the
-            # totals match the sum the importer will compute.
+            # The manifest is an entry too: check and count it before writing
+            # it, so the totals match the sum the importer will compute.
             self._verify_export_size_limits(
-                entry_count, uncompressed_bytes + len(manifest_bytes)
+                entry_count,
+                uncompressed_bytes + len(manifest_bytes),
+                entry_name=MANIFEST_NAME,
+                entry_bytes=len(manifest_bytes),
             )
             zf.writestr(MANIFEST_NAME, manifest_bytes)
         return warnings
@@ -779,7 +803,8 @@ class SessionTransferService:
         if upload.content_length and upload.content_length > MAX_UPLOAD_BYTES:
             raise SessionTransferError("Uploaded package is too large")
 
-        self._sweep_stale_imports()
+        # The sweep globs, stats and unlinks, so keep it off the event loop.
+        await asyncio.to_thread(self._sweep_stale_imports)
 
         import_id = str(uuid.uuid4())
         zip_path = self.temp_dir / f"session_import_{import_id}.zip"

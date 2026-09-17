@@ -364,6 +364,67 @@ async def test_export_refuses_any_importer_zip_limit_it_would_breach(
 
 
 @pytest.mark.asyncio
+async def test_export_refuses_when_export_json_alone_breaches_the_entry_cap(
+    tmp_path, monkeypatch
+):
+    """``export.json`` is an entry, so the per-entry cap applies to it too.
+
+    The importer runs ``_verify_zip_safety`` over every entry, metadata
+    included, so a session with no attachments at all can still produce a
+    package it rejects with "Entry too large: export.json". Only checking
+    attachments let exactly that dead archive out of the exporter.
+    """
+    service = _make_service()
+    # No attachment ids anywhere: the only entries are the two metadata ones.
+    service.platform_history_mgr.get = AsyncMock(
+        return_value=[
+            _row(content={"type": "user", "message": [{"type": "plain", "text": "hi"}]})
+        ]
+    )
+    baseline = await service.export_session("alice", SESSION_ID)
+    with zipfile.ZipFile(baseline.path) as zf:
+        assert zf.namelist() == [EXPORT_DATA_NAME, MANIFEST_NAME]
+        export_json_size = zf.getinfo(EXPORT_DATA_NAME).file_size
+    baseline.path.unlink()
+
+    monkeypatch.setattr(
+        session_transfer_service, "MAX_ENTRY_BYTES", export_json_size - 1
+    )
+
+    with pytest.raises(SessionTransferError, match="per-entry import limit") as excinfo:
+        await service.export_session("alice", SESSION_ID)
+
+    assert EXPORT_DATA_NAME in str(excinfo.value)
+    assert list(tmp_path.glob("session_export_*.zip")) == []
+
+
+@pytest.mark.asyncio
+async def test_export_keeps_the_writer_error_when_cleanup_fails(tmp_path, monkeypatch):
+    """A failing cleanup must not mask the writer's error.
+
+    Windows can refuse the unlink right when the writer failed (a lock or an
+    AV scan), so letting that ``OSError`` escape would swap a clear
+    ``SessionTransferError`` for a bare ``PermissionError`` and a generic 500.
+    """
+    real_unlink = Path.unlink
+
+    def _locked_unlink(self, *args, **kwargs):
+        if self.name.startswith("session_export_"):
+            raise OSError("file is locked")
+        return real_unlink(self, *args, **kwargs)
+
+    def _explode(self, archive_path, *args, **kwargs):
+        raise SessionTransferError("writer exploded")
+
+    monkeypatch.setattr(Path, "unlink", _locked_unlink)
+    monkeypatch.setattr(SessionTransferService, "_build_export_archive", _explode)
+    service = _make_service()
+
+    with pytest.raises(SessionTransferError, match="writer exploded"):
+        await service.export_session("alice", SESSION_ID)
+
+
+@pytest.mark.asyncio
 async def test_export_sweeps_abandoned_export_archives(tmp_path):
     """A killed download is reclaimed by the next export; a live one is not.
 

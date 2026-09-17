@@ -21,7 +21,6 @@ from io import BytesIO
 from pathlib import Path
 
 from astrbot import logger
-from astrbot.core.backup.importer import _get_major_version
 from astrbot.core.config.default import VERSION
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
@@ -506,7 +505,7 @@ class SessionTransferService:
 
         Raises:
             SessionTransferError: If the zip is malformed, of an unexpected
-                kind/format version, or built by an incompatible AstrBot.
+                kind, or of an unrecognised ``format_version``.
         """
         try:
             with zipfile.ZipFile(zip_path) as zf:
@@ -527,12 +526,12 @@ class SessionTransferService:
             raise SessionTransferError(
                 f"Unsupported package format_version: {manifest.get('format_version')}"
             )
-        exported_version = str(manifest.get("astrbot_version") or "")
-        if _get_major_version(exported_version) != _get_major_version(VERSION):
-            raise SessionTransferError(
-                f"Incompatible AstrBot version: package {exported_version}, "
-                f"current {VERSION}"
-            )
+        # The data contract is `format_version` (enforced above). The
+        # exporter's AstrBot version is informational: cross-instance
+        # migration routinely crosses minor releases, so a version
+        # difference becomes a warning the dialog renders, not a rejection.
+        if not isinstance(manifest.get("astrbot_version"), str):
+            raise SessionTransferError("Package is missing astrbot_version")
         if not isinstance(payload, dict) or not isinstance(
             payload.get("sessions"), list
         ):
@@ -558,12 +557,11 @@ class SessionTransferService:
         if upload.content_length and upload.content_length > MAX_UPLOAD_BYTES:
             raise SessionTransferError("Uploaded package is too large")
 
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
         import_id = str(uuid.uuid4())
         zip_path = self.temp_dir / f"session_import_{import_id}.zip"
-        await upload.save(str(zip_path))
-
         try:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            await upload.save(str(zip_path))
             if zip_path.stat().st_size > MAX_UPLOAD_BYTES:
                 raise SessionTransferError("Uploaded package is too large")
             manifest, payload = self._read_package(zip_path)
@@ -572,7 +570,7 @@ class SessionTransferService:
             raise
         except OSError as exc:
             zip_path.unlink(missing_ok=True)
-            raise SessionTransferError(f"Failed to store upload: {exc!s}") from exc
+            raise SessionTransferError(f"Failed to stage upload: {exc!s}") from exc
 
         warnings = list(manifest.get("warnings") or [])
         sessions = []
@@ -584,14 +582,26 @@ class SessionTransferService:
                     "stats": entry.get("stats") or {},
                 }
             )
+        exported_version = str(manifest.get("astrbot_version") or "")
+        version_cmp = (
+            VersionComparator.compare_version(exported_version, VERSION)
+            if exported_version
+            else None
+        )
+        if not exported_version:
+            warnings.append("Package does not declare an AstrBot version")
+        elif version_cmp != 0:
+            warnings.append(
+                f"Package was exported from AstrBot {exported_version}, "
+                f"current version is {VERSION}"
+            )
+        # `compatible` is a genuine constant, not a computed verdict: the
+        # schema contract (`format_version`) already passed `_read_package`.
         version_status = {
             "compatible": True,
-            "package_version": str(manifest.get("astrbot_version") or ""),
+            "package_version": exported_version,
             "current_version": VERSION,
-            "upgrade_advised": VersionComparator.compare_version(
-                str(manifest.get("astrbot_version") or "0.0.0"), VERSION
-            )
-            != 0,
+            "upgrade_advised": version_cmp is not None and version_cmp != 0,
         }
         preview = {
             "import_id": import_id,

@@ -20,6 +20,8 @@ from astrbot.dashboard.services.session_transfer_service import (
     EXPORT_FORMAT_VERSION,
     EXPORT_KIND,
     MANIFEST_NAME,
+    MAX_ENTRY_BYTES,
+    MAX_TOTAL_UNCOMPRESSED_BYTES,
     MAX_ZIP_ENTRIES,
     SessionTransferError,
     SessionTransferService,
@@ -131,12 +133,44 @@ async def test_stage_import_rejects_unknown_format_version():
 
 
 @pytest.mark.asyncio
-async def test_stage_import_rejects_incompatible_major_version():
-    service = _make_service()
-    upload = _FakeUpload(build_package_bytes(astrbot_version="3.0.0").getvalue())
+async def test_stage_import_accepts_other_version_with_warning():
+    """A package from another AstrBot version stages, with a warning.
 
-    with pytest.raises(SessionTransferError):
-        await service.stage_import(upload)
+    The schema contract is ``format_version``; the exporter's AstrBot version
+    is informational, because cross-instance migration routinely crosses
+    minor releases (``4.28.1`` -> ``4.29.0``). Task 8's dialog renders the
+    resulting warning.
+    """
+    service = _make_service()
+    upload = _FakeUpload(
+        build_package_bytes(
+            astrbot_version="3.0.0", sessions=[_EXPORTED_SESSION]
+        ).getvalue()
+    )
+
+    preview = await service.stage_import(upload)
+
+    assert preview["can_import"] is True
+    assert preview["version_status"]["compatible"] is True
+    assert preview["version_status"]["package_version"] == "3.0.0"
+    assert preview["version_status"]["upgrade_advised"] is True
+    assert any("3.0.0" in warning for warning in preview["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_stage_import_warns_when_version_is_absent():
+    """A package that declares no version still stages, but says so."""
+    service = _make_service()
+    upload = _FakeUpload(
+        build_package_bytes(astrbot_version="", sessions=[_EXPORTED_SESSION]).getvalue()
+    )
+
+    preview = await service.stage_import(upload)
+
+    assert preview["can_import"] is True
+    assert preview["version_status"]["package_version"] == ""
+    assert preview["version_status"]["upgrade_advised"] is False
+    assert any("does not declare" in warning for warning in preview["warnings"])
 
 
 @pytest.mark.asyncio
@@ -156,6 +190,133 @@ async def test_stage_import_rejects_too_many_entries():
 
     with pytest.raises(SessionTransferError, match="entries"):
         await service.stage_import(upload)
+
+
+@pytest.mark.asyncio
+async def test_stage_import_rejects_oversized_upload_without_content_length(
+    monkeypatch,
+):
+    """The on-disk size check is the only guard when the client omits the header.
+
+    A chunked upload carries no ``content-length``, so the declared-length
+    check is skipped and the size read after saving is all that stands between
+    the server and an oversized package.
+    """
+    monkeypatch.setattr(session_transfer_service, "MAX_UPLOAD_BYTES", 1024)
+    service = _make_service()
+    upload = _FakeUpload(b"x" * 4096)
+    # A chunked upload declares no length at all — the helper's default maps
+    # None to len(blob), so clear it explicitly to take the header guard out
+    # of the picture and leave the post-save check as the only defence.
+    upload.content_length = None
+
+    with pytest.raises(SessionTransferError, match="too large"):
+        await service.stage_import(upload)
+
+
+@pytest.mark.asyncio
+async def test_stage_import_rejects_corrupt_zip():
+    """A non-zip upload is converted, not leaked as a raw archive error."""
+    service = _make_service()
+    upload = _FakeUpload(b"not a zip at all")
+
+    with pytest.raises(SessionTransferError, match="not a valid zip"):
+        await service.stage_import(upload)
+
+
+@pytest.mark.asyncio
+async def test_stage_import_rejects_package_missing_required_entries():
+    service = _make_service()
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps({"kind": EXPORT_KIND}))
+    buffer.seek(0)
+    upload = _FakeUpload(buffer.getvalue())
+
+    with pytest.raises(SessionTransferError, match="missing required entries"):
+        await service.stage_import(upload)
+
+
+@pytest.mark.asyncio
+async def test_stage_import_rejects_malformed_payload():
+    """A structurally valid archive whose payload is not an object is refused."""
+    service = _make_service()
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr(
+            MANIFEST_NAME,
+            json.dumps(
+                {
+                    "kind": EXPORT_KIND,
+                    "format_version": EXPORT_FORMAT_VERSION,
+                    "astrbot_version": VERSION,
+                }
+            ),
+        )
+        zf.writestr(EXPORT_DATA_NAME, json.dumps([]))
+    buffer.seek(0)
+    upload = _FakeUpload(buffer.getvalue())
+
+    with pytest.raises(SessionTransferError, match="payload is malformed"):
+        await service.stage_import(upload)
+
+
+# ---------------------------------------------------------------
+# Zip-bomb guards: the limits are read from the archive's declared
+# sizes, so a fake archive can drive the real arithmetic without
+# materialising half a gigabyte.
+# ---------------------------------------------------------------
+
+
+class _FakeArchive:
+    """Stand-in exposing only what ``_verify_zip_safety`` reads."""
+
+    def __init__(self, infos):
+        self._infos = infos
+
+    def infolist(self):
+        return self._infos
+
+
+def _info(name: str, size: int) -> zipfile.ZipInfo:
+    """Build a ZipInfo whose declared uncompressed size is ``size``."""
+    info = zipfile.ZipInfo(name)
+    info.file_size = size
+    return info
+
+
+def test_verify_zip_safety_rejects_oversized_entry():
+    archive = _FakeArchive([_info("files/attachments/a.bin", MAX_ENTRY_BYTES + 1)])
+
+    with pytest.raises(SessionTransferError, match="Entry too large"):
+        SessionTransferService._verify_zip_safety(archive)
+
+
+def test_verify_zip_safety_rejects_total_expansion():
+    # Each entry is legal on its own; only their sum breaks the total limit.
+    # Derive the count from the limits so the test cannot drift from them.
+    entries_needed = MAX_TOTAL_UNCOMPRESSED_BYTES // MAX_ENTRY_BYTES + 1
+    archive = _FakeArchive(
+        [
+            _info(f"files/attachments/{i}.bin", MAX_ENTRY_BYTES)
+            for i in range(entries_needed)
+        ]
+    )
+
+    with pytest.raises(SessionTransferError, match="size limit"):
+        SessionTransferService._verify_zip_safety(archive)
+
+
+def test_verify_zip_safety_accepts_entries_within_limits():
+    archive = _FakeArchive(
+        [
+            _info("manifest.json", 128),
+            _info("export.json", 4096),
+            _info("files/attachments/a.bin", MAX_ENTRY_BYTES),
+        ]
+    )
+
+    SessionTransferService._verify_zip_safety(archive)
 
 
 # One exported session body: only its presence matters for ``can_import``,

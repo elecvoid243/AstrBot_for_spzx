@@ -44,6 +44,7 @@ from astrbot.dashboard.services.plugin_service import PluginService
 from astrbot.dashboard.services.session_management_service import (
     SessionManagementService,
 )
+from astrbot.dashboard.services.session_transfer_service import SessionTransferService
 from astrbot.dashboard.services.skills_service import SkillsService
 from astrbot.dashboard.services.stat_service import StatService
 from astrbot.dashboard.services.subagent_service import SubAgentService
@@ -170,6 +171,7 @@ def create_dashboard_asgi_app(
         ),
         open_api=OpenApiService(db, core_lifecycle),
         sessions=SessionManagementService(core_lifecycle, db),
+        session_transfer=SessionTransferService(db, core_lifecycle),
         skills=SkillsService(core_lifecycle),
         stats=stats,
         subagents=SubAgentService(core_lifecycle),

@@ -480,6 +480,10 @@ class ConversationExportRequest(BaseModel):
     conversations: list[ConversationRef]
 
 
+class ChatSessionImportConfirmRequest(BaseModel):
+    import_id: str
+
+
 class BotConfigRequest(OpenModel):
     bot_id: str | None = None
     id: str | None = None

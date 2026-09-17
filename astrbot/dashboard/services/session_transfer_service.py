@@ -297,6 +297,11 @@ class SessionTransferService:
             SessionTransferError: If the session is missing, owned by another
                 user, or not a webchat session.
         """
+        # Exports are reclaimed by mtime, not by the route's BackgroundTask
+        # alone (see `_sweep_stale_imports`), so sweep here too: residue from
+        # a killed download is otherwise only collected after an import.
+        self._sweep_stale_imports()
+
         session = await self._owned_webchat_session(username, session_id)
         session_umo = new_umo(
             session.platform_id, session.is_group, session.creator, session_id
@@ -349,6 +354,7 @@ class SessionTransferService:
         all_attachment_ids = extract_attachment_ids(history) + thread_attachment_ids
 
         attachments: list[dict] = []
+        attachment_sources: dict[str, str] = {}
         seen_ids: set[str] = set()
         for attachment_id in all_attachment_ids:
             if attachment_id in seen_ids:
@@ -360,6 +366,11 @@ class SessionTransferService:
                 continue
             source = Path(attachment.path)
             ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
+            # The entry dicts ARE the documented data contract, so they must
+            # not carry anything the importer does not consume: the absolute
+            # source path names this host's install directory and OS user.
+            # It is handed to the writer out of band instead.
+            attachment_sources[attachment_id] = str(source)
             attachments.append(
                 {
                     "attachment_id": attachment_id,
@@ -368,9 +379,6 @@ class SessionTransferService:
                     "ext": ext,
                     "size": 0,
                     "zip_path": f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}",
-                    # Path-only: the archive writer streams from disk so the
-                    # bytes never sit in RAM and deflate stays off the loop.
-                    "source_path": str(source),
                 }
             )
 
@@ -412,6 +420,7 @@ class SessionTransferService:
                 data_bytes,
                 manifest_sessions,
                 attachments,
+                attachment_sources,
                 warnings,
             )
         except Exception:
@@ -441,37 +450,53 @@ class SessionTransferService:
         data_bytes: bytes,
         manifest_sessions: list[dict],
         attachment_entries: list[dict],
+        attachment_sources: dict[str, str],
         base_warnings: list[str],
     ) -> list[str]:
         """Write the export zip, streaming attachments from disk.
 
         Runs in a worker thread: the deflate work must not block the event
         loop, and streaming keeps peak memory at one chunk per attachment.
+        Every limit ``_verify_zip_safety`` enforces on import is mirrored
+        here, so the exporter can never produce a package the importer would
+        reject.
 
         Args:
             archive_path: Destination zip path in the service temp directory.
             data_bytes: Serialized ``export.json`` payload.
             manifest_sessions: Per-session manifest entries (stats are patched
                 in place as attachments are written).
-            attachment_entries: Attachment metadata dicts carrying an internal
-                ``source_path`` key.
+            attachment_entries: Attachment metadata exactly as it appears in
+                ``export.json``; the exporter's own keys are not stored here.
+            attachment_sources: Attachment id -> absolute source path on this
+                host, consumed only by this writer (and never packaged).
             base_warnings: Warnings collected before packaging.
 
         Returns:
             The final warning list (base warnings plus per-file problems).
+
+        Raises:
+            SessionTransferError: If an attachment cannot be read mid-stream,
+                or the archive would breach the importer's entry-count,
+                per-entry or total-uncompressed-size limit. The caller removes
+                the partial archive.
         """
         warnings = list(base_warnings)
         checksums = {
             EXPORT_DATA_NAME: f"sha256:{hashlib.sha256(data_bytes).hexdigest()}"
         }
         written_bytes = 0
+        # The importer sums every entry, metadata included, so the export
+        # budget starts from the same two entries `_verify_zip_safety` sees.
+        entry_count = 2
+        uncompressed_bytes = len(data_bytes)
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(EXPORT_DATA_NAME, data_bytes)
             for entry in attachment_entries:
-                source = Path(entry.pop("source_path"))
-                zip_path = entry["zip_path"]
                 attachment_id = entry["attachment_id"]
+                source = Path(attachment_sources[attachment_id])
+                zip_path = entry["zip_path"]
                 if not source.is_file():
                     warnings.append(f"Attachment {attachment_id} file missing on disk")
                     continue
@@ -484,15 +509,28 @@ class SessionTransferService:
                             dest.write(chunk)
                             size += len(chunk)
                 except OSError as exc:
-                    # The entry may be truncated: a mid-stream disk error cannot
-                    # be undone once the local header is written. The importer
-                    # treats an unreadable blob as metadata-only with a warning,
-                    # so this degrades rather than corrupting the package.
-                    warnings.append(f"Attachment {attachment_id} unreadable: {exc!s}")
-                    continue
+                    # `zf.open`'s context manager records whatever was written
+                    # so far when it closes, so a read that fails halfway
+                    # leaves a TRUNCATED entry in the archive - and the
+                    # importer reads those bytes back as a normal attachment.
+                    # Abort instead of packaging a corrupt blob. Only a file
+                    # that was already absent before the stream started may
+                    # degrade to a metadata-only entry, and `is_file()` above
+                    # is what decides that.
+                    raise SessionTransferError(
+                        f"Attachment {attachment_id} could not be read: {exc!s}"
+                    ) from exc
                 entry["size"] = size
                 written_bytes += size
+                entry_count += 1
+                uncompressed_bytes += size
                 checksums[zip_path] = f"sha256:{hasher.hexdigest()}"
+                self._verify_export_size_limits(
+                    entry_count,
+                    uncompressed_bytes,
+                    entry_name=zip_path,
+                    entry_bytes=size,
+                )
 
             manifest_sessions[0]["stats"]["attachment_bytes"] = written_bytes
             manifest = {
@@ -504,11 +542,60 @@ class SessionTransferService:
                 "warnings": warnings,
                 "checksums": checksums,
             }
-            zf.writestr(
-                MANIFEST_NAME,
-                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode(
+                "utf-8"
             )
+            # The manifest is an entry too: count it before writing it so the
+            # totals match the sum the importer will compute.
+            self._verify_export_size_limits(
+                entry_count, uncompressed_bytes + len(manifest_bytes)
+            )
+            zf.writestr(MANIFEST_NAME, manifest_bytes)
         return warnings
+
+    @staticmethod
+    def _verify_export_size_limits(
+        entry_count: int,
+        uncompressed_bytes: int,
+        entry_name: str | None = None,
+        entry_bytes: int = 0,
+    ) -> None:
+        """Refuse an export that would breach any importer-side zip guard.
+
+        ``_verify_zip_safety`` rejects four things on upload: too many
+        entries, a single entry above ``MAX_ENTRY_BYTES``, a total above
+        ``MAX_TOTAL_UNCOMPRESSED_BYTES`` and, checked by the caller, an
+        archive above ``MAX_UPLOAD_BYTES``. A session holding large but highly
+        compressible attachments can sail under the upload cap and still be
+        unimportable, so the first three are mirrored while writing.
+
+        Args:
+            entry_count: Entries written so far, metadata entries included.
+            uncompressed_bytes: Sum of their declared uncompressed sizes.
+            entry_name: Zip path of the entry just written, if any.
+            entry_bytes: Declared uncompressed size of that entry.
+
+        Raises:
+            SessionTransferError: Naming the limit the export breached.
+        """
+        if entry_count > MAX_ZIP_ENTRIES:
+            raise SessionTransferError(
+                f"Session export has {entry_count} entries, which exceeds the "
+                f"{MAX_ZIP_ENTRIES} entry import limit; the package could "
+                "never be imported."
+            )
+        if entry_bytes > MAX_ENTRY_BYTES:
+            raise SessionTransferError(
+                f"Session export entry {entry_name} is {entry_bytes} bytes, "
+                f"which exceeds the {MAX_ENTRY_BYTES} byte per-entry import "
+                "limit; the package could never be imported."
+            )
+        if uncompressed_bytes > MAX_TOTAL_UNCOMPRESSED_BYTES:
+            raise SessionTransferError(
+                f"Session export expands to {uncompressed_bytes} bytes, which "
+                f"exceeds the {MAX_TOTAL_UNCOMPRESSED_BYTES} byte total import "
+                "limit; the package could never be imported."
+            )
 
     def _drop_pending(self, import_id: str) -> None:
         """Forget a staged import and delete its temporary zip.
@@ -525,14 +612,20 @@ class SessionTransferService:
             logger.warning(f"Failed to delete staged import {import_id}: {exc!s}")
 
     def _sweep_stale_imports(self) -> None:
-        """Drop expired staged imports and orphaned staged archives.
+        """Drop expired staged imports and orphaned temp archives.
 
         The TTL is otherwise only enforced when the same ``import_id`` is
         looked up again, so a package the user never confirms would sit in the
         temp directory forever (up to ``MAX_UPLOAD_BYTES`` each, unbounded
-        count). A file that is still registered stays untouched; an orphan
-        younger than the TTL is left alone on purpose, because a concurrent
-        upload may be mid-write.
+        count). Export archives are swept by the same rule, because the
+        route's ``BackgroundTask`` is their only other deleter and it never
+        runs when the send loop raises or the task is cancelled (a client
+        disconnect, a graceful shutdown, a killed worker) - each abort would
+        strand up to ``MAX_UPLOAD_BYTES``. An export is never registered in
+        ``pending_imports``, so its mtime is the only guard protecting one
+        that is still being written or streamed; a file that IS still
+        registered stays untouched, and an orphan younger than the TTL is left
+        alone on purpose, because a concurrent write may be in flight.
         """
         for import_id in [
             key
@@ -542,9 +635,13 @@ class SessionTransferService:
             self._drop_pending(import_id)
 
         try:
-            candidates = list(self.temp_dir.glob("session_import_*.zip"))
+            candidates = [
+                path
+                for pattern in ("session_import_*.zip", "session_export_*.zip")
+                for path in self.temp_dir.glob(pattern)
+            ]
         except OSError as exc:
-            logger.warning(f"Failed to scan staged imports: {exc!s}")
+            logger.warning(f"Failed to scan staged archives: {exc!s}")
             return
 
         live = {pending.zip_path for pending in self.pending_imports.values()}
@@ -556,10 +653,10 @@ class SessionTransferService:
                 if path.stat().st_mtime > cutoff:
                     continue
                 path.unlink(missing_ok=True)
-                logger.info(f"Removed orphaned staged import {path.name}")
+                logger.info(f"Removed orphaned staged archive {path.name}")
             except OSError as exc:
                 logger.warning(
-                    f"Failed to remove orphaned staged import {path}: {exc!s}"
+                    f"Failed to remove orphaned staged archive {path}: {exc!s}"
                 )
 
     def _pending(self, import_id: str) -> _PendingImport:

@@ -7,7 +7,10 @@ Spec: docs/superpowers/specs/2026-09-13-chatui-session-export-import-design.md
 
 import hashlib
 import json
+import os
+import re
 import tempfile
+import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +26,7 @@ from astrbot.dashboard.services.session_transfer_service import (
     EXPORT_DATA_NAME,
     EXPORT_FORMAT_VERSION,
     EXPORT_KIND,
+    IMPORT_ID_TTL_SECONDS,
     MANIFEST_NAME,
     SessionTransferError,
     SessionTransferService,
@@ -180,6 +184,9 @@ async def test_export_package_layout_and_checksums(tmp_path):
         assert exported_session["attachments"][0]["zip_path"] == (
             f"{ATTACHMENTS_PREFIX}att-1.png"
         )
+        # `source_path` is exporter-internal: it names the exporting host's
+        # install directory and OS user, and the data contract is public.
+        assert "source_path" not in exported_session["attachments"][0]
 
 
 @pytest.mark.asyncio
@@ -275,12 +282,184 @@ async def test_export_refuses_archives_over_the_import_limit(tmp_path, monkeypat
 
     ``stage_import`` refuses anything larger than ``MAX_UPLOAD_BYTES``, so an
     export above that cap would be a dead archive nobody could ever import.
-    Refusing it must also delete the temporary file it just wrote.
+    The refusal must name both numbers the user needs to act on - the size the
+    archive really reached and the limit it breached - and must delete the
+    temporary file it just wrote.
     """
     monkeypatch.setattr(session_transfer_service, "MAX_UPLOAD_BYTES", 64)
     service = _make_service(attachment_dir=tmp_path)
 
-    with pytest.raises(SessionTransferError, match="exceeds"):
+    # Capture the real on-disk size at the moment the refusal deletes it, so
+    # the reported number can be checked against the artefact, not a literal.
+    measured: list[int] = []
+    real_unlink = Path.unlink
+
+    def _recording_unlink(self, *args, **kwargs):
+        if self.name.startswith("session_export_"):
+            measured.append(self.stat().st_size)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _recording_unlink)
+
+    with pytest.raises(SessionTransferError) as excinfo:
         await service.export_session("alice", SESSION_ID)
 
+    message = str(excinfo.value)
+    assert "exceeds" in message
+    numbers = [int(value) for value in re.findall(r"\d+", message)]
+    assert session_transfer_service.MAX_UPLOAD_BYTES in numbers
+    assert measured, "the refused archive was never deleted"
+    assert measured[0] in numbers, (measured, message)
+    assert measured[0] > session_transfer_service.MAX_UPLOAD_BYTES
+    assert list(tmp_path.glob("session_export_*.zip")) == []
+
+
+def _service_with_one_attachment(tmp_path, payload=b"PNGDATA"):
+    """Build a service whose session references one real attachment on disk."""
+    attachment = tmp_path / "att-1.png"
+    attachment.write_bytes(payload)
+    service = _make_service(attachment_dir=tmp_path)
+    service.db.get_attachment_by_id = AsyncMock(
+        return_value=SimpleNamespace(
+            attachment_id="att-1",
+            path=str(attachment),
+            type="image",
+            mime_type="image/png",
+        )
+    )
+    return service
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "message"),
+    [
+        ("MAX_ZIP_ENTRIES", 2, "entry import limit"),
+        ("MAX_ENTRY_BYTES", 4, "per-entry import limit"),
+        ("MAX_TOTAL_UNCOMPRESSED_BYTES", 8, "total import limit"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_export_refuses_any_importer_zip_limit_it_would_breach(
+    tmp_path, monkeypatch, limit_name, limit_value, message
+):
+    """Every cap ``_verify_zip_safety`` applies on import is mirrored here.
+
+    ``stage_import`` also rejects entry counts, single entries and totals
+    above their caps, so checking the archive size alone is not enough: a
+    session holding large, highly compressible attachments stays far below
+    ``MAX_UPLOAD_BYTES`` and is still unimportable. The message must name the
+    breached limit *and* the value that breached it, and the partial archive
+    must not survive.
+    """
+    monkeypatch.setattr(session_transfer_service, limit_name, limit_value)
+    service = _service_with_one_attachment(tmp_path)
+
+    with pytest.raises(SessionTransferError, match=message) as excinfo:
+        await service.export_session("alice", SESSION_ID)
+
+    numbers = [int(value) for value in re.findall(r"\d+", str(excinfo.value))]
+    assert limit_value in numbers
+    assert any(number > limit_value for number in numbers), excinfo.value
+    assert list(tmp_path.glob("session_export_*.zip")) == []
+
+
+@pytest.mark.asyncio
+async def test_export_sweeps_abandoned_export_archives(tmp_path):
+    """A killed download is reclaimed by the next export; a live one is not.
+
+    The route's ``BackgroundTask`` is the only other deleter of
+    ``session_export_*.zip`` and never runs when the response is cancelled
+    mid-stream, which strands up to ``MAX_UPLOAD_BYTES`` per aborted download
+    with no TTL. Exports are never registered in ``pending_imports``, so the
+    mtime guard is all that protects one still being written or streamed.
+    """
+    service = _make_service()
+    stale = service.temp_dir / "session_export_stale.zip"
+    stale.write_bytes(b"orphan")
+    aged = time.time() - IMPORT_ID_TTL_SECONDS - 60
+    os.utime(stale, (aged, aged))
+    fresh = service.temp_dir / "session_export_fresh.zip"
+    fresh.write_bytes(b"mid-write")
+
+    export = await service.export_session("alice", SESSION_ID)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert export.path.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_removes_the_archive_when_the_writer_raises(tmp_path, monkeypatch):
+    """A crashed writer must not leave its archive behind in the temp dir.
+
+    The archive exists on disk by the time the writer can still fail (its
+    final steps run after the entries are written), so the cleanup around the
+    ``to_thread`` call is what keeps ``data/temp`` from filling up.
+    """
+    real_build = SessionTransferService._build_export_archive
+
+    def _crash_after_writing(self, archive_path, *args, **kwargs):
+        real_build(self, archive_path, *args, **kwargs)
+        assert archive_path.exists(), "the writer produced no archive to clean up"
+        raise RuntimeError("writer exploded")
+
+    monkeypatch.setattr(
+        SessionTransferService, "_build_export_archive", _crash_after_writing
+    )
+    service = _make_service()
+
+    with pytest.raises(RuntimeError, match="writer exploded"):
+        await service.export_session("alice", SESSION_ID)
+
+    assert list(tmp_path.glob("session_export_*.zip")) == []
+
+
+class _FailingReader:
+    """File stand-in whose second read fails, as a dying disk would."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self._reads = 0
+
+    def read(self, size=-1):
+        self._reads += 1
+        if self._reads > 1:
+            raise OSError("disk error")
+        return self._handle.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._handle.close()
+        return False
+
+
+@pytest.mark.asyncio
+async def test_export_aborts_when_an_attachment_fails_mid_stream(tmp_path, monkeypatch):
+    """A read error mid-stream must abort, not ship a truncated attachment.
+
+    ``zf.open(..., "w")`` records whatever was written before the failure when
+    its context manager closes, and the importer reads those bytes back as a
+    normal blob - so degrading to a warning would silently corrupt the file.
+    Only a file that was already absent may degrade (the missing-file case,
+    handled by ``is_file()`` before the stream starts).
+    """
+    monkeypatch.setattr(session_transfer_service, "EXPORT_CHUNK_BYTES", 4)
+    service = _service_with_one_attachment(tmp_path, payload=b"PNGDATA-0123456789")
+    real_open = Path.open
+
+    def _flaky_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self.name == "att-1.png":
+            return _FailingReader(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", _flaky_open)
+
+    with pytest.raises(SessionTransferError) as excinfo:
+        await service.export_session("alice", SESSION_ID)
+
+    assert "att-1" in str(excinfo.value)
+    assert "could not be read" in str(excinfo.value)
     assert list(tmp_path.glob("session_export_*.zip")) == []

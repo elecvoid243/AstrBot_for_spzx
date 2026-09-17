@@ -929,6 +929,7 @@
               @send-command="sendSystemCommand"
               @stop="stopCurrentSession"
               @flush-pending="flushPendingFromInput"
+              @flush-pending-oldest="flushOldestPendingFromInput"
               @interrupt-pending="interruptPendingFromInput"
               @toggle-streaming="toggleStreaming"
               @remove-image="removeImage"
@@ -5138,12 +5139,13 @@ async function stopCurrentSession() {
 // the input (usePendingFollowUps) instead of being dispatched. Dispatch
 // is explicit (2026-09-17 — the tool-call-boundary auto-flush was
 // dropped because it made the pending card flash by unread):
-// 1. The "send" button on a pending card — dispatch now; the backend
-//    captures the message into the running turn and injects it at the
-//    end of that turn's next tool call (the legacy follow-up timing).
-// 2. The "force interrupt" button on a pending card — stop the active
-//    run, then dispatch; the queued text rides on top of full history
-//    as a fresh request.
+// 1. The "追加" button on a pending card — dispatch the whole queue now;
+//    the backend captures the messages into the running turn and injects
+//    them at the end of its next tool call (the legacy follow-up timing).
+//    The composer's Enter key does the same when the input is empty, but
+//    confirms only the OLDEST message (see flushOldestPendingFollowUp).
+// 2. The "强制打断" button on a pending card — stop the active run, then
+//    dispatch; Ctrl/Cmd+Enter on an empty composer does the same.
 // 3. onStreamEnd — the run ended with items still queued; they start
 //    new runs as normal messages (mirrors how the backend activates
 //    unconsumed follow-up tickets), so a message is never stranded.
@@ -5228,6 +5230,32 @@ async function sendQueuedFollowUp(sessionId: string, text: string) {
     right away (see the queue comment above for the landing rules). */
 function flushPendingFromInput() {
   void flushPendingFollowUps(currSessionId.value);
+}
+
+/**
+ * Composer Enter shortcut: confirm the OLDEST queued follow-up only and
+ * leave the rest queued, so repeated Enter presses walk the queue one
+ * message at a time. Anything newer stays visible in the card list.
+ *
+ * Args:
+ *   sessionId: Session owning the queue; ignored when null.
+ */
+async function flushOldestPendingFollowUp(sessionId: string | null) {
+  if (!sessionId || flushingFollowUps.has(sessionId)) return;
+  // The store keeps items in arrival order, so index 0 is the oldest.
+  const oldest = pendingFollowUps.itemsFor(sessionId)[0];
+  if (!oldest) return;
+  pendingFollowUps.remove(sessionId, oldest.id);
+  flushingFollowUps.add(sessionId);
+  try {
+    await sendQueuedFollowUp(sessionId, oldest.text);
+  } finally {
+    flushingFollowUps.delete(sessionId);
+  }
+}
+
+function flushOldestPendingFromInput() {
+  void flushOldestPendingFollowUp(currSessionId.value);
 }
 
 /** "Force interrupt" card action: stop the run, then resend. */

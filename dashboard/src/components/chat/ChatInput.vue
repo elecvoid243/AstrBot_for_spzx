@@ -92,11 +92,15 @@
       ZCode-style pending follow-up queue (2026-09-01): messages sent
       while an agent run is active are held here instead of being
       dispatched. Each card exposes two explicit actions (2026-09-17):
-      "Send" dispatches the message right away, so the backend captures
-      it into the running turn and injects it at the end of that turn's
-      next tool call (the legacy follow-up timing) — or it starts a
-      fresh turn when the run ends first; "Force interrupt" stops the
-      active run and resends the queue as fresh requests.
+      "追加" hands the message to the running turn right away — the
+      backend injects it at the end of that turn's next tool call (the
+      legacy follow-up timing), or it starts a fresh turn when the run
+      ends first; "强制打断" stops the active run and resends as fresh
+      requests.
+
+      Both also have a composer shortcut (2026-09-18), active only while
+      the input is empty — any typed text keeps the normal send path:
+      Enter confirms the oldest queued message, Ctrl/Cmd+Enter interrupts.
 
       Nothing is dispatched automatically at a tool-call boundary
       anymore: that made the card flash by unread whenever the model
@@ -780,9 +784,12 @@ const emit = defineEmits<{
   // dispatches the pending messages above the input right away — the
   // backend captures them into the active run and injects them at the
   // end of its next tool call (or they start a fresh turn when the run
-  // ends first). `interruptPending` stops the active run and resends
-  // the pending messages as fresh requests.
+  // ends first). `flushPendingOldest` does the same for the OLDEST
+  // message only (composer Enter shortcut), so repeated presses confirm
+  // the queue one message at a time. `interruptPending` stops the active
+  // run and resends the pending messages as fresh requests.
   flushPending: [];
+  flushPendingOldest: [];
   interruptPending: [];
 }>();
 
@@ -1358,6 +1365,30 @@ function handleKeyDown(e: KeyboardEvent) {
 
   if (isComposingEnter(e, isComposing.value, lastCompositionEndAt.value)) {
     return;
+  }
+
+  // 2026-09-18 (elecvoid243): follow-up queue shortcuts. With an empty
+  // composer Enter has nothing to send (it would only start a newline), so
+  // it confirms the OLDEST queued message instead — one Enter per message —
+  // and Ctrl/Cmd+Enter forces an interrupt. Any typed text keeps the normal
+  // send path, which may queue the message as yet another follow-up. The
+  // project-op send lock still wins: the composer stays inert while a
+  // load/unload rewrites the system prompt.
+  if (
+    !localPrompt.value.trim() &&
+    !sendLocked.value &&
+    pendingFollowUpItems.value.length
+  ) {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      emit("interruptPending");
+      return;
+    }
+    if (!e.shiftKey) {
+      e.preventDefault();
+      emit("flushPendingOldest");
+      return;
+    }
   }
 
   const isSendHotkey =

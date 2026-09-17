@@ -4,14 +4,16 @@
 // When an agent run is active and the user sends a message, the message
 // is held locally as a "pending follow-up" rendered above the chat input
 // instead of being dispatched immediately. Dispatch is explicit
-// (2026-09-17): the card's "send" action flushes it as a normal message
+// (2026-09-17): the card's "追加" action flushes it as a normal message
 // now — the backend captures it into the running turn and injects it at
-// the end of that turn's next tool call — while "force interrupt" stops
-// the run first and resends. Items still queued when the run ends are
-// flushed by Chat.vue, in which case they simply start new runs. The
-// earlier auto-flush on every tool-call boundary was dropped: it made
-// the card flash by unread whenever the model called a tool right after
-// the user typed.
+// the end of that turn's next tool call — while "强制打断" stops the run
+// first and resends. The composer's Enter key confirms only the oldest
+// queued message (one press per message), Ctrl/Cmd+Enter interrupts; both
+// require an empty input so typed text keeps the normal send path. Items
+// still queued when the run ends are flushed by Chat.vue, in which case
+// they simply start new runs. The earlier auto-flush on every tool-call
+// boundary was dropped: it made the card flash by unread whenever the
+// model called a tool right after the user typed.
 //
 // In-memory only (per browser tab): items not yet flushed are lost on
 // refresh, same as ZCode's queued messages.

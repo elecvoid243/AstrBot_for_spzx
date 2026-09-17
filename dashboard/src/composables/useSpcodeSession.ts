@@ -67,6 +67,16 @@ export function useSpcodeSession(
   // component (getCurrentInstance() !== null) purely to host the
   // composable, and warning there would spam test output without any
   // real misuse to report.
+  //
+  // NOTE: the `getCurrentInstance()` clause does not actually suppress
+  // anything for today's application code — every repository-write
+  // composable is instantiated from inside a component tree (their
+  // callers are .vue components and the composables those components
+  // set up), so the clause always passes there. It is kept as a
+  // deliberate review decision — it states the "this ran in a component"
+  // shape of the mistake — NOT because some caller relies on the
+  // component-less path. Do not read it as "component-less callers are
+  // expected".
   if (
     options.requireScoped &&
     import.meta.env.DEV &&

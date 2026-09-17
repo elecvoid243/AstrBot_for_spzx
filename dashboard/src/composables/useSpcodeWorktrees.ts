@@ -212,12 +212,13 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
 
   // Bug fix (2026-06-18): setLoaded() in useSpcodeProjectStatus does NOT
   // set `umo` (it only optimistically flips `loaded` and `directory`).
-  // The authoritative umo arrives later via spcodeStatus.refresh() —
-  // typically fired from Chat.vue's onStreamEnd after the bot processes
-  // the /project load command. If the user opens GitDiffSidebar before
-  // that refresh, our onMounted() call hits `umo = null` and short-circuits
+  // The authoritative umo arrives later via the session context
+  // (`session.umo.value`) — supplied by the provider side, typically
+  // driven by Chat.vue's onStreamEnd after the bot processes the
+  // /project load command. If the user opens GitDiffSidebar before
+  // that refresh, our first load hits `umo = null` and short-circuits
   // (no network request is made). Without a watcher, the worktree list
-  // would never load. Watch the module-level status ref and re-fetch as
+  // would never load. Watch the session's umo and re-fetch as
   // soon as umo becomes available; the same hook also covers project
   // switches (directory change) so the tabs refresh on `/project load`.
   watch(

@@ -681,13 +681,14 @@ watch(
 let prevWorktreePaths: ReadonlySet<string> | null = null;
 
 // Singleton spcode project status + this sidebar's session identity.
-// Both are declared HERE — before the immediate worktree-list watcher
-// below — because that watcher's callback reads `projectRoot`
-// (→ `session`) on its immediate tick. Instantiating them further down
-// (their natural home next to the other composables) puts the bindings
+// `session` MUST be declared HERE — before the immediate worktree-list
+// watcher below — because that watcher's callback reads `projectRoot`
+// (→ `session`) on its immediate tick. Instantiating it further down
+// (its natural home next to the other composables) would put the binding
 // in TDZ during the immediate tick; production swallows the resulting
 // ReferenceError with a bare console.error and silently skips the
-// watcher's non-git hydration branch on every mount.
+// watcher's non-git hydration branch on every mount. `spcodeStatus` sits
+// here only to minimise migration noise — it is no longer on that path.
 const spcodeStatus = useSpcodeProjectStatus();
 // Session identity for every spcode call below: the sidebar acts on the
 // conversation it belongs to, not on whatever the shared singleton holds.

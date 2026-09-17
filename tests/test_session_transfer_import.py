@@ -259,6 +259,262 @@ async def test_read_package_converts_escaped_archive_errors(tmp_path):
     assert saw_a_failure, "no corruption broke the package - test is vacuous"
 
 
+def _seed_export_sessions():
+    """One session with one history row, one attachment and one thread."""
+    return [
+        {
+            "session": {
+                "session_id": "sess-1",
+                "display_name": "会话 A",
+                "is_group": 0,
+                "archived": 0,
+                "created_at": "2026-09-01T00:00:00+00:00",
+                "updated_at": "2026-09-01T00:00:00+00:00",
+            },
+            "conversations": [
+                {
+                    "conversation_id": "conv-1",
+                    "platform_id": "webchat",
+                    "user_id": "webchat:FriendMessage:webchat!alice!sess-1",
+                    "content": [{"role": "user", "content": "hi"}],
+                    "title": "t",
+                    "persona_id": None,
+                    "token_usage": 0,
+                }
+            ],
+            "history": [
+                {
+                    "id": 11,
+                    "sender_id": "alice",
+                    "sender_name": "alice",
+                    "content": {
+                        "type": "user",
+                        "message": [
+                            {
+                                "type": "image",
+                                "attachment_id": "att-1",
+                                "filename": "a.png",
+                            }
+                        ],
+                    },
+                    "llm_checkpoint_id": "ck-1",
+                    "created_at": "2026-09-01T00:00:00+00:00",
+                }
+            ],
+            "threads": [
+                {
+                    "thread": {
+                        "thread_id": "thr-1",
+                        "creator": "alice",
+                        "parent_session_id": "sess-1",
+                        "parent_message_id": 11,
+                        "base_checkpoint_id": "ck-1",
+                        "selected_text": "hi",
+                    },
+                    "history": [],
+                    "conversations": [],
+                }
+            ],
+            "preferences": [],
+            "attachments": [
+                {
+                    "attachment_id": "att-1",
+                    "type": "image",
+                    "mime_type": "image/png",
+                    "ext": ".png",
+                    "size": 7,
+                    "zip_path": "files/attachments/att-1.png",
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_import_remaps_ids_and_ownership(tmp_path):
+    service = _make_service()
+    service.attachments_dir = tmp_path
+    package = build_package_bytes(
+        sessions=_seed_export_sessions(),
+        extra_entries=[("files/attachments/att-1.png", b"PNGDATA")],
+    )
+    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+
+    added = []
+
+    class _FakeSession:
+        async def flush(self):
+            # Emulate autoincrement assignment for history rows only:
+            # PlatformSession / Attachment / ConversationV2 carry their own
+            # inner_* primary keys and reject a stray ``id`` (pydantic raises).
+            for index, row in enumerate(added):
+                if row.__class__.__name__ != "PlatformMessageHistory":
+                    continue
+                if row.id is None:
+                    row.id = 900 + index
+
+        def add(self, row):
+            added.append(row)
+
+        class _Begin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def begin(self):
+            return _FakeSession._Begin()
+
+    class _DbCtx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    service.db.get_db = lambda: _DbCtx()
+    service.db.get_attachments = AsyncMock(return_value=[])
+    service.db.get_platform_session_by_id = AsyncMock(return_value=None)
+
+    result = await service.confirm_import("bob", preview["import_id"])
+
+    assert result["errors"] == []
+    assert len(result["created"]) == 1
+    created = result["created"][0]
+    assert created["display_name"] == "会话 A"
+    assert created["new_session_id"] != "sess-1"
+
+    sessions = [row for row in added if row.__class__.__name__ == "PlatformSession"]
+    histories = [
+        row for row in added if row.__class__.__name__ == "PlatformMessageHistory"
+    ]
+    threads = [row for row in added if row.__class__.__name__ == "WebChatThread"]
+    assert sessions[0].creator == "bob"
+    assert sessions[0].session_id == created["new_session_id"]
+    assert histories[0].user_id == created["new_session_id"]
+    assert histories[0].content["message"][0]["attachment_id"] == "att-1"
+    assert threads[0].parent_session_id == created["new_session_id"]
+    assert threads[0].parent_message_id == histories[0].id
+    # The staged zip is always cleaned up.
+    assert preview["import_id"] not in service.pending_imports
+
+
+@pytest.mark.asyncio
+async def test_confirm_import_reissues_colliding_attachment_id(tmp_path):
+    service = _make_service()
+    service.attachments_dir = tmp_path
+    package = build_package_bytes(
+        sessions=_seed_export_sessions(),
+        extra_entries=[("files/attachments/att-1.png", b"PNGDATA")],
+    )
+    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+
+    service.db.get_attachments = AsyncMock(
+        return_value=[SimpleNamespace(attachment_id="att-1")]
+    )
+
+    added = []
+
+    class _FakeSession:
+        async def flush(self):
+            # Same history-only id emulation as the first confirm test; see the
+            # comment there for why other rows must not receive an ``id``.
+            for index, row in enumerate(added):
+                if row.__class__.__name__ != "PlatformMessageHistory":
+                    continue
+                if row.id is None:
+                    row.id = 900 + index
+
+        def add(self, row):
+            added.append(row)
+
+        class _Begin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def begin(self):
+            return _FakeSession._Begin()
+
+    class _DbCtx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    service.db.get_db = lambda: _DbCtx()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=None)
+
+    await service.confirm_import("bob", preview["import_id"])
+
+    attachments = [row for row in added if row.__class__.__name__ == "Attachment"]
+    assert attachments[0].attachment_id != "att-1"
+    assert attachments[0].path.endswith(f"{attachments[0].attachment_id}.png")
+    histories = [
+        row for row in added if row.__class__.__name__ == "PlatformMessageHistory"
+    ]
+    assert histories[0].content["message"][0]["attachment_id"] == (
+        attachments[0].attachment_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_import_drops_thread_without_parent(tmp_path):
+    service = _make_service()
+    service.attachments_dir = tmp_path
+    sessions = _seed_export_sessions()
+    sessions[0]["history"] = []
+    sessions[0]["threads"][0]["thread"]["parent_message_id"] = 11
+    package = build_package_bytes(sessions=sessions)
+    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+
+    added = []
+
+    class _FakeSession:
+        async def flush(self):
+            # Same history-only id emulation as the first confirm test; see the
+            # comment there for why other rows must not receive an ``id``.
+            for index, row in enumerate(added):
+                if row.__class__.__name__ != "PlatformMessageHistory":
+                    continue
+                if row.id is None:
+                    row.id = 900 + index
+
+        def add(self, row):
+            added.append(row)
+
+        class _Begin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def begin(self):
+            return _FakeSession._Begin()
+
+    class _DbCtx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    service.db.get_db = lambda: _DbCtx()
+    service.db.get_attachments = AsyncMock(return_value=[])
+
+    result = await service.confirm_import("bob", preview["import_id"])
+
+    # No parent history row was imported, so the thread must be dropped.
+    assert result["errors"] == []
+    assert not [row for row in added if row.__class__.__name__ == "WebChatThread"]
+    assert any("parent message missing" in warning for warning in result["warnings"])
+
+
 @pytest.mark.asyncio
 async def test_stage_import_rejects_package_missing_required_entries():
     service = _make_service()

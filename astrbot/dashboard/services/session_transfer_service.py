@@ -22,6 +22,7 @@ from pathlib import Path
 
 from astrbot import logger
 from astrbot.core.config.default import VERSION
+from astrbot.core.db import po as db_po
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
@@ -634,3 +635,273 @@ class SessionTransferService:
             created_at=time.monotonic(),
         )
         return preview
+
+    @staticmethod
+    def _read_attachment_blob(archive_path: Path, entry_path: str) -> bytes | None:
+        """Read one attachment blob from the staged import zip.
+
+        Args:
+            archive_path: Path of the staged import zip.
+            entry_path: Manifest-declared path inside the archive.
+
+        Returns:
+            The file bytes, or None when the entry is absent.
+        """
+        with zipfile.ZipFile(archive_path) as zf:
+            try:
+                return zf.read(entry_path)
+            except KeyError:
+                return None
+
+    async def _import_one_session(
+        self,
+        dbsession,
+        entry: dict,
+        username: str,
+        warnings: list[str],
+        created_files: list[Path],
+        archive_path: Path,
+    ) -> dict:
+        """Import one exported session inside the caller's transaction.
+
+        Args:
+            dbsession: AsyncSession already inside a ``begin()`` block.
+            entry: One element of ``export.json["sessions"]``.
+            username: Importing dashboard user; becomes the new creator.
+            warnings: Mutable list collecting user-visible warnings.
+            created_files: Mutable list receiving every file written to disk,
+                so the caller can delete them when the transaction fails.
+            archive_path: Path of the staged import zip holding the blobs.
+
+        Returns:
+            ``{"new_session_id", "display_name"}`` for the imported session.
+        """
+        session_data = entry.get("session") or {}
+        is_group = int(session_data.get("is_group") or 0)
+        new_session_id = str(uuid.uuid4())
+        session_umo = new_umo(WEBCHAT_PLATFORM_ID, is_group, username, new_session_id)
+
+        new_session = db_po.PlatformSession(
+            session_id=new_session_id,
+            platform_id=WEBCHAT_PLATFORM_ID,
+            creator=username,
+            display_name=session_data.get("display_name"),
+            is_group=is_group,
+            archived=0,
+        )
+        dbsession.add(new_session)
+
+        # Attachments: reissue colliding ids, then write files and rows.
+        exported_attachments = entry.get("attachments") or []
+        old_attachment_ids = [
+            item.get("attachment_id")
+            for item in exported_attachments
+            if item.get("attachment_id")
+        ]
+        existing = await self.db.get_attachments(old_attachment_ids)
+        attachment_map = build_attachment_id_map(
+            old_attachment_ids, {row.attachment_id for row in existing}
+        )
+        for item in exported_attachments:
+            old_id = item.get("attachment_id")
+            new_id = attachment_map.get(old_id)
+            if not new_id:
+                continue
+            ext = item.get("ext") or ""
+            # An empty suffix is legitimate: the exporter could not derive a
+            # safe one, so the target file is simply "{new_id}" with no
+            # suffix. Only a *provided* suffix must match the strict pattern.
+            if ext and not is_safe_attachment_ext(ext):
+                warnings.append(f"Attachment {old_id}: skipped unsafe suffix {ext!r}")
+                continue
+            zip_path = item.get("zip_path") or ""
+            if not is_safe_attachment_zip_path(zip_path):
+                warnings.append(
+                    f"Attachment {old_id}: skipped unsafe path {zip_path!r}"
+                )
+                continue
+            target = self.attachments_dir / f"{new_id}{ext}"
+            blob = self._read_attachment_blob(archive_path, zip_path)
+            if blob is None:
+                warnings.append(f"Attachment {old_id}: file missing in package")
+                continue
+            await asyncio.to_thread(target.write_bytes, blob)
+            dbsession.add(
+                db_po.Attachment(
+                    attachment_id=new_id,
+                    path=str(target),
+                    type=item.get("type") or "file",
+                    mime_type=item.get("mime_type") or "application/octet-stream",
+                )
+            )
+            created_files.append(target)
+
+        # LLM conversations (session + threads share the same shape).
+        for conversation in entry.get("conversations") or []:
+            dbsession.add(
+                db_po.ConversationV2(
+                    conversation_id=str(uuid.uuid4()),
+                    platform_id=WEBCHAT_PLATFORM_ID,
+                    user_id=session_umo,
+                    content=conversation.get("content") or [],
+                    title=conversation.get("title"),
+                    persona_id=conversation.get("persona_id"),
+                    token_usage=int(conversation.get("token_usage") or 0),
+                )
+            )
+
+        # Main history, remembering old -> new ids for thread backfill.
+        history_rows = []
+        for record in entry.get("history") or []:
+            row = db_po.PlatformMessageHistory(
+                platform_id=WEBCHAT_PLATFORM_ID,
+                user_id=new_session_id,
+                content=rewrite_attachment_refs(
+                    record.get("content") or {}, attachment_map
+                ),
+                sender_id=record.get("sender_id"),
+                sender_name=record.get("sender_name"),
+                llm_checkpoint_id=record.get("llm_checkpoint_id"),
+            )
+            dbsession.add(row)
+            history_rows.append((record.get("id"), row))
+        await dbsession.flush()
+        history_id_map = {
+            old_id: row.id for old_id, row in history_rows if old_id is not None
+        }
+
+        # Threads: drop the ones whose parent message was not imported.
+        for thread_entry in entry.get("threads") or []:
+            thread_data = thread_entry.get("thread") or {}
+            parent_id = resolve_parent_message_id(
+                thread_data.get("parent_message_id"), history_id_map
+            )
+            if parent_id is None:
+                warnings.append(
+                    f"Thread {thread_data.get('thread_id')}: parent message missing"
+                )
+                continue
+            new_thread_id = str(uuid.uuid4())
+            dbsession.add(
+                db_po.WebChatThread(
+                    thread_id=new_thread_id,
+                    creator=username,
+                    parent_session_id=new_session_id,
+                    parent_message_id=parent_id,
+                    base_checkpoint_id=thread_data.get("base_checkpoint_id") or "",
+                    selected_text=thread_data.get("selected_text") or "",
+                )
+            )
+            thread_umo = new_umo(WEBCHAT_PLATFORM_ID, 0, username, new_thread_id)
+            for conversation in thread_entry.get("conversations") or []:
+                dbsession.add(
+                    db_po.ConversationV2(
+                        conversation_id=str(uuid.uuid4()),
+                        platform_id=WEBCHAT_PLATFORM_ID,
+                        user_id=thread_umo,
+                        content=conversation.get("content") or [],
+                        title=conversation.get("title"),
+                        persona_id=conversation.get("persona_id"),
+                        token_usage=int(conversation.get("token_usage") or 0),
+                    )
+                )
+            for record in thread_entry.get("history") or []:
+                dbsession.add(
+                    db_po.PlatformMessageHistory(
+                        platform_id=THREAD_PLATFORM_ID,
+                        user_id=new_thread_id,
+                        content=rewrite_attachment_refs(
+                            record.get("content") or {}, attachment_map
+                        ),
+                        sender_id=record.get("sender_id"),
+                        sender_name=record.get("sender_name"),
+                        llm_checkpoint_id=record.get("llm_checkpoint_id"),
+                    )
+                )
+
+        # Session-scoped preferences follow the session into the new UMO.
+        for preference in entry.get("preferences") or []:
+            dbsession.add(
+                db_po.Preference(
+                    scope=preference.get("scope") or "umo",
+                    scope_id=new_umo(
+                        WEBCHAT_PLATFORM_ID,
+                        int(preference.get("is_group") or is_group),
+                        username,
+                        new_session_id,
+                    ),
+                    key=preference.get("key") or "",
+                    value=preference.get("value") or {},
+                )
+            )
+
+        return {
+            "new_session_id": new_session_id,
+            "display_name": session_data.get("display_name"),
+        }
+
+    async def confirm_import(self, username: str, import_id: str) -> dict:
+        """Import every session of a staged package into ``username``'s account.
+
+        Args:
+            username: Authenticated dashboard user receiving the sessions.
+            import_id: Identifier returned by ``stage_import``.
+
+        Returns:
+            ``{"created", "warnings", "errors"}`` where ``created`` lists the
+            new session ids and display names.
+
+        Raises:
+            SessionTransferError: If the staged package expired, is no longer
+                importable, or its files changed since pre-check.
+        """
+        pending = self._pending(import_id)
+        if not pending.preview.get("can_import"):
+            self._drop_pending(import_id)
+            raise SessionTransferError("Package contains no importable sessions")
+        try:
+            # Re-validate: the staged zip may have changed since pre-check.
+            manifest, payload = self._read_package(pending.zip_path)
+        except SessionTransferError:
+            # Never leave a staged package behind on a failure path.
+            self._drop_pending(import_id)
+            raise
+        pending.manifest, pending.payload = manifest, payload
+
+        created: list[dict] = []
+        warnings: list[str] = []
+        errors: list[str] = []
+        created_files: list[Path] = []
+        try:
+            for entry in pending.payload.get("sessions") or []:
+                mark = len(created_files)
+                try:
+                    async with self.db.get_db() as dbsession:
+                        async with dbsession.begin():
+                            created.append(
+                                await self._import_one_session(
+                                    dbsession,
+                                    entry,
+                                    username,
+                                    warnings,
+                                    created_files,
+                                    pending.zip_path,
+                                )
+                            )
+                except Exception as exc:
+                    logger.error(f"Session import failed: {exc!s}", exc_info=True)
+                    errors.append(
+                        f"{entry.get('session', {}).get('session_id')}: {exc!s}"
+                    )
+                    # Drop the files this session wrote before its tx rolled back.
+                    for path in created_files[mark:]:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError as unlink_exc:
+                            logger.warning(
+                                f"Failed to roll back {path}: {unlink_exc!s}"
+                            )
+                    del created_files[mark:]
+        finally:
+            self._drop_pending(import_id)
+        return {"created": created, "warnings": warnings, "errors": errors}

@@ -15,11 +15,13 @@
   collapses, shows a "changes reverted" badge and disables further
   diff/undo actions.
 
-  Whole-card collapse (2026-09-17): a chevron button at the right end
-  of the header hides the file rows and leaves the count + totals
-  visible, so a long list can be folded away once reviewed. The state
-  is per-card-instance and starts expanded; the per-row expand set and
-  cached diffs survive a collapse, so re-expanding costs no refetch.
+  Whole-card collapse (2026-09-17): the header is itself the toggle — a
+  real <button> spanning the full row — so the click target is the whole
+  "N files changed  +a −b" strip instead of a small chevron. Collapsing
+  hides the file rows and keeps the count + totals visible, so a long
+  list can be folded away once reviewed. The state is per-card-instance
+  and starts expanded; the per-row expand set and cached diffs survive a
+  collapse, so re-expanding costs no refetch.
 
   Author: elecvoid243 | 2026-09-13
 -->
@@ -28,7 +30,13 @@
     class="fcs-card"
     :class="{ 'fcs-card--dark': isDark, 'fcs-card--collapsed': collapsed }"
   >
-    <div class="fcs-head">
+    <button
+      type="button"
+      class="fcs-head"
+      :title="toggleLabel"
+      :aria-expanded="!collapsed"
+      @click="collapsed = !collapsed"
+    >
       <span class="fcs-head-icon">
         <v-icon size="13">mdi-file-edit-outline</v-icon>
       </span>
@@ -39,18 +47,12 @@
         <span class="stat-adds">+{{ totalAdds }}</span>
         <span class="stat-dels">−{{ totalDels }}</span>
       </span>
-      <v-btn
-        class="fcs-toggle"
+      <v-icon
+        class="fcs-head-chevron"
+        size="16"
         :icon="collapsed ? 'mdi-chevron-down' : 'mdi-chevron-up'"
-        size="x-small"
-        variant="text"
-        density="comfortable"
-        :title="toggleLabel"
-        :aria-label="toggleLabel"
-        :aria-expanded="!collapsed"
-        @click="collapsed = !collapsed"
       />
-    </div>
+    </button>
 
     <template v-for="file in files" :key="file.path">
       <div
@@ -392,13 +394,32 @@ watch(
   background: rgba(var(--v-theme-primary), 0.07);
 }
 
+/* The header doubles as the collapse toggle (2026-09-17): a full-width
+   <button>, so the whole "N files changed +a −b" strip is the hit target.
+   Button resets keep the row looking exactly as it did as a <div>. */
 .fcs-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 7px 12px;
-  background: rgba(var(--v-theme-primary), 0.08);
+  border: 0;
   border-bottom: 1px solid rgba(var(--v-theme-primary), 0.14);
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.fcs-head:hover {
+  background: rgba(var(--v-theme-primary), 0.15);
+}
+
+.fcs-head:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.55);
+  outline-offset: -2px;
 }
 
 .fcs-head-icon {
@@ -428,12 +449,11 @@ watch(
   font-weight: 600;
 }
 
-/* Header collapse toggle. The negative margins absorb the button's hit
-   area (taller than the 22px title icon) so the header row keeps its
-   36px rhythm, and pull the chevron towards the card edge. */
-.fcs-toggle {
+/* Collapse affordance. The header itself is the button, so the chevron is
+   decoration: no hit area of its own, tinted with the card's accent. */
+.fcs-head-chevron {
   flex: none;
-  margin: -5px -6px -5px 0;
+  color: rgba(var(--v-theme-primary), 0.75);
 }
 
 /* Collapsed card: nothing follows the header, so its divider goes too. */

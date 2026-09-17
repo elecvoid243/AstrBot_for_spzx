@@ -88,33 +88,37 @@ describe("FileChangeSummaryCard collapse toggle", () => {
     });
   });
 
-  it("starts expanded and offers the collapse action", async () => {
+  it("starts expanded and offers the collapse action on the whole header", async () => {
     const wrapper = mountCard();
     await flushPromises();
 
     expect(wrapper.findAll(".fcs-row")).toHaveLength(2);
     expect(wrapper.classes()).not.toContain("fcs-card--collapsed");
     expect(wrapper.find(".fcs-title").text()).toContain("2");
-    const toggle = wrapper.find(".fcs-toggle");
-    expect(toggle.attributes("aria-expanded")).toBe("true");
-    expect(toggle.attributes("title")).toBe(zh.fileChanges.collapse);
+    const head = wrapper.find(".fcs-head");
+    // The full-width header row is the hit target, not a small chevron: a
+    // native <button>, so tab focus and Enter/Space activation come free.
+    expect(head.element.tagName).toBe("BUTTON");
+    expect(head.attributes("type")).toBe("button");
+    expect(head.attributes("aria-expanded")).toBe("true");
+    expect(head.attributes("title")).toBe(zh.fileChanges.collapse);
   });
 
   it("hides the rows but keeps the count and totals visible", async () => {
     const wrapper = mountCard();
     await flushPromises();
 
-    await wrapper.find(".fcs-toggle").trigger("click");
+    await wrapper.find(".fcs-head").trigger("click");
 
     expect(wrapper.findAll(".fcs-row")).toHaveLength(0);
     expect(wrapper.classes()).toContain("fcs-card--collapsed");
     expect(wrapper.find(".fcs-title").text()).toContain("2");
     expect(wrapper.find(".fcs-total").text()).toBe("+47−20");
-    const toggle = wrapper.find(".fcs-toggle");
-    expect(toggle.attributes("aria-expanded")).toBe("false");
-    expect(toggle.attributes("title")).toBe(zh.fileChanges.expand);
+    const head = wrapper.find(".fcs-head");
+    expect(head.attributes("aria-expanded")).toBe("false");
+    expect(head.attributes("title")).toBe(zh.fileChanges.expand);
 
-    await wrapper.find(".fcs-toggle").trigger("click");
+    await wrapper.find(".fcs-head").trigger("click");
 
     expect(wrapper.findAll(".fcs-row")).toHaveLength(2);
     expect(wrapper.classes()).not.toContain("fcs-card--collapsed");
@@ -130,10 +134,10 @@ describe("FileChangeSummaryCard collapse toggle", () => {
     expect(mocks.fileChangeDiff).toHaveBeenCalledTimes(1);
     expect(wrapper.find(".fcs-body").exists()).toBe(true);
 
-    await wrapper.find(".fcs-toggle").trigger("click");
+    await wrapper.find(".fcs-head").trigger("click");
     expect(wrapper.find(".fcs-body").exists()).toBe(false);
 
-    await wrapper.find(".fcs-toggle").trigger("click");
+    await wrapper.find(".fcs-head").trigger("click");
     await flushPromises();
 
     // Re-expanding replays the cached diff instead of refetching it.

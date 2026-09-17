@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from astrbot.core.db.po import PlatformMessageHistory, PlatformSession
+from astrbot.core.db.po import PlatformMessageHistory, PlatformSession, WebChatThread
 from astrbot.dashboard.services.session_transfer_service import (
     ATTACHMENTS_PREFIX,
     EXPORT_DATA_NAME,
@@ -186,3 +186,69 @@ async def test_export_records_warning_when_attachment_file_is_missing(tmp_path):
         assert manifest["warnings"]
         assert "att-1" in manifest["warnings"][0]
         assert f"{ATTACHMENTS_PREFIX}att-1.png" not in set(zf.namelist())
+
+
+@pytest.mark.asyncio
+async def test_export_packages_attachments_referenced_only_by_a_thread(tmp_path):
+    """A file attached inside a side thread is packaged, not silently dropped.
+
+    Thread history persists the same message-part shape as the main stream
+    (chat_service.create_thread), so its attachment ids must be collected too.
+    """
+    thread_attachment_path = tmp_path / "thread-1.png"
+    thread_attachment_path.write_bytes(b"THREADPNG")
+    service = _make_service(attachment_dir=tmp_path)
+
+    # A real PO: `_serialize_row` calls model_dump() on it.
+    thread = WebChatThread(
+        thread_id="thr-1",
+        creator="alice",
+        parent_session_id=SESSION_ID,
+        parent_message_id=1,
+        base_checkpoint_id="ck-1",
+        selected_text="hi",
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    service.db.get_webchat_threads_by_parent_session = AsyncMock(return_value=[thread])
+
+    # Main stream carries no attachment; only the thread does.
+    main_row = _row(
+        content={"type": "user", "message": [{"type": "plain", "text": "hi"}]}
+    )
+    thread_row = _row(
+        id=2,
+        content={
+            "type": "user",
+            "message": [
+                {"type": "image", "attachment_id": "att-thread", "filename": "t.png"}
+            ],
+        },
+    )
+
+    async def _history(platform_id, user_id, **kwargs):
+        if platform_id == "webchat_thread":
+            return [thread_row]
+        return [main_row]
+
+    service.platform_history_mgr.get = AsyncMock(side_effect=_history)
+    service.db.get_attachment_by_id = AsyncMock(
+        return_value=SimpleNamespace(
+            attachment_id="att-thread",
+            path=str(thread_attachment_path),
+            type="image",
+            mime_type="image/png",
+        )
+    )
+
+    export = await service.export_session("alice", SESSION_ID)
+
+    with zipfile.ZipFile(BytesIO(export.file_obj.getvalue())) as zf:
+        assert f"{ATTACHMENTS_PREFIX}att-thread.png" in set(zf.namelist())
+        manifest = json.loads(zf.read(MANIFEST_NAME))
+        stats = manifest["sessions"][0]["stats"]
+        assert stats["attachments"] == 1
+        assert stats["attachment_bytes"] == len(b"THREADPNG")
+        assert manifest["warnings"] == []
+        data = json.loads(zf.read(EXPORT_DATA_NAME))
+        assert data["sessions"][0]["attachments"][0]["attachment_id"] == "att-thread"

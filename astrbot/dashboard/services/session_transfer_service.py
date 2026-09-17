@@ -302,6 +302,7 @@ class SessionTransferService:
 
         warnings: list[str] = []
         thread_payloads: list[dict] = []
+        thread_attachment_ids: list[str] = []
         umos = [session_umo]
         for thread in threads:
             thread_umo = new_umo(
@@ -314,6 +315,7 @@ class SessionTransferService:
                 page=1,
                 page_size=HISTORY_PAGE_SIZE,
             )
+            thread_attachment_ids.extend(extract_attachment_ids(thread_history))
             thread_payloads.append(
                 {
                     "thread": self._serialize_row(thread),
@@ -327,41 +329,47 @@ class SessionTransferService:
             rows = await self.db.get_preferences(scope="umo", scope_id=umo)
             preferences.extend(self._serialize_row(row) for row in rows)
 
+        # Attachments hang off the main stream *and* off side threads: both
+        # persist the same message-part shape, so scanning `history` alone
+        # would silently drop thread images from the package (no warning,
+        # no bytes) and leave them permanently broken after a migration.
+        all_attachment_ids = extract_attachment_ids(history) + thread_attachment_ids
+
         attachments: list[dict] = []
         attachment_blobs: list[tuple[str, bytes]] = []
         seen_ids: set[str] = set()
-        for record in history:
-            for attachment_id in extract_attachment_ids([record]):
-                if attachment_id in seen_ids:
-                    continue
-                seen_ids.add(attachment_id)
-                attachment = await self.db.get_attachment_by_id(attachment_id)
-                if attachment is None:
-                    warnings.append(f"Attachment {attachment_id} metadata missing")
-                    continue
-                source = Path(attachment.path)
-                ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
-                zip_path = f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}"
-                entry = {
-                    "attachment_id": attachment_id,
-                    "type": attachment.type,
-                    "mime_type": attachment.mime_type,
-                    "ext": ext,
-                    "size": source.stat().st_size if source.is_file() else 0,
-                    "zip_path": zip_path,
-                }
-                if source.is_file():
-                    try:
-                        attachment_blobs.append(
-                            (zip_path, await asyncio.to_thread(source.read_bytes))
-                        )
-                    except OSError as exc:
-                        warnings.append(
-                            f"Attachment {attachment_id} unreadable: {exc!s}"
-                        )
+        for attachment_id in all_attachment_ids:
+            if attachment_id in seen_ids:
+                continue
+            seen_ids.add(attachment_id)
+            attachment = await self.db.get_attachment_by_id(attachment_id)
+            if attachment is None:
+                warnings.append(f"Attachment {attachment_id} metadata missing")
+                continue
+            source = Path(attachment.path)
+            ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
+            zip_path = f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}"
+            entry = {
+                "attachment_id": attachment_id,
+                "type": attachment.type,
+                "mime_type": attachment.mime_type,
+                "ext": ext,
+                "size": 0,
+                "zip_path": zip_path,
+            }
+            # One read serves both the byte count and the package payload; a
+            # separate stat() would add a double syscall and a TOCTOU window.
+            if source.is_file():
+                try:
+                    blob = await asyncio.to_thread(source.read_bytes)
+                except OSError as exc:
+                    warnings.append(f"Attachment {attachment_id} unreadable: {exc!s}")
                 else:
-                    warnings.append(f"Attachment {attachment_id} file missing on disk")
-                attachments.append(entry)
+                    entry["size"] = len(blob)
+                    attachment_blobs.append((zip_path, blob))
+            else:
+                warnings.append(f"Attachment {attachment_id} file missing on disk")
+            attachments.append(entry)
 
         data_payload = {
             "sessions": [

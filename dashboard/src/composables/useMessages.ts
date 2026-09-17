@@ -2261,6 +2261,11 @@ export interface AgentWorkSplit {
   workBlocks: MessageDisplayBlock[];
   /** The trailing final reply, kept visible when work is collapsed. */
   finalBlocks: MessageDisplayBlock[];
+  /** Index of that reply inside the message's full block list. The visible
+   * region is not a suffix of it (work that trails the reply folds back), so
+   * a consumer that addresses blocks by index — the reasoning sidebar does —
+   * must not reuse the position inside `finalBlocks`. */
+  finalBlockIndex: number;
 }
 
 function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
@@ -2338,6 +2343,7 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
       replyParts === blocks[finalStart].parts
         ? [blocks[finalStart]]
         : [{ kind: "content", parts: replyParts }],
+    finalBlockIndex: finalStart,
   };
 }
 

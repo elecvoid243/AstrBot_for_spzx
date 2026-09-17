@@ -86,6 +86,30 @@ describe("splitAgentWork", () => {
     expect(split!.workBlocks).toHaveLength(2);
   });
 
+  it("reports where the reply sits in the message's full block list", () => {
+    const split = splitAgentWork(
+      content([THINK, TEXT("step"), TOOL_CALL, TEXT("final")]),
+    );
+    // blocks: [thinking, content("step"), thinking(tool), content("final")]
+    expect(split).not.toBeNull();
+    expect(split!.finalBlockIndex).toBe(3);
+
+    // Work that trails the reply folds back, so the visible region is not a
+    // suffix: consumers that address blocks by index (the reasoning sidebar)
+    // need the reply's own position, not its position among the visible ones.
+    const trailing = splitAgentWork(
+      content([
+        THINK,
+        TEXT("final"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+        TOOL_CALL,
+      ]),
+    );
+    expect(trailing).not.toBeNull();
+    expect(trailing!.finalBlocks).toHaveLength(1);
+    expect(trailing!.finalBlockIndex).toBe(1);
+  });
+
   it("collapses a resolved interactive choice into the work group", () => {
     const split = splitAgentWork(
       content([

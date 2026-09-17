@@ -202,12 +202,12 @@
                   </v-icon>
                 </button>
                 <template
-                  v-for="(block, blockIndex) in visibleBlocks(msg, msgIndex)"
-                  :key="`${msgIndex}-block-${blockIndex}-${block.kind}`"
+                  v-for="(entry, blockIndex) in visibleBlocks(msg, msgIndex)"
+                  :key="`${msgIndex}-block-${entry.index}-${entry.block.kind}`"
                 >
                   <ReasoningBlock
-                    v-if="block.kind === 'thinking'"
-                    :parts="block.parts"
+                    v-if="entry.block.kind === 'thinking'"
+                    :parts="entry.block.parts"
                     :is-dark="isDark"
                     :initial-expanded="false"
                     :is-streaming="isMessageStreaming(msg, msgIndex)"
@@ -222,7 +222,9 @@
                       (openPayload) =>
                         emit('openReasoning', {
                           message: msg,
-                          blockIndex,
+                          // Full-list index: the sidebar resolves the block
+                          // it shows against the message's block list.
+                          blockIndex: entry.index,
                           callId: openPayload?.callId,
                         })
                     "
@@ -230,8 +232,8 @@
 
                   <template v-else>
                     <template
-                      v-for="(part, partIndex) in block.parts"
-                      :key="`${msgIndex}-${blockIndex}-${partIndex}-${part.type}`"
+                      v-for="(part, partIndex) in entry.block.parts"
+                      :key="`${msgIndex}-${entry.index}-${partIndex}-${part.type}`"
                     >
                       <button
                         v-if="part.type === 'reply'"
@@ -1230,10 +1232,12 @@ function renderBlocks(message: ChatRecord): MessageDisplayBlock[] {
 }
 
 function hasFollowingContentBlock(
-  blocks: MessageDisplayBlock[],
-  blockIndex: number,
+  blocks: RenderedBlock[],
+  visibleIndex: number,
 ) {
-  return blocks.slice(blockIndex + 1).some((block) => block.kind === "content");
+  return blocks
+    .slice(visibleIndex + 1)
+    .some((entry) => entry.block.kind === "content");
 }
 
 // --- Agent work collapse -------------------------------------------------
@@ -1261,11 +1265,30 @@ function agentWorkExpanded(message: ChatRecord, messageIndex: number) {
   return expandedAgentWork.value.has(agentWorkKey(message, messageIndex));
 }
 
+/**
+ * One block as this list renders it, tagged with its index in the message's
+ * full block list.
+ *
+ * The collapsed capsule renders a filtered list, so the position inside the
+ * rendered list is NOT a block index — while `ReasoningBlock`'s `open` event
+ * is resolved by index against the full list (Chat.vue's
+ * `activeReasoningParts`). The two spaces are kept apart here instead of
+ * silently opening a different block (or an empty panel, which is what a
+ * mismatched index used to produce).
+ */
+interface RenderedBlock {
+  block: MessageDisplayBlock;
+  index: number;
+}
+
 function visibleBlocks(
   message: ChatRecord,
   messageIndex: number,
-): MessageDisplayBlock[] {
-  const blocks = renderBlocks(message);
+): RenderedBlock[] {
+  const blocks = renderBlocks(message).map((block, index) => ({
+    block,
+    index,
+  }));
   if (
     isUserMessage(message) ||
     !agentWorkPillVisible(message, messageIndex) ||
@@ -1273,7 +1296,14 @@ function visibleBlocks(
   ) {
     return blocks;
   }
-  return splitAgentWork(messageContent(message))?.finalBlocks ?? blocks;
+  const split = splitAgentWork(messageContent(message));
+  if (!split) return blocks;
+  // The collapsed region is the reply block alone, wherever it sits: work
+  // behind it folds back, so it is not a suffix of the full list.
+  return split.finalBlocks.map((block) => ({
+    block,
+    index: split.finalBlockIndex,
+  }));
 }
 
 function toggleAgentWork(message: ChatRecord, messageIndex: number) {

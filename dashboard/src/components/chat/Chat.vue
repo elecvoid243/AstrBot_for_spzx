@@ -1881,6 +1881,10 @@ onMounted(() => {
   window.addEventListener("keydown", onSidebarKeydown);
 });
 
+// `blockIndex` is an index into this message's FULL block list: the list
+// components translate their rendered position before emitting (a collapsed
+// agent-work capsule renders a filtered list). Resolving a filtered position
+// here silently opened a different block — usually an empty panel.
 const activeReasoningParts = computed<MessagePart[]>(() => {
   if (!activeReasoningTarget.value) return [];
   const blocks = buildMessageBlocks(

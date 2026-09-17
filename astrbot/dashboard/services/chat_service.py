@@ -117,9 +117,12 @@ def collect_plain_text_from_message_parts(message_parts: list[dict]) -> str:
 #
 # `BotMessageAccumulator`'s write-path filter (see `_store_tool_call` /
 # `_store_tool_call_result`) prevents NEW `tool_call` and `tool_call_result`
-# events for `ask_user_choice` from materialising into history parts. Bot
-# records persisted BEFORE that filter shipped — or while a still-running
-# AstrBot still had the old code — carry two stale halves per invocation:
+# events for `ask_user_choice` from materialising into history parts. It used
+# to miss one case: the `interactive_choice` event itself flushes the record
+# it lands in, which retired the accumulator that remembered the filtered
+# call id, so the result event arriving after the user answered fell through
+# to the fallback. Records written before that boundary was fixed carry two
+# stale halves per invocation:
 #
 #   Part A (args only)::
 #
@@ -143,14 +146,11 @@ _ASK_USER_CHOICE_TOOL_NAME = "ask_user_choice"
 def _is_ask_user_choice_stale_entry(tool_call_entry: object) -> bool:
     """True if a single tool_call entry looks like a stale ask_user_choice half.
 
-    Used both for the interactive_choice-paired mode (drop when there's a
-    matching `interactive_choice` part in the same message) and for the
-    pairing-based mode (drop when paired with another entry in the same
-    part). The runtime always sends ``name`` in tool_call events, so a
-    name-less entry with a result is unambiguously the synthesised
-    fallback created by `_store_tool_call_result` for an ask_user_choice
-    call whose `tool_call` half was filtered out — never a legitimate
-    real tool invocation.
+    The runtime always sends ``name`` in tool_call events, so a name-less
+    entry that carries a result is unambiguously the synthesised fallback
+    created by `_store_tool_call_result` for an ask_user_choice call whose
+    `tool_call` half was filtered out — never a legitimate real tool
+    invocation.
     """
     if not isinstance(tool_call_entry, dict):
         return False
@@ -161,33 +161,32 @@ def _is_ask_user_choice_stale_entry(tool_call_entry: object) -> bool:
     return False
 
 
-def _drop_stale_entries_from_part(
-    part: dict, drop_predicate: callable | None
-) -> dict | None:
+def _drop_stale_entries_from_part(part: dict, drop_predicate: callable) -> dict | None:
     """Return a new tool_call part with stale entries removed.
 
     Args:
         part: A tool_call part dict.
-        drop_predicate: Callable returning True for stale entries. If
-            ``None``, the entry is kept (used as the safe default — a
-            malformed record must not silently drop more than it should).
+        drop_predicate: Callable returning True for stale entries.
 
     Returns:
-        A new part with the surviving entries, or ``None`` if every entry
-        was dropped (so the caller can omit the empty shell). For
-        non-dict / id-less entries the predicate is bypassed and the
-        entry passes through unchanged so we never reshape corrupted
-        data into ``{}`` on the read path.
+        A new part with the surviving entries, the SAME part object when
+        nothing was stale, or ``None`` if every entry was dropped (so the
+        caller can omit the empty shell). For non-dict / id-less entries
+        the predicate is bypassed and the entry passes through unchanged so
+        we never reshape corrupted data into ``{}`` on the read path.
     """
-    if drop_predicate is None:
-        return part
     kept_tool_calls: list = []
+    dropped = False
     for tc in part.get("tool_calls") or []:
         if not isinstance(tc, dict) or not str(tc.get("id") or ""):
             kept_tool_calls.append(tc)
             continue
-        if not drop_predicate(tc):
-            kept_tool_calls.append(tc)
+        if drop_predicate(tc):
+            dropped = True
+            continue
+        kept_tool_calls.append(tc)
+    if not dropped:
+        return part
     if not kept_tool_calls:
         return None
     return {**part, "tool_calls": kept_tool_calls}
@@ -208,60 +207,22 @@ def _sanitize_ask_user_choice_tool_call_parts(parts: object) -> object:
         in the common (new-history) path.
 
     Notes:
-        The rule is split by whether the message also carries an
-        ``interactive_choice`` part written by the ask_user_choice plugin:
+        Every record gets the same treatment: drop what
+        :func:`_is_ask_user_choice_stale_entry` recognises.
 
-        * **Message HAS ``interactive_choice``**: every tool_call entry
-          that *looks* like an ask_user_choice stale half is dropped
-          unconditionally — this catches BOTH the original
-          args-only half and the orphan synthesised result half (the
-          latter no longer requires a paired `ask_user_choice` named
-          half in the same message). The runtime always sends
-          ``name`` in tool_call events, so a name-less entry with a
-          result is unambiguously the synthesised fallback and never a
-          legitimate other-tool call.
-
-        * **Message has NO ``interactive_choice``**: apply the
-          conservative pairing rule so a multi-tool message whose
-          ask_user_choice part is somehow present without its box
-          (a malformed pre-feature DB row) still gets cleaned, but a
-          truly anonymous result with no ask_user_choice peer is
-          left alone.
+        The rule used to be split — records that carry an
+        ``interactive_choice`` part lost every stale-looking entry, records
+        without one only lost entries paired with an anonymous result half
+        in the same message. That pairing assumption does not hold in
+        practice: the `interactive_choice` event flushes the record it lands
+        in, so the synthesised result half is written into the *next* record
+        while the box stays behind in the previous one. A live database held
+        56 such orphan halves, each rendering as "已使用 tool 工具". Dropping
+        the named half unconditionally is equally safe: `ask_user_choice` is
+        rendered exclusively through its box, so a bare card adds nothing.
     """
     if not isinstance(parts, list):
         return parts
-
-    has_interactive_choice = any(
-        isinstance(p, dict) and p.get("type") == "interactive_choice" for p in parts
-    )
-
-    if has_interactive_choice:
-        drop_predicate = _is_ask_user_choice_stale_entry
-    else:
-        # Conservative mode: collect ask_user_choice ids in the message
-        # and drop only those PLUS paired anonymous result halves.
-        ask_user_choice_ids: set[str] = set()
-        anonymous_result_ids: set[str] = set()
-        for part in parts:
-            if not isinstance(part, dict) or part.get("type") != "tool_call":
-                continue
-            for tc in part.get("tool_calls") or []:
-                if not isinstance(tc, dict):
-                    continue
-                tc_id = str(tc.get("id") or "")
-                if not tc_id:
-                    continue
-                if tc.get("name") == _ASK_USER_CHOICE_TOOL_NAME:
-                    ask_user_choice_ids.add(tc_id)
-                elif not tc.get("name") and tc.get("result"):
-                    anonymous_result_ids.add(tc_id)
-        paired_ids = ask_user_choice_ids & anonymous_result_ids
-        drop_ids = ask_user_choice_ids | paired_ids
-        if not drop_ids:
-            return parts
-
-        def drop_predicate(tc: dict, _drop: set[str] = drop_ids) -> bool:
-            return str(tc.get("id") or "") in _drop
 
     sanitized: list[dict] = []
     mutated = False
@@ -269,7 +230,7 @@ def _sanitize_ask_user_choice_tool_call_parts(parts: object) -> object:
         if not isinstance(part, dict) or part.get("type") != "tool_call":
             sanitized.append(part)
             continue
-        new_part = _drop_stale_entries_from_part(part, drop_predicate)
+        new_part = _drop_stale_entries_from_part(part, _is_ask_user_choice_stale_entry)
         if new_part is None:
             mutated = True
             continue
@@ -330,10 +291,34 @@ def build_bot_history_content(
 
 
 class BotMessageAccumulator:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        filtered_tool_call_ids: set[str] | None = None,
+        pending_tool_calls: dict[str, dict] | None = None,
+    ) -> None:
+        """Create an accumulator for one bot message segment.
+
+        Args:
+            filtered_tool_call_ids: Suppressed `ask_user_choice` call ids,
+                shared by every accumulator of the same run. A mid-turn
+                flush (the `interactive_choice` event saves the record it
+                lands in) retires the accumulator, while the matching
+                `tool_call_result` only arrives after the user answers —
+                an instance-scoped set forgets the id at that boundary
+                and `_store_tool_call_result` then synthesises a name-less
+                entry (the "已使用 tool 工具" card). Pass one set for the
+                run; the default keeps the previous per-instance lifetime.
+            pending_tool_calls: Calls whose result has not arrived yet,
+                inherited from the accumulator a flush just retired. Their
+                result must still match, otherwise it degrades to the same
+                name-less fallback.
+        """
         self.parts: list[dict] = []
         self.pending_text = ""
-        self.pending_tool_calls: dict[str, dict] = {}
+        self.pending_tool_calls: dict[str, dict] = (
+            pending_tool_calls if pending_tool_calls is not None else {}
+        )
         # Author: elecvoid243
         # Date: 2026-07-25
         # Plan: orphan goal-loop turn agent_stats persistence fix.
@@ -355,11 +340,19 @@ class BotMessageAccumulator:
         # `tool_call_result` events must NOT produce a `tool_call` part.
         # We still need to remember which call_ids were filtered so the
         # later `tool_call_result` event can be silently discarded too
-        # (otherwise the existing fallback in `_store_tool_call_result`
-        # would synthesise a part with only {id, result, finished_ts} —
-        # a name-less "tool" entry that renders next to the
+        # (otherwise the fallback in `_store_tool_call_result` would
+        # synthesise a part with only {id, result, finished_ts} — a
+        # name-less "tool" entry that renders next to the
         # InteractiveChoiceBox after a hard refresh).
-        self._filtered_tool_call_ids: set[str] = set()
+        #
+        # Shared per run when the caller passes one (see `__init__`): the
+        # `interactive_choice` event itself flushes the record it lands in,
+        # which happens strictly between the `tool_call` and its
+        # `tool_call_result`, so an instance-scoped set is empty by the time
+        # the result arrives.
+        self._filtered_tool_call_ids: set[str] = (
+            filtered_tool_call_ids if filtered_tool_call_ids is not None else set()
+        )
         # Author: elecvoid243
         # Date: 2026-07-26
         # Plan: docs/superpowers/plans/2026-07-26-subagent-chatui-progress.md
@@ -671,8 +664,12 @@ class BotMessageAccumulator:
         # dashboard renders as "tool" (the ToolCallCard name
         # fallback), producing the duplicate visible in the bug
         # report.
+        #
+        # The id stays in the set (no discard): when the run shares one
+        # set across its accumulators, the first one to see this event
+        # would otherwise clear it for the others, and `_consume_chat_run`
+        # also reads it to keep the event off the wire.
         if tool_call_id in self._filtered_tool_call_ids:
-            self._filtered_tool_call_ids.discard(tool_call_id)
             return
 
         tool_call = self.pending_tool_calls.pop(tool_call_id, None) or {
@@ -1539,13 +1536,36 @@ class ChatService:
         Args:
             run: Chat run owning the producer queue and durable state.
         """
-        pending_accumulator = BotMessageAccumulator()
-        display_accumulator = BotMessageAccumulator()
+        # ask_user_choice renders exclusively as an `interactive_choice` part,
+        # so the run suppresses its `tool_call` / `tool_call_result` events.
+        # The id must live as long as the run, not as long as one accumulator:
+        # the `interactive_choice` event flushes the record it lands in (which
+        # retires `pending_accumulator`), and the tool result only arrives
+        # after the user answers the box. Both accumulators share the set, and
+        # the SSE fan-out below reads it too.
+        suppressed_tool_call_ids: set[str] = set()
+        pending_accumulator = BotMessageAccumulator(
+            filtered_tool_call_ids=suppressed_tool_call_ids
+        )
+        display_accumulator = BotMessageAccumulator(
+            filtered_tool_call_ids=suppressed_tool_call_ids
+        )
         pending_agent_stats = {}
         pending_file_changes = {}
         pending_refs = {}
 
-        async def flush_pending_bot_message():
+        async def flush_pending_bot_message(*, freeze_pending_tool_calls: bool):
+            """Persist the pending segment and start the next one.
+
+            Args:
+                freeze_pending_tool_calls: Whether calls still waiting for a
+                    result belong in the saved record. A mid-turn save (the
+                    `interactive_choice` event) must not freeze them: the
+                    agent may never run a sibling call of a paused turn, so
+                    freezing leaves a permanently result-less card. They are
+                    handed to the next accumulator instead, where the result
+                    can still match them.
+            """
             nonlocal pending_accumulator, pending_agent_stats, pending_refs
             nonlocal pending_file_changes
             if not (
@@ -1557,7 +1577,7 @@ class ChatService:
                 return None
 
             message_parts_to_save = pending_accumulator.build_message_parts(
-                include_pending_tool_calls=True
+                include_pending_tool_calls=freeze_pending_tool_calls
             )
             plain_text = collect_plain_text_from_message_parts(message_parts_to_save)
             try:
@@ -1582,7 +1602,13 @@ class ChatService:
                 run.platform_history_id,
                 file_changes=pending_file_changes,
             )
-            pending_accumulator = BotMessageAccumulator()
+            pending_accumulator = BotMessageAccumulator(
+                filtered_tool_call_ids=suppressed_tool_call_ids,
+                # `build_message_parts(include_pending_tool_calls=True)` clears
+                # the dict it froze into the saved parts, so this is empty
+                # exactly when the calls were persisted.
+                pending_tool_calls=pending_accumulator.pending_tool_calls,
+            )
             pending_agent_stats = {}
             pending_file_changes = {}
             pending_refs = {}
@@ -1670,6 +1696,24 @@ class ChatService:
                             },
                         }
 
+                # ask_user_choice renders exclusively as an `interactive_choice`
+                # part, so its result must not reach the frontend either: the
+                # frontend recognises it by the call id it remembered from the
+                # `tool_call` event, and that memory lives in the SSE
+                # connection — a page reloaded while the choice waits would
+                # synthesise the same name-less "tool" card from it. The
+                # accumulators above already dropped it from the parts.
+                if chain_type == "tool_call_result":
+                    parsed_result = BotMessageAccumulator._parse_json_object(
+                        result_text
+                    )
+                    if (
+                        parsed_result
+                        and str(parsed_result.get("id") or "")
+                        in suppressed_tool_call_ids
+                    ):
+                        continue
+
                 # Spec §4.5: ask_user_choice pushes its choice payloads
                 # straight onto the run's back_queue, but Agent Teams
                 # runners collect through the system stream — mirror the
@@ -1683,8 +1727,14 @@ class ChatService:
                     await webchat_queue_mgr.put_system_event(run.session_id, result)
 
                 snapshot_accumulator = deepcopy(display_accumulator)
-                run.message_parts = snapshot_accumulator.build_message_parts(
-                    include_pending_tool_calls=True
+                # Read-path defence for the live/`run_snapshot` consumers: the
+                # accumulator already suppresses ask_user_choice results, this
+                # keeps a stale half (e.g. a result arriving before its
+                # `tool_call` event) out of the reattach payload too.
+                run.message_parts = _sanitize_ask_user_choice_tool_call_parts(
+                    snapshot_accumulator.build_message_parts(
+                        include_pending_tool_calls=True
+                    )
                 )
                 self._publish_chat_run(run, result)
                 if attachment_saved_payload:
@@ -1703,7 +1753,12 @@ class ChatService:
                         should_save = True
 
                 if should_save:
-                    saved_record = await flush_pending_bot_message()
+                    saved_record = await flush_pending_bot_message(
+                        # A mid-turn save (the `interactive_choice` event lands
+                        # here) must not freeze calls that are still waiting for
+                        # a result — see `flush_pending_bot_message`.
+                        freeze_pending_tool_calls=msg_type == "end",
+                    )
                     if saved_record:
                         self._publish_chat_run(
                             run,
@@ -1732,7 +1787,11 @@ class ChatService:
             )
         finally:
             try:
-                saved_record = await asyncio.shield(flush_pending_bot_message())
+                # Run teardown: the run is over, so a call still waiting for a
+                # result will never get one — keep it visible in the record.
+                saved_record = await asyncio.shield(
+                    flush_pending_bot_message(freeze_pending_tool_calls=True)
+                )
                 if saved_record:
                     self._publish_chat_run(
                         run,

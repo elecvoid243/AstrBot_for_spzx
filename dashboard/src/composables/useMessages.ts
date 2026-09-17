@@ -2291,11 +2291,16 @@ export function messageBlocks(content: ChatContent): MessageDisplayBlock[] {
 }
 
 export interface AgentWorkSplit {
-  /** Everything the agent produced before the final reply (thinking, tool
-   * calls, intermediate outputs). */
+  /** Everything the agent produced around the final reply (thinking, tool
+   * calls, intermediate outputs, resolved interactive choices). */
   workBlocks: MessageDisplayBlock[];
-  /** The trailing final reply blocks, kept visible when work is collapsed. */
+  /** The trailing final reply, kept visible when work is collapsed. */
   finalBlocks: MessageDisplayBlock[];
+  /** Index of that reply inside the message's full block list. The visible
+   * region is not a suffix of it (work that trails the reply folds back), so
+   * a consumer that addresses blocks by index — the reasoning sidebar does —
+   * must not reuse the position inside `finalBlocks`. */
+  finalBlockIndex: number;
 }
 
 function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
@@ -2306,6 +2311,46 @@ function isFinalReplyBlock(block: MessageDisplayBlock): boolean {
     ) &&
     !block.parts.some((part) => part.type === "tool_call")
   );
+}
+
+function isInteractiveChoicePart(part: MessagePart) {
+  return part.type === "interactive_choice";
+}
+
+function hasReplyText(parts: MessagePart[]) {
+  return parts.some(
+    (part) => part.type === "plain" && String(part.text || "").trim(),
+  );
+}
+
+/**
+ * The reply parts that stay visible while the work trail is collapsed.
+ *
+ * The capsule only shows the final output, so an `interactive_choice` inside
+ * the reply block folds with the rest of the work: the run continued past it
+ * (a pending choice keeps the whole message live, pill included), which makes
+ * the box resolved history — expanding the pill renders it through the same
+ * InteractiveChoiceBox path, review options included.
+ *
+ * @param parts - Parts of the trailing reply block.
+ * @returns The parts to render under the pill.
+ */
+function visibleReplyParts(parts: MessagePart[]) {
+  let choiceIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (isInteractiveChoicePart(parts[index])) {
+      choiceIndex = index;
+      break;
+    }
+  }
+  if (choiceIndex < 0) return parts;
+  // Text streamed after the last box is the actual answer; with none, the
+  // agent asked its question and stopped, so the text before the box is what
+  // the message opens on.
+  const trailing = parts.slice(choiceIndex + 1);
+  if (hasReplyText(trailing)) return trailing;
+  const replyParts = parts.filter((part) => !isInteractiveChoicePart(part));
+  return hasReplyText(replyParts) ? replyParts : parts;
 }
 
 export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
@@ -2319,13 +2364,21 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
   }
   // No final reply, or nothing produced before it — nothing to collapse.
   if (finalStart <= 0) return null;
-  // Interactive choices collapse like any other work: a pending choice
-  // always trails the message (the run pauses there), so a choice inside
-  // the work group is already resolved history. Expanding the pill renders
-  // it through the same InteractiveChoiceBox path, review options included.
+  // Work that landed after the reply stays in the work group instead of
+  // hanging under the capsule: a tool call the run never returned gets
+  // frozen into the record when the `interactive_choice` event saves it,
+  // and it used to render as a separate, empty tool block below the box.
+  const replyParts = visibleReplyParts(blocks[finalStart].parts);
   return {
-    workBlocks: blocks.slice(0, finalStart),
-    finalBlocks: blocks.slice(finalStart),
+    workBlocks: [
+      ...blocks.slice(0, finalStart),
+      ...blocks.slice(finalStart + 1),
+    ],
+    finalBlocks:
+      replyParts === blocks[finalStart].parts
+        ? [blocks[finalStart]]
+        : [{ kind: "content", parts: replyParts }],
+    finalBlockIndex: finalStart,
   };
 }
 

@@ -1,14 +1,15 @@
 // Tests for splitAgentWork — the helper behind the collapsed "worked for
 // ..." pill in the chat message lists. While the agent is working, all
-// blocks render live; once the final reply exists, everything produced
-// before it (thinking / tool-call blocks, intermediate outputs, resolved
-// interactive choices) collapses into an expandable group and only the
-// final reply stays visible.
+// blocks render live; once the final reply exists, everything else
+// (thinking / tool-call blocks, intermediate outputs, resolved interactive
+// choices — including work that trails the reply) collapses into an
+// expandable group and only the final reply stays visible.
 //
 // Block model (see messageBlocks/isThinkingPart): `think` AND `tool_call`
 // parts group into "thinking" blocks (the "thought N times, used M tools"
 // tag); everything else forms "content" blocks. The final reply is the
-// trailing content region after the last thinking block.
+// trailing content region after the last thinking block, cut down to its
+// own reply parts.
 //
 // Author: elecvoid243 | 2026-09-11
 
@@ -85,6 +86,30 @@ describe("splitAgentWork", () => {
     expect(split!.workBlocks).toHaveLength(2);
   });
 
+  it("reports where the reply sits in the message's full block list", () => {
+    const split = splitAgentWork(
+      content([THINK, TEXT("step"), TOOL_CALL, TEXT("final")]),
+    );
+    // blocks: [thinking, content("step"), thinking(tool), content("final")]
+    expect(split).not.toBeNull();
+    expect(split!.finalBlockIndex).toBe(3);
+
+    // Work that trails the reply folds back, so the visible region is not a
+    // suffix: consumers that address blocks by index (the reasoning sidebar)
+    // need the reply's own position, not its position among the visible ones.
+    const trailing = splitAgentWork(
+      content([
+        THINK,
+        TEXT("final"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+        TOOL_CALL,
+      ]),
+    );
+    expect(trailing).not.toBeNull();
+    expect(trailing!.finalBlocks).toHaveLength(1);
+    expect(trailing!.finalBlockIndex).toBe(1);
+  });
+
   it("collapses a resolved interactive choice into the work group", () => {
     const split = splitAgentWork(
       content([
@@ -107,7 +132,7 @@ describe("splitAgentWork", () => {
     ]);
   });
 
-  it("keeps an interactive choice in the final region visible", () => {
+  it("folds an interactive choice that trails the reply text", () => {
     const split = splitAgentWork(
       content([
         THINK,
@@ -115,12 +140,71 @@ describe("splitAgentWork", () => {
         TEXT("please pick one"),
       ]),
     );
-    // The choice trails the last thinking block, so it lands in the final
-    // region and stays rendered — the split is allowed.
+    // The box sits in the reply block: the agent asked after writing, so the
+    // text trails the choice and the box is resolved history once the pill
+    // shows (a pending choice keeps the message live, pill included).
     expect(split).not.toBeNull();
     const finalTypes = split!.finalBlocks.flatMap((block) =>
       block.parts.map((part) => part.type),
     );
-    expect(finalTypes).toContain("interactive_choice");
+    expect(finalTypes).toEqual(["plain"]);
+    expect(split!.finalBlocks[0].parts).toEqual([TEXT("please pick one")]);
+  });
+
+  it("keeps only the reply text when a choice follows it", () => {
+    const split = splitAgentWork(
+      content([
+        THINK,
+        TEXT("plan is written"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+      ]),
+    );
+    // Answering the box continued the run, so both the box and what came
+    // before it are work; the message opens on the text the box followed.
+    expect(split).not.toBeNull();
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("plan is written"),
+    ]);
+  });
+
+  it("prefers text streamed after the last choice", () => {
+    const split = splitAgentWork(
+      content([
+        THINK,
+        TEXT("asking now"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+        TEXT("done with A"),
+      ]),
+    );
+    expect(split).not.toBeNull();
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("done with A"),
+    ]);
+  });
+
+  it("collapses a tool call that trails the reply instead of leaking it", () => {
+    // Shape a paused turn saves: the agent called ask_user_choice together
+    // with a sibling tool, the choice event flushed the record, and the
+    // sibling call was still waiting for its result (empty card below the
+    // box, previously rendered outside the capsule).
+    const pendingSibling = {
+      type: "tool_call",
+      tool_calls: [{ id: "call-read", name: "astrbot_read_tool", args: {} }],
+    };
+    const split = splitAgentWork(
+      content([
+        THINK,
+        TEXT("plan is written"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+        pendingSibling,
+      ]),
+    );
+    expect(split).not.toBeNull();
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("plan is written"),
+    ]);
+    expect(
+      split!.workBlocks.flatMap((block) => block.parts.map((part) => part.type)),
+    ).toContain("tool_call");
   });
 });

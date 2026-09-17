@@ -5090,6 +5090,39 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/updates/sources:
+    get:
+      tags: [Updates]
+      summary: Get the dashboard-editable update sources
+      description: >-
+        Returns the update source URLs that the settings page may edit, each
+        with its effective value, built-in default, and whether an environment
+        variable overrides the config file.
+      operationId: getUpdateSources
+      x-astrbot-scope: system
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    put:
+      tags: [Updates]
+      summary: Save the dashboard-editable update sources
+      description: >-
+        Persists the submitted update sources to data/update_config.json,
+        leaving omitted fields and all unrelated keys untouched. Invalid values
+        are answered with the normal 200 envelope carrying status=error and the
+        validation message.
+      operationId: saveUpdateSources
+      x-astrbot-scope: system
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSourcesRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/pip/install:
     post:
       tags: [Updates]
@@ -7115,6 +7148,27 @@ components:
           type: string
         mirror:
           type: string
+      additionalProperties: false
+
+    UpdateSourcesRequest:
+      type: object
+      description: >-
+        Update source URLs to persist. Omitted fields keep their configured
+        value; an empty string is rejected rather than clearing the field.
+      properties:
+        core_release_api_url:
+          type: string
+          description: Release API used to check for new AstrBot versions.
+        core_package_base_url:
+          type: string
+          description: >-
+            Base URL for hosted core packages. The download URL is built as
+            {base}/{version}/source.zip, so this value must not contain
+            placeholders.
+        dashboard_registry_url_template:
+          type: string
+          description: >-
+            Dashboard package template. Must keep the {version} placeholder.
       additionalProperties: false
 
     GhproxyTestRequest:

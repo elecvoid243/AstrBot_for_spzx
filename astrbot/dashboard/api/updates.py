@@ -6,7 +6,11 @@ from fastapi.responses import JSONResponse
 from astrbot.core import logger
 from astrbot.core.desktop_runtime import DESKTOP_MANAGED_RESTART_MESSAGE
 from astrbot.dashboard.async_utils import run_maybe_async
-from astrbot.dashboard.schemas import PipInstallRequest, UpdateRequest
+from astrbot.dashboard.schemas import (
+    PipInstallRequest,
+    UpdateRequest,
+    UpdateSourcesRequest,
+)
 from astrbot.dashboard.services.update_service import (
     UpdateService,
     UpdateServiceError,
@@ -81,6 +85,13 @@ def _service_response(result: UpdateServiceResult) -> JSONResponse:
 
 
 def _service_error(exc: UpdateServiceError) -> JSONResponse:
+    # User input problems (e.g. an invalid update source URL) must reach the
+    # frontend verbatim, and are not server faults worth a stack trace.
+    if exc.code == "invalid_update_source":
+        return JSONResponse(
+            {"status": "error", "message": str(exc), "data": None},
+            status_code=200,
+        )
     logger.error(f"Dashboard update operation failed: {exc}", exc_info=True)
     if exc.code == "desktop_managed":
         return JSONResponse(
@@ -189,6 +200,23 @@ async def update_dashboard_assets(
     service: UpdateService = Depends(get_service),
 ):
     return await _run(service.update_dashboard)
+
+
+@router.get("/updates/sources")
+async def get_update_sources(
+    _auth: AuthContext = Depends(require_system_scope),
+    service: UpdateService = Depends(get_service),
+):
+    return await _run(service.get_update_sources)
+
+
+@router.put("/updates/sources")
+async def save_update_sources(
+    payload: UpdateSourcesRequest,
+    _auth: AuthContext = Depends(require_system_scope),
+    service: UpdateService = Depends(get_service),
+):
+    return await _run(lambda: service.save_update_sources(_model_dict(payload)))
 
 
 @router.post("/pip/install")

@@ -12,6 +12,9 @@
     "network": {
       "title": "Network"
     },
+    "updateSource": {
+      "title": "Update Sources"
+    },
     "security": {
       "title": "Security"
     },
@@ -99,6 +102,39 @@
       "available": "Available",
       "unavailable": "Unavailable",
       "custom": "Custom"
+    }
+  },
+  "updateSource": {
+    "title": "Download sources",
+    "subtitle": "Set the addresses AstrBot uses to check for updates and download packages — useful for intranet deployments or mirrors. Changes apply right after saving; no restart is needed. The remaining fine-grained addresses (GitHub archive, Harbour, ...) can still be edited by hand in data/update_config.json.",
+    "defaultHint": "Built-in: {value}",
+    "envLocked": "Overridden by the {name} environment variable, so edits here have no effect.",
+    "actions": {
+      "save": "Save changes",
+      "restoreDefaults": "Restore defaults"
+    },
+    "fields": {
+      "core_release_api_url": {
+        "label": "Core release check URL"
+      },
+      "core_package_base_url": {
+        "label": "Core package base URL"
+      },
+      "dashboard_registry_url_template": {
+        "label": "Dashboard package template"
+      }
+    },
+    "errors": {
+      "required": "The address cannot be empty; use Restore defaults to reset it.",
+      "invalidUrl": "Enter a full address starting with http or https and containing no spaces.",
+      "missingVersion": "This template must keep the {placeholder} placeholder.",
+      "fixFirst": "Fix the highlighted addresses first.",
+      "nothingToSave": "There is nothing to save."
+    },
+    "messages": {
+      "loadFailed": "Failed to load the update sources.",
+      "saveSuccess": "Update sources saved.",
+      "saveFailed": "Failed to save the update sources."
     }
   },
   "theme": {

@@ -12,6 +12,9 @@
     "network": {
       "title": "网络"
     },
+    "updateSource": {
+      "title": "更新源"
+    },
     "security": {
       "title": "安全"
     },
@@ -99,6 +102,39 @@
       "available": "可用",
       "unavailable": "不可用",
       "custom": "自定义"
+    }
+  },
+  "updateSource": {
+    "title": "更新源地址",
+    "subtitle": "设置 AstrBot 检查更新与下载安装包时使用的地址，适用于内网部署或使用镜像源的场景。修改保存后立即生效，无需重启。其余更细的地址（GitHub 归档、Harbour 等）仍可在 data/update_config.json 中手工配置。",
+    "defaultHint": "内置地址：{value}",
+    "envLocked": "已被环境变量 {name} 覆盖，此处修改不会生效。",
+    "actions": {
+      "save": "保存修改",
+      "restoreDefaults": "恢复默认值"
+    },
+    "fields": {
+      "core_release_api_url": {
+        "label": "核心版本检查地址"
+      },
+      "core_package_base_url": {
+        "label": "核心包下载基址"
+      },
+      "dashboard_registry_url_template": {
+        "label": "管理面板下载模板"
+      }
+    },
+    "errors": {
+      "required": "地址不能为空，如需恢复内置地址请点击“恢复默认值”。",
+      "invalidUrl": "请输入 http 或 https 开头的完整地址，且不含空格。",
+      "missingVersion": "该模板必须保留 {placeholder} 占位符。",
+      "fixFirst": "请先修正标红的地址。",
+      "nothingToSave": "没有可保存的字段。"
+    },
+    "messages": {
+      "loadFailed": "读取更新源失败。",
+      "saveSuccess": "更新源已保存。",
+      "saveFailed": "保存更新源失败。"
     }
   },
   "theme": {

@@ -12,6 +12,9 @@
     "network": {
       "title": "ネットワーク"
     },
+    "updateSource": {
+      "title": "更新元"
+    },
     "security": {
       "title": "セキュリティ"
     },
@@ -95,6 +98,39 @@
       "available": "利用可能",
       "unavailable": "利用不可",
       "custom": "カスタム"
+    }
+  },
+  "updateSource": {
+    "title": "ダウンロード元",
+    "subtitle": "AstrBot が更新の確認とパッケージのダウンロードに使用するアドレスを設定します。社内ネットワークやミラーを使う場合に便利です。保存後すぐに反映され、再起動は不要です。その他の細かいアドレス（GitHub アーカイブ、Harbour など）は引き続き data/update_config.json で手動設定できます。",
+    "defaultHint": "既定値：{value}",
+    "envLocked": "環境変数 {name} で上書きされているため、ここでの変更は反映されません。",
+    "actions": {
+      "save": "変更を保存",
+      "restoreDefaults": "既定値に戻す"
+    },
+    "fields": {
+      "core_release_api_url": {
+        "label": "コアのバージョン確認 URL"
+      },
+      "core_package_base_url": {
+        "label": "コアパッケージのベース URL"
+      },
+      "dashboard_registry_url_template": {
+        "label": "管理パネルのダウンロードテンプレート"
+      }
+    },
+    "errors": {
+      "required": "アドレスを空にはできません。既定値に戻す場合は「既定値に戻す」を押してください。",
+      "invalidUrl": "http または https で始まる完全なアドレスを入力してください（空白は使用できません）。",
+      "missingVersion": "このテンプレートには {placeholder} プレースホルダーが必要です。",
+      "fixFirst": "赤く表示されたアドレスを先に修正してください。",
+      "nothingToSave": "保存する項目がありません。"
+    },
+    "messages": {
+      "loadFailed": "更新元の読み込みに失敗しました。",
+      "saveSuccess": "更新元を保存しました。",
+      "saveFailed": "更新元の保存に失敗しました。"
     }
   },
   "theme": {

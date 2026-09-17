@@ -74,9 +74,31 @@ class AstrBotUpdater(_RepoZipUpdater):
         """
         super().__init__(verify=verify)
         self._main_path = get_astrbot_path()
-        self._update_config = UpdateConfig()
-        self._release_api = self._update_config.get_core_release_api_url()
         self._repository_url = "https://github.com/AstrBotDevs/AstrBot"
+
+    @property
+    def _update_config(self) -> UpdateConfig:
+        """Read the update configuration on demand.
+
+        A fresh instance per call keeps dashboard edits to the update sources
+        effective immediately, without an AstrBot restart.
+
+        Returns:
+            The current update configuration.
+        """
+        return UpdateConfig()
+
+    @property
+    def _release_api(self) -> str:
+        """Resolve the release API endpoint on demand.
+
+        Caching it in ``__init__`` would freeze the startup snapshot, so a
+        release URL saved from the dashboard would silently not apply.
+
+        Returns:
+            The configured core release API URL.
+        """
+        return self._update_config.get_core_release_api_url()
 
     def _build_core_package_url(self, version: str | None) -> str | None:
         """Build the hosted core package URL for a release tag.

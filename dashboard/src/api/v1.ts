@@ -56,6 +56,7 @@ import {
   type TraceSettingsRequest,
   type UpdateAccountRequest,
   type UpdateRequest,
+  type UpdateSourcesRequest,
 } from './generated/openapi-v1';
 import { apiV1Client, fetchWithAuth, httpClient } from './http';
 
@@ -703,6 +704,27 @@ export const traceApi = {
   },
 };
 
+/** Configurable update source keys exposed on the settings page. */
+export type UpdateSourceKey =
+  | 'core_release_api_url'
+  | 'core_package_base_url'
+  | 'dashboard_registry_url_template';
+
+export interface UpdateSourceDescriptor {
+  /** Effective value after applying environment-variable overrides. */
+  value: string;
+  /** Built-in default, used by the "restore defaults" action. */
+  default: string;
+  /** Environment variable that overrides this field, if any. */
+  env_var: string | null;
+  /** True when the environment variable is set, so the file value is ignored. */
+  env_locked: boolean;
+}
+
+export interface UpdateSourcesPayload {
+  sources: Record<UpdateSourceKey, UpdateSourceDescriptor>;
+}
+
 export const updatesApi = {
   check() {
     return withLegacyFallback<any>(openApiV1.checkUpdate(), () =>
@@ -744,6 +766,14 @@ export const updatesApi = {
     return withLegacyFallback<OpenConfig>(
       openApiV1.installPipPackage({ body: payload }),
       () => httpClient.post<ApiEnvelope<OpenConfig>>('/api/update/pip-install', payload),
+    );
+  },
+  sources() {
+    return typed<UpdateSourcesPayload>(openApiV1.getUpdateSources());
+  },
+  saveSources(payload: UpdateSourcesRequest) {
+    return typed<UpdateSourcesPayload>(
+      openApiV1.saveUpdateSources({ body: payload }),
     );
   },
 };

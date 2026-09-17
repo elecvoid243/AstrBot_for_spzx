@@ -619,17 +619,39 @@ export function useMessages(options: UseMessagesOptions) {
       // postdate the snapshot (persisted while the fetch was in flight, so
       // newer than everything in it) are kept.
       const existing = messagesBySession[sessionId] || [];
-      messagesBySession[sessionId] = records;
+      // A record a live connection still owns is in flight by definition,
+      // whatever id it carries. `message_saved` rewrites a streaming record's
+      // id to the persisted numeric one (see processStreamPayload), so the
+      // snapshot can hold a stale copy of the very same row: the live object is
+      // the one the stream keeps writing into, so it wins here and the snapshot
+      // copy is dropped — leaving both would render two bubbles with one id.
+      // Scoped to ids actually present in `existing`: on a fresh load the
+      // connection is created after this merge runs (restoreNextActiveRun), and
+      // then the snapshot's copy is all there is to show.
+      const ownedIds = new Set<string>();
+      for (const connection of Object.values(activeConnections)) {
+        if (connection.sessionId !== sessionId || !connection.botRecord) {
+          continue;
+        }
+        const ownedId = String(connection.botRecord.id ?? "");
+        if (existing.some((r) => String(r.id ?? "") === ownedId)) {
+          ownedIds.add(ownedId);
+        }
+      }
+      const snapshot = ownedIds.size
+        ? records.filter((r) => !ownedIds.has(String(r.id ?? "")))
+        : records;
+      messagesBySession[sessionId] = snapshot;
       if (existing.length) {
         const historyIds = new Set(
-          records.map((r: ChatRecord) => String(r.id)),
+          snapshot.map((r: ChatRecord) => String(r.id)),
         );
         const activeOrphanIds = new Set(
           (Array.isArray(payload.active_runs) ? payload.active_runs : [])
             .filter((r: ActiveChatRun) => !r.llm_checkpoint_id)
             .map((r: ActiveChatRun) => `system-${r.run_id}`),
         );
-        const snapshotNumericIds = records
+        const snapshotNumericIds = snapshot
           .map((r: ChatRecord) => Number(r.id))
           .filter((n) => Number.isFinite(n));
         const newestSnapshotId = snapshotNumericIds.length
@@ -637,6 +659,7 @@ export function useMessages(options: UseMessagesOptions) {
           : null;
         const live = existing.filter((r: ChatRecord) => {
           const recordId = String(r.id || "");
+          if (ownedIds.has(recordId)) return true;
           if (recordId.startsWith("system-")) {
             return activeOrphanIds.has(recordId);
           }
@@ -660,7 +683,7 @@ export function useMessages(options: UseMessagesOptions) {
           // "Z" values; localeCompare then groups by format instead of time,
           // which reordered the streaming reply above its user message after
           // switching back to a session mid-stream.
-          messagesBySession[sessionId] = [...records, ...live];
+          messagesBySession[sessionId] = [...snapshot, ...live];
         }
       }
       sessionProjects[sessionId] = normalizeSessionProject(payload.project);
@@ -1678,13 +1701,21 @@ export function useMessages(options: UseMessagesOptions) {
     const { botRecord, userRecord } = connection;
     if (!botRecord) return;
     const records = messagesBySession[connection.sessionId] || [];
-    if (records.includes(botRecord)) {
+    // Compare by id, not by object identity: the array is reactive, so a raw
+    // reference and its proxied element are different objects and an identity
+    // check can report the record absent (or present) for the wrong reason.
+    const botId = String(botRecord.id ?? "");
+    if (records.some((r) => String(r.id) === botId)) {
       connection.botVisible = true;
       return;
     }
-    if (!userRecord) return;
-
-    const userIndex = records.indexOf(userRecord);
+    // No user record to anchor to: a resume connection (`restoreNextActiveRun`)
+    // has none at all. Bailing here was why a bubble the history load dropped
+    // could never come back — the connection kept streaming into a record
+    // nothing rendered, and no later payload re-inserted it either.
+    const userIndex = userRecord
+      ? records.findIndex((r) => String(r.id) === String(userRecord.id))
+      : -1;
     let insertionAnchor = connection.deferredBeforeBot;
     if (insertionAnchor) {
       for (const candidate of Object.values(activeConnections)) {
@@ -1694,13 +1725,17 @@ export function useMessages(options: UseMessagesOptions) {
           candidate.deferredBeforeBot === connection.deferredBeforeBot &&
           candidate.botVisible &&
           candidate.botRecord &&
-          records.includes(candidate.botRecord)
+          records.some(
+            (r) => String(r.id) === String(candidate.botRecord?.id ?? ""),
+          )
         ) {
           insertionAnchor = candidate.botRecord;
         }
       }
     }
-    const anchorIndex = insertionAnchor ? records.indexOf(insertionAnchor) : -1;
+    const anchorIndex = insertionAnchor
+      ? records.findIndex((r) => String(r.id) === String(insertionAnchor?.id))
+      : -1;
     if (anchorIndex >= 0) {
       records.splice(anchorIndex + 1, 0, botRecord);
     } else if (userIndex >= 0) {

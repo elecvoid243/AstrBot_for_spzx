@@ -54,6 +54,12 @@ const props = defineProps<{
    * (the user clicked a file-change chip on the reasoning bar).
    */
   focusCallId?: string | null;
+  /**
+   * Message-search reveal: keyword to land on inside the timeline. Set when
+   * the jump's target message matched the search in its thinking text, which
+   * the main message list never renders inline.
+   */
+  focusQuery?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -78,6 +84,7 @@ function close() {
 // focus target, scroll the matching pinned card into view.
 const timelineRef = ref<{
   scrollToFile: (id: string) => Promise<void>;
+  scrollToText: (text: string) => Promise<void>;
 } | null>(null);
 
 watch(
@@ -86,6 +93,17 @@ watch(
     if (!open || !callId) return;
     await nextTick();
     await timelineRef.value?.scrollToFile(callId);
+  },
+);
+
+// Message-search reveal: land on the thought that holds the keyword (the
+// timeline scrolls itself, so no file target is involved).
+watch(
+  [() => props.modelValue, () => props.focusQuery],
+  async ([open, query]) => {
+    if (!open || !query) return;
+    await nextTick();
+    await timelineRef.value?.scrollToText(query);
   },
 );
 

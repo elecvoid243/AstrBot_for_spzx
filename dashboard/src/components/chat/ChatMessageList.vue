@@ -653,6 +653,13 @@ const props = withDefaults(
      * message matched. Null = nothing to reveal.
      */
     revealWorkIndex?: number | null;
+    /**
+     * Keyword the reveal came from. When it matches the thinking text of the
+     * revealed message, the reasoning sidebar is asked to open on that block
+     * and land on the matched thought — the main list keeps reasoning out of
+     * the message flow, so the text is otherwise unreadable.
+     */
+    revealWorkQuery?: string;
   }>(),
   {
     isDark: false,
@@ -673,6 +680,7 @@ const props = withDefaults(
     historyError: null,
     historyOffset: 0,
     revealWorkIndex: null,
+    revealWorkQuery: "",
   },
 );
 
@@ -693,7 +701,13 @@ const emit = defineEmits<{
   selectBotText: [event: MouseEvent, message: ChatRecord];
   openThread: [thread: ChatThread];
   openReasoning: [
-    payload: { message: ChatRecord; blockIndex: number; callId?: string },
+    payload: {
+      message: ChatRecord;
+      blockIndex: number;
+      callId?: string;
+      /** Keyword to land on inside the sidebar's timeline (search reveal). */
+      query?: string;
+    },
   ];
   openRefs: [refs: unknown];
   submitChoice: [
@@ -1298,10 +1312,29 @@ watch(
     if (!message) return;
     adoptedRevealIndex.value = target;
     const key = agentWorkKey(message, localIndex);
-    if (expandedAgentWork.value.has(key)) return;
-    const next = new Set(expandedAgentWork.value);
-    next.add(key);
-    expandedAgentWork.value = next;
+    if (!expandedAgentWork.value.has(key)) {
+      const next = new Set(expandedAgentWork.value);
+      next.add(key);
+      expandedAgentWork.value = next;
+    }
+    // A hit inside the thinking text stays unreadable in the main list, which
+    // renders reasoning only in the sidebar: hand that block over, with the
+    // keyword for the sidebar to land on.
+    const query = props.revealWorkQuery.trim();
+    if (!query) return;
+    const needle = query.toLowerCase();
+    const blockIndex = renderBlocks(message).findIndex(
+      (block) =>
+        block.kind === "thinking" &&
+        block.parts.some(
+          (part) =>
+            part.type === "think" &&
+            String(part.think || "").toLowerCase().includes(needle),
+        ),
+    );
+    if (blockIndex >= 0) {
+      emit("openReasoning", { message, blockIndex, query });
+    }
   },
   { immediate: true },
 );

@@ -827,6 +827,7 @@
               :history-error="historyPaging?.error || null"
               :history-offset="historyOffset"
               :reveal-work-index="revealWorkIndex"
+              :reveal-work-query="revealWorkQuery"
               :current-umo="currentUmo ?? undefined"
               :is-dark="isDark"
               :is-streaming="
@@ -1046,6 +1047,7 @@
       :parts="activeReasoningParts"
       :is-dark="isDark"
       :focus-call-id="activeReasoningTarget?.callId ?? null"
+      :focus-query="activeReasoningTarget?.query ?? null"
     />
     <RefsSidebar
       v-model="refsSidebarOpen"
@@ -1370,6 +1372,10 @@ const branchHistoryCollapsed = ref(true);
 // is rendered; clearing it after a successful landing lets a repeated search
 // to the same index reveal again.
 const revealWorkIndex = ref<number | null>(null);
+// Keyword of that same jump. The list forwards it to the reasoning sidebar
+// when the hit sits in the thinking text, so the sidebar opens on the matched
+// thought instead of its top.
+const revealWorkQuery = ref("");
 // While a programmatic scroll animation runs, keep the scroll-top auto-load
 // from firing mid-animation (it would prepend + anchor and cancel the
 // smooth scroll, leaving the viewport off the target).
@@ -1432,6 +1438,9 @@ const activeReasoningTarget = ref<{
   message: ChatRecord;
   blockIndex: number;
   callId?: string;
+  // Message-search reveal: keyword for the sidebar to land on inside the
+  // thinking block it was opened for.
+  query?: string;
 } | null>(null);
 const deletingThread = ref(false);
 const refsSidebarOpen = ref(false);
@@ -2245,8 +2254,10 @@ async function scrollToMessageFromQuery() {
   // Ask the list to open the target message's agent-work capsule before the
   // landing is measured: a match inside the collapsed work trail is invisible
   // otherwise. The list adopts the index whenever the row appears, so this
-  // also covers a target that still has to be paged in.
+  // also covers a target that still has to be paged in. The keyword goes with
+  // it — the capsule is not enough when the hit is in the thinking text.
   revealWorkIndex.value = target;
+  revealWorkQuery.value = (route.query.scrollToKeyword as string) || "";
   await nextTick();
   await new Promise((r) => setTimeout(r, 300));
   // Windowed history: a search result may live outside the loaded window —
@@ -2257,7 +2268,12 @@ async function scrollToMessageFromQuery() {
     // Consumed: the capsule is expanded by now and stays that way, while the
     // cleared index keeps a later jump to the same row able to reveal again.
     revealWorkIndex.value = null;
-    const { scrollToIndex: _, ...rest } = route.query;
+    revealWorkQuery.value = "";
+    const {
+      scrollToIndex: _index,
+      scrollToKeyword: _keyword,
+      ...rest
+    } = route.query;
     router.replace({ query: rest });
   }
 }
@@ -4607,6 +4623,9 @@ function openReasoningPanel(payload: {
   // 2026-08-11 file-change visibility: optional locate target when the
   // user clicked a file-change chip on the reasoning bar.
   callId?: string;
+  // Message-search reveal: keyword to land on when the search hit sits in
+  // the thinking text of this block.
+  query?: string;
 }) {
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   threadPanelOpen.value = false;

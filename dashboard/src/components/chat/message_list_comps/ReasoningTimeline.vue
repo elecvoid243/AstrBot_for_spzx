@@ -112,7 +112,27 @@ async function scrollToFile(callId: string): Promise<void> {
   setTimeout(() => el.classList.remove("file-change-flash"), 1200);
 }
 
-defineExpose({ scrollToFile });
+/** Scroll the timeline entry holding `text` into view and flash it. */
+async function scrollToText(text: string): Promise<void> {
+  await nextTick();
+  const root = rootRef.value;
+  const needle = text.trim().toLowerCase();
+  if (!root || !needle) return;
+  for (const entry of root.querySelectorAll<HTMLElement>(
+    ".reasoning-timeline-item",
+  )) {
+    if (!entry.textContent?.toLowerCase().includes(needle)) continue;
+    entry.scrollIntoView({ behavior: "smooth", block: "center" });
+    entry.classList.add("reasoning-match-flash");
+    setTimeout(() => entry.classList.remove("reasoning-match-flash"), 1200);
+    return;
+  }
+}
+
+// The message-search jump opens this timeline on the thinking block that
+// matched the keyword; landing at the top of a long trail would leave the
+// user hunting for the hit again.
+defineExpose({ scrollToFile, scrollToText });
 
 type NormalizedToolCall = Record<string, unknown>;
 
@@ -249,6 +269,23 @@ function parseJsonSafe(value: unknown) {
   column-gap: 10px;
   align-items: flex-start;
   padding-bottom: 10px;
+}
+
+/* Message-search reveal: flash the entry whose thinking text matched. */
+.reasoning-timeline-item.reasoning-match-flash {
+  animation: reasoningMatchFlash 1.2s ease-out;
+  border-radius: 10px;
+}
+
+@keyframes reasoningMatchFlash {
+  0%,
+  40% {
+    background: rgba(var(--v-theme-primary), 0.14);
+  }
+
+  100% {
+    background: transparent;
+  }
 }
 
 .reasoning-timeline-item:last-child {

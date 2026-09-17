@@ -15,6 +15,10 @@
 //   4. a reveal that arrives before its row is loaded is adopted on arrival
 //   5. clearing the reveal keeps the capsule open, leaves it manually
 //      collapsible, and re-arms a later reveal of the same index
+//
+// A hit inside the *thinking* text needs more than the capsule: the main list
+// renders reasoning only in the reasoning sidebar, so the keyword rides along
+// and the matched thinking block is handed to the sidebar (cases below).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -166,5 +170,37 @@ describe("ChatMessageList agent-work reveal", () => {
     // Re-searching the same hit reveals it again.
     await wrapper.setProps({ revealWorkIndex: 1 });
     expect(capsuleExpanded(wrapper)).toBe(true);
+  });
+});
+
+describe("ChatMessageList thinking reveal", () => {
+  it("opens the reasoning sidebar on the block holding the keyword", () => {
+    // The sidebar renders the thinking text the main list never shows, and its
+    // timeline needs the keyword to land on the matched thought.
+    const wrapper = mountList({
+      revealWorkIndex: 1,
+      revealWorkQuery: "  KEYWORD  ",
+    });
+    const events = wrapper.emitted("openReasoning");
+    expect(events).toHaveLength(1);
+    expect(events?.[0][0]).toMatchObject({
+      blockIndex: 0,
+      query: "KEYWORD",
+    });
+  });
+
+  it("keeps the sidebar closed when the hit is not in the thinking text", () => {
+    // "final answer" only occurs in the trailing reply, which is rendered in
+    // the message flow — no reasoning panel is needed for it.
+    const wrapper = mountList({
+      revealWorkIndex: 1,
+      revealWorkQuery: "final answer",
+    });
+    expect(wrapper.emitted("openReasoning")).toBeUndefined();
+  });
+
+  it("keeps the sidebar closed when the reveal carries no keyword", () => {
+    const wrapper = mountList({ revealWorkIndex: 1 });
+    expect(wrapper.emitted("openReasoning")).toBeUndefined();
   });
 });

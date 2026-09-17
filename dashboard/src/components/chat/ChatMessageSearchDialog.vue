@@ -158,10 +158,16 @@ function goPage(p: number) {
 
 function goTo(conv: SearchConversation, m: SearchMatch) {
   closeDialog();
+  // The keyword rides along: a hit inside a collapsed agent-work capsule (or
+  // inside its thinking text) only becomes readable if the list knows what
+  // was searched for.
   router.push({
     name: 'ChatDetail',
     params: { conversationId: conv.session_id },
-    query: { scrollToIndex: String(m.message_index) },
+    query: {
+      scrollToIndex: String(m.message_index),
+      scrollToKeyword: query.value.trim(),
+    },
   });
 }
 

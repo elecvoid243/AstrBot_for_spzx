@@ -826,6 +826,8 @@
               :history-loading-older="Boolean(historyPaging?.loadingOlder)"
               :history-error="historyPaging?.error || null"
               :history-offset="historyOffset"
+              :reveal-work-index="revealWorkIndex"
+              :reveal-work-query="revealWorkQuery"
               :current-umo="currentUmo ?? undefined"
               :is-dark="isDark"
               :is-streaming="
@@ -1045,6 +1047,7 @@
       :parts="activeReasoningParts"
       :is-dark="isDark"
       :focus-call-id="activeReasoningTarget?.callId ?? null"
+      :focus-query="activeReasoningTarget?.query ?? null"
     />
     <RefsSidebar
       v-model="refsSidebarOpen"
@@ -1362,6 +1365,17 @@ const jumpInProgress = ref(false);
 // Mirror of ChatMessageList's collapsed branch history (default collapsed
 // there too): inherited scroll markers stay hidden while collapsed.
 const branchHistoryCollapsed = ref(true);
+// Absolute history index of the message a message-search jump must land on
+// with its agent-work capsule opened. The matched text often sits in the work
+// trail that capsule hides, so landing on the row alone would still leave the
+// user unable to spot the hit. ChatMessageList adopts the index once the row
+// is rendered; clearing it after a successful landing lets a repeated search
+// to the same index reveal again.
+const revealWorkIndex = ref<number | null>(null);
+// Keyword of that same jump. The list forwards it to the reasoning sidebar
+// when the hit sits in the thinking text, so the sidebar opens on the matched
+// thought instead of its top.
+const revealWorkQuery = ref("");
 // While a programmatic scroll animation runs, keep the scroll-top auto-load
 // from firing mid-animation (it would prepend + anchor and cancel the
 // smooth scroll, leaving the viewport off the target).
@@ -1424,6 +1438,9 @@ const activeReasoningTarget = ref<{
   message: ChatRecord;
   blockIndex: number;
   callId?: string;
+  // Message-search reveal: keyword for the sidebar to land on inside the
+  // thinking block it was opened for.
+  query?: string;
 } | null>(null);
 const deletingThread = ref(false);
 const refsSidebarOpen = ref(false);
@@ -2234,6 +2251,13 @@ async function scrollToMessageFromQuery() {
   if (!idxStr) return;
   const target = parseInt(idxStr, 10);
   if (isNaN(target) || target < 0) return;
+  // Ask the list to open the target message's agent-work capsule before the
+  // landing is measured: a match inside the collapsed work trail is invisible
+  // otherwise. The list adopts the index whenever the row appears, so this
+  // also covers a target that still has to be paged in. The keyword goes with
+  // it — the capsule is not enough when the hit is in the thinking text.
+  revealWorkIndex.value = target;
+  revealWorkQuery.value = (route.query.scrollToKeyword as string) || "";
   await nextTick();
   await new Promise((r) => setTimeout(r, 300));
   // Windowed history: a search result may live outside the loaded window —
@@ -2241,7 +2265,15 @@ async function scrollToMessageFromQuery() {
   // target cannot be reached (no more history), leave the query so the next
   // session open retries.
   if (await jumpToIndex(target)) {
-    const { scrollToIndex: _, ...rest } = route.query;
+    // Consumed: the capsule is expanded by now and stays that way, while the
+    // cleared index keeps a later jump to the same row able to reveal again.
+    revealWorkIndex.value = null;
+    revealWorkQuery.value = "";
+    const {
+      scrollToIndex: _index,
+      scrollToKeyword: _keyword,
+      ...rest
+    } = route.query;
     router.replace({ query: rest });
   }
 }
@@ -4591,6 +4623,9 @@ function openReasoningPanel(payload: {
   // 2026-08-11 file-change visibility: optional locate target when the
   // user clicked a file-change chip on the reasoning bar.
   callId?: string;
+  // Message-search reveal: keyword to land on when the search hit sits in
+  // the thinking text of this block.
+  query?: string;
 }) {
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   threadPanelOpen.value = false;

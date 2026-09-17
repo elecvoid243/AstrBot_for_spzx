@@ -2,6 +2,10 @@
 // the scrollToFile locate mechanism (2026-08-11 file-change
 // visibility feature).
 //
+// Extended 2026-09-17 (elecvoid243) with the message-search reveal:
+// scrollToText lands on the timeline entry whose thinking text holds the
+// keyword the user searched for.
+//
 // Author: elecvoid243 | 2026-08-11
 
 import { describe, it, expect, vi } from "vitest";
@@ -17,7 +21,7 @@ const STUBS = {
   ToolCallCard: { template: "<div />" },
   ToolCallItem: { template: "<div><slot name='label' /><slot name='details' /></div>" },
   IPythonToolBlock: { template: "<div />" },
-  MarkdownRender: { template: "<div />" },
+  MarkdownRender: { props: ["content"], template: "<div>{{ content }}</div>" },
   "v-icon": { template: "<i />" },
 };
 
@@ -77,5 +81,39 @@ describe("ReasoningTimeline pinned file-change section", () => {
       wrapper.vm as unknown as { scrollToFile: (id: string) => Promise<void> }
     ).scrollToFile("c1");
     expect(scrollSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ReasoningTimeline keyword locate", () => {
+  /** The exposed scrollToText, typed for the test that drives it. */
+  function scrollToText(wrapper: ReturnType<typeof mountTimeline>) {
+    return (
+      wrapper.vm as unknown as {
+        scrollToText: (text: string) => Promise<void>;
+      }
+    ).scrollToText;
+  }
+
+  it("lands on the thinking entry that holds the keyword", async () => {
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    const wrapper = mountTimeline([
+      { type: "think", think: "first thought" },
+      { type: "think", think: "the NEEDLE is here" },
+    ]);
+    await scrollToText(wrapper)("needle");
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    const items = wrapper.findAll(".reasoning-timeline-item");
+    expect(items[0].classes()).not.toContain("reasoning-match-flash");
+    expect(items[1].classes()).toContain("reasoning-match-flash");
+  });
+
+  it("scrolls nowhere when no entry holds the keyword", async () => {
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    const wrapper = mountTimeline([{ type: "think", think: "first thought" }]);
+    await scrollToText(wrapper)("absent");
+    expect(scrollSpy).not.toHaveBeenCalled();
+    expect(wrapper.find(".reasoning-match-flash").exists()).toBe(false);
   });
 });

@@ -494,6 +494,9 @@ class ChatUIProjectService:
             "is_group": session.is_group,
             "created_at": to_utc_isoformat(session.created_at),
             "updated_at": to_utc_isoformat(session.updated_at),
+            # 2026-09-18 (elecvoid243): project session rows carry the same
+            # star marker as the flat ChatUI session list.
+            "starred": bool(session.starred),
         }
 
     @staticmethod

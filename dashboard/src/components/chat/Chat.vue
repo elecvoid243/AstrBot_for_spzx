@@ -211,6 +211,7 @@
           @delete-session="deleteProjectSession"
           @toggle-session-checked="toggleSessionChecked"
           @archive-session="archiveProjectSession"
+          @toggle-session-star="toggleSessionStarred"
           @drag-session-start="onSessionDragStart"
           @drag-session-end="onSessionDragEnd"
           @drag-over-project="onProjectDragOver"
@@ -294,6 +295,14 @@
               v-else-if="sessionHasUnreadMarker(session.session_id)"
               class="session-finished-dot"
               aria-hidden="true"
+            />
+            <!-- 2026-09-18 (elecvoid243): persisted star marker, kept ahead
+               of the title so starred conversations are quick to spot. -->
+            <Star
+              v-if="session.starred"
+              :size="13"
+              class="session-star-badge"
+              :aria-label="tm('conversation.starred')"
             />
             <span class="session-title">{{ sessionTitle(session) }}</span>
             <div
@@ -413,6 +422,25 @@
               </template>
               <v-list-item-title>
                 {{ tm("conversation.editDisplayName") }}
+              </v-list-item-title>
+            </v-list-item>
+            <!-- 2026-09-18 (elecvoid243): star toggle; the mark is persisted
+               server-side so it survives reloads and other browsers. -->
+            <v-list-item
+              class="styled-menu-item"
+              rounded="md"
+              @click="toggleSessionStarred(sessionContextMenu.session!)"
+            >
+              <template #prepend>
+                <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
+                <Star v-else :size="16" />
+              </template>
+              <v-list-item-title>
+                {{
+                  sessionContextMenu.session!.starred
+                    ? tm("conversation.removeStar")
+                    : tm("conversation.addStar")
+                }}
               </v-list-item-title>
             </v-list-item>
             <v-list-item
@@ -1111,6 +1139,8 @@ import {
   Search,
   Settings,
   SquarePen,
+  Star,
+  StarOff,
   Sun,
   Trash2,
 } from "@lucide/vue";
@@ -1269,6 +1299,28 @@ function toggleSessionUnread(sessionId: string) {
     unreadAttention.markUnread(sessionId);
   }
 }
+
+/** 2026-09-18 (elecvoid243): context-menu star toggle. The mark is persisted
+ * server-side, so it survives reloads instead of living in an in-memory
+ * store like the unread marker above.
+ *
+ * Takes the minimal row shape because both the flat session list (`Session`)
+ * and `ProjectList`'s `ProjectSession` rows reach this handler. */
+async function toggleSessionStarred(session: {
+  session_id: string;
+  starred?: boolean;
+}) {
+  const next = !session.starred;
+  const ok = await setSessionStarred(session.session_id, next);
+  if (!ok) {
+    toast.error(tm("conversation.starFailed"));
+    return;
+  }
+  // setSessionStarred patches the flat session list; project rows live in
+  // their own list passed down to ProjectList, so mirror the flag on the
+  // row object itself (a no-op for flat rows, which are the same object).
+  session.starred = next;
+}
 const { languageOptions, currentLanguage, switchLanguage, locale } =
   useLanguageSwitcher();
 const {
@@ -1280,6 +1332,7 @@ const {
   batchDeleteSessions,
   getArchivedSessions,
   setSessionArchived,
+  setSessionStarred,
   updateSessionTitle,
 } = useSessions(props.chatboxMode);
 
@@ -5785,6 +5838,16 @@ function toggleTheme() {
   border-radius: 50%;
   background: #10b981;
   flex-shrink: 0;
+}
+
+/* 2026-09-18 (elecvoid243): persisted star marker. Uses the theme primary
+   colour on purpose: amber already means "waiting for a choice" and green
+   means "unread / run finished", so a fourth status colour would be noise.
+   Filled (not outlined) so it reads as a marker at 13px. */
+.session-star-badge {
+  flex-shrink: 0;
+  color: rgb(var(--v-theme-primary));
+  fill: currentColor;
 }
 
 .session-title {

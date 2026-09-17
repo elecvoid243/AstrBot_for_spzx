@@ -111,7 +111,11 @@
     "displayName": "セッション名",
     "displayNameUpdated": "セッション名を更新しました",
     "displayNameUpdateFailed": "セッション名の更新に失敗しました",
-    "confirmDelete": "「{name}」を削除しますか？この操作は元に戻せません。"
+    "confirmDelete": "「{name}」を削除しますか？この操作は元に戻せません。",
+    "addStar": "スターを追加",
+    "removeStar": "スターを解除",
+    "starred": "スター付き",
+    "starFailed": "スターの更新に失敗しました"
   },
   "modes": {
     "darkMode": "ダークモードに切り替え",

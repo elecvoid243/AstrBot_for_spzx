@@ -23,6 +23,7 @@ def _session(
     creator: str = "alice",
     display_name: str = "会话",
     archived: int = 0,
+    starred: int = 0,
 ):
     return SimpleNamespace(
         session_id=session_id,
@@ -31,6 +32,7 @@ def _session(
         is_group=0,
         display_name=display_name,
         archived=archived,
+        starred=starred,
         created_at=datetime(2026, 8, 13, tzinfo=UTC),
         updated_at=datetime(2026, 8, 13, tzinfo=UTC),
     )

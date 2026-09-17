@@ -172,6 +172,14 @@
                   class="project-session-finished-dot"
                   aria-hidden="true"
                 />
+                <!-- 2026-09-18 (elecvoid243): persisted star marker, mirroring
+                   the flat session list in Chat.vue. -->
+                <Star
+                  v-if="session.starred"
+                  :size="13"
+                  class="project-session-star-badge"
+                  :aria-label="tm('conversation.starred')"
+                />
                 <span class="project-session-title">
                   {{ sessionTitle(session) }}
                 </span>
@@ -318,6 +326,25 @@
           {{ tm("conversation.editDisplayName") }}
         </v-list-item-title>
       </v-list-item>
+      <!-- 2026-09-18 (elecvoid243): star toggle, mirroring the flat session
+         list in Chat.vue; the mark is persisted server-side. -->
+      <v-list-item
+        class="styled-menu-item"
+        rounded="md"
+        @click="$emit('toggleSessionStar', sessionContextMenu.session!)"
+      >
+        <template #prepend>
+          <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
+          <Star v-else :size="16" />
+        </template>
+        <v-list-item-title>
+          {{
+            sessionContextMenu.session!.starred
+              ? tm("conversation.removeStar")
+              : tm("conversation.addStar")
+          }}
+        </v-list-item-title>
+      </v-list-item>
       <v-list-item
         class="styled-menu-item"
         rounded="md"
@@ -391,6 +418,8 @@ import {
   MailOpen,
   Pencil,
   Plus,
+  Star,
+  StarOff,
   Trash2,
 } from "@lucide/vue";
 import { useModuleI18n } from "@/i18n/composables";
@@ -424,6 +453,9 @@ export interface ProjectSession {
    * project rows can render the branch badge / jump-to-source. */
   branch_source?: { session_id: string; message_id: number } | null;
   branches?: Array<{ session_id: string; display_name: string | null }>;
+  /** 2026-09-18 (elecvoid243): persisted star marker, mirroring the flat
+   * Session type in useSessions.ts. */
+  starred?: boolean;
 }
 
 interface Props {
@@ -477,6 +509,9 @@ const emit = defineEmits<{
   toggleSessionChecked: [sessionId: string];
   /** 2026-08-13 session archive: a project session row asked to archive. */
   archiveSession: [sessionId: string, projectId: string];
+  /** 2026-09-18 (elecvoid243): star toggle asked from a project row; the
+   * session object is passed so Chat.vue can mirror the flag on the row. */
+  toggleSessionStar: [session: ProjectSession];
   /** 2026-08-13 session drag events (bubbled to Chat.vue, the owner of
    * sessions/projects and the move logic). */
   dragSessionStart: [sessionId: string, projectId: string];
@@ -985,6 +1020,15 @@ function onSessionRowDrop(
   border-radius: 50%;
   background: #10b981;
   flex-shrink: 0;
+}
+
+/* 2026-09-18 (elecvoid243): persisted star marker for project session rows,
+   mirroring the flat session list in Chat.vue (theme primary, filled, no
+   fourth status colour). */
+.project-session-star-badge {
+  flex-shrink: 0;
+  color: rgb(var(--v-theme-primary));
+  fill: currentColor;
 }
 
 .project-session-select-checkbox {

@@ -424,6 +424,9 @@ class PlatformSession(TimestampMixin, SQLModel, table=True):
     archived: int = Field(default=0, nullable=False)
     """1 when the session is archived (hidden from the ChatUI sidebar
     session lists and moved to the archive section); 0 otherwise."""
+    starred: int = Field(default=0, nullable=False)
+    """1 when the user starred the session from the ChatUI sidebar context
+    menu (kept at the front of the row as a quick-find marker); 0 otherwise."""
 
     __table_args__ = (
         UniqueConstraint(

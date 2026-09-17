@@ -241,6 +241,7 @@ export type ChatSessionBatchDeleteRequest = {
 
 export type ChatSessionPatchRequest = {
     display_name?: string;
+    starred?: boolean;
 };
 
 export type ChatThreadCreateRequest = {

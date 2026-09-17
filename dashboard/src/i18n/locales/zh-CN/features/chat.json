@@ -320,7 +320,11 @@
     "archiveFailed": "归档会话失败",
     "unarchiveFailed": "恢复会话失败",
     "markUnread": "标为未读",
-    "markRead": "标为已读"
+    "markRead": "标为已读",
+    "addStar": "添加星标",
+    "removeStar": "取消星标",
+    "starred": "已加星标",
+    "starFailed": "更新星标失败"
   },
   "modes": {
     "darkMode": "切换到夜间模式",

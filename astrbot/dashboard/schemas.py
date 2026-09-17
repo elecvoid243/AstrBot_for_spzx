@@ -129,6 +129,7 @@ class ChatSessionBatchDeleteRequest(OpenModel):
 
 class ChatSessionPatchRequest(OpenModel):
     display_name: str | None = None
+    starred: bool | None = None
 
 
 class FileAccessModeSetRequest(OpenModel):

@@ -955,6 +955,18 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def set_platform_session_starred(
+        self, session_id: str, starred: int
+    ) -> None:
+        """Set the starred flag of a Platform session without touching it.
+
+        Args:
+            session_id: Session to update.
+            starred: New starred flag (1 to star, 0 to unstar).
+        """
+        ...
+
+    @abc.abstractmethod
     async def delete_platform_session(self, session_id: str) -> None:
         """Delete a Platform session by its ID."""
         ...

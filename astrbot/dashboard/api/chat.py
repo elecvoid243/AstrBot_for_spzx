@@ -372,6 +372,20 @@ async def update_chat_session(
     auth: AuthContext = Depends(require_chat_scope),
     service: ChatService = Depends(get_service),
 ):
+    """Patch a webchat session (display name and/or starred flag).
+
+    ``starred`` takes precedence when both fields are present; the ChatUI
+    sends them from two separate actions (rename / star toggle), so the
+    combination is never produced by the frontend.
+    """
+    if payload.starred is not None:
+        return await _run(
+            lambda: service.set_session_starred(
+                auth.username,
+                session_id,
+                payload.starred,
+            )
+        )
     return await _run(
         lambda: service.update_session_display_name(
             auth.username,

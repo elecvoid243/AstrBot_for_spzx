@@ -320,7 +320,11 @@
     "archiveFailed": "Failed to archive conversation",
     "unarchiveFailed": "Failed to restore conversation",
     "markUnread": "Mark as Unread",
-    "markRead": "Mark as Read"
+    "markRead": "Mark as Read",
+    "addStar": "Add Star",
+    "removeStar": "Remove Star",
+    "starred": "Starred",
+    "starFailed": "Failed to update star"
   },
   "modes": {
     "darkMode": "Switch to Dark Mode",

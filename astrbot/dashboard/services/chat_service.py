@@ -2433,6 +2433,9 @@ class ChatService:
                     "is_group": session.is_group,
                     "created_at": to_utc_isoformat(session.created_at),
                     "updated_at": to_utc_isoformat(session.updated_at),
+                    # 2026-09-18 (elecvoid243): sidebar star marker; persisted
+                    # in `platform_sessions.starred`.
+                    "starred": bool(session.starred),
                 }
             )
 
@@ -2529,6 +2532,7 @@ class ChatService:
                     "project_id": item["project_id"],
                     "project_title": item["project_title"],
                     "project_emoji": item["project_emoji"],
+                    "starred": bool(session.starred),
                 }
             )
 
@@ -2578,6 +2582,31 @@ class ChatService:
         if session.creator != username:
             raise ChatServiceError("Permission denied")
         await self.db.update_platform_session(session_id, archived=1 if archived else 0)
+
+    async def set_session_starred(
+        self, username: str, session_id: str, starred: bool
+    ) -> None:
+        """Star or unstar a webchat session owned by the user.
+
+        Starring is a pure marker: it must not reorder the ChatUI sidebar
+        (sorted by ``updated_at DESC``), so the write goes through
+        ``db.set_platform_session_starred`` instead of
+        ``db.update_platform_session``, which bumps ``updated_at``.
+
+        Args:
+            username: Dashboard username; must own the session.
+            session_id: Session to update.
+            starred: True to star, False to unstar.
+
+        Raises:
+            ChatServiceError: Session missing, or owned by another user.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+        await self.db.set_platform_session_starred(session_id, 1 if starred else 0)
 
     async def get_sessions_from_dashboard_query(
         self,

@@ -6323,6 +6323,8 @@ components:
       properties:
         display_name:
           type: string
+        starred:
+          type: boolean
       additionalProperties: false
 
     ChatOpenFileRequest:

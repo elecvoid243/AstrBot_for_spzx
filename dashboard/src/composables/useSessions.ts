@@ -18,6 +18,10 @@ export interface Session {
   branch_source: { session_id: string; message_id: number } | null;
   /** Direct child sessions branched from this session. */
   branches: Array<{ session_id: string; display_name: string | null }>;
+  /** 2026-09-18 (elecvoid243): user star from the sidebar context menu,
+   * persisted on the server (platform_sessions.starred). Rendered as a
+   * leading marker so a starred conversation is quick to find. */
+  starred?: boolean;
 }
 
 /** Archived session: same shape as Session plus project membership, so the
@@ -200,6 +204,31 @@ export function useSessions(chatboxMode: boolean = false) {
     }
   }
 
+  /** 2026-09-18 (elecvoid243): star / unstar a session (persisted on the
+   * server). Unlike archiving this only flips a marker, so the local list
+   * entry is patched in place — refetching would risk a sidebar flicker and
+   * a reorder for a purely visual change. Returns true on success. */
+  async function setSessionStarred(
+    sessionId: string,
+    starred: boolean,
+  ): Promise<boolean> {
+    try {
+      const response = await chatApi.updateSession(sessionId, { starred });
+      if (response.data?.status !== "ok") {
+        console.error(
+          response.data?.message || "Failed to update star state",
+        );
+        return false;
+      }
+      const session = sessions.value.find((s) => s.session_id === sessionId);
+      if (session) session.starred = starred;
+      return true;
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  }
+
   interface BatchDeleteFailedItem {
     session_id: string;
     reason: string;
@@ -327,6 +356,7 @@ export function useSessions(chatboxMode: boolean = false) {
     batchDeleteSessions,
     getArchivedSessions,
     setSessionArchived,
+    setSessionStarred,
     showEditTitleDialog,
     saveTitle,
     updateSessionTitle,

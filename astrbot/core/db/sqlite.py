@@ -100,7 +100,7 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_persona_skills_column(conn)
             await self._ensure_persona_custom_error_message_column(conn)
             await self._ensure_platform_message_history_checkpoint_column(conn)
-            await self._ensure_platform_session_archived_column(conn)
+            await self._ensure_platform_session_columns(conn)
             await self._ensure_chatui_project_workspace_columns(conn)
             await self._ensure_chatui_project_spcode_columns(conn)
             await self._ensure_session_project_relation_position_column(conn)
@@ -200,11 +200,12 @@ class SQLiteDatabase(BaseDatabase):
             )
         )
 
-    async def _ensure_platform_session_archived_column(self, conn) -> None:
-        """Ensure platform_sessions has the archived column (forward compat).
+    async def _ensure_platform_session_columns(self, conn) -> None:
+        """Ensure platform_sessions has the forward-compat columns.
 
-        Older databases created before the archive feature lack the column;
-        add it with the same default the model declares.
+        Older databases created before the archive / starring features lack
+        `archived` and `starred`; add them with the same defaults the model
+        declares.
         """
         result = await conn.execute(text("PRAGMA table_info(platform_sessions)"))
         columns = {row[1] for row in result.fetchall()}
@@ -214,6 +215,17 @@ class SQLiteDatabase(BaseDatabase):
                 text(
                     "ALTER TABLE platform_sessions "
                     "ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+
+        # 2026-09-18 (elecvoid243) chatui session starring: same forward
+        # compat story as `archived` above — databases created before the
+        # feature need the column added in place.
+        if "starred" not in columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE platform_sessions "
+                    "ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
                 )
             )
 
@@ -2393,6 +2405,35 @@ class SQLiteDatabase(BaseDatabase):
                     update(PlatformSession)
                     .where(col(PlatformSession.session_id) == session_id)
                     .values(**values),
+                )
+
+    async def set_platform_session_starred(self, session_id: str, starred: int) -> None:
+        """Set the starred flag of a Platform session.
+
+        Unlike ``update_platform_session`` this deliberately keeps
+        ``updated_at`` unchanged: the ChatUI session list is ordered by
+        ``updated_at DESC``, so a bumped timestamp would jump the starred
+        row to the top instead of merely marking it (see
+        ``ChatService.set_session_starred``).
+
+        ``updated_at`` has a column-level ``onupdate`` (``TimestampMixin``),
+        which fires on *any* update of the row, so the column is pinned to
+        its own current value to opt out of that refresh.
+
+        Args:
+            session_id: Session to update.
+            starred: New starred flag (1 to star, 0 to unstar).
+        """
+        async with self.get_db() as session:
+            session: AsyncSession
+            async with session.begin():
+                await session.execute(
+                    update(PlatformSession)
+                    .where(col(PlatformSession.session_id) == session_id)
+                    .values(
+                        starred=starred,
+                        updated_at=col(PlatformSession.updated_at),
+                    ),
                 )
 
     async def delete_platform_session(self, session_id: str) -> None:

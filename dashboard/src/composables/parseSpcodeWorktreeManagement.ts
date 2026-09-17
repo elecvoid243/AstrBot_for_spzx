@@ -288,6 +288,13 @@ export const WORKTREE_MGMT_REASON_CODES: Record<string, ReasonMeta> = {
   // 业务类(ADD)
   path_exists_nonempty:    { i18nKey: "error.reason.path_exists_nonempty", color: "warning" },
   cannot_create_existing:  { i18nKey: "error.reason.cannot_create_existing", color: "warning" },
+  // 2026-09-17: git reports `fatal: invalid reference: <ref>` when the start
+  // point does not exist (plugin maps it here — git_worktree_add.py
+  // `_map_add_stderr_to_reason`), and `worktree_not_in_repo` when the
+  // post-create git-common-dir check fails. Both were missing from this
+  // table, so they rendered as `unknown`.
+  cannot_checkout_missing: { i18nKey: "error.reason.cannot_checkout_missing", color: "warning" },
+  worktree_not_in_repo:    { i18nKey: "error.reason.worktree_not_in_repo", color: "error" },
   // 业务类(REMOVE/LOCK/UNLOCK)
   worktree_not_found:      { i18nKey: "error.reason.worktree_not_found", color: "warning" },
   cannot_remove_main:      { i18nKey: "error.reason.cannot_remove_main", color: "error" },
@@ -307,6 +314,7 @@ export const ALLOWED_WORKTREE_REASONS: Record<WorktreeMgmtEndpoint, readonly str
     "directory_missing", "not_a_git_repo", "git_unavailable", "git_error",
     "invalid_body", "invalid_branch", "invalid_param", "path_unsafe",
     "path_exists_nonempty", "cannot_create_existing",
+    "cannot_checkout_missing", "worktree_not_in_repo",
   ],
   remove: [
     "feature_disabled", "no_project_loaded", "worktree_invalid",

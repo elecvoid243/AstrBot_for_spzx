@@ -1344,7 +1344,14 @@
           "worktree_locked": "Worktree is locked; unlock first",
           "worktree_dirty": "Worktree has uncommitted changes",
           "already_locked": "Worktree is already locked",
-          "not_locked": "Worktree is not locked"
+          "not_locked": "Worktree is not locked",
+          "invalid_body": "Invalid request parameters",
+          "path_unsafe": "Unsafe file path",
+          "worktree_invalid": "Invalid worktree parameter",
+          "cannot_checkout_missing": "Start point does not exist - pick an existing branch",
+          "worktree_not_in_repo": "The new worktree is not inside the current repository",
+          "network": "Network error",
+          "unknown": "Operation failed ({reason})"
         }
       },
       "restore": {

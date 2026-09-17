@@ -1344,7 +1344,14 @@
           "worktree_locked": "worktree 已锁定,请先解锁",
           "worktree_dirty": "worktree 有未提交改动",
           "already_locked": "该 worktree 已锁定",
-          "not_locked": "该 worktree 未锁定"
+          "not_locked": "该 worktree 未锁定",
+          "invalid_body": "请求参数不合法",
+          "path_unsafe": "文件路径不安全",
+          "worktree_invalid": "worktree 参数不合法",
+          "cannot_checkout_missing": "起始分支不存在，请从列表中选择一个已存在的分支",
+          "worktree_not_in_repo": "新建的 worktree 不在当前仓库内",
+          "network": "网络连接失败",
+          "unknown": "操作失败（{reason}）"
         }
       },
       "restore": {

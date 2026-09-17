@@ -289,4 +289,31 @@ describe("useSpcodeProjectStatus session scoping", () => {
     expect(status.value.umo).toBe(UMO_A); // 不再是 {umo:A, directory:B}
     expect(status.value.directory).toBe("C:/proj/a");
   });
+
+  // The shared ref must MIRROR a copy of the cache entry, never alias it.
+  // Both writers are covered: if either assigned the entry object itself,
+  // an in-place write to the shared ref (a stale consumer, a test, a
+  // future mutation helper) would silently corrupt the cached status.
+  it("mirror writes are copies: mutating the shared ref cannot corrupt the cache", () => {
+    const { setLoaded, setActiveUmo, status, statusFor } =
+      useSpcodeProjectStatus();
+    setActiveUmo(UMO_A);
+    setLoaded(UMO_A, "C:/proj/a");
+
+    status.value.directory = "MUTATED";
+
+    expect(statusFor(UMO_A).value.directory).toBe("C:/proj/a");
+  });
+
+  it("setUnloaded() mirrors a copy too, so the shared ref cannot corrupt the cache", () => {
+    const { setLoaded, setUnloaded, setActiveUmo, status, statusFor } =
+      useSpcodeProjectStatus();
+    setActiveUmo(UMO_A);
+    setLoaded(UMO_A, "C:/proj/a");
+
+    setUnloaded(UMO_A);
+    status.value.directory = "MUTATED";
+
+    expect(statusFor(UMO_A).value.directory).toBeNull();
+  });
 });

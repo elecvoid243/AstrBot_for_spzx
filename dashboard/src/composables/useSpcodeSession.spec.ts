@@ -4,7 +4,7 @@
 // Without a provider (standalone composables, specs, display-only chips
 // outside the chat page) it falls back to the shared status ref, which
 // keeps existing call sites working unchanged.
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { computed, defineComponent, h } from "vue";
 import { mount } from "@vue/test-utils";
 
@@ -23,15 +23,24 @@ describe("useSpcodeSession", () => {
     useSpcodeProjectStatus().reset();
   });
 
+  // Restore spies/env in afterEach so a failed assertion can never leak a
+  // stubbed MODE (or a console spy) into the tests that follow.
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
   it("resolves the provided session context", () => {
-    let seen: string | null = null;
+    let seenUmo: string | null = null;
+    let seenDirectory: string | null = null;
     let scoped = false;
     const Child = defineComponent({
       setup() {
         const session = useSpcodeSession();
         scoped = session.scoped;
         return () => {
-          seen = session.umo.value;
+          seenUmo = session.umo.value;
+          seenDirectory = session.directory.value;
           return h("div");
         };
       },
@@ -48,7 +57,10 @@ describe("useSpcodeSession", () => {
 
     mount(Parent);
 
-    expect(seen).toBe(UMO_A);
+    expect(seenUmo).toBe(UMO_A);
+    // Both halves of the provided context must reach the consumer — a
+    // provider that swapped or dropped `directory` would otherwise pass.
+    expect(seenDirectory).toBe("C:/proj/a");
     expect(scoped).toBe(true);
   });
 
@@ -86,8 +98,6 @@ describe("useSpcodeSession", () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("[useSpcodeSession]"),
     );
-    warn.mockRestore();
-    vi.unstubAllEnvs();
   });
 
   it("stays quiet inside a component that provided the session", () => {
@@ -111,7 +121,6 @@ describe("useSpcodeSession", () => {
     mount(Parent);
 
     expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 
   it("stays quiet in the test environment even inside a provider-less component", () => {
@@ -129,7 +138,6 @@ describe("useSpcodeSession", () => {
     mount(Orphan);
 
     expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 
   it("stays quiet outside a component even with requireScoped", () => {
@@ -141,6 +149,5 @@ describe("useSpcodeSession", () => {
 
     expect(session.scoped).toBe(false);
     expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 });

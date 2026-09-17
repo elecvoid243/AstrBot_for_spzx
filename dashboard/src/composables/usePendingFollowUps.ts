@@ -3,11 +3,15 @@
 //
 // When an agent run is active and the user sends a message, the message
 // is held locally as a "pending follow-up" rendered above the chat input
-// instead of being dispatched immediately. The queue is flushed (each
-// item sent as a normal message) when the active run reaches a tool-call
-// boundary — the backend then captures it as a follow-up ticket and
-// injects it into that tool's result, matching the pre-queue timing —
-// or when the run ends, in which case the items simply start new runs.
+// instead of being dispatched immediately. Dispatch is explicit
+// (2026-09-17): the card's "send" action flushes it as a normal message
+// now — the backend captures it into the running turn and injects it at
+// the end of that turn's next tool call — while "force interrupt" stops
+// the run first and resends. Items still queued when the run ends are
+// flushed by Chat.vue, in which case they simply start new runs. The
+// earlier auto-flush on every tool-call boundary was dropped: it made
+// the card flash by unread whenever the model called a tool right after
+// the user typed.
 //
 // In-memory only (per browser tab): items not yet flushed are lost on
 // refresh, same as ZCode's queued messages.

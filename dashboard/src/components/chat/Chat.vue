@@ -927,6 +927,7 @@
               @send-command="sendSystemCommand"
               @stop="stopCurrentSession"
               @flush-pending="flushPendingFromInput"
+              @interrupt-pending="interruptPendingFromInput"
               @toggle-streaming="toggleStreaming"
               @remove-image="removeImage"
               @remove-audio="removeAudio"
@@ -1918,12 +1919,6 @@ const {
     if (sessionId === currSessionId.value && shouldStickToBottom(sessionId)) {
       scrollToBottom();
     }
-  },
-  // Tool-call boundary of the active run: flush queued follow-ups now
-  // so the backend captures them and injects them into THIS tool's
-  // result — the same timing the old send-while-running path produced.
-  onToolCallActivity: (sessionId) => {
-    void flushPendingFollowUps(sessionId);
   },
   // Refresh the spcode "currently loaded project" chip every time a
   // bot response finishes, so commands like `/project load <dir>` or
@@ -3678,11 +3673,11 @@ async function sendCurrentMessage() {
 
     // ZCode-style follow-up queue (2026-09-01): while an agent run is
     // active, hold text-only messages in the pending list above the
-    // input instead of dispatching them. Flush triggers (tool-call
-    // boundary / stream end / the "send now" button) dispatch them
-    // later; see flushPendingFollowUps below. Messages with staged
-    // attachments keep the legacy immediate-send path so media keeps
-    // flowing through the backend's own capture pipeline.
+    // input instead of dispatching them. The card's "send" / "force
+    // interrupt" buttons dispatch them later, as does stream end; see
+    // flushPendingFollowUps below. Messages with staged attachments
+    // keep the legacy immediate-send path so media keeps flowing
+    // through the backend's own capture pipeline.
     if (
       isSessionRunning(sessionId) &&
       !stagedImagesUrl.value.length &&
@@ -5061,20 +5056,24 @@ async function stopCurrentSession() {
 
 // ── Pending follow-up queue (ZCode-style, 2026-09-01) ──────────────
 // While an agent run is active, text messages are held locally above
-// the input (usePendingFollowUps) instead of being dispatched. They are
-// dispatched by three triggers:
-// 1. onToolCallActivity — flushed at the tool-call boundary, so the
-//    backend captures them and injects them into that tool's result
-//    (the exact timing the old send-while-running path produced).
-// 2. onStreamEnd — the run ended without consuming the queue; items
-//    start new runs as normal messages (mirrors how the backend
-//    activates unconsumed follow-up tickets).
-// 3. The "send now" button on a pending card — stop the active run,
-//    then dispatch; the queued text rides on top of full history as a
-//    fresh request.
+// the input (usePendingFollowUps) instead of being dispatched. Dispatch
+// is explicit (2026-09-17 — the tool-call-boundary auto-flush was
+// dropped because it made the pending card flash by unread):
+// 1. The "send" button on a pending card — dispatch now; the backend
+//    captures the message into the running turn and injects it at the
+//    end of that turn's next tool call (the legacy follow-up timing).
+// 2. The "force interrupt" button on a pending card — stop the active
+//    run, then dispatch; the queued text rides on top of full history
+//    as a fresh request.
+// 3. onStreamEnd — the run ended with items still queued; they start
+//    new runs as normal messages (mirrors how the backend activates
+//    unconsumed follow-up tickets), so a message is never stranded.
 const pendingFollowUps = usePendingFollowUps();
 const flushingFollowUps = new Set<string>();
 
+/** Dispatch the queued follow-ups as normal messages. The backend
+    captures them into the active run (injected at the end of its next
+    tool call) when one is running, and starts fresh runs otherwise. */
 async function flushPendingFollowUps(sessionId: string) {
   if (!sessionId || flushingFollowUps.has(sessionId)) return;
   const items = pendingFollowUps.takeAll(sessionId);
@@ -5089,8 +5088,9 @@ async function flushPendingFollowUps(sessionId: string) {
   }
 }
 
-/** Interrupt the active run and immediately dispatch the queued
-    follow-ups as fresh requests (equivalent to /stop + resend). */
+/** "Force interrupt" card action: interrupt the active run and
+    immediately dispatch the queued follow-ups as fresh requests
+    (equivalent to /stop + resend). */
 async function flushPendingFollowUpsNow(sessionId: string | null) {
   if (!sessionId) return;
   const items = pendingFollowUps.takeAll(sessionId);
@@ -5145,7 +5145,14 @@ async function sendQueuedFollowUp(sessionId: string, text: string) {
   });
 }
 
+/** "Send" card action: hand the queued follow-ups to the running turn
+    right away (see the queue comment above for the landing rules). */
 function flushPendingFromInput() {
+  void flushPendingFollowUps(currSessionId.value);
+}
+
+/** "Force interrupt" card action: stop the run, then resend. */
+function interruptPendingFromInput() {
   void flushPendingFollowUpsNow(currSessionId.value);
 }
 

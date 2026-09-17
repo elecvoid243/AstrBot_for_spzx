@@ -91,10 +91,18 @@
     <!--
       ZCode-style pending follow-up queue (2026-09-01): messages sent
       while an agent run is active are held here instead of being
-      dispatched. "Send now" interrupts the run and dispatches the
-      queue as fresh requests; without it, Chat.vue flushes the queue
-      at the next tool-call boundary (the backend injects it into that
-      tool's result — the legacy follow-up timing) or on stream end.
+      dispatched. Each card exposes two explicit actions (2026-09-17):
+      "Send" dispatches the message right away, so the backend captures
+      it into the running turn and injects it at the end of that turn's
+      next tool call (the legacy follow-up timing) — or it starts a
+      fresh turn when the run ends first; "Force interrupt" stops the
+      active run and resends the queue as fresh requests.
+
+      Nothing is dispatched automatically at a tool-call boundary
+      anymore: that made the card flash by unread whenever the model
+      happened to call a tool right after the user typed. Items still
+      queued when the run ends are dispatched as normal messages by
+      Chat.vue (see flushPendingFollowUps).
     -->
     <transition-group
       v-if="props.sessionId && pendingFollowUpItems.length"
@@ -147,11 +155,21 @@
             <v-btn
               size="small"
               variant="tonal"
-              class="pending-follow-up-card__now"
+              class="pending-follow-up-card__send"
               @click="emit('flushPending')"
             >
               <v-icon icon="mdi-arrow-up" size="small" start />
-              {{ tm("input.followUpSendNow") }}
+              {{ tm("input.followUpSend") }}
+            </v-btn>
+            <v-btn
+              size="small"
+              variant="text"
+              color="warning"
+              class="pending-follow-up-card__interrupt"
+              @click="emit('interruptPending')"
+            >
+              <v-icon icon="mdi-stop-circle-outline" size="small" start />
+              {{ tm("input.followUpInterrupt") }}
             </v-btn>
             <v-btn
               icon="mdi-pencil-outline"
@@ -759,9 +777,14 @@ const emit = defineEmits<{
   clearReply: [];
   openLiveMode: [];
   "open-diff-sidebar": [];
-  // ZCode-style follow-up queue: interrupt the active run and dispatch
-  // the pending messages above the input as fresh requests.
+  // ZCode-style follow-up queue actions (2026-09-17): `flushPending`
+  // dispatches the pending messages above the input right away — the
+  // backend captures them into the active run and injects them at the
+  // end of its next tool call (or they start a fresh turn when the run
+  // ends first). `interruptPending` stops the active run and resends
+  // the pending messages as fresh requests.
   flushPending: [];
+  interruptPending: [];
 }>();
 
 const { tm } = useModuleI18n("features/chat");
@@ -3079,6 +3102,22 @@ defineExpose({
 @media (max-width: 768px) {
   .pending-follow-ups {
     width: calc(100% - 20px);
+  }
+}
+
+/* 2026-09-17: below this width the two labeled actions (send / force
+   interrupt) plus the edit and delete icons no longer fit beside the
+   message text — let the action row wrap onto its own line instead of
+   squeezing the text down to a couple of characters. */
+@media (max-width: 480px) {
+  .pending-follow-up-card {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .pending-follow-up-card__actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 

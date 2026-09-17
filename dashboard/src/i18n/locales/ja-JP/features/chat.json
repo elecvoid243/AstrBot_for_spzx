@@ -23,7 +23,9 @@
     "recordingPrompt": "録音中です。お話しください…",
     "chatPrompt": "チャットしよう！",
     "dropToUpload": "ドロップしてファイルをアップロード",
-    "stopGenerating": "生成を停止"
+    "stopGenerating": "生成を停止",
+    "followUpSend": "送信",
+    "followUpInterrupt": "強制中断"
   },
   "message": {
     "user": "ユーザー",

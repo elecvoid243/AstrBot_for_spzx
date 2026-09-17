@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -50,6 +51,60 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "url": "",
     },
 }
+
+# 设置页可编辑的更新源: 接口字段名 -> 配置文件路径。
+# 只暴露主下载源；其余模板仍可在 update_config.json 中手工修改。
+EDITABLE_UPDATE_SOURCES: dict[str, str] = {
+    "core_release_api_url": "core_update.release_api_url",
+    "core_package_base_url": "core_update.package_base_url",
+    "dashboard_registry_url_template": "dashboard_update.registry_url_template",
+}
+
+# 各字段必须保留的占位符。缺失时 str.format 会在下载/检查更新阶段抛 KeyError，
+# 因此在保存前就拦下来。
+REQUIRED_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
+    "core_release_api_url": (),
+    "core_package_base_url": (),
+    "dashboard_registry_url_template": ("version",),
+}
+
+
+def validate_update_source(field: str, value: str) -> str | None:
+    """校验设置页提交的单个更新源取值。
+
+    Args:
+        field: 接口字段名，必须存在于 EDITABLE_UPDATE_SOURCES。
+        value: 用户填写的地址或模板。
+
+    Returns:
+        合法时返回 None，否则返回可直接展示给用户的错误描述。
+    """
+    if field not in EDITABLE_UPDATE_SOURCES:
+        return f"未知的更新源字段: {field}"
+
+    candidate = (value or "").strip()
+    if not candidate:
+        return "地址不能为空，如需恢复内置地址请点击“恢复默认值”。"
+    if any(char.isspace() for char in candidate):
+        return "地址中不能包含空白字符。"
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "地址必须是 http 或 https 开头的完整 URL。"
+
+    required = REQUIRED_PLACEHOLDERS[field]
+    for placeholder in required:
+        if f"{{{placeholder}}}" not in candidate:
+            return f"该模板必须保留 {{{placeholder}}} 占位符。"
+
+    # 试跑一次 format，捕获 {} / {0} / 未闭合花括号等非法写法。
+    try:
+        candidate.format(**dict.fromkeys(required, "placeholder"))
+    except (KeyError, IndexError, ValueError):
+        if required:
+            return "模板中含有无法解析的占位符，请检查花括号用法。"
+        return "该地址不支持占位符，请填写不含花括号的固定地址。"
+    return None
 
 
 class UpdateConfig(dict):
@@ -245,3 +300,88 @@ class UpdateConfig(dict):
         if self.is_proxy_enabled():
             return self.get_proxy_url()
         return ""
+
+    # --- 设置页可编辑的更新源 ---
+
+    def get_update_sources(self) -> dict[str, dict[str, Any]]:
+        """描述设置页可编辑的更新源字段。
+
+        环境变量优先级高于配置文件，被环境变量覆盖的字段标记为 env_locked，
+        前端据此提示用户"改了也不生效"，避免出现难以排查的无效修改。
+
+        Returns:
+            字段名到 {value, default, env_var, env_locked} 的映射。
+        """
+        sources: dict[str, dict[str, Any]] = {}
+        for field, path in EDITABLE_UPDATE_SOURCES.items():
+            default = DEFAULT_CONFIG
+            for key in path.split("."):
+                default = default[key]
+
+            env_var = ENV_VAR_MAP.get(path)
+            sources[field] = {
+                "value": str(self._get_value(path, default) or ""),
+                "default": str(default),
+                "env_var": env_var,
+                "env_locked": bool(env_var and env_var in os.environ),
+            }
+        return sources
+
+    def save_update_sources(self, values: dict[str, str]) -> None:
+        """保存更新源到配置文件，并保留文件中其他所有键。
+
+        只读原始文件而不合并默认值，避免把内置默认值写进用户文件、破坏
+        "文件里只放改过的键" 这一约定；写入使用临时文件 + os.replace 的
+        原子替换，防止写一半损坏配置。
+
+        Args:
+            values: 字段名 -> 新取值，未在 EDITABLE_UPDATE_SOURCES 中的字段被忽略。
+
+        Raises:
+            ValueError: 取值未通过 validate_update_source 校验。
+            OSError: 配置文件写入失败。
+        """
+        pending = {
+            field: (value or "").strip()
+            for field, value in values.items()
+            if field in EDITABLE_UPDATE_SOURCES
+        }
+        if not pending:
+            return
+        for field, value in pending.items():
+            error = validate_update_source(field, value)
+            if error:
+                raise ValueError(error)
+
+        config_path = Path(self.config_path)
+        raw: dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8-sig") as f:
+                    loaded = json.loads(f.read())
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    "更新配置文件无法解析，将按可读内容重写 (%s): %s",
+                    e,
+                    self.config_path,
+                )
+
+        for field, value in pending.items():
+            keys = EDITABLE_UPDATE_SOURCES[field].split(".")
+            node = raw
+            for key in keys[:-1]:
+                child = node.get(key)
+                if not isinstance(child, dict):
+                    child = {}
+                    node[key] = child
+                node = child
+            node[keys[-1]] = value
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = config_path.with_name(f"{config_path.name}.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_path, config_path)
+        logger.info("已更新更新源配置 (%s): %s", self.config_path, sorted(pending))

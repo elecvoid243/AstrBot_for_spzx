@@ -13,7 +13,11 @@ import aiohttp
 
 from astrbot.core import logger, pip_installer
 from astrbot.core.config.default import VERSION
-from astrbot.core.config.update_config import DEFAULT_CONFIG, UpdateConfig
+from astrbot.core.config.update_config import (
+    DEFAULT_CONFIG,
+    EDITABLE_UPDATE_SOURCES,
+    UpdateConfig,
+)
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.dashboard_assets import get_dashboard_version
 from astrbot.core.desktop_runtime import (
@@ -121,6 +125,62 @@ class UpdateService:
         except Exception as exc:
             logger.error(f"/api/update/releases: {traceback.format_exc()}")
             raise UpdateServiceError(exc.__str__()) from exc
+
+    def get_update_sources(self) -> UpdateServiceResult:
+        """Return the dashboard-editable update sources.
+
+        Each entry carries the effective value, the built-in default, and
+        whether an environment variable overrides the config file.
+
+        Returns:
+            Result whose ``data.sources`` maps field name to its descriptor.
+        """
+        return UpdateServiceResult(
+            data={"sources": UpdateConfig().get_update_sources()}
+        )
+
+    def save_update_sources(self, data: object) -> UpdateServiceResult:
+        """Persist edited update sources and echo back the effective values.
+
+        Args:
+            data: Request payload. ``None`` fields are left unchanged; an empty
+                string is rejected by validation instead of silently clearing
+                the field.
+
+        Returns:
+            Result carrying the freshly read sources for the frontend to sync.
+
+        Raises:
+            UpdateServiceError: No editable field was submitted, a value failed
+                validation, or the config file could not be written.
+        """
+        payload = data if isinstance(data, dict) else {}
+        values = {
+            field: value
+            for field, value in payload.items()
+            if isinstance(value, str) and field in EDITABLE_UPDATE_SOURCES
+        }
+        if not values:
+            raise UpdateServiceError(
+                "没有需要保存的更新源字段。",
+                code="invalid_update_source",
+            )
+
+        try:
+            UpdateConfig().save_update_sources(values)
+        except ValueError as exc:
+            raise UpdateServiceError(
+                str(exc),
+                code="invalid_update_source",
+            ) from exc
+        except OSError as exc:
+            logger.error(f"Failed to write update_config.json: {exc}")
+            raise UpdateServiceError(f"写入更新配置文件失败: {exc}") from exc
+
+        return UpdateServiceResult(
+            message="更新源已保存。",
+            data={"sources": UpdateConfig().get_update_sources()},
+        )
 
     async def update_project(self, data: object) -> UpdateServiceResult:
         if is_desktop_managed_backend():

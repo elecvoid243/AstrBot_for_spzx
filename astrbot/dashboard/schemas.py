@@ -90,6 +90,12 @@ class PipInstallRequest(OpenModel):
     mirror: str | None = None
 
 
+class UpdateSourcesRequest(OpenModel):
+    core_release_api_url: str | None = None
+    core_package_base_url: str | None = None
+    dashboard_registry_url_template: str | None = None
+
+
 class ChatProjectRequest(OpenModel):
     project_id: str | None = None
     title: str | None = None

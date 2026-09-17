@@ -801,6 +801,24 @@ export type UpdateRequest = {
     progress_id?: string;
 };
 
+/**
+ * Update source URLs to persist. Omitted fields keep their configured value; an empty string is rejected rather than clearing the field.
+ */
+export type UpdateSourcesRequest = {
+    /**
+     * Release API used to check for new AstrBot versions.
+     */
+    core_release_api_url?: string;
+    /**
+     * Base URL for hosted core packages. The download URL is built as {base}/{version}/source.zip, so this value must not contain placeholders.
+     */
+    core_package_base_url?: string;
+    /**
+     * Dashboard package template. Must keep the {version} placeholder.
+     */
+    dashboard_registry_url_template?: string;
+};
+
 export type WorkflowEdge = {
     from: string;
     to: string;
@@ -3827,6 +3845,18 @@ export type GetUpdateProgressData = {
 export type GetUpdateProgressResponse = (SuccessEnvelope);
 
 export type GetUpdateProgressError = unknown;
+
+export type GetUpdateSourcesResponse = (SuccessEnvelope);
+
+export type GetUpdateSourcesError = unknown;
+
+export type SaveUpdateSourcesData = {
+    body: UpdateSourcesRequest;
+};
+
+export type SaveUpdateSourcesResponse = (SuccessEnvelope);
+
+export type SaveUpdateSourcesError = unknown;
 
 export type InstallPipPackageData = {
     body: PipInstallRequest;

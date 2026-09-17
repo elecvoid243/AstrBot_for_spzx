@@ -193,6 +193,73 @@
                     </div>
                 </section>
 
+                <section id="settings-update-source" class="settings-section" v-show="activeSettingsSection === 'updateSource'">
+                    <div class="settings-section__heading">
+                        <div class="settings-section__title">{{ tm('sections.updateSource.title') }}</div>
+                    </div>
+                    <div class="settings-section__content">
+                        <v-progress-linear
+                            v-if="updateSourcesLoading"
+                            indeterminate
+                            color="primary"
+                            class="mb-4"
+                        />
+                        <div class="settings-list-card">
+                            <div class="settings-item settings-item--stack">
+                                <div class="settings-item__label">
+                                    <div class="settings-item__title">{{ tm('updateSource.title') }}</div>
+                                    <div class="settings-item__subtitle">{{ tm('updateSource.subtitle') }}</div>
+                                </div>
+                                <div class="update-source-fields">
+                                    <div
+                                        v-for="key in updateSourceKeys"
+                                        :key="key"
+                                        class="update-source-field"
+                                    >
+                                        <v-text-field
+                                            v-model="updateSourceDraft[key]"
+                                            :label="tm(`updateSource.fields.${key}.label`)"
+                                            :hint="tm('updateSource.defaultHint', { value: updateSourceMeta[key]?.default || '-' })"
+                                            persistent-hint
+                                            variant="outlined"
+                                            density="compact"
+                                            :readonly="isUpdateSourceLocked(key)"
+                                            :error-messages="updateSourceErrors[key] || []"
+                                            @update:model-value="clearUpdateSourceError(key)"
+                                        />
+                                        <div v-if="isUpdateSourceLocked(key)" class="update-source-lock">
+                                            <v-icon size="14">mdi-lock-outline</v-icon>
+                                            <span>{{ tm('updateSource.envLocked', { name: updateSourceMeta[key]?.env_var || '' }) }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="update-source-actions">
+                                    <v-btn
+                                        color="primary"
+                                        variant="tonal"
+                                        size="small"
+                                        :disabled="!updateSourceDirty"
+                                        :loading="updateSourcesSaving"
+                                        @click="saveUpdateSources"
+                                    >
+                                        <v-icon class="mr-2">mdi-content-save-outline</v-icon>
+                                        {{ tm('updateSource.actions.save') }}
+                                    </v-btn>
+                                    <v-btn
+                                        variant="text"
+                                        size="small"
+                                        :disabled="updateSourcesSaving"
+                                        @click="restoreUpdateSourceDefaults"
+                                    >
+                                        <v-icon class="mr-2">mdi-restore</v-icon>
+                                        {{ tm('updateSource.actions.restoreDefaults') }}
+                                    </v-btn>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <section id="settings-security" class="settings-section" v-show="activeSettingsSection === 'security'">
                     <div class="settings-section__heading">
                         <div class="settings-section__title">{{ tm('sections.security.title') }}</div>
@@ -501,7 +568,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { apiKeyApi, systemConfigApi } from '@/api/v1';
+import { apiKeyApi, systemConfigApi, updatesApi } from '@/api/v1';
 import AstrBotConfigV4 from '@/components/shared/AstrBotConfigV4.vue';
 import WaitingForRestart from '@/components/shared/WaitingForRestart.vue';
 import ProxySelector from '@/components/shared/ProxySelector.vue';
@@ -646,6 +713,7 @@ const settingsNavItems = computed(() => [
     { id: 'general', label: tm('sections.general.title'), icon: 'mdi mdi-tune-variant' },
     { id: 'appearance', label: tm('sections.appearance.title'), icon: 'mdi mdi-palette-outline' },
     { id: 'network', label: tm('sections.network.title'), icon: 'mdi mdi-lan-connect' },
+    { id: 'updateSource', label: tm('sections.updateSource.title'), icon: 'mdi mdi-cloud-download-outline' },
     { id: 'security', label: tm('sections.security.title'), icon: 'mdi mdi-shield-lock-outline' },
     { id: 'maintenance', label: tm('sections.maintenance.title'), icon: 'mdi mdi-tools' },
     { id: 'openapi', label: tm('sections.openapi.title'), icon: 'mdi mdi-api' },
@@ -1124,6 +1192,130 @@ const deleteApiKey = async (keyId) => {
     }
 };
 
+const updateSourceKeys = ['core_release_api_url', 'core_package_base_url', 'dashboard_registry_url_template'];
+
+const emptyUpdateSourceDraft = () => ({
+    core_release_api_url: '',
+    core_package_base_url: '',
+    dashboard_registry_url_template: ''
+});
+
+const updateSourceDraft = ref(emptyUpdateSourceDraft());
+const updateSourceMeta = ref({});
+const updateSourceErrors = ref({});
+const updateSourcesLoading = ref(false);
+const updateSourcesSaving = ref(false);
+
+const isUpdateSourceLocked = (key) => Boolean(updateSourceMeta.value[key]?.env_locked);
+
+const updateSourceDirty = computed(() =>
+    updateSourceKeys.some(
+        (key) => (updateSourceDraft.value[key] || '').trim() !== (updateSourceMeta.value[key]?.value || '')
+    )
+);
+
+const clearUpdateSourceError = (key) => {
+    if (!updateSourceErrors.value[key]) return;
+    const next = { ...updateSourceErrors.value };
+    delete next[key];
+    updateSourceErrors.value = next;
+};
+
+const applyUpdateSources = (sources) => {
+    if (!sources) return;
+    updateSourceMeta.value = sources;
+    const draft = emptyUpdateSourceDraft();
+    updateSourceKeys.forEach((key) => {
+        draft[key] = sources[key]?.value ?? '';
+    });
+    updateSourceDraft.value = draft;
+    updateSourceErrors.value = {};
+};
+
+const loadUpdateSources = async () => {
+    updateSourcesLoading.value = true;
+    try {
+        const res = await updatesApi.sources();
+        if (res.data.status !== 'ok') {
+            showToast(res.data.message || tm('updateSource.messages.loadFailed'), 'error');
+            return;
+        }
+        applyUpdateSources(res.data.data?.sources);
+    } catch (e) {
+        showToast(e?.response?.data?.message || tm('updateSource.messages.loadFailed'), 'error');
+    } finally {
+        updateSourcesLoading.value = false;
+    }
+};
+
+// Mirror of the backend validation so obvious mistakes are flagged before a round trip.
+const validateUpdateSources = () => {
+    const errors = {};
+    updateSourceKeys.forEach((key) => {
+        if (isUpdateSourceLocked(key)) return;
+        const value = (updateSourceDraft.value[key] || '').trim();
+        if (!value) {
+            errors[key] = tm('updateSource.errors.required');
+            return;
+        }
+        if (!/^https?:\/\/\S+$/i.test(value)) {
+            errors[key] = tm('updateSource.errors.invalidUrl');
+            return;
+        }
+        if (key === 'dashboard_registry_url_template' && !value.includes('{version}')) {
+            errors[key] = tm('updateSource.errors.missingVersion', { placeholder: '{version}' });
+        }
+    });
+    return errors;
+};
+
+const saveUpdateSources = async () => {
+    if (updateSourcesSaving.value) return;
+
+    const errors = validateUpdateSources();
+    updateSourceErrors.value = errors;
+    if (Object.keys(errors).length) {
+        showToast(tm('updateSource.errors.fixFirst'), 'error');
+        return;
+    }
+
+    const payload = {};
+    updateSourceKeys.forEach((key) => {
+        if (isUpdateSourceLocked(key)) return;
+        payload[key] = (updateSourceDraft.value[key] || '').trim();
+    });
+    if (!Object.keys(payload).length) {
+        showToast(tm('updateSource.errors.nothingToSave'), 'warning');
+        return;
+    }
+
+    updateSourcesSaving.value = true;
+    try {
+        const res = await updatesApi.saveSources(payload);
+        if (res.data.status !== 'ok') {
+            showToast(res.data.message || tm('updateSource.messages.saveFailed'), 'error');
+            return;
+        }
+        // Adopt the values the backend re-read, so the dirty state matches disk.
+        applyUpdateSources(res.data.data?.sources);
+        showToast(res.data.message || tm('updateSource.messages.saveSuccess'), 'success');
+    } catch (e) {
+        showToast(e?.response?.data?.message || tm('updateSource.messages.saveFailed'), 'error');
+    } finally {
+        updateSourcesSaving.value = false;
+    }
+};
+
+const restoreUpdateSourceDefaults = () => {
+    const draft = { ...updateSourceDraft.value };
+    updateSourceKeys.forEach((key) => {
+        if (isUpdateSourceLocked(key)) return;
+        draft[key] = updateSourceMeta.value[key]?.default || '';
+    });
+    updateSourceDraft.value = draft;
+    updateSourceErrors.value = {};
+};
+
 const restartAstrBot = async () => {
     const confirmed = await askForConfirmation(tm('system.restart.confirm'), confirmDialog);
     if (!confirmed) return;
@@ -1150,7 +1342,7 @@ const resetThemeColors = () => {
 };
 
 onMounted(async () => {
-    await Promise.all([loadApiKeys(), loadSystemConfig()]);
+    await Promise.all([loadApiKeys(), loadSystemConfig(), loadUpdateSources()]);
     serverClockTimer.value = window.setInterval(() => {
         serverClockTickMs.value = performance.now();
     }, 1000);
@@ -1159,6 +1351,8 @@ onMounted(async () => {
         activeSettingsSection.value = 'appearance';
     } else if (hash.includes('settings-network')) {
         activeSettingsSection.value = 'network';
+    } else if (hash.includes('settings-update-source')) {
+        activeSettingsSection.value = 'updateSource';
     } else if (hash.includes('settings-security')) {
         activeSettingsSection.value = 'security';
     } else if (hash.includes('settings-maintenance')) {
@@ -1399,6 +1593,36 @@ onUnmounted(() => {
     justify-content: stretch;
     width: 100%;
     max-width: none;
+}
+
+.update-source-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.update-source-field :deep(.v-field) {
+    border-radius: 10px;
+}
+
+.update-source-field :deep(.v-messages__message) {
+    line-height: 1.4;
+}
+
+.update-source-lock {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: -8px 0 4px;
+    color: rgb(var(--v-theme-warning));
+    font-size: 0.76rem;
+}
+
+.update-source-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
 }
 
 .settings-item__control :deep(.v-btn) {

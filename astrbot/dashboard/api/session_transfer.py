@@ -7,13 +7,18 @@ Spec: docs/superpowers/specs/2026-09-13-chatui-session-export-import-design.md
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from pathlib import Path
 
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+
+from astrbot import logger
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import ApiError, ok
 from astrbot.dashboard.schemas import ChatSessionImportConfirmRequest
 from astrbot.dashboard.services.session_transfer_service import (
+    SessionExport,
     SessionTransferError,
     SessionTransferService,
 )
@@ -37,27 +42,33 @@ async def _run(operation):
         raise ApiError(str(exc)) from exc
 
 
-def _zip_response(export) -> StreamingResponse:
-    """Stream a packaged session export as a zip download.
+def _delete_export_file(path) -> None:
+    """Remove a delivered export archive from the service temp directory.
+
+    Args:
+        path: Archive path handed to ``FileResponse``.
+    """
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(f"Failed to delete export archive {path}: {exc!s}")
+
+
+def _zip_response(export: SessionExport) -> FileResponse:
+    """Serve a packaged export from disk and delete it after delivery.
 
     Args:
         export: SessionExport produced by the service.
 
     Returns:
-        A streaming response carrying the zip bytes. ``FileResponse`` cannot
-        be used here because the archive is built in memory (the same reason
-        ``_export_response`` in conversations.py streams a BytesIO).
+        A file response streaming the archive path; a background task removes
+        the temporary archive once the response has been sent.
     """
-    export.file_obj.seek(0)
-
-    def iter_file():
-        while chunk := export.file_obj.read(8192):
-            yield chunk
-
-    return StreamingResponse(
-        iter_file(),
+    return FileResponse(
+        export.path,
         media_type=export.mimetype,
-        headers={"Content-Disposition": f'attachment; filename="{export.filename}"'},
+        filename=export.filename,
+        background=BackgroundTask(_delete_export_file, export.path),
     )
 
 

@@ -10,7 +10,6 @@ import json
 import tempfile
 import zipfile
 from datetime import UTC, datetime
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -18,6 +17,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from astrbot.core.db.po import PlatformMessageHistory, PlatformSession, WebChatThread
+from astrbot.dashboard.services import session_transfer_service
 from astrbot.dashboard.services.session_transfer_service import (
     ATTACHMENTS_PREFIX,
     EXPORT_DATA_NAME,
@@ -87,6 +87,21 @@ def _make_service(attachment_dir=None):
     return service
 
 
+@pytest.fixture(autouse=True)
+def _isolated_temp_dir(tmp_path, monkeypatch):
+    """Stream export archives into the test's temporary directory.
+
+    ``SessionTransferService.__init__`` resolves the temp directory through the
+    module-level ``get_astrbot_temp_path``, so patching that name keeps the
+    archives written by ``export_session`` out of the real ``data/temp``.
+    """
+    monkeypatch.setattr(
+        session_transfer_service,
+        "get_astrbot_temp_path",
+        lambda: str(tmp_path),
+    )
+
+
 @pytest.mark.asyncio
 async def test_export_rejects_non_owner():
     service = _make_service()
@@ -129,7 +144,7 @@ async def test_export_package_layout_and_checksums(tmp_path):
     assert export.filename.startswith("astrbot_chatui_export_")
     assert export.filename.endswith(".zip")
 
-    with zipfile.ZipFile(BytesIO(export.file_obj.getvalue())) as zf:
+    with zipfile.ZipFile(export.path) as zf:
         names = set(zf.namelist())
         assert MANIFEST_NAME in names
         assert EXPORT_DATA_NAME in names
@@ -181,7 +196,7 @@ async def test_export_records_warning_when_attachment_file_is_missing(tmp_path):
 
     export = await service.export_session("alice", SESSION_ID)
 
-    with zipfile.ZipFile(BytesIO(export.file_obj.getvalue())) as zf:
+    with zipfile.ZipFile(export.path) as zf:
         manifest = json.loads(zf.read(MANIFEST_NAME))
         assert manifest["warnings"]
         assert "att-1" in manifest["warnings"][0]
@@ -243,7 +258,7 @@ async def test_export_packages_attachments_referenced_only_by_a_thread(tmp_path)
 
     export = await service.export_session("alice", SESSION_ID)
 
-    with zipfile.ZipFile(BytesIO(export.file_obj.getvalue())) as zf:
+    with zipfile.ZipFile(export.path) as zf:
         assert f"{ATTACHMENTS_PREFIX}att-thread.png" in set(zf.namelist())
         manifest = json.loads(zf.read(MANIFEST_NAME))
         stats = manifest["sessions"][0]["stats"]
@@ -252,3 +267,20 @@ async def test_export_packages_attachments_referenced_only_by_a_thread(tmp_path)
         assert manifest["warnings"] == []
         data = json.loads(zf.read(EXPORT_DATA_NAME))
         assert data["sessions"][0]["attachments"][0]["attachment_id"] == "att-thread"
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_archives_over_the_import_limit(tmp_path, monkeypatch):
+    """A package the importer would reject must never be handed out.
+
+    ``stage_import`` refuses anything larger than ``MAX_UPLOAD_BYTES``, so an
+    export above that cap would be a dead archive nobody could ever import.
+    Refusing it must also delete the temporary file it just wrote.
+    """
+    monkeypatch.setattr(session_transfer_service, "MAX_UPLOAD_BYTES", 64)
+    service = _make_service(attachment_dir=tmp_path)
+
+    with pytest.raises(SessionTransferError, match="exceeds"):
+        await service.export_session("alice", SESSION_ID)
+
+    assert list(tmp_path.glob("session_export_*.zip")) == []

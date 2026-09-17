@@ -173,7 +173,7 @@ async def test_export_import_round_trip_migrates_session_to_another_user(tmp_pat
     ) = await _seed(tmp_path)
 
     export = await service.export_session("alice", session.session_id)
-    preview = await service.stage_import(_Upload(export.file_obj.getvalue()))
+    preview = await service.stage_import(_Upload(export.path.read_bytes()))
     assert preview["can_import"] is True
 
     result = await service.confirm_import("bob", preview["import_id"])
@@ -347,7 +347,7 @@ async def test_import_skips_preferences_for_a_dropped_thread(tmp_path):
             ):
                 preference["value"] = {"val": thread_conversation_id}
 
-    blob = _rewrite_export(export.file_obj.getvalue(), mutate)
+    blob = _rewrite_export(export.path.read_bytes(), mutate)
     preview = await service.stage_import(_Upload(blob))
     result = await service.confirm_import("bob", preview["import_id"])
 

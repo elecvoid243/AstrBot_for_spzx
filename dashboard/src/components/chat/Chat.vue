@@ -3495,6 +3495,23 @@ async function deleteSidebarSession(session: Session) {
 }
 
 /**
+ * 2026-09-18 I2: blob responses carry a Blob on the error path too, so the
+ * server's message has to be decoded before it can be shown.
+ */
+async function exportErrorMessage(error: any): Promise<string | null> {
+  const data = error?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text());
+      return parsed?.message || null;
+    } catch {
+      return null;
+    }
+  }
+  return data?.message || error?.message || null;
+}
+
+/**
  * 2026-09-17 session export: download one ChatUI session package.
  * Mirrors the conversation export flow in ConversationWorkspacePage.
  */
@@ -3513,7 +3530,9 @@ async function exportSidebarSession(sessionId: string) {
     toast.success(tm("conversation.exportSuccess"));
   } catch (error: any) {
     console.error("Failed to export session:", error);
-    toast.error(error?.response?.data?.message || tm("conversation.exportFailed"));
+    toast.error(
+      (await exportErrorMessage(error)) || tm("conversation.exportFailed"),
+    );
   }
 }
 

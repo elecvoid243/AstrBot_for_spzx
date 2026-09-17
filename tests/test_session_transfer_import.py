@@ -6,6 +6,8 @@ Spec: docs/superpowers/specs/2026-09-13-chatui-session-export-import-design.md
 """
 
 import json
+import os
+import time
 import zipfile
 from io import BytesIO
 from types import SimpleNamespace
@@ -19,6 +21,7 @@ from astrbot.dashboard.services.session_transfer_service import (
     EXPORT_DATA_NAME,
     EXPORT_FORMAT_VERSION,
     EXPORT_KIND,
+    IMPORT_ID_TTL_SECONDS,
     MANIFEST_NAME,
     MAX_ENTRY_BYTES,
     MAX_TOTAL_UNCOMPRESSED_BYTES,
@@ -669,3 +672,60 @@ async def test_pending_import_expires():
 
     with pytest.raises(SessionTransferError, match="expired"):
         service._pending(preview["import_id"])
+
+
+@pytest.mark.asyncio
+async def test_stage_import_sweeps_expired_pending_and_orphaned_zips():
+    """An abandoned staged package is reclaimed on the next upload.
+
+    The TTL only ran when the same ``import_id`` was looked up again, so a
+    package the user never confirms kept its file (up to ``MAX_UPLOAD_BYTES``
+    each) in the temp directory forever, with no bound on how many.
+    """
+    service = _make_service()
+    stale_preview = await service.stage_import(
+        _FakeUpload(build_package_bytes().getvalue())
+    )
+    stale_id = stale_preview["import_id"]
+    stale_path = service.pending_imports[stale_id].zip_path
+    service.pending_imports[stale_id].created_at -= IMPORT_ID_TTL_SECONDS + 60
+    # An orphan no pending entry points at, older than the TTL.
+    orphan = service.temp_dir / "session_import_orphan.zip"
+    orphan.write_bytes(b"orphan")
+    aged = time.time() - IMPORT_ID_TTL_SECONDS - 60
+    os.utime(orphan, (aged, aged))
+
+    preview = await service.stage_import(_FakeUpload(build_package_bytes().getvalue()))
+
+    assert stale_id not in service.pending_imports
+    assert not stale_path.exists()
+    assert not orphan.exists()
+    # The package staged by this very call is untouched.
+    assert set(service.pending_imports) == {preview["import_id"]}
+    assert service.pending_imports[preview["import_id"]].zip_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_fresh_orphans_and_live_pending():
+    """A concurrent upload mid-write, and a live preview, must survive.
+
+    The fresh orphan stands for an upload another request is still writing.
+    The aged live file proves a registered package is protected by the pending
+    map itself, not by its mtime.
+    """
+    service = _make_service()
+    live_preview = await service.stage_import(
+        _FakeUpload(build_package_bytes().getvalue())
+    )
+    live_path = service.pending_imports[live_preview["import_id"]].zip_path
+    aged = time.time() - IMPORT_ID_TTL_SECONDS - 60
+    os.utime(live_path, (aged, aged))
+    fresh_orphan = service.temp_dir / "session_import_fresh.zip"
+    fresh_orphan.write_bytes(b"mid-write")
+
+    preview = await service.stage_import(_FakeUpload(build_package_bytes().getvalue()))
+
+    assert live_preview["import_id"] in service.pending_imports
+    assert live_path.exists()
+    assert fresh_orphan.exists()
+    assert preview["import_id"] in service.pending_imports

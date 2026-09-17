@@ -6,12 +6,13 @@ Spec: docs/superpowers/specs/2026-09-13-chatui-session-export-import-design.md
 """
 
 import inspect
-from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.params import Depends
+from fastapi.responses import FileResponse
 
 from astrbot.dashboard.api.auth import AuthContext, ScopeDependency
 from astrbot.dashboard.api.session_transfer import (
@@ -86,10 +87,12 @@ async def test_export_route_maps_service_error_to_api_error():
 
 
 @pytest.mark.asyncio
-async def test_export_route_streams_zip():
+async def test_export_route_serves_zip_file(tmp_path):
+    archive = tmp_path / "pkg.zip"
+    archive.write_bytes(b"zip")
     service = Mock()
     service.export_session = AsyncMock(
-        return_value=SessionExport(file_obj=BytesIO(b"zip"), filename="pkg.zip")
+        return_value=SessionExport(path=archive, filename="pkg.zip")
     )
 
     response = await export_chat_session(
@@ -99,11 +102,33 @@ async def test_export_route_streams_zip():
         service=service,
     )
 
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == archive
     assert response.media_type == "application/zip"
     assert "pkg.zip" in response.headers["content-disposition"]
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    assert body == b"zip"
     service.export_session.assert_awaited_once_with("alice", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_export_route_deletes_the_archive_after_delivery(tmp_path):
+    """The streamed archive is temporary: it must not outlive the response."""
+    archive = tmp_path / "pkg.zip"
+    archive.write_bytes(b"zip")
+    service = Mock()
+    service.export_session = AsyncMock(
+        return_value=SessionExport(path=archive, filename="pkg.zip")
+    )
+
+    response = await export_chat_session(
+        session_id="sess-1",
+        request=_request(service),
+        _auth=_auth(),
+        service=service,
+    )
+
+    assert response.background is not None
+    await response.background()
+    assert not archive.exists()
 
 
 @pytest.mark.asyncio

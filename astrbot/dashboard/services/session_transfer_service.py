@@ -17,7 +17,6 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 
 from astrbot import logger
@@ -55,6 +54,10 @@ IMPORT_ID_TTL_SECONDS = 1800
 # Export reads one session in a single page; matches the existing
 # `page_size=100000` usage in chat_service.py.
 HISTORY_PAGE_SIZE = 100000
+
+# Attachment streaming chunk size: one chunk (never a whole file) is in RAM at
+# a time while the archive is written.
+EXPORT_CHUNK_BYTES = 1024 * 1024
 
 _ATTACHMENT_EXT_PATTERN = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
 
@@ -182,7 +185,7 @@ class SessionTransferError(Exception):
 class SessionExport:
     """A packaged session export ready to stream to the browser."""
 
-    file_obj: BytesIO
+    path: Path
     filename: str
     mimetype: str = "application/zip"
 
@@ -287,7 +290,8 @@ class SessionTransferService:
             session_id: ChatUI session identifier.
 
         Returns:
-            SessionExport holding the zip bytes, download filename and mimetype.
+            SessionExport pointing at the temporary archive on disk, plus the
+            download filename and mimetype.
 
         Raises:
             SessionTransferError: If the session is missing, owned by another
@@ -345,7 +349,6 @@ class SessionTransferService:
         all_attachment_ids = extract_attachment_ids(history) + thread_attachment_ids
 
         attachments: list[dict] = []
-        attachment_blobs: list[tuple[str, bytes]] = []
         seen_ids: set[str] = set()
         for attachment_id in all_attachment_ids:
             if attachment_id in seen_ids:
@@ -357,28 +360,19 @@ class SessionTransferService:
                 continue
             source = Path(attachment.path)
             ext = source.suffix if is_safe_attachment_ext(source.suffix) else ""
-            zip_path = f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}"
-            entry = {
-                "attachment_id": attachment_id,
-                "type": attachment.type,
-                "mime_type": attachment.mime_type,
-                "ext": ext,
-                "size": 0,
-                "zip_path": zip_path,
-            }
-            # One read serves both the byte count and the package payload; a
-            # separate stat() would add a double syscall and a TOCTOU window.
-            if source.is_file():
-                try:
-                    blob = await asyncio.to_thread(source.read_bytes)
-                except OSError as exc:
-                    warnings.append(f"Attachment {attachment_id} unreadable: {exc!s}")
-                else:
-                    entry["size"] = len(blob)
-                    attachment_blobs.append((zip_path, blob))
-            else:
-                warnings.append(f"Attachment {attachment_id} file missing on disk")
-            attachments.append(entry)
+            attachments.append(
+                {
+                    "attachment_id": attachment_id,
+                    "type": attachment.type,
+                    "mime_type": attachment.mime_type,
+                    "ext": ext,
+                    "size": 0,
+                    "zip_path": f"{ATTACHMENTS_PREFIX}{attachment_id}{ext}",
+                    # Path-only: the archive writer streams from disk so the
+                    # bytes never sit in RAM and deflate stays off the loop.
+                    "source_path": str(source),
+                }
+            )
 
         data_payload = {
             "sessions": [
@@ -394,53 +388,127 @@ class SessionTransferService:
         }
         data_bytes = json.dumps(data_payload, ensure_ascii=False).encode("utf-8")
 
-        checksums: dict[str, str] = {
+        manifest_sessions = [
+            {
+                "original_session_id": session.session_id,
+                "display_name": session.display_name,
+                "original_creator": session.creator,
+                "stats": {
+                    "messages": len(history),
+                    "conversations": len(data_payload["sessions"][0]["conversations"]),
+                    "threads": len(thread_payloads),
+                    "attachments": len(attachments),
+                    "attachment_bytes": 0,  # patched by the writer, see below
+                },
+            }
+        ]
+
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = self.temp_dir / f"session_export_{uuid.uuid4()}.zip"
+        try:
+            warnings = await asyncio.to_thread(
+                self._build_export_archive,
+                archive_path,
+                data_bytes,
+                manifest_sessions,
+                attachments,
+                warnings,
+            )
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            raise
+
+        # A package larger than the import cap can never be imported by anyone,
+        # so refuse it here rather than handing the user a dead archive.
+        archive_bytes = archive_path.stat().st_size
+        if archive_bytes > MAX_UPLOAD_BYTES:
+            archive_path.unlink(missing_ok=True)
+            raise SessionTransferError(
+                f"Session export is {archive_bytes} bytes, which exceeds the "
+                f"{MAX_UPLOAD_BYTES} byte import limit; the package could never "
+                "be imported. Remove some attachments and try again."
+            )
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return SessionExport(
+            path=archive_path,
+            filename=f"astrbot_chatui_export_{timestamp}.zip",
+        )
+
+    def _build_export_archive(
+        self,
+        archive_path: Path,
+        data_bytes: bytes,
+        manifest_sessions: list[dict],
+        attachment_entries: list[dict],
+        base_warnings: list[str],
+    ) -> list[str]:
+        """Write the export zip, streaming attachments from disk.
+
+        Runs in a worker thread: the deflate work must not block the event
+        loop, and streaming keeps peak memory at one chunk per attachment.
+
+        Args:
+            archive_path: Destination zip path in the service temp directory.
+            data_bytes: Serialized ``export.json`` payload.
+            manifest_sessions: Per-session manifest entries (stats are patched
+                in place as attachments are written).
+            attachment_entries: Attachment metadata dicts carrying an internal
+                ``source_path`` key.
+            base_warnings: Warnings collected before packaging.
+
+        Returns:
+            The final warning list (base warnings plus per-file problems).
+        """
+        warnings = list(base_warnings)
+        checksums = {
             EXPORT_DATA_NAME: f"sha256:{hashlib.sha256(data_bytes).hexdigest()}"
         }
-        for zip_path, blob in attachment_blobs:
-            checksums[zip_path] = f"sha256:{hashlib.sha256(blob).hexdigest()}"
+        written_bytes = 0
 
-        manifest = {
-            "kind": EXPORT_KIND,
-            "format_version": EXPORT_FORMAT_VERSION,
-            "astrbot_version": VERSION,
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "sessions": [
-                {
-                    "original_session_id": session.session_id,
-                    "display_name": session.display_name,
-                    "original_creator": session.creator,
-                    "stats": {
-                        "messages": len(history),
-                        "conversations": len(
-                            data_payload["sessions"][0]["conversations"]
-                        ),
-                        "threads": len(thread_payloads),
-                        "attachments": len(attachments),
-                        "attachment_bytes": sum(entry["size"] for entry in attachments),
-                    },
-                }
-            ],
-            "warnings": warnings,
-            "checksums": checksums,
-        }
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(EXPORT_DATA_NAME, data_bytes)
+            for entry in attachment_entries:
+                source = Path(entry.pop("source_path"))
+                zip_path = entry["zip_path"]
+                attachment_id = entry["attachment_id"]
+                if not source.is_file():
+                    warnings.append(f"Attachment {attachment_id} file missing on disk")
+                    continue
+                hasher = hashlib.sha256()
+                size = 0
+                try:
+                    with source.open("rb") as src, zf.open(zip_path, "w") as dest:
+                        while chunk := src.read(EXPORT_CHUNK_BYTES):
+                            hasher.update(chunk)
+                            dest.write(chunk)
+                            size += len(chunk)
+                except OSError as exc:
+                    # The entry may be truncated: a mid-stream disk error cannot
+                    # be undone once the local header is written. The importer
+                    # treats an unreadable blob as metadata-only with a warning,
+                    # so this degrades rather than corrupting the package.
+                    warnings.append(f"Attachment {attachment_id} unreadable: {exc!s}")
+                    continue
+                entry["size"] = size
+                written_bytes += size
+                checksums[zip_path] = f"sha256:{hasher.hexdigest()}"
 
-        buffer = BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            manifest_sessions[0]["stats"]["attachment_bytes"] = written_bytes
+            manifest = {
+                "kind": EXPORT_KIND,
+                "format_version": EXPORT_FORMAT_VERSION,
+                "astrbot_version": VERSION,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "sessions": manifest_sessions,
+                "warnings": warnings,
+                "checksums": checksums,
+            }
             zf.writestr(
                 MANIFEST_NAME,
                 json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
             )
-            zf.writestr(EXPORT_DATA_NAME, data_bytes)
-            for zip_path, blob in attachment_blobs:
-                zf.writestr(zip_path, blob)
-        buffer.seek(0)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return SessionExport(
-            file_obj=buffer,
-            filename=f"astrbot_chatui_export_{timestamp}.zip",
-        )
+        return warnings
 
     def _drop_pending(self, import_id: str) -> None:
         """Forget a staged import and delete its temporary zip.
@@ -455,6 +523,44 @@ class SessionTransferService:
             pending.zip_path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning(f"Failed to delete staged import {import_id}: {exc!s}")
+
+    def _sweep_stale_imports(self) -> None:
+        """Drop expired staged imports and orphaned staged archives.
+
+        The TTL is otherwise only enforced when the same ``import_id`` is
+        looked up again, so a package the user never confirms would sit in the
+        temp directory forever (up to ``MAX_UPLOAD_BYTES`` each, unbounded
+        count). A file that is still registered stays untouched; an orphan
+        younger than the TTL is left alone on purpose, because a concurrent
+        upload may be mid-write.
+        """
+        for import_id in [
+            key
+            for key, pending in self.pending_imports.items()
+            if time.monotonic() - pending.created_at > IMPORT_ID_TTL_SECONDS
+        ]:
+            self._drop_pending(import_id)
+
+        try:
+            candidates = list(self.temp_dir.glob("session_import_*.zip"))
+        except OSError as exc:
+            logger.warning(f"Failed to scan staged imports: {exc!s}")
+            return
+
+        live = {pending.zip_path for pending in self.pending_imports.values()}
+        cutoff = time.time() - IMPORT_ID_TTL_SECONDS
+        for path in candidates:
+            if path in live:
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink(missing_ok=True)
+                logger.info(f"Removed orphaned staged import {path.name}")
+            except OSError as exc:
+                logger.warning(
+                    f"Failed to remove orphaned staged import {path}: {exc!s}"
+                )
 
     def _pending(self, import_id: str) -> _PendingImport:
         """Look up a staged import, enforcing the TTL.
@@ -575,6 +681,8 @@ class SessionTransferService:
             raise SessionTransferError("Missing key: file")
         if upload.content_length and upload.content_length > MAX_UPLOAD_BYTES:
             raise SessionTransferError("Uploaded package is too large")
+
+        self._sweep_stale_imports()
 
         import_id = str(uuid.uuid4())
         zip_path = self.temp_dir / f"session_import_{import_id}.zip"

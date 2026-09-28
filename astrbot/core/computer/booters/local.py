@@ -1051,10 +1051,14 @@ class LocalShellComponent(ShellComponent):
                     timeout=5,
                 )
             except Exception:
-                session.process.terminate()
+                should_terminate = True
             else:
-                if taskkill_result.returncode != 0:
-                    session.process.terminate()
+                should_terminate = taskkill_result.returncode != 0
+            # The signal above may already have ended the process, in which
+            # case the sweep reports failure and terminating again raises
+            # ProcessLookupError.
+            if should_terminate and session.process.returncode is None:
+                session.process.terminate()
         else:
             try:
                 os.killpg(session.process.pid, signal.SIGTERM)

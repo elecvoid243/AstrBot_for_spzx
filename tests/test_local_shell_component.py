@@ -989,3 +989,56 @@ async def test_terminate_process_skips_signal_for_powershell(monkeypatch, tmp_pa
 
     assert signal.CTRL_BREAK_EVENT not in signals
     session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_tolerates_already_exited_git_bash(
+    monkeypatch, tmp_path
+):
+    """The signal already ended the process, so the sweep must not re-terminate it.
+
+    Reproduces the real failure: CTRL_BREAK_EVENT ends the process, the
+    taskkill sweep then reports failure because the PID is gone, and
+    terminating an exited process raises ProcessLookupError.
+    """
+
+    class ExitingProcess:
+        pid = 9003
+
+        def __init__(self):
+            self.returncode = None
+
+        def send_signal(self, sig):
+            _ = sig
+            self.returncode = 0  # the signal ends the process
+
+        def terminate(self):
+            raise ProcessLookupError
+
+        def kill(self):
+            raise ProcessLookupError
+
+    (tmp_path / "out3.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test3",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitingProcess(),
+        output_path=tmp_path / "out3.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=1),
+    )
+
+    await LocalShellComponent()._terminate_process(session)
+
+    session.wait_task.cancel()

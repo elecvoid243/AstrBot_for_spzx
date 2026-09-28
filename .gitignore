@@ -55,6 +55,7 @@ venv/*
 pytest.ini
 AGENTS.md
 IFLOW.md
+external_tools/
 
 # genie_tts data
 CharacterModels/

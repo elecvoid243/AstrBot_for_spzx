@@ -37,6 +37,7 @@
 | 编码 | Git Bash 全线原生 UTF-8，现有解码器直接可用（§5） |
 | 输出缓冲 | bash 自身逐行实时；块缓冲来自管道子进程，靠提示词指导缓解（§6） |
 | 中断语义 | 可用，但是**硬杀**，不触发 bash trap（§7） |
+| Python 解释器 | 提示词在 Windows 下直接给出 `sys.executable` 绝对路径，并引导优先用 `astrbot_execute_python`（§10） |
 | 启动开销 | 比 PowerShell 5.1 快 1.8–2.6 倍（§8） |
 | PTY | `winpty` 存在但未采用，属独立增强（§9） |
 
@@ -55,12 +56,27 @@ shutil.which("bash")  -> C:\Users\...\AppData\Local\Microsoft\WindowsApps\bash.E
 
 **采用的检测顺序**（`_find_git_bash()`）：
 
-1. `shutil.which("git")` → `Path(git).resolve().parent.parent` → 依次探测 `bin/bash.exe`、`usr/bin/bash.exe`
+1. `shutil.which("git")` → 从 `git.exe` 所在目录**逐级向上**遍历祖先目录，在每个祖先下依次探测 `bin/bash.exe`、`usr/bin/bash.exe`（跳过盘符根）
 2. `%ProgramFiles%\Git\bin\bash.exe`
 3. `%ProgramFiles(x86)%\Git\bin\bash.exe`
 4. `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
 
 第 1 步是关键：参考机器的 Git 装在 **D 盘**，纯 well-known 路径全部漏检。第 2–4 步只是兜底。
+
+### 3.1 为什么必须逐级向上，而不是固定深度
+
+`git.exe` 在 Git for Windows 里有**三个可能位置**，具体命中哪个由 PATH 顺序决定：
+
+| 启动方式 | `which("git")` 返回 | 若按固定 `parent.parent` 推导 |
+|---|---|---|
+| 常规启动（PATH 含 `Git\cmd`） | `Git\cmd\git.EXE` | `Git` ✅ 正确 |
+| **从 Git Bash 内启动**（PATH 含 `Git\mingw64\bin`） | `Git\mingw64\bin\git.EXE` | `Git\mingw64` ❌ **找不到** |
+
+`Git\mingw64\bin\bash.exe` 并不存在，所以第二行会让检测静默失败并回退到 PowerShell——**没有任何报错**。
+
+这个缺陷是初版实现引入的：`Path(git).resolve().parent.parent` 只在 PATH 恰好含 `Git\cmd` 时成立。它躲过了第一轮探测，因为探测用的 `astrbot_execute_python` 跑在 AstrBot 自身进程里（PATH 只有 `Git\cmd`），而验证提示词时用的子进程继承了 Git Bash 的 PATH，两者结果不一致才暴露出来。
+
+> **维护提示**：判断"当前 shell 是哪一个"时，不要依赖 `which` 的返回路径深度。回归测试见 `test_find_git_bash_derives_from_mingw64_git_on_path`。
 
 **刻意不做缓存**：每次探测只是几次 `is_file()`，而缓存需要在测试里处理失效，得不偿失。
 
@@ -235,7 +251,7 @@ Git Bash 是 MSYS2 原生程序，不像 PowerShell 5.1 需要加载 .NET 运行
 ## 10. 已知的既有缺陷（本次未修）
 
 1. **PowerShell 5.1 不响应 `CTRL_BREAK_EVENT`**。实测 15 秒无响应，而对照组 `python` 与 `bash` 都是 0.00 秒退出。这意味着 `astrbot_shell_session` 的 `interrupt` 动作在 PowerShell 家族下**本就是无效的**，只有 `terminate` 有效。切到 Git Bash 反而让这个动作真正生效。
-2. **`python` 在 Git Bash 中解析到 Windows 应用商店桩**，表现为 `rc=0` 且**输出为空**的静默成功。已在提示词中警告并引导改用 `astrbot_execute_python`。
+2. **`python` 在 Git Bash 中解析到 Windows 应用商店桩**，表现为 `rc=0` 且**输出为空**的静默成功。提示词现在直接给出 AstrBot 自身解释器的绝对路径（`sys.executable`），并引导优先使用 `astrbot_execute_python`；这条指引**仅 Windows 生效**。
 3. **`git status` 默认对 CJK 文件名做八进制转义**（`?? "\347\233\256\345\275\225/"`）。提示词建议加 `-c core.quotepath=false`。
 
 ---

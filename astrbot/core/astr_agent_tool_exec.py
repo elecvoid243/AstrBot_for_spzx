@@ -773,6 +773,17 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             denied_subagent_tools |= {
                 t.name for t in toolset.tools if isinstance(t, HandoffTool)
             }
+        # Share the turn's file-change log with the subagent. File tools append
+        # to ``extra["changed_files"]`` and the main runner reads that same list
+        # when it builds the end-of-turn summary card, so the list object has to
+        # exist here — before the subagent could record into a copy of its own —
+        # and be handed over as-is. The remaining extra keys stay per-subagent.
+        parent_extra = getattr(run_context.context, "extra", None)
+        shared_changed_files: list = []
+        if isinstance(parent_extra, dict):
+            parent_extra.setdefault("changed_files", [])
+            shared_changed_files = parent_extra["changed_files"]
+
         subagent_agent_context = AstrAgentContext(
             context=ctx,
             event=event,
@@ -781,6 +792,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 "is_subagent": True,
                 "subagent_name": agent_name,
                 "denied_tools": denied_subagent_tools,
+                "changed_files": shared_changed_files,
             },
         )
 

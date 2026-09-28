@@ -23,6 +23,7 @@ from astrbot.core.provider.entities import (
 from astrbot.core.provider.provider import Provider
 from astrbot.core.star.context import Context
 from astrbot.core.subagent_manager import SubAgentManager
+from astrbot.core.tools.computer_tools.fs import _record_changed_file
 
 UMO = "test_platform:private:s1"
 
@@ -271,6 +272,43 @@ async def test_normal_mode_keeps_existing_behavior(mock_ctx, mock_event):
     # llm_params inheritance is fork-only: normal-mode payloads are unchanged.
     assert "llm_params" not in kwargs
     assert kwargs["agent_context"].extra["is_subagent"] is True
+
+
+@pytest.mark.asyncio
+async def test_subagent_file_write_reaches_main_turn_changed_files(
+    mock_ctx, mock_event
+):
+    """A subagent's first write of the turn must reach the main agent's summary.
+
+    The main agent has not touched any file yet, so the parent extra carries no
+    ``changed_files`` key when the handoff starts. A shallow copy of the parent
+    extra is not enough here: the recorder's ``setdefault`` would create the
+    list inside the subagent's own dict and the parent would never see it.
+    """
+    SubAgentManager._context_inherit_mode = "normal"
+    main_extra = {"main_agent_runner": _FakeMainRunner(ToolSet())}
+    run_context = make_run_context(
+        mock_ctx, mock_event, make_main_messages(), extra=main_extra
+    )
+
+    await run_handoff(make_handoff_tool(), run_context)
+
+    sub_agent_context = get_tool_loop_agent_kwargs(mock_ctx)["agent_context"]
+    # The subagent keeps its own context; only the turn's change log is shared.
+    assert sub_agent_context is not run_context.context
+    assert sub_agent_context.extra["is_subagent"] is True
+
+    # The subagent's file tool records through its own context wrapper.
+    _record_changed_file(
+        ContextWrapper(context=sub_agent_context),
+        "subagent_written.py",
+        "edit",
+        "local",
+        "backup-1",
+    )
+
+    recorded = run_context.context.extra.get("changed_files", [])
+    assert [entry["path"] for entry in recorded] == ["subagent_written.py"]
 
 
 @pytest.mark.asyncio

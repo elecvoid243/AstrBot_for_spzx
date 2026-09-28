@@ -471,6 +471,7 @@ async def _apply_workspace_extra_prompt(
 def _apply_local_env_tools(
     req: ProviderRequest,
     plugin_context: Context,
+    umo: str,
 ) -> None:
     if req.func_tool is None:
         req.func_tool = ToolSet()
@@ -482,7 +483,13 @@ def _apply_local_env_tools(
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileWriteTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileEditTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
-    req.system_prompt = f"{req.system_prompt or ''}\n{_build_local_mode_prompt()}\n"
+    cfg = plugin_context.get_config(umo=umo)
+    shell_type = str(
+        cfg.get("provider_settings", {}).get("computer_use_local_shell", "auto")
+    )
+    req.system_prompt = (
+        f"{req.system_prompt or ''}\n{_build_local_mode_prompt(shell_type)}\n"
+    )
 
 
 def _build_local_mode_prompt(shell_type: str = "auto") -> str:
@@ -1878,7 +1885,7 @@ async def build_main_agent(
     if config.computer_use_runtime == "sandbox":
         _apply_sandbox_tools(config, req, req.session_id)
     elif config.computer_use_runtime == "local":
-        _apply_local_env_tools(req, plugin_context)
+        _apply_local_env_tools(req, plugin_context, event.unified_msg_origin)
 
     agent_runner = AgentRunner()
     astr_agent_ctx = AstrAgentContext(

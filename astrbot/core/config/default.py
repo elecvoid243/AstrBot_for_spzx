@@ -231,6 +231,7 @@ DEFAULT_CONFIG = {
             "add_cron_tools": True,
         },
         "computer_use_runtime": "none",
+        "computer_use_local_shell": "auto",
         "computer_use_local_permissions": get_local_permission_defaults(),
         "computer_use_require_admin": True,
         "file_access_default_mode": "full",
@@ -3936,6 +3937,22 @@ CONFIG_METADATA_3 = {
                             "第三方沙箱环境",
                         ],
                         "hint": "选择 Computer Use 运行环境。",
+                    },
+                    "provider_settings.computer_use_local_shell": {
+                        "description": "本地 Shell 类型",
+                        "type": "string",
+                        "options": ["auto", "git_bash", "pwsh", "powershell", "cmd"],
+                        "labels": [
+                            "自动（Git Bash 优先）",
+                            "Git Bash",
+                            "PowerShell 7",
+                            "Windows PowerShell 5.1",
+                            "cmd.exe",
+                        ],
+                        "hint": "仅 Windows 生效。auto 依次探测 Git Bash、pwsh、powershell.exe；显式选择但未安装时回退到 auto。",
+                        "condition": {
+                            "provider_settings.computer_use_runtime": "local",
+                        },
                     },
                     "provider_settings.computer_use_local_permissions": {
                         "description": "本地权限策略",

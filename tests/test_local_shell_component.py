@@ -32,9 +32,23 @@ class _FakeTaskkillResult:
 
 
 def _python_command(code: str) -> str:
-    """Build a shell-safe Python command for the current operating system."""
-    args = [sys.executable, "-u", "-c", code]
-    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    """Build a shell-safe Python command for the current operating system.
+
+    The command string is handed to whichever shell the local runtime
+    resolved, and PowerShell and Git Bash disagree on how a quoted
+    interpreter path is invoked: PowerShell needs the call operator, which
+    bash reads as a background separator. An unquoted forward-slash path
+    works in both, so only the code argument is quoted.
+    """
+    if os.name != "nt":
+        return shlex.join([sys.executable, "-u", "-c", code])
+    if " " in sys.executable:
+        pytest.skip(
+            "Interpreter path contains a space; PowerShell and Git Bash need "
+            "different quoting for it."
+        )
+    interpreter = sys.executable.replace("\\", "/")
+    return f'{interpreter} -u -c "{code}"'
 
 
 def test_local_shell_component_decodes_utf8_output(monkeypatch):

@@ -169,6 +169,108 @@ def _would_kill_self(command: str) -> bool:
     return False
 
 
+_POWERSHELL_PREFIX_ARGS = (
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+)
+
+
+@dataclass(frozen=True)
+class ShellSpec:
+    """Resolved local shell: family tag, executable, and fixed argv prefix.
+
+    Attributes:
+        family: One of "git_bash", "pwsh", "powershell", "cmd", "posix".
+        executable: Absolute or PATH-resolved executable path. Empty for the
+            "posix" family, which runs through the platform shell instead of
+            an explicit argv.
+        prefix_args: Arguments placed before the command text.
+    """
+
+    family: str
+    executable: str
+    prefix_args: tuple[str, ...]
+
+
+def _find_git_bash() -> str | None:
+    """Locate Git for Windows' bash.exe without trusting a PATH ``bash``.
+
+    ``shutil.which("bash")`` is deliberately avoided: on Windows it usually
+    resolves to the WSL launcher stub under WindowsApps, which is a different
+    filesystem and shell entirely. The Git installation is located through the
+    ``git`` on PATH instead, with the usual install roots as a fallback.
+
+    Returns:
+        Absolute path to bash.exe, or None when Git for Windows is absent.
+    """
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent.parent
+        for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+            candidate = root / relative
+            if candidate.is_file():
+                return str(candidate)
+
+    for env_key, subdir in (
+        ("ProgramFiles", "Git"),
+        ("ProgramFiles(x86)", "Git"),
+        ("LOCALAPPDATA", "Programs/Git"),
+    ):
+        base = os.environ.get(env_key)
+        if not base:
+            continue
+        candidate = Path(base) / subdir / "bin/bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+
+    return None
+
+
+def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
+    """Resolve which local shell commands should run in.
+
+    On Windows, "auto" prefers Git Bash, then PowerShell 7, then Windows
+    PowerShell. An explicit family that is not installed falls back to "auto",
+    so a stale config value cannot disable shell execution.
+
+    Args:
+        shell_type: "auto" or one of "git_bash", "pwsh", "powershell", "cmd".
+            Ignored outside Windows.
+
+    Returns:
+        The resolved shell specification.
+    """
+    if sys.platform != "win32":
+        return ShellSpec(family="posix", executable="", prefix_args=())
+
+    if shell_type == "git_bash" and (git_bash := _find_git_bash()):
+        return ShellSpec("git_bash", git_bash, ("-c",))
+    if shell_type == "pwsh" and shutil.which("pwsh"):
+        return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    if shell_type == "powershell":
+        return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
+    if shell_type == "cmd" and shutil.which("cmd"):
+        return ShellSpec("cmd", "cmd.exe", ("/d", "/s", "/c"))
+
+    if shell_type not in ("auto", "git_bash", "pwsh", "powershell", "cmd"):
+        logger.warning(
+            "Unknown local shell %r; falling back to auto-detection.", shell_type
+        )
+    elif shell_type != "auto":
+        logger.warning(
+            "Configured local shell %r is unavailable; falling back to auto-detection.",
+            shell_type,
+        )
+
+    if git_bash := _find_git_bash():
+        return ShellSpec("git_bash", git_bash, ("-c",))
+    if shutil.which("pwsh"):
+        return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
+
+
 def resolve_windows_shell() -> str:
     """Prefer PowerShell 7 (pwsh.exe) when on PATH, else Windows PowerShell 5.1."""
     return "pwsh.exe" if shutil.which("pwsh") else "powershell.exe"

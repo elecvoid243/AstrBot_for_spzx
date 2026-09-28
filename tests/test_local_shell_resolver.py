@@ -33,6 +33,29 @@ def test_find_git_bash_derives_from_git_on_path(tmp_path, monkeypatch):
     assert local_booter._find_git_bash() == str(root / "bin" / "bash.exe")
 
 
+def test_find_git_bash_derives_from_mingw64_git_on_path(tmp_path, monkeypatch):
+    """PATH order decides which git.exe `which` finds; both must locate the root.
+
+    AstrBot launched from a Git Bash shell sees `mingw64\\bin\\git.exe` first,
+    where a fixed `parent.parent` lands on `<root>\\mingw64` and finds nothing.
+    """
+    root = tmp_path / "Git"
+    (root / "mingw64" / "bin").mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "mingw64" / "bin" / "git.exe").touch()
+    (root / "bin" / "bash.exe").touch()
+    _isolate_env(monkeypatch)
+    monkeypatch.setattr(
+        local_booter.shutil,
+        "which",
+        lambda name: (
+            str(root / "mingw64" / "bin" / "git.exe") if name == "git" else None
+        ),
+    )
+
+    assert local_booter._find_git_bash() == str(root / "bin" / "bash.exe")
+
+
 def test_find_git_bash_never_uses_path_bash(monkeypatch):
     """`which("bash")` resolves to the WSL launcher stub and must be ignored."""
     stub = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\bash.EXE"

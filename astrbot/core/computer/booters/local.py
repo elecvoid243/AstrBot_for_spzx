@@ -207,11 +207,17 @@ def _find_git_bash() -> str | None:
     """
     git = shutil.which("git")
     if git:
-        root = Path(git).resolve().parent.parent
-        for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
-            candidate = root / relative
-            if candidate.is_file():
-                return str(candidate)
+        # `git.exe` sits in <root>\cmd, <root>\bin or <root>\mingw64\bin
+        # depending on PATH order, so search the ancestors rather than
+        # assuming a fixed depth. The drive root is skipped so an unrelated
+        # C:\bin\bash.exe cannot be picked up.
+        for ancestor in Path(git).resolve().parents:
+            if ancestor.parent == ancestor:
+                break
+            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+                candidate = ancestor / relative
+                if candidate.is_file():
+                    return str(candidate)
 
     for env_key, subdir in (
         ("ProgramFiles", "Git"),

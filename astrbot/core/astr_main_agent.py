@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import platform
+import sys
 import zoneinfo
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
@@ -505,8 +506,6 @@ def _build_local_mode_prompt(shell_type: str = "auto") -> str:
             "such as ls, grep, sed and find are available. "
             "Paths may be written as /c/...; Windows-style paths are also accepted "
             "by most tools. "
-            "The `python` command here resolves to a Windows Store stub that exits "
-            "successfully with no output, so use astrbot_execute_python instead. "
             "When piping long-running output, disable buffering with -u, "
             "--line-buffered or fflush(), otherwise output arrives only when the "
             "command finishes. "
@@ -530,10 +529,23 @@ def _build_local_mode_prompt(shell_type: str = "auto") -> str:
             "Use Windows PowerShell 5.1-compatible syntax and cmdlets; do not use "
             "PowerShell 7-only syntax or assume Unix commands like cat/ls/grep are available."
         )
+    # On Windows a bare `python` is frequently not AstrBot's interpreter — the
+    # Store stub exits successfully with no output — so name the real one and
+    # point at the tool that already runs in it.
+    python_hint = ""
+    if system_name.lower() == "windows":
+        python_hint = (
+            "For Python, prefer the `astrbot_execute_python` tool — it already "
+            "runs in AstrBot's own environment. If you must run Python through "
+            f"the shell, invoke the interpreter at `{sys.executable}` explicitly: "
+            "a bare `python` may resolve to an unrelated interpreter or to a "
+            "Store stub that exits successfully with no output. "
+        )
     return (
         "You have access to the host local environment and can execute shell commands and Python code. "
         f"Current operating system: {system_name}. "
         f"{shell_hint} "
+        f"{python_hint}"
         "Local shell commands automatically return a managed session when they "
         "outlive the initial wait. Use `astrbot_shell_session` to list, poll, "
         "write raw text or complete lines to, interrupt, or terminate those sessions. "

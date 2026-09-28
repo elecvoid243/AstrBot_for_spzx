@@ -2,6 +2,7 @@
 
 import datetime
 import os
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -463,6 +464,19 @@ def test_local_mode_prompt_describes_git_bash():
     assert "line-buffered" in prompt
     assert "core.quotepath" in prompt
     assert "PowerShell 7-only syntax" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("system", "expected"),
+    [("Windows", True), ("Linux", False)],
+)
+def test_local_mode_prompt_names_the_python_interpreter_on_windows(system, expected):
+    """A bare `python` is not AstrBot's interpreter; the prompt names the real one."""
+    with patch("astrbot.core.astr_main_agent.platform.system", return_value=system):
+        prompt = ama._build_local_mode_prompt()
+
+    assert (sys.executable in prompt) is expected
+    assert ("astrbot_execute_python" in prompt) is expected
 
 
 def test_local_mode_prompt_keeps_posix_shell_guidance():

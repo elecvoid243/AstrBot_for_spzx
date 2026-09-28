@@ -1252,13 +1252,48 @@ function agentWorkKey(message: ChatRecord, messageIndex: number) {
   return message.id != null ? String(message.id) : `idx-${messageIndex}`;
 }
 
+/**
+ * Whether the "worked for ..." capsule replaces this message's live render.
+ *
+ * The capsule's collapsed state renders only the reply region, and that
+ * region leaves out its `interactive_choice` parts, so a box that is still
+ * waiting for an answer must keep its whole message out of the collapse —
+ * otherwise the box is rendered nowhere at all. Tab liveness is not a safe
+ * gate for that: a page reload drops the run's SSE connection (or the run is
+ * gone: server restart, the answer arrived in another tab) while the box
+ * still waits, and the capsule then swallowed it. Submitted / cancelled /
+ * ignored boxes are terminal history and fold like everything else.
+ *
+ * @param message - The bot record being rendered.
+ * @param messageIndex - Its position in the loaded list.
+ * @returns True when the message may collapse behind the capsule.
+ */
 function agentWorkPillVisible(message: ChatRecord, messageIndex: number) {
-  return (
-    !isUserMessage(message) &&
-    !messageContent(message).isLoading &&
-    !isMessageStreaming(message, messageIndex) &&
-    splitAgentWork(messageContent(message)) !== null
-  );
+  if (
+    isUserMessage(message) ||
+    messageContent(message).isLoading ||
+    isMessageStreaming(message, messageIndex) ||
+    splitAgentWork(messageContent(message)) === null
+  ) {
+    return false;
+  }
+  // Terminal boxes need no live render; the box itself decides with the same
+  // three flags (see `InteractiveChoiceBox`'s state machine).
+  if (!props.currentUmo || isInteractiveChoiceIgnored(message)) return true;
+  for (const part of messageParts(message)) {
+    if (!isInteractiveChoicePayload(part)) continue;
+    const requestId =
+      typeof part.request_id === "string" ? part.request_id : "";
+    if (!requestId) continue;
+    if (
+      interactiveChoiceStore.getSubmissionState(props.currentUmo, requestId) ||
+      interactiveChoiceStore.isCancelled(props.currentUmo, requestId)
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 function agentWorkExpanded(message: ChatRecord, messageIndex: number) {

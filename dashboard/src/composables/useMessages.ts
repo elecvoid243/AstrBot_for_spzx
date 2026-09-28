@@ -2369,9 +2369,22 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
   // frozen into the record when the `interactive_choice` event saves it,
   // and it used to render as a separate, empty tool block below the box.
   const replyParts = visibleReplyParts(blocks[finalStart].parts);
+  // The reply region can leave parts of its block out (an
+  // `interactive_choice` it hides, or the question a trailing answer
+  // follows). They fold back into the work group instead of being dropped:
+  // the collapsed capsule renders the reply region and nothing else, so a
+  // part that belongs to neither region is rendered nowhere at all.
+  const visible = new Set(replyParts);
+  const foldedParts = blocks[finalStart].parts.filter(
+    (part) => !visible.has(part),
+  );
+  const foldedBlocks: MessageDisplayBlock[] = foldedParts.length
+    ? [{ kind: "content", parts: foldedParts }]
+    : [];
   return {
     workBlocks: [
       ...blocks.slice(0, finalStart),
+      ...foldedBlocks,
       ...blocks.slice(finalStart + 1),
     ],
     finalBlocks:

@@ -1,7 +1,10 @@
 """Tests for the computer_use_local_shell configuration surface."""
 
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -25,3 +28,31 @@ def test_local_shell_schema_lists_every_family():
     assert entry["condition"] == {
         "provider_settings.computer_use_runtime": "local",
     }
+
+
+@pytest.mark.parametrize("locale", ["zh-CN", "en-US", "ru-RU", "ja-JP"])
+def test_local_shell_has_translations_for_every_locale(locale):
+    """The dashboard renders the i18n text, not the schema's inline fallback."""
+    from astrbot.core.config.default import CONFIG_METADATA_3
+
+    options = CONFIG_METADATA_3["ai_group"]["metadata"]["agent_computer_use"]["items"][
+        "provider_settings.computer_use_local_shell"
+    ]["options"]
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "dashboard"
+        / "src"
+        / "i18n"
+        / "locales"
+        / locale
+        / "features"
+        / "config-metadata.json"
+    )
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    entry = metadata["ai_group"]["agent_computer_use"]["provider_settings"][
+        "computer_use_local_shell"
+    ]
+
+    assert entry["description"]
+    assert entry["hint"]
+    assert len(entry["labels"]) == len(options)

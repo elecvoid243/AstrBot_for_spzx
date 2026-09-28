@@ -248,6 +248,11 @@
           "hint": "允许 Agent 访问的环境。",
           "labels": ["不允许任何环境", "本机环境", "第三方沙箱环境"]
         },
+        "computer_use_local_shell": {
+          "description": "本地 Shell 类型",
+          "hint": "仅 Windows 生效。auto 依次探测 Git Bash、pwsh、powershell.exe；显式选择但未安装时回退到 auto。",
+          "labels": ["自动（Git Bash 优先）", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+        },
         "computer_use_local_permissions": {
           "description": "本地权限策略"
         },

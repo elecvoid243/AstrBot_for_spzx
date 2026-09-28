@@ -5,7 +5,7 @@
 | 主题 | 本地 Computer Use 运行时的 shell 选择：Git Bash / PowerShell 7 / Windows PowerShell 5.1 / cmd.exe |
 | 日期 | 2026-09-28 |
 | 状态 | Implemented — 已合入 `all`（merge `fcf32ecc9`） |
-| 关联代码 | `astrbot/core/computer/booters/local.py`（`ShellSpec` / `_find_git_bash` / `resolve_local_shell` / `exec` / `exec_managed` / `_terminate_process`）<br>`astrbot/core/astr_main_agent.py`（`_build_local_mode_prompt`）<br>`astrbot/core/tools/computer_tools/shell.py`（`ExecuteShellTool.call`）<br>`astrbot/core/config/default.py`（默认值 + 面板 schema） |
+| 关联代码 | `astrbot/core/computer/booters/local.py`（`ShellSpec` / `_find_git_bash` / `resolve_local_shell` / `exec` / `exec_managed` / `_terminate_process`）<br>`astrbot/core/astr_main_agent.py`（`_build_local_mode_prompt`）<br>`astrbot/core/tools/computer_tools/shell.py`（`ExecuteShellTool.call`）<br>`astrbot/core/config/default.py`（默认值 + 面板 schema）<br>`dashboard/src/i18n/locales/{zh-CN,en-US,ru-RU,ja-JP}/features/config-metadata.json`（面板文案，**新增配置项时必须同步全部四个语言**，否则前端显示键名） |
 | 关联配置 | `provider_settings.computer_use_local_shell`，默认 `auto` |
 | 实施计划 | `docs/superpowers/plans/2026-09-28-git-bash-local-shell-runtime.md` |
 | 测试 | `tests/test_local_shell_resolver.py`、`tests/test_local_shell_component.py`、`tests/test_local_shell_config.py`、`tests/unit/test_astr_main_agent.py` |

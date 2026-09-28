@@ -359,6 +359,11 @@
                     "hint": "Среда, к которой разрешён доступ Agent.",
                     "labels": ["Нет доступной среды", "Локальный компьютер", "Сторонняя песочница"]
                 },
+                "computer_use_local_shell": {
+                    "description": "Локальная оболочка",
+                    "hint": "Только для Windows. auto по очереди проверяет Git Bash, pwsh и powershell.exe; если выбранная оболочка не установлена, используется auto.",
+                    "labels": ["Авто (сначала Git Bash)", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+                },
                 "computer_use_local_permissions": {
                     "description": "Локальные политики доступа"
                 },

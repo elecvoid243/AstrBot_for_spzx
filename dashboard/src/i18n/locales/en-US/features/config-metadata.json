@@ -232,6 +232,11 @@
           "hint": "Environment the Agent is allowed to access.",
           "labels": ["No environment", "Local machine", "Third-party sandbox"]
         },
+        "computer_use_local_shell": {
+          "description": "Local Shell",
+          "hint": "Windows only. auto probes Git Bash, then pwsh, then powershell.exe; an explicit choice that is not installed falls back to auto.",
+          "labels": ["Auto (Git Bash first)", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+        },
         "computer_use_local_permissions": {
           "description": "Local Permission Policies"
         },

@@ -320,6 +320,11 @@
           "hint": "エージェントにアクセスを許可する環境です。",
           "labels": ["環境を使用しない", "ローカルコンピューター", "外部サンドボックス"]
         },
+        "computer_use_local_shell": {
+          "description": "ローカルシェル",
+          "hint": "Windows のみ有効。auto は Git Bash、pwsh、powershell.exe の順に検出し、明示的に選択したシェルが未インストールの場合は auto にフォールバックします。",
+          "labels": ["自動（Git Bash 優先）", "Git Bash", "PowerShell 7", "Windows PowerShell 5.1", "cmd.exe"]
+        },
         "computer_use_local_permissions": {
           "description": "ローカル権限ポリシー"
         },

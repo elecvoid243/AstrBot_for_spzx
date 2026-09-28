@@ -182,6 +182,43 @@ describe("splitAgentWork", () => {
     ]);
   });
 
+  it("folds the parts the reply region hides back into the work group", () => {
+    // The collapsed capsule renders only `finalBlocks`, and the reply region
+    // drops its `interactive_choice` parts (they are review history once the
+    // run continued past them). No part may fall between the two regions: one
+    // that belongs to neither is rendered nowhere at all while collapsed.
+    const split = splitAgentWork(
+      content([
+        THINK,
+        TEXT("plan is written"),
+        { type: "interactive_choice", request_id: "r1", options: [] },
+      ]),
+    );
+    expect(split).not.toBeNull();
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("plan is written"),
+    ]);
+    expect(
+      split!.workBlocks.flatMap((block) => block.parts.map((part) => part.type)),
+    ).toContain("interactive_choice");
+  });
+
+  it("keeps every part of the reply block in exactly one region", () => {
+    const choice = { type: "interactive_choice", request_id: "r1", options: [] };
+    const split = splitAgentWork(
+      content([THINK, TEXT("asking now"), choice, TEXT("done with A")]),
+    );
+    expect(split).not.toBeNull();
+    // The answer trails the box, so the reply region opens on it and the
+    // question that preceded the box folds with the rest of the work.
+    expect(split!.finalBlocks.flatMap((block) => block.parts)).toEqual([
+      TEXT("done with A"),
+    ]);
+    const folded = split!.workBlocks.flatMap((block) => block.parts);
+    expect(folded).toContainEqual(TEXT("asking now"));
+    expect(folded).toContainEqual(choice);
+  });
+
   it("collapses a tool call that trails the reply instead of leaking it", () => {
     // Shape a paused turn saves: the agent called ask_user_choice together
     // with a sibling tool, the choice event flushed the record, and the

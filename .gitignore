@@ -1,4 +1,4 @@
-﻿# Python related
+# Python related
 __pycache__
 .mypy_cache
 .venv*

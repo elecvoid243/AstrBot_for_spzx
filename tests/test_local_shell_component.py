@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 
+import psutil
 import pytest
 
 from astrbot.core.computer.booters import local as local_booter
@@ -738,6 +739,21 @@ async def test_managed_shell_keeps_completed_session_until_output_is_drained():
 _HOST_PID = 4321
 
 
+class _FakeProcess:
+    """Minimal psutil process stand-in exposing the ``info`` mapping."""
+
+    def __init__(self, pid: int, name: str, cmdline: tuple[str, ...] = ()) -> None:
+        self.info = {"pid": pid, "name": name, "cmdline": list(cmdline)}
+
+
+def _patch_process_table(monkeypatch, processes: list[_FakeProcess]) -> None:
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: list(processes))
+
+
+_HOST_PROCESS = _FakeProcess(_HOST_PID, "python.exe", ("python.exe", "main.py"))
+_UNRELATED_PROCESS = _FakeProcess(9001, "node.exe", ("node.exe", "server.js"))
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -755,7 +771,6 @@ _HOST_PID = 4321
         "perl -e 'kill 9, {pid}'",
         "ruby -e 'Process.kill(\"KILL\", {pid})'",
         "kill -Name python",
-        "spps -Name python",
         "gps python | kill",
         "Get-Process python | ForEach-Object {{ $_.Kill() }}",
     ],
@@ -782,11 +797,79 @@ def test_would_kill_self_allows_unrelated_commands(monkeypatch, command):
     assert not local_booter._would_kill_self(command.format(pid=_HOST_PID + 1))
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /PID 9002",
+        "taskkill /F /IM node.exe",
+        "pkill -f node",
+        "Stop-Process -Name node",
+        "python -c 'import os;os.kill(9002, 9)'",
+    ],
+)
+def test_would_kill_self_allows_kill_of_unrelated_process(monkeypatch, command):
+    """Resolving the selector must let a kill aimed elsewhere through.
+
+    These are the shapes an agent reaches for when it wants to stop a process
+    that has nothing to do with AstrBot. Refusing them outright was the bug.
+    """
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+    _patch_process_table(monkeypatch, [_HOST_PROCESS, _UNRELATED_PROCESS])
+
+    assert not local_booter._would_kill_self(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /IM python.exe",
+        "pkill python",
+        "Stop-Process -Name python",
+        f"python -c 'import os;os.kill({_HOST_PID}, 9)'",
+    ],
+)
+def test_would_kill_self_blocks_kill_that_would_reach_the_host(monkeypatch, command):
+    """Loosening the name-based branch must not open the host-kill path."""
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+    _patch_process_table(monkeypatch, [_HOST_PROCESS, _UNRELATED_PROCESS])
+
+    assert local_booter._would_kill_self(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /T",
+        "taskkill /F /IM",
+        "pkill *",
+    ],
+)
+def test_would_kill_self_refuses_name_based_kill_it_cannot_resolve(
+    monkeypatch, command
+):
+    """No selector, a flag without a value, or a bad pattern: fail closed."""
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+    _patch_process_table(monkeypatch, [_HOST_PROCESS, _UNRELATED_PROCESS])
+
+    assert local_booter._would_kill_self(command)
+
+
+def test_would_kill_self_refuses_when_process_table_is_unavailable(monkeypatch):
+    monkeypatch.setattr(local_booter, "_self_pids", lambda: frozenset({_HOST_PID}))
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("process table unavailable")
+
+    monkeypatch.setattr(psutil, "process_iter", _explode)
+
+    assert local_booter._would_kill_self("taskkill /F /IM node.exe")
+
+
 @pytest.mark.asyncio
 async def test_exec_managed_blocks_host_terminating_command():
     shell = LocalShellComponent()
 
-    with pytest.raises(PermissionError, match="host process"):
+    with pytest.raises(PermissionError, match="own process"):
         await shell.exec_managed(
             f"kill -s SIGKILL {os.getpid()}",
             owner_id="owner-a",
@@ -804,29 +887,23 @@ async def test_exec_managed_blocks_host_terminating_command():
 
 
 @pytest.mark.asyncio
-async def test_exec_managed_name_based_kill_refusal_states_the_rule():
-    """A name-based kill of an unrelated PID must not be reported as targeting AstrBot.
+async def test_exec_managed_unresolved_kill_says_it_could_not_resolve():
+    """A selector the guard cannot resolve must say so.
 
-    ``taskkill``/``pkill``/``killall``/``Stop-Process`` are refused because
-    their target cannot be checked against the protected PID set, not because
-    the caller aimed at the host. The refusal has to say so, and name the one
-    shape that is checked, or the model learns the wrong constraint.
+    It must not claim the caller aimed at AstrBot -- that mislabel is what made
+    an ordinary kill look like an attack on the host.
     """
     shell = LocalShellComponent()
 
-    with pytest.raises(PermissionError) as exc_info:
+    with pytest.raises(PermissionError, match="could not resolve"):
         await shell.exec_managed(
-            "taskkill /F /PID 99999",
+            "taskkill /F /T",
             owner_id="owner-a",
             creator_id="user-a",
             creator_is_admin=False,
             sandboxed=False,
             yield_time_ms=0,
         )
-
-    message = str(exc_info.value)
-    assert "taskkill" in message
-    assert "PID" in message
 
 
 @pytest.mark.asyncio
@@ -842,7 +919,7 @@ async def test_write_session_blocks_host_terminating_input():
     )
 
     try:
-        with pytest.raises(PermissionError, match="host process"):
+        with pytest.raises(PermissionError, match="own process"):
             await shell.write_session(
                 owner_id="owner-a",
                 requester_id="user-a",

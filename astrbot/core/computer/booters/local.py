@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 if sys.version_info < (3, 14):
     from python_ripgrep import search
 
@@ -119,28 +121,35 @@ _KILL_INVOCATION_PATTERN = re.compile(
 
 # Kill-style API calls such as ``os.kill(pid, 9)``, ``Process.kill("KILL", pid)``
 # or PowerShell's ``$_.Kill()``. A shell command has no reason to spell a kill
-# this way.
-_KILL_API_CALL_PATTERN = re.compile(r"\bkill\s*\(")
+# this way. The first argument is captured so a literal PID can be checked like
+# any other target; anything else counts as unresolvable.
+_KILL_API_CALL_PATTERN = re.compile(r"\bkill\s*\(\s*(?P<target>[^,)]*)")
 
-# Refusal raised by every call site guarding on :func:`_would_kill_self`. It has
-# to stay true for both causes of refusal: a kill aimed at a protected PID, and
-# a kill that selects its target by name or pattern and so cannot be checked at
-# all. Naming the rule, and the one shape that is checked, is what lets the model
-# route around a refusal instead of abandoning a legitimate command.
+# Refusal reasons returned by :func:`_would_kill_self`. There are two, because
+# the two causes call for different corrections: a selector that resolves to the
+# host has to be retargeted, while a selector that cannot be resolved has to be
+# spelled in a form this guard understands. Collapsing them into one string
+# would leave the model unable to tell which correction applies.
 _HOST_KILL_REFUSAL = (
-    "Blocked: AstrBot cannot confirm this command will not terminate its own "
-    "host process. Name- or pattern-based kills (taskkill, pkill, killall, "
-    "Stop-Process) are always refused; only a kill naming an explicit numeric "
-    "PID can be checked."
+    "Blocked: this kill command would terminate AstrBot's own process. "
+    "Retarget it at the unrelated process."
+)
+
+_UNRESOLVED_KILL_REFUSAL = (
+    "Blocked: AstrBot could not resolve which processes this kill command "
+    "would terminate. Name the target explicitly -- an image name, a process "
+    "name, or a numeric PID."
 )
 
 
-def _would_kill_self(command: str) -> bool:
+def _would_kill_self(command: str) -> str | None:
     """Best-effort detection of commands that target the host AstrBot process.
 
     Complements the substring blacklist in :data:`_BLOCKED_COMMAND_PATTERNS`
-    by inspecting the command for kill invocations that name a protected PID
-    or that select their victim by process name.
+    by inspecting the command for kill invocations that name a protected PID,
+    or that select their victim by process name and would reach one. A
+    name-based selector that resolves to unrelated processes is allowed;
+    anything that cannot be resolved is refused.
 
     This is a speed bump, not a security boundary: the local shell runs with
     the same privileges as AstrBot, so indirections not modelled here (extra
@@ -153,32 +162,126 @@ def _would_kill_self(command: str) -> bool:
             to a managed shell session.
 
     Returns:
-        True when the command must be refused.
+        The refusal reason, or None when the command is allowed. The reason is
+        a non-empty string, so callers may also treat the result as a boolean.
     """
     lowered = command.lower()
     protected = _self_pids()
 
-    if _KILL_API_CALL_PATTERN.search(lowered):
-        return True
+    for api_call in _KILL_API_CALL_PATTERN.finditer(lowered):
+        target = api_call.group("target").strip()
+        if not target.isdigit():
+            return _UNRESOLVED_KILL_REFUSAL
+        if int(target) in protected:
+            return _HOST_KILL_REFUSAL
 
     # Dropping quotes defeats trivial concatenation such as ``k''ill 1234``
     # without changing the token boundaries the pattern relies on.
     flattened = lowered.replace("'", "").replace('"', "")
 
     for match in _KILL_INVOCATION_PATTERN.finditer(flattened):
-        if match.group("name") != "kill":
-            return True
+        name = match.group("name")
         args = match.group("args")
+        # A literal protected PID settles it, whichever flag introduced it.
         if any(int(pid) in protected for pid in re.findall(r"\d+", args)):
-            return True
-        # A ``kill`` without a literal PID either selects by name
-        # (``kill -Name python``) or leans on a pipeline
-        # (``gps python | kill``); neither can be verified as safe.
-        # ``kill -l`` only lists signal names, so it stays allowed.
-        if not re.search(r"\d", args) and args.strip() not in {"-l", "--list"}:
-            return True
+            return _HOST_KILL_REFUSAL
+        if name == "kill":
+            # A ``kill`` without a literal PID either selects by name
+            # (``kill -Name python``) or leans on a pipeline
+            # (``gps python | kill``); neither can be verified as safe.
+            # ``kill -l`` only lists signal names, so it stays allowed.
+            if not re.search(r"\d", args) and args.strip() not in {"-l", "--list"}:
+                return _UNRESOLVED_KILL_REFUSAL
+            continue
+        # Name-based forms are refused only when the victim cannot be
+        # established. Resolving the selector lets a kill aimed at something
+        # unrelated through, while one that would reach the host still refuses.
+        victims = _kill_victims(name, args)
+        if victims is None:
+            return _UNRESOLVED_KILL_REFUSAL
+        if victims & protected:
+            return _HOST_KILL_REFUSAL
 
-    return False
+    return None
+
+
+def _kill_victims(program: str, args: str) -> set[int] | None:
+    """Resolve the PIDs a name-selecting kill invocation would terminate.
+
+    Name-based forms are not refused for being name-based -- they are refused
+    when their victim cannot be established. Resolving the selector against the
+    process table turns the ordinary case, stopping a process that has nothing
+    to do with AstrBot, into an allow, while a selector that would reach the
+    host still refuses.
+
+    Selectors are matched as regular expressions: that is what ``pkill`` does,
+    and it over-approximates for ``taskkill`` and ``Stop-Process``, which is the
+    safe direction -- an over-wide match refuses more, never less.
+
+    Args:
+        program: Lowercased command name from the kill invocation pattern.
+        args: Text after the command name, up to the next shell separator.
+
+    Returns:
+        The PIDs the invocation would terminate, or None when the victim cannot
+        be established and the caller must refuse.
+    """
+    tokens = args.split()
+    pids: set[int] = set()
+    selectors: list[str] = []
+    full_command_line = False
+
+    if program == "taskkill":
+        for index, token in enumerate(tokens[:-1]):
+            flag = token.lstrip("/-").lower()
+            value = tokens[index + 1].strip("\"'")
+            if flag == "im":
+                selectors.append(value)
+            elif flag == "pid":
+                if not value.isdigit():
+                    return None
+                pids.add(int(value))
+    elif program in {"stop-process", "spps"}:
+        for index, token in enumerate(tokens[:-1]):
+            flag = token.lstrip("-").lower()
+            value = tokens[index + 1].strip("\"'")
+            if flag == "name":
+                selectors.append(value)
+            elif flag == "id":
+                if not value.isdigit():
+                    return None
+                pids.add(int(value))
+    elif program == "pkill":
+        full_command_line = any(token in {"-f", "--full"} for token in tokens)
+        operands = [token for token in tokens if not token.startswith("-")]
+        if operands:
+            selectors.append(operands[0].strip("\"'"))
+    else:
+        # killall5 kills every process, killall is already refused by the
+        # substring blacklist, and pgrep selects no victim at all.
+        return None
+
+    if not selectors and not pids:
+        return None
+
+    victims = set(pids)
+    if not selectors:
+        return victims
+
+    try:
+        patterns = [re.compile(selector, re.IGNORECASE) for selector in selectors]
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            info = proc.info
+            haystack = (
+                " ".join(info.get("cmdline") or [])
+                if full_command_line
+                else info.get("name") or ""
+            )
+            if any(pattern.search(haystack) for pattern in patterns):
+                victims.add(info["pid"])
+    except Exception:
+        return None
+    return victims
 
 
 _POWERSHELL_PREFIX_ARGS = (
@@ -375,8 +478,8 @@ class LocalShellComponent(ShellComponent):
     ) -> dict[str, Any]:
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
-        if _would_kill_self(command):
-            raise PermissionError(_HOST_KILL_REFUSAL)
+        if refusal := _would_kill_self(command):
+            raise PermissionError(refusal)
 
         def _run() -> dict[str, Any]:
             run_env = os.environ.copy()
@@ -507,8 +610,8 @@ class LocalShellComponent(ShellComponent):
         """
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
-        if _would_kill_self(command):
-            raise PermissionError(_HOST_KILL_REFUSAL)
+        if refusal := _would_kill_self(command):
+            raise PermissionError(refusal)
         if yield_time_ms < 0 or yield_time_ms > 120_000:
             raise ValueError("`yield_time_ms` must be between 0 and 120000.")
         if timeout is not None and timeout <= 0:
@@ -866,8 +969,8 @@ class LocalShellComponent(ShellComponent):
         """
         # Per-write check only: a command split across several writes is not
         # reassembled, so this raises the bar rather than closing the path.
-        if _would_kill_self(chars):
-            raise PermissionError(_HOST_KILL_REFUSAL)
+        if refusal := _would_kill_self(chars):
+            raise PermissionError(refusal)
         session = await self._get_owned_session(
             owner_id,
             requester_id,

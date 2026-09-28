@@ -330,6 +330,7 @@ class _LocalShellSession:
     output_event: asyncio.Event
     reader_task: asyncio.Task[None]
     wait_task: asyncio.Task[int]
+    shell_family: str
     timeout_task: asyncio.Task[None] | None = None
     cursor: int = 0
     timed_out: bool = False
@@ -357,6 +358,7 @@ class LocalShellComponent(ShellComponent):
         timeout: int | None = 300,
         shell: bool = True,
         background: bool = False,
+        shell_spec: ShellSpec | None = None,
     ) -> dict[str, Any]:
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
@@ -372,20 +374,24 @@ class LocalShellComponent(ShellComponent):
             working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
             popen_command: str | list[str] = command
             popen_shell = shell
+            spawn_kwargs: dict[str, Any] = dict(_NO_WINDOW_KWARGS)
             if sys.platform == "win32" and shell:
-                shell_executable = resolve_windows_shell()
-                popen_command = [
-                    shell_executable,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                ]
+                spec = shell_spec or resolve_local_shell()
+                popen_command = [spec.executable, *spec.prefix_args, command]
                 popen_shell = False
+                if spec.family == "git_bash":
+                    # CREATE_NO_WINDOW drops the console entirely, and a
+                    # process without one never receives CTRL_BREAK_EVENT —
+                    # the only reliable sweep for MSYS2 background jobs. See
+                    # `_terminate_process`.
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0  # SW_HIDE
+                    spawn_kwargs = {
+                        "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+                        "startupinfo": startupinfo,
+                    }
             if background:
-                # Shell commands use PowerShell 7 if available, else Windows
-                # PowerShell 5.1, on Windows and the platform shell elsewhere.
                 # Safety relies on `_is_safe_command()`.
                 proc = subprocess.Popen(  # noqa: S602  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                     popen_command,
@@ -394,11 +400,9 @@ class LocalShellComponent(ShellComponent):
                     env=run_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    **_NO_WINDOW_KWARGS,
+                    **spawn_kwargs,
                 )
                 return {"pid": proc.pid, "stdout": "", "stderr": "", "exit_code": None}
-            # Shell commands use PowerShell 7 if available, else Windows
-            # PowerShell 5.1, on Windows and the platform shell elsewhere.
             # Safety relies on `_is_safe_command()`.
             proc = subprocess.Popen(  # noqa: S602  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 popen_command,
@@ -407,7 +411,7 @@ class LocalShellComponent(ShellComponent):
                 env=run_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                **_NO_WINDOW_KWARGS,
+                **spawn_kwargs,
             )
             try:
                 stdout, stderr = proc.communicate(timeout=timeout or 300)
@@ -456,6 +460,7 @@ class LocalShellComponent(ShellComponent):
         timeout: int | None = None,
         yield_time_ms: int = 10_000,
         max_output_chars: int = 10_000,
+        shell_spec: ShellSpec | None = None,
     ) -> dict[str, Any]:
         """Start a locally managed shell process and briefly wait for it.
 
@@ -510,8 +515,8 @@ class LocalShellComponent(ShellComponent):
             # process group attached to a console. CREATE_NO_WINDOW cannot be
             # used here because it drops the console entirely and breaks that
             # interrupt path. Instead, hide the console window via STARTUPINFO
-            # so spawning powershell.exe under pythonw.exe (GUI subsystem)
-            # does not flash a visible console window.
+            # so spawning the shell under pythonw.exe (GUI subsystem) does not
+            # flash a visible console window.
             process_kwargs["creationflags"] = getattr(
                 subprocess,
                 "CREATE_NEW_PROCESS_GROUP",
@@ -524,18 +529,12 @@ class LocalShellComponent(ShellComponent):
         else:
             process_kwargs["start_new_session"] = True
 
+        spec = shell_spec or resolve_local_shell()
+
         try:
             if sys.platform == "win32":
                 process_factory = asyncio.create_subprocess_exec
-                shell_executable = resolve_windows_shell()
-                process_args = (
-                    shell_executable,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                )
+                process_args = (spec.executable, *spec.prefix_args, command)
             else:
                 process_factory = asyncio.create_subprocess_shell
                 process_args = (command,)
@@ -584,6 +583,7 @@ class LocalShellComponent(ShellComponent):
             output_event=output_event,
             reader_task=reader_task,
             wait_task=wait_task,
+            shell_family=spec.family,
         )
 
         if timeout is not None:

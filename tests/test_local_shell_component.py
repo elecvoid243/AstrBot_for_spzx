@@ -51,6 +51,18 @@ def _python_command(code: str) -> str:
     return f'{interpreter} -u -c "{code}"'
 
 
+@pytest.fixture(autouse=True)
+def _no_git_bash_by_default(monkeypatch):
+    """Keep shell detection off the real filesystem unless a test opts in.
+
+    Most tests here pin the PowerShell fallback chain or the decoding path, so
+    letting `_find_git_bash()` probe the host would make them depend on whether
+    Git for Windows happens to be installed. Tests that exercise Git Bash patch
+    `_find_git_bash` themselves, which overrides this.
+    """
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: None)
+
+
 def test_local_shell_component_decodes_utf8_output(monkeypatch):
     def fake_run(*args, **kwargs):
         _ = args, kwargs
@@ -814,3 +826,78 @@ async def test_write_session_blocks_host_terminating_input():
         assert shell._sessions[result["session_id"]].process.returncode is None
     finally:
         await shell.shutdown_sessions()
+
+
+@pytest.mark.asyncio
+async def test_managed_shell_uses_git_bash_when_available(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.chunks = [b"done\n", b""]
+
+        async def read(self, _size):
+            return self.chunks.pop(0)
+
+    class FakeProcess:
+        pid = 4242
+        returncode = 0
+        stdin = None
+
+        def __init__(self):
+            self.stdout = FakeStdout()
+
+        async def wait(self):
+            return 0
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        local_booter.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    result = await LocalShellComponent().exec_managed(
+        "ls -la",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=5_000,
+    )
+
+    assert result["status"] == "completed"
+    assert calls[0][0] == (r"D:\Git\bin\bash.exe", "-c", "ls -la")
+
+
+def test_exec_uses_git_bash_argv_when_available(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _FakePopen(stdout=b"")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_run)
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+
+    result = asyncio.run(LocalShellComponent().exec("ls -la"))
+
+    assert result["exit_code"] == 0
+    assert calls[0][0][0] == [r"D:\Git\bin\bash.exe", "-c", "ls -la"]
+    assert calls[0][1]["shell"] is False
+    # CREATE_NO_WINDOW drops the console, which would make CTRL_BREAK_EVENT
+    # undeliverable and leave MSYS2 background jobs unsweepable.
+    assert calls[0][1]["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert not (calls[0][1]["creationflags"] & subprocess.CREATE_NO_WINDOW)
+
+
+def test_decode_shell_output_survives_mixed_encoding():
+    """UTF-8 and GBK bytes in one buffer must not raise."""
+    mixed = "caf\u00e9".encode() + "\u6d4b\u8bd5".encode("gbk")
+
+    assert isinstance(local_booter._decode_shell_output(mixed), str)

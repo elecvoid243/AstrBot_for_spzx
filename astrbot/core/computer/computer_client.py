@@ -17,7 +17,7 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .booters.base import ComputerBooter
-from .booters.local import LocalBooter, resolve_windows_shell
+from .booters.local import LocalBooter, resolve_local_shell
 
 session_booter: dict[str, ComputerBooter] = {}
 local_booter: ComputerBooter | None = None
@@ -696,7 +696,7 @@ def get_local_booter() -> ComputerBooter:
         if sys.platform == "win32":
             logger.info(
                 "[Computer] Windows local runtime shell: %s",
-                resolve_windows_shell(),
+                resolve_local_shell().family,
             )
     return local_booter
 

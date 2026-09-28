@@ -375,6 +375,7 @@ class LocalShellComponent(ShellComponent):
             popen_command: str | list[str] = command
             popen_shell = shell
             spawn_kwargs: dict[str, Any] = dict(_NO_WINDOW_KWARGS)
+            spec: ShellSpec | None = None
             if sys.platform == "win32" and shell:
                 spec = shell_spec or resolve_local_shell()
                 popen_command = [spec.executable, *spec.prefix_args, command]
@@ -417,6 +418,15 @@ class LocalShellComponent(ShellComponent):
                 stdout, stderr = proc.communicate(timeout=timeout or 300)
             except subprocess.TimeoutExpired:
                 should_kill_parent = sys.platform != "win32"
+                if spec is not None and spec.family == "git_bash":
+                    # Same MSYS2 leak as `_terminate_process`: background jobs
+                    # detach from the Windows parent-PID chain, so signal the
+                    # process group before falling back to the taskkill sweep.
+                    try:
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
                 if sys.platform == "win32":
                     try:
                         taskkill_result = subprocess.run(
@@ -1021,6 +1031,21 @@ class LocalShellComponent(ShellComponent):
         """
         if session.process.returncode is not None:
             return
+        if os.name == "nt" and session.shell_family == "git_bash":
+            # MSYS2 background jobs (`cmd &`) detach from the Windows
+            # parent-PID chain that `taskkill /T` walks, so the sweep alone
+            # leaks them. CTRL_BREAK_EVENT reaches the whole MSYS2 process
+            # group; the taskkill below stays as the fallback for whatever
+            # the signal did not reach.
+            try:
+                session.process.send_signal(signal.CTRL_BREAK_EVENT)
+            except OSError:
+                pass
+            else:
+                try:
+                    await asyncio.wait_for(asyncio.shield(session.wait_task), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
         if os.name == "nt":
             try:
                 taskkill_result = await asyncio.to_thread(

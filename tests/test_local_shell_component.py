@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -901,3 +902,90 @@ def test_decode_shell_output_survives_mixed_encoding():
     mixed = "caf\u00e9".encode() + "\u6d4b\u8bd5".encode("gbk")
 
     assert isinstance(local_booter._decode_shell_output(mixed), str)
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_signals_git_bash_before_taskkill(
+    monkeypatch, tmp_path
+):
+    signals = []
+    taskkills = []
+
+    class FakeProcess:
+        pid = 9001
+        returncode = None
+
+        def send_signal(self, sig):
+            signals.append(sig)
+
+        def terminate(self):
+            pass
+
+    (tmp_path / "out.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=FakeProcess(),
+        output_path=tmp_path / "out.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+
+    def fake_taskkill(*args, **kwargs):
+        taskkills.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr(local_booter.subprocess, "run", fake_taskkill)
+
+    await LocalShellComponent()._terminate_process(session)
+
+    assert signal.CTRL_BREAK_EVENT in signals
+    assert taskkills, "taskkill must still run as the fallback sweep"
+    session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_skips_signal_for_powershell(monkeypatch, tmp_path):
+    signals = []
+
+    class FakeProcess:
+        pid = 9002
+        returncode = None
+
+        def send_signal(self, sig):
+            signals.append(sig)
+
+        def terminate(self):
+            pass
+
+    (tmp_path / "out2.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test2",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=FakeProcess(),
+        output_path=tmp_path / "out2.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="powershell",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0),
+    )
+
+    await LocalShellComponent()._terminate_process(session)
+
+    assert signal.CTRL_BREAK_EVENT not in signals
+    session.wait_task.cancel()

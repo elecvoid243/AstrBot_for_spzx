@@ -536,10 +536,12 @@ def _build_local_mode_prompt(shell_type: str = "auto") -> str:
     if system_name.lower() == "windows":
         python_hint = (
             "For Python, prefer the `astrbot_execute_python` tool — it already "
-            "runs in AstrBot's own environment. If you must run Python through "
-            f"the shell, invoke the interpreter at `{sys.executable}` explicitly: "
-            "a bare `python` may resolve to an unrelated interpreter or to a "
-            "Store stub that exits successfully with no output. "
+            f"runs in AstrBot's own environment at `{sys.executable}`. Before "
+            "running project code through the shell, check whether the project "
+            "ships its own environment (venv, .venv, conda, uv) and confirm with "
+            "the user which interpreter to use: a bare `python` may resolve to "
+            "an unrelated interpreter or to a Store stub that exits successfully "
+            "with no output. "
         )
     return (
         "You have access to the host local environment and can execute shell commands and Python code. "

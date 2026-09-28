@@ -37,7 +37,7 @@
 | 编码 | Git Bash 全线原生 UTF-8，现有解码器直接可用（§5） |
 | 输出缓冲 | bash 自身逐行实时；块缓冲来自管道子进程，靠提示词指导缓解（§6） |
 | 中断语义 | 可用，但是**硬杀**，不触发 bash trap（§7） |
-| Python 解释器 | 提示词在 Windows 下直接给出 `sys.executable` 绝对路径，并引导优先用 `astrbot_execute_python`（§10） |
+| Python 解释器 | 提示词在 Windows 下给出 `sys.executable` 作为默认解释器；跑项目代码前须先查项目自带环境并与用户确认（§10） |
 | 启动开销 | 比 PowerShell 5.1 快 1.8–2.6 倍（§8） |
 | PTY | `winpty` 存在但未采用，属独立增强（§9） |
 
@@ -251,7 +251,7 @@ Git Bash 是 MSYS2 原生程序，不像 PowerShell 5.1 需要加载 .NET 运行
 ## 10. 已知的既有缺陷（本次未修）
 
 1. **PowerShell 5.1 不响应 `CTRL_BREAK_EVENT`**。实测 15 秒无响应，而对照组 `python` 与 `bash` 都是 0.00 秒退出。这意味着 `astrbot_shell_session` 的 `interrupt` 动作在 PowerShell 家族下**本就是无效的**，只有 `terminate` 有效。切到 Git Bash 反而让这个动作真正生效。
-2. **`python` 在 Git Bash 中解析到 Windows 应用商店桩**，表现为 `rc=0` 且**输出为空**的静默成功。提示词现在直接给出 AstrBot 自身解释器的绝对路径（`sys.executable`），并引导优先使用 `astrbot_execute_python`；这条指引**仅 Windows 生效**。
+2. **`python` 在 Git Bash 中解析到 Windows 应用商店桩**，表现为 `rc=0` 且**输出为空**的静默成功。提示词把 AstrBot 自身的解释器（`sys.executable`）写成默认值，并引导优先使用 `astrbot_execute_python`；**跑项目代码前要求先检查项目是否自带环境（venv / .venv / conda / uv），再与用户确认用哪个解释器**——因为项目往往有自己的环境，直接用 AstrBot 的解释器是错的。这条指引**仅 Windows 生效**。
 3. **`git status` 默认对 CJK 文件名做八进制转义**（`?? "\347\233\256\345\275\225/"`）。提示词建议加 `-c core.quotepath=false`。
 
 ---

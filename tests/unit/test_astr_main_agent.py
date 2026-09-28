@@ -477,6 +477,10 @@ def test_local_mode_prompt_names_the_python_interpreter_on_windows(system, expec
 
     assert (sys.executable in prompt) is expected
     assert ("astrbot_execute_python" in prompt) is expected
+    # Which interpreter to use for project code is a decision to confirm with
+    # the user, not one the model makes on its own.
+    assert ("confirm with the user" in prompt) is expected
+    assert "invoke the interpreter at" not in prompt
 
 
 def test_local_mode_prompt_keeps_posix_shell_guidance():

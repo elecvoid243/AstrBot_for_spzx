@@ -30,7 +30,7 @@ from astrbot.core.astr_main_agent_resources import (
     TOOL_CALL_PROMPT,
     TOOL_CALL_PROMPT_SKILLS_LIKE_MODE,
 )
-from astrbot.core.computer.booters.local import resolve_windows_shell
+from astrbot.core.computer.booters.local import resolve_local_shell
 from astrbot.core.conversation_mgr import Conversation
 from astrbot.core.db import BaseDatabase
 from astrbot.core.message.components import File, Image, Record, Reply, Video
@@ -485,13 +485,33 @@ def _apply_local_env_tools(
     req.system_prompt = f"{req.system_prompt or ''}\n{_build_local_mode_prompt()}\n"
 
 
-def _build_local_mode_prompt() -> str:
+def _build_local_mode_prompt(shell_type: str = "auto") -> str:
     system_name = platform.system() or "Unknown"
+    family = resolve_local_shell(shell_type).family
     if system_name.lower() != "windows":
         shell_hint = (
             "The runtime shell is Unix-like. Use POSIX-compatible shell commands."
         )
-    elif resolve_windows_shell() == "pwsh.exe":
+    elif family == "git_bash":
+        shell_hint = (
+            "The runtime shell is Git Bash (MSYS2), not PowerShell; Unix tools "
+            "such as ls, grep, sed and find are available. "
+            "Paths may be written as /c/...; Windows-style paths are also accepted "
+            "by most tools. "
+            "The `python` command here resolves to a Windows Store stub that exits "
+            "successfully with no output, so use astrbot_execute_python instead. "
+            "When piping long-running output, disable buffering with -u, "
+            "--line-buffered or fflush(), otherwise output arrives only when the "
+            "command finishes. "
+            "`git status` escapes non-ASCII filenames by default; pass "
+            "-c core.quotepath=false to read them."
+        )
+    elif family == "cmd":
+        shell_hint = (
+            "The runtime shell is cmd.exe. Use cmd.exe-compatible syntax; Unix "
+            "utilities and PowerShell cmdlets are not available."
+        )
+    elif family == "pwsh":
         shell_hint = (
             "The runtime shell is PowerShell 7 (pwsh.exe). "
             "Use PowerShell 7-compatible syntax and cmdlets, and do not "

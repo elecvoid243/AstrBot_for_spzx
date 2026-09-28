@@ -17,6 +17,7 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.computer.booters.local import ShellSpec
 from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.conversation_mgr import Conversation
 from astrbot.core.cron.manager import CronJobManager
@@ -390,8 +391,12 @@ def test_local_mode_prompt_uses_windows_powershell_51():
     with (
         patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"),
         patch(
-            "astrbot.core.astr_main_agent.resolve_windows_shell",
-            return_value="powershell.exe",
+            "astrbot.core.astr_main_agent.resolve_local_shell",
+            return_value=ShellSpec(
+                family="powershell",
+                executable="powershell.exe",
+                prefix_args=("-Command",),
+            ),
         ),
     ):
         prompt = ama._build_local_mode_prompt()
@@ -405,8 +410,12 @@ def test_local_mode_prompt_hints_pwsh_when_resolved():
     with (
         patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"),
         patch(
-            "astrbot.core.astr_main_agent.resolve_windows_shell",
-            return_value="pwsh.exe",
+            "astrbot.core.astr_main_agent.resolve_local_shell",
+            return_value=ShellSpec(
+                family="pwsh",
+                executable="pwsh.exe",
+                prefix_args=("-Command",),
+            ),
         ),
     ):
         prompt = ama._build_local_mode_prompt()
@@ -420,8 +429,12 @@ def test_local_mode_prompt_ignores_pwsh_on_non_windows():
     with (
         patch("astrbot.core.astr_main_agent.platform.system", return_value="Linux"),
         patch(
-            "astrbot.core.astr_main_agent.resolve_windows_shell",
-            return_value="pwsh.exe",
+            "astrbot.core.astr_main_agent.resolve_local_shell",
+            return_value=ShellSpec(
+                family="pwsh",
+                executable="pwsh.exe",
+                prefix_args=("-Command",),
+            ),
         ),
     ):
         prompt = ama._build_local_mode_prompt()
@@ -429,6 +442,27 @@ def test_local_mode_prompt_ignores_pwsh_on_non_windows():
     assert "Unix-like" in prompt
     assert "POSIX-compatible" in prompt
     assert "PowerShell" not in prompt
+
+
+def test_local_mode_prompt_describes_git_bash():
+    with (
+        patch("astrbot.core.astr_main_agent.platform.system", return_value="Windows"),
+        patch(
+            "astrbot.core.astr_main_agent.resolve_local_shell",
+            return_value=ShellSpec(
+                family="git_bash",
+                executable=r"D:\Git\bin\bash.exe",
+                prefix_args=("-c",),
+            ),
+        ),
+    ):
+        prompt = ama._build_local_mode_prompt()
+
+    assert "Git Bash" in prompt
+    assert "astrbot_execute_python" in prompt
+    assert "line-buffered" in prompt
+    assert "core.quotepath" in prompt
+    assert "PowerShell 7-only syntax" not in prompt
 
 
 def test_local_mode_prompt_keeps_posix_shell_guidance():

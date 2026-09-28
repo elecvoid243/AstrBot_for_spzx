@@ -271,11 +271,6 @@ def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
     return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
 
 
-def resolve_windows_shell() -> str:
-    """Prefer PowerShell 7 (pwsh.exe) when on PATH, else Windows PowerShell 5.1."""
-    return "pwsh.exe" if shutil.which("pwsh") else "powershell.exe"
-
-
 def _decode_bytes_with_fallback(
     output: bytes | None,
     *,

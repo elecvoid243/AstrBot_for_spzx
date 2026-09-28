@@ -16,6 +16,7 @@ from astrbot.core import logger, sp
 from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import PlatformMessageHistory
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     build_webchat_message_parts,
@@ -1028,6 +1029,15 @@ class ChatRunState:
     revision: int = 0
     status: str = "running"
     task: asyncio.Task[None] | None = None
+    history_record: PlatformMessageHistory | None = None
+    """History row this turn owns.
+
+    Created by the turn's first save and rewritten by every later one, so a
+    turn that saves mid-way (an `interactive_choice` event saves the record it
+    lands in) still persists as a single history record.
+    """
+    history_parts: list[dict] = field(default_factory=list)
+    """Parts already written into `history_record` — the whole turn so far."""
 
 
 class ChatService:
@@ -1593,15 +1603,36 @@ class ChatService:
                 extracted_refs = pending_refs
 
             run.refs = extracted_refs
-            saved_record = await self.save_bot_message(
-                run.session_id,
-                message_parts_to_save,
-                pending_agent_stats,
-                extracted_refs,
-                run.llm_checkpoint_id,
-                run.platform_history_id,
-                file_changes=pending_file_changes,
-            )
+            # The row holds the whole turn: every save appends its own segment
+            # and rewrites the row the turn already owns. A turn must stay one
+            # history record — a mid-turn save (the `interactive_choice` event
+            # lands here, and the user may answer several of them in one turn)
+            # that started a new row made a hard refresh render the turn as one
+            # bubble, with its own capsule, per save.
+            run.history_parts.extend(message_parts_to_save)
+            if run.history_record is None:
+                # First save of the turn: create the row this turn owns.
+                run.history_record = await self.save_bot_message(
+                    run.session_id,
+                    run.history_parts,
+                    run.agent_stats,
+                    run.refs,
+                    run.llm_checkpoint_id,
+                    run.platform_history_id,
+                    file_changes=run.file_changes,
+                )
+            else:
+                await self.platform_history_mgr.update(
+                    message_id=run.history_record.id,
+                    content=build_bot_history_content(
+                        run.history_parts,
+                        agent_stats=run.agent_stats,
+                        file_changes=run.file_changes,
+                        refs=run.refs,
+                    ),
+                    llm_checkpoint_id=run.llm_checkpoint_id,
+                )
+            saved_record = run.history_record
             pending_accumulator = BotMessageAccumulator(
                 filtered_tool_call_ids=suppressed_tool_call_ids,
                 # `build_message_parts(include_pending_tool_calls=True)` clears

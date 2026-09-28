@@ -1,4 +1,4 @@
-# Python related
+﻿# Python related
 __pycache__
 .mypy_cache
 .venv*
@@ -68,3 +68,6 @@ GenieData/
 dashboard/bun.lock
 start.bat
 start_bg.bat
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/

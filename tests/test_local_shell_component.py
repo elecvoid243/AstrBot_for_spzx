@@ -804,6 +804,32 @@ async def test_exec_managed_blocks_host_terminating_command():
 
 
 @pytest.mark.asyncio
+async def test_exec_managed_name_based_kill_refusal_states_the_rule():
+    """A name-based kill of an unrelated PID must not be reported as targeting AstrBot.
+
+    ``taskkill``/``pkill``/``killall``/``Stop-Process`` are refused because
+    their target cannot be checked against the protected PID set, not because
+    the caller aimed at the host. The refusal has to say so, and name the one
+    shape that is checked, or the model learns the wrong constraint.
+    """
+    shell = LocalShellComponent()
+
+    with pytest.raises(PermissionError) as exc_info:
+        await shell.exec_managed(
+            "taskkill /F /PID 99999",
+            owner_id="owner-a",
+            creator_id="user-a",
+            creator_is_admin=False,
+            sandboxed=False,
+            yield_time_ms=0,
+        )
+
+    message = str(exc_info.value)
+    assert "taskkill" in message
+    assert "PID" in message
+
+
+@pytest.mark.asyncio
 async def test_write_session_blocks_host_terminating_input():
     shell = LocalShellComponent()
     result = await shell.exec_managed(
@@ -816,7 +842,7 @@ async def test_write_session_blocks_host_terminating_input():
     )
 
     try:
-        with pytest.raises(PermissionError, match="host-terminating"):
+        with pytest.raises(PermissionError, match="host process"):
             await shell.write_session(
                 owner_id="owner-a",
                 requester_id="user-a",

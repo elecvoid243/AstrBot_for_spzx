@@ -122,6 +122,18 @@ _KILL_INVOCATION_PATTERN = re.compile(
 # this way.
 _KILL_API_CALL_PATTERN = re.compile(r"\bkill\s*\(")
 
+# Refusal raised by every call site guarding on :func:`_would_kill_self`. It has
+# to stay true for both causes of refusal: a kill aimed at a protected PID, and
+# a kill that selects its target by name or pattern and so cannot be checked at
+# all. Naming the rule, and the one shape that is checked, is what lets the model
+# route around a refusal instead of abandoning a legitimate command.
+_HOST_KILL_REFUSAL = (
+    "Blocked: AstrBot cannot confirm this command will not terminate its own "
+    "host process. Name- or pattern-based kills (taskkill, pkill, killall, "
+    "Stop-Process) are always refused; only a kill naming an explicit numeric "
+    "PID can be checked."
+)
+
 
 def _would_kill_self(command: str) -> bool:
     """Best-effort detection of commands that target the host AstrBot process.
@@ -364,9 +376,7 @@ class LocalShellComponent(ShellComponent):
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
         if _would_kill_self(command):
-            raise PermissionError(
-                "Blocked: refusing to terminate the AstrBot host process."
-            )
+            raise PermissionError(_HOST_KILL_REFUSAL)
 
         def _run() -> dict[str, Any]:
             run_env = os.environ.copy()
@@ -491,16 +501,14 @@ class LocalShellComponent(ShellComponent):
             Process result with output, status, and session metadata.
 
         Raises:
-            PermissionError: If the command matches a blocked pattern or
-                would terminate the AstrBot host process.
+            PermissionError: If the command matches a blocked pattern or is a
+                kill command that cannot be verified as safe.
             ValueError: If a timing or output limit is invalid.
         """
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
         if _would_kill_self(command):
-            raise PermissionError(
-                "Blocked: refusing to terminate the AstrBot host process."
-            )
+            raise PermissionError(_HOST_KILL_REFUSAL)
         if yield_time_ms < 0 or yield_time_ms > 120_000:
             raise ValueError("`yield_time_ms` must be between 0 and 120000.")
         if timeout is not None and timeout <= 0:
@@ -852,17 +860,14 @@ class LocalShellComponent(ShellComponent):
             Current process status after the write.
 
         Raises:
-            PermissionError: If the text would terminate the AstrBot host
-                process.
+            PermissionError: If the text is a kill command that cannot be
+                verified as safe.
             ValueError: If the session is unavailable or no longer accepts input.
         """
         # Per-write check only: a command split across several writes is not
         # reassembled, so this raises the bar rather than closing the path.
         if _would_kill_self(chars):
-            raise PermissionError(
-                "Blocked: refusing to write a host-terminating command to the "
-                "shell session."
-            )
+            raise PermissionError(_HOST_KILL_REFUSAL)
         session = await self._get_owned_session(
             owner_id,
             requester_id,

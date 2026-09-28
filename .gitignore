@@ -69,3 +69,6 @@ GenieData/
 dashboard/bun.lock
 start.bat
 start_bg.bat
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/

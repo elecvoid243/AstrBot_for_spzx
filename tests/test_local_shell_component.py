@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -32,9 +33,35 @@ class _FakeTaskkillResult:
 
 
 def _python_command(code: str) -> str:
-    """Build a shell-safe Python command for the current operating system."""
-    args = [sys.executable, "-u", "-c", code]
-    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    """Build a shell-safe Python command for the current operating system.
+
+    The command string is handed to whichever shell the local runtime
+    resolved, and PowerShell and Git Bash disagree on how a quoted
+    interpreter path is invoked: PowerShell needs the call operator, which
+    bash reads as a background separator. An unquoted forward-slash path
+    works in both, so only the code argument is quoted.
+    """
+    if os.name != "nt":
+        return shlex.join([sys.executable, "-u", "-c", code])
+    if " " in sys.executable:
+        pytest.skip(
+            "Interpreter path contains a space; PowerShell and Git Bash need "
+            "different quoting for it."
+        )
+    interpreter = sys.executable.replace("\\", "/")
+    return f'{interpreter} -u -c "{code}"'
+
+
+@pytest.fixture(autouse=True)
+def _no_git_bash_by_default(monkeypatch):
+    """Keep shell detection off the real filesystem unless a test opts in.
+
+    Most tests here pin the PowerShell fallback chain or the decoding path, so
+    letting `_find_git_bash()` probe the host would make them depend on whether
+    Git for Windows happens to be installed. Tests that exercise Git Bash patch
+    `_find_git_bash` themselves, which overrides this.
+    """
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: None)
 
 
 def test_local_shell_component_decodes_utf8_output(monkeypatch):
@@ -800,3 +827,218 @@ async def test_write_session_blocks_host_terminating_input():
         assert shell._sessions[result["session_id"]].process.returncode is None
     finally:
         await shell.shutdown_sessions()
+
+
+@pytest.mark.asyncio
+async def test_managed_shell_uses_git_bash_when_available(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.chunks = [b"done\n", b""]
+
+        async def read(self, _size):
+            return self.chunks.pop(0)
+
+    class FakeProcess:
+        pid = 4242
+        returncode = 0
+        stdin = None
+
+        def __init__(self):
+            self.stdout = FakeStdout()
+
+        async def wait(self):
+            return 0
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        local_booter.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    result = await LocalShellComponent().exec_managed(
+        "ls -la",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=5_000,
+    )
+
+    assert result["status"] == "completed"
+    assert calls[0][0] == (r"D:\Git\bin\bash.exe", "-c", "ls -la")
+
+
+def test_exec_uses_git_bash_argv_when_available(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _FakePopen(stdout=b"")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_run)
+    monkeypatch.setattr(local_booter.sys, "platform", "win32")
+    monkeypatch.setattr(local_booter, "_find_git_bash", lambda: r"D:\Git\bin\bash.exe")
+
+    result = asyncio.run(LocalShellComponent().exec("ls -la"))
+
+    assert result["exit_code"] == 0
+    assert calls[0][0][0] == [r"D:\Git\bin\bash.exe", "-c", "ls -la"]
+    assert calls[0][1]["shell"] is False
+    # CREATE_NO_WINDOW drops the console, which would make CTRL_BREAK_EVENT
+    # undeliverable and leave MSYS2 background jobs unsweepable.
+    assert calls[0][1]["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert not (calls[0][1]["creationflags"] & subprocess.CREATE_NO_WINDOW)
+
+
+def test_decode_shell_output_survives_mixed_encoding():
+    """UTF-8 and GBK bytes in one buffer must not raise."""
+    mixed = "caf\u00e9".encode() + "\u6d4b\u8bd5".encode("gbk")
+
+    assert isinstance(local_booter._decode_shell_output(mixed), str)
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_signals_git_bash_before_taskkill(
+    monkeypatch, tmp_path
+):
+    signals = []
+    taskkills = []
+
+    class FakeProcess:
+        pid = 9001
+        returncode = None
+
+        def send_signal(self, sig):
+            signals.append(sig)
+
+        def terminate(self):
+            pass
+
+    (tmp_path / "out.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=FakeProcess(),
+        output_path=tmp_path / "out.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+
+    def fake_taskkill(*args, **kwargs):
+        taskkills.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr(local_booter.subprocess, "run", fake_taskkill)
+
+    await LocalShellComponent()._terminate_process(session)
+
+    assert signal.CTRL_BREAK_EVENT in signals
+    assert taskkills, "taskkill must still run as the fallback sweep"
+    session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_skips_signal_for_powershell(monkeypatch, tmp_path):
+    signals = []
+
+    class FakeProcess:
+        pid = 9002
+        returncode = None
+
+        def send_signal(self, sig):
+            signals.append(sig)
+
+        def terminate(self):
+            pass
+
+    (tmp_path / "out2.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test2",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=FakeProcess(),
+        output_path=tmp_path / "out2.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="powershell",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0),
+    )
+
+    await LocalShellComponent()._terminate_process(session)
+
+    assert signal.CTRL_BREAK_EVENT not in signals
+    session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_tolerates_already_exited_git_bash(
+    monkeypatch, tmp_path
+):
+    """The signal already ended the process, so the sweep must not re-terminate it.
+
+    Reproduces the real failure: CTRL_BREAK_EVENT ends the process, the
+    taskkill sweep then reports failure because the PID is gone, and
+    terminating an exited process raises ProcessLookupError.
+    """
+
+    class ExitingProcess:
+        pid = 9003
+
+        def __init__(self):
+            self.returncode = None
+
+        def send_signal(self, sig):
+            _ = sig
+            self.returncode = 0  # the signal ends the process
+
+        def terminate(self):
+            raise ProcessLookupError
+
+        def kill(self):
+            raise ProcessLookupError
+
+    (tmp_path / "out3.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test3",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitingProcess(),
+        output_path=tmp_path / "out3.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=1),
+    )
+
+    await LocalShellComponent()._terminate_process(session)
+
+    session.wait_task.cancel()

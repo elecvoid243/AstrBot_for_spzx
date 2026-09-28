@@ -4,8 +4,6 @@ This module tests the ComputerClient, Booter implementations (local, shipyard, b
 filesystem operations, Python execution, shell execution, and security restrictions.
 """
 
-import os
-import shlex
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -172,18 +170,14 @@ class TestLocalShellComponent:
                 return_value=str(tmp_path),
             ),
         ):
-            # Build a per-shell command: PowerShell needs the call operator
-            # (&) for quoted, space-containing executables; POSIX shells take
-            # the plain quoted form.
-            if os.name == "nt":
-                command = (
-                    f"& '{sys.executable}' -c \"print(open(r'{test_file}').read())\""
-                )
-            else:
-                command = (
-                    f"{shlex.quote(sys.executable)} -c "
-                    f'"print(open({str(test_file)!r}).read())"'
-                )
+            # The command goes to whichever shell the runtime resolved, and
+            # PowerShell needs its call operator for a quoted interpreter path
+            # while bash reads `&` as a background separator. An unquoted
+            # forward-slash path works in both.
+            interpreter = sys.executable.replace("\\", "/")
+            command = (
+                f"{interpreter} -c \"print(open(r'{test_file.as_posix()}').read())\""
+            )
             result = await shell.exec(
                 command,
                 cwd=str(tmp_path),
@@ -194,16 +188,10 @@ class TestLocalShellComponent:
     async def test_exec_with_env(self):
         """Test command execution with custom environment variables."""
         shell = LocalShellComponent()
-        if os.name == "nt":
-            command = (
-                f"& '{sys.executable}' -c "
-                "\"import os; print(os.environ.get('TEST_VAR', ''))\""
-            )
-        else:
-            command = (
-                f"{shlex.quote(sys.executable)} -c "
-                "\"import os; print(os.environ.get('TEST_VAR', ''))\""
-            )
+        interpreter = sys.executable.replace("\\", "/")
+        command = (
+            f"{interpreter} -c \"import os; print(os.environ.get('TEST_VAR', ''))\""
+        )
         result = await shell.exec(
             command,
             env={"TEST_VAR": "test_value"},

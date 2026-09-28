@@ -11,7 +11,10 @@ from astrbot.api import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
-from astrbot.core.computer.booters.local import LocalShellComponent
+from astrbot.core.computer.booters.local import (
+    LocalShellComponent,
+    resolve_local_shell,
+)
 from astrbot.core.computer.computer_client import get_booter
 from astrbot.core.tools import fs_access
 from astrbot.core.utils.astrbot_path import get_astrbot_system_tmp_path
@@ -131,6 +134,14 @@ class ExecuteShellTool(FunctionTool):
                 if not creator_id:
                     return "Error executing command: sender identity is unavailable."
                 started_at = monotonic()
+                cfg = context.context.context.get_config(
+                    umo=context.context.event.unified_msg_origin
+                )
+                shell_type = str(
+                    cfg.get("provider_settings", {}).get(
+                        "computer_use_local_shell", "auto"
+                    )
+                )
                 result = await sb.shell.exec_managed(
                     command,
                     owner_id=context.context.event.unified_msg_origin,
@@ -141,6 +152,7 @@ class ExecuteShellTool(FunctionTool):
                     env=env,
                     timeout=timeout,
                     yield_time_ms=0 if background else yield_time_ms,
+                    shell_spec=resolve_local_shell(shell_type),
                 )
                 elapsed_seconds = monotonic() - started_at
                 if result.get("session_closed") and result.get("status") in {

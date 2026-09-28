@@ -169,9 +169,106 @@ def _would_kill_self(command: str) -> bool:
     return False
 
 
-def resolve_windows_shell() -> str:
-    """Prefer PowerShell 7 (pwsh.exe) when on PATH, else Windows PowerShell 5.1."""
-    return "pwsh.exe" if shutil.which("pwsh") else "powershell.exe"
+_POWERSHELL_PREFIX_ARGS = (
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+)
+
+
+@dataclass(frozen=True)
+class ShellSpec:
+    """Resolved local shell: family tag, executable, and fixed argv prefix.
+
+    Attributes:
+        family: One of "git_bash", "pwsh", "powershell", "cmd", "posix".
+        executable: Absolute or PATH-resolved executable path. Empty for the
+            "posix" family, which runs through the platform shell instead of
+            an explicit argv.
+        prefix_args: Arguments placed before the command text.
+    """
+
+    family: str
+    executable: str
+    prefix_args: tuple[str, ...]
+
+
+def _find_git_bash() -> str | None:
+    """Locate Git for Windows' bash.exe without trusting a PATH ``bash``.
+
+    ``shutil.which("bash")`` is deliberately avoided: on Windows it usually
+    resolves to the WSL launcher stub under WindowsApps, which is a different
+    filesystem and shell entirely. The Git installation is located through the
+    ``git`` on PATH instead, with the usual install roots as a fallback.
+
+    Returns:
+        Absolute path to bash.exe, or None when Git for Windows is absent.
+    """
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent.parent
+        for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+            candidate = root / relative
+            if candidate.is_file():
+                return str(candidate)
+
+    for env_key, subdir in (
+        ("ProgramFiles", "Git"),
+        ("ProgramFiles(x86)", "Git"),
+        ("LOCALAPPDATA", "Programs/Git"),
+    ):
+        base = os.environ.get(env_key)
+        if not base:
+            continue
+        candidate = Path(base) / subdir / "bin/bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+
+    return None
+
+
+def resolve_local_shell(shell_type: str = "auto") -> ShellSpec:
+    """Resolve which local shell commands should run in.
+
+    On Windows, "auto" prefers Git Bash, then PowerShell 7, then Windows
+    PowerShell. An explicit family that is not installed falls back to "auto",
+    so a stale config value cannot disable shell execution.
+
+    Args:
+        shell_type: "auto" or one of "git_bash", "pwsh", "powershell", "cmd".
+            Ignored outside Windows.
+
+    Returns:
+        The resolved shell specification.
+    """
+    if sys.platform != "win32":
+        return ShellSpec(family="posix", executable="", prefix_args=())
+
+    if shell_type == "git_bash" and (git_bash := _find_git_bash()):
+        return ShellSpec("git_bash", git_bash, ("-c",))
+    if shell_type == "pwsh" and shutil.which("pwsh"):
+        return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    if shell_type == "powershell":
+        return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
+    if shell_type == "cmd" and shutil.which("cmd"):
+        return ShellSpec("cmd", "cmd.exe", ("/d", "/s", "/c"))
+
+    if shell_type not in ("auto", "git_bash", "pwsh", "powershell", "cmd"):
+        logger.warning(
+            "Unknown local shell %r; falling back to auto-detection.", shell_type
+        )
+    elif shell_type != "auto":
+        logger.warning(
+            "Configured local shell %r is unavailable; falling back to auto-detection.",
+            shell_type,
+        )
+
+    if git_bash := _find_git_bash():
+        return ShellSpec("git_bash", git_bash, ("-c",))
+    if shutil.which("pwsh"):
+        return ShellSpec("pwsh", "pwsh.exe", _POWERSHELL_PREFIX_ARGS)
+    return ShellSpec("powershell", "powershell.exe", _POWERSHELL_PREFIX_ARGS)
 
 
 def _decode_bytes_with_fallback(
@@ -228,6 +325,7 @@ class _LocalShellSession:
     output_event: asyncio.Event
     reader_task: asyncio.Task[None]
     wait_task: asyncio.Task[int]
+    shell_family: str
     timeout_task: asyncio.Task[None] | None = None
     cursor: int = 0
     timed_out: bool = False
@@ -255,6 +353,7 @@ class LocalShellComponent(ShellComponent):
         timeout: int | None = 300,
         shell: bool = True,
         background: bool = False,
+        shell_spec: ShellSpec | None = None,
     ) -> dict[str, Any]:
         if not _is_safe_command(command):
             raise PermissionError("Blocked unsafe shell command.")
@@ -270,20 +369,25 @@ class LocalShellComponent(ShellComponent):
             working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
             popen_command: str | list[str] = command
             popen_shell = shell
+            spawn_kwargs: dict[str, Any] = dict(_NO_WINDOW_KWARGS)
+            spec: ShellSpec | None = None
             if sys.platform == "win32" and shell:
-                shell_executable = resolve_windows_shell()
-                popen_command = [
-                    shell_executable,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                ]
+                spec = shell_spec or resolve_local_shell()
+                popen_command = [spec.executable, *spec.prefix_args, command]
                 popen_shell = False
+                if spec.family == "git_bash":
+                    # CREATE_NO_WINDOW drops the console entirely, and a
+                    # process without one never receives CTRL_BREAK_EVENT —
+                    # the only reliable sweep for MSYS2 background jobs. See
+                    # `_terminate_process`.
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0  # SW_HIDE
+                    spawn_kwargs = {
+                        "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+                        "startupinfo": startupinfo,
+                    }
             if background:
-                # Shell commands use PowerShell 7 if available, else Windows
-                # PowerShell 5.1, on Windows and the platform shell elsewhere.
                 # Safety relies on `_is_safe_command()`.
                 proc = subprocess.Popen(  # noqa: S602  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                     popen_command,
@@ -292,11 +396,9 @@ class LocalShellComponent(ShellComponent):
                     env=run_env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    **_NO_WINDOW_KWARGS,
+                    **spawn_kwargs,
                 )
                 return {"pid": proc.pid, "stdout": "", "stderr": "", "exit_code": None}
-            # Shell commands use PowerShell 7 if available, else Windows
-            # PowerShell 5.1, on Windows and the platform shell elsewhere.
             # Safety relies on `_is_safe_command()`.
             proc = subprocess.Popen(  # noqa: S602  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 popen_command,
@@ -305,12 +407,21 @@ class LocalShellComponent(ShellComponent):
                 env=run_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                **_NO_WINDOW_KWARGS,
+                **spawn_kwargs,
             )
             try:
                 stdout, stderr = proc.communicate(timeout=timeout or 300)
             except subprocess.TimeoutExpired:
                 should_kill_parent = sys.platform != "win32"
+                if spec is not None and spec.family == "git_bash":
+                    # Same MSYS2 leak as `_terminate_process`: background jobs
+                    # detach from the Windows parent-PID chain, so signal the
+                    # process group before falling back to the taskkill sweep.
+                    try:
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
                 if sys.platform == "win32":
                     try:
                         taskkill_result = subprocess.run(
@@ -354,6 +465,7 @@ class LocalShellComponent(ShellComponent):
         timeout: int | None = None,
         yield_time_ms: int = 10_000,
         max_output_chars: int = 10_000,
+        shell_spec: ShellSpec | None = None,
     ) -> dict[str, Any]:
         """Start a locally managed shell process and briefly wait for it.
 
@@ -408,8 +520,8 @@ class LocalShellComponent(ShellComponent):
             # process group attached to a console. CREATE_NO_WINDOW cannot be
             # used here because it drops the console entirely and breaks that
             # interrupt path. Instead, hide the console window via STARTUPINFO
-            # so spawning powershell.exe under pythonw.exe (GUI subsystem)
-            # does not flash a visible console window.
+            # so spawning the shell under pythonw.exe (GUI subsystem) does not
+            # flash a visible console window.
             process_kwargs["creationflags"] = getattr(
                 subprocess,
                 "CREATE_NEW_PROCESS_GROUP",
@@ -422,18 +534,12 @@ class LocalShellComponent(ShellComponent):
         else:
             process_kwargs["start_new_session"] = True
 
+        spec = shell_spec or resolve_local_shell()
+
         try:
             if sys.platform == "win32":
                 process_factory = asyncio.create_subprocess_exec
-                shell_executable = resolve_windows_shell()
-                process_args = (
-                    shell_executable,
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                )
+                process_args = (spec.executable, *spec.prefix_args, command)
             else:
                 process_factory = asyncio.create_subprocess_shell
                 process_args = (command,)
@@ -482,6 +588,7 @@ class LocalShellComponent(ShellComponent):
             output_event=output_event,
             reader_task=reader_task,
             wait_task=wait_task,
+            shell_family=spec.family,
         )
 
         if timeout is not None:
@@ -919,6 +1026,21 @@ class LocalShellComponent(ShellComponent):
         """
         if session.process.returncode is not None:
             return
+        if os.name == "nt" and session.shell_family == "git_bash":
+            # MSYS2 background jobs (`cmd &`) detach from the Windows
+            # parent-PID chain that `taskkill /T` walks, so the sweep alone
+            # leaks them. CTRL_BREAK_EVENT reaches the whole MSYS2 process
+            # group; the taskkill below stays as the fallback for whatever
+            # the signal did not reach.
+            try:
+                session.process.send_signal(signal.CTRL_BREAK_EVENT)
+            except OSError:
+                pass
+            else:
+                try:
+                    await asyncio.wait_for(asyncio.shield(session.wait_task), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
         if os.name == "nt":
             try:
                 taskkill_result = await asyncio.to_thread(
@@ -929,10 +1051,14 @@ class LocalShellComponent(ShellComponent):
                     timeout=5,
                 )
             except Exception:
-                session.process.terminate()
+                should_terminate = True
             else:
-                if taskkill_result.returncode != 0:
-                    session.process.terminate()
+                should_terminate = taskkill_result.returncode != 0
+            # The signal above may already have ended the process, in which
+            # case the sweep reports failure and terminating again raises
+            # ProcessLookupError.
+            if should_terminate and session.process.returncode is None:
+                session.process.terminate()
         else:
             try:
                 os.killpg(session.process.pid, signal.SIGTERM)

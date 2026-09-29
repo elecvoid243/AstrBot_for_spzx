@@ -1189,3 +1189,39 @@ async def test_shutdown_sessions_keeps_sessions_of_the_configured_family(
 
     assert terminated == ["sh_bash"]
     assert set(shell._sessions) == {"sh_ps"}
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_returns_true_when_task_completes():
+    """A task that finishes within the timeout is awaited normally."""
+    task = asyncio.create_task(asyncio.sleep(0))
+    done = await local_booter._bounded_await(task, timeout=1.0)
+    assert done is True
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_returns_false_on_timeout_and_cancels():
+    """A stuck task times out and is cancelled when cancel_on_timeout=True."""
+
+    async def never():
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(never())
+    done = await local_booter._bounded_await(task, timeout=0.05, cancel_on_timeout=True)
+    assert done is False
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_timeout_without_cancel_keeps_task_running():
+    """With cancel_on_timeout=False the task keeps running after the timeout."""
+
+    async def never():
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(never())
+    done = await local_booter._bounded_await(task, timeout=0.05)
+    assert done is False
+    assert not task.done()
+    task.cancel()

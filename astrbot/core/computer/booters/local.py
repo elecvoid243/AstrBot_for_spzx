@@ -431,6 +431,37 @@ def _decode_shell_output(output: bytes | None) -> str:
     return _decode_bytes_with_fallback(output, preferred_encoding="utf-8")
 
 
+async def _bounded_await(
+    task: asyncio.Task,
+    timeout: float,
+    *,
+    cancel_on_timeout: bool = False,
+) -> bool:
+    """Await a task with a hard timeout, never blocking indefinitely.
+
+    Args:
+        task: The asyncio task to await.
+        timeout: Maximum seconds to wait for completion.
+        cancel_on_timeout: Whether to cancel the task when the timeout
+            expires. Use True when the task is disposable (e.g. an output
+            reader that can be abandoned).
+
+    Returns:
+        True if the task completed within the timeout, False otherwise.
+    """
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        if cancel_on_timeout:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        return False
+
+
 @dataclass
 class _LocalShellSession:
     """Runtime state for one managed local shell process."""

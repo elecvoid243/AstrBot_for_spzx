@@ -1166,10 +1166,11 @@ class LocalShellComponent(ShellComponent):
                     session.session_id,
                     result,
                 )
-        await asyncio.gather(
-            *(session.reader_task for session in sessions),
-            return_exceptions=True,
-        )
+        for session in sessions:
+            # The reader only ends at pipe EOF, which a detached grandchild
+            # can postpone indefinitely; cancel it rather than blocking the
+            # whole shutdown on a stuck pipe.
+            await _bounded_await(session.reader_task, timeout=5, cancel_on_timeout=True)
         for session in sessions:
             await self._remove_session(session)
 

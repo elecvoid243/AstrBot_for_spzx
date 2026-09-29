@@ -1444,3 +1444,41 @@ async def test_terminate_git_bash_tolerates_signal_system_error(monkeypatch, tmp
         LocalShellComponent()._terminate_process(session),
         timeout=20,
     )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_sessions_returns_when_reader_stuck(monkeypatch, tmp_path):
+    """Shutdown must not block on a reader whose pipe never reaches EOF."""
+    import time
+
+    class ExitedProcess:
+        pid = 9014
+        returncode = 1
+
+    async def never():
+        await asyncio.Event().wait()
+
+    (tmp_path / "out7.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test7",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=tmp_path / "out7.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(never()),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="powershell",
+    )
+    shell = LocalShellComponent()
+    shell._sessions[session.session_id] = session
+
+    start = time.monotonic()
+    await asyncio.wait_for(shell.shutdown_sessions(), timeout=20)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 15
+    assert session.session_id not in shell._sessions

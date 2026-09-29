@@ -90,7 +90,9 @@
             {{
               file.runtime === "sandbox"
                 ? tm("fileChanges.sandboxHint")
-                : tm("fileChanges.noStat")
+                : file.sha256 === ""
+                  ? tm("fileChanges.fileGone")
+                  : tm("fileChanges.noStat")
             }}
           </span>
           <v-icon

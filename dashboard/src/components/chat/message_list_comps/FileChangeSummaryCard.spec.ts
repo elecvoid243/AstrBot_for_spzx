@@ -146,3 +146,48 @@ describe("FileChangeSummaryCard collapse toggle", () => {
     expect(mocks.fileChangeDiff).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("FileChangeSummaryCard no-stat labels", () => {
+  beforeEach(() => {
+    mocks.fileChangeStatus.mockReset();
+    mocks.fileChangeStatus.mockResolvedValue({
+      data: { status: "ok", data: { files: [] } },
+    });
+  });
+
+  it("labels a local file whose content is gone as removed, keeps a present-but-baseline-less file as no-stat", async () => {
+    // The end-of-turn summary reads the current file from disk to compute the
+    // net diff. A file the turn touched in a worktree that was then removed
+    // (or a file that was moved) has no readable content: the backend leaves
+    // sha256 empty, adds/dels null. The row must say the file is gone instead
+    // of a bare "no stats", so it is not mistaken for a bug.
+    const files: FileChangeSummaryFile[] = [
+      {
+        path: "F:\\proj\\gone.vue",
+        kind: "edit",
+        adds: null,
+        dels: null,
+        backup_id: "b1",
+        sha256: "",
+        runtime: "local",
+        diff_available: false,
+      },
+      {
+        path: "F:\\proj\\nobaseline.ts",
+        kind: "edit",
+        adds: null,
+        dels: null,
+        backup_id: "",
+        sha256: "s",
+        runtime: "local",
+        diff_available: false,
+      },
+    ];
+    const wrapper = mountCard(files);
+    await flushPromises();
+
+    const rows = wrapper.findAll(".fcs-row");
+    expect(rows[0].text()).toContain("已移除或不可读");
+    expect(rows[1].text()).toContain(zh.fileChanges.noStat);
+  });
+});

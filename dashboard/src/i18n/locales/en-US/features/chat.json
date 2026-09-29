@@ -209,6 +209,7 @@
     "expand": "Expand the file list",
     "sandboxHint": "Sandbox file; diff and undo are unavailable",
     "noStat": "no stats",
+    "fileGone": "removed or unreadable",
     "viewDiff": "View diff",
     "undo": "Undo",
     "undoConfirm": "Click again to confirm",

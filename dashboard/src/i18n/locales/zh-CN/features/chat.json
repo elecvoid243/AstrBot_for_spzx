@@ -209,6 +209,7 @@
     "expand": "展开文件列表",
     "sandboxHint": "沙箱文件，暂不支持查看与撤销",
     "noStat": "无统计",
+    "fileGone": "已移除或不可读",
     "viewDiff": "查看 diff",
     "undo": "撤销",
     "undoConfirm": "再次点击确认撤销",

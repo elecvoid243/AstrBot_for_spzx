@@ -129,4 +129,35 @@ describe("ChatMessageList capsule vs a pending choice box", () => {
     const wrapper = mountList();
     expect(wrapper.find(".agent-work-pill").exists()).toBe(true);
   });
+
+  it("reconciles once a history page carrying a box arrives", async () => {
+    // History is fetched asynchronously, so the mount-time reconcile usually
+    // runs against an empty list and the boxes it mirrors are never checked
+    // against the backend's pending list.
+    const wrapper = mount(ChatMessageList, {
+      props: {
+        messages: [] as ChatRecord[],
+        currentUmo: "webchat:FriendMessage:webchat!u!c",
+        isStreaming: false,
+      },
+      global: { components: vuetifyStubs },
+    });
+    expect(storeMock.reconcile).toHaveBeenCalledTimes(1);
+
+    await wrapper.setProps({ messages: [botRecordWithChoice(8)] });
+    expect(storeMock.reconcile).toHaveBeenCalledTimes(2);
+    expect(storeMock.reconcile).toHaveBeenLastCalledWith(
+      "webchat:FriendMessage:webchat!u!c",
+    );
+
+    // A later mutation that brings no new box must not re-ask the server —
+    // the watcher fires for every streamed chunk.
+    await wrapper.setProps({
+      messages: [
+        botRecordWithChoice(8),
+        { id: 9, content: { type: "bot", message: [TEXT("more")] } as ChatContent },
+      ],
+    });
+    expect(storeMock.reconcile).toHaveBeenCalledTimes(2);
+  });
 });

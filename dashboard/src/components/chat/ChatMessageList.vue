@@ -741,6 +741,11 @@ const interactiveChoiceStore = useInteractiveChoiceStore();
 // Clears the sidebar highlight once a pending choice is resolved locally.
 const choiceAttention = useInteractiveChoiceAttentionStore();
 
+// How many `interactive_choice` parts the last follow-up reconcile saw in
+// `props.messages`. Reset on a session switch, where the new conversation's
+// boxes have to be checked from scratch. See the messages watcher.
+const reconciledChoiceCount = ref(0);
+
 function isUserMessage(message: ChatRecord) {
   return messageContent(message).type === "user";
 }
@@ -945,6 +950,25 @@ watch(
     // the store mirror sees it.
     migrateOldInteractiveChoiceText(next);
     mirrorInteractiveChoiceParts(next);
+    // 2026-09-29: history arrives after mount, so the reconcile in
+    // `onMounted` usually ran against an empty list — the boxes it just
+    // mirrored were never checked against the backend's pending list, and a
+    // box the server no longer knows about (timed out, cancelled, or lost to
+    // a restart) stayed clickable forever. Re-check whenever the number of
+    // choice parts changes; the count keeps this off the per-chunk path of a
+    // streaming run.
+    if (props.currentUmo) {
+      let choiceCount = 0;
+      for (const message of next) {
+        for (const part of messageParts(message)) {
+          if (isInteractiveChoicePayload(part)) choiceCount += 1;
+        }
+      }
+      if (choiceCount !== reconciledChoiceCount.value) {
+        reconciledChoiceCount.value = choiceCount;
+        void interactiveChoiceStore.reconcile(props.currentUmo);
+      }
+    }
   },
   { deep: true },
 );
@@ -953,6 +977,9 @@ watch(
   () => props.currentUmo,
   (nextUmo) => {
     if (!nextUmo) return;
+    // New conversation: its boxes must be checked against the backend from
+    // scratch, so forget how many the previous one had.
+    reconciledChoiceCount.value = 0;
     // Bug Y1 fix: re-hydrate under the new UMO *first* so the store
     // drops the previous session's bucket, otherwise `reconcile`
     // would still leak the old parts into messages on the next

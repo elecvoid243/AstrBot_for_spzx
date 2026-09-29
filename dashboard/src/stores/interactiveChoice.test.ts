@@ -712,18 +712,13 @@ test("hydrate with a new UMO wipes the previous bucket from memory", () => {
     options: [{ id: "B", label: "b" }],
   });
 
-  // After the switch UMO #1 is gone in memory but persistence still
-  // holds it (we cleared only in memory; localStorage was rewritten
-  // by addChoice under UMO #2 and now contains both buckets).
+  // After the switch UMO #1 is gone from memory, but its persisted slice
+  // must survive: addChoice writes through persistSlice, which merges into
+  // the stored map instead of replacing it with the in-memory view.
   const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);
-  // The legacy blank-result is not required: just verify UMO #1's
-  // bucket was *not* deleted from localStorage by hydrate (that's
-  // an in-memory-only op). We expect either shape depending on
-  // whether addChoice later overwrote; for this test, since
-  // addChoice writes through persist(), UMO #2 is present, UMO #1
-  // may still be present depending on order.
   assert.ok(persisted["webchat:two!2!s"]);
   assert.equal(persisted["webchat:two!2!s"]["r2"].prompt, "second session");
+  assert.ok(persisted["webchat:one!1!s"]?.["r1"]);
 });
 
 test("hydrate drops legacy flat-array payloads from localStorage", () => {
@@ -1117,4 +1112,137 @@ test("cancelChoice keeps the cancelled state on network failure (UI must not fli
     store.activeChoices[TEST_UMO]?.["rid-cancel-net-err"],
     undefined,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Bug Z: a write after a session switch must only replace the live UMO's
+// slice. `hydrate(umo)` clears every other UMO's in-memory bucket on
+// purpose (Bug Y1/Y2), so a `persist*` that serialised the whole in-memory
+// map deleted every other session's records from localStorage — which is
+// why a box answered yesterday came back clickable after a reload.
+// ---------------------------------------------------------------------------
+
+const UMO_A = "webchat:FriendMessage:webchat!alice!sessA";
+const UMO_B = "webchat:FriendMessage:webchat!alice!sessB";
+
+test("markSubmitted in another session keeps this session's submissions (Bug Z)", () => {
+  localStorage.setItem(
+    SUBMISSION_STORAGE_KEY,
+    JSON.stringify({
+      [UMO_A]: { "rid-a": { kind: "option", optionId: "B", submittedAt: 1 } },
+    }),
+  );
+  const store = useInteractiveChoiceStore();
+  store.hydrate(UMO_B);
+  store.markSubmitted(UMO_B, "rid-b", "option", { optionId: "A" });
+
+  const persisted = JSON.parse(
+    localStorage.getItem(SUBMISSION_STORAGE_KEY) as string,
+  );
+  assert.equal(persisted[UMO_A]["rid-a"].optionId, "B");
+  assert.equal(persisted[UMO_B]["rid-b"].optionId, "A");
+});
+
+test("addChoice in another session keeps this session's pending slices (Bug Z)", () => {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      [UMO_A]: {
+        "rid-a": {
+          type: "interactive_choice",
+          request_id: "rid-a",
+          prompt: "p",
+          options: [{ id: "A", label: "a" }],
+        },
+      },
+    }),
+  );
+  const store = useInteractiveChoiceStore();
+  store.hydrate(UMO_B);
+  store.addChoice(UMO_B, {
+    type: "interactive_choice",
+    request_id: "rid-b",
+    prompt: "q",
+    options: [{ id: "B", label: "b" }],
+  });
+
+  const persisted = JSON.parse(localStorage.getItem(STORAGE_KEY) as string);
+  assert.ok(persisted[UMO_A]?.["rid-a"]);
+  assert.ok(persisted[UMO_B]?.["rid-b"]);
+});
+
+test("markIgnored / markCancelled keep other sessions' slices (Bug Z)", () => {
+  localStorage.setItem(
+    IGNORED_STORAGE_KEY,
+    JSON.stringify({ [UMO_A]: { "rid-a": true } }),
+  );
+  localStorage.setItem(
+    CANCELLED_STORAGE_KEY,
+    JSON.stringify({ [UMO_A]: { "rid-a-cancel": true } }),
+  );
+  const store = useInteractiveChoiceStore();
+  store.hydrate(UMO_B);
+  store.markIgnored(UMO_B, ["rid-b"]);
+  store.markCancelled(UMO_B, "rid-b-cancel");
+
+  assert.equal(
+    JSON.parse(localStorage.getItem(IGNORED_STORAGE_KEY) as string)[UMO_A][
+      "rid-a"
+    ],
+    true,
+  );
+  assert.equal(
+    JSON.parse(localStorage.getItem(CANCELLED_STORAGE_KEY) as string)[UMO_A][
+      "rid-a-cancel"
+    ],
+    true,
+  );
+});
+
+test("answering in session B does not revive session A's answered box (Bug Z)", () => {
+  localStorage.setItem(
+    SUBMISSION_STORAGE_KEY,
+    JSON.stringify({
+      [UMO_A]: {
+        "rid-yesterday": { kind: "option", optionId: "B", submittedAt: 1 },
+      },
+    }),
+  );
+  const store = useInteractiveChoiceStore();
+
+  // Today: the tab boots into B (the most recent session) and the user
+  // answers a box there — the exact production trigger.
+  store.hydrate(UMO_B);
+  store.markSubmitted(UMO_B, "rid-today", "option", { optionId: "A" });
+  store.addChoice(UMO_B, {
+    type: "interactive_choice",
+    request_id: "rid-today",
+    prompt: "q",
+    options: [{ id: "A", label: "a" }],
+  });
+  store.markIgnored(UMO_B, ["rid-today"]);
+
+  // Switching back to A: yesterday's box must still read "已选择".
+  store.hydrate(UMO_A);
+  assert.equal(store.getSubmissionState(UMO_A, "rid-yesterday")?.optionId, "B");
+});
+
+test("persistSlice swallows a storage failure (private mode / quota)", () => {
+  const original = localStorage.setItem;
+  localStorage.setItem = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    const store = useInteractiveChoiceStore();
+    store.hydrate(TEST_UMO);
+    // Only "must not throw": a failed write degrades to this page session,
+    // and the UI has to keep working.
+    store.markSubmitted(TEST_UMO, "rid-quota", "option", { optionId: "A" });
+    assert.equal(
+      store.getSubmissionState(TEST_UMO, "rid-quota")?.optionId,
+      "A",
+    );
+  } finally {
+    localStorage.setItem = original;
+  }
 });

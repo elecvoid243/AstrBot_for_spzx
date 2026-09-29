@@ -216,7 +216,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
       if (!umo) missingUmo("addChoice");
       const bucket = (this.activeChoices[umo] ??= {});
       bucket[part.request_id] = part;
-      this.persist();
+      this.persist(umo);
     },
 
     /**
@@ -230,7 +230,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
       if (requestId in bucket) {
         delete bucket[requestId];
         if (Object.keys(bucket).length === 0) delete this.activeChoices[umo];
-        this.persist();
+        this.persist(umo);
       }
     },
 
@@ -264,7 +264,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
         freeText: payload.freeText,
         submittedAt: Date.now(),
       };
-      this.persistSubmissions();
+      this.persistSubmissions(umo);
     },
 
     /**
@@ -279,7 +279,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
       if (!bucket || !(requestId in bucket)) return;
       delete bucket[requestId];
       if (Object.keys(bucket).length === 0) delete this.submissionStates[umo];
-      this.persistSubmissions();
+      this.persistSubmissions(umo);
     },
 
     /**
@@ -313,7 +313,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
         bucket[id] = true;
         changed = true;
       }
-      if (changed) this.persistIgnored();
+      if (changed) this.persistIgnored(umo);
     },
 
     /**
@@ -346,7 +346,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
       const bucket = (this.cancelledStates[umo] ??= {});
       if (bucket[requestId]) return;
       bucket[requestId] = true;
-      this.persistCancelled();
+      this.persistCancelled(umo);
     },
 
     /**
@@ -582,7 +582,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
           // alone so a tab-switch back to a previous session still
           // shows its pending box (Bug Y1).
           this.activeChoices[umo] = next;
-          this.persist();
+          this.persist(umo);
         }
       } catch (e) {
         console.warn("[interactiveChoice] reconcile failed:", e);
@@ -751,62 +751,84 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
     },
 
     /**
-     * Serialize the per-UMO `activeChoices` map to localStorage.
-     * Best-effort: failures are logged but never thrown (e.g.
-     * quota exceeded, SSR with no window).
+     * Write one UMO's slice of a per-UMO localStorage map, leaving every
+     * other UMO's slice untouched (Bug Z fix).
+     *
+     * Why the read-modify-write: `hydrate(umo)` clears every other UMO's
+     * in-memory bucket on purpose (Bug Y1/Y2 — a session switch must not
+     * leak another session's parts), so serialising the whole in-memory
+     * map wrote a document holding only the live session. The first write
+     * after a switch (`mirrorInteractiveChoiceParts` → `addChoice`,
+     * `recomputeIgnored` → `markIgnored`, a submit, …) therefore deleted
+     * every other session's "already answered / passed over / cancelled"
+     * records — which is why a box answered yesterday came back clickable
+     * after a reload. Merging into what is already stored keeps each
+     * session's slice in its own lane.
+     *
+     * An undefined or empty `slice` deletes this UMO's entry rather than
+     * leaving an empty object behind.
+     *
+     * Best-effort: failures are logged but never thrown (e.g. quota
+     * exceeded, privacy mode, SSR with no window).
+     *
+     * Args:
+     *   key: localStorage key holding a `Record<umo, Record<id, T>>` map.
+     *   umo: Session whose slice is being written.
+     *   slice: The UMO's slice, or undefined when it has no entries left.
      */
-    persist(): void {
+    persistSlice<T>(
+      key: string,
+      umo: string,
+      slice: Record<string, T> | undefined,
+    ): void {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.activeChoices));
+        const merged = this.readPerUmo<T>(key);
+        if (slice && Object.keys(slice).length > 0) merged[umo] = slice;
+        else delete merged[umo];
+        localStorage.setItem(key, JSON.stringify(merged));
       } catch (e) {
-        console.warn("[interactiveChoice] persist failed:", e);
+        console.warn(`[interactiveChoice] persist ${key} failed:`, e);
       }
     },
 
     /**
-     * Serialize per-UMO `submissionStates` to localStorage. Same
-     * best-effort policy as `persist()`. Kept in its own
+     * Persist one UMO's `activeChoices` bucket to localStorage. See
+     * `persistSlice` for why the write is scoped to a single UMO.
+     */
+    persist(umo: string): void {
+      this.persistSlice(STORAGE_KEY, umo, this.activeChoices[umo]);
+    },
+
+    /**
+     * Persist one UMO's `submissionStates` bucket. Kept in its own
      * localStorage key (see `SUBMISSION_STORAGE_KEY` rationale).
      */
-    persistSubmissions(): void {
-      try {
-        localStorage.setItem(
-          SUBMISSION_STORAGE_KEY,
-          JSON.stringify(this.submissionStates),
-        );
-      } catch (e) {
-        console.warn("[interactiveChoice] persistSubmissions failed:", e);
-      }
+    persistSubmissions(umo: string): void {
+      this.persistSlice(
+        SUBMISSION_STORAGE_KEY,
+        umo,
+        this.submissionStates[umo],
+      );
     },
 
     /**
-     * Serialize per-UMO `ignoredStates` to localStorage. Same
-     * best-effort policy as `persistSubmissions`.
+     * Persist one UMO's `ignoredStates` bucket. Mirrors
+     * `persistSubmissions`.
      */
-    persistIgnored(): void {
-      try {
-        localStorage.setItem(
-          IGNORED_STORAGE_KEY,
-          JSON.stringify(this.ignoredStates),
-        );
-      } catch (e) {
-        console.warn("[interactiveChoice] persistIgnored failed:", e);
-      }
+    persistIgnored(umo: string): void {
+      this.persistSlice(IGNORED_STORAGE_KEY, umo, this.ignoredStates[umo]);
     },
 
     /**
-     * Serialize per-UMO `cancelledStates` to localStorage. Same
-     * best-effort policy as `persistIgnored`.
+     * Persist one UMO's `cancelledStates` bucket. Mirrors
+     * `persistIgnored`.
      */
-    persistCancelled(): void {
-      try {
-        localStorage.setItem(
-          CANCELLED_STORAGE_KEY,
-          JSON.stringify(this.cancelledStates),
-        );
-      } catch (e) {
-        console.warn("[interactiveChoice] persistCancelled failed:", e);
-      }
+    persistCancelled(umo: string): void {
+      this.persistSlice(
+        CANCELLED_STORAGE_KEY,
+        umo,
+        this.cancelledStates[umo],
+      );
     },
   },
 });

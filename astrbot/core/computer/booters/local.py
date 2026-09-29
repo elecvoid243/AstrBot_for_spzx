@@ -1074,10 +1074,21 @@ class LocalShellComponent(ShellComponent):
             max_output_chars=max_output_chars,
         )
 
-    async def shutdown_sessions(self) -> None:
-        """Terminate and remove every managed local shell session."""
+    async def shutdown_sessions(self, *, keep_family: str | None = None) -> None:
+        """Terminate and remove managed local shell sessions.
+
+        Args:
+            keep_family: When set, sessions started with this shell family are
+                left running and only the remaining ones are terminated. The
+                dashboard uses it to invalidate sessions that a shell-type
+                change made stale.
+        """
         async with self._sessions_lock:
-            sessions = list(self._sessions.values())
+            sessions = [
+                session
+                for session in self._sessions.values()
+                if keep_family is None or session.shell_family != keep_family
+            ]
         for session in sessions:
             session.terminated = True
         termination_results = await asyncio.gather(

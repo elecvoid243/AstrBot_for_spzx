@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
+from astrbot.core.computer.booters import local as local_booter
+from astrbot.core.computer.booters.local import LocalShellComponent, resolve_local_shell
 from astrbot.core.computer.computer_client import _discover_bay_credentials
 from astrbot.core.config.default import CONFIG_METADATA_2
+from astrbot.dashboard.services import config_service
 from astrbot.dashboard.services.config_service import (
     _log_computer_config_changes,
     save_config,
@@ -528,3 +533,78 @@ class TestLogComputerConfigChanges:
         call_args_str = str(mock_logger.info.call_args_list)
         assert "***" in call_args_str
         assert "very-secret-value" not in call_args_str
+
+
+def _seed_shell_session(
+    shell: LocalShellComponent, out_dir: Path, session_id: str, family: str
+) -> None:
+    """Register one managed shell session of a given family on the component."""
+    output_path = out_dir / f"{session_id}.log"
+    output_path.touch()
+    shell._sessions[session_id] = local_booter._LocalShellSession(
+        session_id=session_id,
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=object(),
+        output_path=output_path,
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family=family,
+    )
+
+
+def _install_local_booter(monkeypatch, shell: LocalShellComponent) -> None:
+    """Point the computer client at a local booter that owns ``shell``."""
+    monkeypatch.setattr(
+        config_service.computer_client,
+        "local_booter",
+        SimpleNamespace(shell=shell),
+    )
+
+
+@pytest.mark.asyncio
+async def test_config_save_invalidates_sessions_of_the_previous_shell(
+    monkeypatch, tmp_path
+):
+    """Saving a new shell type drops the sessions started with the old one."""
+    shell = LocalShellComponent()
+    terminated = []
+
+    async def fake_terminate(session):
+        terminated.append(session.session_id)
+
+    monkeypatch.setattr(shell, "_terminate_process", fake_terminate)
+
+    out_dir = tmp_path / "shell"
+    out_dir.mkdir()
+    current_family = resolve_local_shell("powershell").family
+    _seed_shell_session(shell, out_dir, "sh_current", current_family)
+    _seed_shell_session(shell, out_dir, "sh_stale", "stale-family")
+    _install_local_booter(monkeypatch, shell)
+
+    await config_service._invalidate_stale_local_shell_sessions(
+        {"provider_settings": {"computer_use_local_shell": "powershell"}}
+    )
+
+    assert terminated == ["sh_stale"]
+    assert set(shell._sessions) == {"sh_current"}
+
+
+@pytest.mark.asyncio
+async def test_config_save_survives_a_failing_shell_cleanup(monkeypatch):
+    """A cleanup failure must not turn an already persisted save into a failure."""
+    shell = LocalShellComponent()
+
+    async def exploding_cleanup(**_kwargs):
+        raise RuntimeError("cleanup exploded")
+
+    monkeypatch.setattr(shell, "shutdown_sessions", exploding_cleanup)
+    _install_local_booter(monkeypatch, shell)
+
+    await config_service._invalidate_stale_local_shell_sessions(
+        {"provider_settings": {"computer_use_local_shell": "powershell"}}
+    )

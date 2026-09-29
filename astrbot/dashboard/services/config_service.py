@@ -12,7 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot.core import file_token_service, logger
 from astrbot.core.computer import computer_client
-from astrbot.core.computer.booters.local import LocalShellComponent
+from astrbot.core.computer.booters.local import (
+    LocalShellComponent,
+    resolve_local_shell,
+)
 from astrbot.core.config.agent_runner import normalize_agent_runner
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.config.default import (
@@ -481,6 +484,36 @@ def _log_computer_config_changes(
         )
 
 
+async def _invalidate_stale_local_shell_sessions(config: dict) -> None:
+    """Drop the local shell sessions that a config save made stale.
+
+    A managed session keeps running whatever shell it was started with, so
+    changing ``computer_use_local_shell`` leaves older sessions interpreting
+    commands with the previous shell while the agent is told to use the new
+    one. Sessions already running the configured shell are left alone.
+
+    Cleanup is best effort: the configuration is persisted before this runs, so
+    a failure here must never turn a successful save into a reported failure.
+
+    Args:
+        config: The configuration that was just saved.
+    """
+    booter = computer_client.local_booter
+    if booter is None or not isinstance(booter.shell, LocalShellComponent):
+        return
+
+    provider_settings = config.get("provider_settings", {})
+    if not isinstance(provider_settings, dict):
+        provider_settings = {}
+    shell_type = str(provider_settings.get("computer_use_local_shell", "auto"))
+
+    try:
+        family = resolve_local_shell(shell_type).family
+        await booter.shell.shutdown_sessions(keep_family=family)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to invalidate stale local shell sessions: %s", exc)
+
+
 def _get_nested_value(data: dict, path: tuple[str, ...]) -> Any:
     current = data
     for key in path:
@@ -804,9 +837,7 @@ class ConfigProfileService:
         save_config(
             config, self.acm.confs[config_id], is_core=True, runtime=self.runtime
         )
-        booter = computer_client.local_booter
-        if booter is not None and isinstance(booter.shell, LocalShellComponent):
-            await booter.shell.shutdown_sessions(invalid_only=True)
+        await _invalidate_stale_local_shell_sessions(config)
         if protected_2fa_changed and self.db is not None:
             await revoke_user_trusted_devices(self.db)
         await self.core_lifecycle.reload_pipeline_scheduler(config_id)

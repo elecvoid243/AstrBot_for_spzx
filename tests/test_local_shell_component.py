@@ -1145,3 +1145,47 @@ async def test_terminate_process_tolerates_already_exited_git_bash(
     await LocalShellComponent()._terminate_process(session)
 
     session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_sessions_keeps_sessions_of_the_configured_family(
+    monkeypatch, tmp_path
+):
+    """Switching the local shell must not kill sessions already using it.
+
+    After a config save the dashboard invalidates stale sessions: those started
+    with the previously configured shell are removed, while sessions that
+    already run the newly configured one keep going.
+    """
+    shell = LocalShellComponent()
+    terminated = []
+
+    async def fake_terminate(session):
+        terminated.append(session.session_id)
+
+    monkeypatch.setattr(shell, "_terminate_process", fake_terminate)
+
+    out_dir = tmp_path / "shell"
+    out_dir.mkdir()
+    for session_id, family in (("sh_bash", "git_bash"), ("sh_ps", "powershell")):
+        output_path = out_dir / f"{session_id}.log"
+        output_path.touch()
+        shell._sessions[session_id] = local_booter._LocalShellSession(
+            session_id=session_id,
+            owner_id="umo",
+            creator_id="user",
+            creator_is_admin=True,
+            sandboxed=False,
+            process=object(),
+            output_path=output_path,
+            started_at=0.0,
+            output_event=asyncio.Event(),
+            reader_task=asyncio.create_task(asyncio.sleep(0)),
+            wait_task=asyncio.create_task(asyncio.sleep(0)),
+            shell_family=family,
+        )
+
+    await shell.shutdown_sessions(keep_family="powershell")
+
+    assert terminated == ["sh_bash"]
+    assert set(shell._sessions) == {"sh_ps"}

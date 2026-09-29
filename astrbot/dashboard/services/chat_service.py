@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
@@ -755,6 +756,72 @@ class BotMessageAccumulator:
         except json.JSONDecodeError:
             return None
         return parsed if isinstance(parsed, dict) else None
+
+
+_CHOICE_ANSWER_FREE_TEXT_MAX = 2000
+"""Cap for a persisted choice answer's free text.
+
+The answer is a display field (the LLM already received the full text as the
+tool result), and the user can paste arbitrarily long text into the box — so
+the history row must not grow with it.
+"""
+
+
+def stamp_choice_resolution(parts: list[dict], data: dict) -> bool:
+    """Record an interactive choice's verdict on the part the turn persisted.
+
+    The plugin broadcasts `interactive_choice_resolved` when a box is answered,
+    cancelled, or times out. Stamping that verdict onto the `interactive_choice`
+    part makes the history record self-describing: after a reload the frontend
+    renders "已选择 X" / "已取消" from the part itself, instead of depending on
+    per-browser localStorage (which a wiped cache, another device, or a session
+    switch never had).
+
+    Args:
+        parts: The parts already written into this turn's history record.
+            The matching part is mutated in place.
+        data: The event's `data` field — `{request_id, reason, ...}`, where a
+            `submitted` reason carries `choice_id` / `free_text`. Malformed
+            payloads (not a dict, missing request_id, unknown reason, a submit
+            without a choice_id) are ignored rather than raising, because this
+            runs inside the run's consume loop.
+
+    Returns:
+        True when a part was stamped, so the caller rewrites the history row;
+        False when nothing matched or the payload carried nothing to record.
+    """
+    if not isinstance(data, dict):
+        return False
+    request_id = str(data.get("request_id") or "").strip()
+    reason = str(data.get("reason") or "").strip()
+    if not request_id or reason not in ("submitted", "cancelled"):
+        return False
+    choice_id = str(data.get("choice_id") or "").strip()
+    if reason == "submitted" and not choice_id:
+        # A submit without an option id has nothing the UI could render —
+        # leave the part pending rather than claim it was answered.
+        return False
+    free_text = str(data.get("free_text") or "")
+    for part in parts:
+        if (
+            not isinstance(part, dict)
+            or part.get("type") != "interactive_choice"
+            or str(part.get("request_id") or "") != request_id
+        ):
+            continue
+        if reason == "submitted":
+            part["answer"] = {
+                "choice_id": choice_id,
+                "free_text": free_text[:_CHOICE_ANSWER_FREE_TEXT_MAX],
+                "answered_at": time.time(),
+            }
+        else:
+            part["resolved"] = {
+                "reason": "cancelled",
+                "resolved_at": time.time(),
+            }
+        return True
+    return False
 
 
 def extract_web_search_refs(accumulated_text: str, accumulated_parts: list) -> dict:
@@ -1756,6 +1823,26 @@ class ChatService:
                     or msg_type == "interactive_choice_resolved"
                 ):
                     await webchat_queue_mgr.put_system_event(run.session_id, result)
+
+                # Stamp the answer / cancellation verdict onto the part this
+                # turn already persisted. A successful submit always happens
+                # while the run is alive (the tool is blocked awaiting the
+                # future), so the part is already in `run.history_parts` and
+                # the row is rewritten in place — the turn stays one record.
+                if msg_type == "interactive_choice_resolved" and (
+                    stamp_choice_resolution(run.history_parts, result.get("data"))
+                ):
+                    if run.history_record is not None:
+                        await self.platform_history_mgr.update(
+                            message_id=run.history_record.id,
+                            content=build_bot_history_content(
+                                run.history_parts,
+                                agent_stats=run.agent_stats,
+                                file_changes=run.file_changes,
+                                refs=run.refs,
+                            ),
+                            llm_checkpoint_id=run.llm_checkpoint_id,
+                        )
 
                 snapshot_accumulator = deepcopy(display_accumulator)
                 # Read-path defence for the live/`run_snapshot` consumers: the

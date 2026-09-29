@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 
-from astrbot.dashboard.services.chat_service import BotMessageAccumulator
+from astrbot.dashboard.services.chat_service import (
+    BotMessageAccumulator,
+    stamp_choice_resolution,
+)
 
 
 def _envelope(
@@ -453,3 +456,96 @@ def test_carried_pending_call_still_matches_its_result() -> None:
     [part] = accumulator.build_message_parts()
     assert part["tool_calls"][0]["name"] == "astrbot_file_read_tool"
     assert part["tool_calls"][0]["result"] == "file contents"
+
+
+# ---------------------------------------------------------------------------
+# The answer/cancellation verdict stamped onto the part the turn persisted.
+# Without it the frontend's only source for "already answered" is per-browser
+# localStorage, which a wiped cache or another device does not have.
+# ---------------------------------------------------------------------------
+
+
+def _choice_part(request_id: str = "req-1") -> dict:
+    return {
+        "type": "interactive_choice",
+        "request_id": request_id,
+        "prompt": "Pick one",
+        "options": [{"id": "A", "label": "alpha"}, {"id": "B", "label": "beta"}],
+    }
+
+
+def test_stamp_choice_resolution_records_the_answer() -> None:
+    parts = [_choice_part()]
+
+    changed = stamp_choice_resolution(
+        parts,
+        {
+            "request_id": "req-1",
+            "reason": "submitted",
+            "choice_id": "B",
+            "free_text": "",
+        },
+    )
+
+    assert changed is True
+    assert parts[0]["answer"]["choice_id"] == "B"
+    assert isinstance(parts[0]["answer"]["answered_at"], float)
+
+
+def test_stamp_choice_resolution_targets_only_the_matching_request_id() -> None:
+    parts = [_choice_part("req-1"), _choice_part("req-2")]
+
+    stamp_choice_resolution(
+        parts,
+        {"request_id": "req-2", "reason": "submitted", "choice_id": "A"},
+    )
+
+    assert "answer" not in parts[0]
+    assert parts[1]["answer"]["choice_id"] == "A"
+
+
+def test_stamp_choice_resolution_truncates_free_text() -> None:
+    parts = [_choice_part()]
+
+    stamp_choice_resolution(
+        parts,
+        {
+            "request_id": "req-1",
+            "reason": "submitted",
+            "choice_id": "__free_text__",
+            "free_text": "x" * 5000,
+        },
+    )
+
+    assert len(parts[0]["answer"]["free_text"]) == 2000
+
+
+def test_stamp_choice_resolution_records_cancellation() -> None:
+    parts = [_choice_part()]
+
+    changed = stamp_choice_resolution(
+        parts,
+        {"request_id": "req-1", "reason": "cancelled"},
+    )
+
+    assert changed is True
+    assert parts[0]["resolved"]["reason"] == "cancelled"
+    assert "answer" not in parts[0]
+
+
+def test_stamp_choice_resolution_is_tolerant_of_malformed_data() -> None:
+    parts = [_choice_part()]
+
+    malformed = (
+        None,
+        "req-1",
+        {},
+        {"reason": "submitted"},
+        {"request_id": "req-1"},
+        {"request_id": "unknown", "reason": "submitted", "choice_id": "A"},
+    )
+    for bad in malformed:
+        assert stamp_choice_resolution(parts, bad) is False
+
+    assert "answer" not in parts[0]
+    assert "resolved" not in parts[0]

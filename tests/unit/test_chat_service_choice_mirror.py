@@ -30,6 +30,9 @@ def _make_service() -> ChatService:
     service.core_lifecycle = MagicMock()
     service.conv_mgr = MagicMock()
     service.platform_history_mgr = MagicMock()
+    # The resolved-event path rewrites the turn's row in place; a bare
+    # MagicMock is not awaitable.
+    service.platform_history_mgr.update = AsyncMock()
     service.umop_config_router = MagicMock()
     service.running_convs = {}
     service.chat_runs = {}
@@ -122,3 +125,73 @@ async def test_non_choice_payloads_are_not_mirrored():
         webchat_queue_mgr.unsubscribe_system(session_id, mirror)
 
     assert mirror.empty()
+
+
+@pytest.mark.asyncio
+async def test_choice_answer_is_stamped_into_the_turn_record():
+    """提交事件必须把答案写回本轮的 `interactive_choice` part。
+
+    前端刷新后靠这个 part 恢复「已选择 X」——localStorage 可能被清掉，
+    或者根本没在这台浏览器上作答过。
+    """
+    service = _make_service()
+    session_id = f"conv-{id(service)}-stamp"
+    run_id = f"stamp-run-{id(service)}"
+    await service.register_synthetic_chat_run(session_id, run_id, "alice")
+    run = service.chat_runs[run_id]
+    try:
+        await webchat_queue_mgr.put_back_queue(
+            run_id,
+            {
+                "type": "plain",
+                "data": json.dumps(
+                    {
+                        "request_id": "req-1",
+                        "spec": {
+                            "type": "interactive_choice",
+                            "prompt": "Pick one",
+                            "options": [
+                                {"id": "A", "label": "alpha"},
+                                {"id": "B", "label": "beta"},
+                            ],
+                        },
+                    }
+                ),
+                "streaming": False,
+                "chain_type": "interactive_choice",
+                "message_id": run_id,
+            },
+        )
+        await webchat_queue_mgr.put_back_queue(
+            run_id,
+            {
+                "type": "interactive_choice_resolved",
+                "data": {
+                    "request_id": "req-1",
+                    "reason": "submitted",
+                    "choice_id": "A",
+                    "umo": "webchat!d!c",
+                },
+                "streaming": False,
+                "message_id": run_id,
+            },
+        )
+        await webchat_queue_mgr.put_back_queue(
+            run_id,
+            {"type": "end", "data": "", "streaming": False, "message_id": run_id},
+        )
+        await asyncio.wait_for(run.task, timeout=2)
+    finally:
+        pass
+
+    # Exactly one rewrite: the resolved event stamps the row the box created.
+    assert service.platform_history_mgr.update.await_count == 1
+    content = service.platform_history_mgr.update.call_args.kwargs["content"]
+    stamped = [
+        part
+        for part in content["message"]
+        if part.get("request_id") == "req-1"
+        and part.get("type") == "interactive_choice"
+    ]
+    assert stamped, "the turn's row must still carry the choice part"
+    assert stamped[0]["answer"]["choice_id"] == "A"

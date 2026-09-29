@@ -1246,3 +1246,39 @@ test("persistSlice swallows a storage failure (private mode / quota)", () => {
     localStorage.setItem = original;
   }
 });
+
+test("reconcile does not cancel a box that arrives while the request is in flight", async () => {
+  // The orphan diff is computed when the response is applied, so a box that
+  // showed up after the request went out is absent from a pending list that
+  // predates it. Condemning it would make a live prompt unanswerable — and
+  // `cancelledStates` is sticky, so a reload would not heal it.
+  const umo = "webchat:FriendMessage:webchat!alice!inflight";
+  const store = useInteractiveChoiceStore();
+  const boxOne: InteractiveChoicePart = {
+    type: "interactive_choice",
+    request_id: "box-1",
+    prompt: "one?",
+    options: [{ id: "a", label: "A" }],
+  };
+  const boxTwo: InteractiveChoicePart = {
+    type: "interactive_choice",
+    request_id: "box-2",
+    prompt: "two?",
+    options: [{ id: "b", label: "B" }],
+  };
+  store.addChoice(umo, boxOne);
+  mock.onPost("/api/chat/interactive-choice/pending").reply(200, {
+    status: "ok",
+    data: { pending: [boxOne] },
+  });
+
+  const inFlight = store.reconcile(umo);
+  // A live box arrives before the round trip lands.
+  store.addChoice(umo, boxTwo);
+  await inFlight;
+
+  assert.equal(store.isCancelled(umo, "box-2"), false);
+  // The box that was already local when the request went out is still judged
+  // against the response (it is pending server-side, so it stays answerable).
+  assert.equal(store.isCancelled(umo, "box-1"), false);
+});

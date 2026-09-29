@@ -139,50 +139,47 @@ async def test_choice_answer_is_stamped_into_the_turn_record():
     run_id = f"stamp-run-{id(service)}"
     await service.register_synthetic_chat_run(session_id, run_id, "alice")
     run = service.chat_runs[run_id]
-    try:
-        await webchat_queue_mgr.put_back_queue(
-            run_id,
-            {
-                "type": "plain",
-                "data": json.dumps(
-                    {
-                        "request_id": "req-1",
-                        "spec": {
-                            "type": "interactive_choice",
-                            "prompt": "Pick one",
-                            "options": [
-                                {"id": "A", "label": "alpha"},
-                                {"id": "B", "label": "beta"},
-                            ],
-                        },
-                    }
-                ),
-                "streaming": False,
-                "chain_type": "interactive_choice",
-                "message_id": run_id,
-            },
-        )
-        await webchat_queue_mgr.put_back_queue(
-            run_id,
-            {
-                "type": "interactive_choice_resolved",
-                "data": {
+    await webchat_queue_mgr.put_back_queue(
+        run_id,
+        {
+            "type": "plain",
+            "data": json.dumps(
+                {
                     "request_id": "req-1",
-                    "reason": "submitted",
-                    "choice_id": "A",
-                    "umo": "webchat!d!c",
-                },
-                "streaming": False,
-                "message_id": run_id,
+                    "spec": {
+                        "type": "interactive_choice",
+                        "prompt": "Pick one",
+                        "options": [
+                            {"id": "A", "label": "alpha"},
+                            {"id": "B", "label": "beta"},
+                        ],
+                    },
+                }
+            ),
+            "streaming": False,
+            "chain_type": "interactive_choice",
+            "message_id": run_id,
+        },
+    )
+    await webchat_queue_mgr.put_back_queue(
+        run_id,
+        {
+            "type": "interactive_choice_resolved",
+            "data": {
+                "request_id": "req-1",
+                "reason": "submitted",
+                "choice_id": "A",
+                "umo": "webchat!d!c",
             },
-        )
-        await webchat_queue_mgr.put_back_queue(
-            run_id,
-            {"type": "end", "data": "", "streaming": False, "message_id": run_id},
-        )
-        await asyncio.wait_for(run.task, timeout=2)
-    finally:
-        pass
+            "streaming": False,
+            "message_id": run_id,
+        },
+    )
+    await webchat_queue_mgr.put_back_queue(
+        run_id,
+        {"type": "end", "data": "", "streaming": False, "message_id": run_id},
+    )
+    await asyncio.wait_for(run.task, timeout=2)
 
     # Exactly one rewrite: the resolved event stamps the row the box created.
     assert service.platform_history_mgr.update.await_count == 1

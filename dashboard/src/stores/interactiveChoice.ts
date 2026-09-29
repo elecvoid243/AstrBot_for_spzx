@@ -543,6 +543,15 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
      */
     async reconcile(umo: string): Promise<void> {
       try {
+        // Snapshot the local rids BEFORE the round trip. The orphan diff runs
+        // when the response is applied, and a box that arrived meanwhile is
+        // absent from a pending list that predates it — judging it would mark
+        // a live prompt cancelled (sticky, and the LLM tool would stay blocked
+        // until its timeout). Only rids that were already local when the
+        // request went out are candidates for "the server no longer knows it".
+        const ridsAtRequest = new Set(
+          Object.keys(this.activeChoices[umo] ?? {}),
+        );
         // POST (not GET) — the dashboard's static-files catch-all
         // route (`/{static_path:path}`) wins on GET and would shadow
         // every /api/* GET with a 404. The pending endpoint has no
@@ -568,12 +577,14 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
           // and mark them cancelled. Must run BEFORE the
           // activeChoices overwrite below, otherwise the local list
           // is gone before we can diff it. Reuses the `next` dict
-          // built above (its keys ARE the backend request_ids).
+          // built above (its keys ARE the backend request_ids), and
+          // `ridsAtRequest` so a box that arrived mid-flight is not
+          // judged by a list that predates it.
           const backendIds = new Set(Object.keys(next));
           const localBucket = this.activeChoices[umo];
           if (localBucket) {
             for (const localRid of Object.keys(localBucket)) {
-              if (!backendIds.has(localRid)) {
+              if (!backendIds.has(localRid) && ridsAtRequest.has(localRid)) {
                 this.markCancelled(umo, localRid);
               }
             }

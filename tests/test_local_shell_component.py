@@ -1482,3 +1482,154 @@ async def test_shutdown_sessions_returns_when_reader_stuck(monkeypatch, tmp_path
 
     assert elapsed < 15
     assert session.session_id not in shell._sessions
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_swallows_task_exception():
+    """A task that failed is finished; its exception must not escape.
+
+    A reader task can die with transport-level errors (broken pipe after the
+    process is killed). Callers use _bounded_await to wait for completion,
+    not to consume the task's result, so the failure must not propagate.
+    """
+
+    async def boom():
+        raise RuntimeError("pipe broke")
+
+    task = asyncio.create_task(boom())
+    await asyncio.sleep(0)  # let the task fail
+    done = await local_booter._bounded_await(task, timeout=1.0)
+    assert done is True
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_remove_session_tolerates_locked_output_file(tmp_path):
+    """Windows refuses to unlink a file a stuck reader still holds open.
+
+    Reproduces the live failure: a detached MSYS2 grandchild keeps the pipe
+    open, the reader task never finishes, and _remove_session raised
+    PermissionError [WinError 32] out of terminate/poll.
+    """
+
+    class ExitedProcess:
+        pid = 9015
+        returncode = 1
+
+    output_path = tmp_path / "out_locked.log"
+    output_path.touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_locked",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=output_path,
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    shell = LocalShellComponent()
+    shell._sessions[session.session_id] = session
+
+    with output_path.open("ab"):  # hold the file open like a stuck reader
+        await shell._remove_session(session)
+
+    assert session.session_id not in shell._sessions
+
+
+@pytest.mark.asyncio
+async def test_remove_session_cancels_stuck_reader(tmp_path):
+    """A never-ending reader must be cancelled so its file handle is freed."""
+
+    class ExitedProcess:
+        pid = 9016
+        returncode = 1
+
+    async def never():
+        await asyncio.Event().wait()
+
+    output_path = tmp_path / "out_stuck2.log"
+    output_path.touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_stuck2",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=output_path,
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(never()),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    shell = LocalShellComponent()
+    shell._sessions[session.session_id] = session
+
+    await asyncio.wait_for(shell._remove_session(session), timeout=10)
+
+    assert session.reader_task.done()
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_terminate_tolerates_failed_wait_task(monkeypatch, tmp_path):
+    """A wait_task that died with a transport error must not break terminate.
+
+    Under pythonw.exe, killing the process can complete wait_task with
+    OSError (invalid handle). Awaiting or shielding it then re-raises that
+    error (surfaced live as a CPython SystemError) out of terminate.
+    """
+
+    class KillableProcess:
+        pid = 9017
+
+        def __init__(self):
+            self.returncode = None
+
+        def send_signal(self, sig):
+            _ = sig
+            raise SystemError("returned a result with an exception set")
+
+        def terminate(self):
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = 1
+
+    async def broken_wait():
+        raise OSError(6, "The handle is invalid")
+
+    wait_task = asyncio.create_task(broken_wait())
+    await asyncio.sleep(0)  # let the wait task fail before terminate runs
+
+    (tmp_path / "out8.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test8",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=KillableProcess(),
+        output_path=tmp_path / "out8.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=wait_task,
+        shell_family="git_bash",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0),
+    )
+
+    await asyncio.wait_for(
+        LocalShellComponent()._terminate_process(session),
+        timeout=20,
+    )

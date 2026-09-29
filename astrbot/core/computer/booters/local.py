@@ -447,7 +447,9 @@ async def _bounded_await(
             reader that can be abandoned).
 
     Returns:
-        True if the task completed within the timeout, False otherwise.
+        True if the task finished within the timeout (including finishing
+        with an exception — the caller waits for completion, not for the
+        task's result), False otherwise.
     """
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
@@ -460,6 +462,10 @@ async def _bounded_await(
             except (asyncio.CancelledError, Exception):
                 pass
         return False
+    except Exception:
+        # The task itself failed. From the caller's perspective it has
+        # finished, and its exception was already consumed by the await.
+        return True
 
 
 @dataclass
@@ -1231,10 +1237,11 @@ class LocalShellComponent(ShellComponent):
                 # the fallback for whatever the signal did not reach.
                 pass
             else:
-                try:
-                    await asyncio.wait_for(asyncio.shield(session.wait_task), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
+                # Give the signal a moment to end the process. Await via the
+                # bounded helper: wait_task may already have failed with a
+                # transport error (invalid handle once the process is gone),
+                # which raw wait_for/shield would re-raise here.
+                await _bounded_await(session.wait_task, timeout=5)
         if os.name == "nt":
             try:
                 taskkill_result = await asyncio.to_thread(
@@ -1259,12 +1266,7 @@ class LocalShellComponent(ShellComponent):
             except ProcessLookupError:
                 pass
 
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(session.wait_task),
-                timeout=5,
-            )
-        except asyncio.TimeoutError:
+        if not await _bounded_await(session.wait_task, timeout=5):
             if os.name == "nt":
                 session.process.kill()
             else:
@@ -1298,7 +1300,23 @@ class LocalShellComponent(ShellComponent):
                 await timeout_task
             except asyncio.CancelledError:
                 pass
-        session.output_path.unlink(missing_ok=True)
+        # A stuck reader (pipe held open by a detached grandchild) keeps the
+        # output file handle open; cancel it before unlinking, and tolerate
+        # a still-locked file so cleanup never fails the caller.
+        reader_task = session.reader_task
+        if not reader_task.done():
+            reader_task.cancel()
+            try:
+                await reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            session.output_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug(
+                "Could not delete shell session output %s; leaving it for the OS",
+                session.output_path,
+            )
         try:
             session.output_path.parent.rmdir()
         except OSError:

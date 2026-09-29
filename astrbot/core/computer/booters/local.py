@@ -1062,9 +1062,30 @@ class LocalShellComponent(ShellComponent):
         )
         if session.process.returncode is None:
             if os.name == "nt":
-                session.process.send_signal(
-                    getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
-                )
+                try:
+                    session.process.send_signal(
+                        getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
+                    )
+                except Exception:
+                    # Console control events are undeliverable when the child
+                    # has no console (e.g. AstrBot runs under pythonw.exe),
+                    # and CPython can misreport the failure as SystemError.
+                    # Fall back to a graceful taskkill sweep of the tree.
+                    logger.debug(
+                        "CTRL_BREAK undeliverable for shell session %s; "
+                        "falling back to taskkill",
+                        session_id,
+                    )
+                    try:
+                        await asyncio.to_thread(
+                            subprocess.run,
+                            ["taskkill", "/T", "/PID", str(session.process.pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5,
+                        )
+                    except Exception:
+                        pass
             else:
                 try:
                     os.killpg(session.process.pid, signal.SIGINT)
@@ -1202,7 +1223,11 @@ class LocalShellComponent(ShellComponent):
             # the signal did not reach.
             try:
                 session.process.send_signal(signal.CTRL_BREAK_EVENT)
-            except OSError:
+            except Exception:
+                # Same console-less failure as interrupt_session: the event
+                # cannot be delivered without a console and CPython may
+                # misreport it as SystemError. The taskkill sweep below is
+                # the fallback for whatever the signal did not reach.
                 pass
             else:
                 try:

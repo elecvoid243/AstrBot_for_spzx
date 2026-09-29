@@ -1334,3 +1334,113 @@ async def test_terminate_process_returns_when_wait_task_stuck(monkeypatch, tmp_p
 
     assert elapsed < 15
     session.wait_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_tolerates_undeliverable_ctrl_break(monkeypatch, tmp_path):
+    """CTRL_BREAK under pythonw (no console) must not surface as an error.
+
+    Reproduces the live failure: send_signal(CTRL_BREAK_EVENT) makes CPython's
+    os.kill raise SystemError ("returned a result with an exception set")
+    because the child has no console. Interrupt must swallow the signal
+    failure, attempt the graceful taskkill fallback, and still return a
+    normal poll result.
+    """
+
+    class NoConsoleProcess:
+        pid = 9012
+        returncode = None
+
+        def send_signal(self, sig):
+            _ = sig
+            raise SystemError(
+                "<built-in function kill> returned a result with an exception set"
+            )
+
+    (tmp_path / "out5.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test5",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=NoConsoleProcess(),
+        output_path=tmp_path / "out5.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="powershell",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0),
+    )
+    shell = LocalShellComponent()
+    shell._sessions[session.session_id] = session
+
+    result = await shell.interrupt_session(
+        owner_id="umo",
+        requester_id="user",
+        requester_is_admin=True,
+        session_id=session.session_id,
+        yield_time_ms=0,
+    )
+
+    assert result["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_terminate_git_bash_tolerates_signal_system_error(monkeypatch, tmp_path):
+    """The git bash CTRL_BREAK branch must fall through to taskkill on error.
+
+    Same console-less failure as interrupt: the signal raises SystemError,
+    which is not OSError, so the narrow catch lets it escape. The sweep must
+    still run and the terminate call must still return.
+    """
+
+    class NoConsoleGitBashProcess:
+        pid = 9013
+
+        def __init__(self):
+            self.returncode = None
+
+        def send_signal(self, sig):
+            _ = sig
+            raise SystemError(
+                "<built-in method get_loop of _asyncio.Task object at 0x0> "
+                "returned a result with an exception set"
+            )
+
+        def terminate(self):
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = 1
+
+    (tmp_path / "out6.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test6",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=NoConsoleGitBashProcess(),
+        output_path=tmp_path / "out6.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=1),
+    )
+
+    await asyncio.wait_for(
+        LocalShellComponent()._terminate_process(session),
+        timeout=20,
+    )

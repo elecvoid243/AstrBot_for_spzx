@@ -1225,3 +1225,57 @@ async def test_bounded_await_timeout_without_cancel_keeps_task_running():
     assert done is False
     assert not task.done()
     task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_poll_session_returns_when_reader_task_stuck(monkeypatch, tmp_path):
+    """A pipe held open by a detached child must not hang poll forever.
+
+    Reproduces the git bash hang: the shell process exited (returncode set,
+    wait_task done) but a surviving MSYS2 grandchild keeps the stdout pipe
+    open, so the reader task never finishes. Poll must return with the
+    last-known output instead of awaiting the reader indefinitely.
+    """
+    import time
+
+    class ExitedProcess:
+        pid = 9010
+        returncode = 1
+
+    async def never():
+        await asyncio.Event().wait()
+
+    (tmp_path / "out_stuck.log").write_bytes(b"partial output\n")
+    session = local_booter._LocalShellSession(
+        session_id="sh_stuck_reader",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=tmp_path / "out_stuck.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(never()),
+        wait_task=asyncio.create_task(asyncio.sleep(0)),
+        shell_family="git_bash",
+    )
+    shell = LocalShellComponent()
+    shell._sessions[session.session_id] = session
+
+    start = time.monotonic()
+    result = await asyncio.wait_for(
+        shell.poll_session(
+            owner_id="umo",
+            requester_id="user",
+            requester_is_admin=True,
+            session_id=session.session_id,
+            yield_time_ms=0,
+        ),
+        timeout=15,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 10
+    assert result["stdout"] == "partial output\n"
+    assert result["exit_code"] == 1

@@ -905,8 +905,14 @@ class LocalShellComponent(ShellComponent):
                 output_size,
             )
 
+        reader_stuck = False
         if session.wait_task.done():
-            await session.reader_task
+            # The reader only ends at pipe EOF, which a surviving detached
+            # child (e.g. an MSYS2 grandchild) can postpone indefinitely by
+            # inheriting the stdout handle. Bound the wait and proceed with
+            # the last-known output; once the reader proves stuck, later
+            # waits in this call would gain nothing.
+            reader_stuck = not await _bounded_await(session.reader_task, timeout=5)
         raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
 
         if not raw_output and session.process.returncode is None and yield_time_ms > 0:
@@ -925,20 +931,26 @@ class LocalShellComponent(ShellComponent):
                         await output_waiter
                     except asyncio.CancelledError:
                         pass
-                if session.wait_task.done():
-                    await session.reader_task
+                if session.wait_task.done() and not reader_stuck:
+                    reader_stuck = not await _bounded_await(
+                        session.reader_task, timeout=5
+                    )
                 raw_output, next_cursor, output_size = await asyncio.to_thread(
                     _read_output
                 )
 
         exit_code = session.process.returncode
-        if exit_code is not None:
-            await session.reader_task
+        if exit_code is not None and not reader_stuck:
+            reader_stuck = not await _bounded_await(session.reader_task, timeout=5)
             raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
 
         exit_code = session.process.returncode
-        if exit_code is not None and not session.reader_task.done():
-            await session.reader_task
+        if (
+            exit_code is not None
+            and not session.reader_task.done()
+            and not reader_stuck
+        ):
+            await _bounded_await(session.reader_task, timeout=5)
             raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
 
         session.cursor = next_cursor

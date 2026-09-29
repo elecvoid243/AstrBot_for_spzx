@@ -6,7 +6,7 @@
 |---|---|
 | **日期** | 2026-09-29 |
 | **分支** | `fix/interactive-choice-resolved-durability` |
-| **状态** | 待评审 |
+| **状态** | 已实现（合入 `all`: `3c77de8`..`7ae9005`） |
 | **范围** | `dashboard/src/stores/interactiveChoice.ts`、`dashboard/src/composables/parseInteractiveChoice.ts`、`dashboard/src/components/chat/`、`astrbot/dashboard/services/chat_service.py`、`data/plugins/astrbot_plugin_ask_user_choice/` |
 
 **Goal:** 让交互选项框的终态（已选择 / 已取消）在刷新、AstrBot 重启、清缓存、换浏览器之后依然成立——前端按会话隔离写回 localStorage，后端把答案写进历史 part，使历史记录本身成为终态的权威来源。

@@ -13,6 +13,27 @@ export interface InteractiveChoiceOption {
   value?: string;
 }
 
+/**
+ * 用户对某个选项框的作答,由后端在 `interactive_choice_resolved` 事件
+ * 到达时戳进已落盘的历史 part(`chat_service.stamp_choice_resolution`)。
+ */
+export interface InteractiveChoiceAnswer {
+  /** 选中的 option id;`"__free_text__"` 表示用户输入的是纯文本。 */
+  choice_id: string;
+  /** 用户附带/输入的文本。 */
+  free_text?: string;
+  /** unix 秒,作答时刻。 */
+  answered_at?: number;
+}
+
+/** 服务端侧对该选项框的结论(超时或用户取消)。 */
+export interface InteractiveChoiceResolution {
+  /** 目前只有 `"cancelled"`。 */
+  reason: string;
+  /** unix 秒,结论时刻。 */
+  resolved_at?: number;
+}
+
 export interface InteractiveChoicePart {
   type: "interactive_choice";
   /** v1.0 必填:后端生成的 request_id,提交时用作路由 */
@@ -23,6 +44,15 @@ export interface InteractiveChoicePart {
   input_placeholder?: string;
   /** v1.0 可选:unix ts,前端可显示倒计时 */
   expires_at?: number;
+  /**
+   * 用户作答后由后端写入(`chat_service.stamp_choice_resolution`)。
+   *
+   * 语义:历史记录是「已选择」的权威来源——localStorage 只属于单台浏览器,
+   * 换设备、清缓存、或本就没在这台机器上作答过时都读不到。
+   */
+  answer?: InteractiveChoiceAnswer;
+  /** 服务端超时 / 用户取消后由同一条路径写入。 */
+  resolved?: InteractiveChoiceResolution;
   /**
    * v1.1 可选:LLM 写的 Markdown 补充说明,≤5000 字符。
    *
@@ -152,6 +182,37 @@ export function getOptionSubmitText(opt: InteractiveChoiceOption): string {
   if (id && label) return `${id}. ${label}`;
   if (label) return label;
   return id;
+}
+
+/**
+ * 从历史 part 上读回用户的作答,归一成组件状态机用的 submission 形状。
+ *
+ * 为什么需要:本地的 `submissionStates` 只存在浏览器 localStorage 里,
+ * 换设备 / 清缓存 / 别的会话把记录覆盖掉之后就读不到了;后端在 resolved
+ * 事件里把答案戳进历史 part 之后,历史本身就是「已选择」的权威来源。
+ *
+ * Args:
+ *   part: 历史(或 store)里的 `interactive_choice` part。
+ *
+ * Returns:
+ *   `{kind: "option", optionId}` 或 `{kind: "input", freeText}`;part 上
+ *   没有 `answer`、或 `answer` 形状非法/为空时返回 `null`(此时框按
+ *   pending / cancelled 处理)。
+ */
+export function submissionFromPart(part: InteractiveChoicePart): {
+  kind: "option" | "input";
+  optionId?: string;
+  freeText?: string;
+} | null {
+  const answer = part.answer;
+  if (!answer || typeof answer !== "object") return null;
+  const choiceId = typeof answer.choice_id === "string" ? answer.choice_id : "";
+  const freeText = typeof answer.free_text === "string" ? answer.free_text : "";
+  if (!choiceId && !freeText) return null;
+  if (!choiceId || choiceId === "__free_text__") {
+    return { kind: "input", freeText };
+  }
+  return { kind: "option", optionId: choiceId, freeText: freeText || undefined };
 }
 
 /**

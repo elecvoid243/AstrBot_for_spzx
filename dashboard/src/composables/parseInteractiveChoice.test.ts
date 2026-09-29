@@ -12,7 +12,9 @@ import {
   validateInteractiveChoice,
   truncateInteractiveChoice,
   getOptionSubmitText,
+  submissionFromPart,
   tryRecoverInteractiveChoiceFromPlainText,
+  type InteractiveChoicePart,
 } from "./parseInteractiveChoice.ts";
 
 test("isInteractiveChoicePayload accepts valid type", () => {
@@ -426,4 +428,64 @@ test("truncateInteractiveChoice: extra_content of wrong type is preserved as-is 
   };
   const out = truncateInteractiveChoice(input);
   assert.equal(out.extra_content, true);
+});
+
+// ---------------------------------------------------------------------------
+// Reading the terminal state off the part itself.
+//
+// `chat_service.stamp_choice_resolution` writes `answer` / `resolved` onto the
+// persisted part when the user answers or the request is cancelled, so a
+// reload can restore "已选择 X" from history alone — localStorage is
+// per-browser and may never have held the record (Bug Z, wiped cache, another
+// device).
+// ---------------------------------------------------------------------------
+
+function makePart(extra: Partial<InteractiveChoicePart> = {}): InteractiveChoicePart {
+  return {
+    type: "interactive_choice",
+    request_id: "req-1",
+    prompt: "Pick one",
+    options: [
+      { id: "A", label: "alpha" },
+      { id: "B", label: "beta" },
+    ],
+    ...extra,
+  };
+}
+
+test("submissionFromPart reads an option answer", () => {
+  const sub = submissionFromPart(
+    makePart({ answer: { choice_id: "B", free_text: "", answered_at: 1 } }),
+  );
+  assert.equal(sub?.kind, "option");
+  assert.equal(sub?.optionId, "B");
+});
+
+test("submissionFromPart reads a free-text answer", () => {
+  const sub = submissionFromPart(
+    makePart({
+      answer: { choice_id: "__free_text__", free_text: "我自己写的答案" },
+    }),
+  );
+  assert.equal(sub?.kind, "input");
+  assert.equal(sub?.freeText, "我自己写的答案");
+  assert.equal(sub?.optionId, undefined);
+});
+
+test("submissionFromPart returns null without an answer", () => {
+  assert.equal(submissionFromPart(makePart()), null);
+  assert.equal(submissionFromPart(makePart({ answer: {} as never })), null);
+});
+
+test("submissionFromPart ignores a malformed answer", () => {
+  assert.equal(
+    submissionFromPart(makePart({ answer: "B" as unknown as never })),
+    null,
+  );
+  assert.equal(
+    submissionFromPart(
+      makePart({ answer: { choice_id: "", free_text: "" } }),
+    ),
+    null,
+  );
 });

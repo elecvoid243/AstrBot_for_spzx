@@ -472,3 +472,71 @@ describe("InteractiveChoiceBox — description fold (>200 chars)", () => {
     expect(readonly.text()).toContain("详".repeat(300));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Terminal state restored from the persisted part (2026-09-29).
+//
+// `chat_service.stamp_choice_resolution` stamps `answer` / `resolved` onto the
+// `interactive_choice` part when the box is answered or cancelled. The store
+// mock below starts empty in every test, which is exactly the situation these
+// cases cover: a fresh browser, a wiped cache, or a session whose localStorage
+// record another session overwrote (Bug Z).
+// ---------------------------------------------------------------------------
+
+describe("InteractiveChoiceBox — terminal state from history", () => {
+  it("renders 已选择 from the part's answer with no local record", () => {
+    const wrapper = mountBox({
+      part: makePart({
+        answer: { choice_id: "B", free_text: "", answered_at: 1 },
+      }),
+    });
+
+    expect(
+      wrapper.find(".interactive-choice-box.is-submitted").exists(),
+    ).toBe(true);
+    expect(wrapper.find(".choice-result-value").text()).toContain(
+      "文件系统 mv",
+    );
+    // Terminal: no cancel affordance, no clickable options.
+    expect(wrapper.find(".choice-cancel-button").exists()).toBe(false);
+    expect(wrapper.find(".choice-option-button").exists()).toBe(false);
+  });
+
+  it("renders 已选择 with the typed text for a free-text answer", () => {
+    const wrapper = mountBox({
+      part: makePart({
+        answer: { choice_id: "__free_text__", free_text: "我自己写的答案" },
+      }),
+    });
+
+    expect(
+      wrapper.find(".interactive-choice-box.is-submitted").exists(),
+    ).toBe(true);
+    expect(wrapper.find(".choice-result-value").text()).toContain(
+      "我自己写的答案",
+    );
+  });
+
+  it("renders 已取消 from the part's resolution stamp", () => {
+    const wrapper = mountBox({
+      part: makePart({ resolved: { reason: "cancelled", resolved_at: 1 } }),
+    });
+
+    expect(
+      wrapper.find(".interactive-choice-box.is-cancelled").exists(),
+    ).toBe(true);
+    expect(wrapper.find(".choice-option-button").exists()).toBe(false);
+  });
+
+  it("keeps the local submission ahead of the history answer", () => {
+    // The user clicked A in this tab; the part carries an older answer B.
+    // The local intent is the honest one (spec §5.1: submission wins).
+    storeMock.markSubmitted(UMO, "req-1", "option", { optionId: "A" });
+
+    const wrapper = mountBox({
+      part: makePart({ answer: { choice_id: "B", answered_at: 1 } }),
+    });
+
+    expect(wrapper.find(".choice-result-value").text()).toContain("git mv");
+  });
+});

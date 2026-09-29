@@ -290,6 +290,7 @@ import { useModuleI18n } from "@/i18n/composables";
 import {
   DESCRIPTION_FOLD_THRESHOLD,
   getOptionSubmitText,
+  submissionFromPart,
   type InteractiveChoicePart,
   type InteractiveChoiceOption,
 } from "@/composables/parseInteractiveChoice";
@@ -336,8 +337,17 @@ const interactiveChoiceStore = useInteractiveChoiceStore();
 // Reactively reads the submission state for this choice's request_id.
 // Bug Y1 fix: scope reads by the supplied UMO so a submission
 // recorded under session B cannot surface here.
-const submissionState = computed(() =>
-  interactiveChoiceStore.getSubmissionState(props.umo, props.part.request_id),
+//
+// 2026-09-29: the local record is per-browser and can be missing (fresh
+// browser, wiped cache, or another session's write overwrote it — Bug Z), so
+// fall back to the answer the backend stamped onto the persisted part.
+// History is the authoritative source for "已选择"; localStorage is a cache.
+const submissionState = computed(
+  () =>
+    interactiveChoiceStore.getSubmissionState(
+      props.umo,
+      props.part.request_id,
+    ) ?? submissionFromPart(props.part),
 );
 
 // v1.2: Reactively reads the server-cancelled flag for this
@@ -346,8 +356,13 @@ const submissionState = computed(() =>
 // from F3 and `reconcile(umo)` orphan detection from F2) so the
 // box can flip to the non-interactive "已取消" state regardless of
 // whether the resolved event arrived cleanly.
-const cancelledState = computed(() =>
-  interactiveChoiceStore.isCancelled(props.umo, props.part.request_id),
+const cancelledState = computed(
+  () =>
+    interactiveChoiceStore.isCancelled(props.umo, props.part.request_id) ||
+    // 2026-09-29: same history-first fallback as `submissionState` — the
+    // backend stamps `resolved` onto the persisted part when the request is
+    // cancelled or times out.
+    props.part.resolved?.reason === "cancelled",
 );
 
 // 自由文本输入框的临时输入——这是 UI 局部状态,不需要全局共享,保留 ref。

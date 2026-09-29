@@ -1279,3 +1279,58 @@ async def test_poll_session_returns_when_reader_task_stuck(monkeypatch, tmp_path
     assert elapsed < 10
     assert result["stdout"] == "partial output\n"
     assert result["exit_code"] == 1
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_returns_when_wait_task_stuck(monkeypatch, tmp_path):
+    """A process that survives kill() must not hang terminate forever.
+
+    Reproduces the tail of _terminate_process: taskkill and terminate() both
+    fail to end the process, kill() runs, and the final wait never settles.
+    Terminate must give up with a warning instead of awaiting indefinitely.
+    """
+    import time
+
+    class StubbornProcess:
+        pid = 9011
+        returncode = None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    async def never():
+        await asyncio.Event().wait()
+
+    (tmp_path / "out4.log").touch()
+    session = local_booter._LocalShellSession(
+        session_id="sh_test4",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=StubbornProcess(),
+        output_path=tmp_path / "out4.log",
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=asyncio.create_task(asyncio.sleep(0)),
+        wait_task=asyncio.create_task(never()),
+        shell_family="powershell",
+    )
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=1),
+    )
+
+    start = time.monotonic()
+    await asyncio.wait_for(
+        LocalShellComponent()._terminate_process(session),
+        timeout=20,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 15
+    session.wait_task.cancel()

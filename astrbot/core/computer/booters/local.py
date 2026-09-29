@@ -1246,7 +1246,11 @@ class LocalShellComponent(ShellComponent):
                     os.killpg(session.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            await session.wait_task
+            if not await _bounded_await(session.wait_task, timeout=5):
+                logger.warning(
+                    "Managed local shell process did not exit after kill: pid=%s",
+                    session.process.pid,
+                )
 
     async def _remove_session(self, session: _LocalShellSession) -> None:
         """Remove a completed session and its temporary output file.

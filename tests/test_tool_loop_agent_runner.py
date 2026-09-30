@@ -24,6 +24,8 @@ from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
 from astrbot.core.provider.provider import Provider
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.star.context import Context
 
 
 class MockProvider(Provider):
@@ -428,16 +430,49 @@ class MockEvent:
     def get_sender_id(self):
         return self._sender_id
 
+    def get_platform_name(self):
+        # Non-webchat: keeps the subagent progress sink disabled in tests.
+        return "test"
+
+
+class HandoffMockEvent(AstrMessageEvent):
+    """AstrMessageEvent-compatible event for subagent handoff tests.
+
+    `_execute_handoff` builds a pydantic-validated `AstrAgentContext`, so the
+    event must be a real AstrMessageEvent instance. The base `__init__` is
+    bypassed; the umo used here is a valid 3-part origin, so the
+    `unified_msg_origin` property setter parses it cleanly.
+    """
+
+    def __init__(self, umo: str, sender_id: str):
+        self.unified_msg_origin = umo
+        self._sender_id = sender_id
+
+    def get_sender_id(self):
+        return self._sender_id
+
+    def get_platform_name(self):
+        # Non-webchat: keeps the subagent progress sink disabled in tests.
+        return "test"
+
+    def get_sender_name(self):
+        return self._sender_id
+
 
 class MockAgentContext:
     def __init__(self, event):
         self.event = event
 
 
-class BlockingSubagentContext:
+class BlockingSubagentContext(Context):
     def __init__(self):
         self.started = asyncio.Event()
         self.cancelled = False
+        # Subclassing Context makes `get_llm_tool_manager` reachable, so the
+        # handoff toolset builder needs a minimal provider_manager stub.
+        self.provider_manager = SimpleNamespace(
+            llm_tools=SimpleNamespace(func_list=[], get_full_tool_set=lambda: [])
+        )
 
     async def get_current_chat_provider_id(self, _umo: str) -> str:
         return "provider-id"
@@ -1730,7 +1765,7 @@ async def test_stop_cancels_provider_before_first_response(
 @pytest.mark.asyncio
 async def test_stop_interrupts_pending_subagent_handoff(mock_hooks):
     subagent_context = BlockingSubagentContext()
-    event = MockEvent("webchat:FriendMessage:webchat!user!session", "user")
+    event = HandoffMockEvent("webchat:FriendMessage:webchat!user!session", "user")
     handoff_tool = HandoffTool(
         Agent(name="subagent", instructions="subagent-instructions", tools=[]),
         tool_description="Delegate tasks to the subagent.",
@@ -1747,7 +1782,9 @@ async def test_stop_interrupts_pending_subagent_handoff(mock_hooks):
         provider=provider,
         request=request,
         run_context=ContextWrapper(
-            context=SimpleNamespace(event=event, context=subagent_context)
+            context=SimpleNamespace(
+                event=event, context=subagent_context, extra={}
+            )
         ),
         tool_executor=FunctionToolExecutor(),
         agent_hooks=mock_hooks,

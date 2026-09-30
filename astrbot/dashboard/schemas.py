@@ -150,6 +150,14 @@ class ChatOpenFileRequest(OpenModel):
     path: str
 
 
+class ChatSubagentFollowUpRequest(OpenModel):
+    """Deliver a user follow-up message into a running subagent run."""
+
+    session_id: str
+    subagent_run_id: str
+    text: str
+
+
 class ChatFileChangeDiffRequest(OpenModel):
     """Request the net diff for one file changed during an agent turn."""
 

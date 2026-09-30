@@ -252,6 +252,12 @@ export type ChatSessionPatchRequest = {
     starred?: boolean;
 };
 
+export type ChatSubagentFollowUpRequest = {
+    session_id: string;
+    subagent_run_id: string;
+    text: string;
+};
+
 export type ChatThreadCreateRequest = {
     session_id: string;
     parent_message_id: (string | number);
@@ -1769,6 +1775,14 @@ export type ChatFileChangeStatusData = {
 export type ChatFileChangeStatusResponse = (SuccessEnvelope);
 
 export type ChatFileChangeStatusError = unknown;
+
+export type PostSubagentFollowUpData = {
+    body: ChatSubagentFollowUpRequest;
+};
+
+export type PostSubagentFollowUpResponse = (SuccessEnvelope);
+
+export type PostSubagentFollowUpError = unknown;
 
 export type ResumeChatRunData = {
     path: {

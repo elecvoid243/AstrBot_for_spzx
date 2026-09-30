@@ -13,10 +13,12 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.message.components import Image
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.func_tool_manager import (
     FunctionToolManager,
     _PermissionGuardedTool,
 )
+from astrbot.core.provider.provider import Provider
 from astrbot.core.star.context import Context
 
 
@@ -691,3 +693,60 @@ async def test_execute_local_unexcluded_tool_times_out():
             tool, run_context, seconds=3
         ):
             pass
+
+
+class _FinalAnswerProvider(Provider):
+    """Provider that immediately returns a final answer with no tool calls."""
+
+    def __init__(self) -> None:
+        super().__init__({}, {})
+
+    def get_current_key(self) -> str:
+        return "test_key"
+
+    def set_key(self, key) -> None:
+        pass
+
+    async def get_models(self) -> list[str]:
+        return ["test_model"]
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        return LLMResponse(role="assistant", completion_text="final answer")
+
+    async def text_chat_stream(self, **kwargs):
+        yield await self.text_chat(**kwargs)
+
+
+class _ToolLoopEvent(AstrMessageEvent):
+    """Minimal real AstrMessageEvent for driving Context.tool_loop_agent."""
+
+    def __init__(self) -> None:
+        self.unified_msg_origin = "webchat:FriendMessage:webchat!user!session"
+
+    def get_platform_name(self):
+        return "test"
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_agent_invokes_on_runner_ready_after_reset():
+    seen = []
+
+    def _cb(runner):
+        # Fires only after reset(): request and run context already exist.
+        seen.append((runner.req is not None, runner.run_context is not None))
+
+    ctx = object.__new__(Context)
+    ctx.provider_manager = SimpleNamespace(
+        get_provider_by_id=AsyncMock(return_value=_FinalAnswerProvider())
+    )
+    ctx.get_config = lambda **_kw: {"provider_settings": {}}
+
+    resp = await ctx.tool_loop_agent(
+        event=_ToolLoopEvent(),
+        chat_provider_id="p1",
+        prompt="hi",
+        on_runner_ready=_cb,
+    )
+
+    assert resp.completion_text == "final answer"
+    assert seen == [(True, True)]

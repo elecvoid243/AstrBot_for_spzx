@@ -17,7 +17,8 @@ export interface SubAgentToolCall {
 export type SubAgentActivity =
   | { kind: "think"; text: string }
   | { kind: "text"; text: string }
-  | { kind: "tool_call"; call: SubAgentToolCall };
+  | { kind: "tool_call"; call: SubAgentToolCall }
+  | { kind: "user_message"; text: string; seq: number; relayed?: boolean };
 
 export interface SubAgentRunPart {
   type: "subagent_run";
@@ -130,6 +131,24 @@ export function applySubAgentEvent(parts: MessagePart[], data: unknown): void {
       if (event.ts != null) call.finished_ts = event.ts;
       part.tool_calls.push(call);
       part.activity.push({ kind: "tool_call", call });
+    }
+  } else if (kind === "user_message") {
+    // A follow-up the user sent to this running subagent; keep it in the
+    // chronological activity log.
+    part.activity.push({
+      kind: "user_message",
+      text: String(payload.text || ""),
+      seq: Number(payload.seq ?? -1),
+      relayed: false,
+    });
+  } else if (kind === "user_message_relayed") {
+    const seq = Number(payload.seq ?? -1);
+    for (let i = part.activity.length - 1; i >= 0; i--) {
+      const entry = part.activity[i];
+      if (entry.kind === "user_message" && entry.seq === seq) {
+        entry.relayed = true;
+        break;
+      }
     }
   } else if (kind === "completed") {
     part.status = "completed";

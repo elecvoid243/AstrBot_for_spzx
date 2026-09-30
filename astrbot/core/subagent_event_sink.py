@@ -122,6 +122,24 @@ class SubAgentEventSink:
                     )
                     break
 
+    async def user_message(self, seq: int, text: str) -> None:
+        """Emit a ``user_message`` event: the user sent a follow-up to this run.
+
+        Args:
+            seq: The follow-up ticket sequence number within this run.
+            text: The user's message text.
+        """
+        await self._emit("user_message", {"seq": seq, "text": text})
+
+    async def user_message_relayed(self, seq: int) -> None:
+        """Emit a ``user_message_relayed`` event: the run ended before the
+        follow-up was consumed, so it was relayed to the main agent.
+
+        Args:
+            seq: The follow-up ticket sequence number to mark as relayed.
+        """
+        await self._emit("user_message_relayed", {"seq": seq})
+
     async def complete(self, result_text: str, execution_time: float) -> None:
         """Emit the terminal ``completed`` event.
 

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from astrbot import logger
+from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.tools import fs_access
 from astrbot.core.tools.computer_tools.edit_history import (
     get_history_manager,
@@ -31,6 +32,7 @@ from astrbot.dashboard.schemas import (
     ChatOpenFileRequest,
     ChatSessionBatchDeleteRequest,
     ChatSessionPatchRequest,
+    ChatSubagentFollowUpRequest,
     ChatThreadCreateRequest,
     ChatThreadMessageRequest,
     FileAccessModeSetRequest,
@@ -432,6 +434,37 @@ async def stop_chat_session(
     service: ChatService = Depends(get_service),
 ):
     return await _run(lambda: service.stop_session(auth.username, session_id))
+
+
+@router.post("/chat/subagent-follow-up")
+async def post_subagent_follow_up(
+    payload: ChatSubagentFollowUpRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+):
+    """Deliver a user follow-up message into a running foreground subagent.
+
+    The message is queued on the subagent's runner and injected at its next
+    tool-result boundary. This deliberately bypasses the webchat message
+    queue and the pipeline: the follow-up must not be captured by the main
+    agent's follow-up mechanism nor persisted as a top-level user message.
+
+    Returns:
+        ok({"accepted": True, "seq": int}) when queued, otherwise
+        ok({"accepted": False, "reason": "not_found" | "finished" | "empty_text"}).
+    """
+    text = payload.text.strip()
+    if not text:
+        return ok({"accepted": False, "reason": "empty_text"})
+    umo = f"webchat:FriendMessage:webchat!{auth.username}!{payload.session_id}"
+    handle = SubAgentManager.get_subagent_run_handle(umo, payload.subagent_run_id)
+    if handle is None:
+        return ok({"accepted": False, "reason": "not_found"})
+    ticket = handle.runner.follow_up(message_text=text)
+    if ticket is None:
+        return ok({"accepted": False, "reason": "finished"})
+    if handle.sink is not None:
+        await handle.sink.user_message(ticket.seq, text)
+    return ok({"accepted": True, "seq": ticket.seq})
 
 
 @router.post("/chat/open-file")

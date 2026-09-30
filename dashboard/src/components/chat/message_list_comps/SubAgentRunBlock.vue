@@ -99,6 +99,41 @@
       </div>
     </v-expand-transition>
 
+    <!-- Follow-up input: visible while the run is live, reachable without
+         expanding the (default-folded) detail body. -->
+    <div
+      v-if="part.status === 'running' && sessionId"
+      class="subagent-follow-up"
+    >
+      <input
+        v-model="followUpText"
+        data-testid="subagent-follow-up-input"
+        class="subagent-follow-up-input"
+        type="text"
+        :placeholder="
+          tm('subagentFollowUp.placeholder', {
+            name: part.agent_name || 'subagent',
+          })
+        "
+        :disabled="followUpSending"
+        @keydown.enter.prevent="sendFollowUp"
+      />
+      <button
+        class="subagent-follow-up-send"
+        data-testid="subagent-follow-up-send"
+        type="button"
+        :disabled="followUpSending || !followUpText.trim()"
+        :title="tm('subagentFollowUp.send')"
+        :aria-label="tm('subagentFollowUp.send')"
+        @click="sendFollowUp"
+      >
+        <v-icon size="16">mdi-send-outline</v-icon>
+      </button>
+    </div>
+    <div v-if="followUpNotice" class="subagent-follow-up-notice">
+      {{ followUpNotice }}
+    </div>
+
     <!-- Always-visible collapse affordance. Sticks to the bottom of the
          visible scroll viewport while this card is taller than it, so a
          long streaming run can be collapsed without scrolling back up. -->
@@ -124,6 +159,7 @@
 // ToolCallCard for visual consistency with the main agent output.
 import { computed, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
+import { postSubagentFollowUp } from "@/api/generated/openapi-v1";
 import ReasoningTimeline from "@/components/chat/message_list_comps/ReasoningTimeline.vue";
 import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
 
@@ -135,6 +171,12 @@ const props = defineProps({
   isDark: {
     type: Boolean,
     default: false,
+  },
+  // Live webchat session id; enables the follow-up input while the run is
+  // active. Empty (e.g. transcript views) hides the input.
+  sessionId: {
+    type: String,
+    default: "",
   },
 });
 
@@ -166,6 +208,38 @@ const taskExpanded = ref(false);
 const taskSectionExpanded = ref(false);
 const executionSectionExpanded = ref(props.part.status === "running");
 const resultSectionExpanded = ref(true);
+
+// Follow-up input state. Submissions go straight to the delivery endpoint;
+// the accepted message renders via the SSE `user_message` echo, so the field
+// is only cleared on acceptance and never appended optimistically.
+const followUpText = ref("");
+const followUpSending = ref(false);
+const followUpNotice = ref("");
+
+async function sendFollowUp() {
+  const text = followUpText.value.trim();
+  if (!text || followUpSending.value || !props.sessionId) return;
+  followUpSending.value = true;
+  followUpNotice.value = "";
+  try {
+    const resp = await postSubagentFollowUp({
+      body: {
+        session_id: props.sessionId,
+        subagent_run_id: props.part.subagent_run_id,
+        text,
+      },
+    });
+    if (resp.data?.data?.accepted) {
+      followUpText.value = "";
+    } else {
+      followUpNotice.value = tm("subagentFollowUp.notDelivered");
+    }
+  } catch {
+    followUpNotice.value = tm("subagentFollowUp.notDelivered");
+  } finally {
+    followUpSending.value = false;
+  }
+}
 
 const hasFullTaskText = computed(() => {
   const full = String(props.part.input_full || "");
@@ -233,6 +307,16 @@ const activityParts = computed(() => {
         parts.push({ type: entry.kind, think: entry.text });
       } else if (entry.kind === "tool_call") {
         pendingTools.push(entry.call);
+      } else if (entry.kind === "user_message") {
+        if (pendingTools.length) {
+          parts.push({ type: "tool_call", tool_calls: pendingTools });
+          pendingTools = [];
+        }
+        parts.push({
+          type: "user_message",
+          userText: entry.text,
+          relayed: Boolean(entry.relayed),
+        });
       }
     }
     if (pendingTools.length) {
@@ -436,6 +520,54 @@ const activityParts = computed(() => {
   cursor: pointer;
   font-size: 0.78em;
   color: rgba(var(--v-theme-primary, 25, 118, 210), 0.85);
+}
+
+.subagent-follow-up {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 10px 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 8px;
+  padding: 4px 6px 4px 12px;
+}
+
+.subagent-follow-up-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 0.85em;
+  color: inherit;
+}
+
+.subagent-follow-up-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer;
+}
+
+.subagent-follow-up-send:hover:not(:disabled) {
+  color: rgb(var(--v-theme-primary));
+}
+
+.subagent-follow-up-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.subagent-follow-up-notice {
+  margin: 0 10px 8px;
+  font-size: 0.78em;
+  color: rgba(var(--v-theme-on-surface), 0.55);
 }
 
 .error-text {

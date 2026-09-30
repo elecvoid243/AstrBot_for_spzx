@@ -24,7 +24,9 @@ from astrbot.core.star.star import star_registry
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
 
 if TYPE_CHECKING:
+    from astrbot.core.astr_agent_run_util import AgentRunner
     from astrbot.core.subagent_dag import DAGExecutionContext
+    from astrbot.core.subagent_event_sink import SubAgentEventSink
 
 
 class SubAgentStatus(str, Enum):
@@ -75,10 +77,27 @@ class SubAgentExecutionResult:
 
 
 @dataclass
+class SubAgentRunHandle:
+    """Handle to a live (running) foreground subagent execution.
+
+    Registered while the subagent's tool-loop runner is active so external
+    callers (e.g. the dashboard follow-up endpoint) can reach the runner.
+    """
+
+    umo: str
+    subagent_run_id: str
+    agent_name: str
+    runner: AgentRunner
+    sink: SubAgentEventSink | None
+
+
+@dataclass
 class SubAgentSession:
     session_id: str
     subagents: dict = field(default_factory=dict)  # 存储SubAgentConfig对象
     handoff_tools: dict = field(default_factory=dict)
+    # Live foreground runs: {subagent_run_id: SubAgentRunHandle}
+    subagent_runners: dict = field(default_factory=dict)
     subagent_status: dict = field(
         default_factory=dict
     )  # 工作状态: SubAgentStatus 枚举值
@@ -1480,6 +1499,58 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         else:
             # 清除特定任务
             task_store.pop(task_id, None)
+
+    @classmethod
+    def register_subagent_runner(
+        cls, session_id: str, handle: SubAgentRunHandle
+    ) -> None:
+        """Register a live subagent run so follow-up messages can reach it.
+
+        Args:
+            session_id: Session ID (unified message origin).
+            handle: Live run handle keyed by its `subagent_run_id`.
+        """
+        session = cls._get_or_create_session(session_id)
+        session.subagent_runners[handle.subagent_run_id] = handle
+
+    @classmethod
+    def unregister_subagent_runner(
+        cls, session_id: str, subagent_run_id: str, runner: AgentRunner
+    ) -> None:
+        """Remove a live subagent run entry.
+
+        Removes only when the stored handle's runner IS the passed runner, so
+        a stale cleanup can never evict a newer run reusing the same id.
+
+        Args:
+            session_id: Session ID (unified message origin).
+            subagent_run_id: The run to remove.
+            runner: The runner expected to own the entry.
+        """
+        session = cls.get_session(session_id)
+        if not session:
+            return
+        handle = session.subagent_runners.get(subagent_run_id)
+        if handle is not None and handle.runner is runner:
+            session.subagent_runners.pop(subagent_run_id, None)
+
+    @classmethod
+    def get_subagent_run_handle(
+        cls, session_id: str, subagent_run_id: str
+    ) -> SubAgentRunHandle | None:
+        """Look up a live subagent run handle.
+
+        Args:
+            session_id: Session ID (unified message origin).
+            subagent_run_id: The run to look up.
+
+        Returns:
+            The handle, or None when the session or run id is unknown.
+        """
+        session = cls.get_session(session_id)
+        if not session:
+            return None
+        return session.subagent_runners.get(subagent_run_id)
 
     @classmethod
     def get_subagent_status(cls, session_id: str, agent_name: str) -> str:

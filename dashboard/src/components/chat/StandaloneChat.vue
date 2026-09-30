@@ -159,6 +159,7 @@
                         v-else-if="part.type === 'subagent_run'"
                         :part="part"
                         :is-dark="isDark"
+                        :session-id="currSessionId"
                       />
 
                       <pre v-else class="unknown-part">{{

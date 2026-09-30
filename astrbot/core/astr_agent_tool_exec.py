@@ -37,6 +37,7 @@ from astrbot.core.subagent_event_sink import SubAgentEventSink
 from astrbot.core.subagent_manager import (
     RET_PENDING_TASK_CREATE_FAILED,
     SubAgentManager,
+    SubAgentRunHandle,
     SubAgentStatus,
 )
 from astrbot.core.tools.computer_tools import (
@@ -71,6 +72,17 @@ from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 # the runner compress after a step or two, which is strictly worse than
 # a clean normal start (cache lost, context truncated, full reprocess).
 _AUTO_FORK_MAX_USAGE_RATIO = 0.45
+
+# Appended to the handoff result when the user sent follow-up messages the
+# subagent finished without consuming. The main agent then decides whether to
+# act on them (e.g. delegate again) or simply acknowledge them to the user.
+_RELAY_NOTICE_TEMPLATE = (
+    "\n\n[SYSTEM NOTICE] While the subagent was finishing, the user sent "
+    "additional message(s) that the subagent did not consume:\n"
+    "{follow_up_lines}\n"
+    "Decide whether to act on them (e.g. delegate a follow-up task) or "
+    "acknowledge them in your reply."
+)
 
 
 class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
@@ -796,6 +808,50 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             },
         )
 
+        # Register the live subagent runner once tool_loop_agent has created
+        # and reset it, so dashboard follow-up messages can reach this run.
+        def _on_runner_ready(runner) -> None:
+            if sink is None:
+                return
+            SubAgentManager.register_subagent_runner(
+                umo,
+                SubAgentRunHandle(
+                    umo=umo,
+                    subagent_run_id=sink.subagent_run_id,
+                    agent_name=agent_name,
+                    runner=runner,
+                    sink=sink,
+                ),
+            )
+
+        async def _relay_unconsumed_follow_ups(text: str) -> str:
+            """Relay follow-ups the subagent never consumed to the main agent.
+
+            Follow-ups are injected at tool-result boundaries; a subagent that
+            finishes without further tool calls leaves them unconsumed. Emit a
+            ``user_message_relayed`` event per message and append their text to
+            the handoff result so user input is never silently dropped.
+
+            Args:
+                text: The result text about to be returned to the main agent.
+
+            Returns:
+                The text with a relay notice appended when needed.
+            """
+            if sink is None:
+                return text
+            handle = SubAgentManager.get_subagent_run_handle(umo, sink.subagent_run_id)
+            pending = handle.runner.unconsumed_follow_up_texts() if handle else []
+            for seq, _text in pending:
+                await sink.user_message_relayed(seq)
+            if not pending:
+                return text
+            follow_up_lines = "\n".join(
+                f"{idx}. {follow_up_text}"
+                for idx, (_seq, follow_up_text) in enumerate(pending, start=1)
+            )
+            return text + _RELAY_NOTICE_TEMPLATE.format(follow_up_lines=follow_up_lines)
+
         # 构建 tool_loop_agent 协程
         async def _run_subagent():
             return await ctx.tool_loop_agent(
@@ -813,6 +869,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 extra_user_content_parts=extra_content_parts,
                 trace_span=subagent_trace,
                 response_sink=sink,
+                on_runner_ready=_on_runner_ready,
                 agent_context=subagent_agent_context,
                 **({"tool_schema_mode": fork_schema_mode} if fork_schema_mode else {}),
                 **({"llm_params": fork_llm_params} if fork_llm_params else {}),
@@ -842,49 +899,65 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
             cls._handle_subagent_timeout(umo=umo, agent_name=agent_name)
 
+            # Relay before the terminal event so the UI marks the follow-up
+            # while the run is still shown as active.
+            error_result = await _relay_unconsumed_follow_ups(f"error: {error_msg}")
             if sink:
                 await sink.fail("timeout", error_msg)
             yield mcp.types.CallToolResult(
-                content=[mcp.types.TextContent(type="text", text=f"error: {error_msg}")]
+                content=[mcp.types.TextContent(type="text", text=error_result)]
             )
             return
         except Exception as exc:
             if sink:
                 await sink.fail("failed", str(exc))
             raise
-
-        execution_time = time.time() - subagent_trace.started_at
-        subagent_trace.record(
-            "subagent_execution_complete",
-            agent_name=agent_name,
-            result=llm_resp.completion_text
-            if hasattr(llm_resp, "completion_text") and llm_resp.completion_text
-            else None,
-            result_length=len(llm_resp.completion_text)
-            if hasattr(llm_resp, "completion_text") and llm_resp.completion_text
-            else 0,
-            execution_time=execution_time,
-        )
-
-        # 保存历史上下文
-        if not use_fork_context:
-            cls._save_subagent_history(umo, runner_messages, agent_name)
+        else:
+            execution_time = time.time() - subagent_trace.started_at
             subagent_trace.record(
-                "subagent_history_saved",
-                messages_count=len(runner_messages),
+                "subagent_execution_complete",
+                agent_name=agent_name,
+                result=llm_resp.completion_text
+                if hasattr(llm_resp, "completion_text") and llm_resp.completion_text
+                else None,
+                result_length=len(llm_resp.completion_text)
+                if hasattr(llm_resp, "completion_text") and llm_resp.completion_text
+                else 0,
+                execution_time=execution_time,
             )
 
-        if sink:
-            await sink.complete(
+            # 保存历史上下文
+            if not use_fork_context:
+                cls._save_subagent_history(umo, runner_messages, agent_name)
+                subagent_trace.record(
+                    "subagent_history_saved",
+                    messages_count=len(runner_messages),
+                )
+
+            result_text = (
                 llm_resp.completion_text
                 if hasattr(llm_resp, "completion_text") and llm_resp.completion_text
-                else "",
-                execution_time,
+                else ""
             )
+            # Relay before the terminal event so the UI marks the follow-up
+            # while the run is still shown as active.
+            result_text = await _relay_unconsumed_follow_ups(result_text)
+            if sink:
+                await sink.complete(result_text, execution_time)
 
-        yield mcp.types.CallToolResult(
-            content=[mcp.types.TextContent(type="text", text=llm_resp.completion_text)]
-        )
+            yield mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(type="text", text=result_text)]
+            )
+        finally:
+            # Release the live-run registry entry on every terminal path.
+            if sink is not None:
+                handle = SubAgentManager.get_subagent_run_handle(
+                    umo, sink.subagent_run_id
+                )
+                if handle is not None:
+                    SubAgentManager.unregister_subagent_runner(
+                        umo, sink.subagent_run_id, handle.runner
+                    )
 
     @classmethod
     async def _execute_handoff_background(

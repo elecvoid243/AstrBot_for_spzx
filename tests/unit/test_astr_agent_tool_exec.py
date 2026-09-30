@@ -13,10 +13,12 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.message.components import Image
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.func_tool_manager import (
     FunctionToolManager,
     _PermissionGuardedTool,
 )
+from astrbot.core.provider.provider import Provider
 from astrbot.core.star.context import Context
 
 
@@ -691,3 +693,340 @@ async def test_execute_local_unexcluded_tool_times_out():
             tool, run_context, seconds=3
         ):
             pass
+
+
+class _FinalAnswerProvider(Provider):
+    """Provider that immediately returns a final answer with no tool calls."""
+
+    def __init__(self) -> None:
+        super().__init__({}, {})
+
+    def get_current_key(self) -> str:
+        return "test_key"
+
+    def set_key(self, key) -> None:
+        pass
+
+    async def get_models(self) -> list[str]:
+        return ["test_model"]
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        return LLMResponse(role="assistant", completion_text="final answer")
+
+    async def text_chat_stream(self, **kwargs):
+        yield await self.text_chat(**kwargs)
+
+
+class _ToolLoopEvent(AstrMessageEvent):
+    """Minimal real AstrMessageEvent for driving Context.tool_loop_agent."""
+
+    def __init__(self) -> None:
+        self.unified_msg_origin = "webchat:FriendMessage:webchat!user!session"
+
+    def get_platform_name(self):
+        return "test"
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_agent_invokes_on_runner_ready_after_reset():
+    seen = []
+
+    def _cb(runner):
+        # Fires only after reset(): request and run context already exist.
+        seen.append((runner.req is not None, runner.run_context is not None))
+
+    ctx = object.__new__(Context)
+    ctx.provider_manager = SimpleNamespace(
+        get_provider_by_id=AsyncMock(return_value=_FinalAnswerProvider())
+    )
+    ctx.get_config = lambda **_kw: {"provider_settings": {}}
+
+    resp = await ctx.tool_loop_agent(
+        event=_ToolLoopEvent(),
+        chat_provider_id="p1",
+        prompt="hi",
+        on_runner_ready=_cb,
+    )
+
+    assert resp.completion_text == "final answer"
+    assert seen == [(True, True)]
+
+
+# -- Live runner registry + follow-up relay in _execute_handoff ----------
+
+from astrbot.core.agent.message import Message  # noqa: E402
+from astrbot.core.agent.tool import ToolSet  # noqa: E402
+from astrbot.core.subagent_manager import SubAgentManager  # noqa: E402
+
+_HANDOFF_UMO = "webchat:FriendMessage:webchat!user!session"
+
+
+class _RecordingQueueStub:
+    """Captures payloads the subagent sink writes to the back queue."""
+
+    def __init__(self) -> None:
+        self.payloads: list[dict] = []
+
+    async def put_back_queue(self, request_id, payload):
+        self.payloads.append(payload)
+        return True
+
+
+@pytest.fixture
+def handoff_env(monkeypatch):
+    """SubAgentManager isolation + sink queue capture for live-handoff tests."""
+    sessions = dict(SubAgentManager._sessions)
+    SubAgentManager._sessions.clear()
+    mode = SubAgentManager._context_inherit_mode
+    timeout = SubAgentManager._execution_timeout
+    prev_workdir_prompt = SubAgentManager._build_workdir_prompt
+    SubAgentManager._build_workdir_prompt = classmethod(
+        lambda cls, session_id, agent_name=None: ""
+    )
+    queue_stub = _RecordingQueueStub()
+    monkeypatch.setattr(
+        "astrbot.core.subagent_event_sink.webchat_queue_mgr", queue_stub
+    )
+    yield queue_stub
+    SubAgentManager._sessions.clear()
+    SubAgentManager._sessions.update(sessions)
+    SubAgentManager._context_inherit_mode = mode
+    SubAgentManager._execution_timeout = timeout
+    SubAgentManager._build_workdir_prompt = prev_workdir_prompt
+
+
+def _first_live_handle():
+    session = SubAgentManager.get_session(_HANDOFF_UMO)
+    if not session or not session.subagent_runners:
+        return None
+    return next(iter(session.subagent_runners.values()))
+
+
+def _live_handoff_args(provider, *, extra=None, messages=None):
+    """Build (tool, run_context) driving the REAL Context.tool_loop_agent."""
+    context = MagicMock(spec=Context)
+    context.get_current_chat_provider_id = AsyncMock(return_value="provider-id")
+    context.get_config = lambda **_kw: {"provider_settings": {}}
+    provider_manager = MagicMock()
+    provider_manager.get_provider_by_id = AsyncMock(return_value=provider)
+    provider_manager.llm_tools = SimpleNamespace(
+        func_list=[], get_full_tool_set=lambda: []
+    )
+    context.provider_manager = provider_manager
+
+    real_tool_loop_agent = Context.tool_loop_agent
+
+    async def _tool_loop_agent(**kwargs):
+        return await real_tool_loop_agent(context, **kwargs)
+
+    context.tool_loop_agent = _tool_loop_agent
+
+    event = MagicMock(spec=AstrMessageEvent)
+    event.unified_msg_origin = _HANDOFF_UMO
+    event.get_platform_name.return_value = "webchat"
+    event.get_sender_name.return_value = "tester"
+    event.trace = None
+    event.message_obj = SimpleNamespace(message=[], message_id="msg-1")
+
+    run_context = ContextWrapper(
+        context=SimpleNamespace(event=event, context=context, extra=extra or {}),
+        messages=messages or [],
+    )
+    tool = SimpleNamespace(
+        name="transfer_to_subagent",
+        provider_id=None,
+        agent=SimpleNamespace(
+            name="subagent",
+            tools=[],
+            instructions="subagent-instructions",
+            begin_dialogs=[],
+            run_hooks=None,
+        ),
+    )
+    return tool, run_context
+
+
+class _HookedFinalProvider(_FinalAnswerProvider):
+    """Final-answer provider that runs a hook inside the first model call."""
+
+    def __init__(self, on_call=None) -> None:
+        super().__init__()
+        self.on_call = on_call
+        self.call_count = 0
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.call_count += 1
+        if self.call_count == 1 and self.on_call:
+            self.on_call()
+        return await super().text_chat(**kwargs)
+
+
+class _ToolThenFinalProvider(Provider):
+    """First model call requests a tool; subsequent calls answer final."""
+
+    def __init__(self, tool_name: str, on_call=None) -> None:
+        super().__init__({}, {})
+        self.tool_name = tool_name
+        self.on_call = on_call
+        self.call_count = 0
+
+    def get_current_key(self) -> str:
+        return "test_key"
+
+    def set_key(self, key) -> None:
+        pass
+
+    async def get_models(self) -> list[str]:
+        return ["test_model"]
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        self.call_count += 1
+        if self.call_count == 1:
+            if self.on_call:
+                self.on_call()
+            return LLMResponse(
+                role="assistant",
+                completion_text="calling a tool",
+                tools_call_name=[self.tool_name],
+                tools_call_args=[{}],
+                tools_call_ids=["call-1"],
+            )
+        return LLMResponse(role="assistant", completion_text="final answer")
+
+    async def text_chat_stream(self, **kwargs):
+        yield await self.text_chat(**kwargs)
+
+
+class _HangingProvider(_FinalAnswerProvider):
+    """Provider whose model call never completes (for timeout tests)."""
+
+    def __init__(self, on_call=None) -> None:
+        super().__init__()
+        self.on_call = on_call
+
+    async def text_chat(self, **kwargs) -> LLMResponse:
+        if self.on_call:
+            self.on_call()
+        await asyncio.Future()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_handoff_registers_runner_while_running_and_unregisters_after(
+    handoff_env,
+):
+    seen = {}
+
+    def _on_call():
+        seen["handle"] = _first_live_handle()
+
+    provider = _HookedFinalProvider(on_call=_on_call)
+    tool, run_context = _live_handoff_args(provider)
+
+    async for _ in FunctionToolExecutor._execute_handoff(
+        tool, run_context, input="do it"
+    ):
+        pass
+
+    handle = seen.get("handle")
+    assert handle is not None, "runner must be registered while the run is live"
+    assert handle.sink is not None
+    assert handle.agent_name == "subagent"
+    assert _first_live_handle() is None, "runner must be unregistered after"
+
+
+@pytest.mark.asyncio
+async def test_handoff_relays_unconsumed_follow_up_to_main_agent(handoff_env):
+    def _on_call():
+        handle = _first_live_handle()
+        if handle is not None:
+            handle.runner.follow_up(message_text="too late note")
+
+    provider = _HookedFinalProvider(on_call=_on_call)
+    tool, run_context = _live_handoff_args(provider)
+
+    results = [
+        r
+        async for r in FunctionToolExecutor._execute_handoff(
+            tool, run_context, input="do it"
+        )
+    ]
+
+    text = results[-1].content[0].text
+    assert "[SYSTEM NOTICE]" in text
+    assert "too late note" in text
+    kinds = [p["data"]["kind"] for p in handoff_env.payloads]
+    assert "user_message_relayed" in kinds
+
+
+@pytest.mark.asyncio
+async def test_handoff_relays_follow_up_on_timeout(handoff_env):
+    SubAgentManager._execution_timeout = 0.3
+
+    def _on_call():
+        handle = _first_live_handle()
+        if handle is not None:
+            handle.runner.follow_up(message_text="timeout note")
+
+    provider = _HangingProvider(on_call=_on_call)
+    tool, run_context = _live_handoff_args(provider)
+
+    results = [
+        r
+        async for r in FunctionToolExecutor._execute_handoff(
+            tool, run_context, input="do it"
+        )
+    ]
+
+    text = results[-1].content[0].text
+    assert "timeout note" in text
+
+
+@pytest.mark.asyncio
+async def test_handoff_follow_up_injected_in_fork_mode(handoff_env):
+    SubAgentManager._context_inherit_mode = "fork"
+    captured = {}
+
+    def _on_call():
+        handle = _first_live_handle()
+        if handle is not None:
+            captured["handle"] = handle
+            handle.runner.follow_up(message_text="fork note")
+
+    toolset = ToolSet()
+    toolset.add_tool(
+        FunctionTool(
+            name="echo_tool",
+            description="d",
+            parameters={"type": "object", "properties": {}},
+        )
+    )
+    main_runner = SimpleNamespace(
+        provider=SimpleNamespace(provider_config={"id": "provider-id"}),
+        req=SimpleNamespace(model=None, llm_params={}),
+        tool_schema_mode="full",
+        effective_raw_tool_set=toolset,
+    )
+    provider = _ToolThenFinalProvider("echo_tool", on_call=_on_call)
+    tool, run_context = _live_handoff_args(
+        provider,
+        extra={"main_agent_runner": main_runner},
+        messages=[Message(role="user", content="original request")],
+    )
+
+    results = [
+        r
+        async for r in FunctionToolExecutor._execute_handoff(
+            tool, run_context, input="fork task"
+        )
+    ]
+    assert results[-1].content[0].text == "final answer"
+
+    handle = captured.get("handle")
+    assert handle is not None, "runner must be registered in fork mode too"
+    messages = handle.runner.run_context.messages
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert any("fork note" in str(m.content) for m in tool_msgs)
+    # The inherited prefix is not mutated by the injection.
+    assert "original request" in str(messages[0].content)
+    assert "fork note" not in str(messages[0].content)

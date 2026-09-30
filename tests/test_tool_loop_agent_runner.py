@@ -22,8 +22,10 @@ from astrbot.core.astr_agent_run_util import run_agent
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
 from astrbot.core.provider.provider import Provider
+from astrbot.core.star.context import Context
 
 
 class MockProvider(Provider):
@@ -428,16 +430,49 @@ class MockEvent:
     def get_sender_id(self):
         return self._sender_id
 
+    def get_platform_name(self):
+        # Non-webchat: keeps the subagent progress sink disabled in tests.
+        return "test"
+
+
+class HandoffMockEvent(AstrMessageEvent):
+    """AstrMessageEvent-compatible event for subagent handoff tests.
+
+    `_execute_handoff` builds a pydantic-validated `AstrAgentContext`, so the
+    event must be a real AstrMessageEvent instance. The base `__init__` is
+    bypassed; the umo used here is a valid 3-part origin, so the
+    `unified_msg_origin` property setter parses it cleanly.
+    """
+
+    def __init__(self, umo: str, sender_id: str):
+        self.unified_msg_origin = umo
+        self._sender_id = sender_id
+
+    def get_sender_id(self):
+        return self._sender_id
+
+    def get_platform_name(self):
+        # Non-webchat: keeps the subagent progress sink disabled in tests.
+        return "test"
+
+    def get_sender_name(self):
+        return self._sender_id
+
 
 class MockAgentContext:
     def __init__(self, event):
         self.event = event
 
 
-class BlockingSubagentContext:
+class BlockingSubagentContext(Context):
     def __init__(self):
         self.started = asyncio.Event()
         self.cancelled = False
+        # Subclassing Context makes `get_llm_tool_manager` reachable, so the
+        # handoff toolset builder needs a minimal provider_manager stub.
+        self.provider_manager = SimpleNamespace(
+            llm_tools=SimpleNamespace(func_list=[], get_full_tool_set=lambda: [])
+        )
 
     async def get_current_chat_provider_id(self, _umo: str) -> str:
         return "provider-id"
@@ -575,9 +610,7 @@ async def test_max_step_final_request_includes_limit_prompt(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -608,9 +641,7 @@ async def test_denied_tool_call_returns_error_without_execution(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -647,9 +678,7 @@ async def test_context_scoped_denied_tools_are_enforced(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -680,9 +709,7 @@ async def test_tool_loop_next_request_includes_tool_result(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -1738,7 +1765,7 @@ async def test_stop_cancels_provider_before_first_response(
 @pytest.mark.asyncio
 async def test_stop_interrupts_pending_subagent_handoff(mock_hooks):
     subagent_context = BlockingSubagentContext()
-    event = MockEvent("webchat:FriendMessage:webchat!user!session", "user")
+    event = HandoffMockEvent("webchat:FriendMessage:webchat!user!session", "user")
     handoff_tool = HandoffTool(
         Agent(name="subagent", instructions="subagent-instructions", tools=[]),
         tool_description="Delegate tasks to the subagent.",
@@ -1755,7 +1782,7 @@ async def test_stop_interrupts_pending_subagent_handoff(mock_hooks):
         provider=provider,
         request=request,
         run_context=ContextWrapper(
-            context=SimpleNamespace(event=event, context=subagent_context)
+            context=SimpleNamespace(event=event, context=subagent_context, extra={})
         ),
         tool_executor=FunctionToolExecutor(),
         agent_hooks=mock_hooks,
@@ -2541,3 +2568,28 @@ async def test_follow_up_after_stop_not_merged_into_tool_result(
 if __name__ == "__main__":
     # 运行测试
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_follow_up_texts_lists_pending_tickets(
+    runner, mock_provider, provider_request, mock_tool_executor, mock_hooks
+):
+    """unconsumed_follow_up_texts returns (seq, text) for pending tickets only."""
+    await runner.reset(
+        provider=mock_provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    t1 = runner.follow_up(message_text="add a constraint")
+    t2 = runner.follow_up(message_text="also check edge cases")
+    assert t1 is not None and t2 is not None
+    assert runner.unconsumed_follow_up_texts() == [
+        (t1.seq, "add a constraint"),
+        (t2.seq, "also check edge cases"),
+    ]
+    runner._consume_follow_up_notice()
+    assert runner.unconsumed_follow_up_texts() == []

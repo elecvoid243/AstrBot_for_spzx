@@ -563,6 +563,23 @@ class BotMessageAccumulator:
                     call["finished_ts"] = data["ts"]
                 part["tool_calls"].append(call)
                 part["activity"].append({"kind": "tool_call", "call": call})
+        elif kind == "user_message":
+            # A user follow-up sent to the running subagent; keep it in the
+            # chronological activity log so a hard refresh restores it.
+            part["activity"].append(
+                {
+                    "kind": "user_message",
+                    "text": str(payload.get("text") or ""),
+                    "seq": payload.get("seq"),
+                    "relayed": False,
+                }
+            )
+        elif kind == "user_message_relayed":
+            seq = payload.get("seq")
+            for entry in reversed(part["activity"]):
+                if entry.get("kind") == "user_message" and entry.get("seq") == seq:
+                    entry["relayed"] = True
+                    break
         elif kind == "completed":
             part["status"] = "completed"
             if payload.get("result_text"):

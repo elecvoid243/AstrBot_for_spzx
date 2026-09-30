@@ -2,8 +2,8 @@
 // Date: 2026-07-26
 // Plan: docs/superpowers/plans/2026-07-26-subagent-chatui-progress.md (Task 5)
 // Leaf-module unit tests, runnable from a bare node runner (vitest).
-import { describe, expect, it } from "vitest";
-import { mount, type DOMWrapper } from "@vue/test-utils";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount, type DOMWrapper } from "@vue/test-utils";
 import {
   applySubAgentEvent,
   type SubAgentRunPart,
@@ -13,6 +13,13 @@ import {
   type MessagePart,
 } from "./normalizeMessageParts.ts";
 import SubAgentRunBlock from "@/components/chat/message_list_comps/SubAgentRunBlock.vue";
+
+const postSubagentFollowUpMock = vi.hoisted(() => ({ fn: vi.fn() }));
+vi.mock("@/api/generated/openapi-v1", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/api/generated/openapi-v1")>();
+  return { ...actual, postSubagentFollowUp: postSubagentFollowUpMock.fn };
+});
 
 function ev(runId: string, kind: string, payload: any, agent = "researcher") {
   return { subagent_run_id: runId, agent_name: agent, kind, payload, ts: 1 };
@@ -125,6 +132,43 @@ describe("applySubAgentEvent", () => {
     applySubAgentEvent(parts, { kind: "text_delta" }); // missing run id
     applySubAgentEvent(parts, "junk");
     expect(parts).toHaveLength(0);
+  });
+
+  it("appends user_message activity and marks it relayed", () => {
+    const parts: MessagePart[] = [];
+    applySubAgentEvent(parts, ev("sa_1", "started", { input_preview: "task" }));
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "user_message", { seq: 0, text: "note" }),
+    );
+    applySubAgentEvent(parts, ev("sa_1", "user_message_relayed", { seq: 0 }));
+    const part = parts[0] as SubAgentRunPart;
+    expect(part.activity.at(-1)).toEqual({
+      kind: "user_message",
+      text: "note",
+      seq: 0,
+      relayed: true,
+    });
+  });
+
+  it("keeps user_message in chronological order between think and tool_call", () => {
+    const parts: MessagePart[] = [];
+    applySubAgentEvent(parts, ev("sa_1", "started", { input_preview: "task" }));
+    applySubAgentEvent(parts, ev("sa_1", "reasoning_delta", { text: "hmm" }));
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "user_message", { seq: 0, text: "steer it" }),
+    );
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "tool_call", { id: "c1", name: "web_search", args: {} }),
+    );
+    const part = parts[0] as SubAgentRunPart;
+    expect(part.activity.map((a) => a.kind)).toEqual([
+      "think",
+      "user_message",
+      "tool_call",
+    ]);
   });
 });
 
@@ -513,5 +557,87 @@ describe("normalizeMessageParts subagent_run passthrough", () => {
       { kind: "tool_call", call: { id: "c3", name: "t3", ts: 1.0 } },
       { kind: "think", text: "think3" },
     ]);
+  });
+});
+
+describe("SubAgentRunBlock follow-up input", () => {
+  const runningPart = (over: Record<string, unknown> = {}) => ({
+    type: "subagent_run",
+    subagent_run_id: "sa_input",
+    agent_name: "coder",
+    status: "running",
+    input_preview: "task",
+    text: "",
+    reasoning: "",
+    tool_calls: [],
+    activity: [],
+    ...over,
+  });
+
+  const mountBlock = (props: Record<string, unknown>) =>
+    mount(SubAgentRunBlock, {
+      props: { part: runningPart(), isDark: false, ...props },
+      global: {
+        stubs: {
+          VIcon: { template: "<i><slot /></i>" },
+          VExpandTransition: { template: "<div><slot /></div>" },
+          MarkdownMessagePart: true,
+          ReasoningTimeline: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    postSubagentFollowUpMock.fn.mockReset();
+    postSubagentFollowUpMock.fn.mockResolvedValue({
+      data: { status: "ok", data: { accepted: true, seq: 0 } },
+    });
+  });
+
+  it("shows the follow-up input only while running with a session id", () => {
+    // The input must be reachable without expanding the (default-folded) body.
+    expect(
+      mountBlock({ sessionId: "sess-1" })
+        .find("[data-testid='subagent-follow-up-input']")
+        .exists(),
+    ).toBe(true);
+    expect(
+      mountBlock({ sessionId: "sess-1", part: runningPart({ status: "completed" }) })
+        .find("[data-testid='subagent-follow-up-input']")
+        .exists(),
+    ).toBe(false);
+    expect(
+      mountBlock({})
+        .find("[data-testid='subagent-follow-up-input']")
+        .exists(),
+    ).toBe(false);
+  });
+
+  it("posts the follow-up and clears the field", async () => {
+    const wrapper = mountBlock({ sessionId: "sess-1" });
+    const input = wrapper.find("[data-testid='subagent-follow-up-input']");
+    await input.setValue("steer it");
+    await wrapper.find("[data-testid='subagent-follow-up-send']").trigger("click");
+    await flushPromises();
+    expect(postSubagentFollowUpMock.fn).toHaveBeenCalledWith({
+      body: {
+        session_id: "sess-1",
+        subagent_run_id: "sa_input",
+        text: "steer it",
+      },
+    });
+    expect((input.element as HTMLInputElement).value).toBe("");
+  });
+
+  it("does not clear the field when the run already finished", async () => {
+    postSubagentFollowUpMock.fn.mockResolvedValue({
+      data: { status: "ok", data: { accepted: false, reason: "finished" } },
+    });
+    const wrapper = mountBlock({ sessionId: "sess-1" });
+    const input = wrapper.find("[data-testid='subagent-follow-up-input']");
+    await input.setValue("too late");
+    await wrapper.find("[data-testid='subagent-follow-up-send']").trigger("click");
+    await flushPromises();
+    expect((input.element as HTMLInputElement).value).toBe("too late");
   });
 });

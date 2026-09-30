@@ -249,6 +249,10 @@ class Context:
                 response_sink: Callable[[AgentResponse], Awaitable[None]] | None - optional
                     observer invoked with every AgentResponse produced by the runner
                     (used to stream subagent progress to webchat).
+                on_runner_ready: Callable[[AgentRunner], None] | None - optional
+                    callback invoked exactly once after the runner is fully
+                    reset and before the run loop starts (used to register the
+                    live subagent runner for follow-up delivery).
                 llm_params: dict - per-request LLM parameter overrides (e.g.
                     {"thinking_effort": "high"}), applied by the provider adapter.
 
@@ -307,7 +311,14 @@ class Context:
         other_kwargs = {
             k: v
             for k, v in kwargs.items()
-            if k not in ["stream", "agent_hooks", "agent_context", "response_sink"]
+            if k
+            not in [
+                "stream",
+                "agent_hooks",
+                "agent_context",
+                "response_sink",
+                "on_runner_ready",
+            ]
         }
 
         # 从 provider_settings 注入「连续工具调用提醒」的默认配置，
@@ -360,6 +371,9 @@ class Context:
             **other_kwargs,
         )
         response_sink = kwargs.get("response_sink")
+        on_runner_ready = kwargs.get("on_runner_ready")
+        if on_runner_ready is not None:
+            on_runner_ready(agent_runner)
         async for resp in agent_runner.step_until_done(max_steps):
             if response_sink is not None:
                 await response_sink(resp)

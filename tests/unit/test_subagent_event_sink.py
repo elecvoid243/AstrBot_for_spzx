@@ -166,3 +166,39 @@ async def test_ignores_unrelated_response_types(monkeypatch):
     await sink(AgentResponse(type="agent_stats", data={"chain": MessageChain()}))
     await sink(AgentResponse(type="llm_result", data={"chain": MessageChain()}))
     assert stub.payloads == []
+
+
+@pytest.mark.asyncio
+async def test_sink_emits_user_message_and_relayed(monkeypatch):
+    import astrbot.core.subagent_event_sink as sink_mod
+
+    stub = _QueueStub()
+    monkeypatch.setattr(sink_mod, "webchat_queue_mgr", stub)
+    sink = sink_mod.SubAgentEventSink("msg-1", "researcher", "do research")
+
+    await sink.user_message(0, "please also run the tests")
+    await sink.user_message_relayed(0)
+
+    payloads = [p for _, p in stub.payloads]
+    kinds = [p["data"]["kind"] for p in payloads]
+    assert kinds == ["user_message", "user_message_relayed"]
+    assert payloads[0]["data"]["payload"] == {
+        "seq": 0,
+        "text": "please also run the tests",
+    }
+    assert payloads[1]["data"]["payload"] == {"seq": 0}
+
+
+@pytest.mark.asyncio
+async def test_sink_user_message_not_emitted_after_close(monkeypatch):
+    import astrbot.core.subagent_event_sink as sink_mod
+
+    stub = _QueueStub()
+    monkeypatch.setattr(sink_mod, "webchat_queue_mgr", stub)
+    sink = sink_mod.SubAgentEventSink("msg-1", "researcher", "do research")
+    await sink.complete("done", 1.0)
+
+    await sink.user_message(0, "too late")
+    assert stub.payloads and all(
+        p["data"]["kind"] != "user_message" for _, p in stub.payloads
+    )

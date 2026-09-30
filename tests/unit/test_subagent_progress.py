@@ -69,9 +69,7 @@ class TestAccumulator:
             _event("sa_1", "tool_call_result", {"id": "c1", "result": "found"})["data"]
         )
         acc.add_subagent_event(_event("sa_1", "text_delta", {"text": "Final "})["data"])
-        acc.add_subagent_event(
-            _event("sa_1", "text_delta", {"text": "answer"})["data"]
-        )
+        acc.add_subagent_event(_event("sa_1", "text_delta", {"text": "answer"})["data"])
         acc.add_subagent_event(
             _event(
                 "sa_1",
@@ -119,7 +117,10 @@ class TestAccumulator:
     def test_tool_calls_carry_event_timestamps(self):
         acc = BotMessageAccumulator()
         acc.add_subagent_event(
-            {**_event("sa_1", "tool_call", {"id": "c1", "name": "t1"})["data"], "ts": 10.0}
+            {
+                **_event("sa_1", "tool_call", {"id": "c1", "name": "t1"})["data"],
+                "ts": 10.0,
+            }
         )
         acc.add_subagent_event(
             {
@@ -176,6 +177,26 @@ class TestAccumulator:
         acc.add_subagent_event({"kind": "text_delta", "payload": {"text": "x"}})
         assert acc.build_message_parts() == []
         assert not acc.has_content()
+
+    def test_user_message_persisted_and_marked_relayed(self):
+        acc = BotMessageAccumulator()
+        acc.add_subagent_event(
+            _event("sa_1", "started", {"input_preview": "task"})["data"]
+        )
+        acc.add_subagent_event(
+            _event("sa_1", "user_message", {"seq": 0, "text": "note"})["data"]
+        )
+        acc.add_subagent_event(
+            _event("sa_1", "user_message_relayed", {"seq": 0})["data"]
+        )
+        part = acc.subagent_runs["sa_1"]
+        entry = part["activity"][-1]
+        assert entry == {
+            "kind": "user_message",
+            "text": "note",
+            "seq": 0,
+            "relayed": True,
+        }
 
 
 class TestConsumeRouting:

@@ -207,6 +207,7 @@ outline: deep
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/regenerate` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
+| `POST` | `/api/v1/chat/subagent-follow-up` | — |
 | `POST` | `/api/v1/chat/threads` | — |
 | `GET` | `/api/v1/chat/threads/{thread_id}` | — |
 | `DELETE` | `/api/v1/chat/threads/{thread_id}` | — |

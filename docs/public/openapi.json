@@ -2510,6 +2510,32 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/subagent-follow-up": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Deliver a user follow-up message into a running foreground subagent",
+        "operationId": "postSubagentFollowUp",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSubagentFollowUpRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/runs/{run_id}/stream": {
       "get": {
         "tags": [
@@ -8442,6 +8468,26 @@
         ],
         "properties": {
           "path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatSubagentFollowUpRequest": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "subagent_run_id",
+          "text"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "subagent_run_id": {
+            "type": "string"
+          },
+          "text": {
             "type": "string"
           }
         },

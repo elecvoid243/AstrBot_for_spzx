@@ -22,9 +22,9 @@ from astrbot.core.astr_agent_run_util import run_agent
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
 from astrbot.core.provider.provider import Provider
-from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.star.context import Context
 
 
@@ -1782,9 +1782,7 @@ async def test_stop_interrupts_pending_subagent_handoff(mock_hooks):
         provider=provider,
         request=request,
         run_context=ContextWrapper(
-            context=SimpleNamespace(
-                event=event, context=subagent_context, extra={}
-            )
+            context=SimpleNamespace(event=event, context=subagent_context, extra={})
         ),
         tool_executor=FunctionToolExecutor(),
         agent_hooks=mock_hooks,

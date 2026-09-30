@@ -126,6 +126,43 @@ describe("applySubAgentEvent", () => {
     applySubAgentEvent(parts, "junk");
     expect(parts).toHaveLength(0);
   });
+
+  it("appends user_message activity and marks it relayed", () => {
+    const parts: MessagePart[] = [];
+    applySubAgentEvent(parts, ev("sa_1", "started", { input_preview: "task" }));
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "user_message", { seq: 0, text: "note" }),
+    );
+    applySubAgentEvent(parts, ev("sa_1", "user_message_relayed", { seq: 0 }));
+    const part = parts[0] as SubAgentRunPart;
+    expect(part.activity.at(-1)).toEqual({
+      kind: "user_message",
+      text: "note",
+      seq: 0,
+      relayed: true,
+    });
+  });
+
+  it("keeps user_message in chronological order between think and tool_call", () => {
+    const parts: MessagePart[] = [];
+    applySubAgentEvent(parts, ev("sa_1", "started", { input_preview: "task" }));
+    applySubAgentEvent(parts, ev("sa_1", "reasoning_delta", { text: "hmm" }));
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "user_message", { seq: 0, text: "steer it" }),
+    );
+    applySubAgentEvent(
+      parts,
+      ev("sa_1", "tool_call", { id: "c1", name: "web_search", args: {} }),
+    );
+    const part = parts[0] as SubAgentRunPart;
+    expect(part.activity.map((a) => a.kind)).toEqual([
+      "think",
+      "user_message",
+      "tool_call",
+    ]);
+  });
 });
 
 describe("SubAgentRunBlock rendering order", () => {

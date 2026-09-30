@@ -575,9 +575,7 @@ async def test_max_step_final_request_includes_limit_prompt(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -608,9 +606,7 @@ async def test_denied_tool_call_returns_error_without_execution(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -647,9 +643,7 @@ async def test_context_scoped_denied_tools_are_enforced(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -680,9 +674,7 @@ async def test_tool_loop_next_request_includes_tool_result(
         streaming=False,
     )
 
-    async def snapshot_context_manager(
-        messages, trusted_token_usage=0, func_tool=None
-    ):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -2541,3 +2533,28 @@ async def test_follow_up_after_stop_not_merged_into_tool_result(
 if __name__ == "__main__":
     # 运行测试
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_follow_up_texts_lists_pending_tickets(
+    runner, mock_provider, provider_request, mock_tool_executor, mock_hooks
+):
+    """unconsumed_follow_up_texts returns (seq, text) for pending tickets only."""
+    await runner.reset(
+        provider=mock_provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    t1 = runner.follow_up(message_text="add a constraint")
+    t2 = runner.follow_up(message_text="also check edge cases")
+    assert t1 is not None and t2 is not None
+    assert runner.unconsumed_follow_up_texts() == [
+        (t1.seq, "add a constraint"),
+        (t2.seq, "also check edge cases"),
+    ]
+    runner._consume_follow_up_notice()
+    assert runner.unconsumed_follow_up_texts() == []

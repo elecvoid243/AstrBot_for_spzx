@@ -786,6 +786,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         for ticket in follow_ups:
             ticket.resolved.set()
 
+    def unconsumed_follow_up_texts(self) -> list[tuple[int, str]]:
+        """Return (seq, text) for every follow-up ticket still pending.
+
+        Consumed tickets are popped by `_consume_follow_up_notice`, so the
+        remaining list is exactly the unconsumed set. Read-only: this method
+        neither resolves nor consumes tickets.
+
+        Returns:
+            List of (seq, text) tuples in arrival order.
+        """
+        return [(t.seq, t.text) for t in self._pending_follow_ups]
+
     def _consume_follow_up_notice(self) -> str:
         if not self._pending_follow_ups:
             return ""

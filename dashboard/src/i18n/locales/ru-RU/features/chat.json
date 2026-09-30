@@ -259,6 +259,11 @@
     "execution": "Выполнение",
     "result": "Результат"
   },
+  "subagentFollowUp": {
+    "placeholder": "Дополнить для {name}…",
+    "send": "Отправить",
+    "notDelivered": "Задача уже завершена; сообщение не доставлено."
+  },
   "subagentCollapse": {
     "hint": "Свернуть карточку субагента"
   },
@@ -362,7 +367,9 @@
     "fileChangeSummary": "файлов изменено: {count} раз",
     "think": "Размышление",
     "reply": "Ответ",
-    "toolUsed": "Использование инструмента"
+    "toolUsed": "Использование инструмента",
+    "userMessage": "Вы",
+    "userMessageRelayed": "Не доставлено субагенту · передано основному агенту"
   },
   "agentWork": {
     "worked": "Работал",

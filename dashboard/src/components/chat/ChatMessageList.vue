@@ -393,6 +393,7 @@
                         v-else-if="part.type === 'subagent_run'"
                         :part="part"
                         :is-dark="isDark"
+                        :session-id="sessionId"
                       />
 
                       <div v-else class="unknown-part">
@@ -638,6 +639,11 @@ const props = withDefaults(
      * interactive choices without depending on a fresh SSE event.
      */
     currentUmo?: string;
+    /**
+     * Live webchat session id. Forwarded to SubAgentRunBlock so a running
+     * subagent run offers a follow-up input; absent in transcript views.
+     */
+    sessionId?: string;
     /**
      * History windowing: whether older history exists and how many records
      * are still unloaded at the top (absolute index of the first row).

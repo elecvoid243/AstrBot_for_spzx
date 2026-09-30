@@ -265,6 +265,11 @@
     "execution": "执行",
     "result": "结果"
   },
+  "subagentFollowUp": {
+    "placeholder": "向 {name} 追加指令…",
+    "send": "发送追加消息",
+    "notDelivered": "该任务已结束，消息未送达。"
+  },
   "subagentCollapse": {
     "hint": "折叠执行卡片"
   },
@@ -368,7 +373,9 @@
     "fileChangeSummary": "变更了 {count} 次文件",
     "think": "思考",
     "reply": "回复",
-    "toolUsed": "使用工具"
+    "toolUsed": "使用工具",
+    "userMessage": "你",
+    "userMessageRelayed": "未送达子代理 · 已转达主 Agent"
   },
   "agentWork": {
     "worked": "已工作",

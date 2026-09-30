@@ -43,6 +43,16 @@
           :style="CHAT_MARKDOWN_HEADING_STYLE"
         />
 
+        <div
+          v-else-if="entry.kind === 'user_message'"
+          class="reasoning-user-message"
+        >
+          <span class="reasoning-user-message-text">{{ entry.userText }}</span>
+          <span v-if="entry.relayed" class="reasoning-user-message-relayed">
+            {{ tm("reasoning.userMessageRelayed") }}
+          </span>
+        </div>
+
         <div v-else-if="entry.tool" class="reasoning-tool-call-block">
           <ToolCallItem v-if="isIPythonToolCall(entry.tool)" :is-dark="isDark">
             <template #label>
@@ -148,6 +158,13 @@ type TimelineEntry =
       kind: "tool_call";
       title: string;
       tool: NormalizedToolCall;
+    }
+  | {
+      key: string;
+      kind: "user_message";
+      title: string;
+      userText: string;
+      relayed: boolean;
     };
 
 const renderParts = computed<MessagePart[]>(() => {
@@ -173,6 +190,19 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
         title:
           part.type === "think" ? tm("reasoning.think") : tm("reasoning.reply"),
         think,
+      });
+      return;
+    }
+
+    if (part.type === "user_message") {
+      // A follow-up the user sent into a running subagent (subagent run
+      // blocks only). Rendered as a compact user entry in the timeline.
+      entries.push({
+        key: `user-${partIndex}`,
+        kind: "user_message",
+        title: tm("reasoning.userMessage"),
+        userText: String(part.userText || ""),
+        relayed: Boolean(part.relayed),
       });
       return;
     }
@@ -321,6 +351,24 @@ function parseJsonSafe(value: unknown) {
   min-width: 0;
   font-size: 14.5px;
   line-height: 1.62;
+}
+
+.reasoning-user-message {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.92em;
+  line-height: 1.62;
+}
+
+.reasoning-user-message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reasoning-user-message-relayed {
+  font-size: 0.82em;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .reasoning-step-meta {

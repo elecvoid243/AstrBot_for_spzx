@@ -265,6 +265,11 @@
     "execution": "Execution",
     "result": "Result"
   },
+  "subagentFollowUp": {
+    "placeholder": "Follow up with {name}…",
+    "send": "Send follow-up",
+    "notDelivered": "The run has finished; the message was not delivered."
+  },
   "subagentCollapse": {
     "hint": "Collapse the subagent card"
   },
@@ -368,7 +373,9 @@
     "fileChangeSummary": "changed files {count} times",
     "think": "Thinking",
     "reply": "Reply",
-    "toolUsed": "Using Tool"
+    "toolUsed": "Using Tool",
+    "userMessage": "You",
+    "userMessageRelayed": "Not delivered to the subagent · relayed to the main agent"
   },
   "agentWork": {
     "worked": "Worked",

@@ -877,6 +877,7 @@
               :reveal-work-index="revealWorkIndex"
               :reveal-work-query="revealWorkQuery"
               :current-umo="currentUmo ?? undefined"
+              :session-id="currSessionId ?? undefined"
               :is-dark="isDark"
               :is-streaming="
                 Boolean(

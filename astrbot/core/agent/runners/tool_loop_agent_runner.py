@@ -333,6 +333,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._aborted = False
         self._abort_signal = asyncio.Event()
         self._pending_follow_ups: list[FollowUpTicket] = []
+        self._unconsumed_follow_ups: list[tuple[int, str]] = []
+        """(seq, text) snapshot of follow-ups resolved without being consumed."""
         self._follow_up_seq = 0
         self._last_tool_name: str | None = None
         self._last_tool_args: dict[str, T.Any] | None = None
@@ -783,20 +785,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             return
         follow_ups = self._pending_follow_ups
         self._pending_follow_ups = []
+        # Snapshot texts of tickets that were never consumed so post-run
+        # consumers (e.g. the subagent handoff relay) can still see them.
+        self._unconsumed_follow_ups.extend(
+            (t.seq, t.text) for t in follow_ups if not t.consumed
+        )
         for ticket in follow_ups:
             ticket.resolved.set()
 
     def unconsumed_follow_up_texts(self) -> list[tuple[int, str]]:
-        """Return (seq, text) for every follow-up ticket still pending.
+        """Return (seq, text) for every follow-up never consumed.
 
-        Consumed tickets are popped by `_consume_follow_up_notice`, so the
-        remaining list is exactly the unconsumed set. Read-only: this method
-        neither resolves nor consumes tickets.
+        Covers both tickets still pending and tickets already resolved
+        (e.g. after the run ended) without having been injected. Read-only:
+        this method neither resolves nor consumes tickets.
 
         Returns:
             List of (seq, text) tuples in arrival order.
         """
-        return [(t.seq, t.text) for t in self._pending_follow_ups]
+        return [
+            *self._unconsumed_follow_ups,
+            *((t.seq, t.text) for t in self._pending_follow_ups),
+        ]
 
     def _consume_follow_up_notice(self) -> str:
         if not self._pending_follow_ups:

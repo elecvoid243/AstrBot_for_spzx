@@ -31,7 +31,7 @@
         </div>
 
         <MarkdownRender
-          v-if="entry.kind === 'think'"
+          v-if="entry.kind === 'think' && !thinkCollapsed(entry, entryIndex)"
           :content="entry.think || ''"
           class="chat-markdown reasoning-text markdown-content"
           :final="!isStreaming"
@@ -42,6 +42,22 @@
           :max-live-nodes="MARKDOWN_RENDER_MAX_LIVE_NODES"
           :style="CHAT_MARKDOWN_HEADING_STYLE"
         />
+
+        <div
+          v-else-if="entry.kind === 'think'"
+          class="reasoning-think-preview"
+          data-testid="think-preview"
+          role="button"
+          tabindex="0"
+          :title="tm('reasoning.expandThink')"
+          @click="toggleThink(entry.key)"
+          @keydown.enter.prevent="toggleThink(entry.key)"
+        >
+          <span class="reasoning-think-preview-text">{{
+            thinkPreview(entry.think)
+          }}</span>
+          <span class="think-toggle-label">{{ tm("reasoning.expandThink") }}</span>
+        </div>
 
         <div
           v-else-if="entry.kind === 'user_message'"
@@ -73,6 +89,20 @@
           </ToolCallItem>
           <ToolCallCard v-else :tool-call="entry.tool" :is-dark="isDark" />
         </div>
+
+        <button
+          v-if="
+            entry.kind === 'think' &&
+            thinkCollapsible(entry, entryIndex) &&
+            expandedThinkKeys.has(entry.key)
+          "
+          class="think-collapse-toggle"
+          data-testid="think-collapse-toggle"
+          type="button"
+          @click="toggleThink(entry.key)"
+        >
+          {{ tm("reasoning.collapseThink") }}
+        </button>
       </div>
     </div>
   </div>
@@ -98,9 +128,62 @@ const props = defineProps<{
   reasoning?: string;
   isDark?: boolean;
   isStreaming?: boolean;
+  /**
+   * Collapse long think entries to a short preview (subagent run blocks).
+   * The currently streaming entry stays expanded so live thinking remains
+   * visible. Defaults to false (main-agent reasoning renders in full).
+   */
+  collapseThink?: boolean;
 }>();
 
 const { tm } = useModuleI18n("features/chat");
+
+const THINK_PREVIEW_CHARS = 100;
+/** Keys of think entries the user manually expanded. */
+const expandedThinkKeys = ref(new Set<string>());
+
+function isLiveThinkEntry(entry: TimelineEntry, index: number): boolean {
+  return (
+    Boolean(props.isStreaming) &&
+    entry.kind === "think" &&
+    index === timelineEntries.value.length - 1
+  );
+}
+
+function thinkCollapsed(entry: TimelineEntry, index: number): boolean {
+  return (
+    Boolean(props.collapseThink) &&
+    entry.kind === "think" &&
+    entry.think.length > THINK_PREVIEW_CHARS &&
+    !isLiveThinkEntry(entry, index) &&
+    !expandedThinkKeys.value.has(entry.key)
+  );
+}
+
+function thinkPreview(think: string): string {
+  const cleaned = think.replace(/\s+/g, " ").trim();
+  return `${cleaned.slice(0, THINK_PREVIEW_CHARS)}…`;
+}
+
+/** True when an expanded long think entry may be collapsed again. */
+function thinkCollapsible(entry: TimelineEntry, index: number): boolean {
+  return (
+    Boolean(props.collapseThink) &&
+    entry.kind === "think" &&
+    entry.think.length > THINK_PREVIEW_CHARS &&
+    !isLiveThinkEntry(entry, index)
+  );
+}
+
+function toggleThink(key: string): void {
+  const next = new Set(expandedThinkKeys.value);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  expandedThinkKeys.value = next;
+}
 
 // 2026-08-11 file-change visibility: distilled per-file changes for the
 // pinned card section, and the scroll-to-locate entry point used by the
@@ -351,6 +434,34 @@ function parseJsonSafe(value: unknown) {
   min-width: 0;
   font-size: 14.5px;
   line-height: 1.62;
+}
+
+.reasoning-think-preview {
+  cursor: pointer;
+  font-size: 0.92em;
+  line-height: 1.62;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+.reasoning-think-preview:hover {
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+.think-toggle-label {
+  margin-left: 6px;
+  font-size: 0.85em;
+  color: rgba(var(--v-theme-primary, 25, 118, 210), 0.85);
+}
+
+.think-collapse-toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.78em;
+  color: rgba(var(--v-theme-primary, 25, 118, 210), 0.85);
 }
 
 .reasoning-user-message {

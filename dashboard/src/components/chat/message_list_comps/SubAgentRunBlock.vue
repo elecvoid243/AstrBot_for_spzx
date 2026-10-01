@@ -67,6 +67,7 @@
               :parts="activityParts"
               :is-dark="isDark"
               :is-streaming="part.status === 'running'"
+              collapse-think
             />
           </div>
         </div>

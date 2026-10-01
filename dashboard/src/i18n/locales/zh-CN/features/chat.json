@@ -374,6 +374,8 @@
     "think": "思考",
     "reply": "回复",
     "toolUsed": "使用工具",
+    "expandThink": "展开",
+    "collapseThink": "收起",
     "userMessage": "你",
     "userMessageRelayed": "未送达子代理 · 已转达主 Agent"
   },

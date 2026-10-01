@@ -335,6 +335,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._pending_follow_ups: list[FollowUpTicket] = []
         self._unconsumed_follow_ups: list[tuple[int, str]] = []
         """(seq, text) snapshot of follow-ups resolved without being consumed."""
+        self._all_follow_ups: list[tuple[int, str]] = []
+        """(seq, text) of every follow-up accepted during this run."""
         self._follow_up_seq = 0
         self._last_tool_name: str | None = None
         self._last_tool_args: dict[str, T.Any] | None = None
@@ -778,6 +780,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         ticket = FollowUpTicket(seq=self._follow_up_seq, text=text)
         self._follow_up_seq += 1
         self._pending_follow_ups.append(ticket)
+        self._all_follow_ups.append((ticket.seq, text))
         return ticket
 
     def _resolve_unconsumed_follow_ups(self) -> None:
@@ -807,6 +810,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             *self._unconsumed_follow_ups,
             *((t.seq, t.text) for t in self._pending_follow_ups),
         ]
+
+    def all_follow_up_texts(self) -> list[tuple[int, str]]:
+        """Return (seq, text) for every follow-up accepted during this run.
+
+        Unlike `unconsumed_follow_up_texts`, this includes follow-ups that
+        were consumed (injected into a tool result), so callers such as the
+        subagent handoff can report user interventions to the main agent.
+
+        Returns:
+            List of (seq, text) tuples in arrival order.
+        """
+        return list(self._all_follow_ups)
 
     def _consume_follow_up_notice(self) -> str:
         if not self._pending_follow_ups:

@@ -1020,7 +1020,9 @@ async def test_handoff_follow_up_injected_in_fork_mode(handoff_env):
             tool, run_context, input="fork task"
         )
     ]
-    assert results[-1].content[0].text == "final answer"
+    assert results[-1].content[0].text.startswith("final answer")
+    # The consumed follow-up is reported to the main agent as delivered.
+    assert "[delivered] fork note" in results[-1].content[0].text
 
     handle = captured.get("handle")
     assert handle is not None, "runner must be registered in fork mode too"
@@ -1030,3 +1032,67 @@ async def test_handoff_follow_up_injected_in_fork_mode(handoff_env):
     # The inherited prefix is not mutated by the injection.
     assert "original request" in str(messages[0].content)
     assert "fork note" not in str(messages[0].content)
+
+
+@pytest.mark.asyncio
+async def test_handoff_result_marks_delivered_follow_up(handoff_env):
+    """A follow-up consumed by the subagent is reported to the main agent."""
+    SubAgentManager._context_inherit_mode = "fork"
+
+    def _on_call():
+        handle = _first_live_handle()
+        if handle is not None:
+            handle.runner.follow_up(message_text="steer it")
+
+    toolset = ToolSet()
+    toolset.add_tool(
+        FunctionTool(
+            name="echo_tool",
+            description="d",
+            parameters={"type": "object", "properties": {}},
+        )
+    )
+    main_runner = SimpleNamespace(
+        provider=SimpleNamespace(provider_config={"id": "provider-id"}),
+        req=SimpleNamespace(model=None, llm_params={}),
+        tool_schema_mode="full",
+        effective_raw_tool_set=toolset,
+    )
+    provider = _ToolThenFinalProvider("echo_tool", on_call=_on_call)
+    tool, run_context = _live_handoff_args(
+        provider,
+        extra={"main_agent_runner": main_runner},
+        messages=[Message(role="user", content="original request")],
+    )
+
+    results = [
+        r
+        async for r in FunctionToolExecutor._execute_handoff(
+            tool, run_context, input="fork task"
+        )
+    ]
+    text = results[-1].content[0].text
+    assert "[SYSTEM NOTICE]" in text
+    assert "[delivered] steer it" in text
+
+
+@pytest.mark.asyncio
+async def test_handoff_result_marks_not_delivered_follow_up(handoff_env):
+    """A follow-up the subagent never consumed is marked accordingly."""
+
+    def _on_call():
+        handle = _first_live_handle()
+        if handle is not None:
+            handle.runner.follow_up(message_text="too late note")
+
+    provider = _HookedFinalProvider(on_call=_on_call)
+    tool, run_context = _live_handoff_args(provider)
+
+    results = [
+        r
+        async for r in FunctionToolExecutor._execute_handoff(
+            tool, run_context, input="do it"
+        )
+    ]
+    text = results[-1].content[0].text
+    assert "[not delivered] too late note" in text

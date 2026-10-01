@@ -73,15 +73,16 @@ from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
 # a clean normal start (cache lost, context truncated, full reprocess).
 _AUTO_FORK_MAX_USAGE_RATIO = 0.45
 
-# Appended to the handoff result when the user sent follow-up messages the
-# subagent finished without consuming. The main agent then decides whether to
-# act on them (e.g. delegate again) or simply acknowledge them to the user.
-_RELAY_NOTICE_TEMPLATE = (
-    "\n\n[SYSTEM NOTICE] While the subagent was finishing, the user sent "
-    "additional message(s) that the subagent did not consume:\n"
+# Appended to the handoff result whenever the user sent follow-up messages
+# directly to the subagent, so the main agent stays aware of interventions
+# that may have shaped the subagent's result.
+_FOLLOW_UP_NOTICE_TEMPLATE = (
+    "\n\n[SYSTEM NOTICE] While the subagent was running, the user sent "
+    "additional message(s) directly to the subagent:\n"
     "{follow_up_lines}\n"
-    "Decide whether to act on them (e.g. delegate a follow-up task) or "
-    "acknowledge them in your reply."
+    "Messages marked [delivered] were injected into the subagent's context and "
+    "may have changed its behavior; messages marked [not delivered] arrived too "
+    "late to reach it. Take them into account when composing your reply."
 )
 
 
@@ -824,33 +825,40 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 ),
             )
 
-        async def _relay_unconsumed_follow_ups(text: str) -> str:
-            """Relay follow-ups the subagent never consumed to the main agent.
+        async def _append_follow_up_notice(text: str) -> str:
+            """Report user follow-ups sent to the subagent in the result text.
 
-            Follow-ups are injected at tool-result boundaries; a subagent that
-            finishes without further tool calls leaves them unconsumed. Emit a
-            ``user_message_relayed`` event per message and append their text to
-            the handoff result so user input is never silently dropped.
+            Every accepted follow-up is listed with its delivery status so the
+            main agent stays aware of user interventions that may have shaped
+            the subagent's behavior. Unconsumed follow-ups additionally emit a
+            ``user_message_relayed`` event so the UI marks them.
 
             Args:
                 text: The result text about to be returned to the main agent.
 
             Returns:
-                The text with a relay notice appended when needed.
+                The text with the follow-up notice appended when needed.
             """
             if sink is None:
                 return text
             handle = SubAgentManager.get_subagent_run_handle(umo, sink.subagent_run_id)
-            pending = handle.runner.unconsumed_follow_up_texts() if handle else []
-            for seq, _text in pending:
-                await sink.user_message_relayed(seq)
-            if not pending:
+            if handle is None:
                 return text
+            all_follow_ups = handle.runner.all_follow_up_texts()
+            if not all_follow_ups:
+                return text
+            unconsumed = {seq for seq, _ in handle.runner.unconsumed_follow_up_texts()}
+            for seq, _text in all_follow_ups:
+                if seq in unconsumed:
+                    await sink.user_message_relayed(seq)
             follow_up_lines = "\n".join(
-                f"{idx}. {follow_up_text}"
-                for idx, (_seq, follow_up_text) in enumerate(pending, start=1)
+                f"{idx}. [{'not delivered' if seq in unconsumed else 'delivered'}] "
+                f"{follow_up_text}"
+                for idx, (seq, follow_up_text) in enumerate(all_follow_ups, start=1)
             )
-            return text + _RELAY_NOTICE_TEMPLATE.format(follow_up_lines=follow_up_lines)
+            return text + _FOLLOW_UP_NOTICE_TEMPLATE.format(
+                follow_up_lines=follow_up_lines
+            )
 
         # 构建 tool_loop_agent 协程
         async def _run_subagent():
@@ -901,7 +909,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
 
             # Relay before the terminal event so the UI marks the follow-up
             # while the run is still shown as active.
-            error_result = await _relay_unconsumed_follow_ups(f"error: {error_msg}")
+            error_result = await _append_follow_up_notice(f"error: {error_msg}")
             if sink:
                 await sink.fail("timeout", error_msg)
             yield mcp.types.CallToolResult(
@@ -941,7 +949,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             )
             # Relay before the terminal event so the UI marks the follow-up
             # while the run is still shown as active.
-            result_text = await _relay_unconsumed_follow_ups(result_text)
+            result_text = await _append_follow_up_notice(result_text)
             if sink:
                 await sink.complete(result_text, execution_time)
 

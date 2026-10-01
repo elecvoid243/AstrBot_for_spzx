@@ -2593,3 +2593,25 @@ async def test_unconsumed_follow_up_texts_lists_pending_tickets(
     ]
     runner._consume_follow_up_notice()
     assert runner.unconsumed_follow_up_texts() == []
+
+
+@pytest.mark.asyncio
+async def test_all_follow_up_texts_includes_consumed_and_pending(
+    runner, mock_provider, provider_request, mock_tool_executor, mock_hooks
+):
+    """all_follow_up_texts reports every accepted follow-up, consumed or not."""
+    await runner.reset(
+        provider=mock_provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    t1 = runner.follow_up(message_text="first")
+    runner._consume_follow_up_notice()  # t1 now consumed
+    t2 = runner.follow_up(message_text="second")  # still pending
+    assert t1 is not None and t2 is not None
+    assert runner.all_follow_up_texts() == [(t1.seq, "first"), (t2.seq, "second")]
+    assert runner.unconsumed_follow_up_texts() == [(t2.seq, "second")]

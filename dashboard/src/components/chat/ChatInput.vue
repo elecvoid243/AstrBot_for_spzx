@@ -760,7 +760,10 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   "update:prompt": [value: string];
-  send: [];
+  // skillNames: one-shot skill nudges consumed by this send (2026-10-01,
+  // elecvoid243) — Chat.vue bakes them into a "[Requested skills]" block
+  // so history shows what was queued.
+  send: [skillNames: string[]];
   "send-command": [command: string];
   stop: [];
   toggleStreaming: [];
@@ -1620,10 +1623,14 @@ function handleSendClick(): void {
  * load). Consumes the pending skill-guide queue — the plugin drains it
  * on the next LLM request, so the pending badges have served their
  * purpose once a message actually goes out (one-shot semantics).
+ * 2026-10-01: snapshot the queued names BEFORE consuming and forward
+ * them with the send event, so Chat.vue can persist a
+ * "[Requested skills]" block into the message text (visible in history).
  */
 function sendMessage(): void {
+  const skillNames = [...skillGuide.queued.value];
   skillGuide.consumeQueued();
-  emit("send");
+  emit("send", skillNames);
 }
 
 /**

@@ -666,6 +666,9 @@
     "fileReferencesCard": {
       "title": "Связанные файлы"
     },
+    "skillRequestCard": {
+      "title": "Запрошенные навыки"
+    },
     "fileReviewCard": {
       "title": "Комментарии к проверке файлов",
       "commentsCount": "{count} комм.",

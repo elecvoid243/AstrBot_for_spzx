@@ -672,6 +672,9 @@
     "fileReferencesCard": {
       "title": "Referenced files"
     },
+    "skillRequestCard": {
+      "title": "Requested skills"
+    },
     "fileReviewCard": {
       "title": "File review comments",
       "commentsCount": "{count} comments",

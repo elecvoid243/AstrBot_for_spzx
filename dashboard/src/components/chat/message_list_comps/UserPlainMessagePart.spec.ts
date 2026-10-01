@@ -34,4 +34,21 @@ describe("UserPlainMessagePart combined comments + references", () => {
     // text above the comments card.
     expect(source).toContain("if (review.value) return review.value.userText;");
   });
+
+  // 2026-10-01 skill-request block: the "[Requested skills]" marker sits
+  // LAST in the send-time concat, so the parser must scan the full text
+  // and the display prefix must fall through comments → references →
+  // skills (the earliest present block holds the clean userText).
+  it("parses skill requests from the full message text", () => {
+    const source = readSiblingSource("./UserPlainMessagePart.vue");
+    expect(source).toContain("parseSkillRequests(props.text)");
+  });
+
+  it("falls back to the references/skills userText only when no earlier block exists", () => {
+    const source = readSiblingSource("./UserPlainMessagePart.vue");
+    expect(source).toContain(
+      "if (references.value) return references.value.userText;",
+    );
+    expect(source).toContain("return skillRequest.value?.userText ?? \"\";");
+  });
 });

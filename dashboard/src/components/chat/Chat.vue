@@ -3788,14 +3788,17 @@ async function selectSession(sessionId: string, pushRoute = true) {
   await focusChatInput();
 }
 
-async function sendCurrentMessage() {
+async function sendCurrentMessage(skillNames: string[] = []) {
   // D13 guard: allow sending when draft is empty if there are staged
-  // files OR file-review comments. Otherwise return.
+  // files OR file-review comments OR queued skill nudges (2026-10-01:
+  // ChatInput already consumed the queue before this runs, so blocking
+  // here would silently drop the one-shot nudge). Otherwise return.
   if (
     !canSend.value &&
     !stagedFiles.value.length &&
     fileComments.totalCount.value === 0 &&
-    fileReferences.totalCount.value === 0
+    fileReferences.totalCount.value === 0 &&
+    skillNames.length === 0
   ) {
     return;
   }
@@ -3852,10 +3855,24 @@ async function sendCurrentMessage() {
     // comments block) — UserPlainMessagePart parses them back in this
     // same order.
     const referenceText = fileReferences.formatForLLM();
-    // Concatenate user text + comment block + references block with
-    // blank lines. The bot's first message will show the block headers
-    // even when userText is empty.
-    const text = [userText, commentText, referenceText]
+    // 2026-10-01 skill-guide: queued one-shot skill nudges (consumed by
+    // ChatInput's send funnel) ride along as a final "[Requested skills]"
+    // block so the history view shows what was queued — the plugin's
+    // guidance injection lives in the LLM conversation history, which
+    // the dashboard history never renders. The block shape is the
+    // contract parsed back by utils/parseSkillRequests.ts — keep the two
+    // byte-for-byte aligned.
+    const skillText = skillNames.length
+      ? [
+          "[Requested skills]",
+          "The user explicitly queued the following skill(s) for this request.",
+          ...skillNames.map((name) => `- \`${name}\``),
+        ].join("\n")
+      : "";
+    // Concatenate user text + comment block + references block + skills
+    // block with blank lines. The bot's first message will show the block
+    // headers even when userText is empty.
+    const text = [userText, commentText, referenceText, skillText]
       .filter(Boolean)
       .join("\n\n");
 

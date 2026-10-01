@@ -374,6 +374,8 @@
     "think": "Thinking",
     "reply": "Reply",
     "toolUsed": "Using Tool",
+    "expandThink": "Expand",
+    "collapseThink": "Collapse",
     "userMessage": "You",
     "userMessageRelayed": "Not delivered to the subagent · relayed to the main agent"
   },

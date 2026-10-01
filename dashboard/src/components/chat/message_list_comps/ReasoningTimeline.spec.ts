@@ -117,3 +117,65 @@ describe("ReasoningTimeline keyword locate", () => {
     expect(wrapper.find(".reasoning-match-flash").exists()).toBe(false);
   });
 });
+
+describe("ReasoningTimeline think collapse", () => {
+  const LONG_THINK = "x".repeat(150);
+
+  function mountCollapsible(
+    parts: unknown[],
+    extraProps: Record<string, unknown> = {},
+  ) {
+    return mount(ReasoningTimeline, {
+      props: {
+        parts: parts as never,
+        isDark: false,
+        collapseThink: true,
+        ...extraProps,
+      },
+      global: { stubs: STUBS },
+    });
+  }
+
+  it("collapses long think entries to a 100-char preview by default", () => {
+    const wrapper = mountCollapsible([{ type: "think", think: LONG_THINK }]);
+    const preview = wrapper.find("[data-testid='think-preview']");
+    expect(preview.exists()).toBe(true);
+    expect(preview.text()).toContain("x".repeat(100));
+    expect(preview.text()).toContain("…");
+    // Full content stays out of the DOM while collapsed.
+    expect(wrapper.text()).not.toContain(LONG_THINK);
+  });
+
+  it("expands on click and collapses again", async () => {
+    const wrapper = mountCollapsible([{ type: "think", think: LONG_THINK }]);
+    await wrapper.find("[data-testid='think-preview']").trigger("click");
+    expect(wrapper.text()).toContain(LONG_THINK);
+    await wrapper.find("[data-testid='think-collapse-toggle']").trigger("click");
+    expect(wrapper.text()).not.toContain(LONG_THINK);
+  });
+
+  it("keeps short think entries fully rendered", () => {
+    const wrapper = mountCollapsible([{ type: "think", think: "short" }]);
+    expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(false);
+    expect(wrapper.text()).toContain("short");
+  });
+
+  it("keeps the live-streaming last think entry expanded", () => {
+    const wrapper = mountCollapsible(
+      [
+        { type: "think", think: `finished earlier ${LONG_THINK}` },
+        { type: "think", think: LONG_THINK },
+      ],
+      { isStreaming: true },
+    );
+    // Only the non-live (first) entry is collapsed; the live one streams open.
+    expect(wrapper.findAll("[data-testid='think-preview']")).toHaveLength(1);
+    expect(wrapper.text()).toContain(LONG_THINK);
+  });
+
+  it("renders full think content when collapseThink is not set", () => {
+    const wrapper = mountTimeline([{ type: "think", think: LONG_THINK }]);
+    expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(false);
+    expect(wrapper.text()).toContain(LONG_THINK);
+  });
+});

@@ -1031,7 +1031,10 @@ function openLoadDialog(): void {
 /* ── Status bubble (2026-08-15) ── */
 .sp-bubble {
   position: absolute;
-  right: 0;
+  /* Anchor to the project chip's left edge: the shared wrapper also
+     contains side buttons, so right anchoring drifts away from the chip.
+     (elecvoid243, 2026-10-02) */
+  left: 0;
   bottom: calc(100% + 10px);
   z-index: 30;
   display: inline-flex;
@@ -1078,7 +1081,7 @@ function openLoadDialog(): void {
 .sp-bubble__tail {
   position: absolute;
   top: 100%;
-  right: 16px;
+  left: 16px;
   width: 0;
   height: 0;
   border-left: 6px solid transparent;

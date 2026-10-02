@@ -23,6 +23,7 @@ import { useModuleI18n } from "@/i18n/composables";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeOperationProgress } from "@/composables/useSpcodeOperationProgress";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
+import { useTcMemoryStatus } from "@/composables/useTcMemoryStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodeWorktrees } from "@/composables/useSpcodeWorktrees";
 import type { SpcodeGitWorktree } from "@/composables/parseSpcodeWorktrees";
@@ -204,6 +205,41 @@ const vivadoState = computed(() => {
         detail: s.message,
       };
   }
+});
+
+// ── Agent Memory（tc_memory 插件）状态条目（2026-10-02 elecvoid243） ──
+// 数据源：插件扩展路由 GET /plugins/extensions/astrbot_plugin_tc_memory/status。
+// 三态：运行中（绿，detail 带 endpoint/pid）/ 未运行（灰，按 mode 给提示）/
+// 未安装（插件未加载或路由不可达）。
+const tcMemory = useTcMemoryStatus();
+
+const tcMemoryState = computed(() => {
+  const s = tcMemory.status.value;
+  if (!s.reachable) {
+    return {
+      dot: "neutral",
+      icon: "mdi-brain-off-outline",
+      label: "Agent Memory 未安装",
+      detail: "插件未加载或未安装",
+    };
+  }
+  if (s.running) {
+    const pidPart = s.pid ? ` · pid ${s.pid}` : "";
+    const verPart = s.version ? ` v${s.version}` : "";
+    return {
+      dot: "success",
+      icon: "mdi-brain",
+      label: "Agent Memory 运行中",
+      detail: `${s.endpoint}${verPart}${pidPart}`,
+    };
+  }
+  return {
+    dot: "neutral",
+    icon: "mdi-brain-off-outline",
+    label: "Agent Memory 未运行",
+    detail:
+      s.mode === "local" ? "将在插件加载时自动启动" : "无法连接远端服务",
+  };
 });
 
 /**
@@ -648,6 +684,21 @@ function openLoadDialog(): void {
           </div>
           <div class="sp-svc-row__detail" :title="vivadoState.detail">
             {{ vivadoState.detail }}
+          </div>
+          <!-- Agent Memory（tc_memory 插件） -->
+          <div class="sp-svc-row">
+            <span
+              class="sp-svc-row__dot"
+              :class="`sp-svc-row__dot--${tcMemoryState.dot}`"
+              aria-hidden="true"
+            />
+            <v-icon size="14" class="sp-svc-row__icon">
+              {{ tcMemoryState.icon }}
+            </v-icon>
+            <span class="sp-svc-row__label">{{ tcMemoryState.label }}</span>
+          </div>
+          <div class="sp-svc-row__detail" :title="tcMemoryState.detail">
+            {{ tcMemoryState.detail }}
           </div>
         </v-card-text>
       </v-card>

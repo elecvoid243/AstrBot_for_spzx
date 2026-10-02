@@ -437,14 +437,10 @@
               @open="openProjectLoadDialog"
             />
 
-            <!-- Config Selector in Menu -->
-            <ConfigSelector
-              :session-id="sessionId || null"
-              :platform-id="sessionPlatformId"
-              :is-group="sessionIsGroup"
-              :initial-config-id="props.configId"
-              @config-changed="handleConfigChange"
-            />
+            <!-- Config Selector in Menu (state lives in the shared
+                 useChatConfigSelection singleton; the composer chip below
+                 renders the same selection). -->
+            <ConfigSelector variant="menu" />
 
             <!-- Streaming Toggle in Menu -->
             <v-list-item
@@ -514,6 +510,10 @@
             style="display: none"
             multiple
           />
+          <!-- Config profile quick-switch chip (2026-10-02, elecvoid243):
+               always-visible sibling of the "+" menu entry. Its label is
+               the live current config profile; switching is one click. -->
+          <ConfigSelector variant="chip" />
           <!-- Provider/Model Selector Menu -->
           <ProviderModelMenu
             v-if="props.showProviderSelector && providerSelectorAvailable"
@@ -667,6 +667,7 @@ import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
 import { commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
+import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
 import ProviderModelMenu from "./ProviderModelMenu.vue";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import type { ThinkingEffortLevel } from "./ThinkingEffortChip.vue";
@@ -690,6 +691,7 @@ import { useSkillGuide } from "@/composables/useSkillGuide";
 import CommentsPreviewDialog from "./CommentsPreviewDialog.vue";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
+import { useTcMemoryStatus } from "@/composables/useTcMemoryStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodeOperationProgress } from "@/composables/useSpcodeOperationProgress";
 import {
@@ -1981,6 +1983,21 @@ function handleConfigChange(payload: {
   }
 }
 
+// Chat config-profile selection (2026-10-02, elecvoid243): ChatInput owns
+// the single context binding — the "+" menu item and the composer chip are
+// pure renderers of the shared singleton; selection changes (including the
+// runner-type gate for the provider selector) arrive via this listener.
+const chatConfigSelection = useChatConfigSelection();
+chatConfigSelection.bindContext(
+  computed(() => ({
+    sessionId: props.sessionId ?? null,
+    platformId: sessionPlatformId.value,
+    isGroup: sessionIsGroup.value,
+    initialConfigId: props.configId ?? null,
+  })),
+);
+onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
+
 function getCurrentSelection() {
   if (!props.showProviderSelector || !providerSelectorAvailable.value) {
     return null;
@@ -2088,6 +2105,7 @@ watch(
 // an initial fetch here so the chip has a value to render on first
 // paint when the spcode indicator becomes visible.
 const codegraphStatus = useSpcodeCodegraphStatus();
+const tcMemoryStatus = useTcMemoryStatus();
 // Singleton vivado MCP status. Follows the same pattern as codegraph:
 // authoritative refresh is driven by ``Chat.vue:onStreamEnd``.
 const vivadoStatus = useSpcodeVivadoStatus();
@@ -2100,6 +2118,7 @@ const vivadoStatus = useSpcodeVivadoStatus();
 const onVisibilityChange = () => {
   if (document.visibilityState === "visible" && showSpcodeIndicator.value) {
     void codegraphStatus.refresh();
+  void tcMemoryStatus.refresh();
     void vivadoStatus.refresh();
   }
 };
@@ -2157,6 +2176,7 @@ onMounted(() => {
   // may already be true — we need an explicit call to guarantee the chip
   // has data to render on first paint.
   void codegraphStatus.refresh();
+  void tcMemoryStatus.refresh();
   // Live polling every 30 s so the chip stays in sync when codegraph
   // state changes externally (e.g. the user toggles it via another
   // client or the bot restarts its MCP server). The interval is gated
@@ -2165,6 +2185,7 @@ onMounted(() => {
   codegraphPollTimer = window.setInterval(() => {
     if (showSpcodeIndicator.value) {
       void codegraphStatus.refresh();
+  void tcMemoryStatus.refresh();
     }
   }, 30_000);
 });

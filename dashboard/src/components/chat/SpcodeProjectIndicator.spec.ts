@@ -14,6 +14,7 @@ import { useSpcodeOperationProgress } from "@/composables/useSpcodeOperationProg
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
+import { useTcMemoryStatus } from "@/composables/useTcMemoryStatus";
 import SpcodeProjectIndicator from "./SpcodeProjectIndicator.vue";
 import { pluginExtensionApi } from "@/api/v1";
 
@@ -76,6 +77,16 @@ function setServicesHealthy() {
     fetchedAt: 1,
     message: "Vivado 运行中 · 1 会话",
   };
+  useTcMemoryStatus().status.value = {
+    reachable: true,
+    mode: "local",
+    enabled: true,
+    running: true,
+    endpoint: "http://127.0.0.1:8420",
+    version: "2.0.1",
+    pid: 26532,
+    fetchedAt: 1,
+  };
 }
 
 describe("SpcodeProjectIndicator progress states", () => {
@@ -84,6 +95,7 @@ describe("SpcodeProjectIndicator progress states", () => {
     useSpcodeProjectStatus().reset();
     useSpcodeCodegraphStatus().reset();
     useSpcodeVivadoStatus().reset();
+    useTcMemoryStatus().reset();
   });
 
   it("shows a generic loading label (no live step) while loading and suppresses click", async () => {
@@ -158,6 +170,7 @@ describe("SpcodeProjectIndicator services popover", () => {
     useSpcodeProjectStatus().reset();
     useSpcodeCodegraphStatus().reset();
     useSpcodeVivadoStatus().reset();
+    useTcMemoryStatus().reset();
   });
 
   it("renders the services side button next to the project chip", () => {
@@ -174,7 +187,7 @@ describe("SpcodeProjectIndicator services popover", () => {
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     expect(wrapper.findAll(".sp-svc-row").length).toBe(0);
     await wrapper.find(".sp-chip-services-btn").trigger("click");
-    expect(wrapper.findAll(".sp-svc-row").length).toBe(2);
+    expect(wrapper.findAll(".sp-svc-row").length).toBe(3);
     expect(wrapper.text()).toContain("Codegraph 已加载");
     expect(wrapper.text()).toContain("Vivado 已就绪");
     // The codegraph path detail is labelled as the *default* project so
@@ -213,11 +226,51 @@ describe("SpcodeProjectIndicator services popover", () => {
     expect(wrapper.text()).toContain("Codegraph 未启动");
   });
 
+  it("shows Agent Memory running state with endpoint and pid", async () => {
+    setServicesHealthy();
+    const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
+    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    expect(wrapper.text()).toContain("Agent Memory 运行中");
+    expect(wrapper.text()).toContain("http://127.0.0.1:8420");
+    expect(wrapper.text()).toContain("26532");
+  });
+
+  it("shows Agent Memory not-running hints by mode", async () => {
+    useTcMemoryStatus().status.value = {
+      reachable: true,
+      mode: "local",
+      enabled: false,
+      running: false,
+      endpoint: "http://127.0.0.1:8420",
+      version: null,
+      pid: null,
+      fetchedAt: 1,
+    };
+    const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
+    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    expect(wrapper.text()).toContain("Agent Memory 未运行");
+    expect(wrapper.text()).toContain("自动启动");
+
+    useTcMemoryStatus().status.value = {
+      ...useTcMemoryStatus().status.value,
+      mode: "server",
+    };
+    await nextTick();
+    expect(wrapper.text()).toContain("无法连接远端服务");
+  });
+
+  it("shows Agent Memory not-installed when plugin is unreachable", async () => {
+    useTcMemoryStatus().reset(); // reachable=false
+    const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
+    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    expect(wrapper.text()).toContain("Agent Memory 未安装");
+  });
+
   it("manage button emits open-codegraph-dialog and closes the popover", async () => {
     setServicesHealthy();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     await wrapper.find(".sp-chip-services-btn").trigger("click");
-    expect(wrapper.findAll(".sp-svc-row").length).toBe(2);
+    expect(wrapper.findAll(".sp-svc-row").length).toBe(3);
     await wrapper.find(".sp-svc-row__action").trigger("click");
     expect(wrapper.emitted("open-codegraph-dialog")).toHaveLength(1);
     await nextTick();

@@ -2,6 +2,7 @@
 // Author: elecvoid243 @ 2026-08-06
 // Updated: 2026-08-15 — services popover (codegraph / vivado status
 // integrated from the removed SpcodeCodegraphChip / SpcodeVivadoStatusChip).
+// Updated: 2026-10-02 — project-load stage bubble timing.
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -46,7 +47,11 @@ function setProgress(
     | "codegraph_set"
     | "codegraph_init"
     | null,
-  extra: Partial<{ currentStep: string; messages: string[]; reason: string }> = {},
+  extra: Partial<{
+    currentStep: string;
+    messages: string[];
+    reason: string;
+  }> = {},
 ) {
   const { progress } = useSpcodeOperationProgress();
   progress.value = {
@@ -388,15 +393,104 @@ describe("SpcodeProjectIndicator status bubble", () => {
     expect(wrapper.find(".sp-bubble").exists()).toBe(false);
   });
 
-  it("shows an initializing bubble while project_load runs a codegraph step", async () => {
+  it("walks through AGENTS.md, Codegraph, and completion bubbles with independent 3s timers", async () => {
+    vi.useFakeTimers();
+    const wrapper = await mountWithBaseline();
+
+    setProgress("running", "project_load", {
+      currentStep: "⏳ [1/3] AGENTS.md 不存在,正在 init: F:/proj",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("正在初始化 AGENTS.md");
+
+    // AGENTS.md generation takes 2s, then the Codegraph stage replaces it
+    // and gets a fresh 3s timer.
+    vi.advanceTimersByTime(2000);
+    setProgress("running", "project_load", {
+      currentStep: "⏳ [2/3] codegraph init: F:/proj",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("正在初始化 Codegraph");
+
+    // Polling the same step again is not a new bubble and must not reset
+    // its timer.
+    vi.advanceTimersByTime(1000);
+    setProgress("running", "project_load", {
+      currentStep: "⏳ [2/3] codegraph init: F:/proj",
+    });
+    await nextTick();
+
+    // Codegraph runs for 5s, so its bubble expires while the operation is
+    // still running.
+    vi.advanceTimersByTime(1999);
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(true);
+    vi.advanceTimersByTime(1);
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(false);
+
+    // Two seconds later the operation finishes; completion is a new bubble
+    // with its own 3s lifetime.
+    vi.advanceTimersByTime(2000);
+    setProgress("done", "project_load", {
+      currentStep: "⏳ [2/3] codegraph init: F:/proj",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("加载完成");
+    vi.advanceTimersByTime(2999);
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(true);
+    vi.advanceTimersByTime(1);
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(false);
+  });
+
+  it("does not show an AGENTS.md initialization bubble when the file already exists", async () => {
     vi.useFakeTimers();
     const wrapper = await mountWithBaseline();
     setProgress("running", "project_load", {
-      currentStep: "⏳ [2/3] codegraph init",
+      currentStep: "ℹ️ [1/3] AGENTS.md 已存在,跳过 init: F:/proj/AGENTS.md",
     });
     await nextTick();
-    expect(wrapper.find(".sp-bubble").exists()).toBe(true);
-    expect(wrapper.find(".sp-bubble").text()).toContain("正在初始化 codegraph");
+    expect(wrapper.find(".sp-bubble").exists()).toBe(false);
+  });
+
+  it("keeps the completion bubble when codegraph status catches up after project_load", async () => {
+    vi.useFakeTimers();
+    const wrapper = await mountWithBaseline();
+    setProgress("running", "project_load", {
+      currentStep: "⏳ [2/3] codegraph init: F:/proj",
+    });
+    await nextTick();
+    setProgress("done", "project_load", {
+      currentStep: "⏳ [2/3] codegraph init: F:/proj",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("加载完成");
+
+    useSpcodeCodegraphStatus().status.value = {
+      enabled: true,
+      mcpRunning: true,
+      activeProject: "F:/proj",
+      fetchedAt: 2,
+    };
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("加载完成");
+    expect(wrapper.find(".sp-bubble").text()).not.toContain("Codegraph 已连接");
+
+    // Once the completion bubble expires, later MCP transitions are visible
+    // again (progress.operation remains project_load until the next op).
+    vi.advanceTimersByTime(3000);
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").exists()).toBe(false);
+    useSpcodeCodegraphStatus().status.value = {
+      enabled: true,
+      mcpRunning: false,
+      activeProject: "",
+      fetchedAt: 3,
+    };
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("Codegraph 已断开");
   });
 
   it("shows a restarting bubble while codegraph_set runs", async () => {

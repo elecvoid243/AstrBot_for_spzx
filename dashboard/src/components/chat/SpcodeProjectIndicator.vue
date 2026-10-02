@@ -1,6 +1,7 @@
 <!--
   Author: elecvoid243, 2026-07-09
   Spec: docs/superpowers/specs/2026-07-09-chat-input-chips-beautify-design.md §5.1, §5.2
+  Updated: elecvoid243, 2026-10-02 — project-load stage bubbles.
 
   SpcodeProjectIndicator — status badge for the loaded/unloaded spcode project.
 
@@ -377,31 +378,65 @@ interface BubbleSnapshot {
 
 /**
  * 由 (codegraph 状态, 操作进度) 推导气泡文案;无值得展示的变化返回 null。
- * 优先级: 进行中的 codegraph 相关操作 > MCP 状态转变 > 运行中切换项目。
+ * 优先级: project_load 阶段 > 进行中的 codegraph 操作 > MCP 状态转变。
  */
 function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string | null {
-  // 1) 进行中操作(最高优先): project_load 含 codegraph 步骤 / codegraph_set
+  // Polling replaces the progress object even when nothing changed. Only a
+  // semantic change may replace the bubble; repeated polls must not extend
+  // the 3s lifetime of the current stage.
+  const unchanged =
+    now.mcp === prev.mcp &&
+    now.proj === prev.proj &&
+    now.op === prev.op &&
+    now.st === prev.st &&
+    now.step === prev.step;
+  if (unchanged) return null;
+
+  if (now.op === "project_load") {
+    // MCP status may catch up while project_load is running or while its
+    // completion bubble is visible. Those refreshes must not replace the
+    // stage/completion bubble, but later MCP transitions still surface.
+    const stageChanged =
+      now.op !== prev.op || now.st !== prev.st || now.step !== prev.step;
+    if (!stageChanged) {
+      if (now.st === "running" || bubbleVisible.value) return null;
+    } else if (now.st === "done" && prev.st === "running") {
+      return tm("spcodeProjectLoad.indicator.projectLoadComplete");
+    } else if (now.st === "running") {
+      if (/AGENTS\.md\s*不存在[，,]\s*正在\s*init/i.test(now.step)) {
+        return tm("spcodeProjectLoad.indicator.agentsMdInitializing");
+      }
+      if (/codegraph/i.test(now.step)) {
+        return tm("spcodeProjectLoad.indicator.codegraphInitializing");
+      }
+      return null;
+    } else {
+      return null;
+    }
+  }
+
   if (now.st === "running") {
+    const stageChanged =
+      now.op !== prev.op || now.st !== prev.st || now.step !== prev.step;
+    if (!stageChanged) return null;
     if (now.op === "codegraph_set") {
       return tm("spcodeProjectLoad.indicator.codegraphRestarting");
     }
     if (now.op === "codegraph_init") {
       return tm("spcodeProjectLoad.indicator.codegraphIndexing");
     }
-    if (now.op === "project_load" && /codegraph/i.test(now.step)) {
-      return tm("spcodeProjectLoad.indicator.codegraphInitializing");
-    }
   }
-  // 2) MCP 状态转变
+  // MCP state transitions; project_load only suppresses them while a stage
+  // is running or its completion bubble is visible.
   if (now.mcp && !prev.mcp) {
     return tm("spcodeProjectLoad.indicator.codegraphConnected");
   }
   if (!now.mcp && prev.mcp) {
-    // 运行→停止。操作进行中已由 1 覆盖(显示"初始化/重启中"),
-    // 走到这里说明是真正被关闭/掉线。
+    // Running -> stopped. Any active operation state is handled above, so
+    // reaching this branch means the service was closed or disconnected.
     return tm("spcodeProjectLoad.indicator.codegraphDisconnected");
   }
-  // 3) 运行中切换默认项目(codegraph set 完成后 mcp 保持 true,靠 proj 变化感知)
+  // A project switch while MCP remains running is observable via proj.
   if (now.mcp && now.proj !== prev.proj) {
     return tm("spcodeProjectLoad.indicator.codegraphConnected");
   }
@@ -707,7 +742,7 @@ function openLoadDialog(): void {
     <!--
       Comic-style status bubble (2026-08-15): pops next to the services
       button when codegraph state changes (initializing / restarting /
-      connected / disconnected). Auto-hides after 5 s; a state update
+      connected / disconnected). Auto-hides after 3 s; a state update
       while visible resets the timer.
     -->
     <Transition name="sp-bubble">

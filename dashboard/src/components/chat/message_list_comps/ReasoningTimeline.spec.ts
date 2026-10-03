@@ -13,6 +13,12 @@ import { reactive } from "vue";
 import { mount } from "@vue/test-utils";
 import ReasoningTimeline from "./ReasoningTimeline.vue";
 
+const anchorBottomMock = vi.hoisted(() => vi.fn());
+vi.mock("@/utils/scrollAnchor", () => ({
+  anchorBottom: anchorBottomMock,
+  findScrollableAncestor: vi.fn(),
+}));
+
 const STUBS = {
   FileChangeCard: {
     name: "FileChangeCard",
@@ -208,5 +214,23 @@ describe("ReasoningTimeline think live preview", () => {
     const wrapper = mountTimeline([{ type: "think", think: LONG_THINK }]);
     expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(false);
     expect(wrapper.text()).toContain("UNIQUE-HEAD");
+  });
+
+  it("anchors the entry bottom when collapsing via the toggle", async () => {
+    const wrapper = mountCollapsible([{ type: "think", think: LONG_THINK }]);
+    await wrapper.find("[data-testid='think-preview']").trigger("click");
+    anchorBottomMock.mockClear();
+
+    await wrapper
+      .find("[data-testid='think-collapse-toggle']")
+      .trigger("click");
+
+    expect(anchorBottomMock).toHaveBeenCalledTimes(1);
+    const [el, beforeBottom] = anchorBottomMock.mock.calls[0] as [
+      HTMLElement,
+      number,
+    ];
+    expect(el.classList.contains("reasoning-step")).toBe(true);
+    expect(typeof beforeBottom).toBe("number");
   });
 });

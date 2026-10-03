@@ -107,7 +107,7 @@
           class="think-collapse-toggle"
           data-testid="think-collapse-toggle"
           type="button"
-          @click="toggleThink(entry.key)"
+          @click="collapseThinkAnchored($event, entry.key)"
         >
           {{ tm("reasoning.collapseThink") }}
         </button>
@@ -128,6 +128,7 @@ import ToolCallCard from "@/components/chat/message_list_comps/ToolCallCard.vue"
 import ToolCallItem from "@/components/chat/message_list_comps/ToolCallItem.vue";
 import FileChangeCard from "@/components/chat/message_list_comps/FileChangeCard.vue";
 import { collectFileChanges } from "@/utils/fileChangeTool";
+import { anchorBottom } from "@/utils/scrollAnchor";
 import type { MessagePart } from "@/composables/useMessages";
 import { useModuleI18n } from "@/i18n/composables";
 
@@ -188,6 +189,22 @@ function toggleThink(key: string): void {
     next.add(key);
   }
   expandedThinkKeys.value = next;
+}
+
+/**
+ * Collapse an expanded think entry while keeping its bottom edge (the toggle
+ * the user just clicked) at the same viewport position — the block shrinks
+ * upward, so the line under the user's eyes does not jump away.
+ */
+async function collapseThinkAnchored(event: MouseEvent, key: string): Promise<void> {
+  const stepEl = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(
+    ".reasoning-step",
+  );
+  const beforeBottom = stepEl?.getBoundingClientRect().bottom ?? null;
+  toggleThink(key);
+  if (!stepEl || beforeBottom === null) return;
+  await nextTick();
+  anchorBottom(stepEl, beforeBottom);
 }
 
 

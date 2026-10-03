@@ -358,13 +358,16 @@ async function saveRoots(): Promise<void> {
 </template>
 
 <style scoped>
+/* Resting state carries a faint 1px border so the capsule reads as a
+   clickable control; hover/open strengthen it and reveal a wash. */
 .fa-chip-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  box-sizing: border-box;
   height: 28px;
   padding: 0 9px;
-  border: 0;
+  border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
   background: transparent;
   color: var(--sp-text-muted);
@@ -373,16 +376,19 @@ async function saveRoots(): Promise<void> {
   cursor: pointer;
   transition:
     background-color 150ms ease,
+    border-color 150ms ease,
     color 150ms ease;
 }
 
 .fa-chip-btn:hover {
   background: var(--sp-ghost-hover-bg, rgba(var(--v-theme-on-surface), 0.055));
+  border-color: var(--sp-chip-border-strong);
   color: var(--sp-text-primary);
 }
 
 .fa-chip-btn--open {
   background: var(--sp-ghost-open-bg, rgba(var(--v-theme-on-surface), 0.07));
+  border-color: var(--sp-chip-border-strong);
   color: var(--sp-text-primary);
 }
 

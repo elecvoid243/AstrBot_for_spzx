@@ -791,15 +791,19 @@ function handleManageProject(): void {
 }
 
 /* ── Ghost capsule (2026-10-03) ──
-   Borderless at rest; hover/open reveals a wash. The status dot and the
-   green worktree suffix carry the semantics, not chrome. */
+   Resting state carries a faint 1px border so the affordance reads as a
+   clickable control (status row sits alone above the composer, so it may
+   not rely on the toolbar's ghost vocabulary); hover/open strengthen the
+   border and reveal a wash. The status dot and the green worktree suffix
+   carry the semantics. */
 .sp-capsule {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  box-sizing: border-box;
   height: 28px;
   padding: 0 9px;
-  border: 0;
+  border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
   background: transparent;
   color: var(--sp-text-muted);
@@ -808,6 +812,7 @@ function handleManageProject(): void {
   cursor: pointer;
   transition:
     background-color 150ms ease,
+    border-color 150ms ease,
     color 150ms ease;
   max-width: min(320px, 100%);
   min-width: 0;
@@ -815,11 +820,13 @@ function handleManageProject(): void {
 
 .sp-capsule:hover {
   background: var(--sp-ghost-hover-bg);
+  border-color: var(--sp-chip-border-strong);
   color: var(--sp-text-primary);
 }
 
 .sp-capsule--open {
   background: var(--sp-ghost-open-bg);
+  border-color: var(--sp-chip-border-strong);
   color: var(--sp-text-primary);
 }
 

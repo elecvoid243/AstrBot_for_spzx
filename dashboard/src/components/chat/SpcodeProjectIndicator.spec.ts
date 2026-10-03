@@ -2,7 +2,8 @@
 // Author: elecvoid243 @ 2026-08-06
 // Updated: 2026-08-15 — services popover (codegraph / vivado status
 // integrated from the removed SpcodeCodegraphChip / SpcodeVivadoStatusChip).
-// Updated: 2026-10-03 — project-load stage bubble timing.
+// Updated: 2026-10-03 — single-capsule redesign: services + worktree side
+// buttons folded into the capsule's unified dropdown (.sp-capsule).
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -109,37 +110,43 @@ describe("SpcodeProjectIndicator progress states", () => {
     });
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     // Live yield steps are deliberately hidden (the codegraph bubble owns
-    // those details); the chip shows one generic loading label instead.
+    // those details); the capsule shows one generic loading label instead.
     expect(wrapper.text()).toContain("正在加载项目");
     expect(wrapper.text()).not.toContain("⏳ [2/3] codegraph init");
-    await wrapper.find(".sp-status-badge").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
     expect(wrapper.emitted("open-load-dialog")).toBeUndefined();
   });
 
-  it("shows failed state with detail popover button", async () => {
+  it("shows failed state; the dropdown carries the log and a retry entry", async () => {
     setProgress("failed", "project_load", {
       messages: ["⏳ [1/3] init", "❌ path unsafe"],
       reason: "path_unsafe",
     });
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     expect(wrapper.text()).toContain("加载失败");
-    expect(wrapper.find(".sp-chip-details-btn").exists()).toBe(true);
-    // failed state still allows opening the dialog (retry)
-    await wrapper.find(".sp-status-badge").trigger("click");
+    expect(wrapper.find(".sp-capsule--failed").exists()).toBe(true);
+    // Open the capsule dropdown → failure log + retry entry.
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".sp-chip-popover-messages").text()).toContain(
+      "❌ path unsafe",
+    );
+    // Retry entry delegates to the load dialog.
+    await wrapper.find(".sp-menu-row").trigger("click");
     expect(wrapper.emitted("open-load-dialog")).toHaveLength(1);
   });
 
-  it("non-project operations do not hijack the chip", () => {
+  it("non-project operations do not hijack the capsule", () => {
     setProgress("running", "codegraph_set", { currentStep: "🔄 restart" });
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     expect(wrapper.text()).not.toContain("🔄 restart");
-    expect(wrapper.find(".sp-chip-details-btn").exists()).toBe(false);
+    expect(wrapper.find(".sp-capsule--failed").exists()).toBe(false);
   });
 
-  it("idle progress falls back to the unloaded badge", () => {
+  it("idle progress falls back to the unloaded capsule", () => {
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     expect(wrapper.text()).toContain("未加载项目");
-    expect(wrapper.find(".sp-chip-details-btn").exists()).toBe(false);
+    expect(wrapper.find(".sp-capsule--failed").exists()).toBe(false);
   });
 
   it("shows only the basename of a loaded project path", () => {
@@ -148,12 +155,12 @@ describe("SpcodeProjectIndicator progress states", () => {
       "F:/project/python/pycharm/testproj1",
     );
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    // Visible badge: label + basename only.
-    const badgeText = wrapper.find(".sp-status-badge").text();
-    expect(badgeText).toContain("已加载项目");
-    expect(badgeText).toContain("testproj1");
-    expect(badgeText).not.toContain("F:/project");
-    // Hover tooltip still exposes the full path.
+    // Visible capsule: basename only (the status dot conveys "loaded").
+    const capsuleText = wrapper.find(".sp-capsule").text();
+    expect(capsuleText).toContain("testproj1");
+    expect(capsuleText).not.toContain("F:/project");
+    // Hover tooltip still exposes the full path and the loaded label.
+    expect(wrapper.text()).toContain("已加载项目");
     expect(wrapper.text()).toContain("F:/project/python/pycharm/testproj1");
   });
 
@@ -163,13 +170,13 @@ describe("SpcodeProjectIndicator progress states", () => {
       "C:\\proj\\demo\\",
     );
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    const badgeText = wrapper.find(".sp-status-badge").text();
-    expect(badgeText).toContain("demo");
-    expect(badgeText).not.toContain("C:\\proj");
+    const capsuleText = wrapper.find(".sp-capsule").text();
+    expect(capsuleText).toContain("demo");
+    expect(capsuleText).not.toContain("C:\\proj");
   });
 });
 
-describe("SpcodeProjectIndicator services popover", () => {
+describe("SpcodeProjectIndicator services section", () => {
   afterEach(() => {
     useSpcodeOperationProgress().clear();
     useSpcodeProjectStatus().reset();
@@ -178,20 +185,22 @@ describe("SpcodeProjectIndicator services popover", () => {
     useTcMemoryStatus().reset();
   });
 
-  it("renders the services side button next to the project chip", () => {
+  it("renders one capsule whose dropdown hosts the services section", async () => {
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    expect(wrapper.find(".sp-chip-services-btn").exists()).toBe(true);
-    // Icon must be one of the project's mdi subset glyphs (mdi-server-network).
-    expect(wrapper.find(".sp-chip-services-btn").text()).toContain(
-      "mdi-server-network",
-    );
+    expect(wrapper.find(".sp-capsule").exists()).toBe(true);
+    // No project loaded: the services section is still reachable — the
+    // codegraph MCP can run without one.
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("服务状态");
   });
 
-  it("opens the popover and shows codegraph + vivado status rows", async () => {
+  it("opens the dropdown and shows codegraph + vivado status rows", async () => {
     setServicesHealthy();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     expect(wrapper.findAll(".sp-svc-row").length).toBe(0);
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.findAll(".sp-svc-row").length).toBe(3);
     expect(wrapper.text()).toContain("Codegraph 已加载");
     expect(wrapper.text()).toContain("Vivado 已就绪");
@@ -210,7 +219,8 @@ describe("SpcodeProjectIndicator services popover", () => {
       fetchedAt: 1,
     };
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
 
     expect(wrapper.text()).toContain("Codegraph 已加载");
     expect(wrapper.text()).not.toContain("Codegraph 未加载");
@@ -227,14 +237,16 @@ describe("SpcodeProjectIndicator services popover", () => {
   it("codegraph row falls back to the not-running label when MCP is down", async () => {
     useSpcodeCodegraphStatus().reset();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.text()).toContain("Codegraph 未启动");
   });
 
   it("shows Agent Memory running state with endpoint and pid", async () => {
     setServicesHealthy();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.text()).toContain("Agent Memory 运行中");
     expect(wrapper.text()).toContain("http://127.0.0.1:8420");
     expect(wrapper.text()).toContain("26532");
@@ -252,7 +264,8 @@ describe("SpcodeProjectIndicator services popover", () => {
       fetchedAt: 1,
     };
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.text()).toContain("Agent Memory 未运行");
     expect(wrapper.text()).toContain("自动启动");
 
@@ -267,19 +280,21 @@ describe("SpcodeProjectIndicator services popover", () => {
   it("shows Agent Memory not-installed when plugin is unreachable", async () => {
     useTcMemoryStatus().reset(); // reachable=false
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.text()).toContain("Agent Memory 未安装");
   });
 
-  it("manage button emits open-codegraph-dialog and closes the popover", async () => {
+  it("manage button emits open-codegraph-dialog and closes the dropdown", async () => {
     setServicesHealthy();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-services-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
     expect(wrapper.findAll(".sp-svc-row").length).toBe(3);
     await wrapper.find(".sp-svc-row__action").trigger("click");
     expect(wrapper.emitted("open-codegraph-dialog")).toHaveLength(1);
     await nextTick();
-    // Popover closed after delegating to the codegraph dialog.
+    // Dropdown closed after delegating to the codegraph dialog.
     expect(wrapper.findAll(".sp-svc-row").length).toBe(0);
   });
 });
@@ -550,7 +565,7 @@ describe("SpcodeProjectIndicator status bubble", () => {
   });
 });
 
-describe("SpcodeProjectIndicator worktree activation overlay", () => {
+describe("SpcodeProjectIndicator worktree activation", () => {
   afterEach(() => {
     useSpcodeOperationProgress().clear();
     useSpcodeProjectStatus().reset();
@@ -627,19 +642,20 @@ describe("SpcodeProjectIndicator worktree activation overlay", () => {
     } as any);
   }
 
-  it("hides the overlay button when no project is loaded", () => {
+  it("hides the worktree section when no project is loaded", async () => {
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    expect(wrapper.find(".sp-chip-wt-btn").exists()).toBe(false);
+    await wrapper.find(".sp-capsule").trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".sp-wt-row").length).toBe(0);
   });
 
-  it("shows the overlay button on the chip and lists worktrees in the menu", async () => {
+  it("lists worktrees in the capsule dropdown", async () => {
     mockWorktreesFetch();
     setProjectLoaded();
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    expect(wrapper.find(".sp-chip-wt-btn").exists()).toBe(true);
     // Menu content only renders once opened (v-menu stub gates on modelValue).
     expect(wrapper.findAll(".sp-wt-row").length).toBe(0);
-    await wrapper.find(".sp-chip-wt-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
     await flushPromises();
     // "not specified" option + 2 worktrees
     expect(wrapper.findAll(".sp-wt-row").length).toBe(3);
@@ -647,15 +663,17 @@ describe("SpcodeProjectIndicator worktree activation overlay", () => {
     expect(wrapper.text()).toContain("feat");
   });
 
-  it("marks the active worktree with a check and the active button state", async () => {
+  it("marks the active worktree with a check and pins its branch on the capsule", async () => {
     mockWorktreesFetch("F:/proj/.worktrees/feat");
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
     // Project status arrives AFTER mount (Chat.vue refresh) — that change
     // is what drives the composable's directory watcher to first fetch.
     setProjectLoaded();
     await flushPromises();
-    expect(wrapper.find(".sp-chip-wt-btn--active").exists()).toBe(true);
-    await wrapper.find(".sp-chip-wt-btn").trigger("click");
+    // The activated worktree renders directly on the capsule label.
+    expect(wrapper.find(".sp-capsule__wt").exists()).toBe(true);
+    expect(wrapper.find(".sp-capsule__wt").text()).toContain("feat");
+    await wrapper.find(".sp-capsule").trigger("click");
     await flushPromises();
     const selected = wrapper.findAll(".sp-wt-row--selected");
     expect(selected.length).toBe(1);
@@ -668,7 +686,7 @@ describe("SpcodeProjectIndicator worktree activation overlay", () => {
     setProjectLoaded();
     mockActivatePost("F:/proj/.worktrees/feat");
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-wt-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
     await flushPromises();
     const featRow = wrapper
       .findAll(".sp-wt-row")
@@ -694,7 +712,7 @@ describe("SpcodeProjectIndicator worktree activation overlay", () => {
     setProjectLoaded();
     mockActivatePost(null);
     const wrapper = mount(SpcodeProjectIndicator, { global: { stubs } });
-    await wrapper.find(".sp-chip-wt-btn").trigger("click");
+    await wrapper.find(".sp-capsule").trigger("click");
     await flushPromises();
     await wrapper.findAll(".sp-wt-row")[0].trigger("click");
     await flushPromises();

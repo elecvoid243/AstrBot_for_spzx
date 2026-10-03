@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 390 icons */
+/* Auto-generated MDI subset – 391 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -732,12 +732,20 @@
   content: "\F0257";
 }
 
+.mdi-folder-plus-outline::before {
+  content: "\F0B9D";
+}
+
 .mdi-folder-remove-outline::before {
   content: "\F0B9E";
 }
 
 .mdi-folder-search-outline::before {
   content: "\F0969";
+}
+
+.mdi-folder-sync-outline::before {
+  content: "\F0D0C";
 }
 
 .mdi-folder-zip-outline::before {
@@ -1162,10 +1170,6 @@
 
 .mdi-pencil-ruler::before {
   content: "\F1353";
-}
-
-.mdi-phone-in-talk::before {
-  content: "\F03F6";
 }
 
 .mdi-pin::before {

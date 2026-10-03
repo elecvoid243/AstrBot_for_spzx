@@ -16,6 +16,14 @@
   --sp-chip-hover-bg: rgba(var(--v-theme-on-surface), 0.04);
   --sp-chip-active-bg: rgba(var(--v-theme-on-surface), 0.08);
 
+  // Ghost pill controls (2026-10-03, elecvoid243): borderless resting state
+  // for the composer toolbar / status-row capsules. Derived from on-surface
+  // so light + dark themes share one definition (hover deepens / lightens
+  // automatically).
+  --sp-ghost-hover-bg: rgba(var(--v-theme-on-surface), 0.055);
+  --sp-ghost-open-bg: rgba(var(--v-theme-on-surface), 0.07);
+  --sp-ghost-divider: rgba(var(--v-theme-on-surface), 0.1);
+
   --sp-segmented-active-bg: rgba(var(--v-theme-primary), 0.12);
 
   --sp-status-dot-success: rgb(var(--v-theme-success));

@@ -1,5 +1,64 @@
 <template>
-    <div>
+    <!--
+      2026-10-02 (elecvoid243): "chip" variant — always-visible pill in the
+      composer. The label IS the live current config profile (shared
+      useChatConfigSelection singleton), and switching takes one click.
+    -->
+    <div v-if="variant === 'chip'" class="config-chip-wrap">
+        <v-menu v-model="menuOpen" location="top" offset="8" transition="none">
+            <template #activator="{ props: menuProps }">
+                <button
+                    v-bind="menuProps"
+                    type="button"
+                    class="config-chip"
+                    :class="{ 'config-chip--open': menuOpen }"
+                    :disabled="loadingConfigs || saving"
+                    :title="tm('config.title')"
+                >
+                    <span class="config-chip-dot" aria-hidden="true"></span>
+                    <span class="config-chip-label">{{ selectedConfigLabel }}</span>
+                    <v-progress-circular
+                        v-if="saving"
+                        size="13"
+                        width="2"
+                        indeterminate
+                        class="config-chip-spinner"
+                    />
+                    <v-icon v-else size="14" class="config-chip-chevron">mdi-chevron-down</v-icon>
+                </button>
+            </template>
+            <v-card class="config-menu-card" elevation="0">
+                <div class="config-menu-title">{{ tm('config.title') }}</div>
+                <v-list density="compact" nav class="config-menu-list">
+                    <v-list-item
+                        v-for="config in configOptions"
+                        :key="config.id"
+                        :active="selectedConfigId === config.id"
+                        rounded="lg"
+                        class="config-menu-item"
+                        @click="handleChipSelect(config.id)"
+                    >
+                        <v-list-item-title class="config-item-title">{{ config.name }}</v-list-item-title>
+                        <v-list-item-subtitle v-if="config.name !== config.id" class="config-item-subtitle">
+                            {{ config.id }}
+                        </v-list-item-subtitle>
+                        <template #append>
+                            <v-icon v-if="selectedConfigId === config.id" size="18" color="primary">mdi-check</v-icon>
+                        </template>
+                    </v-list-item>
+                </v-list>
+                <div
+                    v-if="!loadingConfigs && configOptions.length === 0"
+                    class="config-menu-empty"
+                >
+                    暂无可选配置，请先在配置页创建。
+                </div>
+            </v-card>
+        </v-menu>
+    </div>
+
+    <!-- "menu" variant: the original "+" menu list item + dialog. -->
+    <div v-else>
         <v-list-item
             class="styled-menu-item"
             rounded="md"
@@ -74,84 +133,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { configProfileApi, configRouteApi } from '@/api/v1';
-import { useToast } from '@/utils/toast';
+import { ref } from 'vue';
 import { useModuleI18n } from '@/i18n/composables';
-import {
-    getStoredDashboardUsername,
-    getStoredSelectedChatConfigId,
-    setStoredSelectedChatConfigId
-} from '@/utils/chatConfigBinding';
+import { useChatConfigSelection } from '@/composables/useChatConfigSelection';
 
-interface ConfigInfo {
-    id: string;
-    name: string;
-}
-
-interface ConfigChangedPayload {
-    configId: string;
-    agentRunnerType: string;
-}
-
-const props = withDefaults(defineProps<{
-    sessionId?: string | null;
-    platformId?: string;
-    isGroup?: boolean;
-    initialConfigId?: string | null;
+withDefaults(defineProps<{
+    variant?: 'menu' | 'chip';
 }>(), {
-    sessionId: null,
-    platformId: 'webchat',
-    isGroup: false,
-    initialConfigId: null
+    variant: 'menu'
 });
-
-const emit = defineEmits<{ 'config-changed': [ConfigChangedPayload] }>();
 
 const { tm } = useModuleI18n('features/chat');
 
-const configOptions = ref<ConfigInfo[]>([]);
-const loadingConfigs = ref(false);
+const {
+    configOptions,
+    loadingConfigs,
+    selectedConfigId,
+    selectedConfigLabel,
+    saving,
+    selectConfig
+} = useChatConfigSelection();
+
 const dialog = ref(false);
 const tempSelectedConfig = ref('');
-const selectedConfigId = ref('default');
-const agentRunnerType = ref('local');
-const saving = ref(false);
-const pendingSync = ref(false);
-const routingEntries = ref<Array<{ pattern: string; confId: string }>>([]);
-const configCache = ref<Record<string, string>>({});
-
-const toast = useToast();
-
-const normalizedSessionId = computed(() => {
-    const id = props.sessionId?.trim();
-    return id ? id : null;
-});
-
-const hasActiveSession = computed(() => !!normalizedSessionId.value);
-
-const messageType = computed(() => (props.isGroup ? 'GroupMessage' : 'FriendMessage'));
-
-const username = computed(() => getStoredDashboardUsername());
-
-const sessionKey = computed(() => {
-    if (!normalizedSessionId.value) {
-        return null;
-    }
-    return `${props.platformId}!${username.value}!${normalizedSessionId.value}`;
-});
-
-const targetUmo = computed(() => {
-    if (!sessionKey.value) {
-        return null;
-    }
-    return `${props.platformId}:${messageType.value}:${sessionKey.value}`;
-});
-
-const selectedConfigLabel = computed(() => {
-    const target = configOptions.value.find((item) => item.id === selectedConfigId.value);
-    return target?.name || selectedConfigId.value || 'default';
-});
+const menuOpen = ref(false);
 
 function openDialog() {
     tempSelectedConfig.value = selectedConfigId.value;
@@ -162,158 +167,137 @@ function closeDialog() {
     dialog.value = false;
 }
 
-async function fetchConfigList() {
-    loadingConfigs.value = true;
-    try {
-        const res = await configProfileApi.list();
-        configOptions.value = (res.data.data?.info_list || []).map((item: any) => ({
-            id: String(item.id || ''),
-            name: String(item.name || item.id || 'default')
-        }));
-    } catch (error) {
-        console.error('加载配置文件列表失败', error);
-        configOptions.value = [];
-    } finally {
-        loadingConfigs.value = false;
-    }
-}
-
-async function fetchRoutingEntries() {
-    try {
-        const res = await configRouteApi.list();
-        const routing = res.data.data?.routing || {};
-        routingEntries.value = Object.entries(routing).map(([pattern, confId]) => ({
-            pattern,
-            confId: confId as string
-        }));
-    } catch (error) {
-        console.error('获取配置路由失败', error);
-        routingEntries.value = [];
-    }
-}
-
-function matchesPattern(pattern: string, target: string): boolean {
-    const parts = pattern.split(':');
-    const targetParts = target.split(':');
-    if (parts.length !== 3 || targetParts.length !== 3) {
-        return false;
-    }
-    return parts.every((part, index) => part === '' || part === '*' || part === targetParts[index]);
-}
-
-function resolveConfigId(umo: string | null): string {
-    if (!umo) {
-        return 'default';
-    }
-    for (const entry of routingEntries.value) {
-        if (matchesPattern(entry.pattern, umo)) {
-            return entry.confId;
-        }
-    }
-    return 'default';
-}
-
-async function getAgentRunnerType(confId: string): Promise<string> {
-    if (configCache.value[confId]) {
-        return configCache.value[confId];
-    }
-    try {
-        const res = await configProfileApi.get(confId);
-        const config = ((res.data.data as any).config || {}) as any;
-        const type = config?.agent_runner?.runner_type || 'local';
-        configCache.value[confId] = type;
-        return type;
-    } catch (error) {
-        console.error('获取配置文件详情失败', error);
-        return 'local';
-    }
-}
-
-async function setSelection(confId: string) {
-    const normalized = confId || 'default';
-    selectedConfigId.value = normalized;
-    const runnerType = await getAgentRunnerType(normalized);
-    agentRunnerType.value = runnerType;
-    emit('config-changed', {
-        configId: normalized,
-        agentRunnerType: runnerType
-    });
-}
-
-async function applySelectionToBackend(confId: string): Promise<boolean> {
-    if (!targetUmo.value) {
-        pendingSync.value = true;
-        return true;
-    }
-    saving.value = true;
-    try {
-        await configRouteApi.upsert(targetUmo.value, { config_id: confId });
-        const filtered = routingEntries.value.filter((entry) => entry.pattern !== targetUmo.value);
-        if (confId !== 'default') {
-            filtered.push({ pattern: targetUmo.value, confId });
-        }
-        routingEntries.value = filtered;
-        return true;
-    } catch (error) {
-        const err = error as any;
-        console.error('更新配置文件失败', err);
-        toast.error(err?.response?.data?.message || '配置文件应用失败');
-        return false;
-    } finally {
-        saving.value = false;
-    }
-}
-
 async function confirmSelection() {
     if (!tempSelectedConfig.value) {
         return;
     }
-    const previousId = selectedConfigId.value;
-    await setSelection(tempSelectedConfig.value);
-    setStoredSelectedChatConfigId(tempSelectedConfig.value);
-    const applied = await applySelectionToBackend(tempSelectedConfig.value);
-    if (!applied) {
-        setStoredSelectedChatConfigId(previousId);
-        await setSelection(previousId);
-    }
+    await selectConfig(tempSelectedConfig.value);
     dialog.value = false;
 }
 
-async function syncSelectionForSession() {
-    if (!targetUmo.value) {
-        pendingSync.value = true;
+async function handleChipSelect(confId: string) {
+    if (confId === selectedConfigId.value) {
         return;
     }
-    if (pendingSync.value) {
-        pendingSync.value = false;
-        await applySelectionToBackend(selectedConfigId.value);
-        return;
-    }
-    await fetchRoutingEntries();
-    const resolved = resolveConfigId(targetUmo.value);
-    await setSelection(resolved);
-    setStoredSelectedChatConfigId(resolved);
+    await selectConfig(confId);
 }
-
-watch(
-    () => [props.sessionId, props.platformId, props.isGroup],
-    async () => {
-        await syncSelectionForSession();
-    }
-);
-
-onMounted(async () => {
-    await fetchConfigList();
-    const stored = props.initialConfigId || getStoredSelectedChatConfigId();
-    selectedConfigId.value = stored;
-    await setSelection(stored);
-    await syncSelectionForSession();
-});
 </script>
 
 <style scoped>
 .config-list {
     max-height: 360px;
     overflow-y: auto;
+}
+
+/* Chip: ghost pill (2026-10-03, elecvoid243) — no border/background at
+   rest; hover reveals a wash. The status dot carries the "this is the
+   live config" semantics. */
+.config-chip-wrap {
+    display: inline-flex;
+    min-width: 0;
+}
+
+.config-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    max-width: min(180px, 30vw);
+    padding: 0 9px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: rgba(var(--v-theme-on-surface), 0.72);
+    cursor: pointer;
+    font: inherit;
+    letter-spacing: 0;
+    transition: background-color 150ms ease, color 150ms ease;
+}
+
+.config-chip:hover {
+    background: var(--sp-ghost-hover-bg, rgba(var(--v-theme-on-surface), 0.055));
+    color: rgb(var(--v-theme-on-surface));
+}
+
+.config-chip--open {
+    background: var(--sp-ghost-open-bg, rgba(var(--v-theme-on-surface), 0.07));
+    color: rgb(var(--v-theme-on-surface));
+}
+
+.config-chip:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.config-chip:focus-visible {
+    outline: 2px solid rgb(var(--v-theme-primary));
+    outline-offset: 1px;
+}
+
+.config-chip-dot {
+    flex: 0 0 6px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgb(var(--v-theme-success));
+}
+
+.config-chip-chevron {
+    flex: 0 0 auto;
+    opacity: 0.5;
+}
+
+.config-chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.config-chip-spinner {
+    flex: 0 0 auto;
+}
+
+.config-menu-card {
+    width: min(300px, calc(100vw - 24px));
+    overflow: hidden;
+    border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+    border-radius: 12px;
+}
+
+.config-menu-title {
+    padding: 10px 14px 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.config-menu-list {
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 4px 8px 8px;
+}
+
+.config-item-title {
+    font-size: 14px;
+}
+
+.config-item-subtitle {
+    font-size: 12px;
+}
+
+.config-menu-empty {
+    padding: 16px;
+    text-align: center;
+    font-size: 13px;
+    color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+@media (max-width: 768px) {
+    .config-chip {
+        max-width: 34vw;
+    }
 }
 </style>

@@ -7,10 +7,11 @@
     @drop.prevent="handleDrop"
   >
     <!--
-      Status row above the main input. Always rendered — the file access
-      mode chip must be reachable without the spcode plugin. The left
-      project chip (plugin-gated) exposes a services popover
-      (codegraph / vivado MCP status) via its small side button.
+      Status row above the composer (2026-10-03 redesign, elecvoid243):
+      two ghost capsules only. Left = project capsule (plugin-gated) whose
+      dropdown hosts project / LLM-worktree / services sections. Right =
+      file-access-mode capsule; its dropdown also carries the folded-in
+      "查看工作区" entry when a project is loaded.
     -->
     <div class="input-area__status-row">
       <div v-if="showSpcodeIndicator" class="input-area__status-row__left">
@@ -19,23 +20,12 @@
           @open-codegraph-dialog="openCodegraphLoadDialog"
         />
       </div>
-      <!--
-            Right-side group: keeps the file-access-mode chip visually
-            adjacent to the git-diff chip regardless of which of the two
-            is shown. Without this wrapper, .input-area__status-row's
-            ``justify-content: space-between`` distributes the three chips
-            (project / file-access / git-diff) across the full row width,
-            so enabling the git-diff chip pushes the mode chip into the
-            middle of the row.
-          -->
       <div class="input-area__status-row__right">
         <div class="input-area__status-row__chips-stack">
           <FileAccessModeChip
             :umo="currentSessionUmo"
+            :show-workspace-entry="spcodeStatus.status.value.loaded"
             @change="handleFileAccessModeChange"
-          />
-          <GitDiffChip
-            v-if="spcodeStatus.status.value.loaded"
             @open-diff-sidebar="emit('open-diff-sidebar')"
           />
         </div>
@@ -377,90 +367,18 @@
         @update-selected-index="selectedCommandIndex = $event"
       />
 
+      <!--
+        2026-10-03 composer redesign (elecvoid243): always-stacked layout.
+        Row 1 = the text field alone (the old single-row layout crowded
+        three selectors + four action buttons onto one line). Row 2 = a
+        dedicated toolbar of ghost controls: left cluster is "+", the
+        config-profile capsule and the thinking-effort capsule; right
+        cluster is actions only (token ring, mic, send). The model
+        selector was removed from the composer — switching lives in the
+        page header (ProviderSelectMenu writes the same localStorage
+        keys, so getCurrentSelection() below still resolves it).
+      -->
       <div class="composer-row">
-        <div class="input-left-actions">
-          <!-- Settings Menu -->
-          <StyledMenu
-            offset="8"
-            location="top start"
-            :close-on-content-click="false"
-          >
-            <template v-slot:activator="{ props: activatorProps }">
-              <v-btn
-                v-bind="activatorProps"
-                icon="mdi-plus"
-                variant="outlined"
-                class="input-neutral-btn input-outline-control"
-              />
-            </template>
-
-            <!-- Upload Files -->
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="triggerImageInput"
-            >
-              <template v-slot:prepend>
-                <v-icon icon="mdi-file-upload" size="small"></v-icon>
-              </template>
-              <v-list-item-title>
-                {{ tm("input.upload") }}
-              </v-list-item-title>
-            </v-list-item>
-
-            <!--
-              2026-08-16 skill-guide: "手动加载 Skill" entry. Rendered as a
-              regular "+" menu item; hovering/clicking it opens a SEPARATE
-              compact popover with the session's skills (see
-              SkillGuideMenuItem) — the popover is absolutely positioned, so
-              it never changes the "+" menu's width. The plugin is gated on
-              GET /skill-guide/active having answered once
-              (useSkillGuide.available); queued skills are mirrored by the
-              pending badges row above the composer.
-            -->
-            <SkillGuideMenuItem
-              v-if="skillGuide.available.value"
-              :session-id="sessionId || null"
-              :is-group="sessionIsGroup"
-              :disabled="disabled"
-            />
-
-            <!--
-              spcode project load trigger (lives inside the + menu's
-              popover slot, which is mounted lazily). It only emits
-              "open"; the dialog itself is mounted at the ChatInput
-              level in <ProjectLoadDialog/> below so it survives the
-              menu's lifecycle and is reachable from the chip too.
-            -->
-            <ProjectLoadMenuItem
-              :commands="allCommands"
-              @open="openProjectLoadDialog"
-            />
-
-            <!-- Config Selector in Menu (state lives in the shared
-                 useChatConfigSelection singleton; the composer chip below
-                 renders the same selection). -->
-            <ConfigSelector variant="menu" />
-
-            <!-- Streaming Toggle in Menu -->
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="$emit('toggleStreaming')"
-            >
-              <template v-slot:prepend>
-                <v-icon icon="mdi-lightning-bolt" size="small"></v-icon>
-              </template>
-              <v-list-item-title>
-                {{
-                  enableStreaming
-                    ? tm("streaming.enabled")
-                    : tm("streaming.disabled")
-                }}
-              </v-list-item-title>
-            </v-list-item>
-          </StyledMenu>
-        </div>
         <div class="input-field-shell">
           <input
             v-if="!inputIsMultiline"
@@ -502,111 +420,179 @@
             spellcheck="false"
           ></textarea>
         </div>
-        <div class="input-right-actions">
-          <input
-            type="file"
-            ref="imageInputRef"
-            @change="handleFileSelect"
-            style="display: none"
-            multiple
-          />
-          <!-- Config profile quick-switch chip (2026-10-02, elecvoid243):
-               always-visible sibling of the "+" menu entry. Its label is
-               the live current config profile; switching is one click. -->
-          <ConfigSelector variant="chip" />
-          <!-- Provider/Model Selector Menu -->
-          <ProviderModelMenu
-            v-if="props.showProviderSelector && providerSelectorAvailable"
-            ref="providerModelMenuRef"
-          />
-          <v-progress-circular
-            v-if="disabled && !mobile"
-            indeterminate
-            size="16"
-            class="mr-1"
-            width="1.5"
-          />
-          <!-- Thinking effort override chip: send-time companion of the
-               token ring (context budget), so the two sit side by side.
-               Selection state stays here in ChatInput; the chip's gear
-               emits "edit" which opens the level editor dialog below. -->
-          <ThinkingEffortChip
-            v-model="thinkingEffort"
-            :levels="userEffortLevels"
-            @edit="effortLevelsDialogOpen = true"
-          />
-          <v-tooltip v-if="tokenUsageVisible" location="top" max-width="320">
-            <template #activator="{ props: tokenTooltipProps }">
-              <span
-                v-bind="tokenTooltipProps"
-                class="token-usage-indicator"
-                :style="{ '--token-usage-color': tokenUsageColor }"
-              >
-                <v-progress-circular
-                  :model-value="tokenUsagePercent"
-                  size="24"
-                  width="2.5"
-                  class="token-usage-progress"
-                />
-              </span>
-            </template>
-            <span class="token-usage-tooltip">{{ props.tokenUsage?.tooltip }}</span>
-          </v-tooltip>
-          <!-- <v-btn @click="$emit('openLiveMode')"
-                        icon
-                        variant="text"
-                        color="purple"
-                        size="small"
-                    >
-                        <v-icon icon="mdi-phone-in-talk" variant="text" plain></v-icon>
-                        <v-tooltip activator="parent" location="top">
-                            {{ tm('voice.liveMode') }}
-                        </v-tooltip>
-                    </v-btn> -->
-          <v-btn
-            @click="handleRecordClick"
-            icon
-            variant="text"
-            class="record-btn input-icon-btn"
-          >
-            <v-icon
-              :icon="isRecording ? 'mdi-stop-circle' : 'mdi-microphone'"
-              variant="text"
-              plain
-            ></v-icon>
-            <v-tooltip activator="parent" location="top">
-              {{
-                isRecording ? tm("voice.speaking") : tm("voice.startRecording")
-              }}
-            </v-tooltip>
-          </v-btn>
-          <v-btn
-            icon
-            v-if="isRunning && !canSend"
-            @click="$emit('stop')"
-            variant="tonal"
-            class="send-btn input-action-btn"
-          >
-            <v-icon icon="mdi-stop" variant="text" plain></v-icon>
-            <v-tooltip activator="parent" location="top">
-              {{ tm("input.stopGenerating") }}
-            </v-tooltip>
-          </v-btn>
-          <v-tooltip location="top" :disabled="!sendLocked">
-            <template #activator="{ props: tipProps }">
-              <span v-bind="tipProps" class="send-btn-wrap">
+        <div class="composer-toolbar">
+          <div class="composer-toolbar__left">
+            <input
+              type="file"
+              ref="imageInputRef"
+              @change="handleFileSelect"
+              style="display: none"
+              multiple
+            />
+            <!-- "+" ghost button: upload / skill / project / config / streaming -->
+            <StyledMenu
+              offset="8"
+              location="top start"
+              :close-on-content-click="false"
+            >
+              <template v-slot:activator="{ props: activatorProps }">
                 <v-btn
-                  v-if="!(isRunning && !canSend)"
-                  @click="handleSendClick"
-                  icon="mdi-arrow-up"
-                  variant="tonal"
-                  :disabled="!canSend || sendLocked"
-                  class="send-btn input-action-btn"
+                  v-bind="activatorProps"
+                  icon="mdi-plus"
+                  variant="text"
+                  class="composer-ghost-btn"
                 />
-              </span>
-            </template>
-            <span>{{ tm("spcodeProjectLoad.indicator.sendLocked") }}</span>
-          </v-tooltip>
+              </template>
+
+              <!-- Upload Files -->
+              <v-list-item
+                class="styled-menu-item"
+                rounded="md"
+                @click="triggerImageInput"
+              >
+                <template v-slot:prepend>
+                  <v-icon icon="mdi-file-upload" size="small"></v-icon>
+                </template>
+                <v-list-item-title>
+                  {{ tm("input.upload") }}
+                </v-list-item-title>
+              </v-list-item>
+
+              <!--
+                2026-08-16 skill-guide: "手动加载 Skill" entry. Rendered as a
+                regular "+" menu item; hovering/clicking it opens a SEPARATE
+                compact popover with the session's skills (see
+                SkillGuideMenuItem) — the popover is absolutely positioned, so
+                it never changes the "+" menu's width. The plugin is gated on
+                GET /skill-guide/active having answered once
+                (useSkillGuide.available); queued skills are mirrored by the
+                pending badges row above the composer.
+              -->
+              <SkillGuideMenuItem
+                v-if="skillGuide.available.value"
+                :session-id="sessionId || null"
+                :is-group="sessionIsGroup"
+                :disabled="disabled"
+              />
+
+              <!--
+                spcode project load trigger (lives inside the + menu's
+                popover slot, which is mounted lazily). It only emits
+                "open"; the dialog itself is mounted at the ChatInput
+                level in <ProjectLoadDialog/> below so it survives the
+                menu's lifecycle and is reachable from the chip too.
+              -->
+              <ProjectLoadMenuItem
+                :commands="allCommands"
+                @open="openProjectLoadDialog"
+              />
+
+              <!-- Config Selector in Menu (state lives in the shared
+                   useChatConfigSelection singleton; the composer capsule
+                   renders the same selection). -->
+              <ConfigSelector variant="menu" />
+
+              <!-- Streaming Toggle in Menu -->
+              <v-list-item
+                class="styled-menu-item"
+                rounded="md"
+                @click="$emit('toggleStreaming')"
+              >
+                <template v-slot:prepend>
+                  <v-icon icon="mdi-lightning-bolt" size="small"></v-icon>
+                </template>
+                <v-list-item-title>
+                  {{
+                    enableStreaming
+                      ? tm("streaming.enabled")
+                      : tm("streaming.disabled")
+                  }}
+                </v-list-item-title>
+              </v-list-item>
+            </StyledMenu>
+            <span class="composer-toolbar__divider" aria-hidden="true"></span>
+            <!-- Config profile quick-switch capsule: its label is the live
+                 current config profile; switching is one click. -->
+            <ConfigSelector variant="chip" />
+            <!-- Thinking effort override capsule. Selection state stays here
+                 in ChatInput; the chip's gear emits "edit" which opens the
+                 level editor dialog below. -->
+            <ThinkingEffortChip
+              v-model="thinkingEffort"
+              :levels="userEffortLevels"
+              @edit="effortLevelsDialogOpen = true"
+            />
+          </div>
+          <div class="composer-toolbar__right">
+            <v-progress-circular
+              v-if="disabled && !mobile"
+              indeterminate
+              size="16"
+              class="mr-1"
+              width="1.5"
+            />
+            <v-tooltip v-if="tokenUsageVisible" location="top" max-width="320">
+              <template #activator="{ props: tokenTooltipProps }">
+                <span
+                  v-bind="tokenTooltipProps"
+                  class="token-usage-indicator"
+                  :style="{ '--token-usage-color': tokenUsageColor }"
+                >
+                  <v-progress-circular
+                    :model-value="tokenUsagePercent"
+                    size="24"
+                    width="2.5"
+                    class="token-usage-progress"
+                  />
+                </span>
+              </template>
+              <span class="token-usage-tooltip">{{ props.tokenUsage?.tooltip }}</span>
+            </v-tooltip>
+            <v-btn
+              @click="handleRecordClick"
+              icon
+              variant="text"
+              class="composer-ghost-btn"
+            >
+              <v-icon
+                :icon="isRecording ? 'mdi-stop-circle' : 'mdi-microphone'"
+                variant="text"
+                plain
+              ></v-icon>
+              <v-tooltip activator="parent" location="top">
+                {{
+                  isRecording ? tm("voice.speaking") : tm("voice.startRecording")
+                }}
+              </v-tooltip>
+            </v-btn>
+            <v-btn
+              icon
+              v-if="isRunning && !canSend"
+              @click="$emit('stop')"
+              variant="tonal"
+              class="send-btn input-action-btn"
+            >
+              <v-icon icon="mdi-stop" variant="text" plain></v-icon>
+              <v-tooltip activator="parent" location="top">
+                {{ tm("input.stopGenerating") }}
+              </v-tooltip>
+            </v-btn>
+            <v-tooltip location="top" :disabled="!sendLocked">
+              <template #activator="{ props: tipProps }">
+                <span v-bind="tipProps" class="send-btn-wrap">
+                  <v-btn
+                    v-if="!(isRunning && !canSend)"
+                    @click="handleSendClick"
+                    icon="mdi-arrow-up"
+                    variant="tonal"
+                    :disabled="!canSend || sendLocked"
+                    class="send-btn input-action-btn"
+                  />
+                </span>
+              </template>
+              <span>{{ tm("spcodeProjectLoad.indicator.sendLocked") }}</span>
+            </v-tooltip>
+          </div>
         </div>
       </div>
     </div>
@@ -668,7 +654,6 @@ import { commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
 import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
-import ProviderModelMenu from "./ProviderModelMenu.vue";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import type { ThinkingEffortLevel } from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
@@ -685,7 +670,6 @@ import ProjectLoadDialog from "./ProjectLoadDialog.vue";
 import type { ProjectLoadSubmitPayload } from "./ProjectLoadDialog.vue";
 import SpcodeProjectIndicator from "./SpcodeProjectIndicator.vue";
 import FileAccessModeChip from "./FileAccessModeChip.vue";
-import GitDiffChip from "./GitDiffChip.vue";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 import CommentsPreviewDialog from "./CommentsPreviewDialog.vue";
@@ -830,9 +814,6 @@ const isDark = computed(
 
 const inputField = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
 const imageInputRef = ref<HTMLInputElement | null>(null);
-const providerModelMenuRef = ref<InstanceType<typeof ProviderModelMenu> | null>(
-  null,
-);
 const providerSelectorAvailable = ref(true);
 const isReplyClosing = ref(false);
 const isDragging = ref(false);
@@ -2002,7 +1983,13 @@ function getCurrentSelection() {
   if (!props.showProviderSelector || !providerSelectorAvailable.value) {
     return null;
   }
-  return providerModelMenuRef.value?.getCurrentSelection();
+  // The composer no longer hosts a model selector (2026-10-03): the page
+  // header's ProviderSelectMenu owns switching and persists to the same
+  // localStorage keys, so read them directly.
+  return {
+    providerId: localStorage.getItem("selectedProvider") || "",
+    modelName: localStorage.getItem("selectedProviderModel") || "",
+  };
 }
 
 function getThinkingEffort(): ThinkingEffort {
@@ -2222,29 +2209,23 @@ defineExpose({
   justify-content: space-between;
   margin: 4px auto 0;
   max-width: var(--chat-content-max-width, 760px);
+  padding: 0 6px 6px;
   pointer-events: auto;
   width: var(--chat-content-width, 76%);
 }
 
 /*
- * Left cluster: the project indicator (with its services popover side
- * button) occupies this column. The former codegraph + vivado chips row
- * was removed (2026-08-15) — their status now lives in the project chip's
- * services popover.
+ * Left cluster: the single project capsule (2026-10-03 redesign folded
+ * the services + worktree side buttons into its dropdown).
  */
 .input-area__status-row__left {
-  align-items: flex-start;
+  align-items: center;
   display: flex;
-  flex-direction: column;
-  gap: 0;
   min-width: 0;
 }
 
-/*
- * Right cluster: file access mode segmented control + git-diff ghost
- * button. Horizontal (was column-stack) because the segmented control is
- * always-visible (no v-if) so the column fallback is no longer needed.
- */
+/* Right cluster: the single file-access-mode capsule (its dropdown also
+   hosts the folded-in "查看工作区" entry). */
 .input-area__status-row__right {
   align-items: center;
   display: flex;
@@ -2261,24 +2242,11 @@ defineExpose({
   display: contents;
 }
 
-.input-neutral-btn {
-  color: #6f6f6f !important;
-}
-
-.input-neutral-btn:hover {
-  background: #efefef;
-}
-
-.input-neutral-btn--tonal {
-  background: #efefef;
-  color: #4f4f4f !important;
-}
-
-.input-neutral-btn--tonal:hover {
-  background: #e7e7e7;
-}
-
 .input-action-btn {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  border-radius: 50% !important;
   background: #5594c6 !important;
   color: #fff !important;
 }
@@ -2290,16 +2258,6 @@ defineExpose({
 .input-action-btn:disabled {
   background: rgba(85, 148, 198, 0.24) !important;
   color: rgba(255, 255, 255, 0.72) !important;
-}
-
-.input-icon-btn {
-  background: transparent !important;
-  color: rgb(var(--v-theme-on-surface)) !important;
-  margin-right: 8px;
-}
-
-.input-icon-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.04) !important;
 }
 
 .token-usage-indicator {
@@ -2333,42 +2291,6 @@ defineExpose({
   stroke: currentColor;
 }
 
-.input-outline-control {
-  width: 36px !important;
-  height: 36px !important;
-  min-width: 36px !important;
-  border: 0 !important;
-  border-color: transparent !important;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-.input-outline-control:hover,
-.input-outline-control:focus-visible {
-  border-color: transparent !important;
-  background: rgba(var(--v-theme-on-surface), 0.04) !important;
-}
-
-.input-area.is-dark .input-neutral-btn {
-  color: rgba(255, 255, 255, 0.78) !important;
-}
-
-.input-area.is-dark .input-neutral-btn:hover,
-.input-area.is-dark .input-neutral-btn--tonal {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.input-area.is-dark .input-outline-control {
-  border-color: transparent !important;
-  background: transparent !important;
-}
-
-.input-area.is-dark .input-outline-control:hover,
-.input-area.is-dark .input-outline-control:focus-visible {
-  border-color: transparent !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-}
-
 .input-area.is-dark .input-action-btn {
   background: rgb(var(--v-theme-on-surface)) !important;
   color: rgb(var(--v-theme-surface)) !important;
@@ -2386,26 +2308,11 @@ defineExpose({
 .input-container {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  min-height: 64px;
-  padding: 6px 12px 6px 14px !important;
+  padding: 6px 8px 8px !important;
   border-color: #f0f0f0 !important;
-  border-radius: 999px !important;
+  border-radius: 24px !important;
   background: #fff !important;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06) !important;
-}
-
-.input-container.is-multiline {
-  justify-content: flex-start;
-  padding: 16px 20px 14px !important;
-  border-radius: 34px !important;
-}
-
-.input-container.has-attachments {
-  justify-content: flex-start;
-  min-height: 130px;
-  padding: 14px 18px 10px !important;
-  border-radius: 30px !important;
 }
 
 .input-area.is-dark .input-container {
@@ -2420,35 +2327,20 @@ defineExpose({
   flex: 0 0 auto;
 }
 
+/* 2026-10-03 stacked composer (elecvoid243): field row on top, ghost
+   toolbar below. The old grid squeezed left/field/right onto one line. */
 .composer-row {
   width: 100%;
-  min-height: 52px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "left field right";
-  align-items: center;
-  column-gap: 10px;
-}
-
-.input-container.is-multiline .composer-row {
-  grid-template-areas:
-    "field field field"
-    "left . right";
-  row-gap: 10px;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
 }
 
 .input-field-shell {
-  grid-area: field;
+  width: 100%;
   min-width: 0;
-  min-height: 52px;
   display: flex;
-  align-items: center;
-}
-
-.input-container.is-multiline .input-field-shell {
-  min-height: auto;
   align-items: flex-start;
+  padding: 8px 12px 0;
 }
 
 .chat-text-input,
@@ -2457,10 +2349,9 @@ defineExpose({
   width: 100%;
   box-sizing: border-box;
   min-width: 0;
-  min-height: 52px !important;
-  max-height: 72px !important;
+  min-height: 28px !important;
   margin: 0;
-  padding: 0 !important;
+  padding: 2px 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -2468,22 +2359,20 @@ defineExpose({
   resize: none;
   outline: none;
   font-family: inherit;
-  font-size: 18px !important;
+  font-size: 16px !important;
 }
 
 .chat-text-input {
-  height: 52px !important;
-  padding: 0 !important;
-  line-height: normal !important;
+  height: 28px !important;
+  line-height: 24px !important;
   overflow: hidden;
 }
 
 .chat-textarea {
   max-height: min(48vh, 420px) !important;
-  padding: 12px 0 !important;
   overflow-y: auto;
   overflow-wrap: break-word;
-  line-height: 28px !important;
+  line-height: 24px !important;
   transition: height 0.16s ease;
 }
 
@@ -2493,55 +2382,58 @@ defineExpose({
   opacity: 1;
 }
 
-.input-left-actions {
-  grid-area: left;
+.composer-toolbar {
   display: flex;
   align-items: center;
-  flex: 0 0 auto !important;
-  justify-content: center !important;
-  gap: 0 !important;
-  min-width: auto !important;
-  margin-top: 0 !important;
-  overflow: visible !important;
+  gap: 2px;
+  padding: 4px 6px 0;
 }
 
-.input-right-actions {
-  grid-area: right;
+.composer-toolbar__left {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.composer-toolbar__divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0 6px;
+  background: var(--sp-ghost-divider, rgba(var(--v-theme-on-surface), 0.1));
+}
+
+.composer-toolbar__right {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
   flex-shrink: 0;
-  gap: 10px;
-  margin-top: 0 !important;
 }
 
-.input-outline-control {
-  width: 34px !important;
-  height: 34px !important;
-  min-width: 34px !important;
-  border: 0 !important;
-  border-color: transparent !important;
+/* Ghost icon button ("+", mic): borderless 30px circle, hover wash. */
+.composer-ghost-btn {
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
   border-radius: 50% !important;
   box-shadow: none !important;
+  color: rgba(var(--v-theme-on-surface), 0.65) !important;
 }
 
-.input-icon-btn {
-  width: 42px !important;
-  height: 42px !important;
-  min-width: 42px !important;
-  margin-right: 0;
-}
-
-.input-right-actions :deep(.provider-chip) {
-  height: 40px !important;
-  min-height: 40px !important;
-  border-radius: 999px !important;
+.composer-ghost-btn:hover,
+.composer-ghost-btn:focus-visible {
+  background: var(
+    --sp-ghost-hover-bg,
+    rgba(var(--v-theme-on-surface), 0.055)
+  ) !important;
+  color: rgb(var(--v-theme-on-surface)) !important;
 }
 
 .input-area:not(.is-dark) .input-action-btn {
-  width: 46px !important;
-  height: 46px !important;
-  min-width: 46px !important;
   background: #8fcfb4 !important;
   color: #fff !important;
 }
@@ -2796,33 +2688,15 @@ defineExpose({
   }
 
   .input-container {
-    display: flex !important;
-    flex-direction: column;
-    justify-content: center;
     width: calc(100% - 20px) !important;
     max-width: 100% !important;
-    min-height: 64px;
     margin: 0 10px calc(8px + env(safe-area-inset-bottom)) !important;
-    padding: 6px 8px 6px 10px !important;
+    padding: 4px 6px 6px !important;
     overflow: hidden;
     border: 1px solid rgba(var(--v-theme-on-surface), 0.14) !important;
-    border-radius: 999px !important;
+    border-radius: 24px !important;
     background: #fff !important;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08) !important;
-  }
-
-  .input-container.is-multiline {
-    justify-content: flex-start;
-    min-height: 128px;
-    padding: 10px !important;
-    border-radius: 26px !important;
-  }
-
-  .input-container.has-attachments {
-    justify-content: flex-start;
-    min-height: 124px;
-    padding: 10px !important;
-    border-radius: 26px !important;
   }
 
   .input-area.is-dark .input-container {
@@ -2831,97 +2705,18 @@ defineExpose({
     box-shadow: none !important;
   }
 
-  .composer-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: "left field right";
-    min-height: 52px;
-    row-gap: 0;
-    column-gap: 8px;
-    align-items: center;
-  }
-
-  .input-container.is-multiline .composer-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "field field field"
-      "left . right";
-    min-height: auto;
-    row-gap: 4px;
-  }
-
   .input-field-shell {
-    min-height: 52px;
-    align-items: center;
-  }
-
-  .input-container.is-multiline .input-field-shell {
-    min-height: 56px;
-    align-items: flex-start;
-  }
-
-  .input-left-actions,
-  .input-right-actions {
-    margin-top: 0 !important;
-    align-items: center !important;
-  }
-
-  .input-right-actions {
-    gap: 6px;
-  }
-
-  .input-outline-control {
-    width: 38px !important;
-    height: 38px !important;
-    min-width: 38px !important;
-    border: 0 !important;
-    border-color: transparent !important;
-    border-radius: 50% !important;
+    padding: 6px 10px 0;
   }
 
   .chat-text-input,
   .chat-textarea {
-    min-height: 52px !important;
-    max-height: 132px !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    font-size: 18px !important;
-  }
-
-  .chat-text-input {
-    height: 52px !important;
-    padding: 0 2px !important;
-    line-height: normal !important;
-    overflow: hidden;
+    font-size: 16px !important;
   }
 
   .chat-textarea {
     max-height: min(42vh, 220px) !important;
-    padding: 4px 10px 2px !important;
-    line-height: 24px !important;
     overflow-y: auto;
-  }
-
-  .chat-text-input::placeholder,
-  .chat-textarea::placeholder {
-    color: rgba(var(--v-theme-on-surface), 0.56);
-    opacity: 1;
-  }
-
-  .input-icon-btn {
-    width: 38px !important;
-    height: 38px !important;
-    min-width: 38px !important;
-    margin-right: 0;
-  }
-
-  .input-action-btn {
-    width: 42px !important;
-    height: 42px !important;
-    min-width: 42px !important;
-    border-radius: 50% !important;
   }
 
   .input-action-btn:not(:disabled) {
@@ -2934,23 +2729,9 @@ defineExpose({
     color: rgba(var(--v-theme-on-surface), 0.18) !important;
   }
 
-  :deep(.provider-chip) {
-    height: 38px !important;
-    min-height: 38px !important;
-    border-radius: 999px !important;
-    padding: 0 12px !important;
-    font-size: 14px !important;
-    border-color: rgba(var(--v-theme-on-surface), 0.18) !important;
-    background: transparent !important;
-  }
-
   .attachments-preview {
     margin: 8px 16px 0;
     gap: 8px;
-  }
-
-  .input-container.has-attachments .attachments-preview {
-    margin: 0 0 8px;
   }
 
   .attachment-card {

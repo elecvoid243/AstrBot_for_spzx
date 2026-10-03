@@ -1,22 +1,30 @@
 <!--
   Author: elecvoid243, 2026-07-09
   Spec: docs/superpowers/specs/2026-07-09-chat-input-chips-beautify-design.md §5.1, §5.2
-  Updated: elecvoid243, 2026-10-03 — project-load stage bubbles.
+  Updated: elecvoid243, 2026-10-03 — single-capsule redesign.
 
-  SpcodeProjectIndicator — status badge for the loaded/unloaded spcode project.
+  SpcodeProjectIndicator — ghost capsule for the loaded/unloaded spcode
+  project. The 2026-10-03 redesign folds the two side buttons (services
+  popover trigger + worktree activation trigger) into ONE capsule whose
+  dropdown has three sections:
+    1. 项目       — current project (static) + switch/reload entry
+    2. LLM 工作树 — which worktree the LLM works in (prompt injection,
+                    backend applies it via extra_user_content_parts)
+    3. 服务       — codegraph / vivado / tc-memory MCP status + manage
+  The active worktree renders directly on the capsule label
+  ("project · ⎇ branch") so the pinned state is visible without opening
+  anything.
 
-  Visual states (locked by spec §5.2):
-    - Not loaded → empty state (empty dot ring + mdi-folder-outline + "未加载项目")
-    - Loaded → success dot + mdi-folder-check-outline + "项目已加载" + truncated path
+  Visual states:
+    - Not loaded → hollow dot ring + folder icon; the dropdown shows the
+      "加载项目…" entry plus the services section (codegraph MCP can run
+      without a loaded project, so it must stay reachable)
+    - Loaded     → success dot + project basename (+ active worktree)
+    - Loading    → spinning icon, capsule disabled
+    - Failed     → red, dropdown shows the failure log + retry entry
 
-  Event contract (unchanged from prior version):
-    - Emits `open-load-dialog` on click (suppressed while a silent
-      operation is running)
-
-  Progress states (2026-08-06, driven by useSpcodeOperationProgress):
-    - project_load / project_unload running → spinning mdi-loading + currentStep
-    - project_load / project_unload failed  → red error icon + chevron popover
-      with the full substep log; click still opens the dialog for retry
+  Event contract (unchanged):
+    - Emits `open-load-dialog` / `open-codegraph-dialog`
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
@@ -32,7 +40,6 @@ import type { SpcodeGitWorktree } from "@/composables/parseSpcodeWorktrees";
 const { status } = useSpcodeProjectStatus();
 const { tm } = useModuleI18n("features/chat");
 const { progress } = useSpcodeOperationProgress();
-const popoverOpen = ref(false);
 
 const emit = defineEmits<{
   (e: "open-load-dialog"): void;
@@ -41,7 +48,7 @@ const emit = defineEmits<{
 
 // Only project load/unload operations drive THIS chip. codegraph_set
 // progress had a dedicated badge on the removed SpcodeCodegraphChip; the
-// services popover now reflects codegraph state reactively instead.
+// services section now reflects codegraph state reactively instead.
 const isProjectOp = computed(
   () =>
     progress.value.operation === "project_load" ||
@@ -55,8 +62,8 @@ const isFailed = computed(
 );
 
 /**
- * Show only the basename of a loaded path so the chip stays compact;
- * the full path is available via the hover tooltip.
+ * Show only the basename of a loaded path so the capsule stays compact;
+ * the full path is available via the hover tooltip / dropdown.
  */
 function pathBasename(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, "");
@@ -91,8 +98,7 @@ const icon = computed(() => {
 
 const label = computed(() => {
   // 加载中一律显示统一定位文案(2026-08-15):不再实时打印 yield 的
-  // current_step(如"⏳ [2/3] codegraph init")——细节交给 codegraph
-  // 状态气泡;加载失败时 yield 信息仍可在失败 popover 中查看。
+  // current_step——细节交给状态气泡;加载失败时 yield 信息仍可在下拉中查看。
   if (isLoading.value) {
     return tm("spcodeProjectLoad.indicator.loading");
   }
@@ -101,6 +107,14 @@ const label = computed(() => {
     ? tm("spcodeProjectLoad.indicator.loadedLabel")
     : tm("spcodeProjectLoad.indicator.noProject");
 });
+
+// Capsule main text: the project basename when loaded (the status dot
+// already says "loaded"), status text otherwise.
+const capsuleLabel = computed(() =>
+  status.value.loaded && !isLoading.value && !isFailed.value
+    ? displayPath.value || label.value
+    : label.value,
+);
 
 const tooltipText = computed(() => {
   if (isLoading.value) return label.value;
@@ -119,17 +133,23 @@ const tooltipText = computed(() => {
         `${tm("spcodeProjectLoad.indicator.loadedAtPrefix")}: ${loadedAtDisplay.value}`,
       );
     }
+    if (activeWorktreeLabel.value) {
+      parts.push(
+        tm("spcodeProjectLoad.indicator.worktreeBtnTooltipActive", {
+          branch: activeWorktreeLabel.value,
+        }),
+      );
+    }
     return parts.join(" · ");
   }
   return tm("spcodeProjectLoad.indicator.noProject");
 });
 
-// ── 服务状态 popover (2026-08-15) ─────────────────────────────────────
-// 原 SpcodeCodegraphChip / SpcodeVivadoStatusChip 移除后,两个 MCP 服务的
-// 状态查看整合到 project chip 旁的小按钮 popover 中。数据源仍是同一对
-// 模块级单例 composable(useSpcodeCodegraphStatus / useSpcodeVivadoStatus),
-// ChatInput 的轮询/前台刷新逻辑继续驱动它们。
-const servicesMenuOpen = ref(false);
+// ── Unified dropdown (2026-10-03) ─────────────────────────────────────
+// One menu hosts three sections: project / LLM worktree / services. The
+// data sources are the same module-level singleton composables as before
+// (ChatInput's polling/foreground refresh keeps driving them).
+const menuOpen = ref(false);
 
 const codegraph = useSpcodeCodegraphStatus();
 const vivado = useSpcodeVivadoStatus();
@@ -138,7 +158,6 @@ const vivado = useSpcodeVivadoStatus();
 // 2026-09-08: MCP 在跑即视为"已加载"——不再把"未设置默认项目"当作未加载
 // 态(system_prompt 已要求每次 codegraph_explore 显式传 projectPath,默认
 // 目录缺失不影响 codegraph 可用性);默认目录改在 detail 行提示。
-// 旧 SpCodegraphChip 的"路径不匹配"提醒已于 2026-08-15 随 chip 移除。
 const codegraphState = computed(() => {
   const s = codegraph.status.value;
   const hasProject = s.activeProject.length > 0;
@@ -244,23 +263,21 @@ const tcMemoryState = computed(() => {
 });
 
 /**
- * Codegraph 管理入口:关闭 popover 并委托给 ChatInput 打开
- * ``ProjectLoadDialog command-mode="codegraph"``(原 codegraph chip 的 click 行为)。
+ * Codegraph 管理入口:关闭下拉并委托给 ChatInput 打开
+ * ``ProjectLoadDialog command-mode="codegraph"``。
  */
 function openCodegraphManager(): void {
-  servicesMenuOpen.value = false;
+  menuOpen.value = false;
   emit("open-codegraph-dialog");
 }
 
 // ── Worktree 激活 (2026-08-20) ────────────────────────────────────────
-// GitDiffSidebar 回归纯项目操作;worktree 激活(指定 LLM 工作在哪个
-// worktree,后端以 extra_user_content_parts 注入每次 LLM 请求)的入口
-// 放在 project chip 旁的小按钮(与"查看服务状态"按钮同款几何,不叠加
-// ——chip 宽度随项目名变化,叠加定位会在长名截断时脱离 chip)。
+// worktree 激活(指定 LLM 工作在哪个 worktree,后端以
+// extra_user_content_parts 注入每次 LLM 请求)。2026-10-03 起并入胶囊
+// 下拉;激活的分支直接渲染在胶囊标签上。
 // 数据与操作复用 useSpcodeWorktrees(GET /spcode/git-worktrees +
 // POST /spcode/worktree-activate)。
 const worktrees = useSpcodeWorktrees();
-const worktreeMenuOpen = ref(false);
 const isSelectingWorktree = ref(false);
 
 const worktreeList = computed(() => {
@@ -279,10 +296,10 @@ const worktreesLoading = computed(() => {
 });
 const worktreesFailed = computed(() => worktrees.state.value.kind === "error");
 
-// 打开菜单时刷新列表(worktree 增删多发生在 GitDiffSidebar/外部,这里不轮询;
+// 打开下拉时刷新列表(worktree 增删多发生在 GitDiffSidebar/外部,这里不轮询;
 // 项目加载/切换由 useSpcodeWorktrees 内部的 umo/directory watcher 自动刷新)。
-watch(worktreeMenuOpen, (open) => {
-  if (open) void worktrees.refresh();
+watch(menuOpen, (open) => {
+  if (open && status.value.loaded) void worktrees.refresh();
 });
 
 function worktreeLabel(wt: SpcodeGitWorktree): string {
@@ -291,17 +308,13 @@ function worktreeLabel(wt: SpcodeGitWorktree): string {
     : wt.headSha.slice(0, 7));
 }
 
-const worktreeBtnTooltip = computed(() =>
-  activeWorktree.value
-    ? tm("spcodeProjectLoad.indicator.worktreeBtnTooltipActive", {
-        branch: worktreeList.value.find((w) => w.path === activeWorktree.value)
-          ? worktreeLabel(
-              worktreeList.value.find((w) => w.path === activeWorktree.value)!,
-            )
-          : (activeWorktree.value ?? ""),
-      })
-    : tm("spcodeProjectLoad.indicator.worktreeBtnTooltip"),
-);
+/** Branch/label of the activated worktree, rendered on the capsule. */
+const activeWorktreeLabel = computed(() => {
+  const path = activeWorktree.value;
+  if (!path) return "";
+  const wt = worktreeList.value.find((w) => w.path === path);
+  return wt ? worktreeLabel(wt) : pathBasename(path);
+});
 
 /**
  * 选中菜单项:null = 未指定(取消激活,LLM 跟随项目路径);
@@ -314,7 +327,7 @@ async function selectWorktree(path: string | null): Promise<void> {
   isSelectingWorktree.value = false;
   if (!result.ok && result.reason === "aborted") return;
   if (result.ok) {
-    worktreeMenuOpen.value = false;
+    menuOpen.value = false;
     const wt = path ? worktreeList.value.find((w) => w.path === path) : null;
     showBubble(
       path === null
@@ -334,9 +347,8 @@ async function selectWorktree(path: string | null): Promise<void> {
 
 // ── 状态气泡 (2026-08-15) ─────────────────────────────────────────────
 // 原 codegraph chip 移除后,初始化/重启等过程状态失去常驻显示。这里在
-// codegraph 状态变更(或 codegraph 相关操作进行中)时,于 services 按钮旁
-// 弹一个漫画式气泡实时提示,3s 后消失;显示期间状态再次更新则重置计时。
-// 气泡右上角提供 ✕ 按钮可立即关闭。
+// codegraph 状态变更(或 codegraph 相关操作进行中)时,于胶囊旁弹一个
+// 漫画式气泡实时提示,3s 后消失;显示期间状态再次更新则重置计时。
 const BUBBLE_DURATION_MS = 3000;
 
 const bubbleText = ref("");
@@ -479,274 +491,272 @@ function openLoadDialog(): void {
   if (isLoading.value) return; // one silent operation at a time
   emit("open-load-dialog");
 }
+
+/** Dropdown "切换或重新加载项目…" entry: close the menu first. */
+function handleManageProject(): void {
+  menuOpen.value = false;
+  openLoadDialog();
+}
 </script>
 
 <template>
   <div class="sp-chip-wrap">
-    <v-tooltip location="bottom" :open-delay="200">
-      <template #activator="{ props: tipProps }">
-        <button
-          v-bind="tipProps"
-          type="button"
-          :class="[
-            'sp-status-badge',
-            {
-              'sp-status-badge--empty': !status.loaded && !isLoading && !isFailed,
-              'sp-status-badge--failed': isFailed,
-            },
-          ]"
-          :aria-label="tooltipText"
-          @click="openLoadDialog"
-        >
-          <span
-            class="sp-status-badge__dot"
-            :class="{
-              'sp-status-badge__dot--success': status.loaded && !isLoading && !isFailed,
-              'sp-status-badge__dot--warning': isFailed,
-              'sp-status-badge__dot--neutral': !status.loaded && !isLoading && !isFailed,
-            }"
-            aria-hidden="true"
-          />
-          <v-icon size="14" class="sp-status-badge__icon">{{ icon }}</v-icon>
-          <span class="sp-status-badge__label">{{ label }}</span>
-          <span
-            v-if="displayPath && !isLoading && !isFailed"
-            class="sp-status-badge__path"
-            >{{ displayPath }}</span
-          >
-        </button>
-      </template>
-      <span>{{ tooltipText }}</span>
-    </v-tooltip>
-
     <!--
-      Worktree activation side button (2026-08-20): a small button right
-      next to the chip, sharing the services side button's geometry
-      (shown only when a project is loaded). Deliberately NOT overlaid on
-      the chip — the chip's width varies with the project name, which
-      left an absolutely positioned overlay detached from it. The
-      popover lets the user pick which worktree the LLM should work in —
-      the backend injects the activated worktree into every LLM request
-      via extra_user_content_parts. Kept here rather than in
-      GitDiffSidebar because it is prompt-injection guidance, not a
-      direct project operation.
+      ONE capsule with the unified dropdown in every state (the services
+      section stays reachable even when no project is loaded — codegraph
+      MCP can run without one). Only while a load/unload operation is
+      running is the capsule disabled. The capsule label is the live
+      state — project basename plus the activated LLM worktree branch
+      (green) when one is pinned.
     -->
-    <v-menu
-      v-if="status.loaded"
-      v-model="worktreeMenuOpen"
-      location="bottom start"
-      transition="none"
-    >
+    <v-menu v-model="menuOpen" location="bottom start" transition="none">
       <template #activator="{ props: menuProps }">
         <v-tooltip location="bottom" :open-delay="200">
           <template #activator="{ props: tipProps }">
             <button
               v-bind="{ ...tipProps, ...menuProps }"
               type="button"
-              class="sp-chip-services-btn sp-chip-wt-btn"
-              :class="{ 'sp-chip-wt-btn--active': !!activeWorktree }"
-              :aria-label="tm('spcodeProjectLoad.indicator.worktreeBtnTooltip')"
+              class="sp-capsule"
+              :class="{
+                'sp-capsule--open': menuOpen,
+                'sp-capsule--failed': isFailed,
+                'sp-capsule--empty': !status.loaded && !isLoading && !isFailed,
+              }"
+              :disabled="isLoading"
+              :aria-label="tooltipText"
             >
-              <v-icon size="14">{{
-                activeWorktree ? "mdi-check-bold" : "mdi-source-branch"
-              }}</v-icon>
-            </button>
-          </template>
-          <span>{{ worktreeBtnTooltip }}</span>
-        </v-tooltip>
-      </template>
-      <v-card min-width="300" max-width="420">
-        <v-card-text>
-          <div class="sp-chip-popover-title">
-            {{ tm("spcodeProjectLoad.indicator.worktreeMenuTitle") }}
-          </div>
-          <div class="sp-wt-hint">
-            {{ tm("spcodeProjectLoad.indicator.worktreeMenuHint") }}
-          </div>
-          <!-- "Not specified" option: clears the activation so the LLM
-               follows the project path guidance (default behavior). -->
-          <button
-            type="button"
-            class="sp-wt-row"
-            :class="{ 'sp-wt-row--selected': !activeWorktree }"
-            :disabled="isSelectingWorktree"
-            @click="selectWorktree(null)"
-          >
-            <v-icon size="14" class="sp-wt-row__icon">
-              mdi-folder-outline
-            </v-icon>
-            <span class="sp-wt-row__label">{{
-              tm("spcodeProjectLoad.indicator.worktreeNone")
-            }}</span>
-            <v-icon v-if="!activeWorktree" size="14" class="sp-wt-row__check">
-              mdi-check
-            </v-icon>
-          </button>
-          <div v-if="worktreesLoading" class="sp-wt-hint">
-            {{ tm("spcodeProjectLoad.indicator.worktreeLoading") }}
-          </div>
-          <template v-else-if="worktreeList.length">
-            <button
-              v-for="wt in worktreeList"
-              :key="wt.path"
-              type="button"
-              class="sp-wt-row"
-              :class="{ 'sp-wt-row--selected': activeWorktree === wt.path }"
-              :title="wt.path"
-              :disabled="isSelectingWorktree"
-              @click="selectWorktree(wt.path)"
-            >
-              <v-icon size="14" class="sp-wt-row__icon">{{
-                wt.isMain ? "mdi-home" : wt.locked ? "mdi-lock" : "mdi-source-branch"
-              }}</v-icon>
-              <span class="sp-wt-row__label">{{ worktreeLabel(wt) }}</span>
-              <span v-if="wt.isMain" class="sp-wt-row__badge">{{
-                tm("spcodeProjectLoad.indicator.worktreeMainBadge")
-              }}</span>
-              <span v-else-if="!wt.branch" class="sp-wt-row__badge">{{
-                tm("spcodeProjectLoad.indicator.worktreeDetachedBadge")
-              }}</span>
+              <span
+                class="sp-capsule__dot"
+                :class="{
+                  'sp-capsule__dot--success':
+                    status.loaded && !isLoading && !isFailed,
+                  'sp-capsule__dot--warning': isFailed,
+                  'sp-capsule__dot--hollow':
+                    !status.loaded && !isLoading && !isFailed,
+                }"
+                aria-hidden="true"
+              />
               <v-icon
-                v-if="activeWorktree === wt.path"
+                v-if="isLoading || isFailed || !status.loaded"
                 size="14"
-                class="sp-wt-row__check"
+                class="sp-capsule__icon"
+                >{{ icon }}</v-icon
               >
-                mdi-check
+              <span class="sp-capsule__label">{{ capsuleLabel }}</span>
+              <template v-if="activeWorktreeLabel && !isLoading && !isFailed">
+                <span class="sp-capsule__wt-sep" aria-hidden="true">·</span>
+                <v-icon size="12" class="sp-capsule__wt-icon">
+                  mdi-source-branch
+                </v-icon>
+                <span class="sp-capsule__wt">{{ activeWorktreeLabel }}</span>
+              </template>
+              <v-icon size="12" class="sp-capsule__chevron">
+                mdi-chevron-down
               </v-icon>
             </button>
           </template>
-          <div v-else-if="worktreesFailed" class="sp-wt-hint sp-wt-hint--error">
-            {{ tm("spcodeProjectLoad.indicator.worktreeLoadFailed") }}
-          </div>
-          <div v-else class="sp-wt-hint">
-            {{ tm("spcodeProjectLoad.indicator.worktreeEmpty") }}
-          </div>
-        </v-card-text>
-      </v-card>
-    </v-menu>
-
-    <v-menu
-      v-if="isFailed"
-      v-model="popoverOpen"
-      location="bottom start"
-      transition="none"
-    >
-      <template #activator="{ props: menuProps }">
-        <button
-          v-bind="menuProps"
-          class="sp-chip-details-btn"
-          type="button"
-          :aria-label="tm('spcodeProjectLoad.indicator.failedDetailTitle')"
-          @click.stop
-        >
-          <v-icon size="14">mdi-chevron-down</v-icon>
-        </button>
-      </template>
-      <v-card min-width="320" max-width="480">
-        <v-card-text>
-          <div class="sp-chip-popover-title">
-            {{ tm("spcodeProjectLoad.indicator.failedDetailTitle") }}
-          </div>
-          <pre class="sp-chip-popover-messages">{{ progress.messages.join("\n") }}</pre>
-        </v-card-text>
-      </v-card>
-    </v-menu>
-
-    <!--
-      Services status popover (2026-08-15): the codegraph + vivado status
-      chips were removed from the input row; their status is now reachable
-      through this small button next to the project chip. The popover shows
-      both MCP services' state, plus a manage entry that re-opens the
-      codegraph load dialog (same one the old chip opened).
-    -->
-    <v-menu
-      v-model="servicesMenuOpen"
-      location="bottom start"
-      transition="none"
-    >
-      <template #activator="{ props: menuProps }">
-        <v-tooltip location="bottom" :open-delay="200">
-          <template #activator="{ props: tipProps }">
-            <button
-              v-bind="{ ...tipProps, ...menuProps }"
-              type="button"
-              class="sp-chip-services-btn"
-              :aria-label="tm('spcodeProjectLoad.indicator.servicesTooltip')"
-            >
-              <v-icon size="14">mdi-server-network</v-icon>
-            </button>
-          </template>
-          <span>{{ tm("spcodeProjectLoad.indicator.servicesTooltip") }}</span>
+          <span>{{ tooltipText }}</span>
         </v-tooltip>
       </template>
-      <v-card min-width="320" max-width="420">
+
+      <v-card min-width="280" max-width="420">
         <v-card-text>
-          <div class="sp-chip-popover-title">
-            {{ tm("spcodeProjectLoad.indicator.servicesTitle") }}
-          </div>
-          <!-- Codegraph -->
-          <div class="sp-svc-row">
-            <span
-              class="sp-svc-row__dot"
-              :class="`sp-svc-row__dot--${codegraphState.dot}`"
-              aria-hidden="true"
-            />
-            <v-icon size="14" class="sp-svc-row__icon">
-              {{ codegraphState.icon }}
-            </v-icon>
-            <span class="sp-svc-row__label">{{ codegraphState.label }}</span>
-            <button
-              type="button"
-              class="sp-svc-row__action"
-              @click="openCodegraphManager"
-            >
-              {{ tm("spcodeProjectLoad.indicator.manageCodegraph") }}
+          <!-- Failed: the dropdown IS the failure log + retry entry. -->
+          <template v-if="isFailed">
+            <div class="sp-menu-title">
+              {{ tm("spcodeProjectLoad.indicator.failedDetailTitle") }}
+            </div>
+            <pre class="sp-chip-popover-messages">{{
+              progress.messages.join("\n")
+            }}</pre>
+            <div class="sp-menu-divider"></div>
+            <button type="button" class="sp-menu-row" @click="handleManageProject">
+              <v-icon size="14" class="sp-menu-row__icon">mdi-refresh</v-icon>
+              <span class="sp-menu-row__label">{{
+                tm("spcodeProjectLoad.indicator.manageProject")
+              }}</span>
             </button>
-          </div>
-          <div
-            class="sp-svc-row__detail"
-            :title="`${tm('spcodeProjectLoad.indicator.defaultProjectPrefix')}: ${codegraphState.detail}`"
-          >
-            {{ tm("spcodeProjectLoad.indicator.defaultProjectPrefix") }}:
-            {{ codegraphState.detail }}
-          </div>
-          <!-- Vivado -->
-          <div class="sp-svc-row">
-            <span
-              class="sp-svc-row__dot"
-              :class="`sp-svc-row__dot--${vivadoState.dot}`"
-              aria-hidden="true"
-            />
-            <v-icon size="14" class="sp-svc-row__icon">
-              {{ vivadoState.icon }}
-            </v-icon>
-            <span class="sp-svc-row__label">{{ vivadoState.label }}</span>
-          </div>
-          <div class="sp-svc-row__detail" :title="vivadoState.detail">
-            {{ vivadoState.detail }}
-          </div>
-          <!-- Agent Memory（tc_memory 插件） -->
-          <div class="sp-svc-row">
-            <span
-              class="sp-svc-row__dot"
-              :class="`sp-svc-row__dot--${tcMemoryState.dot}`"
-              aria-hidden="true"
-            />
-            <v-icon size="14" class="sp-svc-row__icon">
-              {{ tcMemoryState.icon }}
-            </v-icon>
-            <span class="sp-svc-row__label">{{ tcMemoryState.label }}</span>
-          </div>
-          <div class="sp-svc-row__detail" :title="tcMemoryState.detail">
-            {{ tcMemoryState.detail }}
-          </div>
+          </template>
+
+          <template v-else>
+            <!-- ── 项目 ── -->
+            <div class="sp-menu-title">
+              {{ tm("spcodeProjectLoad.indicator.projectMenuTitle") }}
+            </div>
+            <div v-if="status.loaded" class="sp-menu-static">
+              <v-icon size="14" class="sp-menu-row__icon">
+                mdi-folder-check-outline
+              </v-icon>
+              <span class="sp-menu-row__label">{{ displayPath }}</span>
+              <span
+                v-if="status.directory"
+                class="sp-menu-row__sub"
+                :title="status.directory"
+                >{{ status.directory }}</span
+              >
+            </div>
+            <button type="button" class="sp-menu-row" @click="handleManageProject">
+              <v-icon size="14" class="sp-menu-row__icon">
+                {{ status.loaded ? "mdi-folder-sync-outline" : "mdi-folder-plus-outline" }}
+              </v-icon>
+              <span class="sp-menu-row__label">{{
+                status.loaded
+                  ? tm("spcodeProjectLoad.indicator.manageProject")
+                  : tm("spcodeProjectLoad.indicator.loadProject")
+              }}</span>
+            </button>
+
+            <!-- ── LLM 工作树（仅已加载项目时） ── -->
+            <template v-if="status.loaded">
+              <div class="sp-menu-divider"></div>
+              <div class="sp-menu-title">
+                {{ tm("spcodeProjectLoad.indicator.worktreeMenuTitle") }}
+              </div>
+              <div class="sp-wt-hint">
+                {{ tm("spcodeProjectLoad.indicator.worktreeMenuHint") }}
+              </div>
+              <!-- "Not specified" option: clears the activation so the LLM
+                   follows the project path guidance (default behavior). -->
+              <button
+                type="button"
+                class="sp-wt-row"
+                :class="{ 'sp-wt-row--selected': !activeWorktree }"
+                :disabled="isSelectingWorktree"
+                @click="selectWorktree(null)"
+              >
+                <v-icon size="14" class="sp-wt-row__icon">
+                  mdi-folder-outline
+                </v-icon>
+                <span class="sp-wt-row__label">{{
+                  tm("spcodeProjectLoad.indicator.worktreeNone")
+                }}</span>
+                <v-icon
+                  v-if="!activeWorktree"
+                  size="14"
+                  class="sp-wt-row__check"
+                >
+                  mdi-check
+                </v-icon>
+              </button>
+              <div v-if="worktreesLoading" class="sp-wt-hint">
+                {{ tm("spcodeProjectLoad.indicator.worktreeLoading") }}
+              </div>
+              <template v-else-if="worktreeList.length">
+                <button
+                  v-for="wt in worktreeList"
+                  :key="wt.path"
+                  type="button"
+                  class="sp-wt-row"
+                  :class="{
+                    'sp-wt-row--selected': activeWorktree === wt.path,
+                  }"
+                  :title="wt.path"
+                  :disabled="isSelectingWorktree"
+                  @click="selectWorktree(wt.path)"
+                >
+                  <v-icon size="14" class="sp-wt-row__icon">{{
+                    wt.isMain
+                      ? "mdi-home"
+                      : wt.locked
+                        ? "mdi-lock"
+                        : "mdi-source-branch"
+                  }}</v-icon>
+                  <span class="sp-wt-row__label">{{ worktreeLabel(wt) }}</span>
+                  <span v-if="wt.isMain" class="sp-wt-row__badge">{{
+                    tm("spcodeProjectLoad.indicator.worktreeMainBadge")
+                  }}</span>
+                  <span v-else-if="!wt.branch" class="sp-wt-row__badge">{{
+                    tm("spcodeProjectLoad.indicator.worktreeDetachedBadge")
+                  }}</span>
+                  <v-icon
+                    v-if="activeWorktree === wt.path"
+                    size="14"
+                    class="sp-wt-row__check"
+                  >
+                    mdi-check
+                  </v-icon>
+                </button>
+              </template>
+              <div
+                v-else-if="worktreesFailed"
+                class="sp-wt-hint sp-wt-hint--error"
+              >
+                {{ tm("spcodeProjectLoad.indicator.worktreeLoadFailed") }}
+              </div>
+              <div v-else class="sp-wt-hint">
+                {{ tm("spcodeProjectLoad.indicator.worktreeEmpty") }}
+              </div>
+            </template>
+
+            <!-- ── 服务 ── -->
+            <div class="sp-menu-divider"></div>
+            <div class="sp-menu-title">
+              {{ tm("spcodeProjectLoad.indicator.servicesTitle") }}
+            </div>
+            <!-- Codegraph -->
+            <div class="sp-svc-row">
+              <span
+                class="sp-svc-row__dot"
+                :class="`sp-svc-row__dot--${codegraphState.dot}`"
+                aria-hidden="true"
+              />
+              <v-icon size="14" class="sp-svc-row__icon">
+                {{ codegraphState.icon }}
+              </v-icon>
+              <span class="sp-svc-row__label">{{ codegraphState.label }}</span>
+              <button
+                type="button"
+                class="sp-svc-row__action"
+                @click="openCodegraphManager"
+              >
+                {{ tm("spcodeProjectLoad.indicator.manageCodegraph") }}
+              </button>
+            </div>
+            <div
+              class="sp-svc-row__detail"
+              :title="`${tm('spcodeProjectLoad.indicator.defaultProjectPrefix')}: ${codegraphState.detail}`"
+            >
+              {{ tm("spcodeProjectLoad.indicator.defaultProjectPrefix") }}:
+              {{ codegraphState.detail }}
+            </div>
+            <!-- Vivado -->
+            <div class="sp-svc-row">
+              <span
+                class="sp-svc-row__dot"
+                :class="`sp-svc-row__dot--${vivadoState.dot}`"
+                aria-hidden="true"
+              />
+              <v-icon size="14" class="sp-svc-row__icon">
+                {{ vivadoState.icon }}
+              </v-icon>
+              <span class="sp-svc-row__label">{{ vivadoState.label }}</span>
+            </div>
+            <div class="sp-svc-row__detail" :title="vivadoState.detail">
+              {{ vivadoState.detail }}
+            </div>
+            <!-- Agent Memory（tc_memory 插件） -->
+            <div class="sp-svc-row">
+              <span
+                class="sp-svc-row__dot"
+                :class="`sp-svc-row__dot--${tcMemoryState.dot}`"
+                aria-hidden="true"
+              />
+              <v-icon size="14" class="sp-svc-row__icon">
+                {{ tcMemoryState.icon }}
+              </v-icon>
+              <span class="sp-svc-row__label">{{ tcMemoryState.label }}</span>
+            </div>
+            <div class="sp-svc-row__detail" :title="tcMemoryState.detail">
+              {{ tcMemoryState.detail }}
+            </div>
+          </template>
         </v-card-text>
       </v-card>
     </v-menu>
 
     <!--
-      Comic-style status bubble (2026-08-15): pops next to the services
-      button when codegraph state changes (initializing / restarting /
+      Comic-style status bubble (2026-08-15): pops next to the capsule
+      when codegraph state changes (initializing / restarting /
       connected / disconnected). Auto-hides after 3 s; a state update
       while visible resets the timer.
     -->
@@ -773,98 +783,206 @@ function openLoadDialog(): void {
 </template>
 
 <style scoped>
-.sp-status-badge {
+.sp-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  position: relative; /* anchor for the status bubble */
+}
+
+/* ── Ghost capsule (2026-10-03) ──
+   Borderless at rest; hover/open reveals a wash. The status dot and the
+   green worktree suffix carry the semantics, not chrome. */
+.sp-capsule {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: var(--sp-chip-height);
-  padding: 0 10px;
-  border: 1px solid var(--sp-chip-border);
-  border-radius: 12px;
-  background: var(--sp-chip-bg);
-  color: var(--sp-text-primary);
-  font-size: 12px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: background-color 150ms ease;
-  max-width: min(240px, 100%);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+  max-width: min(320px, 100%);
   min-width: 0;
 }
 
-.sp-status-badge:hover {
-  background: var(--sp-chip-hover-bg);
+.sp-capsule:hover {
+  background: var(--sp-ghost-hover-bg);
+  color: var(--sp-text-primary);
 }
-.sp-status-badge:active {
-  background: var(--sp-chip-active-bg);
+
+.sp-capsule--open {
+  background: var(--sp-ghost-open-bg);
+  color: var(--sp-text-primary);
 }
-.sp-status-badge:focus-visible {
+
+.sp-capsule:disabled {
+  cursor: default;
+}
+
+.sp-capsule:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 1px;
 }
 
-.sp-status-badge__dot {
+.sp-capsule__dot {
   flex: 0 0 6px;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--sp-status-dot-success);
+  background: var(--sp-status-dot-neutral);
   transition: background-color 200ms ease;
 }
 
-.sp-status-badge__dot--neutral {
-  background: var(--sp-status-dot-neutral);
+.sp-capsule__dot--success {
+  background: var(--sp-status-dot-success);
 }
 
-.sp-status-badge--empty .sp-status-badge__dot {
+.sp-capsule__dot--warning {
+  background: var(--sp-status-dot-warning);
+}
+
+.sp-capsule__dot--hollow {
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--sp-status-dot-neutral);
 }
 
-.sp-status-badge__icon {
+.sp-capsule__icon {
   flex: 0 0 14px;
   color: rgb(var(--v-theme-primary));
 }
 
-.sp-status-badge__label {
-  white-space: nowrap;
+.sp-capsule--failed,
+.sp-capsule--failed .sp-capsule__icon {
+  color: rgb(var(--v-theme-error));
+}
+
+.sp-capsule .mdi-loading {
+  animation: sp-rotate 1s linear infinite;
+}
+
+@keyframes sp-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sp-capsule__label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
-  flex-shrink: 1;
-}
-
-.sp-status-badge__path {
-  font-family: var(--v-font-mono, monospace);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--sp-text-path);
-  max-width: 12rem;
-  min-width: 0;
-  flex-shrink: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ── Silent-operation progress states (2026-08-06) ── */
-.sp-chip-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  position: relative; /* anchor for the status bubble */
+.sp-capsule__wt-sep {
+  flex: 0 0 auto;
+  color: var(--sp-status-dot-neutral);
 }
 
-/* ── Worktree activation side button (2026-08-20) ──
-   Sits right next to the chip, NOT overlaid — the chip's width varies
-   with the project name (long names truncate to "xxx…"), which left an
-   absolutely positioned overlay detached from the chip edge. Geometry
-   comes from the shared .sp-chip-services-btn class; this only adds the
-   activated accent (the LLM is pinned to that worktree). */
-.sp-chip-wt-btn--active {
+.sp-capsule__wt-icon {
+  flex: 0 0 12px;
   color: rgb(var(--v-theme-success));
-  border-color: rgba(var(--v-theme-success), 0.55);
 }
 
+.sp-capsule__wt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--v-theme-success));
+  font-weight: 600;
+}
+
+.sp-capsule__chevron {
+  flex: 0 0 auto;
+  opacity: 0.5;
+}
+
+/* ── Unified dropdown sections ── */
+.sp-menu-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sp-text-path);
+  margin: 8px 0 2px;
+}
+
+.sp-menu-title:first-child {
+  margin-top: 0;
+}
+
+.sp-menu-divider {
+  height: 1px;
+  margin: 6px 2px;
+  background: var(--sp-chip-divider);
+}
+
+.sp-menu-row,
+.sp-menu-static {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sp-text-primary);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.sp-menu-row {
+  cursor: pointer;
+}
+
+.sp-menu-row:hover {
+  background: var(--sp-ghost-hover-bg);
+}
+
+.sp-menu-row__icon {
+  flex: 0 0 14px;
+  opacity: 0.7;
+}
+
+.sp-menu-row__label {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.sp-menu-row__sub {
+  margin-left: auto;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--sp-text-path);
+  direction: ltr;
+}
+
+.sp-chip-popover-messages {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* ── Worktree rows ── */
 .sp-wt-row {
   display: flex;
   align-items: center;
@@ -882,7 +1000,7 @@ function openLoadDialog(): void {
 }
 
 .sp-wt-row:hover:not(:disabled) {
-  background: var(--sp-chip-hover-bg);
+  background: var(--sp-ghost-hover-bg);
 }
 
 .sp-wt-row:disabled {
@@ -929,76 +1047,7 @@ function openLoadDialog(): void {
   color: rgb(var(--v-theme-error));
 }
 
-.sp-status-badge--failed {
-  color: rgb(var(--v-theme-error));
-}
-
-.sp-status-badge--failed .sp-status-badge__icon {
-  color: rgb(var(--v-theme-error));
-}
-
-.sp-status-badge .mdi-loading {
-  animation: sp-rotate 1s linear infinite;
-}
-
-@keyframes sp-rotate {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.sp-chip-details-btn {
-  border: 0;
-  background: transparent;
-  color: rgb(var(--v-theme-error));
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  padding: 0;
-}
-
-.sp-chip-popover-title {
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.sp-chip-popover-messages {
-  margin: 0;
-  white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-/* ── Services status popover (2026-08-15) ── */
-.sp-chip-services-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--sp-chip-height);
-  height: var(--sp-chip-height);
-  padding: 0;
-  border: 1px solid var(--sp-chip-border);
-  border-radius: 10px;
-  background: var(--sp-chip-bg);
-  color: var(--sp-text-primary);
-  cursor: pointer;
-  transition: background-color 150ms ease;
-}
-
-.sp-chip-services-btn:hover {
-  background: var(--sp-chip-hover-bg);
-}
-.sp-chip-services-btn:active {
-  background: var(--sp-chip-active-bg);
-}
-.sp-chip-services-btn:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 1px;
-}
-
+/* ── Services section ── */
 .sp-svc-row {
   display: flex;
   align-items: center;
@@ -1055,7 +1104,7 @@ function openLoadDialog(): void {
 }
 
 .sp-svc-row__action:hover {
-  background: var(--sp-chip-hover-bg);
+  background: var(--sp-ghost-hover-bg);
 }
 
 .sp-svc-row__detail {
@@ -1071,9 +1120,7 @@ function openLoadDialog(): void {
 /* ── Status bubble (2026-08-15) ── */
 .sp-bubble {
   position: absolute;
-  /* Anchor to the project chip's left edge: the shared wrapper also
-     contains side buttons, so right anchoring drifts away from the chip.
-     (elecvoid243, 2026-10-02) */
+  /* Anchor to the capsule's left edge. (elecvoid243, 2026-10-02) */
   left: 0;
   bottom: calc(100% + 10px);
   z-index: 30;
@@ -1114,7 +1161,7 @@ function openLoadDialog(): void {
 }
 
 .sp-bubble__close:hover {
-  background: var(--sp-chip-hover-bg);
+  background: var(--sp-ghost-hover-bg);
   color: var(--sp-text-primary);
 }
 
@@ -1132,7 +1179,9 @@ function openLoadDialog(): void {
 
 .sp-bubble-enter-active,
 .sp-bubble-leave-active {
-  transition: opacity 150ms ease, transform 150ms ease;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
 }
 
 .sp-bubble-enter-from,

@@ -69,6 +69,7 @@ function openEditor(): void {
             v-bind="{ ...tipProps, ...menuProps }"
             type="button"
             class="effort-chip-btn"
+            :class="{ 'effort-chip-btn--open': menuOpen }"
             :aria-label="tm('input.thinkingEffort')"
           >
             <v-icon size="14" class="effort-chip-btn__icon">mdi-brain</v-icon>
@@ -123,20 +124,29 @@ function openEditor(): void {
 .effort-chip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: var(--sp-chip-height);
-  padding: 0 8px;
-  border: 1px solid var(--sp-chip-border);
-  border-radius: 10px;
-  background: var(--sp-chip-bg);
-  color: var(--sp-text-primary);
-  font-size: 12px;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background-color 150ms ease;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
 }
 
 .effort-chip-btn:hover {
-  background: var(--sp-chip-hover-bg);
+  background: var(--sp-ghost-hover-bg, rgba(var(--v-theme-on-surface), 0.055));
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.effort-chip-btn--open {
+  background: var(--sp-ghost-open-bg, rgba(var(--v-theme-on-surface), 0.07));
+  color: rgb(var(--v-theme-on-surface));
 }
 
 .effort-chip-btn:active {
@@ -146,6 +156,10 @@ function openEditor(): void {
 .effort-chip-btn:focus-visible {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: 1px;
+}
+
+.effort-chip-btn__icon {
+  opacity: 0.7;
 }
 
 /* Custom level names and long locales truncate instead of stretching

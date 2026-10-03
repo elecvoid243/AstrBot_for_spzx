@@ -25,9 +25,18 @@ import { useSpcodeWorktrees } from "@/composables/useSpcodeWorktrees";
 
 interface Props {
   umo: string | null;
+  /**
+   * When true (a spcode project is loaded), the dropdown gains a
+   * "查看工作区" entry at the bottom — the standalone GitDiffChip button
+   * was folded into this menu (2026-10-03, elecvoid243) so the status
+   * row's right side converges to a single capsule.
+   */
+  showWorkspaceEntry?: boolean;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  showWorkspaceEntry: false,
+});
 
 const { tm } = useModuleI18n("features/chat");
 const { status, setRoots } = useFileAccessMode();
@@ -36,9 +45,15 @@ const worktrees = useSpcodeWorktrees();
 
 const emit = defineEmits<{
   (e: "change", mode: FileAccessMode): void;
+  (e: "open-diff-sidebar"): void;
 }>();
 
 const menuOpen = ref(false);
+
+function openWorkspace(): void {
+  menuOpen.value = false;
+  emit("open-diff-sidebar");
+}
 
 interface ModeOption {
   value: FileAccessMode;
@@ -170,7 +185,7 @@ async function saveRoots(): Promise<void> {
 </script>
 
 <template>
-  <v-menu v-model="menuOpen" location="bottom start" transition="none">
+  <v-menu v-model="menuOpen" location="bottom end" transition="none">
     <template #activator="{ props: menuProps }">
       <v-tooltip location="bottom" :open-delay="200">
         <template #activator="{ props: tipProps }">
@@ -178,6 +193,7 @@ async function saveRoots(): Promise<void> {
             v-bind="{ ...tipProps, ...menuProps }"
             type="button"
             class="fa-chip-btn"
+            :class="{ 'fa-chip-btn--open': menuOpen }"
             :aria-label="tm('fileAccessChip.menuTitle')"
           >
             <v-icon
@@ -249,6 +265,24 @@ async function saveRoots(): Promise<void> {
             <span>{{ tm("fileAccessChip.rootsDialog.gearTooltip") }}</span>
           </v-tooltip>
         </div>
+        <!-- "查看工作区" folded in from the standalone GitDiffChip
+             (2026-10-03, elecvoid243): same workspace semantic domain —
+             modes govern writes, this opens the read view. -->
+        <template v-if="props.showWorkspaceEntry">
+          <div class="fa-chip-divider"></div>
+          <button
+            type="button"
+            class="fa-chip-row__main fa-chip-row__main--entry"
+            @click="openWorkspace"
+          >
+            <v-icon size="14" class="fa-chip-row__entry-icon">
+              mdi-folder-open-outline
+            </v-icon>
+            <span class="fa-chip-row__label">
+              {{ tm("spcodeProjectLoad.diffSidebar.chip") }}
+            </span>
+          </button>
+        </template>
       </v-card-text>
     </v-card>
   </v-menu>
@@ -327,20 +361,29 @@ async function saveRoots(): Promise<void> {
 .fa-chip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: var(--sp-chip-height);
-  padding: 0 8px;
-  border: 1px solid var(--sp-chip-border);
-  border-radius: 10px;
-  background: var(--sp-chip-bg);
-  color: var(--sp-text-primary);
-  font-size: 12px;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background-color 150ms ease;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
 }
 
 .fa-chip-btn:hover {
-  background: var(--sp-chip-hover-bg);
+  background: var(--sp-ghost-hover-bg, rgba(var(--v-theme-on-surface), 0.055));
+  color: var(--sp-text-primary);
+}
+
+.fa-chip-btn--open {
+  background: var(--sp-ghost-open-bg, rgba(var(--v-theme-on-surface), 0.07));
+  color: var(--sp-text-primary);
 }
 
 .fa-chip-btn:active {
@@ -447,6 +490,26 @@ async function saveRoots(): Promise<void> {
 
 .fa-chip-row__check {
   margin-left: auto;
+}
+
+.fa-chip-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--sp-chip-divider);
+}
+
+.fa-chip-row__main--entry {
+  margin-top: 0;
+  color: var(--sp-text-muted);
+}
+
+.fa-chip-row__main--entry:hover {
+  color: var(--sp-text-primary);
+}
+
+.fa-chip-row__entry-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
 }
 
 /* ── Whitelist dialog ── */

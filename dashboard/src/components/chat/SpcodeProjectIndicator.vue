@@ -895,7 +895,10 @@ function handleManageProject(): void {
 
 .sp-capsule__wt-icon {
   flex: 0 0 12px;
-  color: rgb(var(--v-theme-success));
+  /* Worktree branch renders in the theme's primary blue (2026-10-03) so
+     it reads as a contextual hint rather than a success state; the green
+     status dot keeps the loaded/success semantics. */
+  color: rgb(var(--v-theme-primary));
 }
 
 .sp-capsule__wt {
@@ -903,8 +906,7 @@ function handleManageProject(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgb(var(--v-theme-success));
-  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
 }
 
 .sp-capsule__chevron {

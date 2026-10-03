@@ -233,4 +233,11 @@ describe("ReasoningTimeline think live preview", () => {
     expect(el.classList.contains("reasoning-step")).toBe(true);
     expect(typeof beforeBottom).toBe("number");
   });
+
+  it("never shows the collapse toggle without collapseThink (main agent)", () => {
+    const wrapper = mountTimeline([{ type: "think", think: LONG_THINK }]);
+    expect(
+      wrapper.find("[data-testid='think-collapse-toggle']").exists(),
+    ).toBe(false);
+  });
 });

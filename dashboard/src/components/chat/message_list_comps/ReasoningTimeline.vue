@@ -100,6 +100,7 @@
 
         <button
           v-if="
+            collapseThink &&
             entry.kind === 'think' &&
             !thinkCollapsed(entry) &&
             thinkExpandable(entry)

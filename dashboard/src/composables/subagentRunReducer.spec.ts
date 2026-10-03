@@ -594,27 +594,42 @@ describe("SubAgentRunBlock follow-up input", () => {
     });
   });
 
-  it("shows the follow-up input only while running with a session id", () => {
-    // The input must be reachable without expanding the (default-folded) body.
+  it("shows the follow-up input only while running, expanded, with a session id", async () => {
+    // Folded card (default): the input does not exist, preventing mis-taps.
+    // (v-show-based visibility checks are unreliable in jsdom, so gating is
+    // by v-if and asserted via DOM presence.)
+    const folded = mountBlock({ sessionId: "sess-1" });
     expect(
-      mountBlock({ sessionId: "sess-1" })
-        .find("[data-testid='subagent-follow-up-input']")
-        .exists(),
-    ).toBe(true);
-    expect(
-      mountBlock({ sessionId: "sess-1", part: runningPart({ status: "completed" }) })
-        .find("[data-testid='subagent-follow-up-input']")
-        .exists(),
+      folded.find("[data-testid='subagent-follow-up-input']").exists(),
     ).toBe(false);
+
+    // Expanding the card reveals the input.
+    await folded.find(".subagent-run-header").trigger("click");
     expect(
-      mountBlock({})
-        .find("[data-testid='subagent-follow-up-input']")
-        .exists(),
+      folded.find("[data-testid='subagent-follow-up-input']").exists(),
+    ).toBe(true);
+
+    // Completed run: no input even when expanded.
+    const completed = mountBlock({
+      sessionId: "sess-1",
+      part: runningPart({ status: "completed" }),
+    });
+    await completed.find(".subagent-run-header").trigger("click");
+    expect(
+      completed.find("[data-testid='subagent-follow-up-input']").exists(),
+    ).toBe(false);
+
+    // No session id (transcript views): never any input.
+    const noSession = mountBlock({});
+    await noSession.find(".subagent-run-header").trigger("click");
+    expect(
+      noSession.find("[data-testid='subagent-follow-up-input']").exists(),
     ).toBe(false);
   });
 
   it("posts the follow-up and clears the field", async () => {
     const wrapper = mountBlock({ sessionId: "sess-1" });
+    await wrapper.find(".subagent-run-header").trigger("click");
     const input = wrapper.find("[data-testid='subagent-follow-up-input']");
     await input.setValue("steer it");
     await wrapper.find("[data-testid='subagent-follow-up-send']").trigger("click");
@@ -634,6 +649,7 @@ describe("SubAgentRunBlock follow-up input", () => {
       data: { status: "ok", data: { accepted: false, reason: "finished" } },
     });
     const wrapper = mountBlock({ sessionId: "sess-1" });
+    await wrapper.find(".subagent-run-header").trigger("click");
     const input = wrapper.find("[data-testid='subagent-follow-up-input']");
     await input.setValue("too late");
     await wrapper.find("[data-testid='subagent-follow-up-send']").trigger("click");

@@ -97,43 +97,43 @@
         </div>
 
         <div v-if="part.error" class="error-text">{{ part.error }}</div>
+
+        <!-- Follow-up input: only inside the expanded body, so a folded card
+             offers no accidental input target. -->
+        <div
+          v-if="part.status === 'running' && sessionId && expanded"
+          class="subagent-follow-up"
+        >
+          <input
+            v-model="followUpText"
+            data-testid="subagent-follow-up-input"
+            class="subagent-follow-up-input"
+            type="text"
+            :placeholder="
+              tm('subagentFollowUp.placeholder', {
+                name: part.agent_name || 'subagent',
+              })
+            "
+            :disabled="followUpSending"
+            @keydown.enter.prevent="sendFollowUp"
+          />
+          <button
+            class="subagent-follow-up-send"
+            data-testid="subagent-follow-up-send"
+            type="button"
+            :disabled="followUpSending || !followUpText.trim()"
+            :title="tm('subagentFollowUp.send')"
+            :aria-label="tm('subagentFollowUp.send')"
+            @click="sendFollowUp"
+          >
+            <v-icon size="16">mdi-send-outline</v-icon>
+          </button>
+        </div>
+        <div v-if="followUpNotice" class="subagent-follow-up-notice">
+          {{ followUpNotice }}
+        </div>
       </div>
     </v-expand-transition>
-
-    <!-- Follow-up input: visible while the run is live, reachable without
-         expanding the (default-folded) detail body. -->
-    <div
-      v-if="part.status === 'running' && sessionId"
-      class="subagent-follow-up"
-    >
-      <input
-        v-model="followUpText"
-        data-testid="subagent-follow-up-input"
-        class="subagent-follow-up-input"
-        type="text"
-        :placeholder="
-          tm('subagentFollowUp.placeholder', {
-            name: part.agent_name || 'subagent',
-          })
-        "
-        :disabled="followUpSending"
-        @keydown.enter.prevent="sendFollowUp"
-      />
-      <button
-        class="subagent-follow-up-send"
-        data-testid="subagent-follow-up-send"
-        type="button"
-        :disabled="followUpSending || !followUpText.trim()"
-        :title="tm('subagentFollowUp.send')"
-        :aria-label="tm('subagentFollowUp.send')"
-        @click="sendFollowUp"
-      >
-        <v-icon size="16">mdi-send-outline</v-icon>
-      </button>
-    </div>
-    <div v-if="followUpNotice" class="subagent-follow-up-notice">
-      {{ followUpNotice }}
-    </div>
 
     <!-- Always-visible collapse affordance. Sticks to the bottom of the
          visible scroll viewport while this card is taller than it, so a

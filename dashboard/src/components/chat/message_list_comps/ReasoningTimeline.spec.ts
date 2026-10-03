@@ -9,6 +9,7 @@
 // Author: elecvoid243 | 2026-08-11
 
 import { describe, it, expect, vi } from "vitest";
+import { reactive } from "vue";
 import { mount } from "@vue/test-utils";
 import ReasoningTimeline from "./ReasoningTimeline.vue";
 
@@ -118,8 +119,10 @@ describe("ReasoningTimeline keyword locate", () => {
   });
 });
 
-describe("ReasoningTimeline think collapse", () => {
-  const LONG_THINK = "x".repeat(150);
+describe("ReasoningTimeline think live preview", () => {
+  const HEAD = `UNIQUE-HEAD ${"h".repeat(120)}`;
+  const TAIL = `UNIQUE-TAIL ${"t".repeat(120)}`;
+  const LONG_THINK = `${HEAD}\n${"m".repeat(40)}\n${TAIL}`;
 
   function mountCollapsible(
     parts: unknown[],
@@ -136,46 +139,74 @@ describe("ReasoningTimeline think collapse", () => {
     });
   }
 
-  it("collapses long think entries to a 100-char preview by default", () => {
+  it("shows a clamped tail preview of the thinking, not the head", () => {
     const wrapper = mountCollapsible([{ type: "think", think: LONG_THINK }]);
     const preview = wrapper.find("[data-testid='think-preview']");
     expect(preview.exists()).toBe(true);
-    expect(preview.text()).toContain("x".repeat(100));
-    expect(preview.text()).toContain("…");
-    // Full content stays out of the DOM while collapsed.
-    expect(wrapper.text()).not.toContain(LONG_THINK);
+    expect(preview.text()).toContain("UNIQUE-TAIL");
+    expect(preview.text()).not.toContain("UNIQUE-HEAD");
   });
 
-  it("expands on click and collapses again", async () => {
+  it("keeps short think entries fully visible without an expand affordance", () => {
+    const wrapper = mountCollapsible([{ type: "think", think: "short thought" }]);
+    const preview = wrapper.find("[data-testid='think-preview']");
+    expect(preview.text()).toContain("short thought");
+    expect(preview.text()).not.toContain("…");
+    expect(wrapper.find("[data-testid='think-expand-label']").exists()).toBe(
+      false,
+    );
+  });
+
+  it("expands to full markdown on click and collapses back", async () => {
     const wrapper = mountCollapsible([{ type: "think", think: LONG_THINK }]);
     await wrapper.find("[data-testid='think-preview']").trigger("click");
-    expect(wrapper.text()).toContain(LONG_THINK);
-    await wrapper.find("[data-testid='think-collapse-toggle']").trigger("click");
-    expect(wrapper.text()).not.toContain(LONG_THINK);
+    expect(wrapper.text()).toContain("UNIQUE-HEAD");
+    await wrapper
+      .find("[data-testid='think-collapse-toggle']")
+      .trigger("click");
+    expect(wrapper.text()).not.toContain("UNIQUE-HEAD");
   });
 
-  it("keeps short think entries fully rendered", () => {
-    const wrapper = mountCollapsible([{ type: "think", think: "short" }]);
-    expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(false);
-    expect(wrapper.text()).toContain("short");
+  it("throttles the live preview to a 2s tick while streaming", async () => {
+    vi.useFakeTimers();
+    try {
+      const parts = reactive([{ type: "think", think: "first tail" }]);
+      const wrapper = mountCollapsible(parts, { isStreaming: true });
+      const preview = wrapper.find("[data-testid='think-preview']");
+      expect(preview.text()).toContain("first tail");
+
+      // Reducer-style in-place mutation: newer thinking arrives.
+      (parts[0] as { think: string }).think = "second tail";
+      await wrapper.vm.$nextTick();
+      // Before the next tick the preview still shows the old tail.
+      expect(
+        wrapper.find("[data-testid='think-preview']").text(),
+      ).toContain("first tail");
+
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(
+        wrapper.find("[data-testid='think-preview']").text(),
+      ).toContain("second tail");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("keeps the live-streaming last think entry expanded", () => {
-    const wrapper = mountCollapsible(
-      [
-        { type: "think", think: `finished earlier ${LONG_THINK}` },
-        { type: "think", think: LONG_THINK },
-      ],
-      { isStreaming: true },
-    );
-    // Only the non-live (first) entry is collapsed; the live one streams open.
-    expect(wrapper.findAll("[data-testid='think-preview']")).toHaveLength(1);
-    expect(wrapper.text()).toContain(LONG_THINK);
+  it("collapses the streaming entry too once the run ends", async () => {
+    const parts = reactive([{ type: "think", think: LONG_THINK }]);
+    const wrapper = mountCollapsible(parts, { isStreaming: true });
+    expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(true);
+    await wrapper.setProps({ isStreaming: false });
+    // Same collapsed form after completion; still the tail, still clamped.
+    const preview = wrapper.find("[data-testid='think-preview']");
+    expect(preview.exists()).toBe(true);
+    expect(preview.text()).toContain("UNIQUE-TAIL");
+    expect(preview.text()).not.toContain("UNIQUE-HEAD");
   });
 
   it("renders full think content when collapseThink is not set", () => {
     const wrapper = mountTimeline([{ type: "think", think: LONG_THINK }]);
     expect(wrapper.find("[data-testid='think-preview']").exists()).toBe(false);
-    expect(wrapper.text()).toContain(LONG_THINK);
+    expect(wrapper.text()).toContain("UNIQUE-HEAD");
   });
 });

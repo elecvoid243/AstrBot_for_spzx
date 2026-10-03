@@ -31,7 +31,7 @@
         </div>
 
         <MarkdownRender
-          v-if="entry.kind === 'think' && !thinkCollapsed(entry, entryIndex)"
+          v-if="entry.kind === 'think' && !thinkCollapsed(entry)"
           :content="entry.think || ''"
           class="chat-markdown reasoning-text markdown-content"
           :final="!isStreaming"
@@ -46,17 +46,25 @@
         <div
           v-else-if="entry.kind === 'think'"
           class="reasoning-think-preview"
+          :class="{ 'is-expandable': thinkExpandable(entry) }"
           data-testid="think-preview"
-          role="button"
-          tabindex="0"
-          :title="tm('reasoning.expandThink')"
-          @click="toggleThink(entry.key)"
-          @keydown.enter.prevent="toggleThink(entry.key)"
+          :role="thinkExpandable(entry) ? 'button' : undefined"
+          :tabindex="thinkExpandable(entry) ? 0 : undefined"
+          :title="thinkExpandable(entry) ? tm('reasoning.expandThink') : ''"
+          @click="thinkExpandable(entry) && toggleThink(entry.key)"
+          @keydown.enter.prevent="
+            thinkExpandable(entry) && toggleThink(entry.key)
+          "
         >
           <span class="reasoning-think-preview-text">{{
-            thinkPreview(entry.think)
+            thinkPreviewText(entry, entryIndex)
           }}</span>
-          <span class="think-toggle-label">{{ tm("reasoning.expandThink") }}</span>
+          <span
+            v-if="thinkExpandable(entry)"
+            class="think-toggle-label"
+            data-testid="think-expand-label"
+            >{{ tm("reasoning.expandThink") }}</span
+          >
         </div>
 
         <div
@@ -93,8 +101,8 @@
         <button
           v-if="
             entry.kind === 'think' &&
-            thinkCollapsible(entry, entryIndex) &&
-            expandedThinkKeys.has(entry.key)
+            !thinkCollapsed(entry) &&
+            thinkExpandable(entry)
           "
           class="think-collapse-toggle"
           data-testid="think-collapse-toggle"
@@ -109,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { MarkdownRender } from "markstream-vue";
 import {
   CHAT_MARKDOWN_HEADING_STYLE,
@@ -138,41 +146,38 @@ const props = defineProps<{
 
 const { tm } = useModuleI18n("features/chat");
 
-const THINK_PREVIEW_CHARS = 100;
+const THINK_PREVIEW_MAX_CHARS = 160;
+const LIVE_PREVIEW_INTERVAL_MS = 2000;
 /** Keys of think entries the user manually expanded. */
 const expandedThinkKeys = ref(new Set<string>());
 
-function isLiveThinkEntry(entry: TimelineEntry, index: number): boolean {
-  return (
-    Boolean(props.isStreaming) &&
-    entry.kind === "think" &&
-    index === timelineEntries.value.length - 1
-  );
+/**
+ * Tail preview of a think entry: the last non-empty lines, capped in length.
+ * Mirrors the main agent's reasoning preview, which surfaces the LATEST
+ * thinking rather than the head.
+ */
+function tailPreview(think: string): { text: string; truncated: boolean } {
+  const lines = think
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const tail = lines.slice(-2).join(" ");
+  if (tail.length <= THINK_PREVIEW_MAX_CHARS) {
+    return { text: tail, truncated: false };
+  }
+  return { text: `…${tail.slice(-THINK_PREVIEW_MAX_CHARS)}`, truncated: true };
 }
 
-function thinkCollapsed(entry: TimelineEntry, index: number): boolean {
+function thinkCollapsed(entry: TimelineEntry): boolean {
   return (
     Boolean(props.collapseThink) &&
     entry.kind === "think" &&
-    entry.think.length > THINK_PREVIEW_CHARS &&
-    !isLiveThinkEntry(entry, index) &&
     !expandedThinkKeys.value.has(entry.key)
   );
 }
 
-function thinkPreview(think: string): string {
-  const cleaned = think.replace(/\s+/g, " ").trim();
-  return `${cleaned.slice(0, THINK_PREVIEW_CHARS)}…`;
-}
-
-/** True when an expanded long think entry may be collapsed again. */
-function thinkCollapsible(entry: TimelineEntry, index: number): boolean {
-  return (
-    Boolean(props.collapseThink) &&
-    entry.kind === "think" &&
-    entry.think.length > THINK_PREVIEW_CHARS &&
-    !isLiveThinkEntry(entry, index)
-  );
+function thinkExpandable(entry: TimelineEntry): boolean {
+  return entry.kind === "think" && tailPreview(entry.think).truncated;
 }
 
 function toggleThink(key: string): void {
@@ -184,6 +189,7 @@ function toggleThink(key: string): void {
   }
   expandedThinkKeys.value = next;
 }
+
 
 // 2026-08-11 file-change visibility: distilled per-file changes for the
 // pinned card section, and the scroll-to-locate entry point used by the
@@ -307,6 +313,60 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
 
   return entries;
 });
+
+// Live preview throttle (same cadence as the main agent's ReasoningBlock):
+// while streaming, the last think entry's preview only refreshes on a 2s
+// tick, so fast token output swaps text without per-delta flicker. The fixed
+// line-clamped height means these swaps never move the layout.
+const liveThinkPreview = ref("");
+let livePreviewTimer: ReturnType<typeof setInterval> | null = null;
+
+function updateLiveThinkPreview(): void {
+  const entries = timelineEntries.value;
+  const last = entries[entries.length - 1];
+  liveThinkPreview.value =
+    last && last.kind === "think" ? tailPreview(last.think).text : "";
+}
+
+function stopLivePreviewTimer(): void {
+  if (livePreviewTimer) {
+    clearInterval(livePreviewTimer);
+    livePreviewTimer = null;
+  }
+}
+
+watch(
+  () => [props.isStreaming, props.collapseThink],
+  () => {
+    if (props.isStreaming && props.collapseThink) {
+      updateLiveThinkPreview();
+      if (!livePreviewTimer) {
+        livePreviewTimer = setInterval(
+          updateLiveThinkPreview,
+          LIVE_PREVIEW_INTERVAL_MS,
+        );
+      }
+      return;
+    }
+    stopLivePreviewTimer();
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(stopLivePreviewTimer);
+
+/** Preview text for a collapsed think entry: throttled while it is the live
+ * streaming entry, static tail otherwise. */
+function thinkPreviewText(entry: TimelineEntry, index: number): string {
+  if (
+    props.isStreaming &&
+    entry.kind === "think" &&
+    index === timelineEntries.value.length - 1
+  ) {
+    return liveThinkPreview.value;
+  }
+  return entry.kind === "think" ? tailPreview(entry.think).text : "";
+}
 
 function normalizeToolCall(tool: Record<string, unknown>) {
   const normalized = { ...tool };
@@ -437,13 +497,22 @@ function parseJsonSafe(value: unknown) {
 }
 
 .reasoning-think-preview {
-  cursor: pointer;
   font-size: 0.92em;
   line-height: 1.62;
   color: rgba(var(--v-theme-on-surface), 0.65);
+  /* Fixed two-line clamp: streaming text swaps never change the height, so
+     fast think→tool cycles cannot churn the layout. */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.reasoning-think-preview:hover {
+.reasoning-think-preview.is-expandable {
+  cursor: pointer;
+}
+
+.reasoning-think-preview.is-expandable:hover {
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
 

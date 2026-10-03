@@ -971,6 +971,7 @@
               :reply-to="chatInputReplyTarget"
               :send-shortcut="sendShortcut"
               :show-provider-selector="false"
+              :workspace-panel-open="gitDiffSidebarOpen"
               :placeholder="
                 activeProject ? tm('input.projectPlaceholder') : undefined
               "
@@ -990,7 +991,7 @@
               @file-select="handleFilesSelected"
               @file-reference-drop="handleSidebarFileDrop"
               @clear-reply="replyTarget = null"
-              @open-diff-sidebar="openGitDiffSidebar"
+              @toggle-diff-sidebar="toggleGitDiffSidebar"
             />
           </template>
           <!-- 2026-08-13 (elecvoid243): archived sessions open read-only. -->
@@ -4815,7 +4816,12 @@ function openReasoningPanel(payload: {
   reasoningPanelOpen.value = true;
 }
 
-function openGitDiffSidebar(): void {
+/** Status-row workspace capsule: first click opens, second click closes. */
+function toggleGitDiffSidebar(): void {
+  if (gitDiffSidebarOpen.value) {
+    gitDiffSidebarOpen.value = false;
+    return;
+  }
   // Mutual exclusion: close every other sidebar before opening the
   // Git Diff sidebar. The watch in GitDiffSidebar will also auto-close
   // the sidebar when the underlying spcode project is unloaded.

@@ -8,10 +8,9 @@
   >
     <!--
       Status row above the composer (2026-10-03 redesign, elecvoid243):
-      two ghost capsules only. Left = project capsule (plugin-gated) whose
-      dropdown hosts project / LLM-worktree / services sections. Right =
-      file-access-mode capsule; its dropdown also carries the folded-in
-      "查看工作区" entry when a project is loaded.
+      right cluster = file-access-mode capsule + standalone workspace entry
+      capsule. The workspace entry was briefly folded into the mode menu and
+      is independent again so the menu stays purely about permissions.
     -->
     <div class="input-area__status-row">
       <div v-if="showSpcodeIndicator" class="input-area__status-row__left">
@@ -24,9 +23,16 @@
         <div class="input-area__status-row__chips-stack">
           <FileAccessModeChip
             :umo="currentSessionUmo"
-            :show-workspace-entry="spcodeStatus.status.value.loaded"
             @change="handleFileAccessModeChange"
-            @open-diff-sidebar="emit('open-diff-sidebar')"
+          />
+          <!-- Workspace entry — standalone again (2026-10-03, elecvoid243):
+               the permission menu governs writes, this opens the read view.
+               Same project gate as before the fold-in: no loaded project,
+               nothing to browse. Icon-only below the 768px breakpoint. -->
+          <GitDiffChip
+            v-if="spcodeStatus.status.value.loaded"
+            :active="props.workspacePanelOpen"
+            @toggle-diff-sidebar="emit('toggle-diff-sidebar')"
           />
         </div>
         <!--
@@ -681,6 +687,7 @@ import ProjectLoadDialog from "./ProjectLoadDialog.vue";
 import type { ProjectLoadSubmitPayload } from "./ProjectLoadDialog.vue";
 import SpcodeProjectIndicator from "./SpcodeProjectIndicator.vue";
 import FileAccessModeChip from "./FileAccessModeChip.vue";
+import GitDiffChip from "./GitDiffChip.vue";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 import CommentsPreviewDialog from "./CommentsPreviewDialog.vue";
@@ -742,6 +749,8 @@ interface Props {
   showProviderSelector?: boolean;
   tokenUsage?: TokenUsageInfo | null;
   placeholder?: string;
+  /** Git-diff / workspace sidebar is open — tints the workspace capsule. */
+  workspacePanelOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -753,6 +762,7 @@ const props = withDefaults(defineProps<Props>(), {
   sendShortcut: "shift_enter",
   showProviderSelector: true,
   tokenUsage: null,
+  workspacePanelOpen: false,
 });
 
 const emit = defineEmits<{
@@ -779,7 +789,7 @@ const emit = defineEmits<{
   fileReferenceDrop: [payload: { path: string; name: string }];
   clearReply: [];
   openLiveMode: [];
-  "open-diff-sidebar": [];
+  "toggle-diff-sidebar": [];
   // ZCode-style follow-up queue actions (2026-09-17): `flushPending`
   // dispatches the pending messages above the input right away — the
   // backend captures them into the active run and injects them at the
@@ -2318,8 +2328,8 @@ defineExpose({
   min-width: 0;
 }
 
-/* Right cluster: the single file-access-mode capsule (its dropdown also
-   hosts the folded-in "查看工作区" entry). */
+/* Right cluster: file-access-mode capsule + the standalone workspace
+   entry capsule (icon-only below 768px, see GitDiffChip). */
 .input-area__status-row__right {
   align-items: center;
   display: flex;

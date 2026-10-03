@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import GitDiffChip from './GitDiffChip.vue'
 
-describe('GitDiffChip (ghost button)', () => {
+describe('GitDiffChip (status-row workspace capsule)', () => {
   it('renders the sp-ghost-btn class (no chip border)', () => {
     const wrapper = mount(GitDiffChip, {
       global: { mocks: { $t: (k: string) => k } },
@@ -20,18 +20,39 @@ describe('GitDiffChip (ghost button)', () => {
     expect(wrapper.find('.mdi-folder-open-outline').exists()).toBe(true)
   })
 
-  it('emits open-diff-sidebar on click', async () => {
+  it('emits toggle-diff-sidebar on click', async () => {
     const wrapper = mount(GitDiffChip, {
       global: { mocks: { $t: (k: string) => k } },
     })
     await wrapper.find('.sp-ghost-btn').trigger('click')
-    expect(wrapper.emitted('open-diff-sidebar')).toBeTruthy()
+    expect(wrapper.emitted('toggle-diff-sidebar')).toBeTruthy()
   })
 
-  it('renders the 查看工作区 label from i18n', () => {
+  // The label span is asserted directly: the tooltip carries the shorter
+  // text too, so a wrapper.text() match could pass on the wrong node.
+  it('renders the short 工作区 label from i18n', () => {
     const wrapper = mount(GitDiffChip, {
       global: { mocks: { $t: (k: string) => k } },
     })
-    expect(wrapper.text()).toContain('查看工作区')
+    expect(wrapper.find('.sp-ghost-btn__label').text()).toBe('工作区')
+  })
+
+  it('tints the capsule while the sidebar is open', () => {
+    const wrapper = mount(GitDiffChip, {
+      props: { active: true },
+      global: { mocks: { $t: (k: string) => k } },
+    })
+    const btn = wrapper.find('.sp-ghost-btn')
+    expect(btn.classes()).toContain('sp-ghost-btn--active')
+    expect(btn.attributes('aria-pressed')).toBe('true')
+  })
+
+  it('stays neutral when the sidebar is closed', () => {
+    const wrapper = mount(GitDiffChip, {
+      global: { mocks: { $t: (k: string) => k } },
+    })
+    const btn = wrapper.find('.sp-ghost-btn')
+    expect(btn.classes()).not.toContain('sp-ghost-btn--active')
+    expect(btn.attributes('aria-pressed')).toBe('false')
   })
 })

@@ -872,7 +872,7 @@
       }
     },
     "diffSidebar": {
-      "chip": "查看工作区",
+      "chip": "工作区",
       "chipTooltip": "查看工作区文件、改动和历史",
       "title": "项目改动",
       "refreshTooltip": "刷新",

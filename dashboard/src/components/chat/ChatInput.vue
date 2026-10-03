@@ -520,6 +520,8 @@
             <ThinkingEffortChip
               v-model="thinkingEffort"
               :levels="userEffortLevels"
+              :mode="effortMode"
+              :slider="effortSlider"
               @edit="effortLevelsDialogOpen = true"
             />
           </div>
@@ -627,8 +629,10 @@
 
     <ThinkingEffortLevelsDialog
       v-model="effortLevelsDialogOpen"
+      :mode="effortMode"
       :levels="userEffortLevels"
-      @save="handleEffortLevelsSave"
+      :slider="effortSlider"
+      @save="handleEffortEditorSave"
     />
   </div>
 </template>
@@ -657,6 +661,13 @@ import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import type { ThinkingEffortLevel } from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
+import type { ThinkingEffortEditorPayload } from "./ThinkingEffortLevelsDialog.vue";
+import {
+  DEFAULT_THINKING_EFFORT_SLIDER,
+  normalizeEffortSliderConfig,
+  normalizeEffortValue,
+  type ThinkingEffortSliderConfig,
+} from "@/composables/thinkingEffortSlider";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import CommandSuggestion from "./CommandSuggestion.vue";
 import {
@@ -819,11 +830,16 @@ const isReplyClosing = ref(false);
 const isDragging = ref(false);
 
 // Per-message "thinking effort" (reasoning intensity) override, sent with
-// each chat request. Persisted locally. Every level is user-defined
-// (name + raw value) and stored in localStorage "thinkingEffortLevels"
-// (e.g. { name: "深度", value: "xhigh" }); the shipped defaults are
-// low / high / max, with max preselected.
+// each chat request. Persisted locally. Two shapes share the same chip
+// (2026-10-03): a user-defined level list (name + raw value, stored in
+// localStorage "thinkingEffortLevels") and a numeric slider track for models
+// whose reasoning_effort is a free number (DeepSeek-V4.1-Flash: 1-100, with
+// low / high / xhigh / max as alias values; config in
+// "thinkingEffortSlider"). The shipped level defaults are low / high / max,
+// with max preselected.
 const DEFAULT_EFFORT = "max";
+const EFFORT_MODE_KEY = "thinkingEffortMode";
+const EFFORT_SLIDER_KEY = "thinkingEffortSlider";
 
 const defaultThinkingEffortLevels = computed<ThinkingEffortLevel[]>(() => [
   { name: tm("input.thinkingEffortOptions.low"), value: "low" },
@@ -866,12 +882,56 @@ const userEffortLevels = computed<ThinkingEffortLevel[]>(
   () => storedEffortLevels.value ?? defaultThinkingEffortLevels.value,
 );
 
-const thinkingEffort = ref<ThinkingEffort>(
-  typeof localStorage !== "undefined"
-    ? (localStorage.getItem("thinkingEffort") as ThinkingEffort) ||
-        DEFAULT_EFFORT
-    : DEFAULT_EFFORT,
-);
+function loadStoredEffortMode(): "levels" | "slider" {
+  if (typeof localStorage === "undefined") return "levels";
+  return localStorage.getItem(EFFORT_MODE_KEY) === "slider"
+    ? "slider"
+    : "levels";
+}
+
+function loadStoredEffortSlider(): ThinkingEffortSliderConfig {
+  if (typeof localStorage === "undefined") return DEFAULT_THINKING_EFFORT_SLIDER;
+  try {
+    const raw = localStorage.getItem(EFFORT_SLIDER_KEY);
+    return raw
+      ? normalizeEffortSliderConfig(JSON.parse(raw))
+      : DEFAULT_THINKING_EFFORT_SLIDER;
+  } catch {
+    return DEFAULT_THINKING_EFFORT_SLIDER;
+  }
+}
+
+const effortMode = ref<"levels" | "slider">(loadStoredEffortMode());
+const effortSlider = ref<ThinkingEffortSliderConfig>(loadStoredEffortSlider());
+
+function initialThinkingEffort(): ThinkingEffort {
+  const stored =
+    typeof localStorage === "undefined"
+      ? null
+      : localStorage.getItem("thinkingEffort");
+  if (effortMode.value !== "slider") {
+    return (stored as ThinkingEffort) || DEFAULT_EFFORT;
+  }
+  // Slider mode: land the stored string on the track — a numeric value is
+  // clamped, an alias name ("max") resolves to its snap value, and anything
+  // else ("auto" / "off" / empty) falls back to the track middle.
+  const trimmed = (stored ?? "").trim();
+  if (trimmed !== "" && Number.isFinite(Number(trimmed))) {
+    return String(normalizeEffortValue(Number(trimmed), effortSlider.value));
+  }
+  const alias = effortSlider.value.snaps.find(
+    (snap) => snap.name.toLowerCase() === trimmed.toLowerCase(),
+  );
+  if (alias) return String(alias.value);
+  // Track middle, aligned to the step grid so the readout matches the handle.
+  const track = effortSlider.value;
+  return String(
+    track.min + Math.round((track.max - track.min) / 2 / track.step) * track.step,
+  );
+}
+
+const thinkingEffort = ref<ThinkingEffort>(initialThinkingEffort());
+
 watch(thinkingEffort, (value) => {
   if (typeof localStorage !== "undefined") {
     localStorage.setItem("thinkingEffort", value);
@@ -879,10 +939,12 @@ watch(thinkingEffort, (value) => {
 });
 // Keep the selection valid when the level list changes (e.g. a level
 // deleted, or a legacy stored "auto"/"off" value from before those
-// entries were removed from the menu).
+// entries were removed from the menu). Slider values are free-form and
+// have no list to fall out of, so this only guards levels mode.
 watch(
   userEffortLevels,
   (levels) => {
+    if (effortMode.value !== "levels") return;
     if (levels.some((level) => level.value === thinkingEffort.value)) return;
     const fallback = levels.some((level) => level.value === DEFAULT_EFFORT)
       ? DEFAULT_EFFORT
@@ -894,11 +956,43 @@ watch(
 
 const effortLevelsDialogOpen = ref(false);
 
-function handleEffortLevelsSave(levels: ThinkingEffortLevel[]) {
-  storedEffortLevels.value = levels;
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("thinkingEffortLevels", JSON.stringify(levels));
+function handleEffortEditorSave(payload: ThinkingEffortEditorPayload) {
+  effortMode.value = payload.mode;
+  effortSlider.value = payload.slider;
+  // Levels are written back only when the list itself was edited: saving
+  // from slider mode must not freeze today's localized default names into
+  // storage as if they were user customization.
+  if (payload.mode === "levels") {
+    storedEffortLevels.value = payload.levels;
   }
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(EFFORT_MODE_KEY, payload.mode);
+    localStorage.setItem(EFFORT_SLIDER_KEY, JSON.stringify(payload.slider));
+    if (payload.mode === "levels") {
+      localStorage.setItem(
+        "thinkingEffortLevels",
+        JSON.stringify(payload.levels),
+      );
+    }
+  }
+  // The new shape still has to accept the current selection.
+  if (payload.mode === "slider") {
+    const parsed = Number(thinkingEffort.value);
+    thinkingEffort.value = String(
+      normalizeEffortValue(
+        Number.isFinite(parsed) ? parsed : payload.slider.min,
+        payload.slider,
+      ),
+    );
+    return;
+  }
+  if (payload.levels.some((level) => level.value === thinkingEffort.value)) {
+    return;
+  }
+  const fallback =
+    payload.levels.find((level) => level.value === DEFAULT_EFFORT) ??
+    payload.levels[0];
+  if (fallback) thinkingEffort.value = fallback.value;
 }
 
 /** 2026-08-09 drag-reference: which drop overlay to show. "Files" drags

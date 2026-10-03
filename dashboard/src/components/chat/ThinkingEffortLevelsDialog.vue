@@ -6,7 +6,7 @@
   >
     <v-card class="thinking-effort-levels-dialog">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">
-        {{ tm("input.editThinkingEffortLevels") }}
+        {{ tm("input.editThinkingEffort") }}
       </v-card-title>
       <!-- Plain div (not v-card-subtitle, which is nowrap/ellipsis) so the
            hint wraps fully across lines. -->
@@ -14,45 +14,131 @@
         {{ tm("input.thinkingEffortLevelsHint") }}
       </div>
 
-      <v-card-text class="pa-4">
-        <div
-          v-for="(level, index) in localLevels"
-          :key="index"
-          class="effort-level-row"
+      <!-- Mode picker: the level list keeps the enum-style models working,
+           the slider serves models whose effort field is a free number. -->
+      <div class="pa-4 pb-0 pl-6">
+        <v-btn-toggle
+          v-model="localMode"
+          mandatory
+          density="compact"
+          variant="tonal"
+          divided
         >
-          <v-text-field
-            v-model="level.name"
-            :label="tm('input.levelName')"
-            density="compact"
-            hide-details
-            class="effort-level-name"
-          />
-          <v-text-field
-            v-model="level.value"
-            :label="tm('input.levelValue')"
-            density="compact"
-            hide-details
-            class="effort-level-value"
-          />
-          <v-btn
-            icon
-            variant="text"
-            color="error"
-            :aria-label="tm('input.levelDeleteAria')"
-            @click="removeLevel(index)"
-          >
-            <v-icon icon="mdi-delete"></v-icon>
+          <v-btn value="levels" size="small">
+            {{ tm("input.thinkingEffortModeLevels") }}
           </v-btn>
-        </div>
+          <v-btn value="slider" size="small">
+            {{ tm("input.thinkingEffortModeSlider") }}
+          </v-btn>
+        </v-btn-toggle>
+      </div>
+
+      <v-card-text class="pa-4">
+        <template v-if="localMode === 'slider'">
+          <div class="thinking-effort-levels-hint mb-3">
+            {{ tm("input.thinkingEffortSliderHint") }}
+          </div>
+
+          <div class="effort-slider-fields">
+            <v-text-field
+              v-model="localMin"
+              type="number"
+              :label="tm('input.sliderMin')"
+              density="compact"
+              hide-details
+            />
+            <v-text-field
+              v-model="localMax"
+              type="number"
+              :label="tm('input.sliderMax')"
+              density="compact"
+              hide-details
+            />
+            <v-text-field
+              v-model="localStep"
+              type="number"
+              :label="tm('input.sliderStep')"
+              density="compact"
+              hide-details
+            />
+          </div>
+
+          <div class="effort-slider-snaps-head">
+            {{ tm("input.sliderSnaps") }}
+          </div>
+          <div
+            v-for="(snap, index) in localSnaps"
+            :key="index"
+            class="effort-level-row"
+          >
+            <v-text-field
+              v-model="snap.name"
+              :label="tm('input.sliderSnapName')"
+              density="compact"
+              hide-details
+              class="effort-level-name"
+            />
+            <v-text-field
+              v-model="snap.value"
+              type="number"
+              :label="tm('input.sliderSnapValue')"
+              density="compact"
+              hide-details
+              class="effort-level-value"
+            />
+            <v-btn
+              icon
+              variant="text"
+              color="error"
+              :aria-label="tm('input.sliderSnapDeleteAria')"
+              @click="removeSnap(index)"
+            >
+              <v-icon icon="mdi-delete"></v-icon>
+            </v-btn>
+          </div>
+        </template>
+
+        <template v-else>
+          <div
+            v-for="(level, index) in localLevels"
+            :key="index"
+            class="effort-level-row"
+          >
+            <v-text-field
+              v-model="level.name"
+              :label="tm('input.levelName')"
+              density="compact"
+              hide-details
+              class="effort-level-name"
+            />
+            <v-text-field
+              v-model="level.value"
+              :label="tm('input.levelValue')"
+              density="compact"
+              hide-details
+              class="effort-level-value"
+            />
+            <v-btn
+              icon
+              variant="text"
+              color="error"
+              :aria-label="tm('input.levelDeleteAria')"
+              @click="removeLevel(index)"
+            >
+              <v-icon icon="mdi-delete"></v-icon>
+            </v-btn>
+          </div>
+        </template>
+
         <div v-if="validationError" class="effort-level-validation-error">
           {{ validationError }}
         </div>
       </v-card-text>
 
       <v-card-actions class="pa-4 pt-0">
-        <v-btn variant="tonal" size="small" @click="addLevel">
+        <v-btn variant="tonal" size="small" @click="addRow">
           <v-icon icon="mdi-plus" size="small"></v-icon>
-          {{ tm("input.addLevel") }}
+          {{ localMode === "slider" ? tm("input.addSnap") : tm("input.addLevel") }}
         </v-btn>
         <v-btn variant="tonal" size="small" @click="restoreDefaults">
           {{ tm("input.restoreDefaultLevels") }}
@@ -77,38 +163,84 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
+import {
+  DEFAULT_THINKING_EFFORT_SLIDER,
+  validateEffortSliderConfig,
+  type EffortSliderError,
+  type ThinkingEffortSliderConfig,
+} from "@/composables/thinkingEffortSlider";
 
 interface ThinkingEffortLevel {
   name: string;
   value: string;
 }
 
+export interface ThinkingEffortEditorPayload {
+  mode: "levels" | "slider";
+  levels: ThinkingEffortLevel[];
+  slider: ThinkingEffortSliderConfig;
+}
+
 const props = defineProps<{
   modelValue: boolean;
+  mode: "levels" | "slider";
   levels: ThinkingEffortLevel[];
+  slider: ThinkingEffortSliderConfig;
 }>();
 
 const emit = defineEmits<{
   "update:modelValue": [open: boolean];
-  save: [levels: ThinkingEffortLevel[]];
+  save: [payload: ThinkingEffortEditorPayload];
 }>();
 
 const { tm } = useModuleI18n("features/chat");
 
-// Local editable copy; the parent state is only mutated on save.
+// Local editable copies; the parent state is only mutated on save. The
+// slider fields stay as raw strings so a cleared box reads as "invalid"
+// instead of silently collapsing to 0.
+const localMode = ref<"levels" | "slider">("levels");
 const localLevels = ref<ThinkingEffortLevel[]>([]);
+const localMin = ref("1");
+const localMax = ref("100");
+const localStep = ref("1");
+const localSnaps = ref<{ name: string; value: string }[]>([]);
 
 watch(
   () => props.modelValue,
   (open) => {
-    if (open) {
-      localLevels.value = props.levels.map((level) => ({ ...level }));
-    }
+    if (!open) return;
+    localMode.value = props.mode;
+    localLevels.value = props.levels.map((level) => ({ ...level }));
+    localMin.value = String(props.slider.min);
+    localMax.value = String(props.slider.max);
+    localStep.value = String(props.slider.step);
+    localSnaps.value = props.slider.snaps.map((snap) => ({
+      name: snap.name,
+      value: String(snap.value),
+    }));
   },
   { immediate: true },
 );
 
+const draftSlider = computed<ThinkingEffortSliderConfig>(() => ({
+  min: toNumber(localMin.value),
+  max: toNumber(localMax.value),
+  step: toNumber(localStep.value),
+  snaps: localSnaps.value.map((snap) => ({
+    name: snap.name,
+    value: toNumber(snap.value),
+  })),
+}));
+
+function toNumber(raw: string): number {
+  return raw.trim() === "" ? Number.NaN : Number(raw);
+}
+
 const validationError = computed(() => {
+  if (localMode.value === "slider") {
+    const error = validateEffortSliderConfig(draftSlider.value);
+    return error ? tm(SLIDER_ERROR_KEYS[error]) : "";
+  }
   const seen = new Set<string>();
   for (const level of localLevels.value) {
     const name = level.name.trim();
@@ -121,11 +253,30 @@ const validationError = computed(() => {
   return "";
 });
 
-const isValid = computed(
-  () => validationError.value === "" && localLevels.value.length > 0,
+const SLIDER_ERROR_KEYS: Record<EffortSliderError, string> = {
+  range: "input.sliderRangeInvalid",
+  step: "input.sliderStepInvalid",
+  snapName: "input.sliderSnapNameRequired",
+  snapValue: "input.sliderSnapValueRequired",
+  snapRange: "input.sliderSnapOutOfRange",
+  snapDuplicate: "input.sliderSnapDuplicate",
+};
+
+const isValid = computed(() =>
+  localMode.value === "slider"
+    ? validationError.value === ""
+    : validationError.value === "" && localLevels.value.length > 0,
 );
 
-function addLevel() {
+function addRow() {
+  if (localMode.value === "slider") {
+    const track = draftSlider.value;
+    const mid = Number.isFinite(track.min) && Number.isFinite(track.max)
+      ? Math.round((track.min + track.max) / 2)
+      : DEFAULT_THINKING_EFFORT_SLIDER.min;
+    localSnaps.value.push({ name: "", value: String(mid) });
+    return;
+  }
   localLevels.value.push({ name: "", value: "" });
 }
 
@@ -133,7 +284,22 @@ function removeLevel(index: number) {
   localLevels.value.splice(index, 1);
 }
 
+function removeSnap(index: number) {
+  localSnaps.value.splice(index, 1);
+}
+
 function restoreDefaults() {
+  if (localMode.value === "slider") {
+    const defaults = DEFAULT_THINKING_EFFORT_SLIDER;
+    localMin.value = String(defaults.min);
+    localMax.value = String(defaults.max);
+    localStep.value = String(defaults.step);
+    localSnaps.value = defaults.snaps.map((snap) => ({
+      name: snap.name,
+      value: String(snap.value),
+    }));
+    return;
+  }
   localLevels.value = [
     { name: tm("input.thinkingEffortOptions.low"), value: "low" },
     { name: tm("input.thinkingEffortOptions.high"), value: "high" },
@@ -143,13 +309,23 @@ function restoreDefaults() {
 
 function save() {
   if (!isValid.value) return;
-  emit(
-    "save",
-    localLevels.value.map((level) => ({
+  emit("save", {
+    mode: localMode.value,
+    levels: localLevels.value.map((level) => ({
       name: level.name.trim(),
       value: level.value.trim(),
     })),
-  );
+    slider:
+      localMode.value === "slider"
+        ? {
+            ...draftSlider.value,
+            snaps: draftSlider.value.snaps.map((snap) => ({
+              name: snap.name.trim(),
+              value: snap.value,
+            })),
+          }
+        : props.slider,
+  });
   emit("update:modelValue", false);
 }
 </script>
@@ -184,6 +360,19 @@ function save() {
 
 .effort-level-value {
   flex: 1 1 45%;
+}
+
+.effort-slider-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.effort-slider-snaps-head {
+  margin: 14px 0 6px;
+  color: var(--sp-text-primary);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .effort-level-validation-error {

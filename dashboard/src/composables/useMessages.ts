@@ -95,7 +95,9 @@ type SessionMarkers = {
  * keeps the provider-level static config; "off" disables thinking where the
  * provider supports it. Any other string is passed through to OpenAI-family
  * `reasoning_effort` verbatim (values differ per model / engine, e.g. "max"
- * on deepseek-v4 official API, "xhigh" on llama.cpp-hosted Qwen).
+ * on deepseek-v4 official API, "xhigh" on llama.cpp-hosted Qwen, or a bare
+ * number such as "37" from the ChatUI slider for models that accept a
+ * continuous range).
  */
 export type ThinkingEffort = "auto" | "off" | (string & {});
 

@@ -5,11 +5,17 @@
   effort level is a send-time companion of the context budget, so the
   two controls sit together.
 
+  Two shapes share the popup (2026-10-03): the fixed "levels" list, and a
+  "slider" track for models whose reasoning_effort is a free number
+  (DeepSeek-V4.1-Flash: 1-100 with low/high/xhigh/max as alias values).
+  The slider is deliberately free-form — no snapping, so the handle never
+  fights the pointer — while the aliases stay as labels and shortcuts.
+
   The chip is a pure UI surface: the selection state (localStorage
-  "thinkingEffort") and the custom level list stay owned by ChatInput,
-  which forwards them via v-model/:levels and opens the level editor
-  dialog when this chip emits "edit". Menu/row styling follows the
-  FileAccessModeChip pattern (same --sp-* chip tokens).
+  "thinkingEffort") and the custom level list / slider config stay owned by
+  ChatInput, which forwards them via v-model/:levels/:mode/:slider and opens
+  the editor dialog when this chip emits "edit". Menu/row styling follows
+  the FileAccessModeChip pattern (same --sp-* chip tokens).
 -->
 <script lang="ts">
 export interface ThinkingEffortLevel {
@@ -22,10 +28,19 @@ export interface ThinkingEffortLevel {
 import { computed, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import type { ThinkingEffort } from "@/composables/useMessages";
+import {
+  DEFAULT_THINKING_EFFORT_SLIDER,
+  effortValueLabel,
+  normalizeEffortValue,
+  type ThinkingEffortSliderConfig,
+} from "@/composables/thinkingEffortSlider";
 
 const props = defineProps<{
   modelValue: ThinkingEffort;
   levels: ThinkingEffortLevel[];
+  /** "levels" keeps the fixed alias list; "slider" opens the numeric track. */
+  mode?: "levels" | "slider";
+  slider?: ThinkingEffortSliderConfig;
 }>();
 
 const emit = defineEmits<{
@@ -37,16 +52,53 @@ const { tm } = useModuleI18n("features/chat");
 
 const menuOpen = ref(false);
 
-const activeLabel = computed<string>(
-  () =>
+const sliderConfig = computed<ThinkingEffortSliderConfig>(
+  () => props.slider ?? DEFAULT_THINKING_EFFORT_SLIDER,
+);
+
+const sliderMode = computed(() => props.mode === "slider");
+
+/** Track position for the current selection; non-numeric legacy values land on min. */
+const sliderValue = computed<number>(() => {
+  const parsed = Number(props.modelValue);
+  return Number.isFinite(parsed)
+    ? normalizeEffortValue(parsed, sliderConfig.value)
+    : sliderConfig.value.min;
+});
+
+const activeLabel = computed<string>(() => {
+  if (sliderMode.value) {
+    return effortValueLabel(sliderValue.value, sliderConfig.value);
+  }
+  return (
     props.levels.find((level) => level.value === props.modelValue)?.name ??
-    props.modelValue,
+    props.modelValue
+  );
+});
+
+const sliderReadout = computed<string>(() =>
+  effortValueLabel(sliderValue.value, sliderConfig.value),
 );
 
 function select(value: ThinkingEffort): void {
   menuOpen.value = false;
   if (value === props.modelValue) return;
   emit("update:modelValue", value);
+}
+
+/** Live drag handler: the handle follows the pointer, nothing else. */
+function onSliderInput(value: number | number[]): void {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const next = String(normalizeEffortValue(Number(raw), sliderConfig.value));
+  if (next === String(props.modelValue)) return;
+  emit("update:modelValue", next);
+}
+
+/** Alias pill: jump onto the snap point without closing the popup. */
+function selectSnap(value: number): void {
+  const next = String(value);
+  if (next === String(props.modelValue)) return;
+  emit("update:modelValue", next);
 }
 
 function openEditor(): void {
@@ -61,6 +113,7 @@ function openEditor(): void {
     location="top end"
     origin="bottom end"
     transition="none"
+    :close-on-content-click="false"
   >
     <template #activator="{ props: menuProps }">
       <v-tooltip location="top" :open-delay="200">
@@ -82,26 +135,61 @@ function openEditor(): void {
         <span>{{ tm("input.thinkingEffort") }}</span>
       </v-tooltip>
     </template>
-    <v-card>
+    <v-card class="effort-chip-card">
       <v-card-text>
         <div class="effort-chip-title">{{ tm("input.thinkingEffort") }}</div>
-        <button
-          v-for="level in levels"
-          :key="level.value"
-          type="button"
-          class="effort-chip-row"
-          :class="{ 'effort-chip-row--selected': modelValue === level.value }"
-          @click="select(level.value)"
-        >
-          <span class="effort-chip-row__label">{{ level.name }}</span>
-          <v-icon
-            v-if="modelValue === level.value"
-            size="14"
-            class="effort-chip-row__check"
+
+        <!-- Slider mode: free numeric track (1-100 by default). The named
+             aliases are labels + click-to-jump shortcuts, never magnetism —
+             pulling the handle under the pointer made it jitter. -->
+        <template v-if="sliderMode">
+          <div class="effort-slider-readout">{{ sliderReadout }}</div>
+          <v-slider
+            :model-value="sliderValue"
+            :min="sliderConfig.min"
+            :max="sliderConfig.max"
+            :step="sliderConfig.step"
+            color="primary"
+            density="compact"
+            hide-details
+            class="effort-slider"
+            @update:model-value="onSliderInput"
+          />
+          <div v-if="sliderConfig.snaps.length" class="effort-slider-snaps">
+            <button
+              v-for="snap in sliderConfig.snaps"
+              :key="snap.value"
+              type="button"
+              class="effort-snap-btn"
+              :class="{ 'effort-snap-btn--active': snap.value === sliderValue }"
+              @click="selectSnap(snap.value)"
+            >
+              <span class="effort-snap-btn__name">{{ snap.name }}</span>
+              <span class="effort-snap-btn__value">{{ snap.value }}</span>
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
+          <button
+            v-for="level in levels"
+            :key="level.value"
+            type="button"
+            class="effort-chip-row"
+            :class="{ 'effort-chip-row--selected': modelValue === level.value }"
+            @click="select(level.value)"
           >
-            mdi-check
-          </v-icon>
-        </button>
+            <span class="effort-chip-row__label">{{ level.name }}</span>
+            <v-icon
+              v-if="modelValue === level.value"
+              size="14"
+              class="effort-chip-row__check"
+            >
+              mdi-check
+            </v-icon>
+          </button>
+        </template>
+
         <div class="effort-chip-divider"></div>
         <button
           type="button"
@@ -112,7 +200,7 @@ function openEditor(): void {
             >mdi-cog-outline</v-icon
           >
           <span class="effort-chip-row__label">
-            {{ tm("input.editThinkingEffortLevels") }}
+            {{ tm("input.editThinkingEffort") }}
           </span>
         </button>
       </v-card-text>
@@ -162,13 +250,15 @@ function openEditor(): void {
   opacity: 0.7;
 }
 
-/* Custom level names and long locales truncate instead of stretching
-   the input row. */
+/* Fixed width, not max-width: the popup is anchored to this button, so a
+   label that grows mid-drag ("20" → "low 25") used to widen the chip and
+   shift the whole slider sideways under the pointer. */
 .effort-chip-btn__label {
-  max-width: 72px;
+  width: 64px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .effort-chip-btn__chevron {
@@ -235,5 +325,57 @@ function openEditor(): void {
 .effort-chip-row__gear {
   flex-shrink: 0;
   opacity: 0.75;
+}
+
+/* Slider mode needs a wider popup than the level list so the track has
+   room to drag, and must not swallow the drag as a "click outside". */
+.effort-chip-card {
+  min-width: 264px;
+}
+
+.effort-slider-readout {
+  margin: 2px 0 8px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.effort-slider-snaps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+/* Alias shortcuts under the track: click jumps exactly onto the snap value
+   instead of nudging the handle there. */
+.effort-snap-btn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--sp-chip-divider);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.effort-snap-btn:hover {
+  background: var(--sp-chip-hover-bg);
+  color: var(--sp-text-primary);
+}
+
+.effort-snap-btn--active {
+  border-color: currentColor;
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+
+.effort-snap-btn__value {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
 }
 </style>

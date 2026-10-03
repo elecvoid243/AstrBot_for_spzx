@@ -535,7 +535,7 @@ function ariaLabelForOption(opt: InteractiveChoiceOption): string {
   background: rgba(var(--v-theme-primary), 0.04);
   border: 1px solid rgba(var(--v-theme-primary), 0.18);
   /* 2026-07-23 widen-interactive-box: 跟随父容器 .from-bot .message-stack
-     的宽度(桌面 860px / 移动 100%),让候选框与每条 chat message 视觉
+     的宽度(桌面 960px / 移动 100%),让候选框与每条 chat message 视觉
      宽度对齐;之前 hard-coded 560px cap 比消息气泡窄很多。 */
   max-width: 100%;
 }

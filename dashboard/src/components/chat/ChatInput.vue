@@ -189,8 +189,8 @@
         'has-attachments': hasStagedAttachments,
       }"
       :style="{
-        width: 'var(--chat-content-width, 76%)',
-        maxWidth: 'var(--chat-content-max-width, 760px)',
+        width: 'var(--chat-content-width, 80%)',
+        maxWidth: 'var(--chat-content-max-width, 960px)',
         margin: '0 auto',
         border: isDark ? 'none' : '1px solid #e0e0e0',
         borderRadius: '24px',
@@ -2302,10 +2302,10 @@ defineExpose({
   gap: 8px;
   justify-content: space-between;
   margin: 4px auto 0;
-  max-width: var(--chat-content-max-width, 760px);
+  max-width: var(--chat-content-max-width, 960px);
   padding: 0 6px 6px;
   pointer-events: auto;
-  width: var(--chat-content-width, 76%);
+  width: var(--chat-content-width, 80%);
 }
 
 /*
@@ -2990,8 +2990,8 @@ defineExpose({
 
 /* ── Pending follow-up queue (ZCode-style) ── */
 .pending-follow-ups {
-  width: var(--chat-content-width, 76%);
-  max-width: var(--chat-content-max-width, 760px);
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
   /* No bottom margin: the queue sits flush on the composer so the two
      read as one stacked cluster (2026-09-13). */
   margin: 0 auto;

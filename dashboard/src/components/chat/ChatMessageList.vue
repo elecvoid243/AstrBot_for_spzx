@@ -1803,12 +1803,12 @@ function formatDuration(seconds: number) {
 .from-bot .message-stack {
   flex: 1 1 0;
   min-width: 0;
-  /* 2026-07-22 widen-bot-message: bump bot message stack max-width
-     from 760 to 860 px so longer assistant messages (e.g. code-heavy
-     replies, table output) can use more of the viewport without
-     wrapping prematurely. Mobile media query still resets this to
-     100% below 760 px, so this only affects desktop/tablet. */
-  max-width: 860px;
+  /* 2026-10-03 widen-bot-message (elecvoid243): bot stack cap follows
+     --chat-content-max-width, now 960 px so longer assistant messages
+     (code-heavy replies, table output) use more of the viewport without
+     wrapping prematurely. Mobile media query still resets this to 100%
+     below 760 px, so this only affects desktop/tablet. */
+  max-width: 960px;
 }
 
 .from-user .message-stack {

@@ -170,8 +170,8 @@ async function handleDeleteSession(session: Session) {
 
 .project-header {
   flex: 0 0 auto;
-  width: var(--chat-content-width, 76%);
-  max-width: var(--chat-content-max-width, 760px);
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
   margin: 0 auto 18px;
 }
 
@@ -235,8 +235,8 @@ async function handleDeleteSession(session: Session) {
 
 .project-create-slot {
   flex: 0 0 auto;
-  width: var(--chat-content-width, 76%);
-  max-width: var(--chat-content-max-width, 760px);
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
   margin: 0 auto;
   padding-top: 18px;
 }
@@ -270,8 +270,8 @@ async function handleDeleteSession(session: Session) {
 .project-sessions-list {
   flex: 1;
   min-height: 0;
-  width: var(--chat-content-width, 76%);
-  max-width: var(--chat-content-max-width, 760px);
+  width: var(--chat-content-width, 80%);
+  max-width: var(--chat-content-max-width, 960px);
   overflow-y: auto;
   background-color: transparent !important;
 }

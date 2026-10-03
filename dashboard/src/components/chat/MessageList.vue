@@ -724,18 +724,18 @@ function formatDuration(seconds: number) {
   justify-content: flex-end;
 }
 
-/* 2026-07-22 widen-chat-column: parallel 760 px caps in
-   MessageList.vue (legacy list still mounted by
-   ConversationPage.vue). Match ChatMessageList's 860 px target
-   so both pages render the same bubble width. */
+/* 2026-10-03 widen-chat-column (elecvoid243): parallel caps in
+   MessageList.vue (legacy list still mounted by ConversationPage.vue).
+   Match ChatMessageList's 960 px target so both pages render the same
+   bubble width. */
 .message-stack {
-  max-width: min(860px, 82%);
+  max-width: min(960px, 82%);
 }
 
 .from-bot .message-stack {
   flex: 1 1 0;
   min-width: 0;
-  max-width: 860px;
+  max-width: 960px;
 }
 
 .from-user .message-stack {

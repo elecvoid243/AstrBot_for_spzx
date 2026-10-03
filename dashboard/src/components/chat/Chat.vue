@@ -5430,14 +5430,15 @@ function toggleTheme() {
   --chat-border: #f2f2f2;
   --chat-muted: rgba(var(--v-theme-on-surface), 0.62);
   --chat-section-label: rgba(var(--v-theme-on-surface), 0.48);
-  --chat-content-width: 76%;
-  /* 2026-07-22 widen-chat-column: previous 760 px cap on the chat
-       column was the real bottleneck — .messages-list-shell and the
-       input box both consumed this var, so widening only the inner
-       .from-bot .message-stack had no visible effect on the chat bar.
-       860 px aligns the outer shell with the inner bubble target so
-       longer assistant replies actually get the room we wanted. */
-  --chat-content-max-width: 860px;
+  --chat-content-width: 80%;
+  /* 2026-10-03 widen-chat-column (elecvoid243): raised the chat column
+       from 76% / 860 px to 80% / 960 px. This shell var — not the inner
+       bubble cap — is the real bottleneck: .messages-list-shell and the
+       input box both consume it, so widening only .from-bot
+       .message-stack has no visible effect on the chat bar. 960 px keeps
+       the outer shell aligned with the inner bubble target so long
+       assistant replies (code blocks, tables) get the extra room. */
+  --chat-content-max-width: 960px;
   display: flex;
   height: 100%;
   min-height: 0;

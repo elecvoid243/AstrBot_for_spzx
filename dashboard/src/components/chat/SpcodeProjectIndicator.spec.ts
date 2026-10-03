@@ -2,7 +2,7 @@
 // Author: elecvoid243 @ 2026-08-06
 // Updated: 2026-08-15 — services popover (codegraph / vivado status
 // integrated from the removed SpcodeCodegraphChip / SpcodeVivadoStatusChip).
-// Updated: 2026-10-02 — project-load stage bubble timing.
+// Updated: 2026-10-03 — project-load stage bubble timing.
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -453,6 +453,16 @@ describe("SpcodeProjectIndicator status bubble", () => {
     });
     await nextTick();
     expect(wrapper.find(".sp-bubble").exists()).toBe(false);
+  });
+
+  it("recognizes the plugin's inner AGENTS.md generation step", async () => {
+    vi.useFakeTimers();
+    const wrapper = await mountWithBaseline();
+    setProgress("running", "project_load", {
+      currentStep: "🔄 正在为 `F:/proj` 生成 AGENTS.md,请稍候…",
+    });
+    await nextTick();
+    expect(wrapper.find(".sp-bubble").text()).toContain("正在初始化 AGENTS.md");
   });
 
   it("keeps the completion bubble when codegraph status catches up after project_load", async () => {

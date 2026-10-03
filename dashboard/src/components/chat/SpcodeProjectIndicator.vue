@@ -1,7 +1,7 @@
 <!--
   Author: elecvoid243, 2026-07-09
   Spec: docs/superpowers/specs/2026-07-09-chat-input-chips-beautify-design.md §5.1, §5.2
-  Updated: elecvoid243, 2026-10-02 — project-load stage bubbles.
+  Updated: elecvoid243, 2026-10-03 — project-load stage bubbles.
 
   SpcodeProjectIndicator — status badge for the loaded/unloaded spcode project.
 
@@ -403,7 +403,12 @@ function deriveBubbleMessage(now: BubbleSnapshot, prev: BubbleSnapshot): string 
     } else if (now.st === "done" && prev.st === "running") {
       return tm("spcodeProjectLoad.indicator.projectLoadComplete");
     } else if (now.st === "running") {
-      if (/AGENTS\.md\s*不存在[，,]\s*正在\s*init/i.test(now.step)) {
+      // agentsmd.init reports the long LLM generation through its own 🔄
+      // message, which replaces the outer [1/3] step in current_step.
+      if (
+        /AGENTS\.md\s*不存在[，,]\s*正在\s*init/i.test(now.step) ||
+        /生成\s*AGENTS\.md/i.test(now.step)
+      ) {
         return tm("spcodeProjectLoad.indicator.agentsMdInitializing");
       }
       if (/codegraph/i.test(now.step)) {

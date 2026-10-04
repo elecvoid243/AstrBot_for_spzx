@@ -1000,6 +1000,11 @@ export const chatApi = {
       }),
     );
   },
+  restoreRemovedFileChange(path: string) {
+    return typed<any>(
+      openApiV1.chatFileChangeRestoreRemoved({ body: { path } }),
+    );
+  },
   fileChangeStatus(files: { path: string; backup_id: string }[]) {
     return typed<any>(
       openApiV1.chatFileChangeStatus({ body: { files } }),

@@ -293,6 +293,19 @@ async function loadDiff(file: FileChangeSummaryFile) {
   }
 }
 
+// Old cores without /chat/file-changes/restore-removed answer 404; a transport
+// failure (no HTTP response) is treated the same so the plugin endpoint gets a
+// chance on older deployments. Business-level error envelopes resolve normally
+// (HTTP 200) and never reach here, so they do not trigger the fallback.
+function isMissingCoreRouteError(error: unknown): boolean {
+  const err = error as {
+    response?: { status?: number };
+    request?: unknown;
+  };
+  if (err?.response?.status === 404) return true;
+  return err?.response === undefined && err?.request !== undefined;
+}
+
 async function undoFile(file: FileChangeSummaryFile) {
   // Two-click inline confirmation: first click arms, second click fires.
   if (confirmingPath.value !== file.path) {
@@ -304,11 +317,20 @@ async function undoFile(file: FileChangeSummaryFile) {
   try {
     let envelope: any;
     if (file.kind === "remove") {
-      // Removals are undone via the spcode plugin's recycle-bin restore.
-      const resp = await pluginExtensionApi.post("spcode/file-remove/restore", {
-        path: file.path,
-      });
-      envelope = resp.data;
+      // Removals are undone through the core recycle-bin route. Cores that
+      // predate /chat/file-changes/restore-removed answer 404 (or fail at the
+      // network layer); fall back to the spcode plugin endpoint then.
+      try {
+        const resp = await chatApi.restoreRemovedFileChange(file.path);
+        envelope = resp.data;
+      } catch (error) {
+        if (!isMissingCoreRouteError(error)) throw error;
+        const resp = await pluginExtensionApi.post(
+          "spcode/file-remove/restore",
+          { path: file.path },
+        );
+        envelope = resp.data;
+      }
     } else {
       const resp = await chatApi.restoreFileChange(
         file.path,

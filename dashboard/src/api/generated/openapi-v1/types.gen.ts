@@ -111,6 +111,10 @@ export type ChatFileChangeDiffRequest = {
     expect_sha256?: string;
 };
 
+export type ChatFileChangeRestoreRemovedRequest = {
+    path: string;
+};
+
 export type ChatFileChangeRestoreRequest = {
     path: string;
     backup_id: string;
@@ -1780,6 +1784,14 @@ export type ChatFileChangeRestoreData = {
 export type ChatFileChangeRestoreResponse = (SuccessEnvelope);
 
 export type ChatFileChangeRestoreError = unknown;
+
+export type ChatFileChangeRestoreRemovedData = {
+    body: ChatFileChangeRestoreRemovedRequest;
+};
+
+export type ChatFileChangeRestoreRemovedResponse = (SuccessEnvelope);
+
+export type ChatFileChangeRestoreRemovedError = unknown;
 
 export type ChatFileChangeStatusData = {
     body: ChatFileChangeStatusRequest;

@@ -17,6 +17,7 @@ from astrbot.core.tools.computer_tools.edit_history import (
     get_history_manager,
     render_unified_diff,
 )
+from astrbot.core.tools.computer_tools.recycle_restore import restore_from_recycle_bin
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
     get_astrbot_temp_path,
@@ -25,6 +26,7 @@ from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.schemas import (
     ChatFileChangeDiffRequest,
+    ChatFileChangeRestoreRemovedRequest,
     ChatFileChangeRestoreRequest,
     ChatFileChangeStatusRequest,
     ChatMessagePatchRequest,
@@ -640,6 +642,25 @@ async def chat_file_change_restore(
     except OSError as exc:
         return error(f"Failed to restore file: {exc}")
     return ok({"path": raw_path, "restored_to": payload.backup_id})
+
+
+@router.post("/chat/file-changes/restore-removed")
+async def chat_file_change_restore_removed(
+    payload: ChatFileChangeRestoreRemovedRequest,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    """Restore a file that was removed via the recycle bin (undo one delete).
+
+    Delegates to the recycle-bin backend; a whitespace-only path is rejected
+    before any filesystem work.
+    """
+    raw_path = payload.path.strip()
+    if not raw_path:
+        return error("Missing file path")
+    result = await asyncio.to_thread(restore_from_recycle_bin, raw_path)
+    if result.get("ok"):
+        return ok({"restored_path": result["restored_path"]})
+    return error(result["error"])
 
 
 @router.post("/chat/file-changes/status")

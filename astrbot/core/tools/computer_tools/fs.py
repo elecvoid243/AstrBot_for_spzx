@@ -2,7 +2,7 @@
 
 Tool exposure from the main agent:
 - Local runtime exposes `astrbot_read_file_tool`, `astrbot_file_write_tool`,
-  `astrbot_file_edit_tool`, and `astrbot_grep_tool`.
+  `astrbot_file_edit_tool`, `astrbot_grep_tool`, and `astrbot_file_remove`.
 - Sandbox runtime exposes `astrbot_upload_file`, `astrbot_download_file`,
   `astrbot_read_file_tool`, `astrbot_file_write_tool`,
   `astrbot_file_edit_tool`, and `astrbot_grep_tool`.
@@ -43,6 +43,7 @@ Local path resolution rule:
 import ast
 import asyncio
 import base64
+import json
 import locale
 import os
 import stat
@@ -713,7 +714,8 @@ def _record_changed_file(
     Args:
         context: Tool execution context.
         path: Normalized absolute path that was modified.
-        kind: One of ``edit`` / ``write`` / ``created`` / ``rollback``.
+        kind: One of ``edit`` / ``write`` / ``created`` / ``rollback`` /
+            ``remove``.
         runtime: ``local`` or ``sandbox``.
         backup_id: Id of the pre-change backup; empty when none exists.
     """
@@ -1387,6 +1389,412 @@ class GrepTool(FunctionTool):
         except Exception as exc:
             logger.error(f"Error searching files: {exc}")
             return f"Error searching files: {exc}"
+
+
+# ── recycle-bin removal (astrbot_file_remove) ─────────────────────────────
+# Ported from the spcode plugin's ``tools/file_remove.py`` so the main agent
+# can delete files/directories safely (recycle bin + confirm) instead of
+# shelling out to ``rm``/``del`` or bypassing the guard with Python.
+
+# System directory blacklist (deleting these can break the OS).
+# NOTE: /Users is intentionally absent — it is a common developer home dir
+# and must remain deletable.
+_FORBIDDEN_PREFIXES = [
+    # Windows
+    "C:/Windows",
+    "C:/windows",
+    "C:/Program Files",
+    "C:/Program Files (x86)",
+    "C:/ProgramData",
+    "C:/Users/All Users",
+    # macOS
+    "/System",
+    "/Library",
+    "/private",
+    "/Applications",
+    # Linux/Unix
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/proc",
+    "/root",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+]
+
+
+def _is_forbidden_path(p: Path) -> str | None:
+    """Return the matched system prefix when ``p`` is protected, else None."""
+    raw = str(p).replace("\\", "/")
+    for forbidden in _FORBIDDEN_PREFIXES:
+        if raw.lower() == forbidden.lower() or raw.lower().startswith(
+            forbidden.lower() + "/"
+        ):
+            return forbidden
+    return None
+
+
+def _is_user_blacklisted(p: Path, custom_blacklist: list[str] | None) -> str | None:
+    """Return ``user:<entry>`` when ``p`` hits the user blacklist, else None.
+
+    The ``user:`` prefix distinguishes a config-supplied block from the
+    built-in system blacklist in ``evidence.blocked_by``.
+    """
+    if not custom_blacklist:
+        return None
+    raw_target = str(p).replace("\\", "/").lower()
+    for entry in custom_blacklist:
+        if not entry:
+            continue
+        entry_norm = str(entry).replace("\\", "/").lower().rstrip("/")
+        if not entry_norm:
+            continue
+        if raw_target == entry_norm or raw_target.startswith(entry_norm + "/"):
+            return f"user:{entry}"  # keep the raw entry for auditability
+    return None
+
+
+def _human_size(n: int) -> str:
+    """Render a byte count as a human-readable size (1500 -> ``1.5KB``)."""
+    f = float(n)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if f < 1024:
+            return f"{f:.1f}{unit}".replace(".0", "")
+        f /= 1024
+    return f"{f:.1f}PB"
+
+
+def _remove_proposal(
+    ok: bool,
+    proposal: str,
+    *,
+    error: str = "",
+    evidence: dict | None = None,
+    options: list | None = None,
+) -> dict:
+    """Build the shared proposal/next-call response for the remove tool."""
+    result: dict = {"ok": ok, "proposal": proposal}
+    if error:
+        result["error"] = error
+    if evidence:
+        result["evidence"] = evidence
+    if options:
+        result["options"] = options
+    return result
+
+
+def _json_result(result: dict) -> str:
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _load_send2trash():
+    """Import ``send2trash`` lazily so a missing dep never breaks read/write.
+
+    The dependency is declared in requirements/pyproject, but fs.py also hosts
+    non-destructive tools; a broken install must not take them down.
+    """
+    try:
+        import send2trash
+    except ImportError as exc:  # pragma: no cover - only when the dep is absent
+        raise RuntimeError(
+            "send2trash is not installed, so files cannot be moved to the "
+            "recycle bin. Install it with `pip install send2trash`."
+        ) from exc
+    return send2trash
+
+
+def _remove_path(resolved: str, *, confirm: bool, max_items: int) -> dict:
+    """Synchronously delete ``resolved`` (assumed already validated/exists).
+
+    Runs inside a worker thread. Single files go straight to the recycle bin;
+    directories need ``confirm`` and are refused with a proposal when they hold
+    more than ``max_items`` files.
+    """
+    p = Path(resolved)
+
+    if p.is_file():
+        try:
+            size = p.stat().st_size
+            _load_send2trash().send2trash(str(p))
+            return {"ok": True, "deleted": 1, "freed": _human_size(size)}
+        except FileNotFoundError:
+            return {"ok": False, "error": f"路径不存在: {resolved}"}
+        except PermissionError:
+            return {"ok": False, "error": f"无权限移入回收站: {resolved}"}
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": (
+                    f"回收站不可用: {exc}。请确认系统已安装 trash-cli (Linux) "
+                    "或回收站服务可用。"
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    if p.is_dir():
+        if not confirm:
+            return _remove_proposal(
+                False,
+                f"确认删除目录？目录路径: {resolved}。请设置 confirm=true。",
+                error="目录删除需二次确认",
+                options=["confirm_delete", "cancel"],
+            )
+
+        # Single traversal: count files and total size. Unreadable children
+        # (stat/OSError) are skipped so one bad entry cannot abort the batch.
+        file_count = 0
+        total_size = 0
+        try:
+            for f in p.rglob("*"):
+                try:
+                    is_file = f.is_file()
+                except OSError:
+                    continue
+                if not is_file:
+                    continue
+                file_count += 1
+                try:
+                    total_size += f.stat().st_size
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+        if file_count > max_items:
+            return _remove_proposal(
+                False,
+                f"目录含 {file_count} 个文件，超过上限 {max_items}。确认删除？",
+                error=f"目录含 {file_count} 个文件，超过批量限制 ({max_items})",
+                evidence={"file_count": file_count, "directory": str(p)},
+                options=["confirm_batch_delete", "cancel"],
+            )
+
+        # Single atomic call into the system recycle bin.
+        try:
+            _load_send2trash().send2trash(str(p))
+            return {
+                "ok": True,
+                "deleted": file_count,
+                "freed": _human_size(total_size),
+            }
+        except FileNotFoundError:
+            return {"ok": False, "error": f"路径不存在: {resolved}"}
+        except PermissionError:
+            return {"ok": False, "error": f"无权限移入回收站: {resolved}"}
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": (
+                    f"回收站不可用: {exc}。请确认系统已安装 trash-cli (Linux) "
+                    "或回收站服务可用。"
+                ),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    return {"ok": False, "error": f"不是文件也不是目录: {resolved}"}
+
+
+@builtin_tool(config={"provider_settings.computer_use_runtime": "local"})
+@dataclass
+class FileRemoveTool(FunctionTool):
+    name: str = "astrbot_file_remove"
+    description: str = (
+        "Delete an entire file or directory. Prefer this tool for file "
+        "deletion — do NOT use shell `rm`/`del` or Python `os.remove`/"
+        "`shutil.rmtree` to bypass it. Before deleting, ask the user. "
+        "If deleting fragments instead of the entire file, use "
+        "`astrbot_file_edit_tool`. Deleting a DIRECTORY requires parameter "
+        "'confirm=true'. If a directory contains more than max_items files, "
+        "the call returns a proposal asking for batch confirmation INSTEAD "
+        "of deleting — read the proposal/options, then retry with "
+        "confirm=true AND a larger max_items (confirm=true alone will keep "
+        "looping on the same proposal). Single files are deleted without "
+        "confirm. Items are "
+        "sent to the system recycle bin (recoverable), not permanently "
+        "deleted. Paths inside protected system directories or the "
+        "user-configured blacklist are rejected."
+    )
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path of the file or directory to remove. "
+                        "Must not contain '..' segments and must not be inside a "
+                        "protected system directory or the user-configured "
+                        "blacklist (see config 'file_remove_blacklist')."
+                    ),
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Set to true to confirm a directory deletion. "
+                        "Required for directories; ignored for single files."
+                    ),
+                    "default": False,
+                },
+                "max_items": {
+                    "type": "integer",
+                    "description": (
+                        "If a directory contains more than this many files, "
+                        "return a proposal for batch confirmation instead of "
+                        "deleting. To confirm such a directory, retry with "
+                        "confirm=true and raise max_items above its file count. "
+                        "Defaults to 50."
+                    ),
+                    "default": 50,
+                },
+            },
+            "required": ["path"],
+        }
+    )
+
+    def _user_blacklist(self, context: ContextWrapper[AstrAgentContext]) -> list[str]:
+        """Read ``provider_settings.file_remove_blacklist`` for this session."""
+        cfg = context.context.context.get_config(
+            umo=context.context.event.unified_msg_origin
+        )
+        if not isinstance(cfg, dict):
+            return []
+        raw = cfg.get("provider_settings", {}).get("file_remove_blacklist") or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item) for item in raw if str(item).strip()]
+
+    async def call(
+        self,
+        context: ContextWrapper[AstrAgentContext],
+        path: str,
+        confirm: bool = False,
+        max_items: int = 50,
+    ) -> ToolExecResult:
+        # 1. Empty path
+        raw = "" if path is None else str(path)
+        if not raw.strip():
+            return _json_result({"ok": False, "error": "路径为空"})
+
+        # 2. Readonly (plan) mode rejects every write, deletes included.
+        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
+            return _READONLY_WRITE_ERROR
+
+        # 3. Deletion targets the host recycle bin: local runtime only.
+        if not is_local_runtime(context):
+            return _json_result(
+                {"ok": False, "error": "astrbot_file_remove 仅支持 local 运行时"}
+            )
+
+        # 4. Path traversal / UNC / extended-length rejection (before touching
+        #    the filesystem, so probing never learns anything).
+        if ".." in raw.replace("\\", "/").split("/"):
+            return _json_result({"ok": False, "error": "路径包含 .. 穿越，已被拒绝"})
+        if raw.startswith("\\\\") or raw.startswith("//"):
+            return _json_result(
+                {"ok": False, "error": "UNC 路径（\\\\server\\share）已被拒绝"}
+            )
+        if raw.startswith("\\\\?\\") or raw.startswith("//?/"):
+            return _json_result(
+                {"ok": False, "error": "Windows 扩展长度路径（\\\\?\\...）已被拒绝"}
+            )
+
+        umo = context.context.event.unified_msg_origin
+        try:
+            current_workspace_root = await workspace_root_for_context(context)
+            resolved = _resolve_tool_path(
+                raw,
+                local_env=True,
+                umo=umo,
+                current_workspace_root=current_workspace_root,
+            )
+        except Exception as exc:
+            return _json_result({"ok": False, "error": f"路径解析失败: {exc}"})
+
+        resolved_path = Path(resolved)
+
+        # 5. System directory blacklist — before the existence check so a
+        #    protected path can never be discovered by trial and error.
+        blocked = _is_forbidden_path(resolved_path)
+        if blocked:
+            return _json_result(
+                _remove_proposal(
+                    False,
+                    "路径位于受保护的系统目录中，删除操作已被拦截。",
+                    error=f"禁止操作系统目录: {raw}",
+                    evidence={"path": raw, "blocked_by": blocked},
+                )
+            )
+
+        # 6. User-configured blacklist (same phase as the built-in one).
+        user_blocked = _is_user_blacklisted(
+            resolved_path, self._user_blacklist(context)
+        )
+        if user_blocked:
+            return _json_result(
+                _remove_proposal(
+                    False,
+                    "路径位于用户自定义黑名单中，删除操作已被拦截。",
+                    error=f"禁止删除用户配置保护的路径: {raw}",
+                    evidence={"path": raw, "blocked_by": user_blocked},
+                )
+            )
+
+        # 7. Workspace / restricted-root guard.
+        restricted, extra_write_roots = await _write_guard(context)
+        if restricted:
+            allowed_roots = _write_allowed_roots(
+                umo, current_workspace_root, tuple(extra_write_roots)
+            )
+            if not _is_path_within_allowed_roots(
+                resolved,
+                umo=umo,
+                allowed_roots=allowed_roots,
+                current_workspace_root=current_workspace_root,
+            ):
+                allowed = ", ".join(
+                    _restricted_env_path_labels(
+                        umo,
+                        include_global_skills=False,
+                        current_workspace_root=current_workspace_root,
+                    )
+                )
+                return (
+                    "Error: Write access is restricted for this user. "
+                    f"Allowed directories: {allowed}. "
+                    f"Blocked path: {resolved}."
+                )
+
+        # 8. Existence
+        if not resolved_path.exists():
+            return _json_result({"ok": False, "error": f"路径不存在: {raw}"})
+
+        # 9. Normalize max_items: any non-positive / non-integer value -> 50.
+        try:
+            max_items_value = int(max_items)
+        except (TypeError, ValueError):
+            max_items_value = 50
+        if max_items_value <= 0:
+            max_items_value = 50
+
+        # 10. Execute the deletion off the event loop.
+        result = await asyncio.to_thread(
+            _remove_path,
+            resolved,
+            # Only a real JSON boolean ``true`` confirms a directory delete;
+            # truthy-but-not-bool values (e.g. the string "true" or 1) MUST NOT
+            # pass this destructive gate.
+            confirm=confirm is True,
+            max_items=max_items_value,
+        )
+        if result.get("ok"):
+            _record_changed_file(context, resolved, "remove", "local", "")
+        return _json_result(result)
 
 
 @builtin_tool(config=_SANDBOX_RUNTIME_TOOL_CONFIG)

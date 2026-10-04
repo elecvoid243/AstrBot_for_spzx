@@ -1655,6 +1655,24 @@ class TestEnsurePersonaAndSkills:
         assert "tool_b" in req.func_tool.names()
 
 
+def test_apply_local_env_tools_wires_file_remove(mock_context):
+    """Local runtime must expose astrbot_file_remove to the LLM toolset."""
+    req = ProviderRequest(prompt="hello")
+
+    ama._apply_local_env_tools(req, mock_context, "test_platform:private:session123")
+
+    assert req.func_tool is not None
+    tool_names = set(req.func_tool.names())
+    assert "astrbot_file_remove" in tool_names
+    # Existing local built-ins must remain wired alongside it.
+    assert {
+        "astrbot_file_read_tool",
+        "astrbot_file_write_tool",
+        "astrbot_file_edit_tool",
+        "astrbot_grep_tool",
+    } <= tool_names
+
+
 class TestDecorateLlmRequest:
     """Tests for _decorate_llm_request function."""
 

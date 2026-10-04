@@ -160,3 +160,66 @@ async def test_status_route_reports_active_change(seeded, monkeypatch):
     # File still differs from the baseline → active; bogus backup → not reverted.
     assert files[0]["reverted"] is False
     assert files[1]["reverted"] is False
+
+
+# ── restore-removed (recycle-bin undo) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_restore_removed_success(monkeypatch):
+    """Backend reports ok → 200 response carrying the restored path."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    calls: list[str] = []
+
+    def fake_restore(path, *, recycle_root=None):
+        calls.append(path)
+        return {"ok": True, "restored_path": path}
+
+    monkeypatch.setattr(
+        chat_api, "restore_from_recycle_bin", fake_restore
+    )
+    payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="C:/tmp/gone.txt")
+
+    resp = await chat_api.chat_file_change_restore_removed(payload, None)
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["restored_path"] == "C:/tmp/gone.txt"
+    assert calls == ["C:/tmp/gone.txt"]
+
+
+@pytest.mark.asyncio
+async def test_restore_removed_not_found(monkeypatch):
+    """Backend reports ok:False → error response surfacing its message."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    def fake_restore(path, *, recycle_root=None):
+        return {"ok": False, "error": "not in recycle bin"}
+
+    monkeypatch.setattr(
+        chat_api, "restore_from_recycle_bin", fake_restore
+    )
+    payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="C:/tmp/gone.txt")
+
+    resp = await chat_api.chat_file_change_restore_removed(payload, None)
+
+    assert resp["status"] == "error"
+    assert resp["message"] == "not in recycle bin"
+
+
+@pytest.mark.asyncio
+async def test_restore_removed_blank_path(monkeypatch):
+    """Whitespace-only path → error without touching the backend."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    def fail_backend(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("backend must not be called for a blank path")
+
+    monkeypatch.setattr(
+        chat_api, "restore_from_recycle_bin", fail_backend
+    )
+    payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="   ")
+
+    resp = await chat_api.chat_file_change_restore_removed(payload, None)
+
+    assert resp["status"] == "error"

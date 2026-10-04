@@ -17,13 +17,19 @@ class Main(star.Star):
         goal_service.bind(context)
 
     async def initialize(self) -> None:
-        """Import goal states stored by the legacy astrbot_plugin_goal."""
+        """Import legacy goal states, then sweep stale kernel states."""
+        from astrbot.core import logger
+
         try:
             await goal_service.migrate_legacy_states()
         except Exception as e:
-            from astrbot.core import logger
-
             logger.warning(f"goal loop: legacy state migration failed: {e}")
+        try:
+            result = await goal_service.sweep_stale_states()
+            if result["paused"] or result["cleaned"]:
+                logger.info(f"goal loop: restart sweep done: {result}")
+        except Exception as e:
+            logger.warning(f"goal loop: restart sweep failed: {e}")
 
     # ------------------------------------------------------------------
     # /goal 指令组
@@ -64,6 +70,9 @@ class Main(star.Star):
         """查看当前目标状态"""
         if event.get_extra("goal_continuation"):
             return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
+            return
         state = await goal_service.goals.get(event.unified_msg_origin)
         yield event.plain_result(
             state.status_line()
@@ -91,6 +100,9 @@ class Main(star.Star):
         """恢复目标循环（重置轮次预算）"""
         if event.get_extra("goal_continuation"):
             return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
+            return
         state = await goal_service.goals.resume(event.unified_msg_origin)
         if not state:
             yield event.plain_result("没有可恢复的目标。")
@@ -103,6 +115,9 @@ class Main(star.Star):
     async def goal_clear(self, event: AstrMessageEvent):
         """清除目标，终止循环"""
         if event.get_extra("goal_continuation"):
+            return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
             return
         had = await goal_service.goals.clear(event.unified_msg_origin)
         yield event.plain_result("✓ 目标已清除。" if had else "当前没有目标。")
@@ -121,6 +136,9 @@ class Main(star.Star):
         """追加评判标准：/subgoal add <标准>"""
         if event.get_extra("goal_continuation"):
             return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
+            return
         try:
             added = await goal_service.goals.add_subgoal(event.unified_msg_origin, text)
             yield event.plain_result(f"✓ 已追加标准：{added}")
@@ -132,6 +150,9 @@ class Main(star.Star):
         """列出当前评判标准"""
         if event.get_extra("goal_continuation"):
             return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
+            return
         state = await goal_service.goals.get(event.unified_msg_origin)
         if not state:
             yield event.plain_result("暂无额外标准，用 /subgoal add <标准> 添加。")
@@ -142,6 +163,9 @@ class Main(star.Star):
     async def subgoal_remove(self, event: AstrMessageEvent, index: int):
         """移除评判标准：/subgoal remove <序号>"""
         if event.get_extra("goal_continuation"):
+            return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
             return
         try:
             removed = await goal_service.goals.remove_subgoal(
@@ -155,6 +179,9 @@ class Main(star.Star):
     async def subgoal_clear(self, event: AstrMessageEvent):
         """清空全部评判标准"""
         if event.get_extra("goal_continuation"):
+            return
+        if refusal := goal_service.check_permission(event):
+            yield event.plain_result(refusal)
             return
         try:
             n = await goal_service.goals.clear_subgoals(event.unified_msg_origin)

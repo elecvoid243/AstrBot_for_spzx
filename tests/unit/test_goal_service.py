@@ -486,3 +486,39 @@ async def test_on_turn_done_interrupted_goal_auto_pauses():
         if (context := service._context)
         else True
     )
+
+
+# ---------------------------------------------------------------------------
+# restart sweep
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_pauses_active_and_cleans_old_done():
+    import time as _time
+
+    service = _make_service()
+    await service.goals.set("umo-active", "g1")
+    await service.goals.set("umo-done-old", "g2")
+    await service.goals.set("umo-done-recent", "g3")
+    # Force states: one stale done (31d old), one recent done.
+    old = await service.goals.get("umo-done-old")
+    old.status = "done"
+    old.created_at = _time.time() - 31 * 86400
+    await service.goals._save("umo-done-old", old)
+    recent = await service.goals.get("umo-done-recent")
+    recent.status = "done"
+    recent.created_at = _time.time()
+    await service.goals._save("umo-done-recent", recent)
+
+    result = await service.sweep_stale_states()
+    assert result == {"paused": 1, "cleaned": 1}
+
+    swept = await service.goals.get("umo-active")
+    assert swept.status == "paused"
+    assert swept.paused_reason == "interrupted by restart"
+    assert await service.goals.get("umo-done-old") is None
+    assert (await service.goals.get("umo-done-recent")).status == "done"
+
+    # Idempotent
+    assert await service.sweep_stale_states() == {"paused": 0, "cleaned": 0}

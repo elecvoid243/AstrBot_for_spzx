@@ -426,6 +426,36 @@ class GoalService:
                 f"turns_used={state.turns_used}, reason={decision.get('reason')}"
             )
 
+    async def sweep_stale_states(self) -> dict:
+        """Downgrade leftover active goals to paused after a restart.
+
+        A goal loop never survives a process restart (no in-flight turn
+        remains), so an ``active`` record found at boot is stale. Done
+        records older than 30 days are removed to bound KV growth.
+        Idempotent: a second sweep returns zero counts.
+
+        Returns:
+            Dict with ``paused`` and ``cleaned`` counts.
+        """
+        paused = 0
+        cleaned = 0
+        cutoff = time.time() - 30 * 86400
+        for umo in await self.goals.list_tracked():
+            state = await self.goals.get(umo)
+            if state is None:
+                continue
+            if state.status == "active":
+                await self.goals.pause(umo, reason="interrupted by restart")
+                paused += 1
+            elif (
+                state.status == "done"
+                and state.created_at
+                and state.created_at < cutoff
+            ):
+                await self.goals.clear(umo)
+                cleaned += 1
+        return {"paused": paused, "cleaned": cleaned}
+
     async def migrate_legacy_states(self) -> int:
         """One-time import of goal states stored by the legacy plugin.
 

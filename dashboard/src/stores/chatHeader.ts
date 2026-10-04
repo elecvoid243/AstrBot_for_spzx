@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 
 /** Summary shown on the app-bar goal entry button; null = no goal record. */
 export interface GoalBadge {
-  status: "active" | "paused" | "done";
+  status: "active" | "paused" | "blocked" | "done";
   turnsUsed: number;
   maxTurns: number;
 }

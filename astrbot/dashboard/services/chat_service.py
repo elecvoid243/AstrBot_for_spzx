@@ -9,7 +9,6 @@ import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -2948,25 +2947,7 @@ class ChatService:
 
         umo = build_webchat_unified_msg_origin(session)
         state = await goal_service.goals.get(umo)
-        if state is None:
-            return {"goal": None}
-        return {
-            "goal": {
-                "goal": state.goal,
-                "status": state.status,
-                "turns_used": state.turns_used,
-                "max_turns": state.max_turns,
-                "subgoals": state.subgoals,
-                "last_verdict": state.last_verdict,
-                "last_reason": state.last_reason,
-                "paused_reason": state.paused_reason,
-                "created_at": datetime.fromtimestamp(
-                    state.created_at, tz=timezone.utc
-                ).isoformat()
-                if state.created_at
-                else None,
-            }
-        }
+        return {"goal": state.to_public_dict() if state else None}
 
     async def get_message_markers(
         self,

@@ -147,11 +147,26 @@ class GoalService:
     """Kernel-side standing-goal loop: state, judge, and turn injection."""
 
     def __init__(self) -> None:
-        self.goals = GoalManager(_SpKVStorage())
+        self.goals = GoalManager(_SpKVStorage(), on_change=self._emit_goal_change)
         self._context = None
         self._judged_runs: set[str] = set()
         self._run_registrar: Callable[[str, str, str], Awaitable[None]] | None = None
+        self._state_listener = None
         self._migrated = False
+
+    def set_state_change_listener(self, listener) -> None:
+        """Set an async listener (umo, GoalState | None) fired on every goal
+        state mutation; the dashboard wires it to the webchat system stream."""
+        self._state_listener = listener
+
+    async def _emit_goal_change(self, umo: str, state) -> None:
+        listener = self._state_listener
+        if listener is None:
+            return
+        try:
+            await listener(umo, state)
+        except Exception as e:
+            logger.warning(f"goal loop: state change listener failed: {e}")
 
     def bind(self, context) -> None:
         """Bind the astrbot Context (event queue / llm_generate / send).

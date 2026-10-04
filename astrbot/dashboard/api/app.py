@@ -225,6 +225,25 @@ def create_dashboard_asgi_app(
 
     _goal_service.set_run_registrar(_goal_run_registrar)
 
+    async def _goal_state_changed(umo: str, state) -> None:
+        """Push goal state mutations to the session's webchat system stream."""
+        if not umo.startswith("webchat:"):
+            return
+        from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
+            webchat_queue_mgr,
+        )
+
+        cid = umo.rsplit("!", 1)[-1]
+        await webchat_queue_mgr.put_system_event(
+            cid,
+            {
+                "type": "goal_state_changed",
+                "data": {"goal": state.to_public_dict() if state else None},
+            },
+        )
+
+    _goal_service.set_state_change_listener(_goal_state_changed)
+
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError):
         return JSONResponse(

@@ -50,12 +50,14 @@ class GoalManager:
         *,
         default_max_turns: int = DEFAULT_MAX_TURNS,
         max_parse_failures: int = DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES,
+        on_change: Callable[[str, GoalState | None], Awaitable[None]] | None = None,
     ) -> None:
         self._storage = storage
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self.max_parse_failures = int(
             max_parse_failures or DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES
         )
+        self._on_change = on_change
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _lock_for(self, umo: str) -> asyncio.Lock:
@@ -69,6 +71,8 @@ class GoalManager:
 
     async def _save(self, umo: str, state: GoalState) -> None:
         await self._storage.set(self._key(umo), state.to_dict())
+        if self._on_change:
+            await self._on_change(umo, state)
 
     async def _track(self, umo: str) -> None:
         index = await self._storage.get(INDEX_KEY) or []
@@ -157,6 +161,8 @@ class GoalManager:
             had = state is not None
             await self._storage.delete(self._key(umo))
             await self._untrack(umo)
+            if had and self._on_change:
+                await self._on_change(umo, None)
             return had
 
     async def add_subgoal(self, umo: str, text: str) -> str:

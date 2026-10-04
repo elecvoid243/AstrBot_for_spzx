@@ -688,3 +688,22 @@ async def test_no_toolset_falls_back_to_judge():
     response = SimpleNamespace(completion_text="partial")
     await service.on_turn_done(event, response)
     assert called == ["umo1"]
+
+
+# ---------------------------------------------------------------------------
+# state change push
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_service_state_change_listener_fires_on_control_ops():
+    events = []
+    service = _make_service()
+    service.set_state_change_listener(lambda umo, state: events.append((umo, state)))
+    service.goals = GoalManager(InMemoryKV(), on_change=service._emit_goal_change)
+    await service.set_goal("umo1", "g")
+    await service.pause_goal("umo1")
+    await service.goals.resume("umo1")
+    await service.clear_goal("umo1")
+    statuses = [s.status if s else None for _, s in events]
+    assert statuses == ["active", "paused", "active", None]

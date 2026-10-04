@@ -246,3 +246,15 @@ async def test_control_mutation_bumps_epoch(kv):
     epoch_after_resume = (await mgr.get("umo1")).epoch
     await mgr.evaluate_after_turn("umo1", "resp", judge_continue)
     assert (await mgr.get("umo1")).epoch == epoch_after_resume
+
+
+async def test_manager_emits_on_change(kv):
+    events = []
+
+    async def listener(umo, state):
+        events.append((umo, state))
+
+    mgr = GoalManager(kv, on_change=listener)
+    await mgr.set("umo1", "g")
+    await mgr.clear("umo1")
+    assert events[0][1].goal == "g" and events[1] == ("umo1", None)

@@ -1363,11 +1363,9 @@ const {
 } = useSessions(props.chatboxMode);
 
 // ── goal 循环状态 (右上角 Goal 按钮 + GoalSidebar) ─────────────
-// The kernel goal loop has no push channel: state is fetched per session
-// on switch (watch inside useSessionGoal) and refreshed after each run
-// stream ends (onStreamEnd → refreshGoalAfterRun, converging on late
-// judge writes) so /goal set|pause|resume|clear reflect within one turn.
-const { currentGoal, refreshGoalAfterRun } = useSessionGoal(currSessionId);
+// Push-first: the backend emits goal_state_changed over the system stream
+// on every mutation; GET /goal is only the cold-start path on session switch.
+const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 const goalSidebarOpen = computed({
   get: () => chatHeader.goalSidebarOpen,
   set: (open: boolean) => chatHeader.SET_GOAL_SIDEBAR_OPEN(open),
@@ -2022,6 +2020,7 @@ const {
 } = useMessages({
   currentSessionId: currSessionId,
   onSessionsChanged: getSessions,
+  onGoalStateChanged: applyPushedGoal,
   onInteractiveChoice: (sessionId) => {
     markChoiceAttention(
       sessionId,
@@ -2052,9 +2051,6 @@ const {
   // a stream is in flight, the new session's state is already covered
   // by the `currSessionId` watcher above.
   onStreamEnd: (sessionId) => {
-    // Goal state changes at turn boundaries (judge runs on on_agent_done);
-    // refresh immediately plus a trailing fetch for late judge writes.
-    refreshGoalAfterRun(sessionId);
     // 2026-09-01 (elecvoid243): surface a bounded "reply finished" notice
     // (title flash + steady sidebar dot) when a session's run ends while
     // the user is viewing a different session. The inline message list is

@@ -9,6 +9,7 @@ import {
   finalizeSystemSession,
   processSystemPayload,
 } from "./systemStream";
+import type { SessionGoalState } from "@/api/v1";
 import {
   isInteractiveChoicePayload,
   validateInteractiveChoice,
@@ -319,6 +320,15 @@ interface UseMessagesOptions {
    *     just received the choice.
    */
   onInteractiveChoice?: (sessionId: string) => void;
+  /**
+   * Fired when the kernel goal loop pushes a `goal_state_changed` event over
+   * the system stream. The payload is authoritative — replace the cached
+   * state for the session.
+   */
+  onGoalStateChanged?: (
+    sessionId: string,
+    goal: SessionGoalState | null,
+  ) => void;
 }
 
 export function useMessages(options: UseMessagesOptions) {
@@ -430,6 +440,13 @@ export function useMessages(options: UseMessagesOptions) {
             ) {
               attachLiveRun(sessionId, String(payload.message_id));
               options.onStreamUpdate?.(sessionId);
+              return;
+            }
+            if (payload?.type === "goal_state_changed") {
+              const data = payload.data as
+                | { goal?: SessionGoalState | null }
+                | undefined;
+              options.onGoalStateChanged?.(sessionId, data?.goal ?? null);
               return;
             }
             messagesBySession[sessionId] = messagesBySession[sessionId] || [];

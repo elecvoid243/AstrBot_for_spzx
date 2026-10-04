@@ -197,7 +197,8 @@ export interface ChatSessionListParams {
 /** Serialized kernel standing-goal state (mirrors core GoalState). */
 export interface SessionGoalState {
   goal: string;
-  status: 'active' | 'paused' | 'done';
+  goal_id: string;
+  status: 'active' | 'paused' | 'blocked' | 'done';
   turns_used: number;
   max_turns: number;
   subgoals: string[];

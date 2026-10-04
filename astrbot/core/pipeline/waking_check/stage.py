@@ -110,6 +110,16 @@ class WakingCheckStage(Stage):
                 event.role = "admin"
                 break
 
+        # Internal turns (e.g. goal-loop continuations) are kernel-originated:
+        # they must never activate command/regex handlers, but still run the
+        # LLM pipeline. Set the wake flags directly and skip filter matching.
+        if event.get_extra("internal_turn"):
+            event.is_wake = True
+            event.is_at_or_wake_command = True
+            event.set_extra("activated_handlers", [])
+            event.set_extra("handlers_parsed_params", {})
+            return
+
         # 检查 wake
         wake_prefixes = self.ctx.astrbot_config["wake_prefix"]
         messages = event.get_messages()

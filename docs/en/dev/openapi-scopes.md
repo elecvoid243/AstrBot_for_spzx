@@ -200,6 +200,7 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/sessions/{session_id}/archive` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/export` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/goal` | — |
+| `POST` | `/api/v1/chat/sessions/{session_id}/goal/actions` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/history` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/markers` | — |
 | `PATCH` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}` | — |

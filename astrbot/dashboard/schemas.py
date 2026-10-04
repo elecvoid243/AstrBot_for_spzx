@@ -178,6 +178,12 @@ class ChatFileChangeRestoreRequest(OpenModel):
     expect_sha256: str = ""
 
 
+class ChatFileChangeRestoreRemovedRequest(OpenModel):
+    """Request to restore one file removed via the recycle bin."""
+
+    path: str
+
+
 class ChatFileChangeStatusItem(OpenModel):
     """One file to check against its pre-turn baseline backup."""
 

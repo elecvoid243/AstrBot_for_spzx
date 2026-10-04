@@ -26,7 +26,7 @@ from typing import Any
 
 from astrbot.core import logger, sp
 from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.goal.goal_judge import judge_goal
+from astrbot.core.goal.goal_judge import JUDGE_MAX_TOKENS, judge_goal
 from astrbot.core.goal.goal_manager import GoalManager
 from astrbot.core.goal.goal_state import GoalState
 from astrbot.core.message.components import Plain
@@ -249,6 +249,8 @@ class GoalService:
                     chat_provider_id=pid,
                     prompt=user_prompt,
                     system_prompt=system_prompt,
+                    max_tokens=JUDGE_MAX_TOKENS,
+                    temperature=0,
                 ),
                 timeout=float(self._config().get("judge_timeout", 30.0)),
             )

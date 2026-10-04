@@ -1,5 +1,4 @@
-"""Tests for judge prompt building and response parsing (ported from the
-astrbot_plugin_goal plugin)."""
+"""Tests for judge prompt building and the strict three-value judge protocol."""
 
 import pytest
 
@@ -14,33 +13,61 @@ pytestmark = pytest.mark.asyncio
 
 
 def test_parse_plain_json():
-    done, reason, failed = parse_judge_response('{"done": true, "reason": "ok"}')
-    assert (done, reason, failed) == (True, "ok", False)
+    status, reason, failed = parse_judge_response('{"status": "done", "reason": "ok"}')
+    assert (status, reason, failed) == ("done", "ok", False)
+
+
+def test_parse_blocked_verdict():
+    status, reason, failed = parse_judge_response(
+        '{"status": "blocked", "reason": "need input"}'
+    )
+    assert (status, reason, failed) == ("blocked", "need input", False)
 
 
 def test_parse_fenced_json():
-    raw = '```json\n{"done": false, "reason": "not yet"}\n```'
-    done, reason, failed = parse_judge_response(raw)
-    assert (done, failed) == (False, False)
+    raw = '```json\n{"status": "continue", "reason": "not yet"}\n```'
+    status, reason, failed = parse_judge_response(raw)
+    assert (status, failed) == ("continue", False)
     assert reason == "not yet"
 
 
 def test_parse_prose_wrapped_json():
-    raw = 'Sure! {"done": "true", "reason": "finished"} hope that helps'
-    done, reason, failed = parse_judge_response(raw)
-    assert done is True and failed is False
+    raw = 'Sure! {"status": "done", "reason": "finished"} hope that helps'
+    status, reason, failed = parse_judge_response(raw)
+    assert status == "done" and failed is False
 
 
 def test_parse_empty_and_garbage():
-    assert parse_judge_response("") == (False, "judge returned empty response", True)
+    assert parse_judge_response("") == (
+        "continue",
+        "judge returned empty response",
+        True,
+    )
     _, _, failed = parse_judge_response("I think the goal is done")
     assert failed is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"reason": "no status"}',
+        '{"status": "maybe", "reason": "x"}',
+        '{"status": "done"}',
+        '{"status": "done", "reason": 5}',
+        '{"status": "done", "reason": "  "}',
+        '{"done": true, "reason": "legacy bool protocol"}',
+    ],
+)
+def test_parse_strict_schema_failures(raw):
+    status, _, failed = parse_judge_response(raw)
+    assert failed is True and status == "continue"
 
 
 def test_build_continuation_prompt_plain():
     p = build_continuation_prompt("write report", None)
     assert "write report" in p
     assert "额外标准" not in p
+    assert "goal_done" in p
 
 
 def test_build_continuation_prompt_with_subgoals():
@@ -56,8 +83,19 @@ def test_build_judge_messages_variants():
     assert "crit" in msgs2[1]["content"]
 
 
+def test_response_truncation_keeps_tail():
+    resp = "x" * 4000 + " FINAL_DELIVERABLE_READY"
+    msgs = build_judge_messages("g", resp, None, "now")
+    assert "FINAL_DELIVERABLE_READY" in msgs[1]["content"]
+    assert "middle truncated" in msgs[1]["content"]
+
+
 async def _caller_ok(system, user):
-    return '{"done": true, "reason": "all finished"}'
+    return '{"status": "done", "reason": "all finished"}'
+
+
+async def _caller_blocked(system, user):
+    return '{"status": "blocked", "reason": "needs user choice"}'
 
 
 async def _caller_transport_error(system, user):
@@ -74,6 +112,13 @@ async def test_judge_goal_done():
     )
     assert (verdict, parse_failed, transport_failed) == ("done", False, False)
     assert reason == "all finished"
+
+
+async def test_judge_goal_blocked_passthrough():
+    verdict, _, parse_failed, _ = await judge_goal(
+        llm_caller=_caller_blocked, goal="g", last_response="resp"
+    )
+    assert verdict == "blocked" and parse_failed is False
 
 
 async def test_judge_goal_transport_error_fails_open():
@@ -102,27 +147,27 @@ async def test_judge_goal_skips_empty_inputs():
 
 
 def test_parse_strips_leading_think_tags():
-    raw = '<think>评估中</think>\n{"done": false, "reason": "not yet"}'
-    done, reason, failed = parse_judge_response(raw)
-    assert (done, reason, failed) == (False, "not yet", False)
+    raw = '<think>评估中</think>\n{"status": "continue", "reason": "not yet"}'
+    status, reason, failed = parse_judge_response(raw)
+    assert (status, reason, failed) == ("continue", "not yet", False)
 
 
 def test_parse_think_braces_do_not_misgrab():
-    raw = '<think>需要判断 {done} 后回复</think>\n{"done": true, "reason": "finished"}'
-    done, reason, failed = parse_judge_response(raw)
-    assert (done, reason, failed) == (True, "finished", False)
+    raw = '<think>需要判断 {done} 后回复</think>\n{"status": "done", "reason": "finished"}'
+    status, reason, failed = parse_judge_response(raw)
+    assert (status, reason, failed) == ("done", "finished", False)
 
 
 def test_parse_strips_thinking_variant_and_orphan_tags():
-    raw = '<thinking>notes</thinking>\n</think>\n{"done": true, "reason": "ok"}'
-    done, reason, failed = parse_judge_response(raw)
-    assert (done, reason, failed) == (True, "ok", False)
+    raw = '<thinking>notes</thinking>\n</think>\n{"status": "done", "reason": "ok"}'
+    status, reason, failed = parse_judge_response(raw)
+    assert (status, reason, failed) == ("done", "ok", False)
 
 
 def test_parse_failure_reason_does_not_leak_raw_text():
-    raw = '<think>整个思考内容\n<tool_call>foo</tool_call>\n{"done": 真假}</think>'
-    done, reason, failed = parse_judge_response(raw)
-    assert done is False and failed is True
+    raw = '<think>整个思考内容\n<tool_call>foo</tool_call>\n{"status": 真假}</think>'
+    status, reason, failed = parse_judge_response(raw)
+    assert status == "continue" and failed is True
     assert raw not in reason
     assert "<think>" not in reason
     assert "<tool_call>" not in reason
@@ -130,11 +175,11 @@ def test_parse_failure_reason_does_not_leak_raw_text():
 
 def test_parse_sanitizes_reason_field():
     raw = (
-        '{"done": false, "reason": "经分析 <think>还在想</think> 并 '
+        '{"status": "continue", "reason": "经分析 <think>还在想</think> 并 '
         '<tool_call>ls</tool_call> 后仍未完成"}'
     )
-    done, reason, failed = parse_judge_response(raw)
-    assert (done, failed) == (False, False)
+    status, reason, failed = parse_judge_response(raw)
+    assert (status, failed) == ("continue", False)
     assert "<think>" not in reason
     assert "<tool_call>" not in reason
     assert "还在想" not in reason

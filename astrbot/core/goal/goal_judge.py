@@ -12,8 +12,10 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-DEFAULT_JUDGE_MAX_TOKENS = 4096
+JUDGE_MAX_TOKENS = 256
+"""The judge only emits a one-line JSON verdict; keep the budget tight."""
 JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+JUDGE_RESPONSE_HEAD_CHARS = 1000
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[继续推进你的常驻目标]\n"
@@ -38,25 +40,25 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text and the "
-    "agent's most recent response. Your only job is to decide whether "
-    "the goal is fully satisfied based on that response.\n\n"
-    "A goal is DONE only when:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
-    "Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "agent's most recent response. Decide the goal's status based on that "
+    "response.\n\n"
+    "Reply with exactly one of three statuses:\n"
+    '- "done": the response explicitly confirms the goal was completed, '
+    "OR clearly shows the final deliverable was produced.\n"
+    '- "blocked": the response explains the goal is unachievable, '
+    "blocked, or needs user input.\n"
+    '- "continue": anything else — the goal is not done yet.\n\n'
     "Reply ONLY with a single JSON object on one line. Do NOT output any "
     "thinking, reasoning, tool-call traces, explanations, Markdown fences, "
     "or anything outside the JSON object:\n"
-    '{"done": <true|false>, "reason": "<one-sentence rationale>"}'
+    '{"status": "done|blocked|continue", "reason": "<one-sentence rationale>"}'
 )
 
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
     "Current time: {current_time}\n\n"
-    "Is the goal satisfied?"
+    "Reply with the status JSON."
 )
 
 JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
@@ -70,7 +72,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "satisfied. Do not accept generic phrases like 'all requirements "
     "met' — require specific evidence. If ANY criterion lacks "
     "specific evidence, return CONTINUE.\n\n"
-    "Is the goal AND every additional criterion satisfied?"
+    "Reply with the status JSON."
 )
 
 _LEAK_BLOCK_TAG_RE = re.compile(
@@ -98,6 +100,19 @@ def _truncate(text: str, limit: int) -> str:
     if not text:
         return ""
     return text if len(text) <= limit else text[:limit] + "… [truncated]"
+
+
+def _truncate_response(text: str, limit: int = JUDGE_RESPONSE_SNIPPET_CHARS) -> str:
+    """Tail-biased truncation for agent responses.
+
+    Completion evidence ("done", deliverables, blockers) lives at the END of
+    long responses, so keep the head for context and the tail for evidence.
+    """
+    if not text or len(text) <= limit:
+        return text or ""
+    head = JUDGE_RESPONSE_HEAD_CHARS
+    tail = limit - head
+    return text[:head] + "\n… [middle truncated] …\n" + text[-tail:]
 
 
 def _strip_markup(text: str) -> str:
@@ -166,22 +181,23 @@ def _sanitize_reason(reason: str, limit: int = 200) -> str:
     return _truncate(cleaned, limit)
 
 
-def parse_judge_response(raw: str) -> tuple[bool, str, bool]:
-    """Parse the judge's reply, fail-open to (False, reason, parse_failed).
+def parse_judge_response(raw: str) -> tuple[str, str, bool]:
+    """Parse the judge's reply under the strict three-value protocol.
 
-    Never leaks the raw model output into the returned reason: on parse
-    failure a fixed summary is returned and the raw text is only meant for
-    logging (see :data:`JUDGE_PARSE_FAILURE_REASON`).
+    The reply must be a JSON object with ``status`` in
+    {"done", "blocked", "continue"} and a non-empty string ``reason``.
+    Anything else — including the legacy boolean ``done`` protocol — is a
+    parse failure. Never leaks the raw model output into the returned reason.
 
     Args:
         raw: Raw text returned by the judge model.
 
     Returns:
-        Tuple of (done, reason, parse_failed). parse_failed is True when
-        the output could not be interpreted as the expected JSON verdict.
+        Tuple of (status, reason, parse_failed). On any failure, status is
+        "continue" and parse_failed is True.
     """
     if not raw:
-        return False, "judge returned empty response", True
+        return "continue", "judge returned empty response", True
     text = _strip_markup(raw.strip())
     data = None
     try:
@@ -189,16 +205,14 @@ def parse_judge_response(raw: str) -> tuple[bool, str, bool]:
     except Exception:
         data = _extract_json_object(text)
     if not isinstance(data, dict):
-        return False, JUDGE_PARSE_FAILURE_REASON, True
-    done_val = data.get("done")
-    if isinstance(done_val, str):
-        done = done_val.strip().lower() in {"true", "yes", "1", "done"}
-    else:
-        done = bool(done_val)
-    reason = _sanitize_reason(
-        str(data.get("reason") or "").strip() or "no reason provided"
-    )
-    return done, reason, False
+        return "continue", JUDGE_PARSE_FAILURE_REASON, True
+    status = data.get("status")
+    reason_val = data.get("reason")
+    if status not in {"done", "blocked", "continue"}:
+        return "continue", JUDGE_PARSE_FAILURE_REASON, True
+    if not isinstance(reason_val, str) or not reason_val.strip():
+        return "continue", JUDGE_PARSE_FAILURE_REASON, True
+    return status, _sanitize_reason(reason_val), False
 
 
 def build_continuation_prompt(goal: str, subgoals: list[str] | None) -> str:
@@ -222,13 +236,13 @@ def build_judge_messages(
         user = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             subgoals_block=_truncate(block, 2000),
-            response=_truncate(response, JUDGE_RESPONSE_SNIPPET_CHARS),
+            response=_truncate_response(response),
             current_time=now_str,
         )
     else:
         user = JUDGE_USER_PROMPT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
-            response=_truncate(response, JUDGE_RESPONSE_SNIPPET_CHARS),
+            response=_truncate_response(response),
             current_time=now_str,
         )
     return [
@@ -259,7 +273,7 @@ async def judge_goal(
 
     Returns:
         Tuple of (verdict, reason, parse_failed, transport_failed) where
-        verdict is "done" | "continue" | "skipped".
+        verdict is "done" | "blocked" | "continue" | "skipped".
     """
     if not goal.strip():
         return "skipped", "empty goal", False, False
@@ -274,5 +288,5 @@ async def judge_goal(
     if raw is None:
         return "continue", "judge unavailable (transport error)", False, True
 
-    done, reason, parse_failed = parse_judge_response(raw)
-    return ("done" if done else "continue"), reason, parse_failed, False
+    status, reason, parse_failed = parse_judge_response(raw)
+    return status, reason, parse_failed, False

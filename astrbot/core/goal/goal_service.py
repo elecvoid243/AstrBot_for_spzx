@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from astrbot.core import logger, sp
+from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.goal.goal_judge import judge_goal
 from astrbot.core.goal.goal_manager import GoalManager
 from astrbot.core.goal.goal_state import GoalState
@@ -36,6 +37,7 @@ from astrbot.core.utils.trace import TraceSpan
 
 INTERNAL_TURN_EXTRA = "internal_turn"
 GOAL_ID_EXTRA = "goal_id"
+GOAL_VERDICT_EXTRA = "goal_verdict"
 
 # Storage scope for kernel goal state (the legacy plugin used the
 # ("plugin", "astrbot_plugin_goal") namespace; migrate_legacy_states()
@@ -327,6 +329,77 @@ class GoalService:
         )
         return len(targets)
 
+    def _inject_control_tools(self, req) -> bool:
+        """Inject goal_done/goal_blocked control tools into a goal turn.
+
+        The tools are the loop's primary completion signal: the Agent reports
+        done/blocked structurally instead of relying on judge parsing. Only
+        the current request's ToolSet is mutated — nothing is registered
+        globally. Providers without function calling (``req.func_tool`` is
+        None) simply skip injection and every turn falls back to the judge.
+
+        Args:
+            req: The LLM request object passed to ``on_llm_request``.
+
+        Returns:
+            True when the tools were injected, False when there is no ToolSet.
+        """
+        tool_set = getattr(req, "func_tool", None)
+        if tool_set is None:
+            return False
+
+        params = {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Evidence of completion or the blocker, one sentence.",
+                }
+            },
+            "required": ["reason"],
+        }
+
+        async def _record_verdict(event, reason: str, status: str) -> str:
+            reason = (reason or "").strip()
+            if not reason:
+                return "error: reason must be a non-empty sentence of evidence"
+            event.set_extra(
+                GOAL_VERDICT_EXTRA, {"status": status, "reason": reason[:500]}
+            )
+            return "Recorded."
+
+        async def _goal_done(event, reason: str) -> str:
+            return await _record_verdict(event, reason, "done")
+
+        async def _goal_blocked(event, reason: str) -> str:
+            return await _record_verdict(event, reason, "blocked")
+
+        tool_set.add_tool(
+            FunctionTool(
+                name="goal_done",
+                description=(
+                    "Report that the standing goal (and every additional "
+                    "criterion) is fully satisfied. Call this instead of merely "
+                    "claiming completion in prose; reason must cite concrete "
+                    "evidence."
+                ),
+                parameters=params,
+                handler=_goal_done,
+            )
+        )
+        tool_set.add_tool(
+            FunctionTool(
+                name="goal_blocked",
+                description=(
+                    "Report that the standing goal cannot proceed without user "
+                    "input or is unachievable; reason describes the blocker."
+                ),
+                parameters=params,
+                handler=_goal_blocked,
+            )
+        )
+        return True
+
     async def inject_continuation(
         self, event: AstrMessageEvent, text: str, goal_id: str
     ) -> None:
@@ -391,6 +464,12 @@ class GoalService:
             logger.warning(
                 f"goal loop: failed to strip blocking tools ({type(e).__name__}): {e}"
             )
+        try:
+            self._inject_control_tools(req)
+        except Exception as e:
+            logger.warning(
+                f"goal loop: failed to inject control tools ({type(e).__name__}): {e}"
+            )
         logger.info(
             f"goal loop: internal goal turn entering LLM stage, "
             f"umo={event.unified_msg_origin}"
@@ -430,17 +509,37 @@ class GoalService:
         if not text:
             return  # Empty response: transient failure, skip judging.
 
+        tool_verdict = event.get_extra(GOAL_VERDICT_EXTRA)
+        if isinstance(tool_verdict, dict) and tool_verdict.get("status") in {
+            "done",
+            "blocked",
+        }:
+            # The Agent reported completion structurally via the control
+            # tools; trust it and skip the judge LLM call entirely.
+            recorded_status = str(tool_verdict["status"])
+            recorded_reason = (
+                str(tool_verdict.get("reason") or "").strip() or "agent reported"
+            )[:500]
+
+            async def judge(g, r, s):
+                return recorded_status, recorded_reason, False, False
+
+        else:
+
+            async def judge(g, r, s):
+                return await judge_goal(
+                    llm_caller=lambda sp_prompt, up: self._judge_llm_caller(
+                        umo, sp_prompt, up
+                    ),
+                    goal=g,
+                    last_response=r,
+                    subgoals=s,
+                )
+
         decision = await self.goals.evaluate_after_turn(
             umo,
             text,
-            judge=lambda g, r, s: judge_goal(
-                llm_caller=lambda sp_prompt, up: self._judge_llm_caller(
-                    umo, sp_prompt, up
-                ),
-                goal=g,
-                last_response=r,
-                subgoals=s,
-            ),
+            judge=judge,
             max_parse_failures=self._config().get("max_parse_failures"),
         )
 

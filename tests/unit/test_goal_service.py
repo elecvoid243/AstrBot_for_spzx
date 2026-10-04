@@ -80,6 +80,16 @@ class _StubToolSet:
     def remove_tool(self, name: str) -> None:
         self.tools = [t for t in self.tools if t.name != name]
 
+    def add_tool(self, tool) -> None:
+        self.tools = [t for t in self.tools if t.name != tool.name]
+        self.tools.append(tool)
+
+    def get_tool(self, name: str):
+        for t in self.tools:
+            if t.name == name:
+                return t
+        return None
+
 
 class _StubRequest:
     def __init__(self, tool_set) -> None:
@@ -342,7 +352,11 @@ async def test_guard_strips_tools_on_active_goal():
 
     await service.guard_goal_turn(event, req)
 
-    assert {t.name for t in req.func_tool.tools} == {"web_search"}
+    assert {t.name for t in req.func_tool.tools} == {
+        "web_search",
+        "goal_done",
+        "goal_blocked",
+    }
     assert event._stopped is False
 
 
@@ -595,3 +609,82 @@ async def test_pause_and_clear_request_agent_stop(monkeypatch):
     assert state.status == "paused" and calls == ["umo1"]
     had = await service.clear_goal("umo1")
     assert had is True and calls == ["umo1", "umo1"]
+
+
+# ---------------------------------------------------------------------------
+# goal_done / goal_blocked control tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_control_tools_injected_on_goal_turn():
+    service = _make_service()
+    service.goals = GoalManager(InMemoryKV())
+    state = await service.goals.set("umo1", "g")
+    req = _StubRequest(_StubToolSet([_StubTool("web_search")]))
+    event = _StubEvent(
+        umo="umo1", **{INTERNAL_TURN_EXTRA: "goal", GOAL_ID_EXTRA: state.goal_id}
+    )
+    await service.guard_goal_turn(event, req)
+    assert req.func_tool.get_tool("goal_done") is not None
+    assert req.func_tool.get_tool("goal_blocked") is not None
+    assert req.func_tool.get_tool("web_search") is not None
+
+
+@pytest.mark.asyncio
+async def test_goal_done_tool_records_verdict():
+    service = _make_service()
+    req = _StubRequest(_StubToolSet([]))
+    assert service._inject_control_tools(req) is True
+    tool = req.func_tool.get_tool("goal_done")
+    event = _StubEvent(umo="umo1")
+    result = await tool.handler(event, reason="report written to file")
+    assert result == "Recorded."
+    assert event.get_extra("goal_verdict") == {
+        "status": "done",
+        "reason": "report written to file",
+    }
+    # empty reason must not record
+    event2 = _StubEvent(umo="umo1")
+    assert "error" in await tool.handler(event2, reason="  ")
+    assert event2.get_extra("goal_verdict") is None
+
+
+@pytest.mark.asyncio
+async def test_on_turn_done_uses_tool_verdict_without_judge():
+    service = _make_service()
+    service.goals = GoalManager(InMemoryKV())
+    await service.goals.set("umo1", "g")
+
+    async def _exploding_judge(umo, system_prompt, user_prompt):
+        raise AssertionError("judge must not be called when a tool verdict exists")
+
+    service._judge_llm_caller = _exploding_judge
+    event = _StubEvent(umo="umo1", goal_verdict={"status": "done", "reason": "shipped"})
+    event.message_obj.message_id = "m1"
+    response = SimpleNamespace(completion_text="done work")
+    await service.on_turn_done(event, response)
+    state = await service.goals.get("umo1")
+    assert state.status == "done"
+    assert state.last_reason == "shipped"
+
+
+@pytest.mark.asyncio
+async def test_no_toolset_falls_back_to_judge():
+    service = _make_service()
+    assert service._inject_control_tools(_StubRequest(None)) is False
+
+    service.goals = GoalManager(InMemoryKV())
+    await service.goals.set("umo1", "g")
+    called = []
+
+    async def _judge(umo, system_prompt, user_prompt):
+        called.append(umo)
+        return '{"done": false, "reason": "not yet"}'
+
+    service._judge_llm_caller = _judge
+    event = _StubEvent(umo="umo1")
+    event.message_obj.message_id = "m1"
+    response = SimpleNamespace(completion_text="partial")
+    await service.on_turn_done(event, response)
+    assert called == ["umo1"]

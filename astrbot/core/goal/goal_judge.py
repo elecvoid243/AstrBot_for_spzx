@@ -19,8 +19,9 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "[继续推进你的常驻目标]\n"
     "目标：{goal}\n\n"
     "请继续朝这个目标工作，采取下一个具体步骤。"
-    "如果你认为目标已经完成，请明确说明并停止。"
-    "如果你被阻塞、需要用户输入，请清楚说明并停止。"
+    "当目标完成时，必须调用 goal_done 工具并在 reason 中写明完成证据；"
+    "当被阻塞或需要用户输入时，必须调用 goal_blocked 工具并写明原因。"
+    "不要只在回复正文里口头声称完成。"
 )
 
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
@@ -29,8 +30,9 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "用户在循环中途追加的额外标准：\n"
     "{subgoals_block}\n\n"
     "请继续朝目标以及全部额外标准工作，采取下一个具体步骤。"
-    "如果你认为目标和每条额外标准都已完成，请明确说明并停止。"
-    "如果你被阻塞、需要用户输入，请清楚说明并停止。"
+    "当目标和每条额外标准都完成时，必须调用 goal_done 工具，"
+    "reason 中逐条写明证据；被阻塞或需要用户输入时调用 goal_blocked。"
+    "不要只在回复正文里口头声称完成。"
 )
 
 JUDGE_SYSTEM_PROMPT = (

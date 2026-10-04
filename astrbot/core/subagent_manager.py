@@ -134,7 +134,6 @@ class SubAgentManager:
     _tools_blacklist: set[str] = {
         "broadcast_shared_context",
         "create_subagent",
-        "manage_subagent_protection",
         "remove_subagent",
         "list_subagents",
         "wait_for_subagent",
@@ -162,7 +161,10 @@ Create sub-agents ONLY when:
 - Task has ≥2 independent workstreams with clear inputs/outputs
 - Context exceeds your effective processing window"""
     _SUBAGENT_AUTOCLEAN_PROMPT = (
-        "- Sub-agents auto-destroy per turn; use `manage_subagent_protection(name, protected=true/false)` for multi-turn stateful tasks"
+        "- Dynamically created sub-agents are auto-removed at the end of each turn; "
+        "only user-configured static sub-agents persist across turns. Do not rely on a "
+        "dynamic sub-agent surviving into the next turn — finish or collect its output "
+        "within the current turn."
         if _auto_cleanup_per_turn
         else ""
     )
@@ -253,7 +255,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             cls._tools_blacklist = {
                 "broadcast_shared_context",
                 "create_subagent",
-                "manage_subagent_protection",
                 "remove_subagent",
                 "list_subagents",
                 "wait_for_subagent",
@@ -358,16 +359,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         # 每轮结束时顺便清理全局过期会话
         cls.cleanup_expired_sessions()
         return {"status": "cleaned", "cleaned_agents": cleaned}
-
-    @classmethod
-    def protect_subagent(cls, session_id: str, agent_name: str) -> None:
-        """Mark a subagent as protected from auto cleanup and history retention"""
-        session = cls._get_or_create_session(session_id)
-        session.protected_agents.add(agent_name)
-        logger.debug(
-            "[SubAgent:History] Initialized history for protected agent: %s",
-            agent_name,
-        )
 
     @classmethod
     def update_subagent_history(
@@ -878,14 +869,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         logger.debug("[SubAgent:SharedContext] Cleared all shared context")
 
     @classmethod
-    def is_protected(cls, session_id: str, agent_name: str) -> bool:
-        """Check if a subagent is protected from auto cleanup"""
-        session = cls.get_session(session_id)
-        if not session:
-            return False
-        return agent_name in session.protected_agents
-
-    @classmethod
     def set_history_enabled(cls, session_id: str, enabled: bool) -> None:
         """Enable or disable history for subagents"""
         session = cls._get_or_create_session(session_id)
@@ -976,16 +959,12 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         }
 
     @classmethod
-    async def create_subagent(
-        cls, session_id: str, config: SubAgentConfig, protected: bool = False
-    ) -> tuple:
-        """Create a subagent (dynamic or static).
+    async def create_subagent(cls, session_id: str, config: SubAgentConfig) -> tuple:
+        """Create a subagent at runtime (dynamic or static).
 
         Args:
             session_id: Session ID
             config: SubAgent configuration
-            protected: If True, the subagent will not be auto-cleaned per turn.
-                       Static subagents from config should be protected.
         """
         from astrbot.core.utils.trace import TraceSpan
 
@@ -1043,24 +1022,16 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
             session.subagent_histories[config.name] = []
         # 初始化subagent状态
         cls.set_subagent_status(session_id, config.name, SubAgentStatus.IDLE)
-        # 如果标记为protected，则加入protected集合
-        if protected:
-            session.protected_agents.add(config.name)
         trace.record(
             "subagent_created",
             agent_name=config.name,
             success=True,
             tools=list(config.tools) if config.tools else [],
             skills=list(config.skills) if config.skills else [],
-            protected=protected,
             provider_id=handoff_tool.provider_id,
         )
         session.subagent_traces[config.name] = trace
-        logger.info(
-            "[SubAgent:Create] Created subagent: %s (protected=%s)",
-            config.name,
-            protected,
-        )
+        logger.info("[SubAgent:Create] Created subagent: %s", config.name)
         # Return (tool_name, handoff_tool). The tool_name "transfer_to_{name}"
         # is kept for display/logging purposes only — it is no longer registered
         # as an individual tool in the main agent's func_tool set. The unified

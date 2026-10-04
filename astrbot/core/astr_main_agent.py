@@ -1231,7 +1231,6 @@ async def _apply_subagent_manager_tools(
             BROADCAST_SHARED_CONTEXT_TOOL,
             CREATE_SUBAGENT_TOOL,
             LIST_SUBAGENTS_TOOL,
-            MANAGE_SUBAGENT_PROTECTION_TOOL,
             ORCHESTRATE_TASKS_TOOL,
             REMOVE_SUBAGENT_TOOL,
             VIEW_SHARED_CONTEXT_TOOL,
@@ -1291,8 +1290,6 @@ async def _apply_subagent_manager_tools(
             req.func_tool.add_tool(LIST_SUBAGENTS_TOOL)
             # if SubAgentManager.is_history_enabled():   #
             #     req.func_tool.add_tool(RESET_SUBAGENT_TOOL)
-            if SubAgentManager.is_auto_cleanup_per_turn():
-                req.func_tool.add_tool(MANAGE_SUBAGENT_PROTECTION_TOOL)
             if SubAgentManager.is_shared_context_enabled():
                 req.func_tool.add_tool(VIEW_SHARED_CONTEXT_TOOL)
                 req.func_tool.add_tool(BROADCAST_SHARED_CONTEXT_TOOL)

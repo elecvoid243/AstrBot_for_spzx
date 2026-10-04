@@ -295,7 +295,6 @@ DEFAULT_CONFIG = {
             ),
             "tools_blacklist": [
                 "create_subagent",
-                "manage_subagent_protection",
                 "remove_subagent",
                 "list_subagents",
                 "wait_for_subagent",

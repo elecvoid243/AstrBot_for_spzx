@@ -270,45 +270,6 @@ class ListSubagentsTool(FunctionTool):
 
 
 @dataclass
-class ManageSubagentProtectionTool(FunctionTool):
-    """Tool to protect or unprotect a subagent from auto cleanup"""
-
-    name: str = "manage_subagent_protection"
-    description: str = "Protect or unprotect a subagent from automatic cleanup. Use this to prevent important subagents from being removed, or to allow them to be auto cleaned."
-    parameters: dict = field(
-        default_factory=lambda: {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Subagent name to manage"},
-                "protected": {
-                    "type": "boolean",
-                    "description": "Whether to protect (true) or unprotect (false) the subagent",
-                },
-            },
-            "required": ["name", "protected"],
-        }
-    )
-
-    async def call(self, context, **kwargs) -> str:
-        name = kwargs.get("name", "")
-        protected = kwargs.get("protected", True)
-        if not name:
-            return "Error: name required"
-        session_id = context.context.event.unified_msg_origin
-        session = SubAgentManager._get_or_create_session(session_id)
-        if name not in session.subagents:
-            return f"Error: Subagent {name} not found. Available subagents: {session.subagents.keys()}"
-        if protected:
-            SubAgentManager.protect_subagent(session_id, name)
-            return f"Subagent {name} is now protected from auto cleanup"
-        else:
-            if name in session.protected_agents:
-                session.protected_agents.discard(name)
-                return f"Subagent {name} is no longer protected"
-            return f"Subagent {name} was not protected"
-
-
-@dataclass
 class ResetSubAgentTool(FunctionTool):
     """Tool to reset a subagent"""
 
@@ -928,7 +889,6 @@ CREATE_SUBAGENT_TOOL = CreateSubAgentTool()
 REMOVE_SUBAGENT_TOOL = RemoveSubagentTool()
 LIST_SUBAGENTS_TOOL = ListSubagentsTool()
 RESET_SUBAGENT_TOOL = ResetSubAgentTool()
-MANAGE_SUBAGENT_PROTECTION_TOOL = ManageSubagentProtectionTool()
 SEND_SHARED_CONTEXT_TOOL = SendSharedContextTool()
 BROADCAST_SHARED_CONTEXT_TOOL = BroadCastSharedContextTool()
 VIEW_SHARED_CONTEXT_TOOL = ViewSharedContextTool()

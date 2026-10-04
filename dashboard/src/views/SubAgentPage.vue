@@ -894,7 +894,6 @@ function toast(message: string, color: 'success' | 'error' | 'warning' = 'succes
 
 const DEFAULT_BLACKLIST = [
   'create_subagent',
-  'manage_subagent_protection',
   'remove_subagent',
   'list_subagents',
   'wait_for_subagent',

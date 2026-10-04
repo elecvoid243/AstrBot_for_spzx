@@ -742,10 +742,12 @@ def test_main_agent_only_tools_set():
         "create_subagent",
         "remove_subagent",
         "list_subagents",
-        "manage_subagent_protection",
         "wait_for_subagent",
         "orchestrate_tasks",
         "broadcast_shared_context",
         "view_shared_context",
     ):
         assert blacklisted in tools
+    # Dynamic subagents can no longer be protected from per-turn cleanup, so
+    # the tool that managed that state must not be exposed to the LLM.
+    assert "manage_subagent_protection" not in tools

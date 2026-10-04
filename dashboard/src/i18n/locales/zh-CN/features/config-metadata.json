@@ -454,7 +454,7 @@
             },
             "tool_call_timeout_exclude": {
               "description": "不受超时限制的工具",
-              "hint": "填写不受工具调用超时时间限制的工具名称。这些工具将使用 3600 秒的固定超时。"
+              "hint": "填写不受工具调用超时时间限制的工具名称。这些工具不会被工具调用超时中断，等待时长由工具自身或其调用参数决定。"
             },
             "repeated_tool_call_notice": {
               "enable": {

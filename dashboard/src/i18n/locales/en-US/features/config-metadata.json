@@ -435,7 +435,7 @@
         },
         "tool_call_timeout_exclude": {
           "description": "Tools Excluded from Timeout",
-          "hint": "Tool names that are excluded from the tool call timeout. These tools will use a fixed 3600s timeout instead."
+          "hint": "Tool names that are excluded from the tool call timeout. These tools are never cut off by it — how long they wait is decided by the tool itself or by the arguments passed in the call."
         },
         "repeated_tool_call_notice": {
           "enable": {

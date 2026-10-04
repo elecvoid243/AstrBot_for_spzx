@@ -236,6 +236,7 @@ DEFAULT_CONFIG = {
         "computer_use_require_admin": True,
         "file_access_default_mode": "full",
         "file_access_extra_roots": [],
+        "file_remove_blacklist": [],
         "enable_default_workspace_path": True,
         "sandbox": {
             "booter": "shipyard_neo",
@@ -309,6 +310,7 @@ DEFAULT_CONFIG = {
                 "astrbot_file_write_tool",
                 "astrbot_file_edit_tool",
                 "astrbot_grep_tool",
+                "astrbot_file_remove",
             ],
         },
         "time_prompt_enabled": True,
@@ -4008,6 +4010,14 @@ CONFIG_METADATA_3 = {
                             "type": "string",
                         },
                         "hint": "文件访问模式为 workspace 时，除会话工作区与临时目录外额外允许写入的绝对路径列表。",
+                    },
+                    "provider_settings.file_remove_blacklist": {
+                        "description": "文件删除黑名单目录",
+                        "type": "list",
+                        "item": {
+                            "type": "string",
+                        },
+                        "hint": "禁止 astrbot_file_remove 工具删除的绝对路径前缀列表，与内置系统目录黑名单叠加生效；命中前缀（含其子路径）即拒绝删除。",
                     },
                     "provider_settings.enable_default_workspace_path": {
                         "description": "启用默认工作路径",

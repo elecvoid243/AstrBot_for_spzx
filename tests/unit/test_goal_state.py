@@ -53,3 +53,37 @@ def test_status_line_variants():
     )
     done = GoalState(goal="g", status="done")
     assert "已完成" in done.status_line()
+
+
+def test_new_fields_default():
+    s = GoalState(goal="g", goal_id="id1")
+    assert s.epoch == 1 and s.consecutive_transport_failures == 0
+
+
+def test_from_dict_backfills_goal_id_and_epoch():
+    s = GoalState.from_dict({"goal": "g", "status": "active"})
+    assert s.goal_id and len(s.goal_id) == 32 and s.epoch == 1
+
+
+def test_from_dict_invalid_status_becomes_paused():
+    s = GoalState.from_dict({"goal": "g", "status": "weird"})
+    assert s.status == "paused"
+    assert s.paused_reason == "recovered from invalid status"
+
+
+def test_to_public_dict_shape():
+    s = GoalState(goal="g", goal_id="id1", created_at=1_700_000_000.0)
+    d = s.to_public_dict()
+    assert d["goal_id"] == "id1" and "T" in d["created_at"]
+    assert set(d) == {
+        "goal",
+        "goal_id",
+        "status",
+        "turns_used",
+        "max_turns",
+        "subgoals",
+        "last_verdict",
+        "last_reason",
+        "paused_reason",
+        "created_at",
+    }

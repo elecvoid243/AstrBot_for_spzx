@@ -314,6 +314,7 @@
     "llmService": "Сервис LLM",
     "speechToText": "Преобразование речи",
     "editDisplayName": "Изменить имя чата",
+    "moreActions": "Другие действия",
     "export": "Экспорт сессии",
     "exportSuccess": "Сессия экспортирована",
     "exportFailed": "Не удалось экспортировать сессию",

@@ -108,6 +108,7 @@
     "llmService": "LLM サービス",
     "speechToText": "音声認識",
     "editDisplayName": "セッション名を編集",
+    "moreActions": "その他の操作",
     "export": "セッションをエクスポート",
     "exportSuccess": "セッションをエクスポートしました",
     "exportFailed": "セッションのエクスポートに失敗しました",

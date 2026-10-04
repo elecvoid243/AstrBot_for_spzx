@@ -240,17 +240,15 @@
                     <CornerUpLeft :size="14" />
                   </v-btn>
                 </div>
+                <!-- 2026-10-04 (elecvoid243): same two-action row as the flat
+                   session list in Chat.vue — rename plus an overflow that
+                   reopens the shared session menu (star / export / archive /
+                   delete / mark-unread). -->
                 <span
                   v-if="!selectionMode"
                   class="project-session-actions"
                   @click.stop
                 >
-                  <SessionExportButton
-                    :session-id="session.session_id"
-                    variant="project-icon"
-                    action-class="project-action-btn"
-                    @export="(id) => $emit('exportSession', id)"
-                  />
                   <v-btn
                     icon
                     size="x-small"
@@ -272,22 +270,12 @@
                     size="x-small"
                     variant="text"
                     class="project-action-btn"
-                    :title="tm('conversation.archive')"
+                    :title="tm('conversation.moreActions')"
                     @click="
-                      $emit('archiveSession', session.session_id, project.project_id)
+                      openSessionContextMenu(project.project_id, session, $event)
                     "
                   >
-                    <Archive :size="15" />
-                  </v-btn>
-                  <v-btn
-                    icon
-                    size="x-small"
-                    variant="text"
-                    class="project-action-btn"
-                    :title="tm('actions.deleteChat')"
-                    @click="handleDeleteSession(project.project_id, session)"
-                  >
-                    <Trash2 :size="15" />
+                    <MoreHorizontal :size="16" />
                   </v-btn>
                 </span>
                 <v-progress-circular
@@ -332,25 +320,16 @@
           {{ tm("conversation.editDisplayName") }}
         </v-list-item-title>
       </v-list-item>
-      <!-- 2026-09-18 (elecvoid243): star toggle, mirroring the flat session
-         list in Chat.vue; the mark is persisted server-side. -->
-      <v-list-item
-        class="styled-menu-item"
-        rounded="md"
-        @click="$emit('toggleSessionStar', sessionContextMenu.session!)"
-      >
-        <template #prepend>
-          <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
-          <Star v-else :size="16" />
-        </template>
-        <v-list-item-title>
-          {{
-            sessionContextMenu.session!.starred
-              ? tm("conversation.removeStar")
-              : tm("conversation.addStar")
-          }}
-        </v-list-item-title>
-      </v-list-item>
+      <!-- 2026-10-04 (elecvoid243): mirrors the flat session list menu in
+         Chat.vue — lifetime actions first, markers after the divider. -->
+      <!-- 2026-10-04 (elecvoid243): export moved off the row into this menu
+         together with the other rare actions. -->
+      <SessionExportButton
+        :session-id="sessionContextMenu.session!.session_id"
+        variant="menu-item"
+        :size="16"
+        @export="(id: string) => $emit('exportSession', id)"
+      />
       <v-list-item
         class="styled-menu-item"
         rounded="md"
@@ -387,6 +366,26 @@
         </v-list-item-title>
       </v-list-item>
       <v-divider class="my-1" />
+      <!-- 2026-09-18 (elecvoid243): star toggle, mirroring the flat session
+         list in Chat.vue; the mark is persisted server-side.
+         2026-10-04: grouped with "mark unread" below the divider. -->
+      <v-list-item
+        class="styled-menu-item"
+        rounded="md"
+        @click="$emit('toggleSessionStar', sessionContextMenu.session!)"
+      >
+        <template #prepend>
+          <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
+          <Star v-else :size="16" />
+        </template>
+        <v-list-item-title>
+          {{
+            sessionContextMenu.session!.starred
+              ? tm("conversation.removeStar")
+              : tm("conversation.addStar")
+          }}
+        </v-list-item-title>
+      </v-list-item>
       <v-list-item
         class="styled-menu-item"
         rounded="md"
@@ -422,6 +421,7 @@ import {
   GitBranch,
   Mail,
   MailOpen,
+  MoreHorizontal,
   Pencil,
   Plus,
   Star,
@@ -584,7 +584,16 @@ function openSessionContextMenu(
   session: ProjectSession,
   event: MouseEvent,
 ) {
-  sessionContextMenu.target = [event.clientX, event.clientY];
+  // Keyboard activation reports (0, 0), which would pin the menu to the
+  // viewport corner; anchor to the activator box instead.
+  const hasPointerCoords = event.clientX !== 0 || event.clientY !== 0;
+  const anchor = event.currentTarget as HTMLElement | null;
+  if (hasPointerCoords || !anchor) {
+    sessionContextMenu.target = [event.clientX, event.clientY];
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    sessionContextMenu.target = [rect.right, rect.top + rect.height];
+  }
   sessionContextMenu.projectId = projectId;
   sessionContextMenu.session = session;
   sessionContextMenu.show = true;
@@ -804,6 +813,17 @@ function onSessionRowDrop(
   color: rgb(var(--v-theme-on-surface));
 }
 
+/* 2026-10-04 (elecvoid243): square 26px hit boxes for the two session-row
+   actions and the branch jump button beside them; the project row keeps its
+   original three-button sizing. */
+.project-session-actions .project-action-btn,
+.project-session-action-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 8px;
+}
+
 .project-list-wrap,
 .project-session-list {
   display: flex;
@@ -832,9 +852,11 @@ function onSessionRowDrop(
 /* 2026-08-13: project session rows gained an archive action (3 hover
    buttons), so they need more right padding than project rows.
    2026-09-15 (elecvoid243): project rows gained a quick-create action and
-   now carry 3 buttons as well, so both share the same inset. */
+   now carry 3 buttons as well, so both share the same inset.
+   2026-10-04 (elecvoid243): session rows dropped to two actions (rename +
+   overflow = 56px plus a 6px edge inset), so their inset shrinks with it. */
 .project-session-row {
-  padding-right: 88px;
+  padding-right: 62px;
 }
 
 .project-row:hover,
@@ -941,19 +963,27 @@ function onSessionRowDrop(
   visibility: visible;
 }
 
+/* 2026-10-04 (elecvoid243): session-row actions sit in from the row edge and
+   breathe wider than the project row's three compact buttons. */
+.project-session-actions {
+  right: 6px;
+  gap: 4px;
+}
+
 .project-session-list {
   padding: 2px 0 4px 26px;
 }
 
 /* 2026-08-13: branch badge / jump-to-source on project session rows,
-   mirroring the flat session list styles in Chat.vue. */
+   mirroring the flat session list styles in Chat.vue. The 132px inset covers
+   the branch cluster (66 + 62) and the hover actions (6 + 56) in front of it. */
 .project-session-row.has-branch-meta {
   padding-right: 132px;
 }
 
 .project-session-branch-meta {
   position: absolute;
-  right: 92px;
+  right: 66px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -1073,7 +1103,9 @@ function onSessionRowDrop(
 
 .project-session-progress {
   position: absolute;
-  right: 4px;
+  /* Shares the overflow-button slot (right 6px + 26px box) so the running
+     spinner and the actions swap without moving. */
+  right: 11px;
   top: 50%;
   transform: translateY(-50%);
   flex-shrink: 0;

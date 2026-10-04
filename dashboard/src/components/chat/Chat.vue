@@ -370,11 +370,12 @@
                 <CornerUpLeft :size="14" />
               </v-btn>
             </div>
+            <!-- 2026-10-04 (elecvoid243): row actions keep only the two that
+               earn their space — rename (frequent, inline) and the overflow
+               menu. Star / export / archive / delete / mark-unread already
+               exist in sessionContextMenu, so the overflow button routes to
+               that same state instead of duplicating the item list. -->
             <div v-if="!selectionMode" class="session-actions" @click.stop>
-              <SessionExportButton
-                :session-id="session.session_id"
-                @export="exportSidebarSession"
-              />
               <v-btn
                 icon
                 size="x-small"
@@ -390,20 +391,10 @@
                 size="x-small"
                 variant="text"
                 class="session-action-btn"
-                :title="tm('conversation.archive')"
-                @click="archiveSidebarSession(session)"
+                :title="tm('conversation.moreActions')"
+                @click="openSessionContextMenu(session, $event)"
               >
-                <Archive :size="15" />
-              </v-btn>
-              <v-btn
-                icon
-                size="x-small"
-                variant="text"
-                class="session-action-btn"
-                :title="tm('actions.deleteChat')"
-                @click="deleteSidebarSession(session)"
-              >
-                <Trash2 :size="15" />
+                <MoreHorizontal :size="16" />
               </v-btn>
             </div>
             <v-progress-circular
@@ -438,25 +429,9 @@
                 {{ tm("conversation.editDisplayName") }}
               </v-list-item-title>
             </v-list-item>
-            <!-- 2026-09-18 (elecvoid243): star toggle; the mark is persisted
-               server-side so it survives reloads and other browsers. -->
-            <v-list-item
-              class="styled-menu-item"
-              rounded="md"
-              @click="toggleSessionStarred(sessionContextMenu.session!)"
-            >
-              <template #prepend>
-                <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
-                <Star v-else :size="16" />
-              </template>
-              <v-list-item-title>
-                {{
-                  sessionContextMenu.session!.starred
-                    ? tm("conversation.removeStar")
-                    : tm("conversation.addStar")
-                }}
-              </v-list-item-title>
-            </v-list-item>
+            <!-- 2026-10-04 (elecvoid243): the menu is split into lifetime
+               actions (rename / export / archive / delete) above, and the two
+               lightweight markers (star / unread) below the divider. -->
             <SessionExportButton
               :session-id="sessionContextMenu.session!.session_id"
               variant="menu-item"
@@ -488,6 +463,27 @@
               </v-list-item-title>
             </v-list-item>
             <v-divider class="my-1" />
+            <!-- 2026-09-18 (elecvoid243): star toggle; the mark is persisted
+               server-side so it survives reloads and other browsers.
+               2026-10-04: grouped with "mark unread" — both write a marker on
+               the session rather than acting on its content. -->
+            <v-list-item
+              class="styled-menu-item"
+              rounded="md"
+              @click="toggleSessionStarred(sessionContextMenu.session!)"
+            >
+              <template #prepend>
+                <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
+                <Star v-else :size="16" />
+              </template>
+              <v-list-item-title>
+                {{
+                  sessionContextMenu.session!.starred
+                    ? tm("conversation.removeStar")
+                    : tm("conversation.addStar")
+                }}
+              </v-list-item-title>
+            </v-list-item>
             <v-list-item
               class="styled-menu-item"
               rounded="md"
@@ -1160,6 +1156,7 @@ import {
   Mail,
   MailOpen,
   Moon,
+  MoreHorizontal,
   PanelLeft,
   Pencil,
   Search,
@@ -3245,7 +3242,16 @@ const sessionContextMenu = reactive({
 });
 
 function openSessionContextMenu(session: Session, event: MouseEvent) {
-  sessionContextMenu.target = [event.clientX, event.clientY];
+  // Keyboard activation reports (0, 0), which would pin the menu to the
+  // viewport corner; anchor to the activator box instead.
+  const hasPointerCoords = event.clientX !== 0 || event.clientY !== 0;
+  const anchor = event.currentTarget as HTMLElement | null;
+  if (hasPointerCoords || !anchor) {
+    sessionContextMenu.target = [event.clientX, event.clientY];
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    sessionContextMenu.target = [rect.right, rect.top + rect.height];
+  }
   sessionContextMenu.session = session;
   sessionContextMenu.show = true;
 }
@@ -5892,7 +5898,10 @@ function toggleTheme() {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 88px 4px 10px;
+  /* Right inset reserves the hover action gutter (rename + overflow = 56px
+     plus their 6px edge inset) so revealing the actions never reflows the
+     title. Was 88px for four buttons. */
+  padding: 4px 62px 4px 10px;
   position: relative;
   box-sizing: border-box;
   cursor: pointer;
@@ -5969,7 +5978,9 @@ function toggleTheme() {
 
 .session-progress {
   position: absolute;
-  right: 4px;
+  /* Shares the overflow-button slot (right 6px + 26px box) so the running
+     spinner and the actions swap without moving. */
+  right: 11px;
   top: 50%;
   transform: translateY(-50%);
   flex-shrink: 0;
@@ -5981,12 +5992,12 @@ function toggleTheme() {
 .session-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex-shrink: 0;
   opacity: 0;
   pointer-events: none;
   position: absolute;
-  right: 0;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   visibility: hidden;
@@ -5999,15 +6010,16 @@ function toggleTheme() {
   visibility: visible;
 }
 
-/* Branch meta (badge + jump-to-source) sits left of the hover actions and
-   stays visible without hover. */
+/* Branch meta (badge + jump-to-source ≈ 62px) stays visible without hover and
+   sits left of the hover actions, so the row inset has to clear both clusters:
+   66 + 62 + 4. The old 92px offset let the jump button overlap the title. */
 .session-item.has-branch-meta {
   padding-right: 132px;
 }
 
 .session-branch-meta {
   position: absolute;
-  right: 92px;
+  right: 66px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -6040,6 +6052,10 @@ function toggleTheme() {
 }
 
 .session-action-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 8px;
   color: var(--chat-muted);
 }
 

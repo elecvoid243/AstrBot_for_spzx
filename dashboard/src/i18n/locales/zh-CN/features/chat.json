@@ -320,6 +320,7 @@
     "llmService": "LLM 服务",
     "speechToText": "语音转文本",
     "editDisplayName": "编辑会话名称",
+    "moreActions": "更多操作",
     "export": "导出会话",
     "exportSuccess": "会话已导出",
     "exportFailed": "导出会话失败",

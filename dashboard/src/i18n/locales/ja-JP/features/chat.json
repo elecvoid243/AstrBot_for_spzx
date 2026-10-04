@@ -221,6 +221,25 @@
   "tokenUsage": {
     "tooltip": "{used} / {limit} トークン（{percent}%）"
   },
+  "goal": {
+    "sidebarTitle": "ゴール",
+    "summary": "ゴール進捗",
+    "empty": "目標はありません。/goal set <目標テキスト> で設定してください",
+    "close": "閉じる",
+    "status_active": "進行中",
+    "status_paused": "一時停止中",
+    "status_done": "完了",
+    "status_blocked": "ブロック中",
+    "pause": "一時停止",
+    "resume": "再開",
+    "clear": "クリア",
+    "turnBudget": "ターン予算",
+    "turnsLine": "{used}/{max} ターン",
+    "subgoalsTitle": "評価基準",
+    "lastReason": "最新の評価",
+    "pausedReason": "一時停止の理由",
+    "setAt": "設定: {time}"
+  },
   "refs": {
     "title": "参照",
     "sources": "出典"

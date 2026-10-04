@@ -1700,6 +1700,19 @@ export type GetChatSessionGoalResponse = (SuccessEnvelope);
 
 export type GetChatSessionGoalError = unknown;
 
+export type ApplyChatSessionGoalActionData = {
+    body: {
+        action: 'pause' | 'resume' | 'clear';
+    };
+    path: {
+        session_id: string;
+    };
+};
+
+export type ApplyChatSessionGoalActionResponse = (SuccessEnvelope);
+
+export type ApplyChatSessionGoalActionError = unknown;
+
 export type ExportChatSessionData = {
     path: {
         session_id: string;

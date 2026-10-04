@@ -2949,6 +2949,83 @@ class ChatService:
         state = await goal_service.goals.get(umo)
         return {"goal": state.to_public_dict() if state else None}
 
+    async def apply_goal_action(
+        self, username: str, session_id: str, action: str
+    ) -> dict:
+        """Apply a goal-loop control action (pause/resume/clear) for a session.
+
+        Authorized by session ownership (same as get_session_goal); the
+        ``goal.admin_only`` config gates platform commands, not dashboard
+        owners. ``resume`` queues an internal goal kickoff turn through the
+        webchat session queue (register-then-inject, mirroring
+        agent_team_ports.deliver).
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            action: One of "pause" | "resume" | "clear".
+
+        Returns:
+            ``{"goal": ...}`` with the post-action serialized state (or None).
+
+        Raises:
+            ChatServiceError: Session missing, not owned, or unknown action.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        from astrbot.core.goal.goal_service import goal_service
+
+        umo = build_webchat_unified_msg_origin(session)
+        if action == "pause":
+            await goal_service.pause_goal(umo)
+        elif action == "clear":
+            await goal_service.clear_goal(umo)
+        elif action == "resume":
+            state = await goal_service.goals.resume(umo)
+            if state is not None:
+                message_id = str(uuid.uuid4().hex)
+                checkpoint = str(uuid.uuid4().hex)
+                await self.register_synthetic_chat_run(
+                    session_id=session.session_id,
+                    message_id=message_id,
+                    username=username,
+                    llm_checkpoint_id=checkpoint,
+                )
+                queue = webchat_queue_mgr.get_or_create_queue(session.session_id)
+                await queue.put(
+                    (
+                        username,
+                        session.session_id,
+                        {
+                            "message": [
+                                {
+                                    "type": "plain",
+                                    "text": f"请继续完成目标：{state.goal}",
+                                }
+                            ],
+                            "selected_provider": None,
+                            "selected_model": None,
+                            "flags": resolve_webchat_request_flags({}),
+                            "message_id": message_id,
+                            "llm_checkpoint_id": checkpoint,
+                            "thread_selected_text": None,
+                            "_api_key_allow_admin_role": None,
+                            "internal_turn": "goal",
+                            "goal_id": state.goal_id,
+                            "persist_user_history": True,
+                        },
+                    )
+                )
+        else:
+            raise ChatServiceError(f"Unknown goal action: {action}")
+
+        state = await goal_service.goals.get(umo)
+        return {"goal": state.to_public_dict() if state else None}
+
     async def get_message_markers(
         self,
         username: str,

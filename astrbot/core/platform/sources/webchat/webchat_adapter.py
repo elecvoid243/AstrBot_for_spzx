@@ -311,6 +311,12 @@ class WebChatAdapter(Platform):
                 execution_token = payload.get("execution_token")
                 if isinstance(execution_token, str) and execution_token.strip():
                     message_event.set_extra("execution_token", execution_token)
+                internal_turn = payload.get("internal_turn")
+                if isinstance(internal_turn, str) and internal_turn.strip():
+                    message_event.set_extra("internal_turn", internal_turn)
+                goal_id = payload.get("goal_id")
+                if isinstance(goal_id, str) and goal_id.strip():
+                    message_event.set_extra("goal_id", goal_id)
 
         return message_event
 

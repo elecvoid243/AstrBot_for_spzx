@@ -37,6 +37,7 @@ from astrbot.dashboard.schemas import (
     ChatThreadMessageRequest,
     FileAccessModeSetRequest,
     FileAccessRootsSetRequest,
+    GoalActionRequest,
 )
 from astrbot.dashboard.services.chat_service import (
     MAX_HISTORY_WINDOW_SIZE,
@@ -365,6 +366,19 @@ async def get_chat_session_goal(
 ):
     """Return the standing-goal state for a session (null when none)."""
     return await _run(lambda: service.get_session_goal(auth.username, session_id))
+
+
+@router.post("/chat/sessions/{session_id}/goal/actions")
+async def apply_chat_session_goal_action(
+    session_id: str,
+    payload: GoalActionRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Apply a goal-loop control action (pause/resume/clear)."""
+    return await _run(
+        lambda: service.apply_goal_action(auth.username, session_id, payload.action)
+    )
 
 
 @router.patch("/chat/sessions/{session_id}")

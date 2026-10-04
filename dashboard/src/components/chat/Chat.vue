@@ -1101,7 +1101,11 @@
       :refs="selectedRefs"
       @update:model-value="onRefsToggle"
     />
-    <GoalSidebar v-model="goalSidebarOpen" :goal="currentGoal" />
+    <GoalSidebar
+      v-model="goalSidebarOpen"
+      :goal="currentGoal"
+      :session-id="currSessionId"
+    />
     <GitDiffSidebar
       v-model="gitDiffSidebarOpen"
       :is-dark="isDark"

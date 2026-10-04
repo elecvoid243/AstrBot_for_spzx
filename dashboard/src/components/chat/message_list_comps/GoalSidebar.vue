@@ -83,6 +83,37 @@
         </div>
       </div>
 
+      <div v-if="goal" class="sidebar-actions">
+        <v-btn
+          v-if="goal.status === 'active'"
+          size="small"
+          variant="tonal"
+          :loading="actionBusy"
+          @click="applyAction('pause')"
+        >
+          {{ tm("goal.pause") }}
+        </v-btn>
+        <v-btn
+          v-else-if="goal.status === 'paused' || goal.status === 'blocked'"
+          size="small"
+          variant="tonal"
+          color="primary"
+          :loading="actionBusy"
+          @click="applyAction('resume')"
+        >
+          {{ tm("goal.resume") }}
+        </v-btn>
+        <v-btn
+          size="small"
+          variant="text"
+          color="error"
+          :loading="actionBusy"
+          @click="applyAction('clear')"
+        >
+          {{ tm("goal.clear") }}
+        </v-btn>
+      </div>
+
       <div v-if="goal?.created_at" class="sidebar-footer">
         <v-icon size="12" class="footer-icon">mdi-clock-outline</v-icon>
         {{ tm("goal.setAt", { time: formatCreatedAt(goal.created_at) }) }}
@@ -94,6 +125,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
+import { chatApi } from "@/api/v1";
 import type { SessionGoalState } from "@/api/v1";
 
 /**
@@ -108,10 +140,12 @@ const props = withDefaults(
   defineProps<{
     modelValue: boolean;
     goal: SessionGoalState | null;
+    sessionId?: string;
   }>(),
   {
     modelValue: false,
     goal: null,
+    sessionId: undefined,
   },
 );
 
@@ -133,10 +167,26 @@ function close() {
 
 const statusColor = computed(() => {
   const status = props.goal?.status;
-  if (status === "paused") return "warning";
+  if (status === "paused" || status === "blocked") return "warning";
   if (status === "done") return "success";
   return "primary";
 });
+
+// Actions hit the REST endpoint; the resulting state reaches the sidebar
+// through the goal_state_changed system-stream push (useSessionGoal).
+const actionBusy = ref(false);
+
+async function applyAction(action: "pause" | "resume" | "clear") {
+  if (!props.sessionId || actionBusy.value) return;
+  actionBusy.value = true;
+  try {
+    await chatApi.applyGoalAction(props.sessionId, action);
+  } catch (error) {
+    console.error("Failed to apply goal action:", error);
+  } finally {
+    actionBusy.value = false;
+  }
+}
 
 const budgetPct = computed(() => {
   const goal = props.goal;
@@ -372,6 +422,14 @@ onBeforeUnmount(() => {
   color: rgba(var(--v-theme-on-surface), 0.65);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 16px 10px;
+  border-top: 1px solid var(--chat-border, rgba(var(--v-border-color), 0.08));
 }
 
 .sidebar-footer {

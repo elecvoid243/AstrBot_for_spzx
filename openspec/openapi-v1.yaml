@@ -1507,6 +1507,29 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/goal/actions:
+    post:
+      tags: [Chat]
+      summary: Apply a goal-loop control action (pause/resume/clear)
+      operationId: applyChatSessionGoalAction
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [pause, resume, clear]
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/export:
     get:
       tags: [Chat]

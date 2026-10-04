@@ -132,6 +132,10 @@ class ChatSessionPatchRequest(OpenModel):
     starred: bool | None = None
 
 
+class GoalActionRequest(OpenModel):
+    action: Literal["pause", "resume", "clear"]
+
+
 class FileAccessModeSetRequest(OpenModel):
     umo: str
     mode: Literal["full", "readonly", "workspace"]

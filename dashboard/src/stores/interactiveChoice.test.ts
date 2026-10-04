@@ -491,6 +491,100 @@ test("injectOrphans injects multiple orphans each into the last bot message", ()
 });
 
 // ---------------------------------------------------------------------------
+// 2026-10-04 (elecvoid243): a terminal choice must never be re-attached.
+// History is windowed (HISTORY_PAGE_SIZE), so once a conversation grows
+// past the newest page the choice's own record is no longer in the loaded
+// messages — injectOrphans cannot tell "not persisted" from "outside the
+// window" and appended the stale box to the LAST bot message, rendering an
+// already-answered box at the conversation tail.
+// ---------------------------------------------------------------------------
+
+test("injectOrphans skips a part that already carries an answer", () => {
+  const store = useInteractiveChoiceStore();
+  store.addChoice(TEST_UMO, {
+    type: "interactive_choice",
+    request_id: "answered-1",
+    prompt: "Pick one",
+    options: [{ id: "A", label: "a" }],
+    answer: { choice_id: "A", free_text: "", answered_at: 1 },
+  });
+
+  const bot = makeBotMessage();
+  const injected = store.injectOrphans(TEST_UMO, [bot]);
+
+  assert.equal(injected, 0);
+  assert.equal(bot.content.message.length, 0);
+});
+
+test("injectOrphans skips a part stamped resolved (cancelled/timeout)", () => {
+  const store = useInteractiveChoiceStore();
+  store.addChoice(TEST_UMO, {
+    type: "interactive_choice",
+    request_id: "resolved-1",
+    prompt: "Pick one",
+    options: [{ id: "A", label: "a" }],
+    resolved: { reason: "cancelled", resolved_at: 1 },
+  });
+
+  const bot = makeBotMessage();
+  const injected = store.injectOrphans(TEST_UMO, [bot]);
+
+  assert.equal(injected, 0);
+  assert.equal(bot.content.message.length, 0);
+});
+
+test("injectOrphans skips a part with a persisted local submission", () => {
+  const store = useInteractiveChoiceStore();
+  store.markSubmitted(TEST_UMO, "submitted-1", "option", { optionId: "A" });
+  store.addChoice(TEST_UMO, {
+    type: "interactive_choice",
+    request_id: "submitted-1",
+    prompt: "Pick one",
+    options: [{ id: "A", label: "a" }],
+  });
+
+  const bot = makeBotMessage();
+  const injected = store.injectOrphans(TEST_UMO, [bot]);
+
+  assert.equal(injected, 0);
+  assert.equal(bot.content.message.length, 0);
+});
+
+test("injectOrphans skips a locally cancelled part", () => {
+  const store = useInteractiveChoiceStore();
+  store.markCancelled(TEST_UMO, "cancelled-1");
+  store.addChoice(TEST_UMO, {
+    type: "interactive_choice",
+    request_id: "cancelled-1",
+    prompt: "Pick one",
+    options: [{ id: "A", label: "a" }],
+  });
+
+  const bot = makeBotMessage();
+  const injected = store.injectOrphans(TEST_UMO, [bot]);
+
+  assert.equal(injected, 0);
+  assert.equal(bot.content.message.length, 0);
+});
+
+test("injectOrphans skips an ignored part (user already moved past it)", () => {
+  const store = useInteractiveChoiceStore();
+  store.markIgnored(TEST_UMO, ["ignored-1"]);
+  store.addChoice(TEST_UMO, {
+    type: "interactive_choice",
+    request_id: "ignored-1",
+    prompt: "Pick one",
+    options: [{ id: "A", label: "a" }],
+  });
+
+  const bot = makeBotMessage();
+  const injected = store.injectOrphans(TEST_UMO, [bot]);
+
+  assert.equal(injected, 0);
+  assert.equal(bot.content.message.length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // Bug 1 fix: submissionStates per UMO.
 // ---------------------------------------------------------------------------
 

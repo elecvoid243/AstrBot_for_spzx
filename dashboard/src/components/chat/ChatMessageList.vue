@@ -859,6 +859,22 @@ function mirrorInteractiveChoiceParts(records: ChatRecord[]): void {
     for (const part of messageParts(message)) {
       if (!isInteractiveChoicePayload(part)) continue;
       if (typeof part.request_id !== "string" || !part.request_id) continue;
+      // 2026-10-04 (elecvoid243): a terminal box must not re-enter
+      // activeChoices. Mirroring a resolved part persists it to
+      // localStorage, and once the conversation outgrows the loaded
+      // history window, injectOrphans can no longer find the part's own
+      // record and appends the stale box to the LAST bot message — an
+      // answered box resurfacing at the conversation tail.
+      if (part.answer || part.resolved) continue;
+      if (
+        interactiveChoiceStore.getSubmissionState(
+          props.currentUmo,
+          part.request_id,
+        ) ||
+        interactiveChoiceStore.isCancelled(props.currentUmo, part.request_id) ||
+        interactiveChoiceStore.isIgnored(props.currentUmo, part.request_id)
+      )
+        continue;
       // Bug Y1 fix: dedup against the per-UMO bucket, not a flat
       // global map, so a part belonging to another session cannot
       // block re-mirroring here.

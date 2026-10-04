@@ -727,6 +727,21 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
       if (!bucket) return 0;
       let count = 0;
       for (const part of Object.values(bucket)) {
+        // 2026-10-04 (elecvoid243): never re-attach a terminal box. History
+        // is windowed (HISTORY_PAGE_SIZE), so once the conversation grows
+        // past the newest page the choice's own record is no longer in the
+        // loaded messages and the alreadyAttached scan below cannot tell
+        // "not persisted" from "outside the window" — a stale answered /
+        // cancelled / ignored part was appended to the LAST bot message
+        // and rendered at the conversation tail.
+        if (part.answer || part.resolved) continue;
+        const requestId = part.request_id;
+        if (
+          this.submissionStates[umo]?.[requestId] ||
+          this.cancelledStates[umo]?.[requestId] ||
+          this.ignoredStates[umo]?.[requestId]
+        )
+          continue;
         let alreadyAttached = false;
         let lastBotMessage: InjectableBotMessage | null = null;
         for (const m of messages) {
@@ -739,7 +754,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
             if (
               p &&
               typeof p === "object" &&
-              (p as { request_id?: unknown }).request_id === part.request_id
+              (p as { request_id?: unknown }).request_id === requestId
             ) {
               alreadyAttached = true;
               break;

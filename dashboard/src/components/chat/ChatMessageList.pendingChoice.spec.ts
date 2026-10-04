@@ -161,3 +161,60 @@ describe("ChatMessageList capsule vs a pending choice box", () => {
     expect(storeMock.reconcile).toHaveBeenCalledTimes(2);
   });
 });
+
+// 2026-10-04 (elecvoid243): the store mirror must not re-admit a terminal
+// box. Mirroring a resolved part persists it to localStorage, and once the
+// conversation outgrows the loaded history window, injectOrphans can no
+// longer find the part's own record and appends the stale box to the LAST
+// bot message — an answered box resurfacing at the conversation tail.
+describe("ChatMessageList store mirror vs a terminal choice box", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storeMock.isCancelled.mockReturnValue(false);
+    storeMock.getSubmissionState.mockReturnValue(undefined);
+  });
+
+  it("mirrors a genuinely pending choice part into the store", () => {
+    mountList();
+    expect(storeMock.addChoice).toHaveBeenCalledWith(
+      "webchat:FriendMessage:webchat!u!c",
+      expect.objectContaining({ request_id: CHOICE.request_id }),
+    );
+  });
+
+  it("does not mirror a part that already carries an answer", () => {
+    const answered = {
+      ...CHOICE,
+      answer: { choice_id: "a", free_text: "", answered_at: 1 },
+    };
+    mount(ChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: 8,
+            content: { type: "bot", message: [TEXT("done"), answered] } as ChatContent,
+          },
+        ],
+        currentUmo: "webchat:FriendMessage:webchat!u!c",
+        isStreaming: false,
+      },
+      global: { components: vuetifyStubs },
+    });
+    expect(storeMock.addChoice).not.toHaveBeenCalled();
+  });
+
+  it("does not mirror a part with a persisted local submission", () => {
+    storeMock.getSubmissionState.mockReturnValue({
+      kind: "option",
+      optionId: "a",
+    });
+    mountList();
+    expect(storeMock.addChoice).not.toHaveBeenCalled();
+  });
+
+  it("does not mirror a part the server already cancelled", () => {
+    storeMock.isCancelled.mockReturnValue(true);
+    mountList();
+    expect(storeMock.addChoice).not.toHaveBeenCalled();
+  });
+});

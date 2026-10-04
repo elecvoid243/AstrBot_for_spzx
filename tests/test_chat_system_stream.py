@@ -88,6 +88,36 @@ class TestBuildSystemStream:
             await stream.aclose()
 
     @pytest.mark.asyncio
+    async def test_goal_state_changed_passes_without_message_id(self):
+        """goal_state_changed carries no message_id by design (it is session-
+        scoped, not turn-scoped); the stream must yield it verbatim and never
+        route it into the message accumulator/persistence path."""
+        service = _make_service()
+        session_id = f"conv-{id(self)}-goal"
+        stream = await service.build_system_stream("tester", session_id)
+        sink: list = []
+        pump = asyncio.create_task(_pump(stream, sink))
+        try:
+            await _wait_until(
+                lambda: webchat_queue_mgr.has_system_subscribers(session_id)
+            )
+            await webchat_queue_mgr.put_system_event(
+                session_id,
+                {
+                    "type": "goal_state_changed",
+                    "data": {"goal": {"goal": "g", "status": "paused"}},
+                },
+            )
+            await _wait_until(lambda: len(sink) == 1)
+            assert sink[0]["type"] == "goal_state_changed"
+            assert sink[0]["data"]["goal"]["status"] == "paused"
+            service.save_bot_message.assert_not_awaited()
+        finally:
+            pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
+            await stream.aclose()
+
+    @pytest.mark.asyncio
     async def test_active_run_payloads_are_skipped(self):
         service = _make_service()
         session_id = f"conv-{id(self)}-b"

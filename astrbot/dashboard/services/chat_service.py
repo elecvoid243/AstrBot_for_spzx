@@ -2065,6 +2065,13 @@ class ChatService:
                     payload = await queue.get()
                     if not isinstance(payload, dict):
                         continue
+                    # goal_state_changed is session-scoped (not turn-scoped),
+                    # so it carries no message_id; pass it through verbatim
+                    # before the message_id gate and keep it out of the
+                    # accumulator/persistence path.
+                    if payload.get("type") == "goal_state_changed":
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        continue
                     message_id = payload.get("message_id")
                     if not message_id:
                         continue

@@ -17,6 +17,7 @@ from .util import (
 )
 
 _OS_NAME = platform.system()
+_DEFAULT_TIMEOUT_SECONDS = 60
 _SANDBOX_PYTHON_TOOL_CONFIG = {
     "provider_settings.computer_use_runtime": "sandbox",
 }
@@ -39,7 +40,7 @@ param_schema = {
         "timeout": {
             "type": "integer",
             "description": "Optional timeout in seconds for code execution.",
-            "default": 30,
+            "default": _DEFAULT_TIMEOUT_SECONDS,
         },
     },
     "required": ["code"],
@@ -89,7 +90,7 @@ class PythonTool(FunctionTool):
         context: ContextWrapper[AstrAgentContext],
         code: str,
         silent: bool = False,
-        timeout: int = 30,
+        timeout: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> ToolExecResult:
         if permission_error := check_admin_permission(context, "Python execution"):
             return permission_error
@@ -97,11 +98,17 @@ class PythonTool(FunctionTool):
             context.context.context,
             context.context.event.unified_msg_origin,
         )
-        effective_timeout = (
-            min(timeout, context.tool_call_timeout)
-            if timeout > 0
-            else context.tool_call_timeout
-        )
+        if self.name in context.tool_call_timeout_exclude:
+            # The runner already skips its own timeout for excluded tools, so the
+            # configured tool call timeout must not cap them here either: only the
+            # value passed by the model (schema default when omitted) applies.
+            effective_timeout = timeout if timeout > 0 else _DEFAULT_TIMEOUT_SECONDS
+        else:
+            effective_timeout = (
+                min(timeout, context.tool_call_timeout)
+                if timeout > 0
+                else context.tool_call_timeout
+            )
         try:
             result = await sb.python.exec(
                 code,
@@ -129,16 +136,22 @@ class LocalPythonTool(FunctionTool):
         context: ContextWrapper[AstrAgentContext],
         code: str,
         silent: bool = False,
-        timeout: int = 30,
+        timeout: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> ToolExecResult:
         if permission_error := check_admin_permission(context, "Python execution"):
             return permission_error
         sb = get_local_booter()
-        effective_timeout = (
-            min(timeout, context.tool_call_timeout)
-            if timeout > 0
-            else context.tool_call_timeout
-        )
+        if self.name in context.tool_call_timeout_exclude:
+            # The runner already skips its own timeout for excluded tools, so the
+            # configured tool call timeout must not cap them here either: only the
+            # value passed by the model (schema default when omitted) applies.
+            effective_timeout = timeout if timeout > 0 else _DEFAULT_TIMEOUT_SECONDS
+        else:
+            effective_timeout = (
+                min(timeout, context.tool_call_timeout)
+                if timeout > 0
+                else context.tool_call_timeout
+            )
         try:
             current_workspace_root = await workspace_root_for_context(context)
             current_workspace_root.mkdir(parents=True, exist_ok=True)

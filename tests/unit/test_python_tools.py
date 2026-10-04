@@ -9,6 +9,12 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.computer.booters.local import LocalPythonComponent
 from astrbot.core.tools.computer_tools.python import LocalPythonTool, PythonTool
 
+# The timeout the tools fall back to when the model does not ask for a positive
+# one; read from the schema so the test fails if the two ever drift apart.
+SCHEMA_DEFAULT_TIMEOUT = LocalPythonTool().parameters["properties"]["timeout"][
+    "default"
+]
+
 
 def test_python_tool_description_contains_os():
     """测试 PythonTool 的描述中是否包含当前操作系统信息"""
@@ -156,3 +162,64 @@ async def test_local_python_uses_sandbox_backend(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_cls", [LocalPythonTool, PythonTool])
+@pytest.mark.parametrize(
+    ("excluded", "passed", "expected"),
+    [
+        # Listed in tool_call_timeout_exclude: only the model value applies.
+        (True, 600, 600),
+        # ... and a non-positive value falls back to the schema default, so the
+        # configured timeout never comes back through the side door.
+        (True, 0, SCHEMA_DEFAULT_TIMEOUT),
+        # Not excluded: still capped by the configured tool call timeout (45).
+        (False, 600, 45),
+        (False, 0, 45),
+    ],
+)
+async def test_python_tool_timeout_respects_exclude_list(
+    tmp_path, monkeypatch, tool_cls, excluded, passed, expected
+):
+    """Tools listed in tool_call_timeout_exclude ignore the configured timeout."""
+    python_exec = AsyncMock(
+        return_value={"data": {"output": {"text": "ok", "images": []}, "error": ""}}
+    )
+    local_python = LocalPythonComponent()
+    local_python.exec = python_exec
+    booter = SimpleNamespace(python=local_python)
+    monkeypatch.setattr(
+        "astrbot.core.tools.computer_tools.python.get_local_booter", lambda: booter
+    )
+    monkeypatch.setattr(
+        "astrbot.core.tools.computer_tools.python.get_booter",
+        AsyncMock(return_value=booter),
+    )
+    monkeypatch.setattr(
+        "astrbot.core.tools.computer_tools.python.workspace_root_for_context",
+        AsyncMock(return_value=tmp_path),
+    )
+
+    event = SimpleNamespace(
+        unified_msg_origin="onebot:GroupMessage:12345",
+        role="member",
+        get_platform_name=lambda: "onebot",
+    )
+    context = ContextWrapper(
+        context=SimpleNamespace(
+            event=event,
+            context=SimpleNamespace(
+                get_config=lambda **_kwargs: {
+                    "provider_settings": {
+                        "computer_use_runtime": "local",
+                        "computer_use_require_admin": False,
+                    }
+                }
+            ),
+        ),
+        tool_call_timeout=45,
+        tool_call_timeout_exclude=[tool_cls.name] if excluded else [],
+    )
+
+    await tool_cls().call(context, code="print('ok')", timeout=passed)
+
+    assert python_exec.await_args.kwargs["timeout"] == expected

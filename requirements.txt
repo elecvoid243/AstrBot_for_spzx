@@ -33,6 +33,7 @@ pyjwt>=2.10.1
 python-telegram-bot>=22.6
 qq-botpy==1.2.1
 python-socks>=2.8.0
+send2trash
 silk-python>=0.2.6
 slack-sdk>=3.35.0
 sqlalchemy[asyncio]>=2.0.41

@@ -1168,14 +1168,24 @@ onMounted(async () => {
 
     <v-spacer />
 
-    <!-- 版本提示信息 - 在手机上隐藏 -->
+    <!-- 版本提示信息 - 在手机上隐藏；点击直接打开更新对话框 -->
     <div v-if="!isChatPath" class="mr-4 hidden-xs">
-      <small v-if="hasNewVersion">
+      <button
+        v-if="hasNewVersion"
+        type="button"
+        class="version-hint"
+        @click="handleUpdateClick()"
+      >
         {{ t("core.header.version.hasNewVersion") }}
-      </small>
-      <small v-else-if="dashboardHasNewVersion && !isDesktopReleaseMode">
+      </button>
+      <button
+        v-else-if="dashboardHasNewVersion && !isDesktopReleaseMode"
+        type="button"
+        class="version-hint"
+        @click="handleUpdateClick()"
+      >
         {{ t("core.header.version.dashboardHasNewVersion") }}
-      </small>
+      </button>
     </div>
 
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
@@ -2550,6 +2560,22 @@ onMounted(async () => {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+.version-hint {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgb(var(--v-theme-on-surface));
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 2px;
+}
+
+.version-hint:hover {
+  color: rgb(var(--v-theme-primary));
+  text-decoration: underline;
 }
 
 .advanced-settings-toggle {

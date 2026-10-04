@@ -1,6 +1,8 @@
 """Tests for GoalManager mutation operations and the post-turn decision
 engine (ported from the astrbot_plugin_goal plugin)."""
 
+import asyncio
+
 import pytest
 
 from astrbot.core.goal.goal_manager import GoalManager
@@ -30,21 +32,22 @@ def kv():
 
 
 async def judge_done(goal, response, subgoals):
-    return "done", "finished", False
+    return "done", "finished", False, False
 
 
 async def judge_continue(goal, response, subgoals):
-    return "continue", "keep going", False
+    return "continue", "keep going", False, False
 
 
 async def judge_parse_fail(goal, response, subgoals):
-    return "continue", "judge returned empty response", True
+    return "continue", "judge returned empty response", True, False
 
 
 async def test_set_and_get(kv):
     mgr = GoalManager(kv)
     state = await mgr.set("umo1", "write report")
     assert state.status == "active"
+    assert state.goal_id and state.epoch == 1
     assert (await mgr.get("umo1")).goal == "write report"
     assert "umo1" in await mgr.list_tracked()
 
@@ -129,3 +132,117 @@ async def test_inactive_goal(kv):
     d = await mgr.evaluate_after_turn("umo1", "resp", judge_continue)
     assert d["verdict"] == "inactive"
     assert d["should_continue"] is False
+
+
+async def test_legacy_cleared_record_reads_as_none(kv):
+    # "cleared" is a legacy status value: such records must never resurrect.
+    await kv.set("goal:umo1", {"goal": "g", "status": "cleared"})
+    mgr = GoalManager(kv)
+    assert await mgr.get("umo1") is None
+
+
+# ---------------------------------------------------------------------------
+# CAS evaluation: verdicts computed against a stale state must be discarded
+# ---------------------------------------------------------------------------
+
+
+async def _run_with_slow_judge(mgr, mutate):
+    """Start evaluation, run ``mutate`` while the judge is in flight."""
+    release = asyncio.Event()
+
+    async def slow_judge(goal, response, subgoals):
+        await release.wait()
+        return "continue", "late", False, False
+
+    task = asyncio.create_task(mgr.evaluate_after_turn("umo1", "resp", slow_judge))
+    await asyncio.sleep(0)  # judge has started and is now in flight
+    await mutate()
+    release.set()
+    return await task
+
+
+async def test_clear_during_slow_judge_discards_verdict(kv):
+    mgr = GoalManager(kv)
+    await mgr.set("umo1", "g")
+    decision = await _run_with_slow_judge(mgr, lambda: mgr.clear("umo1"))
+    assert decision["status"] == "stale" and decision["should_continue"] is False
+    assert await mgr.get("umo1") is None  # state must not be resurrected
+
+
+async def test_pause_during_slow_judge_keeps_paused(kv):
+    mgr = GoalManager(kv)
+    await mgr.set("umo1", "g")
+    decision = await _run_with_slow_judge(mgr, lambda: mgr.pause("umo1"))
+    assert decision["status"] == "stale"
+    assert (await mgr.get("umo1")).status == "paused"
+
+
+async def test_set_new_goal_during_slow_judge_discards_old_verdict(kv):
+    mgr = GoalManager(kv)
+    old = await mgr.set("umo1", "old goal")
+
+    async def replace():
+        await mgr.set("umo1", "new goal")
+
+    decision = await _run_with_slow_judge(mgr, replace)
+    assert decision["status"] == "stale"
+    state = await mgr.get("umo1")
+    assert state.goal == "new goal"
+    assert state.turns_used == 0
+    assert state.goal_id != old.goal_id
+
+
+# ---------------------------------------------------------------------------
+# state machine transitions
+# ---------------------------------------------------------------------------
+
+
+async def test_resume_only_from_paused_or_blocked(kv):
+    mgr = GoalManager(kv)
+    await mgr.set("umo1", "g")
+    assert await mgr.resume("umo1") is None  # no-op on active
+    await mgr.pause("umo1")
+    assert (await mgr.resume("umo1")).status == "active"
+
+
+async def test_blocked_verdict_sets_blocked_status(kv):
+    mgr = GoalManager(kv)
+    await mgr.set("umo1", "g")
+
+    async def judge_blocked(g, r, s):
+        return "blocked", "need user input", False, False
+
+    d = await mgr.evaluate_after_turn("umo1", "resp", judge_blocked)
+    assert d["status"] == "blocked" and d["should_continue"] is False
+    state = await mgr.get("umo1")
+    assert state.status == "blocked"
+    # blocked is resumable
+    assert (await mgr.resume("umo1")).status == "active"
+
+
+async def test_transport_failures_pause_after_two(kv):
+    mgr = GoalManager(kv)
+    await mgr.set("umo1", "g")
+
+    async def judge_transport(g, r, s):
+        return "continue", "judge unavailable", False, True
+
+    d1 = await mgr.evaluate_after_turn("umo1", "resp", judge_transport)
+    assert d1["should_continue"] is True  # first failure: let the turn through
+    d2 = await mgr.evaluate_after_turn("umo1", "resp", judge_transport)
+    assert d2["status"] == "paused" and d2["should_continue"] is False
+    state = await mgr.get("umo1")
+    assert state.consecutive_transport_failures == 2
+
+
+async def test_control_mutation_bumps_epoch(kv):
+    mgr = GoalManager(kv)
+    state = await mgr.set("umo1", "g")
+    assert state.epoch == 1
+    await mgr.pause("umo1")
+    assert (await mgr.get("umo1")).epoch == 2
+    # evaluation bookkeeping must NOT bump the epoch (CAS would always miss)
+    await mgr.resume("umo1")
+    epoch_after_resume = (await mgr.get("umo1")).epoch
+    await mgr.evaluate_after_turn("umo1", "resp", judge_continue)
+    assert (await mgr.get("umo1")).epoch == epoch_after_resume

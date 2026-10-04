@@ -6,8 +6,9 @@
 
 配套:
   - LLM 工具 ``astrbot_file_remove``(删除走 send2trash → 系统回收站)
-  - webapi ``POST /spcode/file-remove/restore``(ChatUI 文件变更总结卡片的
-    "撤销删除"按钮)
+  - webapi ``POST /chat/file-changes/restore-removed``(ChatUI 文件变更总结
+    卡片的"撤销删除"按钮);旧核心回退仍兼容插件端点
+    ``POST /spcode/file-remove/restore``。
 
 平台支持:
   - Windows: 解析 ``$Recycle.Bin/<SID>/$I*`` 元数据定位 ``$R*`` 数据文件

@@ -2528,6 +2528,32 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/file-changes/restore-removed": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Restore a file removed via the recycle bin (undo one delete)",
+        "operationId": "chatFileChangeRestoreRemoved",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFileChangeRestoreRemovedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/file-changes/status": {
       "post": {
         "tags": [
@@ -8569,6 +8595,18 @@
             "type": "string"
           },
           "expect_sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatFileChangeRestoreRemovedRequest": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
             "type": "string"
           }
         },

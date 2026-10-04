@@ -260,6 +260,25 @@ async def test_remove_dir_requires_confirm(tmp_path, fake_trash):
 
 
 @pytest.mark.asyncio
+async def test_remove_dir_string_confirm_does_not_delete(tmp_path, fake_trash):
+    """A non-bool truthy ``confirm`` (e.g. "true") must NOT pass the gate."""
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    (directory / "a.txt").write_text("a", encoding="utf-8")
+    ctx = _make_context()
+
+    out = await FileRemoveTool().call(ctx, path=str(directory), confirm="true")
+
+    data = json.loads(out)
+    assert data["ok"] is False
+    assert "proposal" in data
+    assert "confirm_delete" in data["options"]
+    assert fake_trash.calls == []
+    assert directory.exists()
+    assert ctx.context.extra.get("changed_files") in (None, [])
+
+
+@pytest.mark.asyncio
 async def test_remove_dir_over_max_items_proposal(tmp_path, fake_trash):
     directory = tmp_path / "big"
     directory.mkdir()

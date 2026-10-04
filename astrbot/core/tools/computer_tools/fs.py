@@ -1613,7 +1613,9 @@ class FileRemoveTool(FunctionTool):
         "'confirm=true'. If a directory contains more than max_items files, "
         "the call returns a proposal asking for batch confirmation INSTEAD "
         "of deleting — read the proposal/options, then retry with "
-        "confirm=true. Single files are deleted without confirm. Items are "
+        "confirm=true AND a larger max_items (confirm=true alone will keep "
+        "looping on the same proposal). Single files are deleted without "
+        "confirm. Items are "
         "sent to the system recycle bin (recoverable), not permanently "
         "deleted. Paths inside protected system directories or the "
         "user-configured blacklist are rejected."
@@ -1644,7 +1646,9 @@ class FileRemoveTool(FunctionTool):
                     "description": (
                         "If a directory contains more than this many files, "
                         "return a proposal for batch confirmation instead of "
-                        "deleting. Defaults to 50."
+                        "deleting. To confirm such a directory, retry with "
+                        "confirm=true and raise max_items above its file count. "
+                        "Defaults to 50."
                     ),
                     "default": 50,
                 },
@@ -1782,7 +1786,10 @@ class FileRemoveTool(FunctionTool):
         result = await asyncio.to_thread(
             _remove_path,
             resolved,
-            confirm=bool(confirm),
+            # Only a real JSON boolean ``true`` confirms a directory delete;
+            # truthy-but-not-bool values (e.g. the string "true" or 1) MUST NOT
+            # pass this destructive gate.
+            confirm=confirm is True,
             max_items=max_items_value,
         )
         if result.get("ok"):

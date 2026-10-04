@@ -31,8 +31,11 @@ from astrbot.core.goal.goal_state import GoalState
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.utils.active_event_registry import active_event_registry
+from astrbot.core.utils.trace import TraceSpan
 
-GOAL_CONTINUATION_EXTRA = "goal_continuation"
+INTERNAL_TURN_EXTRA = "internal_turn"
+GOAL_ID_EXTRA = "goal_id"
 
 # Storage scope for kernel goal state (the legacy plugin used the
 # ("plugin", "astrbot_plugin_goal") namespace; migrate_legacy_states()
@@ -64,18 +67,22 @@ RegistrarFn = Callable[[str, str, str], Awaitable[None]]
 dashboard to register injected turns as first-class chat runs."""
 
 
-def build_continuation_event(event: AstrMessageEvent, text: str) -> AstrMessageEvent:
-    """Clone an event as a synthetic user turn carrying ``text``.
+def build_goal_turn_event(
+    event: AstrMessageEvent, text: str, goal_id: str
+) -> AstrMessageEvent:
+    """Clone an event as an internal goal turn carrying ``text``.
 
-    The clone gets a fresh message_id (avoid platform dedup), a fresh
-    extras dict (do not inherit one-shot keys from the previous turn),
-    and wake flags set so the pipeline runs the LLM stage. Precedent:
-    ``builtin_stars/astrbot/main.py`` (empty-mention re-injection) and
-    ``core/cron/events.py`` (CronMessageEvent).
+    Internal turns bypass command/regex filter activation (WakingCheckStage
+    short-circuits on the ``internal_turn`` extra), so goal text shaped like
+    a command can never re-enter plugin command handlers. The clone gets a
+    fresh message_id, trace, created_at and temp-file list — nothing
+    observability- or lifecycle-related is inherited from the source event.
 
     Args:
         event: The source event of the just-finished turn.
         text: The user-role text for the synthetic turn.
+        goal_id: Current goal instance id; the guard drops the turn when the
+            session's goal has been replaced.
 
     Returns:
         A new event ready for ``context.get_event_queue().put_nowait()``.
@@ -87,26 +94,31 @@ def build_continuation_event(event: AstrMessageEvent, text: str) -> AstrMessageE
     msg_obj.message_id = uuid.uuid4().hex
     msg_obj.timestamp = int(time.time())
     new_event.message_obj = msg_obj
-    # Event-level message_str must be updated too: waking_check /
-    # CommandFilter read event.message_str (NOT message_obj.message_str).
-    # Leaving the original command text here re-triggers the command
-    # handler on every injected turn (self-sustaining loop).
+    # Event-level message_str must be updated too: downstream stages read
+    # event.message_str (NOT message_obj.message_str).
     new_event.message_str = text
     # Reset per-run runtime flags inherited from the source event, or the
     # ProcessStage agent gate (`not event._has_send_oper and ...`) silently
-    # skips the LLM stage for the synthetic turn:
-    # - kickoff clones are made AFTER the command reply was sent (the
-    #   handler's yield reaches the respond stage before resuming), and
-    # - continuation clones are made after the turn's reply was streamed;
-    #   both source events therefore have _has_send_oper=True at clone time.
+    # skips the LLM stage for the internal turn.
     new_event._has_send_oper = False
     new_event.call_llm = False
     new_event._force_stopped = False
-    # Fresh extras: shallow copy shares the dict; replace it outright.
     if hasattr(new_event, "_extras"):
-        new_event._extras = {GOAL_CONTINUATION_EXTRA: True}
+        new_event._extras = {INTERNAL_TURN_EXTRA: "goal", GOAL_ID_EXTRA: goal_id}
     else:
-        new_event.set_extra(GOAL_CONTINUATION_EXTRA, True)
+        new_event.set_extra(INTERNAL_TURN_EXTRA, "goal")
+        new_event.set_extra(GOAL_ID_EXTRA, goal_id)
+    # Fresh observability/lifecycle state: the turn is a new run, not a
+    # continuation of the source event's trace.
+    new_event.created_at = time.time()
+    new_event._temporary_local_files = []
+    new_event.trace = TraceSpan(
+        name="GoalTurn",
+        umo=event.unified_msg_origin,
+        sender_name=event.get_sender_name(),
+        message_outline=text[:50],
+    )
+    new_event.span = new_event.trace
     try:
         new_event.clear_result()
     except Exception:
@@ -171,6 +183,25 @@ class GoalService:
         if self._config().get("admin_only", True) and event.role != "admin":
             return "⛔ 仅管理员可以使用 /goal。"
         return None
+
+    async def pause_goal(self, umo: str, reason: str = "user-paused"):
+        """Pause the goal and immediately stop any in-flight agent turn."""
+        state = await self.goals.pause(umo, reason=reason)
+        if state is not None:
+            stopped = active_event_registry.request_agent_stop_all(umo)
+            if stopped:
+                logger.info(
+                    f"goal loop: requested stop for {stopped} turn(s), umo={umo}"
+                )
+        return state
+
+    async def clear_goal(self, umo: str) -> bool:
+        """Clear the goal and immediately stop any in-flight agent turn."""
+        had = await self.goals.clear(umo)
+        stopped = active_event_registry.request_agent_stop_all(umo)
+        if stopped:
+            logger.info(f"goal loop: requested stop for {stopped} turn(s), umo={umo}")
+        return had
 
     async def set_goal(self, umo: str, goal: str) -> GoalState:
         """Start a standing goal with the turn budget from config.
@@ -296,7 +327,9 @@ class GoalService:
         )
         return len(targets)
 
-    async def inject_continuation(self, event: AstrMessageEvent, text: str) -> None:
+    async def inject_continuation(
+        self, event: AstrMessageEvent, text: str, goal_id: str
+    ) -> None:
         """Inject a synthetic continuation turn into the event queue.
 
         On webchat sessions the turn is first registered as a first-class
@@ -308,7 +341,7 @@ class GoalService:
             event: The source event of the just-finished turn.
             text: The user-role text for the synthetic turn.
         """
-        new_event = build_continuation_event(event, text)
+        new_event = build_goal_turn_event(event, text, goal_id)
         message_id = str(new_event.message_obj.message_id)
         registrar = self._run_registrar
         if registrar is not None:
@@ -326,37 +359,32 @@ class GoalService:
                 )
         self._context.get_event_queue().put_nowait(new_event)
 
-    async def guard_continuation(self, event: AstrMessageEvent, req) -> None:
-        """``on_llm_request`` hook: drop stale continuations, strip tools.
+    async def guard_goal_turn(self, event: AstrMessageEvent, req) -> None:
+        """``on_llm_request`` hook: drop stale goal turns, strip tools.
 
-        Drop queued continuation events whose goal is no longer active and
-        strip blocking tools from the LLM request on synthetic turns.
-
-        Two responsibilities, both gated on the ``goal_continuation`` extra
-        (set by :func:`build_continuation_event`):
-
-        1. A continuation event may sit in the queue while the user pauses
-           or clears the goal; re-check the active state right before the
-           LLM stage and ``stop_event()`` if no longer active.
-        2. Remove any tool names in the configured block list from
-           ``req.func_tool`` so the Agent cannot suspend the goal loop by
-           calling a tool that waits on user input. Only applies to
-           *continuation* turns; normal user-driven turns are never touched.
+        Only events carrying the ``internal_turn == "goal"`` extra are
+        affected; normal user turns are never touched. A goal turn is
+        dropped (``stop_event``) when the session's goal is gone, no longer
+        active, or has been REPLACED (goal_id mismatch) while the turn sat
+        in the queue. Surviving turns get blocking tools stripped so the
+        Agent cannot suspend the loop waiting for user input.
         """
-        if not event.get_extra(GOAL_CONTINUATION_EXTRA):
+        if event.get_extra(INTERNAL_TURN_EXTRA) != "goal":
             return
         state = await self.goals.get(event.unified_msg_origin)
-        if not state or state.status != "active":
+        if (
+            not state
+            or state.status != "active"
+            or state.goal_id != event.get_extra(GOAL_ID_EXTRA)
+        ):
             logger.info(
-                f"goal loop: continuation event dropped before LLM stage "
-                f"(goal not active), umo={event.unified_msg_origin}"
+                f"goal loop: internal goal turn dropped before LLM stage "
+                f"(goal not active or replaced), umo={event.unified_msg_origin}"
             )
             event.stop_event()
             return
         # Strip blocking tools before the LLM sees the function-calling
-        # schema. Failures are logged but never break the loop — at worst
-        # the Agent retains the blocking tool, which still works (it just
-        # stalls the loop, same as before this guard existed).
+        # schema. Failures are logged but never break the loop.
         try:
             self._strip_blocked_tools(req)
         except Exception as e:
@@ -364,7 +392,7 @@ class GoalService:
                 f"goal loop: failed to strip blocking tools ({type(e).__name__}): {e}"
             )
         logger.info(
-            f"goal loop: continuation event entering LLM stage, "
+            f"goal loop: internal goal turn entering LLM stage, "
             f"umo={event.unified_msg_origin}"
         )
 
@@ -420,7 +448,13 @@ class GoalService:
             await self._notify(event, decision["message"])
 
         if decision.get("should_continue") and decision.get("continuation_prompt"):
-            await self.inject_continuation(event, decision["continuation_prompt"])
+            # Re-read: CAS passed, but fetch the current goal_id explicitly.
+            current = await self.goals.get(umo)
+            if not current or current.status != "active":
+                return
+            await self.inject_continuation(
+                event, decision["continuation_prompt"], current.goal_id
+            )
             logger.info(
                 f"goal loop: continuation injected, umo={umo}, "
                 f"turns_used={state.turns_used}, reason={decision.get('reason')}"

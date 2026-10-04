@@ -12,9 +12,10 @@ import pytest
 from astrbot.core.goal.goal_manager import GoalManager
 from astrbot.core.goal.goal_service import (
     DEFAULT_BLOCKED_TOOLS_DURING_GOAL,
-    GOAL_CONTINUATION_EXTRA,
+    GOAL_ID_EXTRA,
+    INTERNAL_TURN_EXTRA,
     GoalService,
-    build_continuation_event,
+    build_goal_turn_event,
 )
 from astrbot.core.goal.goal_state import DEFAULT_MAX_TURNS
 
@@ -95,6 +96,13 @@ class _StubEvent:
         self.role = "admin"
         self._extras = dict(extras)
         self._stopped = False
+        self.trace = SimpleNamespace(name="OldSpan")
+        self.span = self.trace
+        self.created_at = 1.0
+        self._temporary_local_files = ["leftover"]
+
+    def get_sender_name(self):
+        return "tester"
 
     def set_extra(self, key, value) -> None:
         self._extras[key] = value
@@ -314,7 +322,7 @@ def test_strip_blocked_tools_fallback_tolerates_tool_without_name_attr():
 
 
 # ---------------------------------------------------------------------------
-# guard_continuation integration
+# guard_goal_turn integration
 # ---------------------------------------------------------------------------
 
 
@@ -326,9 +334,13 @@ async def test_guard_strips_tools_on_active_goal():
 
     tool_set = _StubToolSet([_StubTool("ask_user_choice"), _StubTool("web_search")])
     req = _StubRequest(tool_set)
-    event = _StubEvent(umo="umo1", **{GOAL_CONTINUATION_EXTRA: True})
+    state = await service.goals.get("umo1")
+    event = _StubEvent(
+        umo="umo1",
+        **{INTERNAL_TURN_EXTRA: "goal", GOAL_ID_EXTRA: state.goal_id},
+    )
 
-    await service.guard_continuation(event, req)
+    await service.guard_goal_turn(event, req)
 
     assert {t.name for t in req.func_tool.tools} == {"web_search"}
     assert event._stopped is False
@@ -341,9 +353,12 @@ async def test_guard_drops_inactive_goal_without_stripping():
     # No goal set for umo1 → guard must stop the event and leave req alone.
 
     req = _StubRequest(_StubToolSet([_StubTool("ask_user_choice")]))
-    event = _StubEvent(umo="umo1", **{GOAL_CONTINUATION_EXTRA: True})
+    event = _StubEvent(
+        umo="umo1",
+        **{INTERNAL_TURN_EXTRA: "goal", GOAL_ID_EXTRA: "any"},
+    )
 
-    await service.guard_continuation(event, req)
+    await service.guard_goal_turn(event, req)
 
     assert {t.name for t in req.func_tool.tools} == {"ask_user_choice"}
     assert event._stopped is True
@@ -356,27 +371,32 @@ async def test_guard_passes_through_non_continuation_events():
     await service.goals.set("umo1", "ship the feature")
 
     req = _StubRequest(_StubToolSet([_StubTool("ask_user_choice")]))
-    event = _StubEvent(umo="umo1")  # NO goal_continuation extra
+    event = _StubEvent(umo="umo1")  # NOT an internal goal turn
 
-    await service.guard_continuation(event, req)
+    await service.guard_goal_turn(event, req)
 
     assert {t.name for t in req.func_tool.tools} == {"ask_user_choice"}
     assert event._stopped is False
 
 
 # ---------------------------------------------------------------------------
-# build_continuation_event contract
+# build_goal_turn_event contract
 # ---------------------------------------------------------------------------
 
 
-def test_continuation_event_carries_goal_continuation_extra():
-    class _EventSrc:
-        """Stub with the minimal interface build_continuation_event reads."""
+def test_goal_turn_event_is_fresh():
+    """Internal goal turns get fresh identity, extras, trace and temp state."""
 
+    class _EventSrc:
         def __init__(self):
             self.message_str = "/goal set foo"
             self.message_obj = SimpleNamespace(message_id="orig-1")
             self._extras: dict = {}
+            self.trace = SimpleNamespace(name="OldSpan")
+            self.span = self.trace
+            self.created_at = 1.0
+            self._temporary_local_files = ["leftover"]
+            self.unified_msg_origin = "umo1"
 
         def set_extra(self, key, value) -> None:
             self._extras[key] = value
@@ -384,13 +404,22 @@ def test_continuation_event_carries_goal_continuation_extra():
         def get_extra(self, key, default=None):
             return self._extras.get(key, default)
 
+        def get_sender_name(self):
+            return "tester"
+
         def clear_result(self) -> None:
             pass
 
     src = _EventSrc()
-    new_event = build_continuation_event(src, "请继续完成目标")
-    assert new_event.get_extra(GOAL_CONTINUATION_EXTRA) is True
+    new_event = build_goal_turn_event(src, "请继续完成目标", "g1")
+    assert new_event.get_extra(INTERNAL_TURN_EXTRA) == "goal"
+    assert new_event.get_extra(GOAL_ID_EXTRA) == "g1"
     assert new_event.message_str == "请继续完成目标"
+    # nothing observability/lifecycle-related is inherited
+    assert new_event.trace is not src.trace
+    assert new_event.trace.name == "GoalTurn"
+    assert new_event.created_at != 1.0
+    assert new_event._temporary_local_files == []
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +459,7 @@ async def test_on_turn_done_registers_webchat_run_and_injects():
     await service.on_turn_done(event, response)
     assert context.event_queue.qsize() == 1
     queued = context.event_queue.get_nowait()
-    assert queued.get_extra("goal_continuation") is True
+    assert queued.get_extra("internal_turn") == "goal"
     assert registered and registered[0][0] == "webchat:FriendMessage:webchat!u!cid1"
     assert registered[0][1] == queued.message_obj.message_id
 
@@ -522,3 +551,47 @@ async def test_sweep_pauses_active_and_cleans_old_done():
 
     # Idempotent
     assert await service.sweep_stale_states() == {"paused": 0, "cleaned": 0}
+
+
+# ---------------------------------------------------------------------------
+# stale goal_id guard + instant cancel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guard_drops_stale_goal_id():
+    service = _make_service()
+    service.goals = GoalManager(InMemoryKV())
+    await service.goals.set("umo1", "g")
+    req = _StubRequest(_StubToolSet([_StubTool("ask_user_choice")]))
+    event = _StubEvent(
+        umo="umo1",
+        **{INTERNAL_TURN_EXTRA: "goal", GOAL_ID_EXTRA: "replaced-goal-id"},
+    )
+    await service.guard_goal_turn(event, req)
+    assert event._stopped is True
+    assert {t.name for t in req.func_tool.tools} == {"ask_user_choice"}
+
+
+@pytest.mark.asyncio
+async def test_pause_and_clear_request_agent_stop(monkeypatch):
+    import importlib
+
+    svc_mod = importlib.import_module("astrbot.core.goal.goal_service")
+
+    calls = []
+
+    def fake_stop(umo, exclude=None):
+        calls.append(umo)
+        return 1
+
+    monkeypatch.setattr(
+        svc_mod.active_event_registry, "request_agent_stop_all", fake_stop
+    )
+    service = _make_service()
+    service.goals = GoalManager(InMemoryKV())
+    await service.goals.set("umo1", "g")
+    state = await service.pause_goal("umo1")
+    assert state.status == "paused" and calls == ["umo1"]
+    had = await service.clear_goal("umo1")
+    assert had is True and calls == ["umo1", "umo1"]

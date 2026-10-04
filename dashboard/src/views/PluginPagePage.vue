@@ -642,13 +642,16 @@ watch(() => customizer.uiTheme, () => {
       </v-alert>
     </div>
 
+    <!-- 2026-10-04 elecvoid243: 沙箱 +allow-same-origin 使插件页可用 localStorage/
+         带鉴权 fetch 与同域嵌套面板；+allow-popups 允许打开新标签页。
+         （插件本身已是服务端任意代码，边际风险可接受） -->
     <iframe
       v-else
       ref="iframeRef"
       :src="iframeSrc"
       class="plugin-page-frame"
       referrerpolicy="no-referrer"
-      sandbox="allow-scripts allow-forms allow-downloads"
+      sandbox="allow-scripts allow-forms allow-downloads allow-same-origin allow-popups"
       @load="handleIframeLoad"
     ></iframe>
   </div>

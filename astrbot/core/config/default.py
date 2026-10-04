@@ -4344,7 +4344,7 @@ CONFIG_METADATA_3 = {
                     "provider_settings.datetime_system_prompt": {
                         "description": "现实世界时间感知",
                         "type": "bool",
-                        "hint": "启用后，会在系统提示词中附带当前时间信息。",
+                        "hint": "启用后，LLM能感受到当前系统时间。",
                         "condition": {
                             "agent_runner.runner_type": "local",
                         },

@@ -466,7 +466,7 @@
         },
         "datetime_system_prompt": {
           "description": "Real-world Time Awareness",
-          "hint": "When enabled, current time information will be appended to the system prompt."
+          "hint": "When enabled, the LLM can perceive the current system time."
         },
         "show_tool_use_status": {
           "description": "Show Tool Call Information"

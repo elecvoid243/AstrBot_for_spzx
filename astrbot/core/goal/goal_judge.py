@@ -241,12 +241,12 @@ async def judge_goal(
     goal: str,
     last_response: str,
     subgoals: list[str] | None = None,
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, bool]:
     """Ask the judge model whether the goal is satisfied.
 
-    Deliberately fail-open: any transport error returns
-    ("continue", ..., False) so a broken judge never wedges the loop —
-    the turn budget and the parse-failure backstop are the guards.
+    Deliberately fail-open on the verdict: any transport error returns
+    ("continue", ..., False, True) so a broken judge never wedges the loop —
+    the consecutive-transport-failure pause in GoalManager is the guard.
 
     Args:
         llm_caller: Async callable (system_prompt, user_prompt) -> raw text,
@@ -256,13 +256,13 @@ async def judge_goal(
         subgoals: Optional user-added criteria (from /subgoal).
 
     Returns:
-        Tuple of (verdict, reason, parse_failed) where verdict is
-        "done" | "continue" | "skipped".
+        Tuple of (verdict, reason, parse_failed, transport_failed) where
+        verdict is "done" | "continue" | "skipped".
     """
     if not goal.strip():
-        return "skipped", "empty goal", False
+        return "skipped", "empty goal", False, False
     if not last_response.strip():
-        return "continue", "empty response (nothing to evaluate)", False
+        return "continue", "empty response (nothing to evaluate)", False, False
 
     now_str = (
         datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -270,7 +270,7 @@ async def judge_goal(
     messages = build_judge_messages(goal, last_response, subgoals, now_str)
     raw = await llm_caller(messages[0]["content"], messages[1]["content"])
     if raw is None:
-        return "continue", "judge unavailable (transport error)", False
+        return "continue", "judge unavailable (transport error)", False, True
 
     done, reason, parse_failed = parse_judge_response(raw)
-    return ("done" if done else "continue"), reason, parse_failed
+    return ("done" if done else "continue"), reason, parse_failed, False

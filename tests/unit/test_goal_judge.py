@@ -69,34 +69,36 @@ async def _caller_garbage(system, user):
 
 
 async def test_judge_goal_done():
-    verdict, reason, failed = await judge_goal(
+    verdict, reason, parse_failed, transport_failed = await judge_goal(
         llm_caller=_caller_ok, goal="g", last_response="resp"
     )
-    assert (verdict, failed) == ("done", False)
+    assert (verdict, parse_failed, transport_failed) == ("done", False, False)
     assert reason == "all finished"
 
 
 async def test_judge_goal_transport_error_fails_open():
-    verdict, _, failed = await judge_goal(
+    verdict, _, parse_failed, transport_failed = await judge_goal(
         llm_caller=_caller_transport_error, goal="g", last_response="resp"
     )
     assert verdict == "continue"
-    assert failed is False  # transport errors must NOT count as parse failures
+    assert parse_failed is False  # transport errors must NOT count as parse failures
+    assert transport_failed is True
 
 
 async def test_judge_goal_garbage_counts_parse_failure():
-    verdict, _, failed = await judge_goal(
+    verdict, _, parse_failed, transport_failed = await judge_goal(
         llm_caller=_caller_garbage, goal="g", last_response="resp"
     )
     assert verdict == "continue"
-    assert failed is True
+    assert parse_failed is True
+    assert transport_failed is False
 
 
 async def test_judge_goal_skips_empty_inputs():
-    verdict, _, failed = await judge_goal(
+    verdict, _, parse_failed, transport_failed = await judge_goal(
         llm_caller=_caller_ok, goal="  ", last_response="resp"
     )
-    assert (verdict, failed) == ("skipped", False)
+    assert (verdict, parse_failed, transport_failed) == ("skipped", False, False)
 
 
 def test_parse_strips_leading_think_tags():

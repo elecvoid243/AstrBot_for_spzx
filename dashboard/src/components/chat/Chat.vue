@@ -1372,7 +1372,7 @@ const {
 // on every mutation; GET /goal is only the cold-start path on session switch.
 const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 
-// ── 后台 shell 会话感知 (右上角指示器) ─────────────────────────
+// ── Background shell session awareness (app-bar indicator) ──────
 // Push-first: the backend emits shell_sessions_changed over the system
 // stream on every session lifecycle transition; GET /shell-sessions is only
 // the cold-start path on session switch.

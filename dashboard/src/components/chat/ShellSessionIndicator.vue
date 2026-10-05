@@ -31,7 +31,9 @@
         <v-icon size="18" :class="{ 'shell-pulse': runningCount > 0 }" :color="runningCount > 0 ? '#2da44e' : undefined">
           mdi-console
         </v-icon>
-        <span class="shell-trigger-count">{{ sessions.length }}</span>
+        <span class="shell-trigger-count" :class="{ dimmed: runningCount === 0 }">
+          {{ runningCount > 0 ? runningCount : sessions.length }}
+        </span>
       </v-btn>
     </template>
 
@@ -111,6 +113,10 @@ function shortId(id: string): string {
   margin-left: 4px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.shell-trigger-count.dimmed {
+  opacity: 0.55;
 }
 
 .shell-session-popover {

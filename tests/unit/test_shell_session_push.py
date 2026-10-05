@@ -37,7 +37,30 @@ def _record_system_events(monkeypatch) -> list:
         return True
 
     monkeypatch.setattr(webchat_queue_mgr, "put_system_event", fake_put)
+    # Tests subscribe implicitly: the push path early-returns without one.
+    monkeypatch.setattr(webchat_queue_mgr, "has_system_subscribers", lambda _cid: True)
     return calls
+
+
+async def test_push_skips_snapshot_without_subscribers(monkeypatch):
+    """No SSE subscriber → no list_sessions work, no event."""
+    calls: list = []
+
+    async def fake_put(conversation_id, payload):
+        calls.append((conversation_id, payload))
+        return True
+
+    monkeypatch.setattr(webchat_queue_mgr, "put_system_event", fake_put)
+    monkeypatch.setattr(webchat_queue_mgr, "has_system_subscribers", lambda _cid: False)
+    shell = LocalShellComponent()
+    list_spy = AsyncMock(return_value={"sessions": [SESSION_ITEM]})
+    monkeypatch.setattr(shell, "list_sessions", list_spy)
+    monkeypatch.setattr(computer_client, "local_booter", SimpleNamespace(shell=shell))
+
+    await app_module._shell_sessions_changed(UMO)
+
+    assert calls == []
+    list_spy.assert_not_awaited()
 
 
 async def test_push_ignores_non_webchat_owner(monkeypatch):

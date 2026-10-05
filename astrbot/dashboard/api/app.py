@@ -128,24 +128,34 @@ async def _shell_sessions_changed(owner_id: str) -> None:
         webchat_queue_mgr,
     )
 
+    cid = owner_id.rsplit("!", 1)[-1]
+    if not webchat_queue_mgr.has_system_subscribers(cid):
+        # Nobody is watching this conversation: skip the snapshot work
+        # entirely. The next transition or the cold-start GET re-converges.
+        return
     booter = computer_client.local_booter
     if booter is None or not isinstance(booter.shell, LocalShellComponent):
         return
-    result = await booter.shell.list_sessions(
-        owner_id=owner_id,
-        # The snapshot is conversation-scoped, not sender-scoped: every
-        # dashboard viewer of the conversation sees the same session list.
-        requester_id="",
-        requester_is_admin=True,
-    )
-    cid = owner_id.rsplit("!", 1)[-1]
-    await webchat_queue_mgr.put_system_event(
-        cid,
-        {
-            "type": "shell_sessions_changed",
-            "data": {"sessions": result["sessions"]},
-        },
-    )
+    # The push is fire-and-forget (scheduled from a sync listener); catch
+    # everything here so the discarded task never ends with an unretrieved
+    # exception. CancelledError (BaseException) still propagates.
+    try:
+        result = await booter.shell.list_sessions(
+            owner_id=owner_id,
+            # The snapshot is conversation-scoped, not sender-scoped: every
+            # dashboard viewer of the conversation sees the same session list.
+            requester_id="",
+            requester_is_admin=True,
+        )
+        await webchat_queue_mgr.put_system_event(
+            cid,
+            {
+                "type": "shell_sessions_changed",
+                "data": {"sessions": result["sessions"]},
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort push
+        logger.warning("Failed to push shell session snapshot: %s", exc)
 
 
 def create_dashboard_asgi_app(

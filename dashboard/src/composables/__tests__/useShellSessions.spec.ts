@@ -35,6 +35,9 @@ function okResponse(sessions: ShellSessionListItem[]) {
 describe("useShellSessions", () => {
   beforeEach(() => {
     getSessionShellSessions.mockReset();
+    // Default to an empty list so the immediate watcher does not log
+    // fetch errors in tests that never touch the network path.
+    getSessionShellSessions.mockResolvedValue(okResponse([]) as never);
   });
 
   it("applyPushedShellSessions authoritatively replaces the session cache", () => {

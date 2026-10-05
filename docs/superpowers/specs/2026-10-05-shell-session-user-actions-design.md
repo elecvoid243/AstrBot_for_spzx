@@ -105,7 +105,7 @@ def inject_system_notice(umo: str, text: str) -> bool:
 **terminate 的通知文本**（chat_service 调用处组装）：
 
 ```
-[ChatUI] User terminated managed shell session sh_xxx (pid 1234).
+User terminated managed shell session sh_xxx (pid 1234).
 If you were polling it, expect "not found" errors — do not retry it.
 ```
 

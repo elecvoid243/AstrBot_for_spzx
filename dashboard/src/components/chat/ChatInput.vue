@@ -21,6 +21,10 @@
       </div>
       <div class="input-area__status-row__right">
         <div class="input-area__status-row__chips-stack">
+          <!-- Managed background shell sessions (2026-10-05): lives in the
+               composer status row next to the other ambient chips; the
+               component hides itself when no sessions exist. -->
+          <ShellSessionIndicator />
           <FileAccessModeChip
             :umo="currentSessionUmo"
             @change="handleFileAccessModeChange"
@@ -688,6 +692,7 @@ import type { ProjectLoadSubmitPayload } from "./ProjectLoadDialog.vue";
 import SpcodeProjectIndicator from "./SpcodeProjectIndicator.vue";
 import FileAccessModeChip from "./FileAccessModeChip.vue";
 import GitDiffChip from "./GitDiffChip.vue";
+import ShellSessionIndicator from "./ShellSessionIndicator.vue";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 import CommentsPreviewDialog from "./CommentsPreviewDialog.vue";

@@ -14,7 +14,7 @@
 <template>
   <v-menu
     v-if="sessions.length"
-    location="bottom end"
+    location="top end"
     :close-on-content-click="false"
     transition="none"
   >
@@ -53,7 +53,6 @@
           />
           <CopyableText
             :value="s.session_id"
-            :display-value="shortId(s.session_id)"
             :title="s.session_id"
             mode="code"
             class="session-id"
@@ -101,11 +100,6 @@ const runningCount = computed(
 );
 
 const statusMeta = getShellSessionStatusMeta;
-
-/** session_id renders as an 8-char prefix (hover/copy gives the full id). */
-function shortId(id: string): string {
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
-}
 </script>
 
 <style scoped>
@@ -120,8 +114,8 @@ function shortId(id: string): string {
 }
 
 .shell-session-popover {
-  min-width: 320px;
-  max-width: 420px;
+  min-width: 400px;
+  max-width: 480px;
   padding: 8px;
 }
 
@@ -155,9 +149,20 @@ function shortId(id: string): string {
   flex-shrink: 0;
 }
 
+/* The session id claims all free space; the status text and exit code are
+   pushed to the row end so a long id never squeezes them out. */
+.session-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-label {
   font-size: 12px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .exit-code {

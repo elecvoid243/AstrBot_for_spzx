@@ -1041,7 +1041,7 @@ async def test_terminate_process_signals_git_bash_before_taskkill(
     )
 
     def fake_taskkill(*args, **kwargs):
-        taskkills.append(args)
+        taskkills.append((args, kwargs))
         return subprocess.CompletedProcess(args=args, returncode=0)
 
     monkeypatch.setattr(local_booter.subprocess, "run", fake_taskkill)
@@ -1050,6 +1050,10 @@ async def test_terminate_process_signals_git_bash_before_taskkill(
 
     assert signal.CTRL_BREAK_EVENT in signals
     assert taskkills, "taskkill must still run as the fallback sweep"
+    if os.name == "nt":
+        # The sweep is a CUI child of a console-less parent under pythonw.exe;
+        # without this flag Windows flashes a visible console for it.
+        assert taskkills[0][1]["creationflags"] == subprocess.CREATE_NO_WINDOW
     session.wait_task.cancel()
 
 
@@ -1372,11 +1376,13 @@ async def test_interrupt_tolerates_undeliverable_ctrl_break(monkeypatch, tmp_pat
         wait_task=asyncio.create_task(asyncio.sleep(0)),
         shell_family="powershell",
     )
-    monkeypatch.setattr(
-        local_booter.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=0),
-    )
+    taskkills = []
+
+    def fake_taskkill(*args, **kwargs):
+        taskkills.append((args, kwargs))
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr(local_booter.subprocess, "run", fake_taskkill)
     shell = LocalShellComponent()
     shell._sessions[session.session_id] = session
 
@@ -1389,6 +1395,11 @@ async def test_interrupt_tolerates_undeliverable_ctrl_break(monkeypatch, tmp_pat
     )
 
     assert result["status"] == "running"
+    assert taskkills, "the graceful taskkill fallback must still run"
+    if os.name == "nt":
+        # Same windowless requirement as _terminate_process: the fallback
+        # sweep must not flash a console window under pythonw.exe.
+        assert taskkills[0][1]["creationflags"] == subprocess.CREATE_NO_WINDOW
 
 
 @pytest.mark.asyncio

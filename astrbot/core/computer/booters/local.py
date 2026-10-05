@@ -1118,12 +1118,17 @@ class LocalShellComponent(ShellComponent):
                         session_id,
                     )
                     try:
+                        # The sweep taskkill is itself a CUI child of a
+                        # console-less parent under pythonw.exe, so it needs
+                        # the same windowless flags as the shell spawn: see
+                        # `_NO_WINDOW_KWARGS`.
                         await asyncio.to_thread(
                             subprocess.run,
                             ["taskkill", "/T", "/PID", str(session.process.pid)],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                             timeout=5,
+                            **_NO_WINDOW_KWARGS,
                         )
                     except Exception:
                         pass
@@ -1279,12 +1284,19 @@ class LocalShellComponent(ShellComponent):
                 await _bounded_await(session.wait_task, timeout=5)
         if os.name == "nt":
             try:
+                # `taskkill` is a CUI executable, and the parent has no console
+                # under pythonw.exe, so Windows would allocate a fresh *visible*
+                # console for it — the black window that flashed on terminate.
+                # The flag hides only that sweep console; the managed shell
+                # keeps its own hidden console, so the CTRL_BREAK_EVENT path
+                # above is unaffected.
                 taskkill_result = await asyncio.to_thread(
                     subprocess.run,
                     ["taskkill", "/F", "/T", "/PID", str(session.process.pid)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
+                    **_NO_WINDOW_KWARGS,
                 )
             except Exception:
                 should_terminate = True
@@ -1509,6 +1521,9 @@ class LocalFileSystemComponent(FileSystemComponent):
                     command,
                     capture_output=True,
                     timeout=30,
+                    # rg.exe is a CUI binary; without the windowless flag a
+                    # pythonw.exe-hosted AstrBot shows a console flash per search.
+                    **_NO_WINDOW_KWARGS,
                 )
             except subprocess.TimeoutExpired:
                 return {

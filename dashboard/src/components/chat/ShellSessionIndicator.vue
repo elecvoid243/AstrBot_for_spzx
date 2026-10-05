@@ -163,10 +163,12 @@ function openWindow(shellSessionId: string) {
   flex-shrink: 0;
 }
 
-/* The session id claims all free space; the status text and exit code are
-   pushed to the row end so a long id never squeezes them out. */
+/* Hug the id text: the span must NOT stretch across the row's free space,
+   otherwise its copy-only click zone becomes an invisible dead spot for
+   the row's open-window click. It shrinks (with ellipsis) only when the
+   id itself is too long. */
 .session-id {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -75,6 +75,30 @@ describe("GitLogGraphGutter", () => {
     expect(w.find('[data-seg="out"][data-lane="1"]').exists()).toBe(false);
   });
 
+  it("centers every vertical on the lane axis, not on its own left edge", () => {
+    const w = mount(GitLogGraphGutter, {
+      props: {
+        row: row({ lane: 0, passIn: [2], outs: [1], cont: true }),
+        lanes: 3,
+      },
+    });
+
+    // 圆点与曲线都以 x(lane) 为轴；竖线是"盒子"，必须自己往左挪半个线宽，
+    // 否则线心比圆心偏 STROKE_W/2 —— 2px 线就是 1px，肉眼可见的偏心，
+    // 同一原因也让 fork 弧线与竖线的接头出现台阶。
+    const selectors = [
+      '[data-seg="pass"][data-lane="2"]',
+      '[data-seg="node-up"]',
+      '[data-seg="node-down"]',
+      '[data-seg="out"][data-lane="1"]',
+    ];
+    for (const sel of selectors) {
+      const el = w.find(sel);
+      expect(el.exists(), sel).toBe(true);
+      expect(el.attributes("style"), sel).toContain("translateX(-50%)");
+    }
+  });
+
   it("draws curves with the same weight as the verticals, from one constant", () => {
     const w = mount(GitLogGraphGutter, {
       props: { row: row({ ins: [1], cont: true }), lanes: 2 },

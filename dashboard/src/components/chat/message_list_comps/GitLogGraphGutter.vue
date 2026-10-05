@@ -32,6 +32,15 @@ const x = (lane: number): number => GUTTER_PAD + lane * LANE_W + LANE_W / 2;
 const laneColor = (lane: number): string => `var(--spcode-graph-l${lane % 6})`;
 
 const width = computed(() => gutterWidth(props.lanes));
+/**
+ * 竖线是有宽度的盒子:left 直接给 x(lane) 会让线心落在 x(lane) + STROKE_W/2,
+ * 比圆点与曲线的轴(x(lane))偏半个线宽 —— 2px 线即 1px 偏心,接头处还会出现
+ * 台阶。translateX(-50%) 让盒子以自身中心对齐 x(lane),且与线宽解耦。
+ */
+const lineBox = (lane: number): Record<string, string> => ({
+  left: x(lane) + "px",
+  transform: "translateX(-50%)",
+});
 /** 曲线止于曲线层底(BAND):目标列若本行没有贯穿竖线,要补一段接到行底。 */
 const outContinuations = computed(() =>
   props.row.outs.filter((l) => !props.row.passIn.includes(l)),
@@ -71,14 +80,14 @@ const outPath = (to: number): string =>
       class="git-log-gutter-v"
       data-seg="pass"
       :data-lane="l"
-      :style="{ left: x(l) + 'px', background: laneColor(l) }"
+      :style="{ ...lineBox(l), background: laneColor(l) }"
     />
     <span
       class="git-log-gutter-v"
       data-seg="node-up"
       :data-lane="row.lane"
       :style="{
-        left: nodeX + 'px',
+        ...lineBox(row.lane),
         height: NODE_CY + 'px',
         background: laneColor(row.lane),
       }"
@@ -90,7 +99,7 @@ const outPath = (to: number): string =>
       :data-dangling="String(row.dangling)"
       :data-lane="row.lane"
       :style="{
-        left: nodeX + 'px',
+        ...lineBox(row.lane),
         top: NODE_CY + 'px',
         background: laneColor(row.lane),
       }"
@@ -103,7 +112,7 @@ const outPath = (to: number): string =>
       class="git-log-gutter-v"
       data-seg="out"
       :data-lane="l"
-      :style="{ left: x(l) + 'px', top: BAND + 'px', background: laneColor(l) }"
+      :style="{ ...lineBox(l), top: BAND + 'px', background: laneColor(l) }"
     />
     <svg
       class="git-log-gutter-svg"

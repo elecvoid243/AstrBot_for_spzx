@@ -44,7 +44,7 @@
         <input v-model="follow" type="checkbox" />
         {{ tm("shellSession.window.followOutput") }}
       </label>
-      <span class="spacer" />
+      <span class="win-foot-spacer" />
       <span>{{ sessionClosed ? tm("shellSession.window.closed") : tm("shellSession.window.polling") }}</span>
       <span>{{ tm("shellSession.window.readBytes", { size: formatBytes(byteCount) }) }}</span>
     </div>
@@ -278,8 +278,9 @@ onUnmounted(() => {
 
 .win-body {
   /* The terminal log is the window's main content: it claims most of the
-     vertical space instead of a fixed short strip. */
-  height: clamp(360px, 58vh, 640px);
+     vertical space instead of a fixed short strip. (Trimmed 30% from the
+     first cut, which read as too tall.) */
+  height: clamp(250px, 40vh, 450px);
   overflow-y: auto;
   padding: 10px 12px;
   background: #0d1117;
@@ -308,7 +309,10 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.spacer {
+/* NOT `.spacer`: that class name carries a global 100px vertical padding
+   from the layout scss (_container.scss), which ballooned this row into a
+   ~200px-tall box with the text centered — the "blank area" bug. */
+.win-foot-spacer {
   flex: 1;
 }
 </style>

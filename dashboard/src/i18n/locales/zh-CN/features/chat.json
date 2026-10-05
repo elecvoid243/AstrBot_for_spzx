@@ -277,7 +277,9 @@
       "close": "关闭",
       "followOutput": "跟随输出",
       "noOutput": "暂无输出",
-      "readBytes": "已读 {size}"
+      "readBytes": "已读 {size}",
+      "closed": "已结束 · 定格",
+      "polling": "长轮询中"
     }
   },
   "subagentStatus": {

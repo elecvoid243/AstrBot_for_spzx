@@ -71,9 +71,25 @@ describe("useShellSessionOutput", () => {
   });
 
   it("keeps displayed content when the session vanishes mid-follow", async () => {
+    // AstrBot business errors arrive as HTTP 200 with {status:"error"}
+    // envelopes — axios does NOT reject, so the loop must branch on it.
     getOutput
       .mockResolvedValueOnce(peek("partial\n", 8) as never)
-      .mockRejectedValueOnce(new Error("Shell session sh_1 was not found."));
+      .mockResolvedValueOnce({
+        data: { status: "error", message: "Shell session sh_1 was not found." },
+      } as never);
+
+    const out = useShellSessionOutput("s1", "sh_1");
+    await out.start();
+
+    expect(out.outputText.value).toBe("partial\n");
+    expect(out.sessionClosed.value).toBe(true);
+  });
+
+  it("keeps displayed content on network failure", async () => {
+    getOutput
+      .mockResolvedValueOnce(peek("partial\n", 8) as never)
+      .mockRejectedValueOnce(new Error("network down"));
 
     const out = useShellSessionOutput("s1", "sh_1");
     await out.start();

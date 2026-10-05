@@ -11,6 +11,7 @@
 -->
 <template>
   <div
+    ref="winEl"
     class="shell-win"
     :style="{ zIndex, right: `${pos.x}px`, bottom: `${pos.y}px` }"
     @mousedown="chatHeader.FOCUS_SHELL_WINDOW(shellSessionId)"
@@ -26,6 +27,7 @@
         {{ tm(`shellSession.stateLabels.${statusMeta.i18nKey}`) }}
       </span>
       <span v-if="meta?.pid" class="meta">pid {{ meta.pid }}</span>
+      <span v-if="meta?.started_at" class="meta">{{ formatRelativeTime(meta.started_at) }}</span>
       <button
         v-if="!terminated"
         class="win-btn term"
@@ -43,6 +45,7 @@
         {{ tm("shellSession.window.followOutput") }}
       </label>
       <span class="spacer" />
+      <span>{{ sessionClosed ? tm("shellSession.window.closed") : tm("shellSession.window.polling") }}</span>
       <span>{{ tm("shellSession.window.readBytes", { size: formatBytes(byteCount) }) }}</span>
     </div>
   </div>
@@ -55,6 +58,7 @@ import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useModuleI18n } from "@/i18n/composables";
 import { useShellSessionOutput } from "@/composables/useShellSessionOutput";
 import { formatBytes } from "./message_list_comps/shell_session_tools/format";
+import { formatRelativeTime } from "./message_list_comps/inta_shell_tools/format";
 import { getShellSessionStatusMeta } from "./message_list_comps/shell_session_tools/icons";
 
 const props = defineProps<{
@@ -78,12 +82,19 @@ const meta = ref(
 const { outputText, status, sessionClosed, follow, start, stop } =
   useShellSessionOutput(props.sessionId, props.shellSessionId);
 
+// Snapshot the owning conversation at mount: props.sessionId tracks the
+// LIVE conversation, which changes when the user switches sessions — but
+// this window keeps following (and must keep terminating) the session it
+// was opened for.
+const ownerSessionId = props.sessionId;
+
 const statusMeta = computed(() => getShellSessionStatusMeta(status.value));
 const terminated = computed(() => status.value === "terminated");
 const byteCount = computed(() => new Blob([outputText.value]).size);
 
 // ── Auto-scroll while following ───────────────────────────────────
 const logRef = ref<HTMLElement | null>(null);
+const winEl = ref<HTMLElement | null>(null);
 watch(outputText, async () => {
   if (!follow.value) return;
   await nextTick();
@@ -103,7 +114,17 @@ async function onTerminate() {
   if (confirmTimer) clearTimeout(confirmTimer);
   confirmTerminate.value = false;
   try {
-    await chatApi.terminateShellSession(props.sessionId, props.shellSessionId);
+    const resp = await chatApi.terminateShellSession(
+      ownerSessionId,
+      props.shellSessionId,
+    );
+    // Business errors arrive as HTTP 200 {status:"error"} envelopes — only
+    // a real ok result flips the window to terminated.
+    const envelope = resp.data as { status?: string } | undefined;
+    if (!envelope || envelope.status !== "ok") {
+      console.error("Failed to terminate shell session:", envelope);
+      return;
+    }
     status.value = "terminated";
     sessionClosed.value = true;
   } catch (error) {
@@ -130,9 +151,14 @@ function startDrag(e: MouseEvent) {
   const startY = e.clientY;
   const origin = { ...pos.value };
   const onMove = (ev: MouseEvent) => {
+    // Clamp both directions: right/bottom offsets only grow when dragging
+    // left/up, so an unclamped window could leave the viewport entirely.
+    const el = winEl.value;
+    const maxX = el ? window.innerWidth - el.offsetWidth : Number.MAX_SAFE_INTEGER;
+    const maxY = el ? window.innerHeight - el.offsetHeight : Number.MAX_SAFE_INTEGER;
     pos.value = {
-      x: Math.max(0, origin.x - (ev.clientX - startX)),
-      y: Math.max(0, origin.y - (ev.clientY - startY)),
+      x: Math.min(Math.max(0, origin.x - (ev.clientX - startX)), Math.max(0, maxX)),
+      y: Math.min(Math.max(0, origin.y - (ev.clientY - startY)), Math.max(0, maxY)),
     };
   };
   const onUp = () => {

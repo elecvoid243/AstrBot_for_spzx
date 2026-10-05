@@ -1,5 +1,6 @@
 import { ref, type Ref } from "vue";
 import { chatApi } from "@/api/v1";
+import type { ShellSessionPollResult } from "@/components/chat/message_list_comps/shell_session_tools/format";
 
 /**
  * useShellSessionOutput — peek-polling loop for one floating shell session
@@ -17,6 +18,10 @@ export function useShellSessionOutput(
   sessionId: string,
   shellSessionId: string,
 ) {
+  /** Retained-output cap; older text is dropped behind a trim marker. */
+  const MAX_RETAINED_CHARS = 256 * 1024;
+  const TRIM_MARKER = "[... earlier output trimmed ...]\n";
+
   const outputText: Ref<string> = ref("");
   const status: Ref<string> = ref("running");
   const sessionClosed: Ref<boolean> = ref(false);
@@ -39,9 +44,29 @@ export function useShellSessionOutput(
           shellSessionId,
           { cursor, yieldTimeMs: 2000 },
         );
-        const data = resp.data?.data;
-        if (!data) break;
-        if (data.stdout) outputText.value += data.stdout;
+        // AstrBot business errors are HTTP 200 with {status:"error"} — axios
+        // resolves them, so branch on the envelope, not on rejection.
+        const envelope = resp.data as {
+          status?: string;
+          data?: ShellSessionPollResult;
+        };
+        if (!envelope || envelope.status === "error" || !envelope.data) {
+          // Session reaped or runtime unavailable: keep what we read and
+          // freeze in place.
+          sessionClosed.value = true;
+          break;
+        }
+        const data = envelope.data;
+        if (data.stdout) {
+          outputText.value += data.stdout;
+          // Bound the retained buffer: a chatty process must not grow the
+          // window's string without limit.
+          if (outputText.value.length > MAX_RETAINED_CHARS) {
+            outputText.value =
+              TRIM_MARKER +
+              outputText.value.slice(-MAX_RETAINED_CHARS);
+          }
+        }
         cursor = data.cursor ?? cursor;
         if (data.status) status.value = data.status;
         if (data.session_closed) {
@@ -49,8 +74,7 @@ export function useShellSessionOutput(
           break;
         }
       } catch {
-        // Session reaped or network failure: the window keeps the output it
-        // already has and freezes in place.
+        // Network failure: same freeze-in-place behavior.
         sessionClosed.value = true;
         break;
       }

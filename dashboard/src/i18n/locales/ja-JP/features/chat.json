@@ -217,7 +217,9 @@
       "close": "閉じる",
       "followOutput": "出力を追従",
       "noOutput": "まだ出力がありません",
-      "readBytes": "読み取り済み {size}"
+      "readBytes": "読み取り済み {size}",
+      "closed": "終了 · 静止",
+      "polling": "ポーリング中"
     },
     "stateLabels": {
       "running": "実行中",

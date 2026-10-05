@@ -905,9 +905,13 @@ class LocalShellComponent(ShellComponent):
         except FileNotFoundError:
             return b"", cursor, cursor
         normalized_cursor = min(cursor, output_size)
-        with session.output_path.open("rb") as output_file:
-            output_file.seek(normalized_cursor)
-            raw_output = output_file.read(max_chars)
+        try:
+            with session.output_path.open("rb") as output_file:
+                output_file.seek(normalized_cursor)
+                raw_output = output_file.read(max_chars)
+        except FileNotFoundError:
+            # Reap can unlink the file between stat() and open().
+            return b"", cursor, cursor
         return (
             raw_output,
             normalized_cursor + len(raw_output),
@@ -1104,6 +1108,14 @@ class LocalShellComponent(ShellComponent):
                 )
 
         exit_code = session.process.returncode
+        if exit_code is not None:
+            # Mirror poll_session: give the reader a bounded chance to flush
+            # the pipe tail before declaring closure, otherwise the final
+            # chunk could be cut from the window permanently.
+            await _bounded_await(session.reader_task, timeout=5)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, cursor, max_output_chars
+            )
         has_more = next_cursor < output_size
         return {
             "session_id": session.session_id,

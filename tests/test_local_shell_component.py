@@ -1990,3 +1990,41 @@ async def test_peek_yield_waits_for_new_output(monkeypatch, tmp_path):
     await feeder
     assert peeked["stdout"] == "late\n"
     assert peeked["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_peek_tolerates_unlinked_output_file(monkeypatch, tmp_path):
+    """Reap racing a peek: the output file can vanish between stat and open."""
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    session = shell._sessions[started["session_id"]]
+    holder["proc"].exit(0)
+    holder["proc"].stdout.close()
+    await asyncio.sleep(0.05)
+
+    # Emulate the stat→open race: stat() succeeds, open() sees the file gone.
+    class RacingPath(type(session.output_path)):
+        def open(self, *args, **kwargs):  # noqa: ARG002
+            raise FileNotFoundError(2, "No such file or directory")
+
+    session.output_path = RacingPath(session.output_path)
+
+    peeked = await shell.peek_session_output(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+        cursor=0,
+    )
+    assert peeked["stdout"] == ""
+    assert peeked["session_closed"] is True

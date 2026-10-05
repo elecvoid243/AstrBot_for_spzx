@@ -29,7 +29,7 @@
       <span v-if="meta?.pid" class="meta">pid {{ meta.pid }}</span>
       <span v-if="meta?.started_at" class="meta">{{ formatRelativeTime(meta.started_at) }}</span>
       <button
-        v-if="!terminated"
+        v-if="canTerminate"
         class="win-btn term"
         :class="{ confirm: confirmTerminate }"
         @click="onTerminate"
@@ -89,7 +89,11 @@ const { outputText, status, sessionClosed, follow, start, stop } =
 const ownerSessionId = props.sessionId;
 
 const statusMeta = computed(() => getShellSessionStatusMeta(status.value));
-const terminated = computed(() => status.value === "terminated");
+// Terminate only makes sense while the process is alive: completed /
+// failed / timed_out / terminated / already-reaped sessions hide it.
+const canTerminate = computed(
+  () => status.value === "running" && !sessionClosed.value,
+);
 const byteCount = computed(() => new Blob([outputText.value]).size);
 
 // ── Auto-scroll while following ───────────────────────────────────
@@ -273,7 +277,9 @@ onUnmounted(() => {
 }
 
 .win-body {
-  height: 260px;
+  /* The terminal log is the window's main content: it claims most of the
+     vertical space instead of a fixed short strip. */
+  height: clamp(360px, 58vh, 640px);
   overflow-y: auto;
   padding: 10px 12px;
   background: #0d1117;

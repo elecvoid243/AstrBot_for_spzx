@@ -81,8 +81,6 @@
             <span class="meta-sep">·</span>
             <span>{{ tm("shellSession.labels.unread") }} {{ formatBytes(s.unread_output_bytes) }}</span>
           </template>
-          <span class="meta-sep">·</span>
-          <v-icon size="13" class="view-icon">mdi-text-box-outline</v-icon>
         </div>
       </div>
     </v-card>
@@ -149,10 +147,6 @@ function openWindow(shellSessionId: string) {
 
 .session-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
-.view-icon {
-  opacity: 0.55;
 }
 
 .session-row-main {

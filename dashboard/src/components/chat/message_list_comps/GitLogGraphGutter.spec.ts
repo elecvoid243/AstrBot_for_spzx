@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import GitLogGraphGutter from "./GitLogGraphGutter.vue";
 import {
+  BAND,
   GUTTER_LEFT,
   NODE_CY,
+  STROKE_W,
   gutterWidth,
   type GraphRow,
 } from "@/composables/gitGraphLayout";
@@ -43,8 +45,44 @@ describe("GitLogGraphGutter", () => {
     // 定位契约由组件自己声明,jsdom 才守得住它。
     expect(style).toContain("position: absolute");
     expect(style).toContain("top: 0px");
-    expect(style).toContain("bottom: 0px");
+    // 下沿多出 1px:跨过 .git-log-item 的 border-bottom,否则每条 lane
+    // 在每个行边界都会缺 1px(截图里表现为间断的细口)。
+    expect(style).toContain("bottom: -1px");
     expect(style).toContain(`left: ${GUTTER_LEFT}px`);
+  });
+
+  it("continues a fork line down to the row's bottom", () => {
+    const w = mount(GitLogGraphGutter, {
+      props: { row: row({ lane: 0, outs: [1], cont: true }), lanes: 2 },
+    });
+
+    // 弧线只画到曲线层底(BAND);剩下的必须由竖线接到行底 —— 否则真机上
+    // 每个分叉都会留 24~26px 断口(2026-10-06 实测截图:26px)。
+    const stub = w.find('[data-seg="out"][data-lane="1"]');
+    expect(stub.exists()).toBe(true);
+    expect(stub.attributes("style")).toContain(`top: ${BAND}px`);
+  });
+
+  it("does not double-draw a fork target that already passes through", () => {
+    const w = mount(GitLogGraphGutter, {
+      props: {
+        row: row({ lane: 0, outs: [1], passIn: [1], cont: true }),
+        lanes: 2,
+      },
+    });
+
+    // passIn 的竖线已经覆盖整行,再补一段是冗余绘制
+    expect(w.find('[data-seg="out"][data-lane="1"]').exists()).toBe(false);
+  });
+
+  it("draws curves with the same weight as the verticals, from one constant", () => {
+    const w = mount(GitLogGraphGutter, {
+      props: { row: row({ ins: [1], cont: true }), lanes: 2 },
+    });
+
+    const style = w.attributes("style") ?? "";
+    expect(style).toContain(`--spcode-graph-sw: ${STROKE_W}px`);
+    expect(w.find("path").attributes("stroke-width")).toBe(String(STROKE_W));
   });
 
   it("draws the node at NODE_CY and only renders the lower half when it continues", () => {

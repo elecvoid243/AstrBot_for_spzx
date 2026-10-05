@@ -13,6 +13,7 @@ import {
   GUTTER_PAD,
   LANE_W,
   NODE_CY,
+  STROKE_W,
   gutterWidth,
   type GraphRow,
 } from "@/composables/gitGraphLayout";
@@ -31,6 +32,10 @@ const x = (lane: number): number => GUTTER_PAD + lane * LANE_W + LANE_W / 2;
 const laneColor = (lane: number): string => `var(--spcode-graph-l${lane % 6})`;
 
 const width = computed(() => gutterWidth(props.lanes));
+/** 曲线止于曲线层底(BAND):目标列若本行没有贯穿竖线,要补一段接到行底。 */
+const outContinuations = computed(() =>
+  props.row.outs.filter((l) => !props.row.passIn.includes(l)),
+);
 const nodeX = computed(() => x(props.row.lane));
 
 /** 收敛：col@行顶 → 节点@NODE_CY。 */
@@ -53,8 +58,11 @@ const outPath = (to: number): string =>
       position: 'absolute',
       left: GUTTER_LEFT + 'px',
       top: '0px',
-      bottom: '0px',
+      // 下沿多出 1px:跨过 .git-log-item 的 border-bottom,否则每条 lane
+      // 在每个行边界都缺 1px。
+      bottom: '-1px',
       width: width + 'px',
+      '--spcode-graph-sw': STROKE_W + 'px',
     }"
   >
     <span
@@ -88,6 +96,15 @@ const outPath = (to: number): string =>
       }"
     />
 
+    <!-- 弧线以下到行底的这一小段:不补它,分叉处就会留 24~26px 断口 -->
+    <span
+      v-for="l in outContinuations"
+      :key="`out-${l}`"
+      class="git-log-gutter-v"
+      data-seg="out"
+      :data-lane="l"
+      :style="{ left: x(l) + 'px', top: BAND + 'px', background: laneColor(l) }"
+    />
     <svg
       class="git-log-gutter-svg"
       :width="width"
@@ -99,12 +116,14 @@ const outPath = (to: number): string =>
         :key="`in-${l}`"
         :d="inPath(l)"
         :stroke="laneColor(l)"
+        :stroke-width="STROKE_W"
       />
       <path
         v-for="l in row.outs"
         :key="`out-${l}`"
         :d="outPath(l)"
         :stroke="laneColor(l)"
+        :stroke-width="STROKE_W"
       />
       <template v-if="isHead">
         <circle :cx="nodeX" :cy="NODE_CY" r="5.3" class="git-log-gutter-ring-bg" />
@@ -154,7 +173,7 @@ const outPath = (to: number): string =>
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 1.5px;
+  width: var(--spcode-graph-sw, 1.5px);
   border-radius: 1px;
 }
 

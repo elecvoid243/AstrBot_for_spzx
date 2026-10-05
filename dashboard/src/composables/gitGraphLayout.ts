@@ -18,6 +18,8 @@ export const GUTTER_LEFT = 12;
 export const NODE_CY = 17;
 /** 曲线 / 节点 SVG 层的高度（px），只覆盖 commit 行首行。 */
 export const BAND = 34;
+/** 线宽（px）—— 竖线与曲线共用这一个真源。 */
+export const STROKE_W = 2;
 
 /**
  * gutter 宽度。单列（线性历史）返回 0 —— 零占用，窄侧边栏不该为一条竖线

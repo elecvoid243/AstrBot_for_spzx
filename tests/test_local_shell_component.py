@@ -1633,3 +1633,171 @@ async def test_terminate_tolerates_failed_wait_task(monkeypatch, tmp_path):
         LocalShellComponent()._terminate_process(session),
         timeout=20,
     )
+
+
+class _EmptyStdout:
+    async def read(self, _limit: int) -> bytes:
+        return b""
+
+
+class _ControllableProcess:
+    """Fake managed process whose exit the test triggers explicitly."""
+
+    def __init__(self) -> None:
+        self.pid = 12345
+        self.returncode: int | None = None
+        self.stdout = _EmptyStdout()
+        self.stdin = None
+        self._exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        return self.returncode or 0
+
+    def exit(self, code: int = 0) -> None:
+        self.returncode = code
+        self._exited.set()
+
+
+def _patch_managed_spawn(monkeypatch, holder: dict) -> None:
+    """Route managed subprocess creation to a controllable fake process."""
+
+    async def fake_spawn(*args, **kwargs):
+        _ = args, kwargs
+        proc = _ControllableProcess()
+        holder["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(local_booter.asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(local_booter.asyncio, "create_subprocess_shell", fake_spawn)
+
+
+async def _drain_notifications(notifications: list, count: int) -> None:
+    """Let the event loop run until enough change notifications arrived."""
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if len(notifications) >= count:
+            return
+
+
+@pytest.mark.asyncio
+async def test_change_listener_fires_on_session_create(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_managed_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    notifications: list[str] = []
+    shell.add_change_listener(notifications.append)
+
+    result = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+
+    assert result["status"] == "running"
+    assert notifications == ["owner-a"]
+
+
+@pytest.mark.asyncio
+async def test_change_listener_fires_on_process_exit(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_managed_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    notifications: list[str] = []
+    shell.add_change_listener(notifications.append)
+
+    await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    assert notifications == ["owner-a"]
+
+    holder["proc"].exit(0)
+    await _drain_notifications(notifications, 2)
+
+    # wait_task's done callback must schedule the notification without
+    # blocking or hanging the loop.
+    assert notifications == ["owner-a", "owner-a"]
+
+
+@pytest.mark.asyncio
+async def test_change_listener_fires_on_session_removal(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_managed_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    notifications: list[str] = []
+    shell.add_change_listener(notifications.append)
+
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    holder["proc"].exit(0)
+    await _drain_notifications(notifications, 2)
+
+    result = await shell.poll_session(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+        yield_time_ms=0,
+    )
+
+    assert result["session_closed"] is True
+    # create + exit + removal
+    assert notifications == ["owner-a", "owner-a", "owner-a"]
+
+
+@pytest.mark.asyncio
+async def test_change_listener_exception_does_not_break_shell_ops(
+    monkeypatch, tmp_path
+):
+    holder: dict = {}
+    _patch_managed_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    notifications: list[str] = []
+
+    def boom(_owner_id: str) -> None:
+        raise RuntimeError("listener exploded")
+
+    shell.add_change_listener(boom)
+    shell.add_change_listener(notifications.append)
+
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    assert started["status"] == "running"
+
+    holder["proc"].exit(0)
+    result = await shell.poll_session(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+        yield_time_ms=0,
+    )
+
+    # A raising listener must neither break shell operations nor prevent
+    # later listeners from running.
+    assert result["session_closed"] is True
+    assert notifications

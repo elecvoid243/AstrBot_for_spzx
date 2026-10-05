@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -502,6 +503,35 @@ class LocalShellComponent(ShellComponent):
         init=False,
         repr=False,
     )
+    _change_listeners: list[Callable[[str], None]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+
+    def add_change_listener(self, listener: Callable[[str], None]) -> None:
+        """Register a sync listener fired with the owner_id on session changes.
+
+        Notifications fire on session creation, process exit, and session
+        removal. They are best-effort: listener exceptions are logged and
+        never affect shell management.
+
+        Args:
+            listener: Sync callable receiving the owning unified message
+                origin. Async work must be scheduled by the listener itself.
+        """
+        self._change_listeners.append(listener)
+
+    def _notify_change(self, owner_id: str) -> None:
+        """Fan a session-change signal out to listeners, isolating failures."""
+        for listener in list(self._change_listeners):
+            try:
+                listener(owner_id)
+            except Exception as exc:  # noqa: BLE001 - notification is best-effort
+                logger.warning(
+                    "Shell session change listener failed: %s",
+                    exc,
+                )
 
     async def exec(
         self,
@@ -730,6 +760,10 @@ class LocalShellComponent(ShellComponent):
             name=f"local_shell_wait_{session_id}",
         )
         wait_task.add_done_callback(lambda _: output_event.set())
+        # Notify watchers (e.g. the dashboard push wiring) that this session
+        # reached a terminal state. Sync fire-and-forget: safe in a done
+        # callback because `_notify_change` never awaits.
+        wait_task.add_done_callback(lambda _: self._notify_change(owner_id))
         session = _LocalShellSession(
             session_id=session_id,
             owner_id=owner_id,
@@ -769,6 +803,7 @@ class LocalShellComponent(ShellComponent):
 
         async with self._sessions_lock:
             self._sessions[session_id] = session
+        self._notify_change(owner_id)
 
         if yield_time_ms > 0:
             try:
@@ -1286,9 +1321,13 @@ class LocalShellComponent(ShellComponent):
         Args:
             session: Managed shell session to remove.
         """
+        removed = False
         async with self._sessions_lock:
             if self._sessions.get(session.session_id) is session:
                 self._sessions.pop(session.session_id, None)
+                removed = True
+        if removed:
+            self._notify_change(session.owner_id)
         timeout_task = session.timeout_task
         if (
             timeout_task is not None

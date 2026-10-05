@@ -70,6 +70,22 @@
             class="exit-code"
             :class="s.exit_code === 0 ? 'success' : 'error'"
           >exit {{ s.exit_code }}</span>
+          <button
+            v-if="s.status !== 'running'"
+            class="row-cleanup"
+            :class="{ confirm: cleanupConfirmId === s.session_id }"
+            :title="
+              cleanupConfirmId === s.session_id
+                ? tm('shellSession.labels.cleanupConfirm')
+                : tm('shellSession.labels.cleanup')
+            "
+            :disabled="!conversationId"
+            @click.stop="onCleanup(s.session_id)"
+          >
+            <v-icon size="13">
+              {{ cleanupConfirmId === s.session_id ? "mdi-check" : "mdi-delete-outline" }}
+            </v-icon>
+          </button>
         </div>
         <div class="session-row-meta">
           <span>pid {{ s.pid }}</span>
@@ -88,13 +104,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
+import { chatApi } from "@/api/v1";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useModuleI18n } from "@/i18n/composables";
 import CopyableText from "./message_list_comps/__shared__/CopyableText.vue";
 import { formatRelativeTime } from "./message_list_comps/inta_shell_tools/format";
 import { formatBytes } from "./message_list_comps/shell_session_tools/format";
 import { getShellSessionStatusMeta } from "./message_list_comps/shell_session_tools/icons";
+
+const props = defineProps<{
+  /** Active conversation id; cleanup calls are scoped to it. */
+  conversationId: string | null;
+}>();
 
 const chatHeader = useChatHeaderStore();
 const { tm } = useModuleI18n("features/chat");
@@ -113,6 +135,42 @@ function openWindow(shellSessionId: string) {
   chatHeader.SET_SHELL_WINDOW_OPEN(shellSessionId, true);
   menuOpen.value = false;
 }
+
+// ── Cleanup of finished sessions (early reap) ─────────────────────
+// Two-click confirm, mirroring the window's terminate button. The list
+// itself refreshes through the shell_sessions_changed push that the
+// removal fires — no local state surgery.
+const cleanupConfirmId = ref<string | null>(null);
+let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function onCleanup(shellSessionId: string) {
+  if (!props.conversationId) return;
+  if (cleanupConfirmId.value !== shellSessionId) {
+    cleanupConfirmId.value = shellSessionId;
+    if (cleanupTimer) clearTimeout(cleanupTimer);
+    cleanupTimer = setTimeout(() => (cleanupConfirmId.value = null), 3000);
+    return;
+  }
+  if (cleanupTimer) clearTimeout(cleanupTimer);
+  cleanupConfirmId.value = null;
+  try {
+    const resp = await chatApi.discardShellSession(
+      props.conversationId,
+      shellSessionId,
+    );
+    // Business errors arrive as HTTP 200 {status:"error"} envelopes.
+    const envelope = resp.data as { status?: string } | undefined;
+    if (!envelope || envelope.status !== "ok") {
+      console.error("Failed to clean up shell session:", envelope);
+    }
+  } catch (error) {
+    console.error("Failed to clean up shell session:", error);
+  }
+}
+
+onUnmounted(() => {
+  if (cleanupTimer) clearTimeout(cleanupTimer);
+});
 </script>
 
 <style scoped>
@@ -193,6 +251,29 @@ function openWindow(shellSessionId: string) {
 
 .exit-code.error {
   color: #cf222e;
+}
+
+/* Cleanup button for finished sessions: quiet until hovered; the confirm
+   click turns it green (check icon). */
+.row-cleanup {
+  border: none;
+  background: none;
+  padding: 1px 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.45;
+  color: inherit;
+  flex-shrink: 0;
+}
+
+.row-cleanup:hover {
+  opacity: 1;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.row-cleanup.confirm {
+  opacity: 1;
+  color: #2da44e;
 }
 
 .session-row-meta {

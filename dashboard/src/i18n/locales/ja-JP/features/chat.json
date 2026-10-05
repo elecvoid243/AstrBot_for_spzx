@@ -229,7 +229,9 @@
       "terminated": "終了"
     },
     "labels": {
-      "unread": "未読"
+      "unread": "未読",
+      "cleanup": "記録を削除",
+      "cleanupConfirm": "削除を確認"
     }
   },
   "time": {

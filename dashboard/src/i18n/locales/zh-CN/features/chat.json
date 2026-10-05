@@ -258,7 +258,9 @@
       "noOutput": "无新输出",
       "noSessions": "暂无 Shell 会话",
       "moreOutput": "还有更多输出",
-      "sessionClosed": "会话已关闭"
+      "sessionClosed": "会话已关闭",
+      "cleanup": "清理记录",
+      "cleanupConfirm": "确认清理？"
     },
     "stateLabels": {
       "running": "运行中",

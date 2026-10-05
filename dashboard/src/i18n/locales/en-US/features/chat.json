@@ -258,7 +258,9 @@
       "noOutput": "No new output",
       "noSessions": "No shell sessions",
       "moreOutput": "More output available",
-      "sessionClosed": "Session closed"
+      "sessionClosed": "Session closed",
+      "cleanup": "Clean up",
+      "cleanupConfirm": "Confirm cleanup?"
     },
     "stateLabels": {
       "running": "running",

@@ -1754,6 +1754,17 @@ export type TerminateChatShellSessionResponse = (SuccessEnvelope);
 
 export type TerminateChatShellSessionError = unknown;
 
+export type DiscardChatShellSessionData = {
+    path: {
+        session_id: string;
+        shell_session_id: string;
+    };
+};
+
+export type DiscardChatShellSessionResponse = (SuccessEnvelope);
+
+export type DiscardChatShellSessionError = unknown;
+
 export type ExportChatSessionData = {
     path: {
         session_id: string;

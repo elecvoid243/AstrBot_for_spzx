@@ -937,6 +937,13 @@ export const chatApi = {
       }),
     );
   },
+  discardShellSession(sessionId: string, shellSessionId: string) {
+    return typed<{ session_id: string; removed: boolean }>(
+      openApiV1.discardChatShellSession({
+        path: { session_id: sessionId, shell_session_id: shellSessionId },
+      }),
+    );
+  },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {
     return typed<any>(
       openApiV1.updateChatSession({

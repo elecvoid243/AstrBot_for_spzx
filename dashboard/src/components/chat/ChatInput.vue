@@ -24,7 +24,7 @@
           <!-- Managed background shell sessions (2026-10-05): lives in the
                composer status row next to the other ambient chips; the
                component hides itself when no sessions exist. -->
-          <ShellSessionIndicator />
+          <ShellSessionIndicator :conversation-id="sessionId" />
           <FileAccessModeChip
             :umo="currentSessionUmo"
             @change="handleFileAccessModeChange"

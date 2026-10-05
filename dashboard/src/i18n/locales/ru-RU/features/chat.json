@@ -252,7 +252,9 @@
       "noOutput": "Нового вывода нет",
       "noSessions": "Shell-сессий нет",
       "moreOutput": "Есть ещё вывод",
-      "sessionClosed": "Сессия закрыта"
+      "sessionClosed": "Сессия закрыта",
+      "cleanup": "Очистить",
+      "cleanupConfirm": "Подтвердить очистку?"
     },
     "stateLabels": {
       "running": "выполняется",

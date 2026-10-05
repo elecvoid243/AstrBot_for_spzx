@@ -588,6 +588,9 @@
       "expandAll": "全部展开",
       "collapseAll": "全部折叠",
       "bulkAria": "批量折叠控制"
+    },
+    "overlay": {
+      "expandLines": "展开 {n} 行"
     }
   },
   "spcodeProjectLoad": {

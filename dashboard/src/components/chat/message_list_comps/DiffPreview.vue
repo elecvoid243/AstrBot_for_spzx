@@ -41,6 +41,7 @@
              Stops propagation so clicking a button does not also toggle
              the body collapse. -->
         <div
+          v-if="!overlayActive"
           class="diff-view-toggle"
           role="group"
           :aria-label="viewModeAriaLabel"
@@ -105,7 +106,32 @@
            unfold the hunk. State is local to the component so a
            re-mount (file change) resets all folds — matches the
            "expansion state is per-file" mental model. -->
-      <template v-if="viewMode === 'unified'">
+      <!-- 2026-10-06 overlay 模式:全文件 + diff 叠加(对齐成功时) -->
+      <div v-if="overlayActive" class="overlay-body">
+        <template v-for="row in overlayRows" :key="row.key">
+          <div
+            v-if="row.kind === 'gap'"
+            class="overlay-gap"
+            role="button"
+            tabindex="0"
+            @click="expandGap(row.gap.afterBaseLineno)"
+            @keydown.enter.prevent="expandGap(row.gap.afterBaseLineno)"
+          >
+            {{ tm("diffPreview.overlay.expandLines", { n: row.gap.hiddenCount }) }}
+          </div>
+          <div
+            v-else
+            class="diff-line"
+            :class="overlayLineClass(row.line)"
+          >
+            <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
+            <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
+            <span class="line-content" v-html="overlayLineHtml(row.line)"></span>
+          </div>
+        </template>
+      </div>
+
+      <template v-if="!overlayActive && viewMode === 'unified'">
         <div
           v-for="(hunk, hi) in parsedHunks"
           :key="hi"
@@ -246,7 +272,7 @@
            whole hunk at once — rows stay in the DOM, preserving
            scroll position and any in-progress comment hover state
            when the user re-expands. -->
-      <template v-else>
+      <template v-else-if="!overlayActive">
         <div
           v-for="(hunk, hi) in splitHunks"
           :key="hi"
@@ -521,6 +547,7 @@
                 >
               </template>
               <div
+                v-if="!overlayActive"
                 class="diff-view-toggle"
                 role="group"
                 :aria-label="viewModeAriaLabel"
@@ -600,7 +627,32 @@
             </div>
 
             <!-- Unified mode (fullscreen copy) -->
-            <template v-if="viewMode === 'unified'">
+            <!-- 2026-10-06 overlay 模式:全文件 + diff 叠加(对齐成功时) -->
+      <div v-if="overlayActive" class="overlay-body">
+        <template v-for="row in overlayRows" :key="row.key">
+          <div
+            v-if="row.kind === 'gap'"
+            class="overlay-gap"
+            role="button"
+            tabindex="0"
+            @click="expandGap(row.gap.afterBaseLineno)"
+            @keydown.enter.prevent="expandGap(row.gap.afterBaseLineno)"
+          >
+            {{ tm("diffPreview.overlay.expandLines", { n: row.gap.hiddenCount }) }}
+          </div>
+          <div
+            v-else
+            class="diff-line"
+            :class="overlayLineClass(row.line)"
+          >
+            <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
+            <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
+            <span class="line-content" v-html="overlayLineHtml(row.line)"></span>
+          </div>
+        </template>
+      </div>
+
+      <template v-if="!overlayActive && viewMode === 'unified'">
               <div
                 v-for="(hunk, hi) in parsedHunks"
                 :key="hi"
@@ -649,7 +701,7 @@
                       :size="12"
                       :width="2"
                     />
-                    <template v-else>
+                    <template v-else-if="!overlayActive">
                       <v-icon :size="14">
                         {{ confirmingHunkIndex === hi ? 'mdi-alert-circle' : 'mdi-content-cut' }}
                       </v-icon>
@@ -978,6 +1030,11 @@ import {
   type DiffHunk,
   type DiffLine,
 } from "@/utils/diffHunkPatch";
+import {
+  alignOverlay,
+  type OverlayGap,
+  type OverlayLine,
+} from "@/utils/diffOverlayAlign";
 import FileCommentEditor from "./FileCommentEditor.vue";
 
 // A single visual row in split mode: holds the old-side line (or null
@@ -1007,6 +1064,13 @@ const props = withDefaults(
     content: string;
     filePath?: string;
     summary?: string;
+    /**
+     * 2026-10-06 range-compare overlay: 提供时进入「全文件 + diff 叠加」
+     * 模式——以该基准全文为骨架渲染,`content` 的 hunk 叠加到对应行。
+     * 对齐失败(hunk 与基准行不匹配)自动降级为普通 patch 渲染。
+     * overlay 模式仅 unified、无评论 gutter、隐藏 unified/split 切换。
+     */
+    baseContent?: string;
     maxLines?: number;
     maxChars?: number;
     collapsible?: boolean;
@@ -1050,6 +1114,7 @@ const props = withDefaults(
   {
     filePath: "",
     summary: "",
+    baseContent: "",
     maxLines: 30,
     maxChars: 2000,
     collapsible: true,
@@ -1072,6 +1137,91 @@ const isCurrentHunkDiscarding = (hi: number): boolean => {
   const prefix = props.discardKeyPrefix || props.filePath;
   return props.discardingHunks.has(`${prefix}#${hi}`);
 };
+
+// ─── 2026-10-06 overlay mode (range-compare full-file overlay) ─────
+// Spec: docs/superpowers/specs/2026-10-06-git-file-range-diff-frontend-design.md §4
+const overlayResult = computed(() =>
+  props.baseContent ? alignOverlay(props.baseContent, props.content) : null,
+);
+/** overlay 仅在对齐成功时激活;失败自动降级普通 patch 渲染 */
+const overlayActive = computed(
+  () => overlayResult.value !== null && overlayResult.value.ok,
+);
+/** 已展开的间隙(afterBaseLineno 集合);文件/patch 变化时重置 */
+const expandedGaps = ref<Set<number>>(new Set());
+watch(
+  () => [props.baseContent, props.content],
+  () => {
+    expandedGaps.value = new Set();
+  },
+);
+function expandGap(afterBaseLineno: number): void {
+  const s = new Set(expandedGaps.value);
+  s.add(afterBaseLineno);
+  expandedGaps.value = s;
+}
+
+type OverlayRow =
+  | { kind: "line"; line: OverlayLine; key: string }
+  | { kind: "gap"; gap: OverlayGap; key: string };
+
+/** 渲染行序列:未展开间隙的隐藏行被剔除,原位插入间隙折叠条 */
+const overlayRows = computed<OverlayRow[]>(() => {
+  const r = overlayResult.value;
+  if (!r || !r.ok) return [];
+  const hidden = new Set<number>();
+  for (const g of r.gaps) {
+    if (expandedGaps.value.has(g.afterBaseLineno)) continue;
+    for (
+      let i = g.afterBaseLineno + 1;
+      i <= g.afterBaseLineno + g.hiddenCount;
+      i++
+    ) {
+      hidden.add(i);
+    }
+  }
+  const gapAfter = new Map(r.gaps.map((g) => [g.afterBaseLineno, g]));
+  const rows: OverlayRow[] = [];
+  // afterBaseLineno=0 的前导间隙:锚点行不存在,插在最前
+  const leadGap = gapAfter.get(0);
+  if (leadGap && !expandedGaps.value.has(0)) {
+    rows.push({ kind: "gap", gap: leadGap, key: "g-0" });
+  }
+  for (const l of r.lines) {
+    if (l.baseLineno !== null && hidden.has(l.baseLineno)) continue;
+    rows.push({
+      kind: "line",
+      line: l,
+      key: `l-${l.baseLineno ?? "add"}-${rows.length}`,
+    });
+    if (l.baseLineno !== null) {
+      const g = gapAfter.get(l.baseLineno);
+      if (g && !expandedGaps.value.has(g.afterBaseLineno)) {
+        rows.push({ kind: "gap", gap: g, key: `g-${g.afterBaseLineno}` });
+      }
+    }
+  }
+  return rows;
+});
+
+function overlayPrefix(kind: OverlayLine["kind"]): string {
+  return kind === "add" ? "+" : kind === "del" ? "−" : " ";
+}
+
+/** 复用统一视图的语法高亮:OverlayLine → DiffLine 形状适配 */
+function overlayLineHtml(l: OverlayLine): string {
+  return lineContentHtml({
+    type: l.kind === "add" ? "add" : l.kind === "del" ? "del" : "ctx",
+    prefix: overlayPrefix(l.kind),
+    content: l.text,
+    oldNo: l.baseLineno !== null ? String(l.baseLineno) : "",
+    newNo: "",
+  });
+}
+
+function overlayLineClass(l: OverlayLine): string {
+  return l.kind === "context" ? "ctx" : l.kind;
+}
 
 const { tm } = useModuleI18n("features/chat");
 
@@ -2148,6 +2298,27 @@ const statsDels = computed(() => {
 }
 
 /* ── View-mode segmented toggle ─────────────────────────────────── */
+
+.overlay-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.overlay-gap {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
+  border-bottom: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
+  cursor: pointer;
+  text-align: center;
+  user-select: none;
+}
+
+.overlay-gap:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
 
 .diff-view-toggle {
   display: inline-flex;

@@ -588,6 +588,9 @@
       "expandAll": "Expand all",
       "collapseAll": "Collapse all",
       "bulkAria": "Bulk fold controls"
+    },
+    "overlay": {
+      "expandLines": "Expand {n} lines"
     }
   },
   "spcodeProjectLoad": {

@@ -644,3 +644,88 @@ describe("DiffPreview intra-line highlight (2026-08-14)", () => {
     expect(cells[1].find(".intra-hl-add").text()).toBe("d");
   });
 });
+
+
+// ─── Overlay mode (2026-10-06, range-compare full-file overlay) ─────
+// Spec: docs/superpowers/specs/2026-10-06-git-file-range-diff-frontend-design.md §4
+
+describe("overlay mode (baseContent provided)", () => {
+  const BASE = ["l1", "l2", "l3", "l4", "l5"].join("\n");
+  const PATCH = "@@ -2,3 +2,4 @@\n l2\n-l3\n+L3\n+L3x\n l4";
+
+  function mountOverlay(extra: Record<string, unknown> = {}) {
+    return mount(DiffPreview, {
+      props: {
+        content: PATCH,
+        baseContent: BASE,
+        filePath: "sample.txt",
+        isDark: false,
+        ...extra,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+  }
+
+  it("renders base lines plus inserted adds (full file + overlay)", () => {
+    const wrapper = mountOverlay();
+    const rows = wrapper.findAll(".overlay-body .diff-line");
+    // 5 基准行(l3 为 del 行)+ 2 插入行(L3 替换 + L3x 纯新增)= 7
+    expect(rows.length).toBe(7);
+    const classes = rows.map((r) => r.classes());
+    expect(classes[1]).toContain("ctx"); // l2
+    expect(classes[2]).toContain("del"); // l3
+    expect(classes[3]).toContain("add"); // L3
+    expect(classes[4]).toContain("add"); // L3x
+    expect(classes[5]).toContain("ctx"); // l4
+  });
+
+  it("shows base line numbers on ctx/del rows, blank on add rows", () => {
+    const wrapper = mountOverlay();
+    const rows = wrapper.findAll(".overlay-body .diff-line");
+    const num = (i: number) =>
+      rows[i].find(".line-number.old").text();
+    expect(num(1)).toBe("2");
+    expect(num(2)).toBe("3");
+    expect(rows[3].find(".line-number.old").text()).toBe("");
+  });
+
+  it("folds a large gap and expands it on click", async () => {
+    const base = Array.from({ length: 30 }, (_, i) => `l${i + 1}`).join("\n");
+    const patch = [
+      "@@ -1,3 +1,3 @@\n l1\n-l2\n+L2\n l3",
+      "@@ -28,3 +28,3 @@\n l28\n-l29\n+L29\n l30",
+    ].join("\n");
+    const wrapper = mount(DiffPreview, {
+      props: { content: patch, baseContent: base, filePath: "f", isDark: false },
+      global: { stubs: STUB_CHILDREN },
+    });
+    const gap = wrapper.find(".overlay-gap");
+    expect(gap.exists()).toBe(true);
+    expect(gap.text()).toContain("24");
+    // 折叠时:l4..l27 不渲染;可见 = 6 基准行 + 2 add 行(L2/L29)
+    expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(30 - 24 + 2);
+    await gap.trigger("click");
+    expect(wrapper.find(".overlay-gap").exists()).toBe(false);
+    expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(32);
+  });
+
+  it("hides the unified/split mode toggle in overlay mode", () => {
+    const wrapper = mountOverlay();
+    expect(wrapper.find('[aria-pressed]').exists()).toBe(false);
+  });
+
+  it("falls back to plain patch rendering when alignment fails", () => {
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content: "@@ -1,2 +1,2 @@\n NOPE\n l2",
+        baseContent: "l1\nl2\n",
+        filePath: "f",
+        isDark: false,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    expect(wrapper.find(".overlay-body").exists()).toBe(false);
+    // 普通 patch 视图仍在(hunk header 存在)
+    expect(wrapper.find(".hunk-header").exists()).toBe(true);
+  });
+});

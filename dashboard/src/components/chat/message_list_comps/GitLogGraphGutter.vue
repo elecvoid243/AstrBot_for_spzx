@@ -9,6 +9,7 @@
 import { computed } from "vue";
 import {
   BAND,
+  GUTTER_LEFT,
   GUTTER_PAD,
   LANE_W,
   NODE_CY,
@@ -16,6 +17,9 @@ import {
   type GraphRow,
 } from "@/composables/gitGraphLayout";
 
+// 定位写在行内:gutter 的孩子全是绝对定位元素,留在流内它的高度会塌成 0,
+// top:0;bottom:0 的竖线随之高度 0 —— 真机上只剩孤立的圆点。行内声明也让
+// jsdom 能守住这条契约(模板根层不要放注释,否则组件变多根)。
 const props = defineProps<{
   row: GraphRow;
   lanes: number;
@@ -43,7 +47,16 @@ const outPath = (to: number): string =>
 </script>
 
 <template>
-  <div class="git-log-gutter" :style="{ width: width + 'px' }">
+  <div
+    class="git-log-gutter"
+    :style="{
+      position: 'absolute',
+      left: GUTTER_LEFT + 'px',
+      top: '0px',
+      bottom: '0px',
+      width: width + 'px',
+    }"
+  >
     <span
       v-for="l in row.passIn"
       :key="`pass-${l}`"
@@ -120,9 +133,6 @@ const outPath = (to: number): string =>
 /* lane 颜色是装饰性的（颜色 = 列，列可复用），分支身份由 ref chip 的文本
    承载 —— 主题切换只换色值，不换信息。默认给浅色底用的深一档色值。 */
 .git-log-gutter {
-  position: relative;
-  align-self: stretch;
-  flex: none;
   --spcode-graph-l0: #4a6fd8;
   --spcode-graph-l1: #2b8f86;
   --spcode-graph-l2: #a97a1f;

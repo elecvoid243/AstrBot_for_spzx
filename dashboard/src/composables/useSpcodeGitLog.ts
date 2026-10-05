@@ -218,7 +218,11 @@ export function useSpcodeGitLog(
       const resp = await pluginExtensionApi.get<unknown>("spcode/git-log", {
         params: {
           umo,
-          ...(filter.value.allRefs ? { all: "true", topo: "true" } : {}),
+          // 2026-10-05: lane 布局的唯一输入契约是 child-before-parent,而
+          // 单 ref 视图同样会画出分叉(merge 历史)—— git 默认的 commit-date
+          // 顺序在时钟偏移下会违反它,导致幽灵列 + 永远画不出的边。恒开。
+          topo: "true",
+          ...(filter.value.allRefs ? { all: "true" } : {}),
           ...(worktree ? { worktree } : {}),
           ...(effectiveRef ? { ref: effectiveRef } : {}),
           ...(filter.value.path ? { path: filter.value.path } : {}),

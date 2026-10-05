@@ -106,6 +106,18 @@ describe("useSpcodeGitLog all-branches scope (2026-10-05)", () => {
     expect(lastRequest().headers["If-None-Match"]).toBeUndefined();
   });
 
+  it("requests topological order in the default scope too", async () => {
+    const { refresh } = withSetup(() => useSpcodeGitLog(null, true));
+
+    await refresh();
+
+    // lane 布局的唯一输入契约是 child-before-parent；单 ref 视图同样会画出
+    // 分叉（merge 历史），而 git 默认的 commit-date 顺序在时钟偏移下会违反
+    // 它 —— 结果是幽灵列 + 永远画不出的边。
+    expect(lastRequest().params.topo).toBe("true");
+    expect(lastRequest().params.all).toBeUndefined();
+  });
+
   it("still sends ref in the default (single-ref) scope", async () => {
     const { refresh } = withSetup(() => useSpcodeGitLog(null, true));
 

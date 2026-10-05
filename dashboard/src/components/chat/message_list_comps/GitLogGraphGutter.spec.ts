@@ -5,7 +5,12 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import GitLogGraphGutter from "./GitLogGraphGutter.vue";
-import { NODE_CY, gutterWidth, type GraphRow } from "@/composables/gitGraphLayout";
+import {
+  GUTTER_LEFT,
+  NODE_CY,
+  gutterWidth,
+  type GraphRow,
+} from "@/composables/gitGraphLayout";
 
 const row = (over: Partial<GraphRow> = {}): GraphRow => ({
   lane: 0,
@@ -27,6 +32,19 @@ describe("GitLogGraphGutter", () => {
       w.findAll('[data-seg="pass"]').map((v) => v.attributes("data-lane")),
     ).toEqual(["1", "2"]);
     expect(w.attributes("style")).toContain(`width: ${gutterWidth(3)}px`);
+  });
+
+  it("positions itself against the row rather than sitting in flow", () => {
+    const w = mount(GitLogGraphGutter, { props: { row: row(), lanes: 2 } });
+    const style = w.attributes("style") ?? "";
+
+    // gutter 的孩子全是绝对定位:流内元素的高度由内容决定,会塌成 0,
+    // 于是 top:0;bottom:0 的竖线高度为 0,真机上只剩孤立的点和短弧。
+    // 定位契约由组件自己声明,jsdom 才守得住它。
+    expect(style).toContain("position: absolute");
+    expect(style).toContain("top: 0px");
+    expect(style).toContain("bottom: 0px");
+    expect(style).toContain(`left: ${GUTTER_LEFT}px`);
   });
 
   it("draws the node at NODE_CY and only renders the lower half when it continues", () => {

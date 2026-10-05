@@ -4511,13 +4511,15 @@ function onLogApply(filter: LogFilter): void {
   // 后若不清空，用户再用 hash 搜索时命中行会静默不高亮。深链自身走
   // gitLog.refresh()，不经过本函数，所以这里清空不会打断深链。
   focusedCommitSha.value = null;
-  // 2026-10-05: 哨兵翻译成作用域标志 —— 否则后端会收到一个不存在的
-  // 分支名;rev 同清,避免 hash 搜索把作用域盖掉。
+  // 2026-10-05: 哨兵**留在** ref 里 —— activeBranch 因此不等于当前分支,
+  // viewingCurrent 为假,逐行操作门(revert / amend / reset --hard)保持
+  // 隐藏、cherry-pick 可见(spec §5)。「不发 ref」的线上翻译由
+  // useSpcodeGitLog 依据 allRefs 完成。rev 仍清掉,避免 hash 搜索把作用域
+  // 盖成单 ref。
   const allRefs = filter.ref === ALL_REFS_SENTINEL;
   // 用 filter 调用 refresh(spec §6.5.1:filter 变化时 key 自动变化,旧 ETag 不复用)
   void gitLog.refresh({
     ...filter,
-    ref: allRefs ? undefined : filter.ref,
     rev: allRefs ? null : filter.rev,
     allRefs,
   });

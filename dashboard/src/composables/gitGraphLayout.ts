@@ -12,6 +12,8 @@
 export const LANE_W = 13;
 /** gutter 左右内边距（px）。 */
 export const GUTTER_PAD = 4;
+/** gutter 距行左边界的偏移（px）—— 与 .git-log-item 的 padding-left 对齐。 */
+export const GUTTER_LEFT = 12;
 /** 节点圆心距行顶的距离（px）—— 与行内复选框同心（top:9px + 16px 盒）。 */
 export const NODE_CY = 17;
 /** 曲线 / 节点 SVG 层的高度（px），只覆盖 commit 行首行。 */

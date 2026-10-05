@@ -1307,6 +1307,45 @@ class LocalShellComponent(ShellComponent):
             max_output_chars=max_output_chars,
         )
 
+    async def discard_session(
+        self,
+        *,
+        owner_id: str,
+        requester_id: str,
+        requester_is_admin: bool,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Forget a finished session and delete its output file.
+
+        The user-facing "clean up" action for sessions that already ended:
+        an early reap. Only terminal sessions may be discarded — a live
+        process must never be silently killed by a cleanup button.
+
+        Args:
+            owner_id: Unified message origin containing the session.
+            requester_id: Sender ID requesting the cleanup.
+            requester_is_admin: Whether the requester is an administrator.
+            session_id: Managed shell session identifier.
+
+        Returns:
+            ``{"session_id": ..., "removed": True}``.
+
+        Raises:
+            ValueError: If the session is unavailable or still running.
+        """
+        session = await self._get_owned_session(
+            owner_id,
+            requester_id,
+            requester_is_admin,
+            session_id,
+        )
+        if session.process.returncode is None:
+            raise ValueError(
+                f"Shell session {session_id} is still running; terminate it first.",
+            )
+        await self._remove_session(session)
+        return {"session_id": session_id, "removed": True}
+
     async def shutdown_sessions(self, *, keep_family: str | None = None) -> None:
         """Terminate and remove managed local shell sessions.
 

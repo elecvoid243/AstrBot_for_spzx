@@ -2188,3 +2188,61 @@ async def test_bounded_await_cancel_branch_is_bounded():
         assert bounded_task.result() is False
     finally:
         await _settle_cancel_swallowing_task(task)
+
+
+@pytest.mark.asyncio
+async def test_discard_finished_session_removes_it(monkeypatch, tmp_path):
+    """Cleanup of a finished session: record gone, output file deleted."""
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    session = shell._sessions[started["session_id"]]
+    holder["proc"].exit(0)
+    holder["proc"].stdout.close()
+    await asyncio.sleep(0.05)
+
+    result = await shell.discard_session(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+    )
+
+    assert result == {"session_id": started["session_id"], "removed": True}
+    assert started["session_id"] not in shell._sessions
+    assert not session.output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_discard_refuses_running_session(monkeypatch, tmp_path):
+    """A live process must never be silently killed by a cleanup action."""
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+
+    with pytest.raises(ValueError):
+        await shell.discard_session(
+            owner_id="owner-a",
+            requester_id="user-a",
+            requester_is_admin=True,
+            session_id=started["session_id"],
+        )
+    assert started["session_id"] in shell._sessions

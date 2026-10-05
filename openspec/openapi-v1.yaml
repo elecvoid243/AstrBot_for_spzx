@@ -1591,6 +1591,23 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/discard:
+    post:
+      tags: [Chat]
+      summary: Remove a finished shell session's record (cleanup)
+      operationId: discardChatShellSession
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: shell_session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/export:
     get:
       tags: [Chat]

@@ -3113,6 +3113,51 @@ class ChatService:
         )
         return result
 
+    async def discard_shell_session(
+        self,
+        username: str,
+        session_id: str,
+        shell_session_id: str,
+    ) -> dict:
+        """Remove a finished managed shell session's record (early reap).
+
+        Deletes the session from the runtime registry and its temporary
+        output file. Running sessions are refused — cleanup never kills.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            shell_session_id: Managed shell session identifier.
+
+        Returns:
+            ``{"session_id": ..., "removed": True}``.
+
+        Raises:
+            ChatServiceError: Session missing/foreign, runtime unavailable,
+                or the shell session is gone/still running.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        from astrbot.core.computer import computer_client
+        from astrbot.core.computer.booters.local import LocalShellComponent
+
+        booter = computer_client.local_booter
+        if booter is None or not isinstance(booter.shell, LocalShellComponent):
+            raise ChatServiceError("Shell session runtime is unavailable")
+        try:
+            return await booter.shell.discard_session(
+                owner_id=build_webchat_unified_msg_origin(session),
+                requester_id=username,
+                requester_is_admin=True,
+                session_id=shell_session_id,
+            )
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
     async def apply_goal_action(
         self, username: str, session_id: str, action: str
     ) -> dict:

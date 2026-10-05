@@ -203,3 +203,41 @@ async def test_terminate_notice_skipped_without_active_run(monkeypatch):
 
     result = await service.terminate_shell_session("alice", "cid1", "sh_abc123")
     assert result["status"] == "terminated"
+
+
+async def test_discard_shell_session_passthrough(monkeypatch):
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+    shell = LocalShellComponent()
+    discard = AsyncMock(return_value={"session_id": "sh_abc123", "removed": True})
+    monkeypatch.setattr(shell, "discard_session", discard)
+    monkeypatch.setattr(computer_client, "local_booter", SimpleNamespace(shell=shell))
+
+    result = await service.discard_shell_session("alice", "cid1", "sh_abc123")
+
+    assert result == {"session_id": "sh_abc123", "removed": True}
+    kwargs = discard.await_args.kwargs
+    assert kwargs["owner_id"] == "webchat:FriendMessage:webchat!alice!cid1"
+    assert kwargs["requester_is_admin"] is True
+
+
+async def test_discard_shell_session_maps_running_error(monkeypatch):
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+    shell = LocalShellComponent()
+    monkeypatch.setattr(
+        shell,
+        "discard_session",
+        AsyncMock(side_effect=ValueError("Shell session sh_x is still running.")),
+    )
+    monkeypatch.setattr(computer_client, "local_booter", SimpleNamespace(shell=shell))
+
+    with pytest.raises(ChatServiceError):
+        await service.discard_shell_session("alice", "cid1", "sh_x")
+
+
+async def test_discard_shell_session_requires_owner():
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session("bob"))
+    with pytest.raises(ChatServiceError):
+        await service.discard_shell_session("alice", "cid1", "sh_x")

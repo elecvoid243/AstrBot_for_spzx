@@ -433,6 +433,21 @@ async def terminate_chat_shell_session(
     )
 
 
+@router.post("/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/discard")
+async def discard_chat_shell_session(
+    session_id: str,
+    shell_session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Remove a finished shell session's record (cleanup button)."""
+    return await _run(
+        lambda: service.discard_shell_session(
+            auth.username, session_id, shell_session_id
+        )
+    )
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

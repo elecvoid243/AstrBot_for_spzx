@@ -210,6 +210,15 @@
     "indicator": {
       "title": "バックグラウンドプロセス"
     },
+    "window": {
+      "view": "出力を表示",
+      "terminate": "終了",
+      "terminateConfirm": "終了を確認",
+      "close": "閉じる",
+      "followOutput": "出力を追従",
+      "noOutput": "まだ出力がありません",
+      "readBytes": "読み取り済み {size}"
+    },
     "stateLabels": {
       "running": "実行中",
       "completed": "完了",

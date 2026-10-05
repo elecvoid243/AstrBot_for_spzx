@@ -269,6 +269,15 @@
     },
     "indicator": {
       "title": "后台进程"
+    },
+    "window": {
+      "view": "查看输出",
+      "terminate": "终止",
+      "terminateConfirm": "确认终止？",
+      "close": "关闭",
+      "followOutput": "跟随输出",
+      "noOutput": "暂无输出",
+      "readBytes": "已读 {size}"
     }
   },
   "subagentStatus": {

@@ -269,6 +269,15 @@
     },
     "indicator": {
       "title": "Background processes"
+    },
+    "window": {
+      "view": "View output",
+      "terminate": "Terminate",
+      "terminateConfirm": "Confirm terminate?",
+      "close": "Close",
+      "followOutput": "Follow output",
+      "noOutput": "No output yet",
+      "readBytes": "Read {size}"
     }
   },
   "subagentStatus": {

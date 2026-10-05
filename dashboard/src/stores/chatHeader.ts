@@ -27,6 +27,10 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     // mirrors the active session's list here so the VerticalHeader button
     // can badge and list it. null = no sessions (indicator hidden).
     shellSessions: null as ShellSessionListItem[] | null,
+    // 2026-10-05: floating shell-session output windows. Open order IS the
+    // stacking order — the last entry renders topmost; FOCUS moves an entry
+    // to the end. Reopening an existing id raises instead of duplicating.
+    openShellWindows: [] as string[],
   }),
 
   actions: {
@@ -63,6 +67,21 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     SET_SHELL_SESSIONS(sessions: ShellSessionListItem[] | null) {
       this.shellSessions = sessions;
     },
+    SET_SHELL_WINDOW_OPEN(sessionId: string, open: boolean) {
+      if (open) {
+        this.FOCUS_SHELL_WINDOW(sessionId);
+      } else {
+        this.openShellWindows = this.openShellWindows.filter(
+          (id) => id !== sessionId,
+        );
+      }
+    },
+    FOCUS_SHELL_WINDOW(sessionId: string) {
+      this.openShellWindows = [
+        ...this.openShellWindows.filter((id) => id !== sessionId),
+        sessionId,
+      ];
+    },
     CLEAR_CONTEXT() {
       this.title = "";
       this.subtitle = "";
@@ -71,6 +90,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       this.goalSidebarOpen = false;
       this.goalBadge = null;
       this.shellSessions = null;
+      this.openShellWindows = [];
     },
   },
 });

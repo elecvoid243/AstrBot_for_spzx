@@ -207,6 +207,7 @@ outline: deep
 | `PATCH` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/branch` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/regenerate` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
 | `POST` | `/api/v1/chat/subagent-follow-up` | — |

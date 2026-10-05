@@ -3107,7 +3107,7 @@ class ChatService:
 
         inject_system_notice_to_active_run(
             umo,
-            f"[ChatUI] User terminated managed shell session {shell_session_id} "
+            f"User terminated managed shell session {shell_session_id} "
             f"(pid {result.get('pid')}). If you were polling it, expect "
             '"not found" errors — do not retry it.',
         )

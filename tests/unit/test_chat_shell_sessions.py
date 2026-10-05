@@ -178,6 +178,8 @@ async def test_terminate_shell_session_injects_notice(monkeypatch):
     assert len(injected) == 1
     umo, text = injected[0]
     assert umo == "webchat:FriendMessage:webchat!alice!cid1"
+    assert text.startswith("User terminated")
+    assert "[ChatUI]" not in text
     assert "sh_abc123" in text
     assert "4321" in text
 

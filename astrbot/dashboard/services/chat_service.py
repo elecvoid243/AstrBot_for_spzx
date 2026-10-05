@@ -2998,6 +2998,121 @@ class ChatService:
             requester_is_admin=True,
         )
 
+    async def get_shell_session_output(
+        self,
+        username: str,
+        session_id: str,
+        shell_session_id: str,
+        cursor: int = 0,
+        max_chars: int = 50_000,
+        yield_time_ms: int = 0,
+    ) -> dict:
+        """Peek at a managed shell session's output (non-destructive).
+
+        Wraps ``LocalShellComponent.peek_session_output``: never advances the
+        agent's incremental cursor and never reaps the session.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            shell_session_id: Managed shell session identifier.
+            cursor: Byte offset to read from.
+            max_chars: Maximum output bytes returned.
+            yield_time_ms: Long-poll wait for new output.
+
+        Returns:
+            The peek result dict (same shape as poll results).
+
+        Raises:
+            ChatServiceError: Session missing/foreign, runtime unavailable,
+                or the shell session is gone (reaped by an agent poll).
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        from astrbot.core.computer import computer_client
+        from astrbot.core.computer.booters.local import LocalShellComponent
+
+        booter = computer_client.local_booter
+        if booter is None or not isinstance(booter.shell, LocalShellComponent):
+            raise ChatServiceError("Shell session runtime is unavailable")
+        try:
+            return await booter.shell.peek_session_output(
+                owner_id=build_webchat_unified_msg_origin(session),
+                requester_id=username,
+                requester_is_admin=True,
+                session_id=shell_session_id,
+                cursor=cursor,
+                yield_time_ms=yield_time_ms,
+                max_output_chars=max_chars,
+            )
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+    async def terminate_shell_session(
+        self,
+        username: str,
+        session_id: str,
+        shell_session_id: str,
+    ) -> dict:
+        """Terminate a managed shell session on the user's behalf.
+
+        On success, an active agent run in the same conversation is told via
+        a [SYSTEM NOTICE] so it does not keep polling the now-gone session.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            shell_session_id: Managed shell session identifier.
+
+        Returns:
+            The terminate result dict (final status + remaining output).
+
+        Raises:
+            ChatServiceError: Session missing/foreign, runtime unavailable,
+                or the shell session is gone.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        from astrbot.core.computer import computer_client
+        from astrbot.core.computer.booters.local import LocalShellComponent
+
+        booter = computer_client.local_booter
+        if booter is None or not isinstance(booter.shell, LocalShellComponent):
+            raise ChatServiceError("Shell session runtime is unavailable")
+        umo = build_webchat_unified_msg_origin(session)
+        try:
+            result = await booter.shell.terminate_session(
+                owner_id=umo,
+                requester_id=username,
+                requester_is_admin=True,
+                session_id=shell_session_id,
+            )
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+        # Best-effort: the notice is transient by design — when no run is
+        # active there is nothing to warn, and the agent observes the state
+        # directly on its next poll.
+        from astrbot.core.pipeline.process_stage.follow_up import (
+            inject_system_notice_to_active_run,
+        )
+
+        inject_system_notice_to_active_run(
+            umo,
+            f"[ChatUI] User terminated managed shell session {shell_session_id} "
+            f"(pid {result.get('pid')}). If you were polling it, expect "
+            '"not found" errors — do not retry it.',
+        )
+        return result
+
     async def apply_goal_action(
         self, username: str, session_id: str, action: str
     ) -> dict:

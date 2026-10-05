@@ -2338,6 +2338,88 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Peek at a shell session's output without consuming the agent cursor",
+        "operationId": "getChatShellSessionOutput",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "name": "shell_session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "max_chars",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50000
+            }
+          },
+          {
+            "name": "yield_time_ms",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/terminate": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Terminate a managed shell session on the user's behalf",
+        "operationId": "terminateChatShellSession",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "name": "shell_session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
     "/api/v1/chat/sessions/{session_id}/export": {
       "get": {
         "tags": [

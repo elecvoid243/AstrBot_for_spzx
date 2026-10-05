@@ -1727,6 +1727,33 @@ export type GetChatSessionShellSessionsResponse = (SuccessEnvelope);
 
 export type GetChatSessionShellSessionsError = unknown;
 
+export type GetChatShellSessionOutputData = {
+    path: {
+        session_id: string;
+        shell_session_id: string;
+    };
+    query?: {
+        cursor?: number;
+        max_chars?: number;
+        yield_time_ms?: number;
+    };
+};
+
+export type GetChatShellSessionOutputResponse = (SuccessEnvelope);
+
+export type GetChatShellSessionOutputError = unknown;
+
+export type TerminateChatShellSessionData = {
+    path: {
+        session_id: string;
+        shell_session_id: string;
+    };
+};
+
+export type TerminateChatShellSessionResponse = (SuccessEnvelope);
+
+export type TerminateChatShellSessionError = unknown;
+
 export type ExportChatSessionData = {
     path: {
         session_id: string;

@@ -395,6 +395,44 @@ async def get_chat_session_shell_sessions(
     )
 
 
+@router.get("/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output")
+async def get_chat_shell_session_output(
+    session_id: str,
+    shell_session_id: str,
+    cursor: int = 0,
+    max_chars: int = 50_000,
+    yield_time_ms: int = 0,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Peek at a shell session's output without consuming the agent cursor."""
+    return await _run(
+        lambda: service.get_shell_session_output(
+            auth.username,
+            session_id,
+            shell_session_id,
+            cursor=cursor,
+            max_chars=max_chars,
+            yield_time_ms=yield_time_ms,
+        )
+    )
+
+
+@router.post("/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/terminate")
+async def terminate_chat_shell_session(
+    session_id: str,
+    shell_session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Terminate a managed shell session on the user's behalf."""
+    return await _run(
+        lambda: service.terminate_shell_session(
+            auth.username, session_id, shell_session_id
+        )
+    )
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

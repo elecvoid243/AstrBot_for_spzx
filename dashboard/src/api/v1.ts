@@ -1,5 +1,8 @@
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
-import type { ShellSessionListItem } from '@/components/chat/message_list_comps/shell_session_tools/format';
+import type {
+  ShellSessionListItem,
+  ShellSessionPollResult as ShellSessionPeekResult,
+} from '@/components/chat/message_list_comps/shell_session_tools/format';
 
 import * as openApiV1 from './generated/openapi-v1';
 import {
@@ -909,6 +912,29 @@ export const chatApi = {
   getSessionShellSessions(sessionId: string) {
     return typed<{ sessions: ShellSessionListItem[] }>(
       openApiV1.getChatSessionShellSessions({ path: { session_id: sessionId } }),
+    );
+  },
+  getShellSessionOutput(
+    sessionId: string,
+    shellSessionId: string,
+    opts: { cursor?: number; maxChars?: number; yieldTimeMs?: number } = {},
+  ) {
+    return typed<ShellSessionPeekResult>(
+      openApiV1.getChatShellSessionOutput({
+        path: { session_id: sessionId, shell_session_id: shellSessionId },
+        query: {
+          cursor: opts.cursor ?? 0,
+          max_chars: opts.maxChars ?? 50000,
+          yield_time_ms: opts.yieldTimeMs ?? 0,
+        },
+      }),
+    );
+  },
+  terminateShellSession(sessionId: string, shellSessionId: string) {
+    return typed<{ status: string }>(
+      openApiV1.terminateChatShellSession({
+        path: { session_id: sessionId, shell_session_id: shellSessionId },
+      }),
     );
   },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {

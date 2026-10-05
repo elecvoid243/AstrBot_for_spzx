@@ -1005,6 +1005,18 @@
               {{ tm("conversation.unarchive") }}
             </v-btn>
           </div>
+          <!-- Floating shell-session output windows (2026-10-05): one per
+               entry in chatHeader.openShellWindows; open order is the
+               stacking order, so the last entry gets the highest z-index. -->
+          <template v-if="currSessionId">
+            <ShellSessionWindow
+              v-for="(shid, idx) in chatHeader.openShellWindows"
+              :key="shid"
+              :session-id="currSessionId"
+              :shell-session-id="shid"
+              :z-index="2000 + idx"
+            />
+          </template>
         </section>
       </div>
     </main>
@@ -1175,6 +1187,7 @@ import {
 import { chatApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
 import { useShellSessions } from "@/composables/useShellSessions";
+import ShellSessionWindow from "@/components/chat/ShellSessionWindow.vue";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { provideSpcodeSession } from "@/composables/useSpcodeSession";
 import {

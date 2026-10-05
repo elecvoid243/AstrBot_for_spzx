@@ -269,6 +269,17 @@
     },
     "indicator": {
       "title": "Background processes"
+    },
+    "window": {
+      "view": "View output",
+      "terminate": "Terminate",
+      "terminateConfirm": "Confirm terminate?",
+      "close": "Close",
+      "followOutput": "Follow output",
+      "noOutput": "No output yet",
+      "readBytes": "Read {size}",
+      "closed": "Closed · frozen",
+      "polling": "Polling"
     }
   },
   "subagentStatus": {
@@ -1807,7 +1818,7 @@
         "clear": "Clear",
         "startFailed": "Failed to start terminal",
         "shellLabel": "Shell",
-        "noSession": "Click \u201cConnect\u201d to start the terminal"
+        "noSession": "Click “Connect” to start the terminal"
       }
     },
     "documentManager": {

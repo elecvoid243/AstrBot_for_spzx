@@ -858,19 +858,7 @@ class LocalShellComponent(ShellComponent):
         items = []
         for session in sessions:
             exit_code = session.process.returncode
-            status = (
-                "running"
-                if exit_code is None
-                else (
-                    "timed_out"
-                    if session.timed_out
-                    else (
-                        "terminated"
-                        if session.terminated
-                        else ("completed" if exit_code == 0 else "failed")
-                    )
-                )
-            )
+            status = self._session_status(session)
             try:
                 output_size = session.output_path.stat().st_size
             except OSError:
@@ -887,6 +875,48 @@ class LocalShellComponent(ShellComponent):
                 }
             )
         return {"sessions": items}
+
+    @staticmethod
+    def _session_status(session: _LocalShellSession) -> str:
+        """Derive the display status from process state and session flags."""
+        exit_code = session.process.returncode
+        if exit_code is None:
+            return "running"
+        if session.timed_out:
+            return "timed_out"
+        if session.terminated:
+            return "terminated"
+        return "completed" if exit_code == 0 else "failed"
+
+    @staticmethod
+    def _read_output_range(
+        session: _LocalShellSession,
+        cursor: int,
+        max_chars: int,
+    ) -> tuple[bytes, int, int]:
+        """Read output bytes in ``[cursor, cursor + max_chars)`` from disk.
+
+        Returns:
+            ``(raw_bytes, next_cursor, output_size)``. Pure read: never
+            touches ``session.cursor``.
+        """
+        try:
+            output_size = session.output_path.stat().st_size
+        except FileNotFoundError:
+            return b"", cursor, cursor
+        normalized_cursor = min(cursor, output_size)
+        try:
+            with session.output_path.open("rb") as output_file:
+                output_file.seek(normalized_cursor)
+                raw_output = output_file.read(max_chars)
+        except FileNotFoundError:
+            # Reap can unlink the file between stat() and open().
+            return b"", cursor, cursor
+        return (
+            raw_output,
+            normalized_cursor + len(raw_output),
+            output_size,
+        )
 
     async def poll_session(
         self,
@@ -931,21 +961,6 @@ class LocalShellComponent(ShellComponent):
         if read_cursor < 0:
             raise ValueError("`cursor` must be greater than or equal to 0.")
 
-        def _read_output() -> tuple[bytes, int, int]:
-            try:
-                output_size = session.output_path.stat().st_size
-            except FileNotFoundError:
-                return b"", read_cursor, read_cursor
-            normalized_cursor = min(read_cursor, output_size)
-            with session.output_path.open("rb") as output_file:
-                output_file.seek(normalized_cursor)
-                raw_output = output_file.read(max_output_chars)
-            return (
-                raw_output,
-                normalized_cursor + len(raw_output),
-                output_size,
-            )
-
         reader_stuck = False
         if session.wait_task.done():
             # The reader only ends at pipe EOF, which a surviving detached
@@ -954,11 +969,15 @@ class LocalShellComponent(ShellComponent):
             # the last-known output; once the reader proves stuck, later
             # waits in this call would gain nothing.
             reader_stuck = not await _bounded_await(session.reader_task, timeout=5)
-        raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
+        raw_output, next_cursor, output_size = await asyncio.to_thread(
+            self._read_output_range, session, read_cursor, max_output_chars
+        )
 
         if not raw_output and session.process.returncode is None and yield_time_ms > 0:
             session.output_event.clear()
-            raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, read_cursor, max_output_chars
+            )
             if not raw_output and session.process.returncode is None:
                 output_waiter = asyncio.create_task(session.output_event.wait())
                 done, _ = await asyncio.wait(
@@ -977,13 +996,15 @@ class LocalShellComponent(ShellComponent):
                         session.reader_task, timeout=5
                     )
                 raw_output, next_cursor, output_size = await asyncio.to_thread(
-                    _read_output
+                    self._read_output_range, session, read_cursor, max_output_chars
                 )
 
         exit_code = session.process.returncode
         if exit_code is not None and not reader_stuck:
             reader_stuck = not await _bounded_await(session.reader_task, timeout=5)
-            raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, read_cursor, max_output_chars
+            )
 
         exit_code = session.process.returncode
         if (
@@ -992,22 +1013,12 @@ class LocalShellComponent(ShellComponent):
             and not reader_stuck
         ):
             await _bounded_await(session.reader_task, timeout=5)
-            raw_output, next_cursor, output_size = await asyncio.to_thread(_read_output)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, read_cursor, max_output_chars
+            )
 
         session.cursor = next_cursor
-        status = (
-            "running"
-            if exit_code is None
-            else (
-                "timed_out"
-                if session.timed_out
-                else (
-                    "terminated"
-                    if session.terminated
-                    else ("completed" if exit_code == 0 else "failed")
-                )
-            )
-        )
+        status = self._session_status(session)
         has_more = next_cursor < output_size
         session_closed = exit_code is not None and not has_more
         result = {
@@ -1024,6 +1035,99 @@ class LocalShellComponent(ShellComponent):
         if session_closed:
             await self._remove_session(session)
         return result
+
+    async def peek_session_output(
+        self,
+        *,
+        owner_id: str,
+        requester_id: str,
+        requester_is_admin: bool,
+        session_id: str,
+        cursor: int = 0,
+        yield_time_ms: int = 0,
+        max_output_chars: int = 50_000,
+    ) -> dict[str, Any]:
+        """Read session output without consuming the agent's cursor.
+
+        Unlike ``poll_session``, peeking neither advances ``session.cursor``
+        nor removes closed sessions: user viewing must never eat output the
+        agent has not seen, and reaping stays poll's job.
+
+        Args:
+            owner_id: Unified message origin containing the session.
+            requester_id: Sender ID requesting the output.
+            requester_is_admin: Whether the requester is an administrator.
+            session_id: Managed shell session identifier.
+            cursor: Byte offset to read from; defaults to 0 (from the start).
+            yield_time_ms: Maximum wait for new output or process exit.
+            max_output_chars: Maximum output bytes returned in this call.
+
+        Returns:
+            Same shape as ``poll_session`` (output, next cursor, status,
+            exit code, closed flag).
+
+        Raises:
+            ValueError: If the session is unavailable or an argument is invalid.
+        """
+        if yield_time_ms < 0 or yield_time_ms > 120_000:
+            raise ValueError("`yield_time_ms` must be between 0 and 120000.")
+        if max_output_chars < 1:
+            raise ValueError("`max_output_chars` must be greater than 0.")
+        if cursor < 0:
+            raise ValueError("`cursor` must be greater than or equal to 0.")
+        session = await self._get_owned_session(
+            owner_id,
+            requester_id,
+            requester_is_admin,
+            session_id,
+        )
+
+        raw_output, next_cursor, output_size = await asyncio.to_thread(
+            self._read_output_range, session, cursor, max_output_chars
+        )
+        if not raw_output and session.process.returncode is None and yield_time_ms > 0:
+            session.output_event.clear()
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, cursor, max_output_chars
+            )
+            if not raw_output and session.process.returncode is None:
+                output_waiter = asyncio.create_task(session.output_event.wait())
+                done, _ = await asyncio.wait(
+                    {output_waiter, session.wait_task},
+                    timeout=yield_time_ms / 1000,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if output_waiter not in done:
+                    output_waiter.cancel()
+                    try:
+                        await output_waiter
+                    except asyncio.CancelledError:
+                        pass
+                raw_output, next_cursor, output_size = await asyncio.to_thread(
+                    self._read_output_range, session, cursor, max_output_chars
+                )
+
+        exit_code = session.process.returncode
+        if exit_code is not None:
+            # Mirror poll_session: give the reader a bounded chance to flush
+            # the pipe tail before declaring closure, otherwise the final
+            # chunk could be cut from the window permanently.
+            await _bounded_await(session.reader_task, timeout=5)
+            raw_output, next_cursor, output_size = await asyncio.to_thread(
+                self._read_output_range, session, cursor, max_output_chars
+            )
+        has_more = next_cursor < output_size
+        return {
+            "session_id": session.session_id,
+            "pid": session.process.pid,
+            "status": self._session_status(session),
+            "stdout": _decode_shell_output(raw_output),
+            "stderr": "",
+            "exit_code": exit_code,
+            "cursor": next_cursor,
+            "has_more": has_more,
+            "session_closed": exit_code is not None and not has_more,
+        }
 
     async def write_session(
         self,

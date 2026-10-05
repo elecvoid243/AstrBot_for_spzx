@@ -208,6 +208,8 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/branch` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/messages/{message_id}/regenerate` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output` | — |
+| `POST` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/terminate` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
 | `POST` | `/api/v1/chat/subagent-follow-up` | — |

@@ -263,6 +263,17 @@
     },
     "indicator": {
       "title": "Фоновые процессы"
+    },
+    "window": {
+      "view": "Смотреть вывод",
+      "terminate": "Завершить",
+      "terminateConfirm": "Подтвердить завершение?",
+      "close": "Закрыть",
+      "followOutput": "Следить за выводом",
+      "noOutput": "Пока нет вывода",
+      "readBytes": "Прочитано {size}",
+      "closed": "Завершена · стоп-кадр",
+      "polling": "Опрос"
     }
   },
   "subagentStatus": {

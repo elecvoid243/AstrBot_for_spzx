@@ -14,6 +14,7 @@
 <template>
   <v-menu
     v-if="sessions.length"
+    v-model="menuOpen"
     location="top end"
     :close-on-content-click="false"
     transition="none"
@@ -43,6 +44,9 @@
         v-for="s in sessions"
         :key="s.session_id"
         class="session-row"
+        role="button"
+        :title="tm('shellSession.window.view')"
+        @click="openWindow(s.session_id)"
       >
         <div class="session-row-main">
           <span
@@ -51,12 +55,13 @@
             :style="{ backgroundColor: statusMeta(s.status).color }"
             :title="tm(`shellSession.stateLabels.${statusMeta(s.status).i18nKey}`)"
           />
-          <CopyableText
-            :value="s.session_id"
-            :title="s.session_id"
-            mode="code"
-            class="session-id"
-          />
+          <span class="session-id" @click.stop>
+            <CopyableText
+              :value="s.session_id"
+              :title="s.session_id"
+              mode="code"
+            />
+          </span>
           <span class="status-label" :style="{ color: statusMeta(s.status).color }">
             {{ tm(`shellSession.stateLabels.${statusMeta(s.status).i18nKey}`) }}
           </span>
@@ -76,6 +81,8 @@
             <span class="meta-sep">·</span>
             <span>{{ tm("shellSession.labels.unread") }} {{ formatBytes(s.unread_output_bytes) }}</span>
           </template>
+          <span class="meta-sep">·</span>
+          <v-icon size="13" class="view-icon">mdi-text-box-outline</v-icon>
         </div>
       </div>
     </v-card>
@@ -83,7 +90,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useModuleI18n } from "@/i18n/composables";
 import CopyableText from "./message_list_comps/__shared__/CopyableText.vue";
@@ -94,12 +101,20 @@ import { getShellSessionStatusMeta } from "./message_list_comps/shell_session_to
 const chatHeader = useChatHeaderStore();
 const { tm } = useModuleI18n("features/chat");
 
+const menuOpen = ref(false);
+
 const sessions = computed(() => chatHeader.shellSessions ?? []);
 const runningCount = computed(
   () => sessions.value.filter((s) => s.status === "running").length,
 );
 
 const statusMeta = getShellSessionStatusMeta;
+
+/** Open (or raise) the floating output window for one session. */
+function openWindow(shellSessionId: string) {
+  chatHeader.SET_SHELL_WINDOW_OPEN(shellSessionId, true);
+  menuOpen.value = false;
+}
 </script>
 
 <style scoped>
@@ -129,10 +144,15 @@ const statusMeta = getShellSessionStatusMeta;
 .session-row {
   padding: 6px 8px;
   border-radius: 6px;
+  cursor: pointer;
 }
 
 .session-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.view-icon {
+  opacity: 0.55;
 }
 
 .session-row-main {

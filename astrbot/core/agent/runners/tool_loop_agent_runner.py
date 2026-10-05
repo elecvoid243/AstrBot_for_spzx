@@ -333,6 +333,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._aborted = False
         self._abort_signal = asyncio.Event()
         self._pending_follow_ups: list[FollowUpTicket] = []
+        self._pending_system_notices: list[str] = []
+        """Dashboard-originated notices (e.g. user shell-session actions),
+        merged into the next tool result with their own [SYSTEM NOTICE]
+        framing — deliberately separate from user follow-up messages."""
         self._unconsumed_follow_ups: list[tuple[int, str]] = []
         """(seq, text) snapshot of follow-ups resolved without being consumed."""
         self._all_follow_ups: list[tuple[int, str]] = []
@@ -783,6 +787,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._all_follow_ups.append((ticket.seq, text))
         return ticket
 
+    def inject_system_notice(self, text: str) -> bool:
+        """Queue a system notice for the next tool result.
+
+        Used for dashboard-originated events (e.g. the user terminating a
+        managed shell session) that the agent must learn about mid-run.
+        Rendered with a plain ``[SYSTEM NOTICE]`` prefix rather than the
+        follow-up template, which is framed for user chat messages.
+
+        Args:
+            text: Notice body; blank text is ignored.
+
+        Returns:
+            False when the run is done/stopped or the text is blank.
+        """
+        if self.done() or self._is_stop_requested():
+            return False
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return False
+        self._pending_system_notices.append(cleaned)
+        return True
+
     def _resolve_unconsumed_follow_ups(self) -> None:
         if not self._pending_follow_ups:
             return
@@ -839,6 +865,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         )
 
     def _merge_follow_up_notice(self, content: str) -> str:
+        if self._pending_system_notices:
+            notices = self._pending_system_notices
+            self._pending_system_notices = []
+            content += "".join(f"\n\n[SYSTEM NOTICE] {notice}" for notice in notices)
         notice = self._consume_follow_up_notice()
         if not notice:
             return content

@@ -1812,3 +1812,181 @@ async def test_change_listener_exception_does_not_break_shell_ops(
     # later listeners from running.
     assert result["session_closed"] is True
     assert notifications
+
+
+class _QueueStdout:
+    """Fake stdout whose chunks the test feeds on demand (blocks until fed)."""
+
+    def __init__(self) -> None:
+        self.chunks: asyncio.Queue[bytes] = asyncio.Queue()
+
+    async def read(self, _limit: int) -> bytes:
+        return await self.chunks.get()
+
+    def feed(self, data: bytes) -> None:
+        self.chunks.put_nowait(data)
+
+    def close(self) -> None:
+        self.chunks.put_nowait(b"")
+
+
+class _OutputProcess:
+    """Controllable fake process with feedable stdout and explicit exit."""
+
+    def __init__(self) -> None:
+        self.pid = 12345
+        self.returncode: int | None = None
+        self.stdout = _QueueStdout()
+        self.stdin = None
+        self._exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        return self.returncode or 0
+
+    def exit(self, code: int = 0) -> None:
+        self.returncode = code
+        self._exited.set()
+
+
+def _patch_output_spawn(monkeypatch, holder: dict) -> None:
+    """Route managed subprocess creation to an output-feedable fake."""
+
+    async def fake_spawn(*args, **kwargs):
+        _ = args, kwargs
+        proc = _OutputProcess()
+        holder["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(local_booter.asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(local_booter.asyncio, "create_subprocess_shell", fake_spawn)
+
+
+@pytest.mark.asyncio
+async def test_peek_does_not_advance_session_cursor(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    session = next(iter(shell._sessions.values()))
+    assert session.cursor == 0
+
+    holder["proc"].stdout.feed(b"hello\n")
+    await asyncio.sleep(0.05)  # let the reader flush the chunk to disk
+
+    peeked = await shell.peek_session_output(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=session.session_id,
+        cursor=0,
+    )
+    assert peeked["stdout"] == "hello\n"
+    # The agent's incremental cursor must be untouched by user viewing.
+    assert session.cursor == 0
+
+    polled = await shell.poll_session(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=session.session_id,
+        yield_time_ms=0,
+    )
+    assert polled["stdout"] == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_peek_reports_closed_but_keeps_session(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    holder["proc"].stdout.feed(b"done\n")
+    await asyncio.sleep(0.05)
+    holder["proc"].exit(0)
+    holder["proc"].stdout.close()
+    await asyncio.sleep(0.05)
+
+    peeked = await shell.peek_session_output(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+        cursor=0,
+    )
+    assert peeked["session_closed"] is True
+    assert peeked["exit_code"] == 0
+    # peek never reaps: removal stays poll's job.
+    assert started["session_id"] in shell._sessions
+
+
+@pytest.mark.asyncio
+async def test_peek_enforces_ownership(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=False,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+    with pytest.raises(ValueError):
+        await shell.peek_session_output(
+            owner_id="owner-b",
+            requester_id="user-b",
+            requester_is_admin=False,
+            session_id=started["session_id"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_peek_yield_waits_for_new_output(monkeypatch, tmp_path):
+    holder: dict = {}
+    _patch_output_spawn(monkeypatch, holder)
+    shell = LocalShellComponent()
+    started = await shell.exec_managed(
+        "dummy",
+        owner_id="owner-a",
+        creator_id="user-a",
+        creator_is_admin=True,
+        sandboxed=False,
+        cwd=str(tmp_path),
+        yield_time_ms=50,
+    )
+
+    async def feed_later():
+        await asyncio.sleep(0.1)
+        holder["proc"].stdout.feed(b"late\n")
+
+    feeder = asyncio.create_task(feed_later())
+    peeked = await shell.peek_session_output(
+        owner_id="owner-a",
+        requester_id="user-a",
+        requester_is_admin=True,
+        session_id=started["session_id"],
+        cursor=0,
+        yield_time_ms=2000,
+    )
+    await feeder
+    assert peeked["stdout"] == "late\n"
+    assert peeked["status"] == "running"

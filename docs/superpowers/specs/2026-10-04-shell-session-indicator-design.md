@@ -5,9 +5,10 @@
 | 主题 | 让 ChatUI 用户对 Agent 托管的后台 shell 会话（`astrbot_execute_shell` 超时托管 / `astrbot_shell_session` 管理）具备持续感知能力 |
 | 日期 | 2026-10-04 |
 | 作者 | elecvoid243 |
-| 状态 | Approved（方案经对话评审通过），待实施 |
+| 状态 | Implemented — 已合入 `all`（merge `a79c6d991`） |
 | 范围 | **Scope A：纯感知**（指示条 + 状态变化实时刷新 + 只读列表）。不含输出查看面板、terminate/write 操作 |
-| 关联代码 | `astrbot/core/computer/booters/local.py`（`LocalShellComponent` / `_LocalShellSession` / `exec_managed` / `list_sessions` / `poll_session` / `_remove_session`）<br>`astrbot/core/tools/computer_tools/shell.py`（`LocalExecuteShellTool` / `ShellSessionTool`）<br>`astrbot/core/platform/sources/webchat/webchat_queue_mgr.py`（`put_system_event`）<br>`astrbot/dashboard/api/app.py`（`_goal_state_changed` 接线先例）<br>`astrbot/dashboard/api/chat.py`、`astrbot/dashboard/services/chat_service.py`（`get_session_goal` 先例）<br>`dashboard/src/composables/useSessionGoal.ts`（store 先例）<br>`dashboard/src/composables/useMessages.ts`（system-stream 分发，L445 `goal_state_changed` 分支）<br>`dashboard/src/components/chat/message_list_comps/shell_session_tools/format.ts`（`ShellSessionListItem` 类型，直接复用） |
+| 关联代码 | `astrbot/core/computer/booters/local.py`（`LocalShellComponent` / `_LocalShellSession` / `exec_managed` / `list_sessions` / `poll_session` / `_remove_session` / `add_change_listener` / `_notify_change`）<br>`astrbot/core/tools/computer_tools/shell.py`（`LocalExecuteShellTool` / `ShellSessionTool`）<br>`astrbot/core/platform/sources/webchat/webchat_queue_mgr.py`（`put_system_event` / `has_system_subscribers`）<br>`astrbot/dashboard/api/app.py`（`_shell_sessions_changed` 推送接线）<br>`astrbot/dashboard/api/chat.py`、`astrbot/dashboard/services/chat_service.py`（`get_session_shell_sessions`）<br>`dashboard/src/composables/useShellSessions.ts`（store）<br>`dashboard/src/composables/useMessages.ts`（system-stream 分发）<br>`dashboard/src/components/chat/ShellSessionIndicator.vue`（header 指示器）<br>`dashboard/src/stores/chatHeader.ts`（`shellSessions`）<br>`dashboard/src/components/chat/message_list_comps/shell_session_tools/format.ts`（`ShellSessionListItem` 类型） |
+| 实施计划 | `docs/superpowers/plans/2026-10-04-shell-session-indicator.md` |
 | 测试 | `tests/test_local_shell_component.py`（通知触发用例）、`dashboard/src/composables/__tests__/`（store 单测） |
 
 ---

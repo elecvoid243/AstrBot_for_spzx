@@ -5,7 +5,7 @@
 | 主题 | ChatUI 用户手动查看（peek）与终止（terminate）托管 shell 会话；用户操作通过 [SYSTEM NOTICE] 让活动中的 Agent 感知 |
 | 日期 | 2026-10-05 |
 | 作者 | elecvoid243 |
-| 状态 | Approved（对话评审通过；展示形态由"新页面"修正为**侧边栏**——用户评审时明确） |
+| 状态 | Implemented — 已合入 `all`（merge `c2cc3feea`） |
 | 前序 | `2026-10-04-shell-session-indicator-design.md`（Scope A 感知层，已实施） |
 | 关联代码 | `astrbot/core/computer/booters/local.py`（`poll_session` / `terminate_session` / `_get_owned_session`）<br>`astrbot/core/pipeline/process_stage/follow_up.py`（`_ACTIVE_AGENT_RUNNERS` / `register_active_runner`）<br>`astrbot/core/agent/runners/tool_loop_agent_runner.py`（`follow_up` / `_merge_follow_up_notice`，L841；消费点 L1287）<br>`astrbot/dashboard/services/chat_service.py`、`astrbot/dashboard/api/chat.py`<br>`dashboard/src/components/chat/ShellSessionIndicator.vue`（popover 入口）<br>`dashboard/src/components/chat/message_list_comps/GoalSidebar.vue`（抽屉先例）<br>`dashboard/src/stores/chatHeader.ts` |
 | 测试 | `tests/test_local_shell_component.py`、`tests/unit/test_chat_shell_sessions.py`（扩展）、`tests/unit/test_shell_session_push.py`、runner 通知合并测试 |

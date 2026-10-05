@@ -1576,6 +1576,7 @@
           "tab": "History",
           "tabAria": "Switch to history view",
           "filter": {
+            "allRefs": "All branches",
             "branch": "Branch",
             "branchPlaceholder": "Type to filter branches",
             "rev": "Commit / tag",

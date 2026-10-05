@@ -1576,6 +1576,7 @@
           "tab": "Git 历史",
           "tabAria": "切换到历史视图",
           "filter": {
+            "allRefs": "所有分支",
             "branch": "分支",
             "branchPlaceholder": "输入以筛选分支",
             "rev": "提交 / 标签",

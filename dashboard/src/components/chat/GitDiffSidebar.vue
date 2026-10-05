@@ -59,7 +59,11 @@ import {
 } from "@/composables/useSpcodeGitReset";
 import { useSpcodeFileWrite } from "@/composables/useSpcodeFileWrite";
 import GitIgnoreEditor from "@/components/chat/message_list_comps/GitIgnoreEditor.vue";
-import { useSpcodeGitLog, type LogFilter } from "@/composables/useSpcodeGitLog";
+import {
+  ALL_REFS_SENTINEL,
+  useSpcodeGitLog,
+  type LogFilter,
+} from "@/composables/useSpcodeGitLog";
 import { useSpcodeGitShow } from "@/composables/useSpcodeGitShow";
 import { useSpcodeGitStats } from "@/composables/useSpcodeGitStats";
 import {
@@ -502,7 +506,17 @@ const tagNameList = computed(() => {
 // 顶部的 HEAD 条目让用户在切走之后仍能回到「跟随当前检出提交」的默认
 // 值（重设筛选条件之外的显式入口，游离 HEAD 时尤其有用）。
 const branchPickerItems = computed<RefPickerItem[]>(() => {
-  const items: RefPickerItem[] = [{ title: "HEAD", value: "HEAD" }];
+  const items: RefPickerItem[] = [
+    // 2026-10-05: 「所有分支」作用域入口,寄生在现有分支选择器里 ——
+    // 新增控件 0 个。选中即 all=true&topo=true,且不向 git log 传 ref。
+    {
+      title: tm(
+        "spcodeProjectLoad.diffSidebar.gitWorkflow.history.filter.allRefs",
+      ),
+      value: ALL_REFS_SENTINEL,
+    },
+    { title: "HEAD", value: "HEAD" },
+  ];
   const groups: Array<[string, string[]]> = [
     [
       "filter.group.current",
@@ -4497,8 +4511,16 @@ function onLogApply(filter: LogFilter): void {
   // 后若不清空，用户再用 hash 搜索时命中行会静默不高亮。深链自身走
   // gitLog.refresh()，不经过本函数，所以这里清空不会打断深链。
   focusedCommitSha.value = null;
+  // 2026-10-05: 哨兵翻译成作用域标志 —— 否则后端会收到一个不存在的
+  // 分支名;rev 同清,避免 hash 搜索把作用域盖掉。
+  const allRefs = filter.ref === ALL_REFS_SENTINEL;
   // 用 filter 调用 refresh(spec §6.5.1:filter 变化时 key 自动变化,旧 ETag 不复用)
-  void gitLog.refresh(filter);
+  void gitLog.refresh({
+    ...filter,
+    ref: allRefs ? undefined : filter.ref,
+    rev: allRefs ? null : filter.rev,
+    allRefs,
+  });
 }
 // 2026-07-18 git-stats heatmap: the History-tab manual refresh button
 // re-fetches the log AND the stats panel (ETag-validated; cheap 304s

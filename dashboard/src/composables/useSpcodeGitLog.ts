@@ -23,6 +23,9 @@ import {
   type SpcodeLogCommit,
 } from "./parseSpcodeGitWorkflow";
 
+/** 2026-10-05: 分支选择器里「所有分支」的哨兵值 —— 与真实 ref 名不可能冲突。 */
+export const ALL_REFS_SENTINEL = "__spcode_all_refs__";
+
 export type LogFilter = {
   /** Branch (or HEAD) whose history is listed. 2026-09-09
    *  (elecvoid243) split-ref-filter: this field is now BRANCH-ONLY —
@@ -36,6 +39,9 @@ export type LogFilter = {
    *  OVERRIDES `ref` as the rev passed to `git log`, while `ref` keeps
    *  describing the branch context for the action buttons. */
   rev?: string | null;
+  /** 2026-10-05 (elecvoid243): 「所有分支」作用域 —— 请求带
+   *  all=true&topo=true 且不带 ref(见 ALL_REFS_SENTINEL)。 */
+  allRefs?: boolean;
   path?: string;
   author?: string;
   grep?: string;
@@ -112,6 +118,9 @@ function etagKey(parts: {
     f.grep ?? "",
     f.since ?? "",
     f.until ?? "",
+    // 2026-10-05: 作用域也是一个 ETag 维度 —— 共用 bucket 会让切换范围
+    // 命中 304 并回放另一范围的快照。
+    f.allRefs ? "ALL" : "",
     String(f.n ?? DEFAULT_N),
   ].join("|");
 }
@@ -199,12 +208,17 @@ export function useSpcodeGitLog(
     // (SHA / tag) when present, otherwise the branch. The backend's
     // contract is unchanged — it still receives a single `ref` and
     // resolves / echoes it.
-    const effectiveRef = filter.value.rev || filter.value.ref;
+    // 2026-10-05: 「所有分支」不发 ref —— 后端用默认 ref=HEAD 加 --all,
+    // 与显式 ref 的并集语义等价,但 query 元组只取决于作用域。
+    const effectiveRef = filter.value.allRefs
+      ? ""
+      : filter.value.rev || filter.value.ref;
 
     try {
       const resp = await pluginExtensionApi.get<unknown>("spcode/git-log", {
         params: {
           umo,
+          ...(filter.value.allRefs ? { all: "true", topo: "true" } : {}),
           ...(worktree ? { worktree } : {}),
           ...(effectiveRef ? { ref: effectiveRef } : {}),
           ...(filter.value.path ? { path: filter.value.path } : {}),

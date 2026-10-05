@@ -108,3 +108,29 @@ describe("subagentCollapse i18n completeness", () => {
     });
   }
 });
+
+describe("all-branches scope i18n completeness (2026-10-05)", () => {
+  // 「所有分支」入口寄生在历史视图的分支选择器首项 —— 三语都缺不得,
+  // 否则选择器会渲染出 [MISSING: ...] 占位。
+  for (const [locale, dict] of localizations) {
+    it(`${locale} defines spcodeProjectLoad…history.filter.allRefs`, () => {
+      const nodes = dict.spcodeProjectLoad as
+        | Record<string, unknown>
+        | undefined;
+      const diffSidebar = nodes?.diffSidebar as
+        | Record<string, unknown>
+        | undefined;
+      const gitWorkflow = diffSidebar?.gitWorkflow as
+        | Record<string, unknown>
+        | undefined;
+      const history = gitWorkflow?.history as
+        | Record<string, unknown>
+        | undefined;
+      const filter = history?.filter as Record<string, unknown> | undefined;
+      expect(
+        typeof filter?.allRefs,
+        `${locale} missing history.filter.allRefs string`,
+      ).toBe("string");
+    });
+  }
+});

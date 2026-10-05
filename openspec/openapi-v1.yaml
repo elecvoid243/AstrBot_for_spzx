@@ -1530,6 +1530,18 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/sessions/{session_id}/shell-sessions:
+    get:
+      tags: [Chat]
+      summary: Return managed shell sessions for a session (cold-start path)
+      operationId: getChatSessionShellSessions
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/sessions/{session_id}/export:
     get:
       tags: [Chat]

@@ -383,6 +383,18 @@ async def apply_chat_session_goal_action(
     )
 
 
+@router.get("/chat/sessions/{session_id}/shell-sessions")
+async def get_chat_session_shell_sessions(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Return managed shell sessions for a session (cold-start path)."""
+    return await _run(
+        lambda: service.get_session_shell_sessions(auth.username, session_id)
+    )
+
+
 @router.patch("/chat/sessions/{session_id}")
 async def update_chat_session(
     session_id: str,

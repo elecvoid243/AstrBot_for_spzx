@@ -2956,6 +2956,45 @@ class ChatService:
         state = await goal_service.goals.get(umo)
         return {"goal": state.to_public_dict() if state else None}
 
+    async def get_session_shell_sessions(self, username: str, session_id: str) -> dict:
+        """Return managed local shell sessions for a ChatUI session.
+
+        This is the cold-start path for the header indicator; live updates
+        arrive via the ``shell_sessions_changed`` system-stream push.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+
+        Returns:
+            ``{"sessions": [...]}`` in the verbatim ``list_sessions`` item
+            shape; empty list when no local shell runtime is active.
+
+        Raises:
+            ChatServiceError: Session missing or owned by another user.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        # Function-local imports: the computer runtime is only reachable once
+        # the core lifecycle created the local booter.
+        from astrbot.core.computer import computer_client
+        from astrbot.core.computer.booters.local import LocalShellComponent
+
+        booter = computer_client.local_booter
+        if booter is None or not isinstance(booter.shell, LocalShellComponent):
+            return {"sessions": []}
+        return await booter.shell.list_sessions(
+            owner_id=build_webchat_unified_msg_origin(session),
+            requester_id=username,
+            # Dashboard session owners see the full conversation view; the
+            # creator check above is the authorization boundary.
+            requester_is_admin=True,
+        )
+
     async def apply_goal_action(
         self, username: str, session_id: str, action: str
     ) -> dict:

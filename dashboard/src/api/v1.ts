@@ -1,4 +1,5 @@
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
+import type { ShellSessionListItem } from '@/components/chat/message_list_comps/shell_session_tools/format';
 
 import * as openApiV1 from './generated/openapi-v1';
 import {
@@ -903,6 +904,11 @@ export const chatApi = {
         path: { session_id: sessionId },
         body: { action },
       }),
+    );
+  },
+  getSessionShellSessions(sessionId: string) {
+    return typed<{ sessions: ShellSessionListItem[] }>(
+      openApiV1.getChatSessionShellSessions({ path: { session_id: sessionId } }),
     );
   },
   updateSession(sessionId: string, payload: ChatSessionPatchRequest) {

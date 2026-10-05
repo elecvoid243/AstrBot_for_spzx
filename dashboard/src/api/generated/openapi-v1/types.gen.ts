@@ -1717,6 +1717,16 @@ export type ApplyChatSessionGoalActionResponse = (SuccessEnvelope);
 
 export type ApplyChatSessionGoalActionError = unknown;
 
+export type GetChatSessionShellSessionsData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type GetChatSessionShellSessionsResponse = (SuccessEnvelope);
+
+export type GetChatSessionShellSessionsError = unknown;
+
 export type ExportChatSessionData = {
     path: {
         session_id: string;

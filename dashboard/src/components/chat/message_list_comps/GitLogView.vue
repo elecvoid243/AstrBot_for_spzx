@@ -37,6 +37,11 @@ import {
 } from "@/composables/parseSpcodeGitStats";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import { absoluteFromSelectedDoc } from "@/composables/pathUtils";
+import {
+  gutterWidth,
+  layoutGraph,
+} from "@/composables/gitGraphLayout";
+import GitLogGraphGutter from "./GitLogGraphGutter.vue";
 
 const { tm } = useModuleI18n("features/chat");
 // Note (v3.9, 2026-06-25, elecvoid243): FilePatchPanel reads the
@@ -393,6 +398,14 @@ const commits = computed(() => {
   }
   return [];
 });
+
+// 2026-10-05 (elecvoid243): 分支树 lane 布局。行序与 commits 严格一致
+// (layoutGraph 不重排),所以模板直接用下标取行,不必建 sha → row 的 Map。
+const graphLayout = computed(() =>
+  layoutGraph(commits.value.map((c) => ({ sha: c.sha, parents: c.parents }))),
+);
+const graphLanes = computed(() => graphLayout.value.lanes);
+const gw = computed(() => gutterWidth(graphLanes.value));
 
 const isEmptyRepository = computed(() => {
   return (
@@ -1290,9 +1303,10 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
       :class="{ 'squash-selecting': squashSelecting || changelogSelecting }"
     >
       <div
-        v-for="c in commits"
+        v-for="(c, i) in commits"
         :key="c.sha"
         class="git-log-item"
+        :style="{ '--gw': gw + 'px' }"
         :class="{
           expanded: expanded.has(c.sha),
           // 2026-07-15 history-sha-jump: only one row at a time
@@ -1309,6 +1323,12 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
              rendered in selection mode (armed via the toolbar
              button) and absolutely positioned in the left gutter
              the rows grow while the mode is active. -->
+        <GitLogGraphGutter
+          v-if="gw > 0"
+          :row="graphLayout.rows[i]"
+          :lanes="graphLanes"
+          :is-head="c.sha === headSha"
+        />
         <button
           v-if="viewingCurrent && squashSelecting"
           type="button"
@@ -1375,7 +1395,9 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
           @keydown.enter.prevent="toggleCommit(c.sha)"
           @keydown.space.prevent="toggleCommit(c.sha)"
         >
-          <v-icon size="14" class="git-log-item-icon">mdi-source-commit</v-icon>
+          <v-icon v-if="gw === 0" size="14" class="git-log-item-icon">
+            mdi-source-commit
+          </v-icon>
           <span class="git-log-item-sha">{{
             c.shaShort || c.sha.slice(0, 7)
           }}</span>
@@ -1882,7 +1904,8 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
   /* 2026-08-03 git-squash: anchor for the absolutely positioned
      selection checkbox. */
   position: relative;
-  padding: 8px 12px;
+  /* --gw 由行内 style 注入:有分叉时给 lane gutter 留位,线性历史为 0 */
+  padding: 8px 12px 8px calc(12px + var(--gw, 0px));
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 /* 2026-07-15 history-sha-jump: highlight the row targeted by a
@@ -2384,7 +2407,8 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
    gutter that the absolutely positioned checkbox sits in, so the
    checkbox never overlaps the commit icon / sha text. */
 .git-log-list.squash-selecting .git-log-item {
-  padding-left: 32px;
+  /* 选择模式的复选框占据 --gw 右侧的槽位,图形不被顶掉 */
+  padding-left: calc(32px + var(--gw, 0px));
 }
 /* 2026-08-03 git-squash: per-row selection checkbox. Rendered only
    in selection mode (no hover reveal) and always visible. Vertical
@@ -2392,7 +2416,7 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
    tall, so top: 9px centers the 16px box on the header line. */
 .git-log-item-select {
   position: absolute;
-  left: 8px;
+  left: calc(8px + var(--gw, 0px));
   top: 9px;
   z-index: 1;
   display: inline-flex;

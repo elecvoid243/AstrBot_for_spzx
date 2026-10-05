@@ -2028,3 +2028,163 @@ async def test_peek_tolerates_unlinked_output_file(monkeypatch, tmp_path):
     )
     assert peeked["stdout"] == ""
     assert peeked["session_closed"] is True
+
+
+def _make_cancel_swallowing_task() -> asyncio.Task:
+    """Task whose first cancellation does not land.
+
+    Mirrors a Windows Proactor pipe read held open by a detached grandchild:
+    the cancelled reader does not complete promptly.
+    """
+
+    async def stubborn() -> None:
+        swallowed = False
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if swallowed:
+                    raise
+                swallowed = True
+
+    return asyncio.create_task(stubborn())
+
+
+async def _settle_cancel_swallowing_task(task: asyncio.Task) -> None:
+    """Let a first-cancel-swallowing task finish (second cancel lands)."""
+    if task.done():
+        return
+    task.cancel()
+    await asyncio.sleep(0.05)
+    if not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_poll_closed_session_returns_when_reader_refuses_cancel(tmp_path):
+    """The incident regression: a closed session whose reader task does not
+    finish on cancellation must not wedge poll forever in _remove_session."""
+    output_path = tmp_path / "out.log"
+    output_path.write_bytes(b"tail\n")
+
+    class ExitedProcess:
+        pid = 12345
+        returncode = 0
+
+    wait_task = asyncio.create_task(asyncio.sleep(0))
+    await wait_task
+    stubborn = _make_cancel_swallowing_task()
+    shell = LocalShellComponent()
+    session = local_booter._LocalShellSession(
+        session_id="sh_stubborn",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=output_path,
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=stubborn,
+        wait_task=wait_task,
+        shell_family="git_bash",
+    )
+    shell._sessions["sh_stubborn"] = session
+    try:
+        # Correct methodology: do NOT wrap in wait_for — its timeout
+        # cancellation would be swallowed by the code under test (the very
+        # bug), falsely reporting success. Wait on the task externally.
+        poll_task = asyncio.create_task(
+            shell.poll_session(
+                owner_id="umo",
+                requester_id="user",
+                requester_is_admin=True,
+                session_id="sh_stubborn",
+                yield_time_ms=0,
+            )
+        )
+        done, _pending = await asyncio.wait({poll_task}, timeout=12)
+        assert poll_task in done, "poll_session hung on a cancel-resistant reader"
+        result = poll_task.result()
+        assert result["session_closed"] is True
+        assert "sh_stubborn" not in shell._sessions
+    finally:
+        if not poll_task.done():
+            poll_task.cancel()
+        await _settle_cancel_swallowing_task(stubborn)
+
+
+@pytest.mark.asyncio
+async def test_remove_session_propagates_outer_cancellation(tmp_path):
+    """An external cancellation (stop / timeout) must be able to abort the
+    reap path — the old wide except swallowed it and the call ran on."""
+    output_path = tmp_path / "out.log"
+    output_path.write_bytes(b"tail\n")
+
+    class ExitedProcess:
+        pid = 12345
+        returncode = 0
+
+    wait_task = asyncio.create_task(asyncio.sleep(0))
+    await wait_task
+    stubborn = _make_cancel_swallowing_task()
+    shell = LocalShellComponent()
+    session = local_booter._LocalShellSession(
+        session_id="sh_abort",
+        owner_id="umo",
+        creator_id="user",
+        creator_is_admin=True,
+        sandboxed=False,
+        process=ExitedProcess(),
+        output_path=output_path,
+        started_at=0.0,
+        output_event=asyncio.Event(),
+        reader_task=stubborn,
+        wait_task=wait_task,
+        shell_family="git_bash",
+    )
+    shell._sessions["sh_abort"] = session
+    poll_task = asyncio.create_task(
+        shell.poll_session(
+            owner_id="umo",
+            requester_id="user",
+            requester_is_admin=True,
+            session_id="sh_abort",
+            yield_time_ms=0,
+        )
+    )
+    try:
+        # Wait until the reap popped the session: we are inside _remove_session.
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if "sh_abort" not in shell._sessions:
+                break
+        assert "sh_abort" not in shell._sessions, "reap stage never reached"
+
+        poll_task.cancel()
+        await asyncio.wait({poll_task}, timeout=3)
+        assert poll_task.cancelled(), "outer cancellation was swallowed by the reap"
+    finally:
+        if not poll_task.done():
+            poll_task.cancel()
+        await _settle_cancel_swallowing_task(stubborn)
+
+
+@pytest.mark.asyncio
+async def test_bounded_await_cancel_branch_is_bounded():
+    """_bounded_await(cancel_on_timeout=True) must return even when the
+    task ignores cancellation — the post-cancel await cannot be unbounded."""
+    task = _make_cancel_swallowing_task()
+    try:
+        bounded_task = asyncio.create_task(
+            local_booter._bounded_await(task, timeout=0.1, cancel_on_timeout=True)
+        )
+        done, _pending = await asyncio.wait({bounded_task}, timeout=8)
+        assert bounded_task in done, "_bounded_await hung after cancelling the task"
+        assert bounded_task.result() is False
+    finally:
+        await _settle_cancel_swallowing_task(task)

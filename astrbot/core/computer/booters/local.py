@@ -432,6 +432,29 @@ def _decode_shell_output(output: bytes | None) -> str:
     return _decode_bytes_with_fallback(output, preferred_encoding="utf-8")
 
 
+async def _cancel_task_bounded(task: asyncio.Task, timeout: float = 5) -> None:
+    """Cancel a task and wait for its end with a hard bound.
+
+    A cancellation that never lands — e.g. a Windows Proactor pipe read
+    whose pipe is still held open by a detached grandchild — must not turn
+    into an unbounded wait here. The task is abandoned after ``timeout``:
+    it keeps running until it finishes on its own, which is strictly better
+    than wedging the caller forever. ``asyncio.wait`` never raises and does
+    not consume the task's result, so an outer cancellation still
+    propagates (unlike a bare ``await task`` wrapped in a wide except).
+
+    Args:
+        task: The task to cancel and (briefly) await.
+        timeout: Maximum seconds to wait for the cancellation to land.
+    """
+    task.cancel()
+    await asyncio.wait({task}, timeout=timeout)
+    if task.done() and not task.cancelled():
+        # Consume the result/exception so an already-finished task never
+        # triggers "exception was never retrieved" warnings.
+        task.exception()
+
+
 async def _bounded_await(
     task: asyncio.Task,
     timeout: float,
@@ -457,11 +480,7 @@ async def _bounded_await(
         return True
     except asyncio.TimeoutError:
         if cancel_on_timeout:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await _cancel_task_bounded(task)
         return False
     except Exception:
         # The task itself failed. From the caller's perspective it has
@@ -1450,21 +1469,15 @@ class LocalShellComponent(ShellComponent):
             and timeout_task is not asyncio.current_task()
             and not timeout_task.done()
         ):
-            timeout_task.cancel()
-            try:
-                await timeout_task
-            except asyncio.CancelledError:
-                pass
+            await _cancel_task_bounded(timeout_task)
         # A stuck reader (pipe held open by a detached grandchild) keeps the
         # output file handle open; cancel it before unlinking, and tolerate
-        # a still-locked file so cleanup never fails the caller.
+        # a still-locked file so cleanup never fails the caller. The cancel
+        # wait is bounded — a cancellation that never lands must not wedge
+        # the reap (see _cancel_task_bounded).
         reader_task = session.reader_task
         if not reader_task.done():
-            reader_task.cancel()
-            try:
-                await reader_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await _cancel_task_bounded(reader_task)
         try:
             session.output_path.unlink(missing_ok=True)
         except OSError:

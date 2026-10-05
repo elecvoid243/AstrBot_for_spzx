@@ -266,6 +266,9 @@
       "failed": "失败",
       "timedOut": "超时",
       "terminated": "已终止"
+    },
+    "indicator": {
+      "title": "后台进程"
     }
   },
   "subagentStatus": {

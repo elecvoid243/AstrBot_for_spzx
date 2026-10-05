@@ -206,6 +206,21 @@
     "closePreview": "ファイルプレビューを閉じる",
     "closeDialogPreview": "拡大プレビューを閉じる"
   },
+  "shellSession": {
+    "indicator": {
+      "title": "バックグラウンドプロセス"
+    },
+    "stateLabels": {
+      "running": "実行中",
+      "completed": "完了",
+      "failed": "失敗",
+      "timedOut": "タイムアウト",
+      "terminated": "終了"
+    },
+    "labels": {
+      "unread": "未読"
+    }
+  },
   "time": {
     "today": "今日",
     "yesterday": "昨日"

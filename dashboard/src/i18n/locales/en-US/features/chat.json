@@ -266,6 +266,9 @@
       "failed": "failed",
       "timedOut": "timed out",
       "terminated": "terminated"
+    },
+    "indicator": {
+      "title": "Background processes"
     }
   },
   "subagentStatus": {

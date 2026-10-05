@@ -260,6 +260,9 @@
       "failed": "ошибка",
       "timedOut": "тайм-аут",
       "terminated": "прервана"
+    },
+    "indicator": {
+      "title": "Фоновые процессы"
     }
   },
   "subagentStatus": {

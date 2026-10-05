@@ -1174,6 +1174,7 @@ import {
 } from "@lucide/vue";
 import { chatApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
+import { useShellSessions } from "@/composables/useShellSessions";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { provideSpcodeSession } from "@/composables/useSpcodeSession";
 import {
@@ -1370,6 +1371,13 @@ const {
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
 const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
+
+// ── Background shell session awareness (app-bar indicator) ──────
+// Push-first: the backend emits shell_sessions_changed over the system
+// stream on every session lifecycle transition; GET /shell-sessions is only
+// the cold-start path on session switch.
+const { currentSessions: shellSessions, applyPushedShellSessions } =
+  useShellSessions(currSessionId);
 const goalSidebarOpen = computed({
   get: () => chatHeader.goalSidebarOpen,
   set: (open: boolean) => chatHeader.SET_GOAL_SIDEBAR_OPEN(open),
@@ -2025,6 +2033,7 @@ const {
   currentSessionId: currSessionId,
   onSessionsChanged: getSessions,
   onGoalStateChanged: applyPushedGoal,
+  onShellSessionsChanged: applyPushedShellSessions,
   onInteractiveChoice: (sessionId) => {
     markChoiceAttention(
       sessionId,
@@ -4931,6 +4940,17 @@ watch(
         : null,
     );
     if (!goal) chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  },
+  { immediate: true },
+);
+
+// Mirror the active session's managed shell sessions into the header store
+// so the app-bar indicator can badge and list them. An empty list collapses
+// to null (indicator hidden).
+watch(
+  shellSessions,
+  (sessions) => {
+    chatHeader.SET_SHELL_SESSIONS(sessions.length ? [...sessions] : null);
   },
   { immediate: true },
 );

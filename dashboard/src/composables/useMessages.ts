@@ -10,6 +10,7 @@ import {
   processSystemPayload,
 } from "./systemStream";
 import type { SessionGoalState } from "@/api/v1";
+import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
 import {
   isInteractiveChoicePayload,
   validateInteractiveChoice,
@@ -329,6 +330,16 @@ interface UseMessagesOptions {
     sessionId: string,
     goal: SessionGoalState | null,
   ) => void;
+  /**
+   * Fired when a managed shell session lifecycle transition (create / exit /
+   * removal) pushes a `shell_sessions_changed` snapshot over the system
+   * stream. The payload is authoritative — replace the cached list for the
+   * session.
+   */
+  onShellSessionsChanged?: (
+    sessionId: string,
+    sessions: ShellSessionListItem[],
+  ) => void;
 }
 
 export function useMessages(options: UseMessagesOptions) {
@@ -447,6 +458,13 @@ export function useMessages(options: UseMessagesOptions) {
                 | { goal?: SessionGoalState | null }
                 | undefined;
               options.onGoalStateChanged?.(sessionId, data?.goal ?? null);
+              return;
+            }
+            if (payload?.type === "shell_sessions_changed") {
+              const data = payload.data as
+                | { sessions?: ShellSessionListItem[] }
+                | undefined;
+              options.onShellSessionsChanged?.(sessionId, data?.sessions ?? []);
               return;
             }
             messagesBySession[sessionId] = messagesBySession[sessionId] || [];

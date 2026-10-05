@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useChatHeaderStore } from "@/stores/chatHeader";
+import ShellSessionIndicator from "@/components/chat/ShellSessionIndicator.vue";
 import { useCustomizerStore } from "@/stores/customizer";
 import axios from "axios";
 import Logo from "@/components/shared/Logo.vue";
@@ -1189,6 +1190,11 @@ onMounted(async () => {
     </div>
 
     <div class="header-actions" :class="{ 'chat-header-actions': isChatPath }">
+      <!-- 2026-10-05: managed shell session indicator. Content is pushed
+           from Chat.vue (useShellSessions) through the chatHeader store;
+           the component hides itself when the session list is empty. -->
+      <ShellSessionIndicator v-if="isChatPath" />
+
       <!-- 2026-09-09: persistent GoalSidebar entry. Shown only when the
            active session has a standing-goal record (/goal set, until
            /goal clear). Badge mirrors the goal status + turn budget;

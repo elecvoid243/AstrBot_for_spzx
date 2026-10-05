@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
 
 /** Summary shown on the app-bar goal entry button; null = no goal record. */
 export interface GoalBadge {
@@ -21,6 +22,11 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     // the goal state per session) and syncs it in.
     goalSidebarOpen: false,
     goalBadge: null as GoalBadge | null,
+    // 2026-10-05: managed shell session indicator. Same push pattern as the
+    // goal badge: Chat.vue owns the per-session cache (useShellSessions) and
+    // mirrors the active session's list here so the VerticalHeader button
+    // can badge and list it. null = no sessions (indicator hidden).
+    shellSessions: null as ShellSessionListItem[] | null,
   }),
 
   actions: {
@@ -54,6 +60,9 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     SET_GOAL_BADGE(badge: GoalBadge | null) {
       this.goalBadge = badge;
     },
+    SET_SHELL_SESSIONS(sessions: ShellSessionListItem[] | null) {
+      this.shellSessions = sessions;
+    },
     CLEAR_CONTEXT() {
       this.title = "";
       this.subtitle = "";
@@ -61,6 +70,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
       this.workspaceFilesOpen = false;
       this.goalSidebarOpen = false;
       this.goalBadge = null;
+      this.shellSessions = null;
     },
   },
 });

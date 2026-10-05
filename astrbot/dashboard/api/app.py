@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -106,6 +107,55 @@ def _stop_member_turn(member: dict) -> None:
     umo = member.get("umo") or ""
     if umo:
         active_event_registry.request_agent_stop_all(umo)
+
+
+async def _shell_sessions_changed(owner_id: str) -> None:
+    """Push a shell-session snapshot to the owning session's system stream.
+
+    Registered as a ``LocalShellComponent`` change listener; module-level so
+    unit tests can drive it directly. Snapshot generation lives here (not in
+    the kernel component) so the kernel stays free of webchat concepts.
+
+    Args:
+        owner_id: Unified message origin owning the changed sessions;
+            non-webchat origins are ignored (no dashboard stream exists).
+    """
+    if not owner_id.startswith("webchat:"):
+        return
+    from astrbot.core.computer import computer_client
+    from astrbot.core.computer.booters.local import LocalShellComponent
+    from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
+        webchat_queue_mgr,
+    )
+
+    cid = owner_id.rsplit("!", 1)[-1]
+    if not webchat_queue_mgr.has_system_subscribers(cid):
+        # Nobody is watching this conversation: skip the snapshot work
+        # entirely. The next transition or the cold-start GET re-converges.
+        return
+    booter = computer_client.local_booter
+    if booter is None or not isinstance(booter.shell, LocalShellComponent):
+        return
+    # The push is fire-and-forget (scheduled from a sync listener); catch
+    # everything here so the discarded task never ends with an unretrieved
+    # exception. CancelledError (BaseException) still propagates.
+    try:
+        result = await booter.shell.list_sessions(
+            owner_id=owner_id,
+            # The snapshot is conversation-scoped, not sender-scoped: every
+            # dashboard viewer of the conversation sees the same session list.
+            requester_id="",
+            requester_is_admin=True,
+        )
+        await webchat_queue_mgr.put_system_event(
+            cid,
+            {
+                "type": "shell_sessions_changed",
+                "data": {"sessions": result["sessions"]},
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort push
+        logger.warning("Failed to push shell session snapshot: %s", exc)
 
 
 def create_dashboard_asgi_app(
@@ -243,6 +293,21 @@ def create_dashboard_asgi_app(
         )
 
     _goal_service.set_state_change_listener(_goal_state_changed)
+
+    # Shell session awareness: forward LocalShellComponent change signals to
+    # the owning conversation's system stream as full snapshots. The sync
+    # wrapper matches the component's listener contract; create_task needs
+    # the running loop, which all three trigger points (create/exit/remove)
+    # have. get_local_booter() construction is side-effect-free (component
+    # objects only, no processes).
+    from astrbot.core.computer.booters.local import LocalShellComponent
+    from astrbot.core.computer.computer_client import get_local_booter
+
+    _booter = get_local_booter()
+    if isinstance(_booter.shell, LocalShellComponent):
+        _booter.shell.add_change_listener(
+            lambda owner_id: asyncio.create_task(_shell_sessions_changed(owner_id))
+        )
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError):

@@ -166,6 +166,6 @@ If you were polling it, expect "not found" errors — do not retry it.
 | `openspec/openapi-v1.yaml` + 生成客户端 | +2 端点 + scope 文档再生成 |
 | `dashboard/src/components/chat/ShellSessionWindow.vue` | 新建（多实例悬浮窗） |
 | `dashboard/src/components/chat/ShellSessionIndicator.vue` | +查看入口 |
-| `dashboard/src/components/chat/Chat.vue` / `stores/chatHeader.ts` | 抽屉挂载与互斥 |
-| `dashboard/src/i18n/locales/*/features/chat.json` | `shellSession.sidebar.*` ×4 |
+| `dashboard/src/components/chat/Chat.vue` / `stores/chatHeader.ts` | 窗口宿主与开窗状态 |
+| `dashboard/src/i18n/locales/*/features/chat.json` | `shellSession.window.*` ×4 |
 | 测试 | 后端 3 个文件扩展 + runner 测试 + 前端 spec |

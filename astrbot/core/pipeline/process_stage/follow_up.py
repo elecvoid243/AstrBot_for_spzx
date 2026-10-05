@@ -58,6 +58,26 @@ def unregister_active_runner(umo: str, runner: AgentRunner) -> None:
             active_event_registry.unregister_agent_stop_callback(runner_event)
 
 
+def inject_system_notice_to_active_run(umo: str, text: str) -> bool:
+    """Inject a system notice into the umo's currently active agent run.
+
+    Notices are transient signals: when no run is active they are dropped
+    (never queued for a future run — the next run observes the resulting
+    state directly, e.g. a terminated shell session simply being gone).
+
+    Args:
+        umo: Unified message origin whose active run should be notified.
+        text: Notice body, rendered as a [SYSTEM NOTICE] tool-result suffix.
+
+    Returns:
+        True when an active run accepted the notice, False otherwise.
+    """
+    runner = _ACTIVE_AGENT_RUNNERS.get(umo)
+    if runner is None:
+        return False
+    return runner.inject_system_notice(text)
+
+
 def _get_follow_up_order_state(umo: str) -> dict[str, object]:
     state = _FOLLOW_UP_ORDER_STATE.get(umo)
     if state is None:

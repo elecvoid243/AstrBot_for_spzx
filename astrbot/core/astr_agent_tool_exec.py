@@ -32,6 +32,7 @@ from astrbot.core.message.message_event_result import (
 )
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.provider.entites import ProviderRequest
+from astrbot.core.provider.provider import Provider
 from astrbot.core.provider.register import llm_tools
 from astrbot.core.subagent_event_sink import SubAgentEventSink
 from astrbot.core.subagent_manager import (
@@ -703,6 +704,43 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                     except Exception:
                         continue
 
+        # Subagent context compression: reuse the session's compression
+        # section (single source of truth — no per-subagent settings). When
+        # the strategy is llm_compress, prefer the configured compression
+        # provider and fall back to the subagent's own provider, so the
+        # summary request shares the chat requests' prefix cache. Without a
+        # resolvable provider the runner keeps its truncation default.
+        compress_kwargs: dict[str, T.Any] = {}
+        compression_cfg = resolve_context_compression_config(
+            config.get("agent_runner", {}).get("config", {}).get("compression", {})
+        )
+        if compression_cfg["context_limit_reached_strategy"] == "llm_compress":
+            compress_provider: Provider | None = None
+            compress_provider_id = compression_cfg["llm_compress_provider_id"]
+            if compress_provider_id:
+                candidate = ctx.get_provider_by_id(compress_provider_id)
+                if isinstance(candidate, Provider):
+                    compress_provider = candidate
+                else:
+                    logger.warning(
+                        "指定的上下文压缩模型 %s 不可用，子代理将回退到自身模型压缩",
+                        compress_provider_id,
+                    )
+            if compress_provider is None:
+                candidate = ctx.get_provider_by_id(prov_id)
+                if isinstance(candidate, Provider):
+                    compress_provider = candidate
+            if compress_provider is not None:
+                compress_kwargs = {
+                    "llm_compress_provider": compress_provider,
+                    "llm_compress_instruction": compression_cfg[
+                        "llm_compress_instruction"
+                    ],
+                    "llm_compress_keep_recent_ratio": compression_cfg[
+                        "llm_compress_keep_recent_ratio"
+                    ],
+                }
+
         agent_max_step = coerce_int_config(
             config.get("agent_runner", {})
             .get("config", {})
@@ -881,6 +919,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 agent_context=subagent_agent_context,
                 **({"tool_schema_mode": fork_schema_mode} if fork_schema_mode else {}),
                 **({"llm_params": fork_llm_params} if fork_llm_params else {}),
+                **compress_kwargs,
             )
 
         # 添加执行超时控制

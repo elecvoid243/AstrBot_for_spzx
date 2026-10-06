@@ -751,3 +751,133 @@ def test_main_agent_only_tools_set():
     # Dynamic subagents can no longer be protected from per-turn cleanup, so
     # the tool that managed that state must not be exposed to the LLM.
     assert "manage_subagent_protection" not in tools
+# --- LLM-summary compression wiring for subagents ---
+
+
+def make_compress_config(
+    strategy="llm_compress",
+    provider_id="",
+    instruction="Sum it.",
+    ratio=0.2,
+):
+    return {
+        "provider_settings": {},
+        "agent_runner": {
+            "config": {
+                "compression": {
+                    "overflow_strategy": strategy,
+                    "instruction": instruction,
+                    "keep_recent_ratio": ratio,
+                    "provider_id": provider_id,
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_llm_compress_strategy_falls_back_to_subagent_provider(
+    mock_ctx, mock_event
+):
+    """llm_compress without a configured provider uses the subagent's own
+    provider, so the summary request shares the chat prefix cache."""
+    SubAgentManager._context_inherit_mode = "normal"
+    compress_provider = MagicMock(spec=Provider)
+    mock_ctx.get_config.return_value = make_compress_config(provider_id="")
+    mock_ctx.get_provider_by_id.return_value = compress_provider
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["llm_compress_provider"] is compress_provider
+    assert kwargs["llm_compress_instruction"] == "Sum it."
+    assert kwargs["llm_compress_keep_recent_ratio"] == 0.2
+    # Fallback anchor: the subagent's resolved provider id ("provider-1").
+    mock_ctx.get_provider_by_id.assert_called_once_with("provider-1")
+
+
+@pytest.mark.asyncio
+async def test_llm_compress_strategy_prefers_configured_provider(mock_ctx, mock_event):
+    SubAgentManager._context_inherit_mode = "normal"
+    compress_provider = MagicMock(spec=Provider)
+    mock_ctx.get_config.return_value = make_compress_config(provider_id="compress-p")
+    mock_ctx.get_provider_by_id.return_value = compress_provider
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["llm_compress_provider"] is compress_provider
+    mock_ctx.get_provider_by_id.assert_called_once_with("compress-p")
+
+
+@pytest.mark.asyncio
+async def test_llm_compress_invalid_configured_provider_falls_back(
+    mock_ctx, mock_event
+):
+    """A configured compression provider that cannot be resolved falls back
+    to the subagent's own provider instead of silently disabling LLM
+    compression."""
+    SubAgentManager._context_inherit_mode = "normal"
+    sub_provider = MagicMock(spec=Provider)
+    mock_ctx.get_provider_by_id.side_effect = lambda pid: (
+        None if pid == "compress-p" else sub_provider
+    )
+    mock_ctx.get_config.return_value = make_compress_config(provider_id="compress-p")
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["llm_compress_provider"] is sub_provider
+
+
+@pytest.mark.asyncio
+async def test_truncate_strategy_omits_llm_compress_kwargs(mock_ctx, mock_event):
+    SubAgentManager._context_inherit_mode = "normal"
+    mock_ctx.get_config.return_value = make_compress_config(
+        strategy="truncate_by_turns"
+    )
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert "llm_compress_provider" not in kwargs
+    assert "llm_compress_instruction" not in kwargs
+    assert "llm_compress_keep_recent_ratio" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_default_config_omits_llm_compress_kwargs(mock_ctx, mock_event):
+    """The fixture's default config has no agent_runner section; the subagent
+    must keep the pre-change truncation behavior (no compressor kwargs)."""
+    SubAgentManager._context_inherit_mode = "normal"
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert "llm_compress_provider" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_llm_compress_strategy_applies_in_fork_mode(mock_ctx, mock_event):
+    """Fork mode inherits the same compressor wiring: compression only
+    triggers past the 0.82 usage line, where the inherited prefix cache is
+    already lost, and an LLM summary preserves more task state than
+    truncation."""
+    SubAgentManager._context_inherit_mode = "fork"
+    compress_provider = MagicMock(spec=Provider)
+    mock_ctx.get_config.return_value = make_compress_config(provider_id="")
+    mock_ctx.get_provider_by_id.return_value = compress_provider
+
+    run_context = make_run_context(mock_ctx, mock_event, make_main_messages())
+    await run_handoff(make_handoff_tool(), run_context)
+
+    kwargs = get_tool_loop_agent_kwargs(mock_ctx)
+    assert kwargs["prompt"].startswith("[SUBAGENT MODE: FORK]")
+    assert kwargs["llm_compress_provider"] is compress_provider
+
+

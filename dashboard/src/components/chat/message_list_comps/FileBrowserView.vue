@@ -512,6 +512,19 @@ const rangeDiffData = computed(() => {
   return gitFileDiff.getData(path, cr.from, cr.to);
 });
 
+/** I3:比较请求在飞 / 失败的呈现态(有数据后为 null) */
+const rangePending = computed<{ kind: "loading" } | { kind: "error"; reason: string } | null>(
+  () => {
+    const path = gitLogPath.value;
+    const cr = compareRange.value;
+    if (!path || !cr) return null;
+    if (gitFileDiff.getData(path, cr.from, cr.to)) return null;
+    const s = gitFileDiff.getState(path, cr.from, cr.to);
+    if (s.kind === "error") return { kind: "error", reason: s.reason };
+    return { kind: "loading" };
+  },
+);
+
 function onSetRangeBase(sha: string | null): void {
   rangeBase.value = sha;
 }
@@ -714,6 +727,7 @@ onBeforeUnmount(() => {
   // workspace tab unmounts.
   dirComposable.dispose();
   previewComposable.dispose();
+  gitFileDiff.dispose(); // I4
   gitFile.dispose();
 });
 </script>
@@ -1005,6 +1019,8 @@ onBeforeUnmount(() => {
             :diff-patch="diffPatch"
             :diff-is-binary="diffIsBinary"
             :range-diff="rangeDiffData"
+            :range-active="!!compareRange"
+            :range-pending="rangePending"
             :file-relative-path="gitLogPath"
             :worktree="props.worktree ?? null"
             @navigate-target="onPreviewTargetNavigate"

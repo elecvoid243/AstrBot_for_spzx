@@ -714,6 +714,29 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.find('[aria-pressed]').exists()).toBe(false);
   });
 
+  it("overlay rows receive shiki syntax highlighting", async () => {
+    // I1(final review):overlay 行也必须走 Shiki token 高亮
+    // (此前 overlayLineHtml 新建 DiffLine 字面量,高亮 Map 按对象身份
+    // 查找永远 miss,只剩 escapeHtml 兜底)。
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content: "@@ -1,2 +1,2 @@\n-const a = 1\n+const a = 2\n const b = 3",
+        baseContent: "const a = 1\nconst b = 3\n",
+        filePath: "a.ts",
+        isDark: false,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    await vi.waitFor(
+      () => {
+        const cell = wrapper.find(".overlay-body .diff-line .line-content");
+        expect(cell.exists()).toBe(true);
+        expect(cell.html()).toContain("color:");
+      },
+      { timeout: 8000, interval: 100 },
+    );
+  });
+
   it("falls back to plain patch rendering when alignment fails", () => {
     const wrapper = mount(DiffPreview, {
       props: {

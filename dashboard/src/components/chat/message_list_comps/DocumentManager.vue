@@ -1185,6 +1185,14 @@ const rangeDiffData = computed(() => {
   return gitFileDiff.getData(path, cr.from, cr.to);
 });
 
+/** 当前比较的请求状态(I3:loading/error 反馈用) */
+const rangeState = computed(() => {
+  const path = gitLogPath.value;
+  const cr = compareRange.value;
+  if (!path || !cr) return { kind: "idle" as const };
+  return gitFileDiff.getState(path, cr.from, cr.to);
+});
+
 function onSetRangeBase(sha: string | null): void {
   rangeBase.value = sha;
 }
@@ -1502,6 +1510,7 @@ onBeforeUnmount(() => {
     clearTimeout(saveSuccessTimer);
     saveSuccessTimer = null;
   }
+  gitFileDiff.dispose(); // I4:卸载时 abort 在途比较请求
   gitFile.dispose();
   fileWrite.dispose();
   btw.dispose();
@@ -2125,6 +2134,33 @@ onBeforeUnmount(() => {
                      git-file-diff 数据驱动 overlay(基准全文 + diff 叠加)。
                      status=added 不传 baseContent → 纯 patch 全绿视图;
                      unchanged → patch="" + baseContent → 纯文件视图 -->
+                <!-- I2/I3:range 比较的三态反馈(数据未到时不得静默显示空区) -->
+                <div
+                  v-if="compareRange && rangeDiffData?.status === 'unchanged'"
+                  class="document-manager__range-hint"
+                  data-testid="range-identical"
+                >
+                  {{ tm("spcodeProjectLoad.documentManager.history.rangeIdentical") }}
+                </div>
+                <div
+                  v-else-if="compareRange && !rangeDiffData && rangeState.kind === 'error'"
+                  class="document-manager__range-hint document-manager__range-hint--error"
+                  data-testid="range-error"
+                >
+                  {{
+                    tm("spcodeProjectLoad.documentManager.history.rangeError", {
+                      reason:
+                        rangeState.kind === "error" ? rangeState.reason : "",
+                    })
+                  }}
+                </div>
+                <div
+                  v-else-if="compareRange && !rangeDiffData"
+                  class="document-manager__range-hint"
+                  data-testid="range-loading"
+                >
+                  {{ tm("spcodeProjectLoad.documentManager.history.rangeLoading") }}
+                </div>
                 <DiffPreview
                   :content="
                     compareRange ? (rangeDiffData?.patch ?? '') : (diffPatch ?? '')
@@ -2379,6 +2415,15 @@ onBeforeUnmount(() => {
   color: rgba(var(--v-theme-on-surface), 0.5);
   font-size: 12.5px;
   text-align: center;
+}
+.document-manager__range-hint {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  text-align: center;
+}
+.document-manager__range-hint--error {
+  color: rgb(var(--v-theme-error));
 }
 .document-manager__banner {
   display: flex;

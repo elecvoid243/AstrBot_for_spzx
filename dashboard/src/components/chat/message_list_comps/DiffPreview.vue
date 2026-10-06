@@ -126,7 +126,7 @@
           >
             <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
             <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
-            <span class="line-content" v-html="overlayLineHtml(row.line)"></span>
+            <span class="line-content" v-html="overlayLineHtml(row.line, row.addIdx)"></span>
           </div>
         </template>
       </div>
@@ -647,7 +647,7 @@
           >
             <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
             <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
-            <span class="line-content" v-html="overlayLineHtml(row.line)"></span>
+            <span class="line-content" v-html="overlayLineHtml(row.line, row.addIdx)"></span>
           </div>
         </template>
       </div>
@@ -1162,7 +1162,7 @@ function expandGap(afterBaseLineno: number): void {
 }
 
 type OverlayRow =
-  | { kind: "line"; line: OverlayLine; key: string }
+  | { kind: "line"; line: OverlayLine; addIdx: number; key: string }
   | { kind: "gap"; gap: OverlayGap; key: string };
 
 /** 渲染行序列:未展开间隙的隐藏行被剔除,原位插入间隙折叠条 */
@@ -1187,11 +1187,13 @@ const overlayRows = computed<OverlayRow[]>(() => {
   if (leadGap && !expandedGaps.value.has(0)) {
     rows.push({ kind: "gap", gap: leadGap, key: "g-0" });
   }
+  let addCounter = 0;
   for (const l of r.lines) {
     if (l.baseLineno !== null && hidden.has(l.baseLineno)) continue;
     rows.push({
       kind: "line",
       line: l,
+      addIdx: l.kind === "add" ? addCounter++ : -1,
       key: `l-${l.baseLineno ?? "add"}-${rows.length}`,
     });
     if (l.baseLineno !== null) {
@@ -1208,15 +1210,77 @@ function overlayPrefix(kind: OverlayLine["kind"]): string {
   return kind === "add" ? "+" : kind === "del" ? "−" : " ";
 }
 
-/** 复用统一视图的语法高亮:OverlayLine → DiffLine 形状适配 */
-function overlayLineHtml(l: OverlayLine): string {
-  return lineContentHtml({
-    type: l.kind === "add" ? "add" : l.kind === "del" ? "del" : "ctx",
-    prefix: overlayPrefix(l.kind),
-    content: l.text,
-    oldNo: l.baseLineno !== null ? String(l.baseLineno) : "",
-    newNo: "",
-  });
+/** overlay 高亮表(I1 fix):统一视图的高亮 Map 按 DiffLine 对象身份
+ *  键控,overlay 行不在那批对象里,必须建自己的表。
+ *  基准行直接对 baseContent 整体 tokenize(比逐侧 diff 行拼接的
+ *  上下文更完整,高亮质量更好);add 行单独成批。 */
+const overlayHighlights = computed<{
+  base: Map<number, LineHighlight>;
+  adds: Map<number, LineHighlight>;
+} | null>(() => {
+  if (!overlayActive.value) return null;
+  if (!shikiReady.value || !shikiHighlighter.value) return null;
+  const lang = highlightLanguage.value;
+  if (lang === "text") return null;
+  const r = overlayResult.value;
+  if (!r || !r.ok) return null;
+  if (props.baseContent.length > HIGHLIGHT_MAX_CHARS) return null;
+  try {
+    const baseMap = new Map<number, LineHighlight>();
+    const baseLineCount = props.baseContent.split("\n").length;
+    if (baseLineCount > 0) {
+      const light = shikiHighlighter.value.codeToTokens(props.baseContent, {
+        lang,
+        theme: SHIKI_THEMES.light,
+      });
+      const dark = shikiHighlighter.value.codeToTokens(props.baseContent, {
+        lang,
+        theme: SHIKI_THEMES.dark,
+      });
+      for (let i = 0; i < baseLineCount; i++) {
+        baseMap.set(i + 1, {
+          light: tokensToHtml(light.tokens[i] ?? []),
+          dark: tokensToHtml(dark.tokens[i] ?? []),
+        });
+      }
+    }
+    const addLines = r.lines.filter((l) => l.kind === "add");
+    const addMap = new Map<number, LineHighlight>();
+    if (addLines.length) {
+      const addText = addLines.map((l) => l.text).join("\n");
+      const alight = shikiHighlighter.value.codeToTokens(addText, {
+        lang,
+        theme: SHIKI_THEMES.light,
+      });
+      const adark = shikiHighlighter.value.codeToTokens(addText, {
+        lang,
+        theme: SHIKI_THEMES.dark,
+      });
+      addLines.forEach((_, i) => {
+        addMap.set(i, {
+          light: tokensToHtml(alight.tokens[i] ?? []),
+          dark: tokensToHtml(adark.tokens[i] ?? []),
+        });
+      });
+    }
+    return { base: baseMap, adds: addMap };
+  } catch (err) {
+    console.error("Failed to highlight overlay with Shiki:", err);
+    return null;
+  }
+});
+
+/** overlay 行渲染:高亮表命中 → token 色;未命中 → escapeHtml 兜底 */
+function overlayLineHtml(l: OverlayLine, addIdx: number): string {
+  const hl = overlayHighlights.value;
+  if (hl) {
+    const hit =
+      l.kind === "add"
+        ? hl.adds.get(addIdx)
+        : hl.base.get(l.baseLineno ?? -1);
+    if (hit) return props.isDark ? hit.dark : hit.light;
+  }
+  return escapeHtml(l.text);
 }
 
 function overlayLineClass(l: OverlayLine): string {

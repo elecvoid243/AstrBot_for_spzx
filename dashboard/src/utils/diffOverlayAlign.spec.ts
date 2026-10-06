@@ -99,6 +99,38 @@ describe("alignOverlay", () => {
     expect(r.lines.length).toBe(2);
   });
 
+  it("base file without trailing newline aligns (\\ No newline marker)", () => {
+    // C1(final review):基准文件无尾换行时,hunk 末尾的
+    // "\\ No newline at end of file" marker 不占基准行,
+    // 不得被越界检查误判为对齐失败。
+    const base = "l1\nl2\nl3"; // 无尾换行
+    const patch = [
+      "@@ -1,3 +1,2 @@",
+      " l1",
+      "-l2",
+      " l3",
+      "\\ No newline at end of file",
+    ].join("\n");
+    const r = alignOverlay(base, patch);
+    expect(r.ok).toBe(true);
+    expect(r.lines.map((x) => x.kind)).toEqual(["context", "del", "context"]);
+  });
+
+  it("new version without trailing newline at hunk tail aligns", () => {
+    // 末行被修改且新版本无尾换行:marker 在 add 行之后
+    const base = "l1\nl2\n";
+    const patch = [
+      "@@ -1,2 +1,2 @@",
+      " l1",
+      "-l2",
+      "+L2",
+      "\\ No newline at end of file",
+    ].join("\n");
+    const r = alignOverlay(base, patch);
+    expect(r.ok).toBe(true);
+    expect(r.lines.map((x) => x.kind)).toEqual(["context", "del", "add"]);
+  });
+
   it("GAP_FOLD_THRESHOLD is 8", () => {
     expect(GAP_FOLD_THRESHOLD).toBe(8);
   });

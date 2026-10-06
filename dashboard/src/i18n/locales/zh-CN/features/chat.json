@@ -1911,7 +1911,9 @@
         "compareWithBase": "与基准比较",
         "rangeBaseBadge": "基准",
         "rangeBanner": "正在比较 基准 {from} → {to}",
-        "rangeIdentical": "两个版本内容一致"
+        "rangeIdentical": "两个版本内容一致",
+        "rangeLoading": "正在加载比较…",
+        "rangeError": "比较失败:{reason}"
       },
       "editor": {
         "newFile": "新建",

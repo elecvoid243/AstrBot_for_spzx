@@ -24,13 +24,15 @@ vi.mock("@/composables/useSpcodeProjectStatus", () => ({
 
 const mockFetchDiff = vi.fn();
 const mockGetData = vi.fn();
+const mockGetState = vi.fn();
+const mockDispose = vi.fn();
 vi.mock("@/composables/useSpcodeGitFileDiff", () => ({
   useSpcodeGitFileDiff: () => ({
     fetchDiff: (...args: unknown[]) => mockFetchDiff(...args),
     getData: (...args: unknown[]) => mockGetData(...args),
-    getState: () => ({ kind: "idle" }),
+    getState: (...args: unknown[]) => mockGetState(...args),
     invalidateAll: vi.fn(),
-    dispose: vi.fn(),
+    dispose: (...args: unknown[]) => mockDispose(...args),
   }),
 }));
 
@@ -175,6 +177,9 @@ describe("DocumentManager range compare wiring", () => {
     mockFetchDiff.mockReset();
     mockGetData.mockReset();
     mockGetData.mockReturnValue(RANGE_FIXTURE);
+    mockGetState.mockReset();
+    mockGetState.mockReturnValue({ kind: "idle" });
+    mockDispose.mockReset();
   });
 
   const wiringStubs = {
@@ -271,6 +276,66 @@ describe("DocumentManager range compare wiring", () => {
     await nextTick();
     expect(vm.compareRange).toBeNull();
     expect(vm.rangeBase).toBe(SHA_A);
+  });
+
+  it("unchanged status shows identical hint (I2)", async () => {
+    mockGetData.mockReturnValue({ ...RANGE_FIXTURE, status: "unchanged", patch: "" });
+    const w = mountWiring();
+    const vm = w.vm as any;
+    vm.selectedDoc = "a.md";
+    await nextTick();
+    w.findComponent(DocumentHistoryPanel).vm.$emit("compare-range", SHA_A, SHA_B);
+    await nextTick();
+    expect(w.find('[data-testid="range-identical"]').exists()).toBe(true);
+  });
+
+  it("loading state shows placeholder instead of stale content (I3)", async () => {
+    mockGetData.mockReturnValue(null);
+    mockGetState.mockReturnValue({ kind: "loading" });
+    const w = mountWiring();
+    const vm = w.vm as any;
+    vm.selectedDoc = "a.md";
+    await nextTick();
+    w.findComponent(DocumentHistoryPanel).vm.$emit("compare-range", SHA_A, SHA_B);
+    await nextTick();
+    expect(w.find('[data-testid="range-loading"]').exists()).toBe(true);
+  });
+
+  it("error state shows reason instead of silently showing current file (I3)", async () => {
+    mockGetData.mockReturnValue(null);
+    mockGetState.mockReturnValue({ kind: "error", reason: "ref_not_found" });
+    const w = mountWiring();
+    const vm = w.vm as any;
+    vm.selectedDoc = "a.md";
+    await nextTick();
+    w.findComponent(DocumentHistoryPanel).vm.$emit("compare-range", SHA_A, SHA_B);
+    await nextTick();
+    const err = w.find('[data-testid="range-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("ref_not_found");
+  });
+
+  it("added status passes no baseContent to DiffPreview (I5 / Review Focus #4)", async () => {
+    mockGetData.mockReturnValue({
+      ...RANGE_FIXTURE,
+      status: "added",
+      baseContent: "",
+    });
+    const w = mountWiring();
+    const vm = w.vm as any;
+    vm.selectedDoc = "a.md";
+    await nextTick();
+    w.findComponent(DocumentHistoryPanel).vm.$emit("compare-range", SHA_A, SHA_B);
+    await nextTick();
+    const dp = w.findComponent(DiffPreview);
+    expect(dp.props("baseContent")).toBeUndefined();
+    expect(dp.props("content")).toContain("@@");
+  });
+
+  it("dispose is called on unmount (I4)", async () => {
+    const w = mountWiring();
+    w.unmount();
+    expect(mockDispose).toHaveBeenCalled();
   });
 
   it("switching doc clears rangeBase + compareRange", async () => {

@@ -1878,7 +1878,9 @@
         "compareWithBase": "Compare with base",
         "rangeBaseBadge": "Base",
         "rangeBanner": "Comparing base {from} → {to}",
-        "rangeIdentical": "Identical content in both versions"
+        "rangeIdentical": "Identical content in both versions",
+        "rangeLoading": "Loading comparison…",
+        "rangeError": "Compare failed: {reason}"
       },
       "editor": {
         "newFile": "New",

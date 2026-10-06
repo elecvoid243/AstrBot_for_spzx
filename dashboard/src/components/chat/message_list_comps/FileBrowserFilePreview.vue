@@ -108,6 +108,10 @@ const props = defineProps<{
    * status=added → 纯 patch 全绿;unchanged → 纯文件视图。
    */
   rangeDiff?: GitFileDiffData | null;
+  /** I3:比较请求进行中(banner 在数据到达前就显示,不再静默) */
+  rangeActive?: boolean;
+  /** I3:在飞 / 失败呈现态(null = 数据已到或未比较) */
+  rangePending?: { kind: "loading" } | { kind: "error"; reason: string } | null;
 }>();
 const emit = defineEmits<{
   (e: "navigate-target", resolvedPath: string): void;
@@ -1178,10 +1182,20 @@ onBeforeUnmount(() => {
             user-feedback request to align the two tabs.
           -->
           <div
-            v-if="props.rangeDiff || props.selectedRevision"
+            v-if="props.rangeActive || props.rangeDiff || props.selectedRevision"
             class="preview-file__banner"
           >
-            <span v-if="props.rangeDiff">
+            <span v-if="props.rangePending?.kind === 'loading'">
+              {{ tm("spcodeProjectLoad.documentManager.history.rangeLoading") }}
+            </span>
+            <span v-else-if="props.rangePending?.kind === 'error'">
+              {{
+                tm("spcodeProjectLoad.documentManager.history.rangeError", {
+                  reason: props.rangePending.reason,
+                })
+              }}
+            </span>
+            <span v-else-if="props.rangeDiff">
               {{
                 tm(
                   "spcodeProjectLoad.documentManager.history.rangeBanner",
@@ -1449,6 +1463,20 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
+          <div
+            v-else-if="props.rangePending"
+            class="preview-file__range-pending"
+            :class="{ 'preview-file__range-pending--error': props.rangePending.kind === 'error' }"
+          >
+            <span v-if="props.rangePending.kind === 'error'">
+              {{
+                tm("spcodeProjectLoad.documentManager.history.rangeError", {
+                  reason: props.rangePending.reason,
+                })
+              }}
+            </span>
+          </div>
           <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
                compareRange 激活时 selectedRevision 必为 null -->
           <div
@@ -1844,6 +1872,17 @@ onBeforeUnmount(() => {
   tabs, so we now render the same banner DocumentManager
   uses for its document-manager tab.
 */
+.preview-file__range-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.preview-file__range-pending--error {
+  color: rgb(var(--v-theme-error));
+}
 .preview-file__banner {
   display: flex;
   align-items: center;

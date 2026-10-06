@@ -76,11 +76,13 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
       // ctx / del 都消费一个基准行
       if (l.type === "header-file") continue;
       const text = l.content;
+      // marker 必须先于越界检查吞掉:EOF 无换行时 cursor 已越过
+      // baseLines.length,先查越界会把合法输入误判为对齐失败
+      if (text === "\\ No newline at end of file") continue; // 不占基准行
       if (cursor > baseLines.length) return { ok: false, lines: [], gaps: [] };
-      if (baseLines[cursor - 1] !== text && text !== "\\ No newline at end of file") {
+      if (baseLines[cursor - 1] !== text) {
         return { ok: false, lines: [], gaps: [] };
       }
-      if (text === "\\ No newline at end of file") continue; // 不占基准行
       segLines.push({
         kind: l.type === "del" ? "del" : "context",
         baseLineno: cursor,

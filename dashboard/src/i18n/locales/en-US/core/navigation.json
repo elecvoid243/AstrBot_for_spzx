@@ -54,7 +54,7 @@
     "normal": "Normal Config",
     "system": "System Config"
   },
-  "pluginWebui": "Plugin Pages",
+  "pluginView": "Plugin Views",
   "feedback": {
     "button": "Feedback",
     "title": "Feedback",
@@ -70,5 +70,6 @@
     "success": "Feedback submitted. Thank you!",
     "failed": "Failed to submit feedback, please try again later",
     "versionInfo": "Version info will be attached automatically: {info}"
-  }
+  },
+  "pluginViewType": "Plugin View"
 }

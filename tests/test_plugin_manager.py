@@ -141,11 +141,26 @@ def test_load_plugin_metadata_includes_i18n(tmp_path: Path):
 
     assert metadata is not None
     assert metadata.short_desc == "Local test short description"
-    assert metadata.pages == []
+    assert metadata.views == []
     assert metadata.i18n == {"zh-CN": {"metadata": {"display_name": "你好世界"}}}
 
 
-def test_load_plugin_metadata_includes_pages(tmp_path: Path):
+def test_load_plugin_metadata_includes_views(tmp_path: Path):
+    plugin_path = tmp_path / "helloworld"
+    _write_local_test_plugin(plugin_path, TEST_PLUGIN_REPO)
+    metadata_path = plugin_path / "metadata.yaml"
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    metadata["views"] = [{"name": "dashboard", "title": "Dashboard"}]
+    metadata_path.write_text(yaml.dump(metadata), encoding="utf-8")
+
+    loaded_metadata = PluginManager._load_plugin_metadata(str(plugin_path))
+
+    assert loaded_metadata is not None
+    assert loaded_metadata.views == [{"name": "dashboard", "title": "Dashboard"}]
+
+
+def test_load_plugin_metadata_pages_alias_maps_to_views(tmp_path: Path):
+    # "pages" stays a compatible alias for "views" in metadata.yaml.
     plugin_path = tmp_path / "helloworld"
     _write_local_test_plugin(plugin_path, TEST_PLUGIN_REPO)
     metadata_path = plugin_path / "metadata.yaml"
@@ -156,7 +171,7 @@ def test_load_plugin_metadata_includes_pages(tmp_path: Path):
     loaded_metadata = PluginManager._load_plugin_metadata(str(plugin_path))
 
     assert loaded_metadata is not None
-    assert loaded_metadata.pages == [{"name": "dashboard", "title": "Dashboard"}]
+    assert loaded_metadata.views == [{"name": "dashboard", "title": "Dashboard"}]
 
 
 def test_load_plugin_metadata_accepts_yml_suffix(tmp_path: Path):
@@ -412,13 +427,16 @@ def local_updater(plugin_manager_pm):
 @pytest.mark.parametrize("dependency_install_fails", [False, True])
 @pytest.mark.parametrize("cross_filesystem", [False, True])
 async def test_install_plugin_dependency_install_flow(
-    plugin_manager_pm: PluginManager, monkeypatch, dependency_install_fails: bool,
+    plugin_manager_pm: PluginManager,
+    monkeypatch,
+    dependency_install_fails: bool,
     cross_filesystem: bool,
 ):
     plugin_path = Path(plugin_manager_pm.plugin_store_path) / TEST_PLUGIN_DIR
     events = []
     _mock_missing_requirements(monkeypatch, {"networkx"})
     if cross_filesystem:
+
         def cross_device_rename(*args, **kwargs):
             raise OSError(errno.EXDEV, "Cross-device move")
 
@@ -570,7 +588,9 @@ async def test_install_updates_existing_plugin_and_restores_on_failure(
     original_rename = os.rename
 
     def cross_device_rename(source, destination, *args, **kwargs):
-        if Path(source).is_relative_to(system_temp) != Path(destination).is_relative_to(system_temp):
+        if Path(source).is_relative_to(system_temp) != Path(destination).is_relative_to(
+            system_temp
+        ):
             raise OSError(errno.EXDEV, "Cross-device move")
         return original_rename(source, destination, *args, **kwargs)
 
@@ -801,7 +821,9 @@ async def test_install_copy_failure_preserves_complete_old_code(
         assert {path.name: path.read_bytes() for path in backup.iterdir()} == old_files
         assert versions_loaded == ["2.0.0"]
     else:
-        assert {path.name: path.read_bytes() for path in local_updater.iterdir()} == old_files
+        assert {
+            path.name: path.read_bytes() for path in local_updater.iterdir()
+        } == old_files
         assert versions_loaded == ["1.0.0"]
         assert list(system_temp.iterdir()) == []
 

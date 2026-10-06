@@ -76,10 +76,16 @@ export function usePluginI18n() {
     if (!base || !attr) {
       return fallback;
     }
-    return resolve(plugin?.i18n, `${base}.${attr}`, fallback);
+    const viewBase = base.replace(/^pages\./, "views.");
+    const pageBase = base.replace(/^views\./, "pages.");
+    return resolve(
+      plugin?.i18n,
+      `${viewBase}.${attr}`,
+      resolve(plugin?.i18n, `${pageBase}.${attr}`, fallback),
+    );
   };
 
-  const pluginPageTitle = (plugin, page, fallback = "") => {
+  const pluginViewTitle = (plugin, page, fallback = "") => {
     const pageFallback =
       fallback ||
       (page && typeof page === "object"
@@ -89,7 +95,7 @@ export function usePluginI18n() {
     return pluginPageText(plugin, page, "title", pageFallback);
   };
 
-  const pluginPageDescription = (plugin, page, fallback = "") => {
+  const pluginViewDescription = (plugin, page, fallback = "") => {
     const pageFallback =
       fallback ||
       (page && typeof page === "object" ? page.description || page.desc : "") ||
@@ -109,8 +115,8 @@ export function usePluginI18n() {
     pluginDesc,
     pluginShortDesc,
     pluginPageText,
-    pluginPageTitle,
-    pluginPageDescription,
+    pluginViewTitle,
+    pluginViewDescription,
     configText,
   };
 }

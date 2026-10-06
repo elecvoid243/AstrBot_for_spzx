@@ -1797,6 +1797,10 @@
           "network": "Network connection failed",
           "unknown": "Initialization failed ({reason})"
         }
+      },
+      "overlay": {
+        "toOverlay": "Show full file with diff",
+        "toDiff": "Show diff only"
       }
     },
     "planModeChip": {

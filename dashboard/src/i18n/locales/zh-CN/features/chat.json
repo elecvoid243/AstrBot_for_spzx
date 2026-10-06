@@ -1830,6 +1830,10 @@
           "network": "网络连接失败",
           "unknown": "初始化失败({reason})"
         }
+      },
+      "overlay": {
+        "toOverlay": "全文叠加显示",
+        "toDiff": "仅显示差异"
       }
     },
     "planModeChip": {

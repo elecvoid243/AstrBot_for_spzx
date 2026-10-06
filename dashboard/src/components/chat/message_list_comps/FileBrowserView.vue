@@ -13,6 +13,7 @@ import type { SpcodeFileBrowserEntry } from "@/composables/parseSpcodeFileBrowse
 import type { UseSpcodeGitLog } from "@/composables/useSpcodeGitLog";
 import type { UseSpcodeGitShow } from "@/composables/useSpcodeGitShow";
 import { useSpcodeGitFile } from "@/composables/useSpcodeGitFile";
+import { useSpcodeGitFileDiff } from "@/composables/useSpcodeGitFileDiff";
 import { useResizableSplit } from "@/composables/useResizableSplit";
 import { projectRelativePath } from "@/composables/pathUtils";
 import FileBrowserBreadcrumb from "./FileBrowserBreadcrumb.vue";
@@ -336,6 +337,14 @@ watch(
 // file selections in a way we don't need here.)
 const gitFile = useSpcodeGitFile(computed(() => props.worktree ?? null));
 
+// 2026-10-06 range-compare:任意两版本比较(git-file-diff 数据层)
+const gitFileDiff = useSpcodeGitFileDiff(
+  computed(() => props.worktree ?? null),
+);
+/** 基准 SHA(第一次点选);第二次点选 = to。不做时间序纠正 */
+const rangeBase = ref<string | null>(null);
+const compareRange = ref<{ from: string; to: string } | null>(null);
+
 /** Repo-relative path of the currently-previewed file (or empty
  *  string when nothing is selected). Passed straight to
  *  `<DocumentHistoryPanel>` as `file-relative`; the panel's
@@ -449,6 +458,9 @@ watch(
   () => gitLogPath.value,
   (path, prev) => {
     if (path !== prev) {
+      // Review Focus #2:切文件作废比较态
+      rangeBase.value = null;
+      compareRange.value = null;
       selectedRevision.value = null;
       viewMode.value = "raw";
     }
@@ -461,6 +473,7 @@ watch(
 function onHistorySelectRevision(sha: string): void {
   if (!confirmLeaveEditing()) return;
   if (!gitLogPath.value) return;
+  compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
   viewMode.value = "raw";
   // Kick the historical-blob fetch — `getData()` is reactive so the
@@ -470,6 +483,7 @@ function onHistorySelectRevision(sha: string): void {
 function onHistoryCompareCurrent(sha: string): void {
   if (!confirmLeaveEditing()) return;
   if (!gitLogPath.value) return;
+  compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
   viewMode.value = "diff";
   // No explicit fetch here — the diffPatch watcher above sees the
@@ -490,7 +504,28 @@ function onHistoryCompareCurrent(sha: string): void {
  * "回到当前" button so the workspace tab reads identically
  * to the document-manager tab.
  */
+/** 当前比较的已取数据(未比较 / 未取到为 null) */
+const rangeDiffData = computed(() => {
+  const path = gitLogPath.value;
+  const cr = compareRange.value;
+  if (!path || !cr) return null;
+  return gitFileDiff.getData(path, cr.from, cr.to);
+});
+
+function onSetRangeBase(sha: string | null): void {
+  rangeBase.value = sha;
+}
+
+function onCompareRange(from: string, to: string): void {
+  if (!confirmLeaveEditing()) return;
+  if (!gitLogPath.value) return;
+  compareRange.value = { from, to };
+  selectedRevision.value = null; // 与单版本查看互斥
+  void gitFileDiff.fetchDiff(gitLogPath.value, from, to);
+}
+
 function onBackToCurrent(): void {
+  compareRange.value = null; // 退出比较视图;rangeBase 保留
   selectedRevision.value = null;
   viewMode.value = "raw";
 }
@@ -969,6 +1004,7 @@ onBeforeUnmount(() => {
             :historical-is-binary="historicalIsBinary"
             :diff-patch="diffPatch"
             :diff-is-binary="diffIsBinary"
+            :range-diff="rangeDiffData"
             :file-relative-path="gitLogPath"
             :worktree="props.worktree ?? null"
             @navigate-target="onPreviewTargetNavigate"
@@ -1020,8 +1056,11 @@ onBeforeUnmount(() => {
               :file-relative="gitLogPath"
               :current-revision="selectedRevision"
               :is-loading="gitLog.state.value.kind === 'loading'"
+              :range-base="rangeBase"
               @select-revision="onHistorySelectRevision"
               @compare-current="onHistoryCompareCurrent"
+              @set-range-base="onSetRangeBase"
+              @compare-range="onCompareRange"
               @collapse="isHistoryCollapsed = true"
             />
           </div>

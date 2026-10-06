@@ -16,6 +16,7 @@ import {
 } from "vue";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeGitFile } from "@/composables/useSpcodeGitFile";
+import { useSpcodeGitFileDiff } from "@/composables/useSpcodeGitFileDiff";
 // 2026-07-22 docs-rename-remove-endpoints: workspace tab's
 // rename/remove flow uses the generic spcode/file-rename and
 // spcode/file-remove endpoints (accepts umo/worktree). The
@@ -1155,6 +1156,7 @@ function onRename(newPath: string) {
 
 function onSelectRevision(sha: string) {
   if (!selectedDoc.value) return;
+  compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
   viewMode.value = "rendered";
   if (selectedDoc.value && sha) {
@@ -1164,9 +1166,44 @@ function onSelectRevision(sha: string) {
 
 function onCompareCurrent(sha: string) {
   if (!selectedDoc.value) return;
+  compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
   viewMode.value = "diff";
 }
+
+// ─── 2026-10-06 range-compare(任意两版本比较) ───────────────────────
+// Spec: docs/superpowers/specs/2026-10-06-git-file-range-diff-frontend-design.md §5
+const gitFileDiff = useSpcodeGitFileDiff(computed(() => props.worktree));
+/** 基准 SHA(第一次点选);第二次点选 = to。不做时间序纠正 */
+const rangeBase = ref<string | null>(null);
+const compareRange = ref<{ from: string; to: string } | null>(null);
+/** 当前比较的已取数据(未取到 / 未比较时为 null) */
+const rangeDiffData = computed(() => {
+  const path = gitLogPath.value;
+  const cr = compareRange.value;
+  if (!path || !cr) return null;
+  return gitFileDiff.getData(path, cr.from, cr.to);
+});
+
+function onSetRangeBase(sha: string | null): void {
+  rangeBase.value = sha;
+}
+
+function onCompareRange(from: string, to: string): void {
+  if (!selectedDoc.value) return;
+  compareRange.value = { from, to };
+  selectedRevision.value = null; // 与单版本查看互斥
+  viewMode.value = "diff";
+  void gitFileDiff.fetchDiff(gitLogPath.value, from, to);
+}
+
+// 切换文件 → 比较态全部作废(Review Focus #2)
+watch(gitLogPath, (path, prev) => {
+  if (path !== prev) {
+    rangeBase.value = null;
+    compareRange.value = null;
+  }
+});
 
 function onCreateNew(name: string) {
   // selectedDoc is always stored as a docsRoot-relative path.
@@ -1197,6 +1234,7 @@ function onCreateNew(name: string) {
 }
 
 function onBackToCurrent() {
+  compareRange.value = null; // 退出比较视图;rangeBase 保留(便于快速再比较)
   selectedRevision.value = null;
 }
 
@@ -1811,6 +1849,32 @@ onBeforeUnmount(() => {
               />
             </template>
             <template v-else>
+              <!-- 2026-10-06 range-compare banner:与 selectedRevision 互斥,
+                   compareRange 非空时 selectedRevision 必为 null -->
+              <div v-if="compareRange" class="document-manager__banner">
+                <span>
+                  {{
+                    tm(
+                      "spcodeProjectLoad.documentManager.history.rangeBanner",
+                      {
+                        from: compareRange.from.slice(0, 7),
+                        to: compareRange.to.slice(0, 7),
+                      },
+                    )
+                  }}
+                </span>
+                <button
+                  type="button"
+                  class="document-manager__banner-btn"
+                  @click="onBackToCurrent"
+                >
+                  {{
+                    tm(
+                      "spcodeProjectLoad.documentManager.viewMode.backToCurrent",
+                    )
+                  }}
+                </button>
+              </div>
               <div v-if="selectedRevision" class="document-manager__banner">
                 <span>
                   {{
@@ -2057,8 +2121,22 @@ onBeforeUnmount(() => {
                 v-else
                 class="document-manager__diff"
               >
+                <!-- 2026-10-06 range-compare:compareRange 激活时改由
+                     git-file-diff 数据驱动 overlay(基准全文 + diff 叠加)。
+                     status=added 不传 baseContent → 纯 patch 全绿视图;
+                     unchanged → patch="" + baseContent → 纯文件视图 -->
                 <DiffPreview
-                  :content="diffPatch ?? ''"
+                  :content="
+                    compareRange ? (rangeDiffData?.patch ?? '') : (diffPatch ?? '')
+                  "
+                  :base-content="
+                    compareRange
+                      ? rangeDiffData && rangeDiffData.status !== 'added'
+                        ? rangeDiffData.baseContent
+                        : undefined
+                      : undefined
+                  "
+                  :commentable="false"
                   :is-dark="isDark"
                 />
               </div>
@@ -2112,8 +2190,11 @@ onBeforeUnmount(() => {
             :file-relative="gitLogPath"
             :current-revision="selectedRevision"
             :is-loading="gitLog.state.value.kind === 'loading'"
+            :range-base="rangeBase"
             @select-revision="onSelectRevision"
             @compare-current="onCompareCurrent"
+            @set-range-base="onSetRangeBase"
+            @compare-range="onCompareRange"
             @collapse="isHistoryCollapsed = true"
           />
 

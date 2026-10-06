@@ -30,6 +30,7 @@ import FileCommentEditor from "./FileCommentEditor.vue";
 import InlineAskEditor from "./InlineAskEditor.vue";
 import SelectionActionMenu from "./SelectionActionMenu.vue";
 import DiffPreview from "./DiffPreview.vue";
+import type { GitFileDiffData } from "@/composables/parseSpcodeGitFileDiff";
 import CodeMirrorEditor from "./CodeMirrorEditor.vue";
 import CodeCheckFormatBar from "./CodeCheckFormatBar.vue";
 import MarkdownView from "@/components/shared/MarkdownView.vue";
@@ -101,6 +102,12 @@ const props = defineProps<{
   fileRelativePath?: string;
   /** Current worktree root, forwarded to the file-write endpoint. */
   worktree?: string | null;
+  /**
+   * 2026-10-06 range-compare: 任意两版本比较数据(git-file-diff)。
+   * 非空时优先于 diffPatch 走「全文件 + diff 叠加」渲染;
+   * status=added → 纯 patch 全绿;unchanged → 纯文件视图。
+   */
+  rangeDiff?: GitFileDiffData | null;
 }>();
 const emit = defineEmits<{
   (e: "navigate-target", resolvedPath: string): void;
@@ -1171,10 +1178,21 @@ onBeforeUnmount(() => {
             user-feedback request to align the two tabs.
           -->
           <div
-            v-if="props.selectedRevision"
+            v-if="props.rangeDiff || props.selectedRevision"
             class="preview-file__banner"
           >
-            <span>
+            <span v-if="props.rangeDiff">
+              {{
+                tm(
+                  "spcodeProjectLoad.documentManager.history.rangeBanner",
+                  {
+                    from: props.rangeDiff.from.slice(0, 7),
+                    to: props.rangeDiff.to.slice(0, 7),
+                  }
+                )
+              }}
+            </span>
+            <span v-else>
               {{
                 tm(
                   "spcodeProjectLoad.documentManager.viewMode.viewingRevision",
@@ -1431,6 +1449,24 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
+               compareRange 激活时 selectedRevision 必为 null -->
+          <div
+            v-else-if="props.rangeDiff"
+            class="preview-file__diff-wrapper"
+          >
+            <DiffPreview
+              :content="props.rangeDiff.patch ?? ''"
+              :file-path="state.snapshot.meta.path"
+              :base-content="
+                props.rangeDiff.status !== 'added'
+                  ? props.rangeDiff.baseContent
+                  : undefined
+              "
+              :is-dark="isDark"
+              :commentable="false"
+            />
+          </div>
           <div
             v-else-if="isHistoricalDiff"
             class="preview-file__diff-wrapper"

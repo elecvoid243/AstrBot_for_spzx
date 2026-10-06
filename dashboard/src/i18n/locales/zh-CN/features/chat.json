@@ -1909,7 +1909,9 @@
         "setRangeBase": "设为比较基准",
         "clearRangeBase": "取消比较基准",
         "compareWithBase": "与基准比较",
-        "rangeBaseBadge": "基准"
+        "rangeBaseBadge": "基准",
+        "rangeBanner": "正在比较 基准 {from} → {to}",
+        "rangeIdentical": "两个版本内容一致"
       },
       "editor": {
         "newFile": "新建",

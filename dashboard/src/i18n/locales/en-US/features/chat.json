@@ -1876,7 +1876,9 @@
         "setRangeBase": "Set as compare base",
         "clearRangeBase": "Clear compare base",
         "compareWithBase": "Compare with base",
-        "rangeBaseBadge": "Base"
+        "rangeBaseBadge": "Base",
+        "rangeBanner": "Comparing base {from} → {to}",
+        "rangeIdentical": "Identical content in both versions"
       },
       "editor": {
         "newFile": "New",

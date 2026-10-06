@@ -129,8 +129,6 @@
     "defaultProviderIdHint": "动态子代理未指定 provider 时的默认值。留空则使用主代理的 provider",
     "sharedContextMaxlen": "共享上下文最大长度",
     "sharedContextMaxlenHint": "共享上下文消息的最大数量（条）",
-    "subagentHistoryMaxlen": "最大历史消息数",
-    "subagentHistoryMaxlenHint": "每个子代理最多保留的历史消息条数",
     "executionTimeout": "执行超时时间(秒)",
     "executionTimeoutHint": "子代理执行任务的最大超时时间，-1表示不限制",
     "rulePrompt": "行为约束提示词",

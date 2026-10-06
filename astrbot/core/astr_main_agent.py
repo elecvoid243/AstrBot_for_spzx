@@ -1249,7 +1249,6 @@ async def _apply_subagent_manager_tools(
             auto_cleanup_per_turn=dynamic_cfg.get("auto_cleanup_per_turn", True),
             shared_context_enabled=shared_context_enabled,
             shared_context_maxlen=orch_cfg.get("shared_context_maxlen", 300),
-            subagent_history_maxlen=orch_cfg.get("subagent_history_maxlen", 300),
             tools_blacklist=dynamic_cfg.get("tools_blacklist", None),
             tools_inherent=dynamic_cfg.get("tools_inherent", None),
             execution_timeout=orch_cfg.get("execution_timeout", 1200),

@@ -126,7 +126,6 @@ class SubAgentManager:
     _shared_context_enabled: bool = False
     _history_enabled: bool = True  # 是否启用子代理历史记忆功能
     _shared_context_maxlen: int = 300  # 公共上下文保留的历史消息条数
-    _subagent_history_maxlen: int = 300  # 每个subagent最多保留的历史消息条数
     _execution_timeout: float = 1200.0  # SubAgent 执行超时时间（秒） 总时长
     _rule_prompt: str = ""  # 动态子代理的固定行为约束prompt
     _time_prompt_enabled: bool = True  # 是否启用时间prompt注入
@@ -213,7 +212,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         auto_cleanup_per_turn: bool = True,
         shared_context_enabled: bool = False,
         shared_context_maxlen: int = 300,
-        subagent_history_maxlen: int = 300,
         tools_blacklist: list[str] = None,
         tools_inherent: list[str] = None,
         execution_timeout: float = 1200.0,
@@ -232,7 +230,6 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
         cls._shared_context_enabled = shared_context_enabled
         cls._history_enabled = history_enabled
         cls._shared_context_maxlen = shared_context_maxlen
-        cls._subagent_history_maxlen = subagent_history_maxlen
         cls._execution_timeout = execution_timeout
         cls._rule_prompt = rule_prompt
         cls._time_prompt_enabled = time_prompt_enabled
@@ -378,29 +375,17 @@ DAG Orchestration automatically delegate subagents. When you have 2+ independent
 
         filtered_messages = []
         if isinstance(current_messages, list):
-            _MAX_TOOL_RESULT_LEN = 2000
             for msg in current_messages:
                 if (
                     isinstance(msg, dict) and msg.get("role") == "system"
                 ):  # 移除system消息
                     continue
-                # 对过长的 tool 结果做截断，避免单条消息占用过多空间
-                if (
-                    isinstance(msg, dict)
-                    and msg.get("role") == "tool"
-                    and isinstance(msg.get("content"), str)
-                    and len(msg["content"]) > _MAX_TOOL_RESULT_LEN
-                ):
-                    msg["content"] = (
-                        msg["content"][:_MAX_TOOL_RESULT_LEN] + "\n...[truncated]"
-                    )
                 filtered_messages.append(msg)
 
+        # 历史规模不做条数/字符裁剪：超大 tool 结果在运行时已被 runner 的
+        # 溢出文件机制收敛（与主 agent 共用），请求时的 token 预算压缩负责
+        # 控制上下文规模。
         session.subagent_histories[agent_name].extend(filtered_messages)
-        if len(session.subagent_histories[agent_name]) > cls._subagent_history_maxlen:
-            session.subagent_histories[agent_name] = session.subagent_histories[
-                agent_name
-            ][-cls._subagent_history_maxlen :]
 
         logger.debug(
             "[SubAgent:History] Saved messages for %s, current len=%d",

@@ -129,8 +129,6 @@
     "defaultProviderIdHint": "Default provider ID for dynamic subagents when not explicitly set. Leave empty to follow the main agent's provider",
     "sharedContextMaxlen": "Shared Context Max Length",
     "sharedContextMaxlenHint": "Maximum number of messages in shared context",
-    "subagentHistoryMaxlen": "Max History Messages",
-    "subagentHistoryMaxlenHint": "Maximum history messages retained per subagent",
     "executionTimeout": "Execution Timeout (seconds)",
     "executionTimeoutHint": "Maximum execution timeout for subagent tasks, -1 means unlimited",
     "rulePrompt": "Behavior Rule Prompt",

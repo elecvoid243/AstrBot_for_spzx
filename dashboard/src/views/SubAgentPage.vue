@@ -184,24 +184,6 @@
             </div>
           </div>
 
-          <!-- 最大历史消息数 -->
-          <div v-if="rootCfg.history_enabled" class="setting-card">
-            <div class="setting-card-head">
-              <div>
-                <div class="setting-title">{{ tm('enhancedFields.subagentHistoryMaxlen') }}</div>
-                <div class="setting-subtitle">{{ tm('enhancedFields.subagentHistoryMaxlenHint') }}</div>
-              </div>
-              <v-text-field
-                v-model.number="rootCfg.subagent_history_maxlen"
-                type="number"
-                density="compact"
-                variant="outlined"
-                style="width: 120px;"
-                hide-details
-              />
-            </div>
-          </div>
-
           <!-- 共享上下文最大长度 -->
           <div v-if="rootCfg.shared_context_enabled" class="setting-card">
             <div class="setting-card-head">
@@ -818,7 +800,6 @@ type SubAgentOrchestratorConfig = {
   history_enabled: boolean
   shared_context_enabled: boolean
   shared_context_maxlen: number
-  subagent_history_maxlen: number
   execution_timeout: number
   time_prompt_enabled: boolean
 }
@@ -933,7 +914,6 @@ const rootCfg = ref({
   history_enabled: true,
   shared_context_enabled: false,
   shared_context_maxlen: 200,
-  subagent_history_maxlen: 500,
   execution_timeout: 600,
   time_prompt_enabled: true,
   context_inherit_mode: 'normal'
@@ -1019,7 +999,6 @@ function normalizeRootConfig(raw: any) {
     history_enabled: orchData?.history_enabled !== false,
     shared_context_enabled: !!orchData?.shared_context_enabled,
     shared_context_maxlen: Number(orchData?.shared_context_maxlen) || 200,
-    subagent_history_maxlen: Number(orchData?.subagent_history_maxlen) || 500,
     execution_timeout: Number(orchData?.execution_timeout) || 600,
     time_prompt_enabled: orchData?.time_prompt_enabled !== false,
     context_inherit_mode: CONTEXT_INHERIT_MODES.includes(orchData?.context_inherit_mode)
@@ -1062,7 +1041,6 @@ function serializeFullConfig(config: SubAgentConfig, dynamic: DynamicAgentsConfi
     history_enabled: root.history_enabled,
     shared_context_enabled: root.shared_context_enabled,
     shared_context_maxlen: root.shared_context_maxlen,
-    subagent_history_maxlen: root.subagent_history_maxlen,
     execution_timeout: root.execution_timeout,
     time_prompt_enabled: root.time_prompt_enabled,
     context_inherit_mode: root.context_inherit_mode,
@@ -1196,7 +1174,6 @@ async function save() {
       history_enabled: rootCfg.value.history_enabled,
       shared_context_enabled: rootCfg.value.shared_context_enabled,
       shared_context_maxlen: rootCfg.value.shared_context_maxlen,
-      subagent_history_maxlen: rootCfg.value.subagent_history_maxlen,
       execution_timeout: rootCfg.value.execution_timeout,
       time_prompt_enabled: rootCfg.value.time_prompt_enabled,
       context_inherit_mode: rootCfg.value.context_inherit_mode,

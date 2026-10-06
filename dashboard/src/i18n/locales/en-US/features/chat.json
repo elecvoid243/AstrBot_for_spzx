@@ -1872,7 +1872,11 @@
         "compareWithCurrent": "View this commit's changes",
         "loadFail": "Failed to read history",
         "noSelection": "No file selected",
-        "jumpToCommit": "Jump to commit {sha} in Git history"
+        "jumpToCommit": "Jump to commit {sha} in Git history",
+        "setRangeBase": "Set as compare base",
+        "clearRangeBase": "Clear compare base",
+        "compareWithBase": "Compare with base",
+        "rangeBaseBadge": "Base"
       },
       "editor": {
         "newFile": "New",

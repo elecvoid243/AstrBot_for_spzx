@@ -15,10 +15,16 @@ const props = defineProps<{
   fileRelative: string | null;
   currentRevision: string | null;
   isLoading: boolean;
+  /** 2026-10-06 range-compare: 当前基准 SHA(父组件持有,面板受控) */
+  rangeBase?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "select-revision", sha: string): void;
   (e: "compare-current", sha: string): void;
+  /** 双选比较:第一次点选 = from(基准),第二次 = to。不做时间序纠正 */
+  (e: "compare-range", fromSha: string, toSha: string): void;
+  /** 设置 / 清除基准(null = 清除) */
+  (e: "set-range-base", sha: string | null): void;
   (e: "collapse"): void;
 }>();
 const { tm } = useModuleI18n("features/chat");
@@ -170,11 +176,45 @@ function onShaClick(sha: string): void {
           >
             <v-icon size="12">mdi-eye-outline</v-icon>
           </button>
+          <!-- 2026-10-06 range-compare: 基准切换。基准行显示徽章;
+               有基准时 compare 按钮语义切换为「与基准比较」 -->
           <button
             type="button"
             class="document-history-panel__action"
-            :title="tm('spcodeProjectLoad.documentManager.history.compareWithCurrent')"
-            @click="emit('compare-current', c.sha)"
+            :class="{ 'is-range-base': rangeBase === c.sha }"
+            data-testid="range-base-btn"
+            :title="tm(
+              rangeBase === c.sha
+                ? 'spcodeProjectLoad.documentManager.history.clearRangeBase'
+                : 'spcodeProjectLoad.documentManager.history.setRangeBase',
+            )"
+            @click="emit('set-range-base', rangeBase === c.sha ? null : c.sha)"
+          >
+            <v-icon size="12">
+              {{ rangeBase === c.sha ? 'mdi-bookmark' : 'mdi-bookmark-outline' }}
+            </v-icon>
+          </button>
+          <span
+            v-if="rangeBase === c.sha"
+            class="document-history-panel__base-badge"
+            data-testid="range-base-badge"
+          >
+            {{ tm('spcodeProjectLoad.documentManager.history.rangeBaseBadge') }}
+          </span>
+          <button
+            type="button"
+            class="document-history-panel__action"
+            data-testid="compare-btn"
+            :title="tm(
+              rangeBase && rangeBase !== c.sha
+                ? 'spcodeProjectLoad.documentManager.history.compareWithBase'
+                : 'spcodeProjectLoad.documentManager.history.compareWithCurrent',
+            )"
+            @click="
+              rangeBase && rangeBase !== c.sha
+                ? emit('compare-range', rangeBase, c.sha)
+                : emit('compare-current', c.sha)
+            "
           >
             <v-icon size="12">mdi-compare</v-icon>
           </button>
@@ -194,6 +234,18 @@ function onShaClick(sha: string): void {
   background: rgba(var(--v-theme-on-surface), 0.03);
   overflow: hidden;
   position: relative;
+}
+.document-history-panel__base-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: rgb(var(--v-theme-primary));
+  border: 1px solid rgba(var(--v-theme-primary), 0.5);
+  user-select: none;
+}
+.document-history-panel__action.is-range-base {
+  color: rgb(var(--v-theme-primary));
 }
 .document-history-panel__header {
   display: flex;

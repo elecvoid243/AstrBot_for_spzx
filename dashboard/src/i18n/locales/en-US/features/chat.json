@@ -1803,11 +1803,9 @@
         "toDiff": "Show diff only"
       },
       "viewRevision": {
-        "buttonAria": "View {path} at this commit",
-        "loading": "Loading…",
-        "loadError": "Load failed: {reason}",
-        "binary": "Binary file, no preview",
-        "close": "Close"
+        "buttonAria": "Export and open {path} at this commit",
+        "exporting": "Exporting…",
+        "exportFailed": "Export failed: {reason}"
       }
     },
     "planModeChip": {

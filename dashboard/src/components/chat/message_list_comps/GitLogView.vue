@@ -15,7 +15,8 @@
 import { computed, inject, nextTick, ref, watch, type ComputedRef } from "vue";
 import { storeToRefs } from "pinia";
 import { useCustomizerStore } from "@/stores/customizer";
-import { useSpcodeGitFile } from "@/composables/useSpcodeGitFile";
+import { pluginExtensionApi } from "@/api/v1";
+import { useToast } from "@/utils/toast";
 import { useModuleI18n } from "@/i18n/composables";
 import type { LogFetchState, LogFilter } from "@/composables/useSpcodeGitLog";
 import type { SpcodeLogCommit } from "@/composables/parseSpcodeGitWorkflow";
@@ -169,34 +170,53 @@ function openOnDiskAbsPath(f: GitShowFile): string {
   return absoluteFromSelectedDoc(root, ".", f.path);
 }
 
-// ─── 2026-10-06 查看此版本(历史版本只读查看器) ─────────────────────
-// 「在磁盘中打开」开的是当前工作区最新版;这里补「看那次提交的版本」:
-// 弹窗内展示 git-file?ref=<sha>&path 的 blob,不离开上下文、不污染磁盘。
-const gitFile = useSpcodeGitFile(
-  computed(() => openOnDiskRoot?.value ?? null),
-);
-const viewingRevision = ref<{ sha: string; path: string } | null>(null);
-const viewingData = computed(() => {
-  const v = viewingRevision.value;
-  if (!v) return null;
-  return gitFile.getData(v.path, v.sha);
-});
-const viewingState = computed(() => {
-  const v = viewingRevision.value;
-  if (!v) return { kind: "idle" as const };
-  return gitFile.getState(v.path, v.sha);
-});
-function onViewRevisionClick(
+// ─── 2026-10-06 导出此版本并打开 ─────────────────────────────────────
+// 「在磁盘中打开」开的是当前工作区最新版;这里补「该提交下的版本」:
+// 后端把 <ref>:<path> 的 blob 导出到 data/temp/git-history/<sha7>/,
+// 返回绝对路径后复用核心 open-file 用系统默认应用打开。
+// (2026-10-06 修订:原应用内查看器方案弃用,两个按钮统一走磁盘。)
+const toast = useToast();
+const exporting = ref(false);
+
+async function onViewRevisionClick(
   e: MouseEvent,
   c: SpcodeLogCommit,
   f: GitShowFile,
-): void {
+): Promise<void> {
   e.stopPropagation();
-  viewingRevision.value = { sha: c.sha, path: f.path };
-  void gitFile.fetchRef(f.path, c.sha);
-}
-function closeViewRevision(): void {
-  viewingRevision.value = null;
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const worktree = openOnDiskRoot?.value ?? null;
+    const resp = await pluginExtensionApi.post<unknown>("spcode/git-file-export", {
+      path: f.path,
+      ref: c.sha,
+      ...(worktree ? { worktree } : {}),
+    });
+    const envelope = resp.data as {
+      data?: { success?: boolean; abs_path?: string; reason?: string };
+    };
+    const payload = envelope?.data;
+    if (!payload?.success || !payload.abs_path) {
+      toast.error(
+        tm("spcodeProjectLoad.diffSidebar.viewRevision.exportFailed", {
+          reason: payload?.reason ?? "unknown",
+        }),
+      );
+      return;
+    }
+    // 打开成功的 toast 由 useOpenOnDisk 统一负责(复用同一通道)
+    void openOnDisk(payload.abs_path, f.path);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    toast.error(
+      tm("spcodeProjectLoad.diffSidebar.viewRevision.exportFailed", {
+        reason: message,
+      }),
+    );
+  } finally {
+    exporting.value = false;
+  }
 }
 
 function onOpenOnDiskClick(e: MouseEvent, f: GitShowFile): void {
@@ -1720,19 +1740,26 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
                     type="button"
                     class="git-log-files-item-view-revision"
                     data-testid="view-revision-btn"
+                    :disabled="exporting"
                     :aria-label="
-                      tm('spcodeProjectLoad.diffSidebar.viewRevision.buttonAria', {
-                        path: f.path,
-                      })
+                      tm(
+                        exporting
+                          ? 'spcodeProjectLoad.diffSidebar.viewRevision.exporting'
+                          : 'spcodeProjectLoad.diffSidebar.viewRevision.buttonAria',
+                        { path: f.path },
+                      )
                     "
                     :title="
-                      tm('spcodeProjectLoad.diffSidebar.viewRevision.buttonAria', {
-                        path: f.path,
-                      })
+                      tm(
+                        exporting
+                          ? 'spcodeProjectLoad.diffSidebar.viewRevision.exporting'
+                          : 'spcodeProjectLoad.diffSidebar.viewRevision.buttonAria',
+                        { path: f.path },
+                      )
                     "
                     @click="onViewRevisionClick($event, c, f)"
                   >
-                    <v-icon :size="14">mdi-eye-outline</v-icon>
+                    <v-icon :size="14">mdi-history</v-icon>
                   </button>
                   <!-- 2026-08-14 open-on-disk: opens the file on the
                        AstrBot host with the OS default application.
@@ -1835,106 +1862,11 @@ function fileErrorMessage(state: GitShowFetchState): string | null {
         {{ tm("spcodeProjectLoad.diffSidebar.error.retry") }}
       </button>
     </div>
-
-    <!-- 2026-10-06 查看此版本:只读历史版本查看器。 -->
-    <v-dialog
-      :model-value="!!viewingRevision"
-      max-width="860"
-      scrollable
-      @update:model-value="closeViewRevision"
-    >
-      <v-card v-if="viewingRevision" data-testid="view-revision-dialog">
-        <v-card-title class="git-log-view-revision__title">
-          <span class="git-log-view-revision__path" :title="viewingRevision.path">
-            {{ viewingRevision.path }}
-          </span>
-          <span class="git-log-view-revision__sha">@{{ viewingRevision.sha.slice(0, 7) }}</span>
-        </v-card-title>
-        <v-card-text class="git-log-view-revision__body">
-          <div
-            v-if="!viewingData && viewingState.kind === 'error'"
-            class="git-log-view-revision__error"
-          >
-            {{
-              tm("spcodeProjectLoad.diffSidebar.viewRevision.loadError", {
-                reason: viewingState.kind === "error" ? viewingState.reason : "",
-              })
-            }}
-          </div>
-          <div
-            v-else-if="!viewingData"
-            class="git-log-view-revision__loading"
-          >
-            {{ tm("spcodeProjectLoad.diffSidebar.viewRevision.loading") }}
-          </div>
-          <div
-            v-else-if="viewingData.isBinary"
-            class="git-log-view-revision__loading"
-          >
-            {{ tm("spcodeProjectLoad.diffSidebar.viewRevision.binary") }}
-          </div>
-          <pre v-else class="git-log-view-revision__content">{{ viewingData.content }}</pre>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <button
-            type="button"
-            class="git-log-view-revision__close"
-            @click="closeViewRevision"
-          >
-            {{ tm("spcodeProjectLoad.diffSidebar.viewRevision.close") }}
-          </button>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
   </div>
 </template>
 
 <style scoped>
 
-.git-log-view-revision__title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
-}
-.git-log-view-revision__path {
-  font-family: monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.git-log-view-revision__sha {
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  font-family: monospace;
-  flex-shrink: 0;
-}
-.git-log-view-revision__body {
-  max-height: 60vh;
-  overflow: auto;
-}
-.git-log-view-revision__content {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.git-log-view-revision__loading,
-.git-log-view-revision__error {
-  padding: 24px 0;
-  text-align: center;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-}
-.git-log-view-revision__error {
-  color: rgb(var(--v-theme-error));
-}
-.git-log-view-revision__close {
-  padding: 4px 12px;
-  font-size: 12px;
-  color: rgb(var(--v-theme-primary));
-}
 .git-log-view {
   display: flex;
   flex-direction: column;

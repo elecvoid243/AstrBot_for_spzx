@@ -1834,6 +1834,13 @@
       "overlay": {
         "toOverlay": "全文叠加显示",
         "toDiff": "仅显示差异"
+      },
+      "viewRevision": {
+        "buttonAria": "查看 {path} 在此提交下的版本",
+        "loading": "正在加载…",
+        "loadError": "加载失败:{reason}",
+        "binary": "二进制文件,无法预览",
+        "close": "关闭"
       }
     },
     "planModeChip": {

@@ -1801,6 +1801,13 @@
       "overlay": {
         "toOverlay": "Show full file with diff",
         "toDiff": "Show diff only"
+      },
+      "viewRevision": {
+        "buttonAria": "View {path} at this commit",
+        "loading": "Loading…",
+        "loadError": "Load failed: {reason}",
+        "binary": "Binary file, no preview",
+        "close": "Close"
       }
     },
     "planModeChip": {

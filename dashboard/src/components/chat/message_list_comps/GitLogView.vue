@@ -16,6 +16,7 @@ import { computed, inject, nextTick, ref, watch, type ComputedRef } from "vue";
 import { storeToRefs } from "pinia";
 import { useCustomizerStore } from "@/stores/customizer";
 import { pluginExtensionApi } from "@/api/v1";
+import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useToast } from "@/utils/toast";
 import { useModuleI18n } from "@/i18n/composables";
 import type { LogFetchState, LogFilter } from "@/composables/useSpcodeGitLog";
@@ -176,6 +177,7 @@ function openOnDiskAbsPath(f: GitShowFile): string {
 // 返回绝对路径后复用核心 open-file 用系统默认应用打开。
 // (2026-10-06 修订:原应用内查看器方案弃用,两个按钮统一走磁盘。)
 const toast = useToast();
+const session = useSpcodeSession();
 const exporting = ref(false);
 
 async function onViewRevisionClick(
@@ -188,9 +190,14 @@ async function onViewRevisionClick(
   exporting.value = true;
   try {
     const worktree = openOnDiskRoot?.value ?? null;
+    // WHY umo:缺它时后端 preflight 回退「最近加载项目(跨所有会话)」,
+    // 可能命中别的会话的仓库,worktree 参数随即失配 → worktree_invalid
+    // (bug 2026-10-06)。与其它 sidebar 请求同源:会话上下文。
+    const umo = session.umo.value;
     const resp = await pluginExtensionApi.post<unknown>("spcode/git-file-export", {
       path: f.path,
       ref: c.sha,
+      ...(umo ? { umo } : {}),
       ...(worktree ? { worktree } : {}),
     });
     const envelope = resp.data as {

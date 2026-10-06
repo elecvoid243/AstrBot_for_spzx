@@ -9,6 +9,14 @@ import { enableAutoUnmount, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 
+vi.mock("@/composables/useSpcodeSession", () => ({
+  useSpcodeSession: () => ({
+    umo: { value: "umo-test" },
+    directory: { value: "D:/repo" },
+    scoped: true,
+  }),
+}));
+
 import { chatApi, pluginExtensionApi } from "@/api/v1";
 import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 
@@ -141,7 +149,13 @@ describe("GitLogView export-this-revision", () => {
     await nextTick();
     expect(postSpy).toHaveBeenCalledWith(
       "spcode/git-file-export",
-      expect.objectContaining({ path: "src/foo.ts", ref: SHA }),
+      expect.objectContaining({
+        path: "src/foo.ts",
+        ref: SHA,
+        // 2026-10-06 bug:缺 umo 时后端回退「最近加载项目」,
+        // 可能命中其它会话的仓库 → worktree_invalid。
+        umo: "umo-test",
+      }),
     );
     expect(openSpy).toHaveBeenCalledWith(ABS_PATH);
   });

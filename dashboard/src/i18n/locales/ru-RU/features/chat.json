@@ -1678,6 +1678,7 @@
         "loading": "Загрузка списка веток…",
         "error": "Не удалось загрузить ветки ({reason})",
         "detached": "detached HEAD",
+        "unavailable": "Ветки недоступны",
         "remote": "удалённая",
         "empty": "Веток пока нет",
         "switch": {

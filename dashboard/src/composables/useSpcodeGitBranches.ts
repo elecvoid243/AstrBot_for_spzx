@@ -75,6 +75,27 @@ export interface UseSpcodeGitBranches {
 // start/stop in lockstep in GitDiffSidebar.vue.
 const DEFAULT_POLL_MS = 30_000;
 
+// 2026-10-07 (elecvoid243): 「项目尚未就绪」类失败的有界退避重试表。
+//
+// WHY: 项目加载完成的信号只有 session.directory 变化，而这个 composable
+// 原先只 watch umo（项目加载时 umo 不变）。仅补 directory watcher 也不够：
+// 聊天框 `/project load` 在命令发出的瞬间就乐观 setLoaded(umo, path)，之后
+// onStreamEnd 的权威 refresh 写入同一个 path 值 —— watcher 不会第二次触发。
+// 于是「首帧请求早于项目登记」这条路径上分支快照会永久停在空结果（UI 把它
+// 渲染成 detached HEAD），只能靠用户手点刷新。8 次退避 ≈ 27.5s，覆盖正常
+// 加载时长；更长的加载由 30s 轮询兜底。
+const RETRY_BACKOFF_MS: readonly number[] = [
+  500, 1000, 2000, 4000, 5000, 5000, 5000, 5000,
+];
+
+// 只有「项目还没登记好」类失败值得重试：换 / 建项目都无法修好网络错误、
+// 参数错误或响应结构错误，重试只是浪费请求。
+// (`success: false` 且 reason 为其他值 → 不重试。)
+const RETRYABLE_REASONS: readonly string[] = [
+  "no_project_loaded",
+  "directory_missing",
+];
+
 export function useSpcodeGitBranches(): UseSpcodeGitBranches {
   const state = ref<BranchesFetchState>({ kind: "idle" });
   const session = useSpcodeSession({ requireScoped: true });
@@ -82,6 +103,9 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
   let mutationAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let refreshDelayTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryAttempt = 0;
+  let retryKey: string | null = null;
   let isMounted = true;
   const etagMap = new Map<string, string>();
   const prevSnapshotMap = new Map<string, SpcodeGitBranchesSnapshot>();
@@ -93,23 +117,65 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
     return `branches|${d.umo ?? "null"}|${d.directory ?? "null"}`;
   }
 
+  function clearRetry(): void {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    retryAttempt = 0;
+    retryKey = null;
+  }
+
+  /**
+   * 失败后安排一次退避重试。`key` 是 umo|directory 上下文键 —— 上下文一变
+   * （项目加载完 / 切会话）就重置计数，退避预算跟着新上下文重新开始。
+   */
+  function scheduleRetry(reason: string, key: string): void {
+    if (!isMounted) return;
+    if (!RETRYABLE_REASONS.includes(reason)) return;
+    if (retryKey !== key) {
+      retryKey = key;
+      retryAttempt = 0;
+    }
+    if (retryAttempt >= RETRY_BACKOFF_MS.length) return;
+    const delay = RETRY_BACKOFF_MS[retryAttempt];
+    retryAttempt += 1;
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void refresh();
+    }, delay);
+  }
+
   async function refresh(): Promise<void> {
     if (!isMounted) return;
     const umo = session.umo.value ?? null;
     const directory = session.directory.value ?? null;
+    const key = etagKey({ umo, directory });
+    // 本次刷新取代任何已排队的延迟抓取 / 重试（失败会各自重新排）。
+    // WHY: 退避重试与 umo/directory watcher 的 refreshDelayed 可能撞在同一个
+    // 500ms 截止点上（会话刚建立那一下），不取消就会连发两个等价的 GET。
+    if (refreshDelayTimer) {
+      clearTimeout(refreshDelayTimer);
+      refreshDelayTimer = null;
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     if (!umo) {
       state.value = {
         kind: "error",
         reason: "no_project_loaded",
         previousSnapshot: undefined,
       };
+      scheduleRetry("no_project_loaded", key);
       return;
     }
     abortController?.abort();
     abortController = new AbortController();
     const isFirst = state.value.kind !== "ok";
     if (isFirst) state.value = { kind: "loading" };
-    const key = etagKey({ umo, directory });
     const etag = etagMap.get(key);
     try {
       const resp = await pluginExtensionApi.get<unknown>(
@@ -126,12 +192,33 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
         const cached = prevSnapshotMap.get(key);
         if (cached) {
           state.value = { kind: "ok", snapshot: cached, notModified: true };
+          clearRetry();
         }
         return;
       }
-      const envelope = resp.data as { data?: SpcodeGitBranchesRawResponse };
+      const envelope = resp.data as {
+        data?: SpcodeGitBranchesRawResponse & {
+          success?: boolean;
+          reason?: string | null;
+        };
+      };
       const data = envelope?.data;
       if (!data) throw new Error("empty response data");
+      // 2026-10-07 (elecvoid243): 失败信封（如 no_project_loaded /
+      // directory_missing）**没有** branches 字段，直接喂给 parser 会得到
+      // 一个「成功但空」的快照 —— 那正是取数失败被渲染成 detached HEAD 的
+      // 来源。判定口径与 parseSpcodeBranchManagement 一致：_make_envelope
+      // 保证 success=true 时 reason 恒为 null，故 reason 非空即失败。
+      const failureReason =
+        typeof data.reason === "string" && data.reason ? data.reason : null;
+      if (data.success === false || failureReason !== null) {
+        const reason = failureReason ?? "unknown";
+        const prev =
+          state.value.kind === "ok" ? state.value.snapshot : undefined;
+        state.value = { kind: "error", reason, previousSnapshot: prev };
+        scheduleRetry(reason, key);
+        return;
+      }
       const snap = parseSpcodeGitBranches(data);
       prevSnapshotMap.set(key, snap);
       const newEtag = (resp.headers as Record<string, string> | undefined)?.[
@@ -139,6 +226,7 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
       ] ?? (resp.headers as Record<string, string> | undefined)?.["ETag"];
       if (newEtag) etagMap.set(key, newEtag);
       state.value = { kind: "ok", snapshot: snap, notModified: false };
+      clearRetry();
     } catch (err) {
       if (!isMounted) return;
       if ((err as { name?: string })?.name === "CanceledError") return;
@@ -160,6 +248,20 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
       // 2026-08-13: project switches defer the fetch ~500ms instead of
       // firing the instant the umo flips (rapid switches coalesce).
       if (newUmo && newUmo !== oldUmo) refreshDelayed();
+    },
+  );
+
+  // 2026-10-07 (elecvoid243): 项目加载完成时 umo 不变、只有 directory 翻，
+  // 所以上面的 umo watcher 抓不到「项目刚加载」这一跳 —— 工作树列表
+  // (useSpcodeWorktrees) 与 git-status (useSpcodeGitStatus) 都因此额外
+  // watch 了 directory，唯独分支列表没有，于是侧栏出现了「工作区 chips
+  // 已就绪、当前分支却停在 fallback 文案」的分裂现象。对齐它们。
+  // (乐观 setLoaded 与权威 refresh 同值的情况由 scheduleRetry 兜底。)
+  watch(
+    () => session.directory.value,
+    (newDir, oldDir) => {
+      if (!isMounted) return;
+      if (newDir && newDir !== oldDir) refreshDelayed();
     },
   );
 
@@ -328,6 +430,7 @@ export function useSpcodeGitBranches(): UseSpcodeGitBranches {
     stopPolling();
     if (refreshDelayTimer) clearTimeout(refreshDelayTimer);
     refreshDelayTimer = null;
+    clearRetry();
     abortController?.abort();
     abortController = null;
     mutationAbort?.abort();

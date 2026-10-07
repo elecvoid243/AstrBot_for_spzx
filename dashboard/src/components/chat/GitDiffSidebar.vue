@@ -486,6 +486,25 @@ const currentBranchName = computed(() => {
   if (s.kind !== "ok") return null;
   return s.snapshot.current;
 });
+// 2026-10-07 (elecvoid243): 当前分支按钮的文案必须区分三态。
+// 旧实现是 `currentBranchName ?? tm(...branchMgmt.detached)` —— 快照为空
+// （首帧请求早于项目登记、加载失败、或空仓库）时 current 为 null，于是
+// 「还没拿到数据」被渲染成与事实相反的 "detached HEAD"，把排查方向带偏。
+// 现在只有后端真的报了 detached 才展示该文案；取数失败展示「不可用」，
+// 具体 reason 在展开的分支菜单里（那里本来就有 error 分支）。
+const currentBranchLabel = computed(() => {
+  const s = branchesComposable.state.value;
+  if (s.kind === "ok") {
+    if (s.snapshot.current) return s.snapshot.current;
+    return s.snapshot.detached
+      ? tm("spcodeProjectLoad.diffSidebar.branchMgmt.detached")
+      : tm("spcodeProjectLoad.diffSidebar.branchMgmt.empty");
+  }
+  if (s.kind === "loading") {
+    return tm("spcodeProjectLoad.diffSidebar.branchMgmt.loading");
+  }
+  return tm("spcodeProjectLoad.diffSidebar.branchMgmt.unavailable");
+});
 // 2026-09-17: the worktree-create dialog offers these as combobox items so the
 // start point / branch can be picked instead of typed. A typed start point
 // that does not exist used to reach git as `fatal: invalid reference: <ref>`.
@@ -2205,6 +2224,10 @@ watch(
       // conflict created while the sidebar was closed lights up the
       // banner right away instead of 30 s later.
       void gitConflict.refresh();
+      // 2026-10-07 (elecvoid243): same reasoning for the branch list —
+      // the branch label is the first thing the user looks at, so don't
+      // make them wait a full 30 s cadence (or click the ↻) for it.
+      void branchesComposable.refresh();
     } else {
       branchesComposable.stopPolling();
       gitConflict.stopPolling();
@@ -2252,8 +2275,26 @@ watch(
 // Without this, a 30s worktree timer would already be ticking by the
 // time the probe returns. Teardown all four composables together so
 // the gate has a single source of truth.
+//
+// 2026-10-07 (elecvoid243): the reverse direction is *not* symmetric —
+// the gate above (`modelValue`) is evaluated once when the sidebar
+// opens, so when the sidebar is opened BEFORE the project is loaded
+// (`isGitRepo` still false, probe idle) no poller is ever started:
+// the probe only flips to `ok` later, and this watcher used to return
+// early on that transition. The branch list then stayed at its failed
+// first snapshot (rendered as "detached HEAD") until the user clicked
+// the manual refresh. Start the pollers here too, and refresh the
+// branch list immediately instead of waiting out a 30 s cadence.
 watch(isGitRepo, (isRepo) => {
-  if (isRepo) return;
+  if (isRepo) {
+    if (props.modelValue) {
+      worktreesComposable.startPolling(30_000);
+      branchesComposable.startPolling(30_000);
+      gitConflict.startPolling(30_000);
+      void branchesComposable.refresh();
+    }
+    return;
+  }
   worktreesComposable.stopPolling();
   branchesComposable.stopPolling();
   gitConflict.stopPolling();
@@ -5018,10 +5059,7 @@ watch(
                 >
                   <v-icon size="14">mdi-source-branch</v-icon>
                   <span class="git-diff-sidebar-branch-mgmt-btn-name">
-                    {{
-                      currentBranchName ??
-                      tm("spcodeProjectLoad.diffSidebar.branchMgmt.detached")
-                    }}
+                    {{ currentBranchLabel }}
                   </span>
                   <v-icon size="12">mdi-menu-down</v-icon>
                 </button>

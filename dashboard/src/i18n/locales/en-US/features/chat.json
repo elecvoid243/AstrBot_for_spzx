@@ -980,6 +980,7 @@
         "loading": "Loading branches…",
         "error": "Failed to load branches ({reason})",
         "detached": "detached HEAD",
+        "unavailable": "Branches unavailable",
         "remote": "remote",
         "empty": "No branches yet",
         "switch": {

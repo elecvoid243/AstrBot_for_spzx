@@ -980,6 +980,7 @@
         "loading": "加载分支列表…",
         "error": "获取分支失败（{reason}）",
         "detached": "detached HEAD",
+        "unavailable": "分支信息不可用",
         "remote": "远程",
         "empty": "暂无分支",
         "switch": {

@@ -616,6 +616,65 @@ class TestContextManager:
             mock_compress.assert_not_called()
             assert result == messages
 
+    # ==================== Absolute Token Threshold Tests ====================
+
+    def test_compressor_abs_threshold_overrides_ratio(self):
+        """An absolute token threshold takes precedence over the ratio trigger."""
+        config = ContextConfig(max_context_tokens=1000, compress_threshold_tokens=100)
+        manager = ContextManager(config)
+
+        assert manager.compressor.compress_threshold_tokens == 100
+        # 101 > 100 triggers even though 101/1000 is far below 82%.
+        assert manager.compressor.should_compress([], 101, 1000) is True
+        # The boundary itself does not trigger.
+        assert manager.compressor.should_compress([], 100, 1000) is False
+
+    def test_compressor_abs_threshold_zero_keeps_ratio(self):
+        """compress_threshold_tokens = 0 keeps the legacy 82% ratio trigger."""
+        config = ContextConfig(max_context_tokens=100)
+        manager = ContextManager(config)
+
+        assert manager.compressor.compress_threshold_tokens == 0
+        assert manager.compressor.should_compress([], 83, 100) is True
+        assert manager.compressor.should_compress([], 82, 100) is False
+
+    def test_llm_compressor_abs_threshold(self):
+        """The LLM summary compressor honours the absolute threshold too."""
+        from astrbot.core.agent.context.compressor import LLMSummaryCompressor
+
+        provider = MockProvider()
+        compressor = LLMSummaryCompressor(
+            provider=provider, compress_threshold_tokens=100
+        )  # type: ignore[arg-type]
+
+        assert compressor.should_compress([], 101, 1000) is True
+        assert compressor.should_compress([], 100, 1000) is False
+
+        config = ContextConfig(
+            max_context_tokens=1000,
+            compress_threshold_tokens=200,
+            llm_compress_provider=provider,  # type: ignore
+        )
+        manager = ContextManager(config)
+        assert manager.compressor.compress_threshold_tokens == 200
+
+    @pytest.mark.asyncio
+    async def test_abs_threshold_triggers_without_max_context_tokens(self):
+        """The absolute threshold fires even when max_context_tokens is 0."""
+        config = ContextConfig(max_context_tokens=0, compress_threshold_tokens=50)
+        manager = ContextManager(config)
+        messages = [self.create_message("user", "x" * 300)]  # ~90 tokens > 50
+
+        compressed = [self.create_message("user", "compressed")]
+        mock_compressor = AsyncMock(return_value=compressed)
+        mock_compressor.should_compress = MagicMock(side_effect=[True, False])
+        manager.compressor = mock_compressor
+
+        result = await manager.process(messages)
+
+        mock_compressor.assert_awaited_once_with(messages, func_tool=None)
+        assert result == compressed
+
     @pytest.mark.asyncio
     async def test_double_check_after_compression(self):
         """Test that halving is applied if still over threshold after compression."""

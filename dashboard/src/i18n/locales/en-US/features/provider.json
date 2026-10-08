@@ -160,6 +160,7 @@
     "manualDialogPreviewHint": "Generated as sourceId/modelId",
     "manualModelRequired": "Please enter a model ID",
     "manualModelExists": "Model already exists",
+    "thresholdExceedsWindow": "The compression threshold cannot exceed the model context window size",
     "configure": "Configure",
     "testButton": "Test model",
     "metadata": {

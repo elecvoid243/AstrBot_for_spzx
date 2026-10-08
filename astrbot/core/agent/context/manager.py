@@ -48,12 +48,14 @@ class ContextManager:
                 provider=config.llm_compress_provider,
                 keep_recent_ratio=config.llm_compress_keep_recent_ratio,
                 instruction_text=config.llm_compress_instruction,
+                compress_threshold_tokens=config.compress_threshold_tokens,
                 token_counter=self.token_counter,
                 llm_params=config.llm_params,
             )
         else:
             self.compressor = TruncateByTurnsCompressor(
                 truncate_turns=config.truncate_turns,
+                compress_threshold_tokens=config.compress_threshold_tokens,
                 target_usage_ratio=config.truncate_target_usage_ratio,
                 max_tokens=config.max_context_tokens,
                 token_counter=self.token_counter,
@@ -97,7 +99,10 @@ class ContextManager:
                 )
 
             # 2. 基于 token 的压缩
-            if self.config.max_context_tokens > 0:
+            if (
+                self.config.max_context_tokens > 0
+                or self.config.compress_threshold_tokens > 0
+            ):
                 total_tokens = self.token_counter.count_tokens(
                     result, trusted_token_usage
                 )
@@ -153,12 +158,21 @@ class ContextManager:
         tokens_after_summary = self.token_counter.count_tokens(messages)
 
         # calculate compress rate
-        compress_rate = (tokens_after_summary / self.config.max_context_tokens) * 100
-        logger.info(
-            f"Compress completed."
-            f" {prev_tokens} -> {tokens_after_summary} tokens,"
-            f" compression rate: {compress_rate:.2f}%.",
-        )
+        if self.config.max_context_tokens > 0:
+            compress_rate = (
+                tokens_after_summary / self.config.max_context_tokens
+            ) * 100
+            logger.info(
+                f"Compress completed."
+                f" {prev_tokens} -> {tokens_after_summary} tokens,"
+                f" compression rate: {compress_rate:.2f}%.",
+            )
+        else:
+            # Absolute-threshold mode without a window size: nothing to
+            # express the result as a rate of.
+            logger.info(
+                f"Compress completed. {prev_tokens} -> {tokens_after_summary} tokens.",
+            )
 
         # last check
         halved = False

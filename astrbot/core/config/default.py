@@ -3057,6 +3057,11 @@ CONFIG_METADATA_2 = {
                         "type": "int",
                         "hint": "模型最大上下文 Token 大小。如果为 0，则会自动从模型元数据填充（如有）",
                     },
+                    "compress_threshold_tokens": {
+                        "description": "上下文压缩触发阈值",
+                        "type": "int",
+                        "hint": "当上下文估算 Token 数超过该值时触发自动压缩，例如 256000 表示达到 256k 时压缩。为 0 时按上下文窗口大小的 82% 触发。",
+                    },
                     "dify_api_key": {
                         "description": "API Key",
                         "type": "string",

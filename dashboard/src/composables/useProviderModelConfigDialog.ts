@@ -62,6 +62,12 @@ export function useProviderModelConfigDialog(options: UseProviderModelConfigDial
     if (editableProvider.provider_source_id) {
       delete editableProvider.reasoning
     }
+    // The edit dialog renders exactly the keys present on the provider object,
+    // so a chat provider created before this field existed needs the default
+    // filled in here or the input would never show up.
+    if (editableProvider.compress_threshold_tokens === undefined) {
+      editableProvider.compress_threshold_tokens = 0
+    }
     providerEditData.value = editableProvider
     providerEditOriginalId.value = provider.id
     providerEditMode.value = 'edit'
@@ -90,6 +96,19 @@ export function useProviderModelConfigDialog(options: UseProviderModelConfigDial
 
   async function saveEditedProvider() {
     if (!providerEditData.value) return
+
+    // A compression threshold above the model window can never trigger before
+    // the request overflows; refuse it while the window value is known. When
+    // max_context_tokens is 0 (auto-filled at runtime), the runner-side check
+    // is the backstop.
+    const maxContextTokens = Number(providerEditData.value.max_context_tokens || 0)
+    const compressThreshold = Number(
+      providerEditData.value.compress_threshold_tokens || 0
+    )
+    if (maxContextTokens > 0 && compressThreshold > maxContextTokens) {
+      showMessage(tm('models.thresholdExceedsWindow'), 'error')
+      return
+    }
 
     savingProviders.value.push(providerEditData.value.id)
     try {

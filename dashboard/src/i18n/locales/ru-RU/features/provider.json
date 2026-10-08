@@ -160,6 +160,7 @@
         "manualDialogPreviewHint": "Будет выглядеть как: SourceID/ModelID",
         "manualModelRequired": "Укажите ID модели",
         "manualModelExists": "Эта модель уже добавлена",
+        "thresholdExceedsWindow": "Порог сжатия не может превышать размер контекстного окна модели",
         "configure": "Настроить",
         "testButton": "Тестировать модель",
         "metadata": {

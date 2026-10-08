@@ -14,6 +14,13 @@ class ContextConfig:
 
     max_context_tokens: int = 0
     """Maximum number of context tokens. <= 0 means no limit."""
+    compress_threshold_tokens: int = 0
+    """Absolute token threshold that triggers compression.
+
+    When > 0, the context is compressed once its estimated token count exceeds
+    this value, regardless of ``max_context_tokens``; <= 0 falls back to the
+    compressors' ratio-based trigger.
+    """
     enforce_max_turns: int = -1  # -1 means no limit
     """Maximum number of conversation turns to keep. -1 means no limit. Executed before compression."""
     truncate_turns: int = 1

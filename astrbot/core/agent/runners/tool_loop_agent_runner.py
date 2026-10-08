@@ -292,9 +292,34 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.tool_result_overflow_dir = tool_result_overflow_dir
         self.read_tool = read_tool
         self._tool_result_token_counter = EstimateTokenCounter()
+        max_context_tokens = provider.provider_config.get("max_context_tokens", 0)
+        # Provider-level absolute compression trigger in tokens (e.g. 256000).
+        # A threshold above the model window can never be reached before the
+        # request overflows, so it is treated as misconfigured and the
+        # compressors' ratio-based trigger takes over (0).
+        compress_threshold_tokens = int(
+            provider.provider_config.get("compress_threshold_tokens", 0) or 0
+        )
+        if (
+            compress_threshold_tokens > 0
+            and max_context_tokens > 0
+            and compress_threshold_tokens > max_context_tokens
+        ):
+            logger.warning(
+                "Provider %s: compress_threshold_tokens=%s exceeds "
+                "max_context_tokens=%s; falling back to the ratio-based "
+                "compression trigger.",
+                provider.provider_config.get("id", "unknown"),
+                compress_threshold_tokens,
+                max_context_tokens,
+            )
+            compress_threshold_tokens = 0
+
         self.request_context_manager_config = ContextConfig(
             # <=0 disables token-based guarding.
-            max_context_tokens=provider.provider_config.get("max_context_tokens", 0),
+            max_context_tokens=max_context_tokens,
+            # <=0 keeps the compressors' ratio-based trigger.
+            compress_threshold_tokens=compress_threshold_tokens,
             # Enforce max turns before token-based guarding.
             enforce_max_turns=self.enforce_max_turns,
             truncate_turns=self.truncate_turns,

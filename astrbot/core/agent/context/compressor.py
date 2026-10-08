@@ -86,6 +86,7 @@ class TruncateByTurnsCompressor:
         self,
         truncate_turns: int = 1,
         compression_threshold: float = 0.82,
+        compress_threshold_tokens: int = 0,
         target_usage_ratio: float = 0.4,
         max_tokens: int = 0,
         token_counter: TokenCounter | None = None,
@@ -95,6 +96,10 @@ class TruncateByTurnsCompressor:
         Args:
             truncate_turns: The number of turns to remove when truncating (default: 1).
             compression_threshold: The compression trigger threshold (default: 0.82).
+            compress_threshold_tokens: Absolute token threshold that triggers
+                compression. When ``> 0``, compression fires once the estimated
+                context tokens exceed this value and ``compression_threshold``
+                is ignored. ``<= 0`` falls back to the ratio.
             target_usage_ratio: Target usage ratio of ``max_tokens`` after
                 truncation (default: 0.4). When ``max_tokens`` is provided, the
                 compressor drops the oldest turns until the remaining estimated
@@ -106,6 +111,7 @@ class TruncateByTurnsCompressor:
         """
         self.truncate_turns = truncate_turns
         self.compression_threshold = compression_threshold
+        self.compress_threshold_tokens = compress_threshold_tokens
         self.target_usage_ratio = max(0.0, min(float(target_usage_ratio), 1.0))
         self.max_tokens = max_tokens
         self.token_counter = token_counter
@@ -122,8 +128,16 @@ class TruncateByTurnsCompressor:
 
         Returns:
             True if compression is needed, False otherwise.
+
+        Notes:
+            A positive ``compress_threshold_tokens`` takes precedence over the
+            ratio-based trigger.
         """
-        if max_tokens <= 0 or current_tokens <= 0:
+        if current_tokens <= 0:
+            return False
+        if self.compress_threshold_tokens > 0:
+            return current_tokens > self.compress_threshold_tokens
+        if max_tokens <= 0:
             return False
         usage_rate = current_tokens / max_tokens
         return usage_rate > self.compression_threshold
@@ -196,6 +210,7 @@ class LLMSummaryCompressor:
         keep_recent_ratio: float = 0.15,
         instruction_text: str | None = None,
         compression_threshold: float = 0.82,
+        compress_threshold_tokens: int = 0,
         token_counter: TokenCounter | None = None,
         llm_params: dict | None = None,
     ) -> None:
@@ -207,6 +222,10 @@ class LLMSummaryCompressor:
                 exact context. Clamped to 0-0.3.
             instruction_text: Custom instruction for summary generation.
             compression_threshold: The compression trigger threshold (default: 0.82).
+            compress_threshold_tokens: Absolute token threshold that triggers
+                compression. When ``> 0``, compression fires once the estimated
+                context tokens exceed this value and ``compression_threshold``
+                is ignored. ``<= 0`` falls back to the ratio.
             token_counter: Custom token counter. Defaults to EstimateTokenCounter.
             llm_params: Per-request LLM parameters (e.g. thinking_effort) sent
                 with the summary request so provider fields derived from them
@@ -216,6 +235,7 @@ class LLMSummaryCompressor:
         self.provider = provider
         self.keep_recent_ratio = min(max(float(keep_recent_ratio), 0.0), 0.3)
         self.compression_threshold = compression_threshold
+        self.compress_threshold_tokens = compress_threshold_tokens
         self.token_counter = token_counter or EstimateTokenCounter()
         self.llm_params = llm_params or {}
 
@@ -241,8 +261,16 @@ class LLMSummaryCompressor:
 
         Returns:
             True if compression is needed, False otherwise.
+
+        Notes:
+            A positive ``compress_threshold_tokens`` takes precedence over the
+            ratio-based trigger.
         """
-        if max_tokens <= 0 or current_tokens <= 0:
+        if current_tokens <= 0:
+            return False
+        if self.compress_threshold_tokens > 0:
+            return current_tokens > self.compress_threshold_tokens
+        if max_tokens <= 0:
             return False
         usage_rate = current_tokens / max_tokens
         return usage_rate > self.compression_threshold

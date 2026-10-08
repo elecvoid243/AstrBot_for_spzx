@@ -663,7 +663,8 @@ export function useProviderSources(options: UseProviderSourcesOptions) {
       model: modelName,
       modalities,
       custom_extra_body: {},
-      max_context_tokens: max_context_tokens
+      max_context_tokens: max_context_tokens,
+      compress_threshold_tokens: 0
     }
   }
 

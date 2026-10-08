@@ -160,6 +160,7 @@
     "manualDialogPreviewHint": "生成ルール：sourceId/modelId",
     "manualModelRequired": "モデル ID を入力してください",
     "manualModelExists": "このモデルはすでに存在します",
+    "thresholdExceedsWindow": "圧縮しきい値はモデルのコンテキストウィンドウサイズを超えることはできません",
     "configure": "設定",
     "testButton": "モデルをテスト",
     "metadata": {

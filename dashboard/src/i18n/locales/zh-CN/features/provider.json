@@ -160,6 +160,7 @@
     "manualDialogPreviewHint": "生成规则：源ID/模型ID",
     "manualModelRequired": "请输入模型 ID",
     "manualModelExists": "该模型已存在",
+    "thresholdExceedsWindow": "压缩触发阈值不能超过模型上下文窗口大小",
     "configure": "配置",
     "testButton": "测试模型",
     "metadata": {

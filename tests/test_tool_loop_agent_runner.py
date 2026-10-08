@@ -2686,3 +2686,55 @@ async def test_step_omits_context_compression_when_under_limit(
     assert not [
         response for response in responses if response.type == "context_compression"
     ]
+
+
+@pytest.mark.asyncio
+async def test_compress_threshold_above_window_falls_back_to_ratio(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """A compression threshold above the model window can never fire in time."""
+    provider = MockProvider()
+    provider.provider_config.update(
+        {
+            "max_context_tokens": 100000,
+            "compress_threshold_tokens": 200000,
+        }
+    )
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    # Treated as misconfigured: the ratio-based trigger takes over.
+    assert runner.request_context_manager_config.compress_threshold_tokens == 0
+    assert runner.request_context_manager_config.max_context_tokens == 100000
+
+
+@pytest.mark.asyncio
+async def test_compress_threshold_within_window_is_kept(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """A threshold inside the model window is used as configured."""
+    provider = MockProvider()
+    provider.provider_config.update(
+        {
+            "max_context_tokens": 100000,
+            "compress_threshold_tokens": 50000,
+        }
+    )
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    assert runner.request_context_manager_config.compress_threshold_tokens == 50000

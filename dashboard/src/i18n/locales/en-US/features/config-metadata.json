@@ -1978,6 +1978,10 @@
         "description": "Model context window size",
         "hint": "Maximum context tokens. If 0, it auto-fills from model metadata (if available); you can also edit manually."
       },
+      "compress_threshold_tokens": {
+        "description": "Context compression trigger threshold",
+        "hint": "Automatic compression fires once the estimated context tokens exceed this value, e.g. 256000 triggers at 256k. When 0, compression triggers at 82% of the context window size."
+      },
       "dify_api_key": {
         "description": "API Key",
         "hint": "Dify API Key. This field is required."

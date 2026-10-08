@@ -1122,7 +1122,15 @@ export function useMessages(options: UseMessagesOptions) {
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     messagesBySession[sessionId] = messagesBySession[sessionId] || [];
 
-    const botRecord: ChatRecord = {
+    // Author: elecvoid243
+    // Date: 2026-10-08
+    // Hand the stream the record the list actually renders — the reactive
+    // one — instead of the raw literal pushed into the array. Raw writes
+    // bypass the set trap, so every chunk of this run mutated the data while
+    // the bubble kept rendering its first frame ("思考中...", `v-if="isLoading"`)
+    // until some unrelated reactive change forced a re-render.
+    // `createLocalExchange` and `attachLiveRun` avoid this the same way.
+    const botRecord = reactive<ChatRecord>({
       id: `local-edited-bot-${messageId}`,
       created_at: new Date().toISOString(),
       content: {
@@ -1131,7 +1139,7 @@ export function useMessages(options: UseMessagesOptions) {
         reasoning: "",
         isLoading: true,
       },
-    };
+    });
     messagesBySession[sessionId].push(botRecord);
 
     startSseStream(
@@ -1341,6 +1349,28 @@ export function useMessages(options: UseMessagesOptions) {
         if (!response.ok || !response.body) {
           throw new Error(`SSE connection failed: ${response.status}`);
         }
+        // Author: elecvoid243
+        // Date: 2026-10-08
+        // A rejected send is not an HTTP error here: both the v1 and legacy
+        // send handlers answer `JSONResponse(error(...))` — HTTP 200 plus
+        // `application/json`. Feeding that body to `readSseStream` yields zero
+        // frames, so nothing ever cleared the placeholder's `isLoading` and
+        // the bubble sat on "思考中..." forever while the server was healthy.
+        // The regenerate and resume streams already guard on the content type;
+        // this path was the one that did not, and it is the only send path.
+        //
+        // An absent content type is still treated as a stream (a proxy that
+        // strips the header must not break a working stream); the terminal
+        // state in `finally` is the backstop for whatever slips through.
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType !== "" && !contentType.includes("text/event-stream")) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(
+            payload?.message ||
+              payload?.data?.message ||
+              `Chat stream rejected (${contentType})`,
+          );
+        }
         await readSseStream(response.body, (payload) => {
           processStreamPayload(botRecord, payload, userRecord, connection);
           options.onStreamUpdate?.(sessionId);
@@ -1350,12 +1380,84 @@ export function useMessages(options: UseMessagesOptions) {
         if (abort.signal.aborted) return;
         ensureBotRecordVisible(connection);
         appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
+        // The appended text is invisible while `isLoading` is still set: the
+        // bubble renders the loading div instead of its content (see
+        // ChatMessageList's `v-if`). A run that died before its first content
+        // event must therefore settle here, or the reason stays hidden.
+        markMessageStarted(botRecord);
         console.error("SSE chat failed:", error);
       })
       .finally(async () => {
         if (activeConnections[messageId]?.abort === abort) {
           delete activeConnections[messageId];
           await options.onSessionsChanged?.();
+        }
+        // Author: elecvoid243
+        // Date: 2026-10-08
+        // Terminal state for a run that delivered no event at all. `isLoading`
+        // is only ever cleared by a stream payload (`markMessageStarted`), so
+        // such a placeholder spins forever — and a refresh only "fixed" it
+        // because the history snapshot replaced the whole array.
+        //
+        // Rule: the moment the run dies, the list must agree with what a
+        // refresh would show. An empty placeholder carries nothing, so it is
+        // dropped and the session re-syncs from history — which also surfaces
+        // the reply the server persisted while the fan-out to this subscriber
+        // was lost (run teardown drops buffered events; the subscriber attaches
+        // lazily after the run may already have finished). This mirrors the
+        // recovery the resume stream and the session switch already rely on.
+        //
+        // Guards: a normal run ends with `isLoading === false` and is left
+        // untouched; an aborted request (page unmount, `cleanupConnections`)
+        // must never touch the data; and a record another connection still owns
+        // is not settled here.
+        const isUnfulfilled =
+          botRecord.content.isLoading === true &&
+          messageParts(botRecord).length === 0 &&
+          !botRecord.content.reasoning;
+        // Another connection (resume stream) may still be feeding this record;
+        // settle only when none does. Phrased by `messageId` + record identity
+        // because comparing the connection's own `abort` is not reliable:
+        // `AbortController` is proxied by Vue whenever the environment does not
+        // tag it (`[object Object]`), which makes that equality silently false.
+        const ownedElsewhere = Object.values(activeConnections).some(
+          (candidate) =>
+            candidate.messageId !== messageId &&
+            candidate.botRecord === botRecord,
+        );
+        if (!abort.signal.aborted && isUnfulfilled && !ownedElsewhere) {
+          const records = messagesBySession[sessionId];
+          const index = records ? records.indexOf(botRecord) : -1;
+          if (index >= 0) records.splice(index, 1);
+          await loadSessionMessages(sessionId, true, false);
+          // The reload keeps temp-id records the snapshot cannot contain, so a
+          // user record whose persisted row IS in the snapshot would render
+          // twice — its id was never adopted because no `user_message_saved`
+          // event arrived. Ids cannot identify the pair here, so the local copy
+          // is dropped only when the snapshot already carries the same text
+          // (never losing content: a send the server never persisted keeps its
+          // local record, which is exactly what a refresh would show).
+          const plainTextOf = (candidate: ChatRecord) =>
+            messageParts(candidate)
+              .filter((part) => part.type === "plain")
+              .map((part) => part.text || "")
+              .join("");
+          const userText = userRecord ? plainTextOf(userRecord) : "";
+          const current = messagesBySession[sessionId] || [];
+          const duplicated =
+            userRecord != null &&
+            String(userRecord.id).startsWith("local-") &&
+            userText !== "" &&
+            current.some(
+              (candidate) =>
+                candidate !== userRecord &&
+                isUserMessage(candidate) &&
+                plainTextOf(candidate) === userText,
+            );
+          if (duplicated) {
+            const userIndex = current.indexOf(userRecord);
+            if (userIndex >= 0) current.splice(userIndex, 1);
+          }
         }
         options.onStreamEnd?.(sessionId);
       });

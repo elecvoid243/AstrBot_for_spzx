@@ -6,6 +6,7 @@ import pytest
 
 from astrbot.core.pipeline.llm_request_trace import (
     EVENT_EXTRA_KEY,
+    FULL_CHARS,
     collect_changes,
     read_injections,
     record_injections,
@@ -39,7 +40,13 @@ def test_system_prompt_append_reports_delta_and_preview():
     changes = collect_changes(req, before, snapshot(req))
 
     assert changes == [
-        {"field": "system_prompt", "delta": 412, "lossy": False, "preview": "X" * 80}
+        {
+            "field": "system_prompt",
+            "delta": 412,
+            "lossy": False,
+            "preview": "X" * 80,
+            "full": "X" * 412,
+        }
     ]
 
 
@@ -58,7 +65,13 @@ def test_equal_length_rewrite_is_reported_as_rewritten():
     changes = collect_changes(req, before, snapshot(req))
 
     assert changes == [
-        {"field": "system_prompt", "delta": 0, "lossy": False, "preview": ""}
+        {
+            "field": "system_prompt",
+            "delta": 0,
+            "lossy": False,
+            "preview": "",
+            "full": "",
+        }
     ]
 
 
@@ -70,8 +83,52 @@ def test_contexts_append_reports_count_and_last_text():
     changes = collect_changes(req, before, snapshot(req))
 
     assert changes == [
-        {"field": "contexts", "delta": 1, "lossy": False, "preview": "hello context"}
+        {
+            "field": "contexts",
+            "delta": 1,
+            "lossy": False,
+            "preview": "hello context",
+            "full": "hello context",
+        }
     ]
+
+
+def test_full_text_carries_beyond_the_preview():
+    req = ProviderRequest()
+    req.system_prompt = ""
+    before = snapshot(req)
+
+    appended = "A" * 500
+    req.system_prompt = appended
+    changes = collect_changes(req, before, snapshot(req))
+
+    assert changes[0]["preview"] == "A" * 80
+    assert changes[0]["full"] == appended
+
+
+def test_full_text_capped_with_ellipsis():
+    req = ProviderRequest()
+    before = snapshot(req)
+
+    req.system_prompt = "B" * (FULL_CHARS + 100)
+    changes = collect_changes(req, before, snapshot(req))
+
+    assert changes[0]["full"] == "B" * FULL_CHARS + "…"
+
+
+def test_multiple_appended_contexts_join_into_full():
+    req = ProviderRequest()
+    before = snapshot(req)
+
+    req.contexts = [
+        {"role": "user", "content": "first block"},
+        {"role": "user", "content": "second block"},
+    ]
+    changes = collect_changes(req, before, snapshot(req))
+
+    assert changes[0]["delta"] == 2
+    assert changes[0]["preview"] == "second block"
+    assert changes[0]["full"] == "first block\n\nsecond block"
 
 
 def test_record_and_read_round_trip():

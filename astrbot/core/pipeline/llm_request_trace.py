@@ -17,6 +17,10 @@ EVENT_EXTRA_KEY = "_llm_request_injections"
 PREVIEW_CHARS = 80
 """Upper bound of the injected-text preview carried on the wire."""
 
+FULL_CHARS = 8192
+"""Upper bound of the expandable full text per change. Longer text is cut and
+marked with an ellipsis so the panel can still disclose the whole injection."""
+
 
 def _digest(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
@@ -46,6 +50,20 @@ def _part_text(part: object) -> str:
         return text if isinstance(text, str) else ""
     text = getattr(part, "text", None)
     return text if isinstance(text, str) else ""
+
+
+def _cap_full(text: str) -> str:
+    """Cap an expandable text, marking the cut with an ellipsis.
+
+    Args:
+        text: The complete injected text.
+
+    Returns:
+        ``text`` when it fits, otherwise a capped copy ending in ``…``.
+    """
+    if len(text) <= FULL_CHARS:
+        return text
+    return text[:FULL_CHARS] + "…"
 
 
 def snapshot(request: object) -> dict:
@@ -91,47 +109,72 @@ def collect_changes(request: object, before: dict, after: dict) -> list[dict]:
     if before["system_prompt"] != after["system_prompt"]:
         delta = after["system_prompt"][0] - before["system_prompt"][0]
         preview = ""
+        full = ""
         if delta > 0:
             text = getattr(request, "system_prompt", "") or ""
-            preview = text[before["system_prompt"][0] :][:PREVIEW_CHARS]
+            appended = text[before["system_prompt"][0] :]
+            preview = appended[:PREVIEW_CHARS]
+            full = _cap_full(appended)
         changes.append(
             {
                 "field": "system_prompt",
                 "delta": delta,
                 "lossy": delta < 0,
                 "preview": preview,
+                "full": full,
             }
         )
 
     if before["contexts"] != after["contexts"]:
         delta = after["contexts"][0] - before["contexts"][0]
         preview = ""
+        full = ""
         if delta > 0:
             contexts = list(getattr(request, "contexts", None) or [])
             if contexts:
                 preview = _part_text(contexts[-1])[:PREVIEW_CHARS]
+            appended = [
+                text
+                for text in (
+                    _part_text(entry) for entry in contexts[before["contexts"][0] :]
+                )
+                if text
+            ]
+            full = _cap_full("\n\n".join(appended))
         changes.append(
             {
                 "field": "contexts",
                 "delta": delta,
                 "lossy": delta < 0,
                 "preview": preview,
+                "full": full,
             }
         )
 
     if before["extra_user_content_parts"] != after["extra_user_content_parts"]:
         delta = after["extra_user_content_parts"] - before["extra_user_content_parts"]
         preview = ""
+        full = ""
         if delta > 0:
             parts = list(getattr(request, "extra_user_content_parts", None) or [])
             if parts:
                 preview = _part_text(parts[-1])[:PREVIEW_CHARS]
+            appended = [
+                text
+                for text in (
+                    _part_text(entry)
+                    for entry in parts[before["extra_user_content_parts"] :]
+                )
+                if text
+            ]
+            full = _cap_full("\n\n".join(appended))
         changes.append(
             {
                 "field": "extra_user_content_parts",
                 "delta": delta,
                 "lossy": delta < 0,
                 "preview": preview,
+                "full": full,
             }
         )
 
@@ -147,6 +190,7 @@ def collect_changes(request: object, before: dict, after: dict) -> list[dict]:
                 "delta": delta,
                 "lossy": delta < 0,
                 "preview": ", ".join(added or removed)[:PREVIEW_CHARS],
+                "full": _cap_full(", ".join(added or removed)),
             }
         )
 

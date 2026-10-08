@@ -207,6 +207,14 @@ async def run_agent(
                         await astr_event.send(resp.data["chain"])
                     continue
 
+                # Plugin context injections observed by `call_event_hook`:
+                # same dispatch as agent_stats — the ChatUI renders them as a
+                # gutter marker on the bot record, other platforms drop them.
+                if resp.type == "llm_request_injections":
+                    if astr_event.get_platform_name() == "webchat":
+                        await astr_event.send(resp.data["chain"])
+                    continue
+
                 # Context compression notice: webchat surfaces it as a
                 # transient toast. Other platforms have no notice UI, so the
                 # payload is dropped rather than injected into their chat

@@ -95,6 +95,16 @@ def test_record_and_read_round_trip():
     assert event.extras[EVENT_EXTRA_KEY] == items
 
 
+def test_read_injections_tolerates_events_without_extras_store():
+    """Events bypassing ``AstrMessageEvent.__init__`` raise on get_extra."""
+
+    class _ExtraslessEvent:
+        def get_extra(self, key, default=None):
+            raise AttributeError("_extras")
+
+    assert read_injections(_ExtraslessEvent()) == []
+
+
 @pytest.mark.asyncio
 async def test_call_event_hook_traces_each_handler():
     from astrbot.core.pipeline.context_utils import call_event_hook

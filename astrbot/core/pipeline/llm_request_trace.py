@@ -182,5 +182,10 @@ def read_injections(event: object | None) -> list[dict]:
     """
     if event is None or not hasattr(event, "get_extra"):
         return []
-    items = event.get_extra(EVENT_EXTRA_KEY)
+    try:
+        items = event.get_extra(EVENT_EXTRA_KEY)
+    except AttributeError:
+        # Events that bypass ``AstrMessageEvent.__init__`` carry no extras
+        # store; a trace is telemetry and must never break the run.
+        return []
     return items if isinstance(items, list) else []

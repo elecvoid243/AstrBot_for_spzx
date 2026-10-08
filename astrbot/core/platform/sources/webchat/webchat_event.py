@@ -54,6 +54,7 @@ async def _persist_bot_reply_if_orphan(
         if getattr(message_chain, "type", "") in (
             "agent_stats",
             "context_compression",
+            "llm_request_injections",
         ):
             return
         parts = await message_chain_to_storage_message_parts(

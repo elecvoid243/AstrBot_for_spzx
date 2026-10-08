@@ -36,6 +36,7 @@ from astrbot.core.message.message_event_result import (
 from astrbot.core.persona_error_reply import (
     extract_persona_custom_error_message_from_event,
 )
+from astrbot.core.pipeline.llm_request_trace import read_injections
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
@@ -243,6 +244,31 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 chain=MessageChain(
                     type="file_changes",
                     chain=[Json(data={"files": files})],
+                )
+            ),
+        )
+
+    def _injection_trace_response(self) -> AgentResponse | None:
+        """Build the per-turn plugin context-injection trace event.
+
+        Reads the records the ``call_event_hook`` observation left on the
+        event extras for ``on_llm_request`` handlers.
+
+        Returns:
+            The ``llm_request_injections`` AgentResponse, or None when no
+            handler injected anything this turn.
+        """
+        run_context = getattr(self, "run_context", None)
+        event = getattr(getattr(run_context, "context", None), "event", None)
+        items = read_injections(event)
+        if not items:
+            return None
+        return AgentResponse(
+            type="llm_request_injections",
+            data=AgentResponseData(
+                chain=MessageChain(
+                    type="llm_request_injections",
+                    chain=[Json(data={"items": items})],
                 )
             ),
         )
@@ -1086,6 +1112,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
                 ),
             )
+            injection_resp = self._injection_trace_response()
+            if injection_resp is not None:
+                yield injection_resp
             break  # got final response
 
         if self._is_stop_requested():

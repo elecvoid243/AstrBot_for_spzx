@@ -616,10 +616,6 @@
   content: "\F102B";
 }
 
-.mdi-file-compare::before {
-  content: "\F08AA";
-}
-
 .mdi-file-delimited-outline::before {
   content: "\F0EA5";
 }
@@ -942,6 +938,10 @@
 
 .mdi-layers-outline::before {
   content: "\F09FE";
+}
+
+.mdi-layers-triple-outline::before {
+  content: "\F0F59";
 }
 
 .mdi-lightbulb-on-outline::before {

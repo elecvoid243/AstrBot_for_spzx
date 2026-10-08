@@ -194,3 +194,38 @@ describe("context compression chip i18n completeness (2026-10-08)", () => {
     );
   });
 });
+
+describe("diff overlay mode slot i18n completeness (2026-10-08)", () => {
+  // 第三格的 tooltip 有三态(在途 / 不可用原因)加进入退出两种动作文案。
+  // ru-RU 的 diffSidebar.overlay 块此前完全缺失(tooltip 会渲染
+  // "[MISSING: ...]"),这次一并补齐并钉死,避免只有 zh 有词条。
+  const OVERLAY_KEYS = [
+    "toOverlay",
+    "toDiff",
+    "loading",
+    "disabledNoBase",
+    "disabledError",
+    "disabledTruncated",
+  ];
+
+  for (const [locale, dict] of localizations) {
+    it(`${locale} defines every diffSidebar.overlay tooltip state`, () => {
+      const projectLoad = dict.spcodeProjectLoad as
+        | Record<string, unknown>
+        | undefined;
+      const diffSidebar = projectLoad?.diffSidebar as
+        | Record<string, unknown>
+        | undefined;
+      const overlay = diffSidebar?.overlay as
+        | Record<string, unknown>
+        | undefined;
+
+      for (const key of OVERLAY_KEYS) {
+        expect(
+          typeof overlay?.[key],
+          `${locale} missing diffSidebar.overlay.${key} string`,
+        ).toBe("string");
+      }
+    });
+  }
+});

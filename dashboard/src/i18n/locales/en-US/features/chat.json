@@ -1814,7 +1814,11 @@
       },
       "overlay": {
         "toOverlay": "Show full file with diff",
-        "toDiff": "Show diff only"
+        "toDiff": "Show diff only",
+        "loading": "Reading the base revision…",
+        "disabledNoBase": "No base revision of this file in HEAD — overlay unavailable",
+        "disabledError": "Could not read the base revision — overlay unavailable",
+        "disabledTruncated": "Base revision is truncated (file too large) — overlay unavailable"
       },
       "viewRevision": {
         "buttonAria": "Export and open {path} at this commit",

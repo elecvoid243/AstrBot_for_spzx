@@ -10,7 +10,7 @@
      icon for modified files). Spec: docs/superpowers/specs/2026-06-17-
      chatui-git-diff-sidebar-design.md §4.2.3 (merged untracked). -->
 <script setup lang="ts">
-import { computed, inject, ref, type ComputedRef } from "vue";
+import { computed, inject, ref, watch, type ComputedRef } from "vue";
 import type {
   SpcodeGitDiffFile,
   FileStatus,
@@ -203,13 +203,46 @@ const overlayBaseContent = computed<string | undefined>(() => {
   if (!overlayMode.value) return undefined;
   return gitFile.getData(props.file.path, "HEAD")?.content;
 });
-function toggleOverlayMode(): void {
-  overlayMode.value = !overlayMode.value;
-  if (overlayMode.value) {
-    // 幂等:已缓存时 fetchRef 是 no-op
-    void gitFile.fetchRef(props.file.path, "HEAD");
+
+// 基准懒取:进入叠加时才请求 HEAD blob(watch 覆盖所有入口——点击第三格、
+// 程序化切换、未来可能的持久化恢复)。fetchRef 自带幂等,已缓存时是 no-op。
+watch(overlayMode, (on) => {
+  if (on) void gitFile.fetchRef(props.file.path, "HEAD");
+});
+
+/**
+ * 第三格的三态。切换器住在 DiffPreview 里(它与模式组同处),而「基准能不能
+ * 用」只有这里知道,所以状态以 prop 交接:
+ *   在途 → 转圈;不可用 → disabled + 原因 tooltip;可用 → 正常切换。
+ * 这段窗口以前完全不可见:按钮已显示「已开启」而正文还是 patch。
+ */
+const overlayState = computed(() => gitFile.getState(props.file.path, "HEAD"));
+/** 只有已请求叠加时才转圈:后台预取不该让第三格动。 */
+const overlayLoading = computed(
+  () =>
+    overlayMode.value &&
+    (overlayState.value.kind === "idle" ||
+      overlayState.value.kind === "loading"),
+);
+/** 不可用原因(已本地化文案);空串 = 可用。 */
+const overlayUnavailable = computed(() => {
+  // 新文件在 HEAD 中不存在,叠加没有基准可言 —— 不必等请求失败才说。
+  if (props.isNewFile) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledNoBase");
   }
-}
+  if (overlayState.value.kind === "error") {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledError");
+  }
+  const data = gitFile.getData(props.file.path, "HEAD");
+  if (data?.truncated) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledTruncated");
+  }
+  // 请求过、也确实读到了,但内容为空:同样没有基准可对。
+  if (overlayMode.value && overlayState.value.kind === "ok" && !data?.content) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledNoBase");
+  }
+  return "";
+});
 const openOnDiskAbsPath = computed(() => {
   const root = openOnDiskRoot?.value;
   if (!root || props.file.status === "D") return "";
@@ -467,28 +500,16 @@ function rowKey(): string {
            `useSpcodeNewFileLineCounts`). Both render the same
            DiffPreview with the standard 30-line truncation +
            "Show all N lines" overflow. -->
-      <!-- 切换按钮与 DiffPreview 必须包在同一个 v-else-if 分支里:
-           v-else-if 链条附着于紧邻的前置 v-if,裸插按钮会截断链条 -->
+      <!-- 2026-10-08:mode 切换器已搬进 DiffPreview 的模式组第三格,
+           本组件只交接状态。DiffPreview 仍必须留在 v-else-if 分支内:
+           v-else-if 链条附着于紧邻的前置 v-if,裸插元素会截断链条。 -->
       <template v-else-if="file.slice">
-        <button
-          type="button"
-          class="git-diff-file-item__overlay-toggle"
-          data-testid="overlay-toggle"
-          :aria-pressed="overlayMode"
-          :title="
-            overlayMode
-              ? tm('spcodeProjectLoad.diffSidebar.overlay.toDiff')
-              : tm('spcodeProjectLoad.diffSidebar.overlay.toOverlay')
-          "
-          @click.stop="toggleOverlayMode"
-        >
-          <v-icon :size="14">
-            {{ overlayMode ? 'mdi-file-compare' : 'mdi-file-document-outline' }}
-          </v-icon>
-        </button>
         <DiffPreview
           :content="file.slice"
           :base-content="overlayBaseContent"
+          v-model:overlay-mode="overlayMode"
+          :overlay-loading="overlayLoading"
+          :overlay-unavailable="overlayUnavailable"
         :file-path="file.path"
         :collapsible="false"
         :is-dark="isDark"
@@ -511,22 +532,6 @@ function rowKey(): string {
 </template>
 
 <style scoped>
-.git-diff-file-item__overlay-toggle {
-  align-self: flex-end;
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 4px;
-  margin: 2px 4px 0 0;
-  border-radius: 4px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  cursor: pointer;
-}
-.git-diff-file-item__overlay-toggle:hover {
-  background: rgba(var(--v-theme-on-surface), 0.08);
-}
-.git-diff-file-item__overlay-toggle[aria-pressed="true"] {
-  color: rgb(var(--v-theme-primary));
-}
 .git-diff-file-item {
   /* Dark mode flips to a translucent white so the divider remains
      visible against the dark surface. Tied to the `isDark` prop that

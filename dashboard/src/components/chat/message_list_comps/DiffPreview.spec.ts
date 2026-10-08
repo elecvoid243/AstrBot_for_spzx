@@ -24,6 +24,8 @@ import { useFileComments } from "@/composables/useFileComments";
 const STUB_CHILDREN = {
   FileCommentEditor: { template: "<div />" },
   "v-icon": { template: "<i />" },
+  // 模式组第三格在基准懒取期间用转圈占位，断言按 class 匹配。
+  "v-progress-circular": { template: "<span class='v-progress-circular' />" },
 };
 
 function buildDiffContent(totalLines: number): string {
@@ -709,9 +711,68 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(32);
   });
 
-  it("hides the unified/split mode toggle in overlay mode", () => {
+  it("renders the overlay slot as the third mode and keeps the group visible", () => {
+    // 2026-10-08 (elecvoid243): overlay 不再是「独立按钮 + 顺便隐藏模式组」,
+    // 而是模式组里的第三格。旧实现在 overlayActive 时整组消失,这里把它钉死。
+    const wrapper = mountOverlay({ overlayMode: true });
+    const group = wrapper.find(".diff-view-toggle");
+    expect(group.exists()).toBe(true);
+
+    const slots = group.findAll("button");
+    expect(slots.length).toBe(3);
+    expect(slots[2].attributes("aria-pressed")).toBe("true");
+    expect(slots[0].attributes("aria-pressed")).toBe("false");
+    expect(slots[1].attributes("aria-pressed")).toBe("false");
+  });
+
+  it("requests the mode instead of owning it", async () => {
     const wrapper = mountOverlay();
-    expect(wrapper.find('[aria-pressed]').exists()).toBe(false);
+    await wrapper.findAll(".diff-view-toggle button")[2].trigger("click");
+
+    expect(wrapper.emitted("update:overlayMode")).toEqual([[true]]);
+  });
+
+  it("leaving overlay for unified is one dimension, not two switches", async () => {
+    const wrapper = mountOverlay({ overlayMode: true });
+    await wrapper.findAll(".diff-view-toggle button")[0].trigger("click");
+
+    expect(wrapper.emitted("update:overlayMode")).toEqual([[false]]);
+  });
+
+  it("spins in the slot while the base blob is in flight and keeps the patch body", () => {
+    // 基准懒取的这段窗口今天完全不可见:按钮显示「已开启」,正文还是 patch。
+    // 第三格用转圈把这段时间说清楚,正文等对齐成功再换。
+    // 注意不传 baseContent —— 真实调用方在请求回来前也给不出基准,「基准已就绪
+    // 且仍在加载」这个组合并不存在。
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content: PATCH,
+        filePath: "sample.txt",
+        isDark: false,
+        overlayMode: true,
+        overlayLoading: true,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    const slot = wrapper.findAll(".diff-view-toggle button")[2];
+
+    expect(slot.attributes("aria-pressed")).toBe("true");
+    expect(slot.find(".v-progress-circular").exists()).toBe(true);
+    expect(wrapper.find(".overlay-body").exists()).toBe(false);
+    expect(wrapper.find(".hunk-header").exists()).toBe(true);
+  });
+
+  it("disables the slot and explains why when the base is unusable", async () => {
+    const wrapper = mountOverlay({
+      overlayUnavailable: "HEAD 中没有该文件的基准版本",
+    });
+    const slot = wrapper.findAll(".diff-view-toggle button")[2];
+
+    expect(slot.attributes("disabled")).toBeDefined();
+    expect(slot.attributes("title")).toBe("HEAD 中没有该文件的基准版本");
+
+    await slot.trigger("click");
+    expect(wrapper.emitted("update:overlayMode")).toBeUndefined();
   });
 
   it("overlay rows receive shiki syntax highlighting", async () => {

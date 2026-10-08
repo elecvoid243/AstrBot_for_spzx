@@ -41,7 +41,6 @@
              Stops propagation so clicking a button does not also toggle
              the body collapse. -->
         <div
-          v-if="!overlayActive"
           class="diff-view-toggle"
           role="group"
           :aria-label="viewModeAriaLabel"
@@ -49,8 +48,8 @@
           <button
             type="button"
             class="diff-view-toggle-btn"
-            :class="{ active: viewMode === 'unified' }"
-            :aria-pressed="viewMode === 'unified'"
+            :class="{ active: !overlayMode && viewMode === 'unified' }"
+            :aria-pressed="!overlayMode && viewMode === 'unified'"
             :title="unifiedLabel"
             @click.stop="setViewMode('unified')"
           >
@@ -59,12 +58,29 @@
           <button
             type="button"
             class="diff-view-toggle-btn"
-            :class="{ active: viewMode === 'split' }"
-            :aria-pressed="viewMode === 'split'"
+            :class="{ active: !overlayMode && viewMode === 'split' }"
+            :aria-pressed="!overlayMode && viewMode === 'split'"
             :title="splitLabel"
             @click.stop="setViewMode('split')"
           >
             <v-icon size="14">mdi-view-split-vertical</v-icon>
+          </button>
+          <button
+            type="button"
+            class="diff-view-toggle-btn"
+            :class="{ active: overlayMode }"
+            :aria-pressed="overlayMode"
+            :disabled="Boolean(overlayUnavailable)"
+            :title="overlayTitle"
+            @click.stop="toggleOverlay"
+          >
+            <v-progress-circular
+              v-if="overlayMode && overlayLoading"
+              indeterminate
+              :size="12"
+              :width="1.5"
+            />
+            <v-icon v-else size="14">mdi-layers-triple-outline</v-icon>
           </button>
         </div>
         <!-- Fullscreen button (spec 2026-06-30-diff-fullscreen-design.md §3.1) -->
@@ -547,7 +563,6 @@
                 >
               </template>
               <div
-                v-if="!overlayActive"
                 class="diff-view-toggle"
                 role="group"
                 :aria-label="viewModeAriaLabel"
@@ -555,8 +570,8 @@
                 <button
                   type="button"
                   class="diff-view-toggle-btn"
-                  :class="{ active: viewMode === 'unified' }"
-                  :aria-pressed="viewMode === 'unified'"
+                  :class="{ active: !overlayMode && viewMode === 'unified' }"
+                  :aria-pressed="!overlayMode && viewMode === 'unified'"
                   :title="unifiedLabel"
                   @click.stop="setViewMode('unified')"
                 >
@@ -565,12 +580,29 @@
                 <button
                   type="button"
                   class="diff-view-toggle-btn"
-                  :class="{ active: viewMode === 'split' }"
-                  :aria-pressed="viewMode === 'split'"
+                  :class="{ active: !overlayMode && viewMode === 'split' }"
+                  :aria-pressed="!overlayMode && viewMode === 'split'"
                   :title="splitLabel"
                   @click.stop="setViewMode('split')"
                 >
                   <v-icon size="14">mdi-view-split-vertical</v-icon>
+                </button>
+                <button
+                  type="button"
+                  class="diff-view-toggle-btn"
+                  :class="{ active: overlayMode }"
+                  :aria-pressed="overlayMode"
+                  :disabled="Boolean(overlayUnavailable)"
+                  :title="overlayTitle"
+                  @click.stop="toggleOverlay"
+                >
+                  <v-progress-circular
+                    v-if="overlayMode && overlayLoading"
+                    indeterminate
+                    :size="12"
+                    :width="1.5"
+                  />
+                  <v-icon v-else size="14">mdi-layers-triple-outline</v-icon>
                 </button>
               </div>
               <!-- 2026-08-09 (elecvoid243): bulk fold controls. Only in
@@ -1068,9 +1100,21 @@ const props = withDefaults(
      * 2026-10-06 range-compare overlay: 提供时进入「全文件 + diff 叠加」
      * 模式——以该基准全文为骨架渲染,`content` 的 hunk 叠加到对应行。
      * 对齐失败(hunk 与基准行不匹配)自动降级为普通 patch 渲染。
-     * overlay 模式仅 unified、无评论 gutter、隐藏 unified/split 切换。
+     * overlay 模式仅 unified、无评论 gutter;自 2026-10-08 起它是模式组
+     * 的第三格(见 overlayMode),不再隐藏整组。
      */
     baseContent?: string;
+    /**
+     * 2026-10-08 (elecvoid243): overlay 是第三种视图模式,与 unified/split
+     * 同组。`overlayMode` 是「用户请求的意图」,与基准是否就绪无关:请求了就
+     * 点亮第三格,基准未回时正文暂留 patch(格内转圈),对齐成功才换正文。
+     * 由父级(GitDiffFileItem)持有,走 v-model:overlay-mode。
+     */
+    overlayMode?: boolean;
+    /** 基准全文(HEAD blob)请求在途:第三格转圈。 */
+    overlayLoading?: boolean;
+    /** 不可用原因(已本地化文案);非空时第三格 disabled 并以它作为 tooltip。 */
+    overlayUnavailable?: string;
     maxLines?: number;
     maxChars?: number;
     collapsible?: boolean;
@@ -1115,6 +1159,9 @@ const props = withDefaults(
     filePath: "",
     summary: "",
     baseContent: "",
+    overlayMode: false,
+    overlayLoading: false,
+    overlayUnavailable: "",
     maxLines: 30,
     maxChars: 2000,
     collapsible: true,
@@ -1458,10 +1505,27 @@ const viewMode = ref<ViewMode>(
   safeGetItem(VIEW_MODE_STORAGE_KEY) === "split" ? "split" : "unified",
 );
 
+/**
+ * overlay 模式本身由父级持有(它才知道基准全文从哪来),这里只发意图。
+ * v-model:overlay-mode 契约:值 = 「用户请求进入叠加」。
+ */
+const emit = defineEmits<{
+  (e: "update:overlayMode", value: boolean): void;
+}>();
+
 function setViewMode(mode: ViewMode): void {
+  // 三个模式是同一条维度:切回 patch 视图就等于退出叠加,不能留下
+  // 「格子上还亮着、正文已经回到 patch」的自相矛盾状态。
+  if (props.overlayMode) emit("update:overlayMode", false);
   if (viewMode.value === mode) return;
   viewMode.value = mode;
   safeSetItem(VIEW_MODE_STORAGE_KEY, mode);
+}
+
+function toggleOverlay(): void {
+  // 不可用时按钮已 disabled,这里再挡一次是为了键盘/程序化调用。
+  if (props.overlayUnavailable) return;
+  emit("update:overlayMode", !props.overlayMode);
 }
 
 // i18n labels for the toggle. The tm() values are evaluated lazily
@@ -1469,6 +1533,19 @@ function setViewMode(mode: ViewMode): void {
 const unifiedLabel = computed(() => tm("diffPreview.viewMode.unified"));
 const splitLabel = computed(() => tm("diffPreview.viewMode.split"));
 const viewModeAriaLabel = computed(() => tm("diffPreview.viewMode.ariaLabel"));
+/**
+ * 第三格的 tooltip 承载三态:不可用原因 > 基准在途 > 进入/退出叠加。
+ * 不可用原因由父级给出(只有它知道是取失败、新文件还是被截断)。
+ */
+const overlayTitle = computed(() => {
+  if (props.overlayUnavailable) return props.overlayUnavailable;
+  if (props.overlayMode && props.overlayLoading) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.loading");
+  }
+  return props.overlayMode
+    ? tm("spcodeProjectLoad.diffSidebar.overlay.toDiff")
+    : tm("spcodeProjectLoad.diffSidebar.overlay.toOverlay");
+});
 
 const toggleCollapsed = () => {
   if (props.collapsible) {

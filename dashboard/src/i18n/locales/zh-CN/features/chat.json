@@ -1847,7 +1847,11 @@
       },
       "overlay": {
         "toOverlay": "全文叠加显示",
-        "toDiff": "仅显示差异"
+        "toDiff": "仅显示差异",
+        "loading": "正在读取基准版本…",
+        "disabledNoBase": "HEAD 中没有该文件的基准版本，无法叠加",
+        "disabledError": "基准版本读取失败，无法叠加",
+        "disabledTruncated": "基准版本过大被截断，无法叠加"
       },
       "viewRevision": {
         "buttonAria": "导出并打开 {path} 在此提交下的版本",

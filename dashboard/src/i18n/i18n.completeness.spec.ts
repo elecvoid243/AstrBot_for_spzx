@@ -13,8 +13,15 @@
 // supported UI language.
 
 import { describe, expect, it } from "vitest";
+
+import {
+  contextCompressionChip,
+  contextCompressionHistoryLine,
+} from "@/composables/contextCompressionNotice";
+import { useModuleI18n } from "@/i18n/composables";
 import chatZh from "./locales/zh-CN/features/chat.json";
 import chatEn from "./locales/en-US/features/chat.json";
+import chatJa from "./locales/ja-JP/features/chat.json";
 import chatRu from "./locales/ru-RU/features/chat.json";
 
 const localizations: Array<[string, Record<string, unknown>]> = [
@@ -133,4 +140,57 @@ describe("all-branches scope i18n completeness (2026-10-05)", () => {
       ).toBe("string");
     });
   }
+});
+
+describe("context compression chip i18n completeness (2026-10-08)", () => {
+  // The chip itself carries numbers only, so the strategy has to be named in
+  // words by the ring tooltip's "last compression" line. A locale missing one
+  // of these renders "[MISSING: contextCompression.strategy.…]" in the tooltip
+  // — ja-JP included, which the other blocks of this file do not cover.
+  const allLocales: Array<[string, Record<string, unknown>]> = [
+    ...localizations,
+    ["ja-JP", chatJa as unknown as Record<string, unknown>],
+  ];
+
+  for (const [locale, dict] of allLocales) {
+    it(`${locale} defines contextCompression.lastCompression + strategy words`, () => {
+      const compression = dict.contextCompression as
+        | Record<string, unknown>
+        | undefined;
+      expect(
+        typeof compression?.lastCompression,
+        `${locale} missing contextCompression.lastCompression string`,
+      ).toBe("string");
+
+      const strategy = compression?.strategy as
+        | Record<string, unknown>
+        | undefined;
+      for (const key of ["llm", "truncate", "halving", "generic"]) {
+        expect(
+          typeof strategy?.[key],
+          `${locale} missing contextCompression.strategy.${key} string`,
+        ).toBe("string");
+      }
+    });
+  }
+
+  // Presence is not enough for the two keys with parameters: a renamed
+  // placeholder ({strategy} → {kind}) interpolates to itself and ships a
+  // literal "{strategy}" in the tooltip, which the leaf-module tests cannot
+  // see because they pass a fake translate.
+  it("substitutes every placeholder of the chip and the tooltip line", () => {
+    const { tm } = useModuleI18n("features/chat");
+    const notice = {
+      strategy: "llm_compress",
+      tokensBefore: 123456,
+      tokensAfter: 45123,
+    };
+
+    expect(contextCompressionChip(notice, tm).description).toBe(
+      "上下文已压缩 · 123.5k → 45.1k tokens",
+    );
+    expect(contextCompressionHistoryLine(notice, tm)).toBe(
+      "上次压缩：123.5k → 45.1k tokens · 摘要",
+    );
+  });
 });

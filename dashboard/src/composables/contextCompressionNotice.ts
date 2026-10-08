@@ -6,10 +6,10 @@
 //
 // The notice is live-only telemetry: the runner emits it once per compression
 // and the dashboard accumulator deliberately drops it (see
-// `BotMessageAccumulator.add_plain`), so the chat page renders it as a
-// transient toast instead of a message part. Keeping the wire parsing and the
-// message composition here leaves the SSE consumers as thin wiring and keeps
-// this logic unit-testable without the API layer.
+// `BotMessageAccumulator.add_plain`), so the chat page renders it as a chip
+// next to the composer's token-usage ring instead of a message part. Keeping
+// the wire parsing and the chip composition here leaves the SSE consumers as
+// thin wiring and keeps this logic unit-testable without the API layer.
 
 export interface ContextCompressionNotice {
   /** Strategy that produced the result, e.g. `llm_compress`. */
@@ -86,34 +86,92 @@ function trimTrailingZero(value: number): string {
   return value.toFixed(1).replace(/\.0$/, "");
 }
 
+export interface ContextCompressionEntry {
+  /** Identity of the event, from {@link contextCompressionNoticeKey}. */
+  key: string;
+  notice: ContextCompressionNotice;
+}
+
+/** Chip shown next to the composer's token-usage ring while the notice is live. */
+export interface ContextCompressionChip {
+  /** Token delta only: "123.5k → 45.1k". */
+  label: string;
+  /** MDI icon; its shape carries the strategy, not just the colour. */
+  icon: string;
+  /** True when history was dropped, false when it was merely summarized. */
+  lossy: boolean;
+  /** Full sentence, used as the aria-label and the hover tooltip. */
+  description: string;
+}
+
+export type CompressionTranslate = (
+  key: string,
+  params?: Record<string, string | number>,
+) => string;
+
+/** Strategies that lose history outright. */
+const LOSSY_STRATEGIES = new Set(["truncate_by_turns", "truncate_by_halving"]);
+
+/** Wire strategy → i18n key suffix. Unknown (custom) compressors fall back. */
+const STRATEGY_KEYS: Record<string, string> = {
+  llm_compress: "llm",
+  truncate_by_turns: "truncate",
+  truncate_by_halving: "halving",
+};
+
+function strategyKey(strategy: string): string {
+  return STRATEGY_KEYS[strategy] ?? "generic";
+}
+
 /**
- * Build the toast the chat page shows for a compression.
+ * Build the composer chip for a compression.
  *
- * The wording depends on the strategy: an LLM summary keeps the conversation
+ * The sentence depends on the strategy: an LLM summary keeps the conversation
  * (compressed), while a truncation drops history, so the two must not read the
- * same. Unknown (custom) strategies fall back to the generic wording.
+ * same. The icon differs by shape as well as colour so the loss survives
+ * greyscale and colour blindness.
  *
  * @param notice Parsed notice.
  * @param translate Module-scoped translation function.
- * @returns Message text and display duration.
+ * @returns Chip label, icon, loss flag and the full description.
  */
-export function contextCompressionToast(
+export function contextCompressionChip(
   notice: ContextCompressionNotice,
-  translate: (key: string, params?: Record<string, string | number>) => string,
-): { message: string; timeout: number } {
-  const keyByStrategy: Record<string, string> = {
-    llm_compress: "llm",
-    truncate_by_turns: "truncate",
-    truncate_by_halving: "halving",
-  };
-  const key = keyByStrategy[notice.strategy] ?? "generic";
+  translate: CompressionTranslate,
+): ContextCompressionChip {
+  const lossy = LOSSY_STRATEGIES.has(notice.strategy);
 
   return {
-    message: translate(`contextCompression.${key}`, {
+    label: `${formatTokenCount(notice.tokensBefore)} → ${formatTokenCount(notice.tokensAfter)}`,
+    icon: lossy ? "mdi-content-cut" : "mdi-arrow-collapse-vertical",
+    lossy,
+    description: translate(`contextCompression.${strategyKey(notice.strategy)}`, {
       from: formatTokenCount(notice.tokensBefore),
       to: formatTokenCount(notice.tokensAfter),
     }),
-    // Longer than the 3s default: the message carries two numbers to read.
-    timeout: 4000,
   };
+}
+
+/**
+ * Build the ring tooltip's "last compression" line.
+ *
+ * The chip is transient, so the numbers must stay reachable from the control
+ * that explains them: hovering the token ring is how a user later answers
+ * "did it forget what we discussed?".
+ *
+ * @param notice Parsed notice.
+ * @param translate Module-scoped translation function.
+ * @returns One-line summary of the last compression.
+ */
+export function contextCompressionHistoryLine(
+  notice: ContextCompressionNotice,
+  translate: CompressionTranslate,
+): string {
+  return translate("contextCompression.lastCompression", {
+    from: formatTokenCount(notice.tokensBefore),
+    to: formatTokenCount(notice.tokensAfter),
+    strategy: translate(
+      `contextCompression.strategy.${strategyKey(notice.strategy)}`,
+    ),
+  });
 }

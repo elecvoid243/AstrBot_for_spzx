@@ -497,7 +497,14 @@
     "llm": "上下文已压缩 · {from} → {to} tokens",
     "truncate": "上下文超出窗口，已丢弃最早的历史 · {from} → {to} tokens",
     "halving": "压缩后仍超限，已二次截断 · {from} → {to} tokens",
-    "generic": "上下文已压缩 · {from} → {to} tokens"
+    "generic": "上下文已压缩 · {from} → {to} tokens",
+    "lastCompression": "上次压缩：{from} → {to} tokens · {strategy}",
+    "strategy": {
+      "llm": "摘要",
+      "truncate": "截断",
+      "halving": "二次截断",
+      "generic": "压缩"
+    }
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens（{percent}%）",

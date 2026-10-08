@@ -543,6 +543,37 @@
               class="mr-1"
               width="1.5"
             />
+            <!-- 2026-10-08 (elecvoid243): context compression notice, in the
+                 actions cluster immediately left of the token-usage ring. The
+                 slot span stays mounted so the tooltip always has an
+                 activator; the chip itself is transitioned in and out. -->
+            <v-tooltip location="top" max-width="320">
+              <template #activator="{ props: compressionTipProps }">
+                <span
+                  v-bind="compressionTipProps"
+                  class="compression-chip-slot"
+                >
+                  <Transition name="compression-chip">
+                    <span
+                      v-if="compressionChipVisible && compressionChip"
+                      class="compression-chip"
+                      :class="{
+                        'compression-chip--lossy': compressionChip.lossy,
+                      }"
+                      role="status"
+                      aria-live="polite"
+                      :aria-label="compressionChip.description"
+                    >
+                      <v-icon :icon="compressionChip.icon" size="12" />
+                      <span class="compression-chip__label">
+                        {{ compressionChip.label }}
+                      </span>
+                    </span>
+                  </Transition>
+                </span>
+              </template>
+              <span>{{ compressionChip?.description }}</span>
+            </v-tooltip>
             <v-tooltip v-if="tokenUsageVisible" location="top" max-width="320">
               <template #activator="{ props: tokenTooltipProps }">
                 <span
@@ -558,7 +589,7 @@
                   />
                 </span>
               </template>
-              <span class="token-usage-tooltip">{{ props.tokenUsage?.tooltip }}</span>
+              <span class="token-usage-tooltip">{{ tokenUsageTooltip }}</span>
             </v-tooltip>
             <v-btn
               @click="handleRecordClick"
@@ -695,6 +726,8 @@ import GitDiffChip from "./GitDiffChip.vue";
 import ShellSessionIndicator from "./ShellSessionIndicator.vue";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
 import { useSkillGuide } from "@/composables/useSkillGuide";
+import type { ContextCompressionEntry } from "@/composables/contextCompressionNotice";
+import { useContextCompressionChip } from "@/composables/useContextCompressionChip";
 import CommentsPreviewDialog from "./CommentsPreviewDialog.vue";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus";
@@ -753,6 +786,12 @@ interface Props {
   sendShortcut?: "enter" | "shift_enter";
   showProviderSelector?: boolean;
   tokenUsage?: TokenUsageInfo | null;
+  /**
+   * Last context compression of the session on screen; null after a session
+   * switch. Chat.vue owns it because the notice arrives on the stream, this
+   * component only renders and times it.
+   */
+  compressionNotice?: ContextCompressionEntry | null;
   placeholder?: string;
   /** Git-diff / workspace sidebar is open — tints the workspace capsule. */
   workspacePanelOpen?: boolean;
@@ -767,6 +806,7 @@ const props = withDefaults(defineProps<Props>(), {
   sendShortcut: "shift_enter",
   showProviderSelector: true,
   tokenUsage: null,
+  compressionNotice: null,
   workspacePanelOpen: false,
 });
 
@@ -1332,6 +1372,25 @@ const tokenUsageColor = computed(() =>
   isDark.value
     ? "rgba(var(--v-theme-on-surface), 0.82)"
     : "rgba(var(--v-theme-on-surface), 0.72)",
+);
+
+// 2026-10-08 (elecvoid243): compression notice. It renders as a chip left of
+// the token-usage ring — the ring is the control whose numbers the compression
+// just changed, so the notice belongs next to it; a toast floats over the page
+// with no relation to the value it explains. The chip is transient (6s), while
+// `compressionHistoryLine` stays in the ring tooltip so the numbers remain
+// checkable after it fades.
+const {
+  chip: compressionChip,
+  visible: compressionChipVisible,
+  historyLine: compressionHistoryLine,
+} = useContextCompressionChip(() => props.compressionNotice, tm);
+
+/** Ring tooltip: token usage, then the last compression as its second line. */
+const tokenUsageTooltip = computed(() =>
+  [props.tokenUsage?.tooltip, compressionHistoryLine.value]
+    .filter(Boolean)
+    .join("\n"),
 );
 
 // Auto-resize textarea
@@ -2378,6 +2437,77 @@ defineExpose({
   flex: 0 0 24px;
   border-radius: 50%;
   color: var(--token-usage-color);
+}
+
+/* Compression chip (2026-10-08, elecvoid243): 22px pill reusing the composer
+   chip tokens, sized to sit on the same baseline as the 24px token ring. A
+   truncation switches to the warning tint AND a different icon shape, so the
+   loss stays legible without relying on colour. */
+.compression-chip-slot {
+  display: inline-flex;
+  align-items: center;
+}
+
+.compression-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--sp-chip-border);
+  background: var(--sp-chip-bg);
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.compression-chip--lossy {
+  border-color: rgba(var(--v-theme-warning), 0.32);
+  background: rgba(var(--v-theme-warning), 0.08);
+  color: rgb(var(--v-theme-warning));
+}
+
+.compression-chip__label {
+  line-height: 1;
+}
+
+.compression-chip-enter-active {
+  transition:
+    opacity 0.15s ease-out,
+    transform 0.15s ease-out;
+}
+
+.compression-chip-leave-active {
+  transition:
+    opacity 0.4s ease-in,
+    transform 0.4s ease-in;
+}
+
+.compression-chip-enter-from,
+.compression-chip-leave-to {
+  opacity: 0;
+  transform: translateX(5px);
+}
+
+/* Motion here is decoration — the numbers carry the meaning. */
+@media (prefers-reduced-motion: reduce) {
+  .compression-chip-enter-from,
+  .compression-chip-leave-to {
+    transform: none;
+  }
+}
+
+/* Narrow composers keep the numbers: the icon is the first thing to go when
+   the row has to share space with the mic and send buttons. */
+@media (max-width: 480px) {
+  .compression-chip :deep(.v-icon) {
+    display: none;
+  }
 }
 
 /* Token usage tooltip carries an explicit newline before the cache-hit

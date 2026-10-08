@@ -2,14 +2,15 @@
 // Date: 2026-10-08
 //
 // Leaf-module tests for the live-only context compression notice: parsing of
-// the runner's wire payload, the duplicate-suppression identity, and the
-// i18n message the chat page shows as a transient toast.
+// the runner's wire payload, the duplicate-suppression identity, and the chip
+// the chat page renders next to the token-usage ring.
 
 import { describe, expect, it } from "vitest";
 
 import {
+  contextCompressionChip,
+  contextCompressionHistoryLine,
   contextCompressionNoticeKey,
-  contextCompressionToast,
   formatTokenCount,
   parseContextCompressionNotice,
 } from "./contextCompressionNotice";
@@ -68,35 +69,80 @@ describe("contextCompressionNoticeKey", () => {
   });
 });
 
-describe("contextCompressionToast", () => {
+describe("contextCompressionChip", () => {
   const translate = (key: string, params?: Record<string, string | number>) =>
     params ? `${key}|${params.from}|${params.to}` : key;
 
-  it("names the strategy that produced the truncation", () => {
-    const toast = contextCompressionToast(
-      { strategy: "truncate_by_turns", tokensBefore: 123456, tokensAfter: 45123 },
+  it("labels the chip with the token delta and describes a summary neutrally", () => {
+    const chip = contextCompressionChip(
+      { strategy: "llm_compress", tokensBefore: 123456, tokensAfter: 45123 },
       translate,
     );
 
-    expect(toast.message).toBe("contextCompression.truncate|123.5k|45.1k");
-    expect(toast.timeout).toBe(4000);
+    expect(chip.label).toBe("123.5k → 45.1k");
+    expect(chip.lossy).toBe(false);
+    expect(chip.icon).toBe("mdi-arrow-collapse-vertical");
+    expect(chip.description).toBe("contextCompression.llm|123.5k|45.1k");
   });
 
-  it("falls back to the generic wording for custom strategies", () => {
-    const toast = contextCompressionToast(
+  it("gives truncation its own icon shape, so the loss never rests on colour alone", () => {
+    for (const strategy of ["truncate_by_turns", "truncate_by_halving"]) {
+      const chip = contextCompressionChip(
+        { strategy, tokensBefore: 123456, tokensAfter: 45123 },
+        translate,
+      );
+
+      expect(chip.lossy).toBe(true);
+      expect(chip.icon).toBe("mdi-content-cut");
+    }
+  });
+
+  it("treats a custom compressor as a non-lossy summary with generic wording", () => {
+    const chip = contextCompressionChip(
       { strategy: "plugin_summarizer", tokensBefore: 1000, tokensAfter: 500 },
       translate,
     );
 
-    expect(toast.message).toBe("contextCompression.generic|1k|500");
+    expect(chip.lossy).toBe(false);
+    expect(chip.icon).toBe("mdi-arrow-collapse-vertical");
+    expect(chip.description).toBe("contextCompression.generic|1k|500");
   });
 
-  it("distinguishes the halving fallback from the configured strategy", () => {
-    const toast = contextCompressionToast(
+  it("names the halving fallback as its own event", () => {
+    const chip = contextCompressionChip(
       { strategy: "truncate_by_halving", tokensBefore: 1000, tokensAfter: 500 },
       translate,
     );
 
-    expect(toast.message).toBe("contextCompression.halving|1k|500");
+    expect(chip.description).toBe("contextCompression.halving|1k|500");
+  });
+});
+
+describe("contextCompressionHistoryLine", () => {
+  const translate = (key: string, params?: Record<string, string | number>) =>
+    key.startsWith("contextCompression.strategy.")
+      ? `≈${key}`
+      : `contextCompression.lastCompression|${params?.from}|${params?.to}|${params?.strategy}`;
+
+  it("names the strategy so the ring stays self-explanatory after the chip fades", () => {
+    expect(
+      contextCompressionHistoryLine(
+        { strategy: "llm_compress", tokensBefore: 123456, tokensAfter: 45123 },
+        translate,
+      ),
+    ).toBe(
+      "contextCompression.lastCompression|123.5k|45.1k|≈contextCompression.strategy.llm",
+    );
+  });
+
+  it("falls back to the generic strategy word for custom compressors", () => {
+    expect(
+      contextCompressionHistoryLine(
+        { strategy: "plugin_summarizer", tokensBefore: 1000, tokensAfter: 500 },
+        translate,
+      ),
+    ).toBe(
+      "contextCompression.lastCompression|1k|500|≈contextCompression.strategy.generic",
+    );
   });
 });

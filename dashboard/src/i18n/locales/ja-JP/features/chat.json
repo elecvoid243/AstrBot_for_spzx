@@ -250,7 +250,14 @@
     "llm": "コンテキストを圧縮しました · {from} → {to} トークン",
     "truncate": "コンテキストが上限を超えたため古い履歴を破棄しました · {from} → {to} トークン",
     "halving": "圧縮後も上限を超えたため再度切り詰めました · {from} → {to} トークン",
-    "generic": "コンテキストを圧縮しました · {from} → {to} トークン"
+    "generic": "コンテキストを圧縮しました · {from} → {to} トークン",
+    "lastCompression": "前回の圧縮：{from} → {to} トークン · {strategy}",
+    "strategy": {
+      "llm": "要約",
+      "truncate": "切り詰め",
+      "halving": "再切り詰め",
+      "generic": "圧縮"
+    }
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} トークン（{percent}%）"

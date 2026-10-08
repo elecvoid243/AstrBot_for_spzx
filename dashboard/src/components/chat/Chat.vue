@@ -962,6 +962,7 @@
                 )
               "
               :token-usage="tokenUsageIndicator"
+              :compression-notice="compressionNoticeEntry"
               :session-id="currSessionId || null"
               :current-session="currentSession"
               :reply-to="chatInputReplyTarget"
@@ -1207,10 +1208,10 @@ import { useFileAccessMode } from "@/composables/useFileAccessMode";
 // Author: elecvoid243
 // Date: 2026-10-08
 // Live-only context compression notice: identity for duplicate suppression
-// and the i18n toast the page shows when the runner compresses a request.
+// plus the entry handed to ChatInput, which renders the chip and its tooltip.
 import {
   contextCompressionNoticeKey,
-  contextCompressionToast,
+  type ContextCompressionEntry,
 } from "@/composables/contextCompressionNotice";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import ProjectDialog, {
@@ -1324,10 +1325,13 @@ const confirmDialog = useConfirmDialog();
 const toast = useToast();
 // Author: elecvoid243
 // Date: 2026-10-08
-// Identity of the last context compression notice shown as a toast. Bounded
-// to one slot on purpose: it suppresses a repeat of the same notice (same
-// turn, same token delta) without keeping a growing history of keys.
-let lastCompressionNoticeKey = "";
+// Current session's last context compression notice, handed to ChatInput,
+// which renders it as a chip beside the token-usage ring and times its
+// display. One slot on purpose: it suppresses a repeat of the same notice
+// (same turn, same token delta) without keeping a growing history of keys.
+// Cleared on session switch — a notice from another session must not surface
+// under this session's composer.
+const compressionNoticeEntry = ref<ContextCompressionEntry | null>(null);
 // Sessions with an unanswered ask_user_choice prompt — drives the sidebar
 // highlight and the browser attention signals.
 const choiceAttention = useInteractiveChoiceAttentionStore();
@@ -2079,16 +2083,15 @@ const {
   // Author: elecvoid243
   // Date: 2026-10-08
   // The runner compressed this turn's context. The notice is live-only
-  // telemetry about the run (never persisted), so it is shown as a transient
-  // toast — and only for the session on screen: a compression in a background
-  // session must not interrupt what the user is reading.
+  // telemetry about the run (never persisted), so it is handed to ChatInput,
+  // which shows it as a short-lived chip beside the token ring — and only for
+  // the session on screen: a compression in a background session must not
+  // interrupt what the user is reading.
   onContextCompression: (sessionId, notice) => {
     if (sessionId !== currSessionId.value) return;
     const key = contextCompressionNoticeKey(sessionId, notice);
-    if (key === lastCompressionNoticeKey) return;
-    lastCompressionNoticeKey = key;
-    const { message, timeout } = contextCompressionToast(notice, tm);
-    toast.info(message, { timeout });
+    if (key === compressionNoticeEntry.value?.key) return;
+    compressionNoticeEntry.value = { key, notice };
   },
   // Refresh the spcode "currently loaded project" chip every time a
   // bot response finishes, so commands like `/project load <dir>` or
@@ -2183,6 +2186,8 @@ watch(currSessionId, (newId, oldId) => {
     fileComments.resetForSession();
     fileReferences.resetForSession();
     inlineAnnotations.resetForSession();
+    // The compression chip belongs to the conversation that produced it.
+    compressionNoticeEntry.value = null;
   }
 });
 

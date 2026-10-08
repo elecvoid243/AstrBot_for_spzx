@@ -497,7 +497,14 @@
     "llm": "Context compacted · {from} → {to} tokens",
     "truncate": "Context over the window limit — oldest history dropped · {from} → {to} tokens",
     "halving": "Context still over the limit — truncated again · {from} → {to} tokens",
-    "generic": "Context compacted · {from} → {to} tokens"
+    "generic": "Context compacted · {from} → {to} tokens",
+    "lastCompression": "Last compaction: {from} → {to} tokens · {strategy}",
+    "strategy": {
+      "llm": "summary",
+      "truncate": "truncation",
+      "halving": "truncated again",
+      "generic": "compaction"
+    }
   },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens ({percent}%)",

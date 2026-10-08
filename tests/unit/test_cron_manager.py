@@ -839,3 +839,148 @@ class TestGetNextRunTime:
         next_run = cron_manager._get_next_run_time("non-existent")
 
         assert next_run is None
+
+
+class TestRunWebchatUserTurn:
+    """Tests for the webchat user-turn cron delivery mode."""
+
+    @staticmethod
+    def _job(session: str, **payload_overrides) -> CronJob:
+        payload = {
+            "note": "ping the agent",
+            "session": session,
+            "delivery_mode": "webchat_user_turn",
+        }
+        payload.update(payload_overrides)
+        return CronJob(
+            job_id="webchat-job",
+            name="Webchat turn",
+            job_type="active_agent",
+            cron_expression="0 9 * * *",
+            enabled=True,
+            persistent=True,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _final_update(mock_db) -> dict:
+        return [call.kwargs for call in mock_db.update_cron_job.call_args_list][-1]
+
+    @pytest.mark.asyncio
+    async def test_injects_note_as_user_message(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test the note is handed to the injector for the webchat session."""
+        mock_db.get_cron_job.return_value = self._job(
+            "webchat:FriendMessage:webchat!alice!conv-1"
+        )
+        cron_manager.ctx = mock_context
+        injector = AsyncMock()
+        cron_manager.set_webchat_turn_injector(injector)
+
+        await cron_manager._run_job("webchat-job")
+
+        injector.assert_awaited_once()
+        kwargs = injector.await_args.kwargs
+        assert kwargs["cid"] == "conv-1"
+        assert kwargs["username"] == "alice"
+        assert kwargs["text"] == "ping the agent"
+        assert kwargs["message_id"]
+        assert self._final_update(mock_db)["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_non_webchat_session_fails_without_injecting(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test a non-webchat delivery target is rejected, not injected."""
+        mock_db.get_cron_job.return_value = self._job("aiocqhttp:FriendMessage:123456")
+        cron_manager.ctx = mock_context
+        injector = AsyncMock()
+        cron_manager.set_webchat_turn_injector(injector)
+
+        await cron_manager._run_job("webchat-job")
+
+        injector.assert_not_awaited()
+        final = self._final_update(mock_db)
+        assert final["status"] == "failed"
+        assert "webchat" in final["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_malformed_webchat_session_fails(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test a webchat umo without the composite session id is rejected."""
+        mock_db.get_cron_job.return_value = self._job(
+            "webchat:FriendMessage:conv-without-owner"
+        )
+        cron_manager.ctx = mock_context
+        injector = AsyncMock()
+        cron_manager.set_webchat_turn_injector(injector)
+
+        await cron_manager._run_job("webchat-job")
+
+        injector.assert_not_awaited()
+        final = self._final_update(mock_db)
+        assert final["status"] == "failed"
+        assert "webchat" in final["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_injector_marks_job_failed(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test the dashboard seam is required for this delivery mode."""
+        mock_db.get_cron_job.return_value = self._job(
+            "webchat:FriendMessage:webchat!alice!conv-1"
+        )
+        cron_manager.ctx = mock_context
+
+        await cron_manager._run_job("webchat-job")
+
+        final = self._final_update(mock_db)
+        assert final["status"] == "failed"
+        assert "injector" in final["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_injector_failure_marks_job_failed(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test an injector error surfaces as the job's last_error."""
+        mock_db.get_cron_job.return_value = self._job(
+            "webchat:FriendMessage:webchat!alice!conv-1"
+        )
+        cron_manager.ctx = mock_context
+        injector = AsyncMock(side_effect=RuntimeError("session busy"))
+        cron_manager.set_webchat_turn_injector(injector)
+
+        await cron_manager._run_job("webchat-job")
+
+        final = self._final_update(mock_db)
+        assert final["status"] == "failed"
+        assert final["last_error"] == "session busy"
+
+    @pytest.mark.asyncio
+    async def test_proactive_mode_ignores_injector(
+        self, cron_manager, mock_db, mock_context
+    ):
+        """Test jobs without the delivery mode keep the proactive path."""
+        job = self._job("webchat:FriendMessage:webchat!alice!conv-1")
+        job.payload.pop("delivery_mode")
+        mock_db.get_cron_job.return_value = job
+        cron_manager.ctx = mock_context
+        injector = AsyncMock()
+        cron_manager.set_webchat_turn_injector(injector)
+
+        with (
+            patch(
+                "astrbot.core.astr_main_agent.build_main_agent",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "astrbot.core.astr_main_agent._get_session_conv",
+                new=AsyncMock(return_value=SimpleNamespace(history="[]")),
+            ),
+        ):
+            await cron_manager._run_job("webchat-job")
+
+        injector.assert_not_awaited()
+        assert self._final_update(mock_db)["status"] == "failed"

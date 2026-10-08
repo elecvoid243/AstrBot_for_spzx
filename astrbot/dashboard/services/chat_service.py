@@ -2195,6 +2195,61 @@ class ChatService:
             },
         )
 
+    async def inject_cron_turn(
+        self,
+        *,
+        cid: str,
+        username: str,
+        message_id: str,
+        text: str,
+    ) -> None:
+        """Deliver a scheduled task as a user-authored webchat turn.
+
+        The run is registered BEFORE the input item is queued: the turn must
+        own a back queue from its very first chunk, otherwise the adapter
+        treats it as an orphan and the reply persists through the lossy
+        system-mirror channel (plain text and reasoning only — no tool calls,
+        no stats).
+
+        Args:
+            cid: Raw webchat conversation id (the queue manager's key).
+            username: Session owner, used as the injected message's sender.
+            message_id: Run id for the injected turn.
+            text: Message text, taken from the job's note.
+
+        Raises:
+            ChatServiceError: A turn is already running on this conversation.
+        """
+        if self.chat_runs_by_session.get(cid):
+            raise ChatServiceError(
+                f"Conversation {cid} is busy; skipping the scheduled turn"
+            )
+
+        llm_checkpoint_id = str(uuid.uuid4())
+        await self.register_synthetic_chat_run(
+            cid, message_id, username, llm_checkpoint_id
+        )
+
+        chat_queue = webchat_queue_mgr.get_or_create_queue(cid)
+        await chat_queue.put(
+            (
+                username,
+                cid,
+                {
+                    "message": [{"type": "plain", "text": text}],
+                    "selected_provider": None,
+                    "selected_model": None,
+                    "flags": resolve_webchat_request_flags({}),
+                    "message_id": message_id,
+                    "llm_checkpoint_id": llm_checkpoint_id,
+                    "thread_selected_text": None,
+                    # Core-path messages are not persisted by the webchat
+                    # adapter, so the history record must be requested here.
+                    "persist_user_history": True,
+                },
+            )
+        )
+
     async def build_chat_stream(
         self,
         username: str,

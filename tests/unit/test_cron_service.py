@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astrbot.dashboard.services.cron_service import CronService
+from astrbot.core.db.po import CronJob
+from astrbot.dashboard.services.cron_service import CronService, CronServiceError
 
 
 @pytest.mark.parametrize(
@@ -98,3 +99,115 @@ async def test_create_job_resolves_default_timezone(
         config_manager.get_conf.assert_called_once_with(session or None)
     else:
         config_manager.get_conf.assert_not_called()
+
+
+def _service_with_job(job=None, **manager_overrides):
+    cron_manager = SimpleNamespace(
+        add_active_job=AsyncMock(return_value=job),
+        **manager_overrides,
+    )
+    config_manager = SimpleNamespace(get_conf=MagicMock(return_value={}))
+    return CronService(
+        SimpleNamespace(
+            cron_manager=cron_manager,
+            astrbot_config_mgr=config_manager,
+        )
+    ), cron_manager
+
+
+@pytest.mark.asyncio
+async def test_create_job_defaults_delivery_mode_to_proactive() -> None:
+    """A job created without an explicit mode keeps the proactive delivery."""
+    job = SimpleNamespace(job_id="job-1", name="test-job", payload={}, run_once=False)
+    service, cron_manager = _service_with_job(job)
+
+    await service.create_job(
+        {
+            "name": "test-job",
+            "note": "test",
+            "cron_expression": "0 9 * * *",
+            "session": "aiocqhttp:FriendMessage:123456",
+        }
+    )
+
+    payload = cron_manager.add_active_job.await_args.kwargs["payload"]
+    assert payload["delivery_mode"] == "proactive"
+
+
+@pytest.mark.asyncio
+async def test_create_job_rejects_user_turn_for_non_webchat_session() -> None:
+    """The user-turn mode is only meaningful for webchat delivery targets."""
+    service, cron_manager = _service_with_job()
+
+    with pytest.raises(CronServiceError, match="webchat"):
+        await service.create_job(
+            {
+                "name": "test-job",
+                "note": "test",
+                "cron_expression": "0 9 * * *",
+                "session": "aiocqhttp:FriendMessage:123456",
+                "delivery_mode": "webchat_user_turn",
+            }
+        )
+
+    cron_manager.add_active_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_job_persists_user_turn_mode() -> None:
+    """A webchat target keeps the requested user-turn mode in the payload."""
+    job = SimpleNamespace(job_id="job-1", name="test-job", payload={}, run_once=False)
+    service, cron_manager = _service_with_job(job)
+
+    await service.create_job(
+        {
+            "name": "test-job",
+            "note": "test",
+            "cron_expression": "0 9 * * *",
+            "session": "webchat:FriendMessage:webchat!alice!conv-1",
+            "delivery_mode": "webchat_user_turn",
+        }
+    )
+
+    payload = cron_manager.add_active_job.await_args.kwargs["payload"]
+    assert payload["delivery_mode"] == "webchat_user_turn"
+
+
+@pytest.mark.asyncio
+async def test_update_job_merges_user_turn_mode() -> None:
+    """Switching an existing job to the user-turn mode updates its payload."""
+    job = CronJob(
+        job_id="job-1",
+        name="test-job",
+        job_type="active_agent",
+        cron_expression="0 9 * * *",
+        payload={
+            "note": "test",
+            "session": "webchat:FriendMessage:webchat!alice!conv-1",
+        },
+    )
+    service, cron_manager = _service_with_job(
+        job,
+        db=SimpleNamespace(get_cron_job=AsyncMock(return_value=job)),
+        update_job=AsyncMock(return_value=job),
+    )
+
+    await service.update_job("job-1", {"delivery_mode": "webchat_user_turn"})
+
+    payload = cron_manager.update_job.await_args.kwargs["payload"]
+    assert payload["delivery_mode"] == "webchat_user_turn"
+
+
+def test_serialize_job_exposes_delivery_mode() -> None:
+    """The dashboard reads the mode from the serialized job."""
+    job = CronJob(
+        job_id="job-1",
+        name="test-job",
+        job_type="active_agent",
+        payload={"delivery_mode": "webchat_user_turn"},
+    )
+
+    assert CronService.serialize_job(job)["delivery_mode"] == "webchat_user_turn"
+
+    job.payload = {}
+    assert CronService.serialize_job(job)["delivery_mode"] == "proactive"

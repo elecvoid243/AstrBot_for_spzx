@@ -238,6 +238,13 @@ def create_dashboard_asgi_app(
     )
     app.state.services = services
 
+    cron_manager = getattr(core_lifecycle, "cron_manager", None)
+    if cron_manager is not None:
+        # Jobs delivered as webchat user turns are injected through the chat
+        # service: that path registers a first-class run (back queue +
+        # standard persistence + run stream) instead of a lossy proactive send.
+        cron_manager.set_webchat_turn_injector(chat.inject_cron_turn)
+
     services.agent_teams = AgentTeamService(
         db=db,
         core_lifecycle=core_lifecycle,

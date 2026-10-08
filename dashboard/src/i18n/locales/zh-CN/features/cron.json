@@ -148,6 +148,14 @@
     "session": "投递到（可选）",
     "noUmos": "暂无可用会话",
     "timezone": "时区（可选，如 Asia/Shanghai）",
+    "deliveryMode": "投递方式",
+    "deliveryModeProactive": "主动消息（机器人主动发送）",
+    "deliveryModeUserTurn": "伪装成用户消息",
+    "deliveryModeUserTurnShort": "用户消息",
+    "deliveryModeHints": {
+      "proactive": "机器人主动发送结果，不写入聊天记录。",
+      "webchat_user_turn": "以你的身份写入该会话，聊天记录与执行轨迹都会保留。"
+    },
     "enabled": "启用"
   },
   "messages": {

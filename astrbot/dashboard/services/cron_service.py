@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 
 from astrbot.core import logger
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
+from astrbot.core.cron.webchat_turn import (
+    DELIVERY_MODE_PROACTIVE,
+    DELIVERY_MODE_WEBCHAT_USER_TURN,
+    normalize_delivery_mode,
+    parse_webchat_turn_session,
+)
 
 
 class CronServiceError(Exception):
@@ -37,6 +43,7 @@ class CronService:
         data["note"] = payload.get("note") or data.get("description") or ""
         data["run_at"] = payload.get("run_at")
         data["run_once"] = data.get("run_once", False)
+        data["delivery_mode"] = payload.get("delivery_mode") or DELIVERY_MODE_PROACTIVE
         data.pop("status", None)
         return data
 
@@ -75,6 +82,16 @@ class CronService:
             run_once = bool(payload.get("run_once", False))
             run_at = payload.get("run_at")
 
+            # The user-turn mode replaces the whole delivery path, so an
+            # unusable target must be rejected at creation time instead of
+            # failing later inside the scheduler.
+            try:
+                delivery_mode = normalize_delivery_mode(payload.get("delivery_mode"))
+                if delivery_mode == DELIVERY_MODE_WEBCHAT_USER_TURN:
+                    parse_webchat_turn_session(session)
+            except ValueError as exc:
+                raise CronServiceError(str(exc)) from exc
+
             if run_once and not run_at:
                 raise CronServiceError("run_at is required when run_once=true")
             if (not run_once) and not cron_expression:
@@ -92,6 +109,7 @@ class CronService:
                 "provider_id": provider_id,
                 "run_at": run_at,
                 "origin": "api",
+                "delivery_mode": delivery_mode,
             }
 
             job = await cron_mgr.add_active_job(
@@ -204,6 +222,23 @@ class CronService:
                 merged_payload["session"] = session
             else:
                 merged_payload.pop("session", None)
+
+        # Validate the mode against the session it will finally target, so
+        # switching an existing user-turn job onto another platform is
+        # rejected rather than silently downgraded at run time.
+        try:
+            merged_mode = normalize_delivery_mode(
+                payload.get("delivery_mode")
+                if "delivery_mode" in payload
+                else merged_payload.get("delivery_mode")
+            )
+            if merged_mode == DELIVERY_MODE_WEBCHAT_USER_TURN:
+                parse_webchat_turn_session(
+                    str(merged_payload.get("session") or "").strip()
+                )
+        except ValueError as exc:
+            raise CronServiceError(str(exc)) from exc
+        merged_payload["delivery_mode"] = merged_mode
 
         self._merge_note(payload, job, merged_payload, updates)
 

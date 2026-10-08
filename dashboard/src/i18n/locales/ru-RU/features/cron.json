@@ -148,6 +148,14 @@
     "session": "Доставить в",
     "noUmos": "Нет доступных сессий",
     "timezone": "Часовой пояс (опционально, напр. Europe/Moscow)",
+    "deliveryMode": "Способ доставки",
+    "deliveryModeProactive": "Проактивное сообщение",
+    "deliveryModeUserTurn": "Отправить как сообщение пользователя",
+    "deliveryModeUserTurnShort": "Сообщение пользователя",
+    "deliveryModeHints": {
+      "proactive": "Бот отправляет результат сам; в историю чата он не записывается.",
+      "webchat_user_turn": "Записывается в диалог от вашего имени: история и трассировка выполнения сохраняются."
+    },
     "enabled": "Включено"
   },
   "messages": {

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,11 @@ from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.cron.events import CronMessageEvent
+from astrbot.core.cron.webchat_turn import (
+    DELIVERY_MODE_WEBCHAT_USER_TURN,
+    normalize_delivery_mode,
+    parse_webchat_turn_session,
+)
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import CronJob
 from astrbot.core.platform.message_session import MessageSession
@@ -108,6 +114,9 @@ class CronJobManager:
         self._started = False
         # The scheduler may start early via _schedule_job; track DB sync separately.
         self._db_synced = False
+        # Dashboard seam for delivery_mode=webchat_user_turn (see
+        # set_webchat_turn_injector); core never imports dashboard services.
+        self._webchat_turn_injector: Callable[..., Awaitable[None]] | None = None
 
     async def start(self, ctx: "Context") -> None:
         self.ctx: Context = ctx  # star context
@@ -219,6 +228,19 @@ class CronJobManager:
 
     async def list_jobs(self, job_type: str | None = None) -> list[CronJob]:
         return await self.db.list_cron_jobs(job_type)
+
+    def set_webchat_turn_injector(
+        self, injector: Callable[..., Awaitable[None]]
+    ) -> None:
+        """Register the dashboard callback that injects a webchat user turn.
+
+        Args:
+            injector: Async callable invoked with the keyword arguments
+                ``cid``, ``username``, ``message_id`` and ``text``. It is
+                expected to raise when the turn cannot be delivered (for
+                example because the conversation is busy).
+        """
+        self._webchat_turn_injector = injector
 
     def _remove_scheduled(self, job_id: str) -> None:
         if self.scheduler.get_job(job_id):
@@ -361,6 +383,13 @@ class CronJobManager:
 
     async def _run_active_agent_job(self, job: CronJob, start_time: datetime) -> None:
         payload = job.payload or {}
+        if (
+            normalize_delivery_mode(payload.get("delivery_mode"))
+            == DELIVERY_MODE_WEBCHAT_USER_TURN
+        ):
+            await self._run_webchat_user_turn(job, payload)
+            return
+
         delivery_session_str = str(payload.get("session") or "").strip()
         session_str = delivery_session_str or str(
             MessageSession(
@@ -393,6 +422,42 @@ class CronJobManager:
             session_str=session_str,
             extras=extras,
             delivery_session_str=delivery_session_str,
+        )
+
+    async def _run_webchat_user_turn(self, job: CronJob, payload: dict) -> None:
+        """Deliver a scheduled job as a user-authored webchat turn.
+
+        The turn is injected into the conversation's input queue so the normal
+        pipeline owns it: the user message lands in the platform history, the
+        reply is persisted with its tool calls and stats, and a chat page with
+        that session open can attach to the run stream. Delivery is
+        fire-and-forget — the job run completes once the turn is queued, and
+        the run itself keeps going asynchronously.
+
+        Args:
+            job: The active_agent job being executed.
+            payload: The job's payload, already resolved to a dict.
+
+        Raises:
+            ValueError: The delivery target is not a usable webchat session.
+            RuntimeError: No webchat turn injector is registered.
+        """
+        session_str = str(payload.get("session") or "").strip()
+        conversation_id, owner = parse_webchat_turn_session(session_str)
+
+        if self._webchat_turn_injector is None:
+            raise RuntimeError(
+                "webchat turn injector is not registered; the dashboard must "
+                "call set_webchat_turn_injector() to run jobs with "
+                "delivery_mode=webchat_user_turn"
+            )
+
+        note = str(payload.get("note") or job.description or job.name or "")
+        await self._webchat_turn_injector(
+            cid=conversation_id,
+            username=owner,
+            message_id=uuid.uuid4().hex,
+            text=note,
         )
 
     async def _woke_main_agent(

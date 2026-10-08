@@ -103,6 +103,14 @@
                   >
                     {{ scheduleProductLabel(item) }}
                   </v-chip>
+                  <v-chip
+                    v-if="item.delivery_mode === 'webchat_user_turn'"
+                    size="x-small"
+                    color="info"
+                    variant="tonal"
+                  >
+                    {{ tm("form.deliveryModeUserTurnShort") }}
+                  </v-chip>
                 </template>
 
                 <div class="task-description text-body-2 text-medium-emphasis">
@@ -413,6 +421,22 @@
                     </v-chip>
                   </template>
                 </v-autocomplete>
+
+                <div v-if="isWebchatSession" class="schedule-field">
+                  <v-select
+                    v-model="newJob.delivery_mode"
+                    :items="deliveryModeOptions"
+                    item-title="label"
+                    item-value="value"
+                    :label="tm('form.deliveryMode')"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details
+                  />
+                  <p class="text-caption text-medium-emphasis mt-1">
+                    {{ tm(`form.deliveryModeHints.${newJob.delivery_mode}`) }}
+                  </p>
+                </div>
               </div>
             </v-card-text>
             <v-card-actions class="justify-end px-5 pb-5">
@@ -436,7 +460,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useTheme } from "vuetify";
 import { botApi, cronApi, sessionApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -472,6 +496,7 @@ type ScheduleMode =
   | "monthly"
   | "cron";
 type IntervalUnit = "minutes" | "hours" | "days";
+type DeliveryMode = "proactive" | "webchat_user_turn";
 type UmoInfo = {
   umo: string;
   platform?: string;
@@ -497,8 +522,24 @@ const newJob = ref({
   monthly_time: "09:00",
   session: "",
   timezone: "",
+  delivery_mode: "proactive" as DeliveryMode,
   enabled: true,
 });
+
+const isWebchatSession = computed(
+  () => getUmoInfo(newJob.value.session).platform === "webchat",
+);
+
+// The user-turn mode only exists for webchat targets; leaving webchat must not
+// submit a mode the backend rejects.
+watch(isWebchatSession, (isWebchat) => {
+  if (!isWebchat) newJob.value.delivery_mode = "proactive";
+});
+
+const deliveryModeOptions = computed(() => [
+  { value: "proactive", label: tm("form.deliveryModeProactive") },
+  { value: "webchat_user_turn", label: tm("form.deliveryModeUserTurn") },
+]);
 
 const snackbar = ref({ show: false, message: "", color: "success" });
 
@@ -828,6 +869,8 @@ async function loadJobs() {
       jobs.value = data.map((job: any) => ({
         ...job,
         session: job?.payload?.session || job?.session || "",
+        delivery_mode:
+          job.delivery_mode || job?.payload?.delivery_mode || "proactive",
       }));
       mergeUmoInfos(
         jobs.value.map(getJobSession).filter(Boolean).map(parseUmoInfo),
@@ -947,6 +990,7 @@ function resetNewJob() {
     monthly_time: "09:00",
     session: "",
     timezone: "",
+    delivery_mode: "proactive" as DeliveryMode,
     enabled: true,
   };
 }
@@ -973,6 +1017,8 @@ function openEdit(job: any) {
     monthly_time: schedule.monthly_time,
     session: job.session || job?.payload?.session || "",
     timezone: job.timezone || "",
+    delivery_mode:
+      job.delivery_mode || job?.payload?.delivery_mode || "proactive",
     enabled: job.enabled !== false,
   };
   createDialog.value = true;
@@ -1174,6 +1220,9 @@ function buildPayload() {
     run_at: runOnce ? toIsoDatetime(newJob.value.run_at) : "",
     session: newJob.value.session,
     timezone: newJob.value.timezone,
+    delivery_mode: isWebchatSession.value
+      ? newJob.value.delivery_mode
+      : "proactive",
     enabled: newJob.value.enabled,
   };
 }

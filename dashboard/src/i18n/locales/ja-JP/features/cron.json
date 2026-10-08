@@ -148,6 +148,14 @@
     "session": "配信先（任意）",
     "noUmos": "利用可能なセッションがありません",
     "timezone": "タイムゾーン（任意、例：Asia/Shanghai）",
+    "deliveryMode": "配信方法",
+    "deliveryModeProactive": "プロアクティブメッセージ",
+    "deliveryModeUserTurn": "ユーザーメッセージとして送信",
+    "deliveryModeUserTurnShort": "ユーザー発言",
+    "deliveryModeHints": {
+      "proactive": "ボットが自発的に結果を送信します。チャット履歴には残りません。",
+      "webchat_user_turn": "あなたの発言として書き込まれ、履歴と実行トレースが残ります。"
+    },
     "enabled": "有効"
   },
   "messages": {

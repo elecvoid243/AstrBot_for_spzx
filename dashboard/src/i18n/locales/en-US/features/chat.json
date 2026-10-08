@@ -506,6 +506,19 @@
       "generic": "compaction"
     }
   },
+  "llmRequestInjections": {
+    "tooltip": "Context injection · {count} items",
+    "title": "Context injected this turn",
+    "count": "{count} items",
+    "note": "Injected by plugins on the LLM request",
+    "units": {
+      "chars": "{delta} chars",
+      "items": "{delta} items",
+      "tools": "{delta} tools"
+    },
+    "lossySuffix": "trimmed",
+    "rewritten": "rewritten"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens ({percent}%)",
     "tooltipWithCache": "{used} / {limit} tokens ({percent}%)\ncache hit {cachePercent}%"

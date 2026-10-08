@@ -195,6 +195,58 @@ describe("context compression chip i18n completeness (2026-10-08)", () => {
   });
 });
 
+describe("llm request injection marker i18n completeness (2026-10-08)", () => {
+  // The gutter marker and its panel are pure i18n surfaces: a locale missing
+  // one of these renders "[MISSING: llmRequestInjections.…]" in the tooltip
+  // or the panel. ja-JP included, which `localizations` does not cover.
+  const allLocales: Array<[string, Record<string, unknown>]> = [
+    ...localizations,
+    ["ja-JP", chatJa as unknown as Record<string, unknown>],
+  ];
+
+  for (const [locale, dict] of allLocales) {
+    it(`${locale} defines llmRequestInjections strings`, () => {
+      const block = dict.llmRequestInjections as
+        | Record<string, unknown>
+        | undefined;
+      for (const key of [
+        "tooltip",
+        "title",
+        "count",
+        "note",
+        "lossySuffix",
+        "rewritten",
+      ]) {
+        expect(
+          typeof block?.[key],
+          `${locale} missing llmRequestInjections.${key} string`,
+        ).toBe("string");
+      }
+
+      const units = block?.units as Record<string, unknown> | undefined;
+      for (const key of ["chars", "items", "tools"]) {
+        expect(
+          typeof units?.[key],
+          `${locale} missing llmRequestInjections.units.${key} string`,
+        ).toBe("string");
+      }
+    });
+  }
+
+  // Presence is not enough for the parameterised keys: a renamed placeholder
+  // ({count} → {n}) interpolates to itself and ships a literal "{count}".
+  it("substitutes every placeholder of the tooltip and the delta label", () => {
+    const { tm } = useModuleI18n("features/chat");
+
+    expect(tm("llmRequestInjections.tooltip", { count: 3 })).toBe(
+      "上下文注入 · 3 项",
+    );
+    expect(tm("llmRequestInjections.units.chars", { delta: "+412" })).toBe(
+      "+412 字符",
+    );
+  });
+});
+
 describe("diff overlay mode slot i18n completeness (2026-10-08)", () => {
   // 第三格的 tooltip 有三态(在途 / 不可用原因)加进入退出两种动作文案。
   // ru-RU 的 diffSidebar.overlay 块此前完全缺失(tooltip 会渲染

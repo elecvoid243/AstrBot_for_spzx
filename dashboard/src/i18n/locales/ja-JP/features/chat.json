@@ -259,6 +259,19 @@
       "generic": "圧縮"
     }
   },
+  "llmRequestInjections": {
+    "tooltip": "コンテキスト注入 · {count} 件",
+    "title": "このターンのコンテキスト注入",
+    "count": "{count} 件",
+    "note": "プラグインが LLM リクエスト時に注入",
+    "units": {
+      "chars": "{delta} 文字",
+      "items": "{delta} 件",
+      "tools": "{delta} 個のツール"
+    },
+    "lossySuffix": "切り詰め",
+    "rewritten": "書き換え"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} トークン（{percent}%）"
   },

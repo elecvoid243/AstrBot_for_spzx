@@ -506,6 +506,19 @@
       "generic": "压缩"
     }
   },
+  "llmRequestInjections": {
+    "tooltip": "上下文注入 · {count} 项",
+    "title": "本轮上下文注入",
+    "count": "{count} 项",
+    "note": "插件在 LLM 请求时注入",
+    "units": {
+      "chars": "{delta} 字符",
+      "items": "{delta} 条",
+      "tools": "{delta} 个工具"
+    },
+    "lossySuffix": "已截断",
+    "rewritten": "已改写"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens（{percent}%）",
     "tooltipWithCache": "{used} / {limit} tokens（{percent}%）\n缓存命中率 {cachePercent}%"

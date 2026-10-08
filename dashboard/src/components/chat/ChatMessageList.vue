@@ -55,6 +55,35 @@
           <span v-else class="bot-avatar-symbol" aria-hidden="true">✦</span>
         </v-avatar>
 
+        <!-- 2026-10-08 (elecvoid243): LLM request injection trail. Fixed-width
+             rail so the marker never shifts the message layout; it stays empty
+             for turns without injections and hides on narrow screens. -->
+        <div
+          v-if="!isUserMessage(msg) && !isBranchDivider(msg)"
+          class="message-rail"
+        >
+          <v-tooltip
+            v-if="injectionItems(msg).length"
+            location="right"
+            max-width="240"
+          >
+            <template #activator="{ props: injectionTipProps }">
+              <button
+                v-bind="injectionTipProps"
+                type="button"
+                class="injection-marker"
+                :class="{ 'is-open': injectionTrailOpen(msg, msgIndex) }"
+                :aria-expanded="injectionTrailOpen(msg, msgIndex)"
+                :aria-label="injectionTooltip(msg)"
+                @click="toggleInjectionTrail(msg, msgIndex)"
+              >
+                <span class="injection-marker-dot" aria-hidden="true"></span>
+              </button>
+            </template>
+            <span>{{ injectionTooltip(msg) }}</span>
+          </v-tooltip>
+        </div>
+
         <div class="message-stack">
           <div v-if="isBranchDivider(msg)" class="branch-divider">
             <button
@@ -411,6 +440,11 @@
               </template>
             </div>
 
+            <LlmRequestInjectionsPanel
+              v-if="injectionTrailOpen(msg, msgIndex)"
+              :items="injectionItems(msg)"
+            />
+
             <div v-if="showMessageMeta(msg, msgIndex)" class="message-meta">
               <span v-if="msg.created_at">{{
                 formatTime(msg.created_at)
@@ -585,6 +619,7 @@ import ActionRef from "@/components/chat/message_list_comps/ActionRef.vue";
 import MarkdownMessagePart from "@/components/chat/message_list_comps/MarkdownMessagePart.vue";
 import UserPlainMessagePart from "@/components/chat/message_list_comps/UserPlainMessagePart.vue";
 import InteractiveChoiceBox from "@/components/chat/message_list_comps/InteractiveChoiceBox.vue";
+import LlmRequestInjectionsPanel from "@/components/chat/LlmRequestInjectionsPanel.vue";
 import {
   isInteractiveChoicePayload,
   truncateInteractiveChoice,
@@ -1399,6 +1434,47 @@ function toggleAgentWork(message: ChatRecord, messageIndex: number) {
   expandedAgentWork.value = next;
 }
 
+// 2026-10-08 (elecvoid243): LLM request injection trail. One gutter marker
+// per bot turn whose request carried plugin injections; the panel lists
+// plugin / handler / field deltas. Mirrors the agent-work expansion above.
+const expandedInjectionTrails = ref(new Set<string>());
+
+function injectionTrailKey(message: ChatRecord, messageIndex: number) {
+  return message.id != null ? String(message.id) : `idx-${messageIndex}`;
+}
+
+function injectionItems(message: ChatRecord) {
+  return messageContent(message).llmRequestInjections?.items || [];
+}
+
+function injectionChangeCount(message: ChatRecord) {
+  return injectionItems(message).reduce(
+    (total, item) => total + (item.changes?.length || 0),
+    0,
+  );
+}
+
+function injectionTrailOpen(message: ChatRecord, messageIndex: number) {
+  return expandedInjectionTrails.value.has(
+    injectionTrailKey(message, messageIndex),
+  );
+}
+
+function toggleInjectionTrail(message: ChatRecord, messageIndex: number) {
+  const key = injectionTrailKey(message, messageIndex);
+  const next = new Set(expandedInjectionTrails.value);
+  if (!next.delete(key)) {
+    next.add(key);
+  }
+  expandedInjectionTrails.value = next;
+}
+
+function injectionTooltip(message: ChatRecord) {
+  return tm("llmRequestInjections.tooltip", {
+    count: injectionChangeCount(message),
+  });
+}
+
 // A search hit can sit inside the work trail the capsule hides, so a jump
 // from the message-search dialog hands over the target's absolute history
 // index. The row may still be missing when the request arrives (the jump
@@ -2146,6 +2222,63 @@ function formatDuration(seconds: number) {
 .tool-call-inline-status {
   color: var(--chat-muted);
   font-size: 12px;
+}
+
+/* 2026-10-08 (elecvoid243): LLM request injection trail. The rail is a fixed
+   16px column so rows never shift; the marker is silent at rest (a 6px
+   square) and enlarges on hover / stays dark while its panel is open. */
+.message-rail {
+  flex: 0 0 16px;
+  width: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 4px;
+}
+
+.injection-marker {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.injection-marker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(var(--v-theme-on-surface), 0.22);
+  transition:
+    width 0.12s ease-out,
+    height 0.12s ease-out,
+    background 0.12s ease-out;
+}
+
+.injection-marker:hover .injection-marker-dot,
+.injection-marker.is-open .injection-marker-dot {
+  width: 8px;
+  height: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.62);
+}
+
+.injection-marker.is-open {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.injection-marker:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
+  outline-offset: 1px;
+}
+
+@media (max-width: 560px) {
+  .message-rail {
+    display: none;
+  }
 }
 
 /* Collapsed agent-work toggle: a quiet capsule that mirrors the chat's

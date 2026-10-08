@@ -500,6 +500,19 @@
       "generic": "сжатие"
     }
   },
+  "llmRequestInjections": {
+    "tooltip": "Внедрение контекста · {count}",
+    "title": "Внедрение контекста в этом ходе",
+    "count": "{count} элем.",
+    "note": "Внедрено плагинами при запросе к LLM",
+    "units": {
+      "chars": "{delta} симв.",
+      "items": "{delta} элем.",
+      "tools": "{delta} инстр."
+    },
+    "lossySuffix": "обрезано",
+    "rewritten": "переписано"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} токенов ({percent}%)",
     "tooltipWithCache": "{used} / {limit} токенов ({percent}%)\nпопаданий в кэш {cachePercent}%"

@@ -196,6 +196,8 @@ function normalizeRecord(record: any): ChatRecord {
       message: normalizedMessage,
       reasoning: extractReasoningText(normalizedMessage, content.reasoning || ""),
       agentStats: content.agentStats || content.agent_stats,
+      llmRequestInjections:
+        content.llmRequestInjections || content.llm_request_injections,
       refs: content.refs,
     },
   };

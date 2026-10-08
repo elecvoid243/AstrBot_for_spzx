@@ -47,6 +47,11 @@ import {
   parseContextCompressionNotice,
   type ContextCompressionNotice,
 } from "./contextCompressionNotice";
+// LLM request injection trace: leaf parsing for the gutter marker payload.
+import {
+  parseLlmRequestInjections,
+  type LlmRequestInjections,
+} from "./llmRequestInjections";
 // Live reducer for structured subagent progress stream payloads.
 import { applySubAgentEvent } from "./subagentRunReducer";
 // spcode todo_* tool protocol: shared tool-name set + the history
@@ -206,6 +211,10 @@ export interface ChatContent {
    * delivered via the `file_changes` stream event and persisted as
    * `content.file_changes`. */
   fileChangeSummary?: FileChangeSummaryFile[];
+  /** Plugin context injections observed on `on_llm_request`, delivered via
+   * the `llm_request_injections` stream event and persisted as
+   * `content.llm_request_injections`. */
+  llmRequestInjections?: LlmRequestInjections | null;
   refs?: any;
 }
 
@@ -500,6 +509,11 @@ export function useMessages(options: UseMessagesOptions) {
               if (notice) {
                 options.onContextCompression?.(sessionId, notice);
               }
+              return;
+            }
+            // LLM request injection traces are primary-stream telemetry: an
+            // orphan turn must not render the wire JSON as chat text.
+            if (payload?.chain_type === "llm_request_injections") {
               return;
             }
             messagesBySession[sessionId] = messagesBySession[sessionId] || [];
@@ -1276,6 +1290,10 @@ export function useMessages(options: UseMessagesOptions) {
         content.reasoning || "",
       ),
       agentStats: content.agentStats || content.agent_stats,
+      llmRequestInjections:
+        parseLlmRequestInjections(
+          content.llm_request_injections ?? content.llmRequestInjections,
+        ) ?? undefined,
       fileChangeSummary:
         (content.fileChangeSummary as FileChangeSummaryFile[] | undefined) ||
         (content.file_changes?.files as FileChangeSummaryFile[] | undefined),
@@ -2013,6 +2031,15 @@ export function useMessages(options: UseMessagesOptions) {
     if (msgType === "agent_stats" || chainType === "agent_stats") {
       markMessageStarted(botRecord);
       messageContent(botRecord).agentStats = data;
+      return;
+    }
+    if (
+      msgType === "llm_request_injections" ||
+      chainType === "llm_request_injections"
+    ) {
+      markMessageStarted(botRecord);
+      messageContent(botRecord).llmRequestInjections =
+        parseLlmRequestInjections(data) ?? undefined;
       return;
     }
     if (msgType === "file_changes" || chainType === "file_changes") {

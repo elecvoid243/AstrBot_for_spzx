@@ -225,7 +225,32 @@ class ChatThreadMessageRequest(OpenModel):
     selected_provider: str | None = None
     selected_model: str | None = None
     enable_streaming: bool | None = None
-    flags: ChatFlags | None = None
+
+
+class ChatUiThinkingEffortValueRequest(OpenModel):
+    value: str
+
+
+class ChatUiThinkingEffortPresetsRequest(OpenModel):
+    """Full thinking-effort definition submitted by the preset editor.
+
+    `presets` and `active_preset` are validated in the service layer so that
+    rejections carry a precise message; `value` is optional and keeps the
+    stored selection when omitted.
+    """
+
+    presets: list[Any] = Field(default_factory=list)
+    active_preset: str = ""
+    value: str | None = None
+
+
+class ChatUiQuickMessagesRequest(OpenModel):
+    """Click-to-send phrase list submitted by the quick-message editor.
+
+    Validated in the service layer so rejections carry a precise message.
+    """
+
+    items: list[Any] = Field(default_factory=list)
 
 
 class CronJobRequest(OpenModel):

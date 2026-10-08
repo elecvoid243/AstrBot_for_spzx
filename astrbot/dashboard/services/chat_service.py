@@ -35,6 +35,13 @@ from astrbot.core.utils.media_utils import (
     MEDIA_MIME_EXTENSIONS,
     detect_image_mime_type_async,
 )
+from astrbot.dashboard.services.chatui_settings import (
+    normalize_quick_messages,
+    normalize_thinking_effort_settings,
+    normalize_thinking_effort_value,
+    validate_quick_messages,
+    validate_thinking_effort_presets,
+)
 
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
@@ -1168,6 +1175,135 @@ class ChatService:
         # (`BaseDatabase.get_branch_relations`) so every dashboard service
         # sharing the db instance sees the same relations — the project
         # session list (ChatUIProjectService) needs them too.
+
+    def _default_config(self):
+        conf = self.core_lifecycle.astrbot_config_mgr.confs.get("default")
+        if conf is None:
+            raise ChatServiceError("Default config profile is unavailable")
+        return conf
+
+    def get_chatui_thinking_effort(self) -> dict:
+        """Read the ChatUI thinking-effort presets from the config file.
+
+        Returns:
+            Normalized ``{"active_preset", "value", "presets"}``; corrupt
+            entries are dropped instead of failing the request.
+        """
+        chatui = self._default_config().get("chatui")
+        raw = chatui.get("thinking_effort") if isinstance(chatui, dict) else None
+        return normalize_thinking_effort_settings(raw)
+
+    def _write_chatui(self, **sections: dict) -> None:
+        """Persist chatui sub-sections while keeping the siblings intact.
+
+        `save_config` shallow-merges at the top level, so handing over
+        ``{"chatui": ...}`` replaces the whole section: merge first, or writing
+        the effort presets would silently drop the quick messages (and vice
+        versa).
+
+        Args:
+            **sections: Sub-sections to replace, keyed by their config name.
+        """
+        chatui = self._default_config().get("chatui")
+        merged = dict(chatui) if isinstance(chatui, dict) else {}
+        merged.update(sections)
+        self._default_config().save_config({"chatui": merged})
+
+    def get_chatui_quick_messages(self) -> dict:
+        """Read the ChatUI click-to-send phrases from the config file.
+
+        Returns:
+            Normalized ``{"items": [{"id", "content"}]}``; corrupt entries are
+            dropped instead of failing the request.
+        """
+        chatui = self._default_config().get("chatui")
+        raw = chatui.get("quick_messages") if isinstance(chatui, dict) else None
+        return normalize_quick_messages(raw)
+
+    def replace_chatui_quick_messages(self, items_raw: object) -> dict:
+        """Replace the whole quick-message list.
+
+        Args:
+            items_raw: Candidate item list from the editor.
+
+        Returns:
+            The normalized settings as persisted.
+
+        Raises:
+            ChatServiceError: If the list is unusable.
+        """
+        try:
+            items = validate_quick_messages(items_raw)
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+        settings = {"items": items}
+        self._write_chatui(quick_messages=settings)
+        return settings
+
+    def set_chatui_thinking_effort_value(self, raw_value: object) -> dict:
+        """Persist the selected effort value.
+
+        Args:
+            raw_value: Free-form effort value chosen in the input row.
+
+        Returns:
+            The normalized settings as persisted.
+
+        Raises:
+            ChatServiceError: If the value is unusable.
+        """
+        settings = self.get_chatui_thinking_effort()
+        try:
+            settings["value"] = normalize_thinking_effort_value(raw_value)
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+        self._write_chatui(thinking_effort=settings)
+        return settings
+
+    def replace_chatui_thinking_effort(
+        self,
+        presets_raw: object,
+        active_preset: object,
+        value: object | None = None,
+    ) -> dict:
+        """Replace the preset list and the active selection as one unit.
+
+        Args:
+            presets_raw: Candidate preset list from the editor.
+            active_preset: Preset id to activate; falls back to the first
+                preset (or empty) when it names nothing.
+            value: Selected effort value, or None to keep the stored one.
+
+        Returns:
+            The normalized settings as persisted.
+
+        Raises:
+            ChatServiceError: If the preset list or the value is unusable.
+        """
+        try:
+            presets = validate_thinking_effort_presets(presets_raw)
+        except ValueError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+        active = active_preset.strip() if isinstance(active_preset, str) else ""
+        if not any(preset["id"] == active for preset in presets):
+            active = presets[0]["id"] if presets else ""
+
+        if value is None:
+            stored_value = self.get_chatui_thinking_effort()["value"]
+        else:
+            try:
+                stored_value = normalize_thinking_effort_value(value)
+            except ValueError as exc:
+                raise ChatServiceError(str(exc)) from exc
+
+        settings = {
+            "active_preset": active,
+            "value": stored_value,
+            "presets": presets,
+        }
+        self._write_chatui(thinking_effort=settings)
+        return settings
 
     async def get_branch_relations(self) -> dict[str, dict]:
         """Return cached branch relations (see ``BaseDatabase``).

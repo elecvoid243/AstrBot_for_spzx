@@ -129,4 +129,20 @@ describe("ThinkingEffortChip (slider mode)", () => {
     expect(wrapper.find("input.slider-stub").exists()).toBe(false);
     expect(wrapper.find(".effort-chip-row__label").text()).toBe("低");
   });
+
+  it("shows the active preset name under the title", () => {
+    const wrapper = mountChip({ presetName: "DeepSeek-V4.1" });
+    expect(wrapper.find(".effort-chip-preset").text()).toBe("DeepSeek-V4.1");
+  });
+
+  it("hides the edit row unless the caller may rewrite presets", () => {
+    const editable = mountChip({ canEdit: true });
+    expect(editable.find(".effort-chip-row--edit").exists()).toBe(true);
+
+    // Read-only callers see the shapes and pick a value; the gear (and its
+    // divider) simply is not there.
+    const readonly = mountChip({});
+    expect(readonly.find(".effort-chip-row--edit").exists()).toBe(false);
+    expect(readonly.find(".effort-chip-divider").exists()).toBe(false);
+  });
 });

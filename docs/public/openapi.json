@@ -2887,6 +2887,115 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/ui-settings": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Get the ChatUI thinking-effort presets and the caller's edit permission",
+        "description": "Returns the presets persisted under `chatui.thinking_effort` in\n`cmd_config.json` plus `can_edit`, which tells the frontend whether the\ncaller may rewrite the preset list (it requires the `config` scope;\nevery chat caller may still select a value).\n\n**Required scope:** `chat`",
+        "operationId": "getChatUiSettings",
+        "x-astrbot-scope": "chat",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/chat/ui-settings/value": {
+      "put": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Store the selected thinking-effort value",
+        "description": "Persists the current selection for every ChatUI user. Preset\ndefinitions stay admin-only; choosing among them does not.\n\n**Required scope:** `chat`",
+        "operationId": "updateChatUiEffortValue",
+        "x-astrbot-scope": "chat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Free-form effort value forwarded to the provider (e.g. `max`, `xhigh`, `72`)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/chat/ui-settings/presets": {
+      "put": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Replace the thinking-effort preset list and active selection",
+        "operationId": "updateChatUiEffortPresets",
+        "x-astrbot-scope": "config",
+        "x-astrbot-sensitive-scopes": [
+          "config:edit_admin"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUiThinkingEffortPresetsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `config`\n\n**Conditional sensitive scope:** `config:edit_admin`"
+      }
+    },
+    "/api/v1/chat/ui-settings/quick-messages": {
+      "put": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Replace the click-to-send phrase list",
+        "description": "Persists `chatui.quick_messages` in `cmd_config.json`. Items carry no\ntitle: the input row truncates long content and reveals it on hover.\n\n**Required scope:** `config`\n\n**Conditional sensitive scope:** `config:edit_admin`",
+        "operationId": "updateChatUiQuickMessages",
+        "x-astrbot-scope": "config",
+        "x-astrbot-sensitive-scopes": [
+          "config:edit_admin"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUiQuickMessagesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
     "/api/v1/chat/threads": {
       "post": {
         "tags": [
@@ -8535,6 +8644,140 @@
           },
           "config": {
             "$ref": "#/components/schemas/DynamicConfig"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatUiQuickMessagesRequest": {
+        "type": "object",
+        "description": "Click-to-send phrase list submitted by the ChatUI quick-message editor.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatUiQuickMessage"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatUiQuickMessage": {
+        "type": "object",
+        "description": "One click-to-send phrase. Content only — the menu truncates long text and reveals it on hover.",
+        "required": [
+          "id",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatUiThinkingEffortPresetsRequest": {
+        "type": "object",
+        "description": "Full thinking-effort definition submitted by the ChatUI preset editor. `active_preset` is normalized to the first preset when it names nothing; omitting `value` keeps the stored selection.",
+        "properties": {
+          "presets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatUiThinkingEffortPreset"
+            }
+          },
+          "active_preset": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatUiThinkingEffortPreset": {
+        "type": "object",
+        "description": "One named thinking-effort shape. `mode` picks which half the input row renders; both halves are kept so switching modes never loses the other one.",
+        "required": [
+          "id",
+          "name",
+          "mode"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "levels",
+              "slider"
+            ]
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "value"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "slider": {
+            "$ref": "#/components/schemas/ChatUiThinkingEffortSlider"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatUiThinkingEffortSlider": {
+        "type": "object",
+        "description": "Continuous effort track for models whose reasoning_effort accepts a free number; `snaps` are labelled shortcuts, not snapping points.",
+        "required": [
+          "min",
+          "max",
+          "step"
+        ],
+        "properties": {
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "step": {
+            "type": "number"
+          },
+          "snaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "value"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "number"
+                }
+              }
+            }
           }
         },
         "additionalProperties": false

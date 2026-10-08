@@ -11,19 +11,12 @@
   The slider is deliberately free-form — no snapping, so the handle never
   fights the pointer — while the aliases stay as labels and shortcuts.
 
-  The chip is a pure UI surface: the selection state (localStorage
-  "thinkingEffort") and the custom level list / slider config stay owned by
-  ChatInput, which forwards them via v-model/:levels/:mode/:slider and opens
-  the editor dialog when this chip emits "edit". Menu/row styling follows
-  the FileAccessModeChip pattern (same --sp-* chip tokens).
+  The chip is a pure UI surface: the preset list and the selected value live
+  in cmd_config.json and stay owned by ChatInput, which forwards them via
+  v-model/:levels/:mode/:slider/presetName and opens the editor dialog when
+  this chip emits "edit". Menu/row styling follows the FileAccessModeChip
+  pattern (same --sp-* chip tokens).
 -->
-<script lang="ts">
-export interface ThinkingEffortLevel {
-  name: string;
-  value: string;
-}
-</script>
-
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
@@ -34,6 +27,7 @@ import {
   normalizeEffortValue,
   type ThinkingEffortSliderConfig,
 } from "@/composables/thinkingEffortSlider";
+import type { ThinkingEffortLevel } from "@/composables/thinkingEffortPresets";
 
 const props = defineProps<{
   modelValue: ThinkingEffort;
@@ -41,6 +35,10 @@ const props = defineProps<{
   /** "levels" keeps the fixed alias list; "slider" opens the numeric track. */
   mode?: "levels" | "slider";
   slider?: ThinkingEffortSliderConfig;
+  /** Name of the preset being rendered; empty when none is configured. */
+  presetName?: string;
+  /** Config editors only — without it the edit row stays hidden. */
+  canEdit?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -135,9 +133,13 @@ function openEditor(): void {
         <span>{{ tm("input.thinkingEffort") }}</span>
       </v-tooltip>
     </template>
-    <v-card class="effort-chip-card">
+    <v-card
+      class="effort-chip-card"
+      :class="{ 'effort-chip-card--slider': sliderMode }"
+    >
       <v-card-text>
         <div class="effort-chip-title">{{ tm("input.thinkingEffort") }}</div>
+        <div v-if="presetName" class="effort-chip-preset">{{ presetName }}</div>
 
         <!-- Slider mode: free numeric track (1-100 by default). The named
              aliases are labels + click-to-jump shortcuts, never magnetism —
@@ -190,19 +192,21 @@ function openEditor(): void {
           </button>
         </template>
 
-        <div class="effort-chip-divider"></div>
-        <button
-          type="button"
-          class="effort-chip-row effort-chip-row--edit"
-          @click="openEditor"
-        >
-          <v-icon size="14" class="effort-chip-row__gear"
-            >mdi-cog-outline</v-icon
+        <template v-if="canEdit">
+          <div class="effort-chip-divider"></div>
+          <button
+            type="button"
+            class="effort-chip-row effort-chip-row--edit"
+            @click="openEditor"
           >
-          <span class="effort-chip-row__label">
-            {{ tm("input.editThinkingEffort") }}
-          </span>
-        </button>
+            <v-icon size="14" class="effort-chip-row__gear"
+              >mdi-cog-outline</v-icon
+            >
+            <span class="effort-chip-row__label">
+              {{ tm("input.editThinkingEffort") }}
+            </span>
+          </button>
+        </template>
       </v-card-text>
     </v-card>
   </v-menu>
@@ -272,6 +276,14 @@ function openEditor(): void {
   margin-bottom: 2px;
 }
 
+/* Active preset name, read-only context under the title: the row itself
+   renders whichever shape that preset defines. */
+.effort-chip-preset {
+  margin-bottom: 6px;
+  color: var(--sp-text-muted);
+  font-size: 12px;
+}
+
 .effort-chip-row {
   display: flex;
   align-items: center;
@@ -327,9 +339,16 @@ function openEditor(): void {
   opacity: 0.75;
 }
 
-/* Slider mode needs a wider popup than the level list so the track has
-   room to drag, and must not swallow the drag as a "click outside". */
+/* Level mode sizes itself to its content: a label plus a check needs no wide
+   floor, and the shared 264px used to leave a mostly empty right edge. The
+   floor below only keeps a very short list from collapsing into a sliver. */
 .effort-chip-card {
+  min-width: 160px;
+}
+
+/* Slider mode keeps the wide floor: the track needs horizontal room to drag,
+   and the card must not swallow the drag as a "click outside". */
+.effort-chip-card--slider {
   min-width: 264px;
 }
 

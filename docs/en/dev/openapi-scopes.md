@@ -107,6 +107,8 @@ Manage configuration profiles, system configuration, and shared configuration, e
 | Method | Endpoint | Conditional sensitive sub-scope |
 | --- | --- | --- |
 | `POST` | `/api/v1/bot-types/{bot_type}/registration` | — |
+| `PUT` | `/api/v1/chat/ui-settings/presets` | `config:edit_admin` |
+| `PUT` | `/api/v1/chat/ui-settings/quick-messages` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles` | — |
 | `POST` | `/api/v1/config-profiles` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles/schema` | — |
@@ -218,6 +220,8 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `GET` | `/api/v1/chat/threads/{thread_id}` | — |
 | `DELETE` | `/api/v1/chat/threads/{thread_id}` | — |
 | `POST` | `/api/v1/chat/threads/{thread_id}/messages` | — |
+| `GET` | `/api/v1/chat/ui-settings` | — |
+| `PUT` | `/api/v1/chat/ui-settings/value` | — |
 | `GET` | `/api/v1/chat/ws` | `chat:admin` |
 
 ## `data`

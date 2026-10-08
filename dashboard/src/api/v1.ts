@@ -23,6 +23,8 @@ import {
   type ChatSessionPatchRequest,
   type ChatThreadCreateRequest,
   type ChatThreadMessageRequest,
+  type ChatUiQuickMessagesRequest,
+  type ChatUiThinkingEffortPresetsRequest,
   type CommandPatchRequest,
   type ConfigRouteUpsertRequest,
   type ConfigRoutesReplaceRequest,
@@ -843,6 +845,18 @@ export const backupApi = {
 };
 
 export const chatApi = {
+  getUiSettings() {
+    return typed<any>(openApiV1.getChatUiSettings());
+  },
+  updateThinkingEffortValue(value: string) {
+    return typed<any>(openApiV1.updateChatUiEffortValue({ body: { value } }));
+  },
+  updateThinkingEffortPresets(payload: ChatUiThinkingEffortPresetsRequest) {
+    return typed<any>(openApiV1.updateChatUiEffortPresets({ body: payload }));
+  },
+  updateQuickMessages(payload: ChatUiQuickMessagesRequest) {
+    return typed<any>(openApiV1.updateChatUiQuickMessages({ body: payload }));
+  },
   send(payload: ChatRequest) {
     return typed<any>(openApiV1.sendChatMessage({ body: payload }));
   },

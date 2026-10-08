@@ -428,6 +428,66 @@ DEFAULT_CONFIG = {
             "ca_certs": "",
         },
     },
+    # ChatUI frontend preferences. Kept in the config file (not browser
+    # localStorage) so every browser opening this instance shares one
+    # definition; written through /api/chat/ui-settings rather than the
+    # system config editor, hence no CONFIG_METADATA entry.
+    "chatui": {
+        "thinking_effort": {
+            "active_preset": "deepseek-v4",
+            "value": "max",
+            "presets": [
+                {
+                    "id": "deepseek-v4",
+                    "name": "DeepSeek-V4",
+                    "mode": "levels",
+                    "levels": [
+                        {"name": "低", "value": "low"},
+                        {"name": "高", "value": "high"},
+                        {"name": "最大", "value": "max"},
+                    ],
+                    "slider": {"min": 1, "max": 100, "step": 1, "snaps": []},
+                },
+                {
+                    "id": "deepseek-v4.1",
+                    "name": "DeepSeek-V4.1",
+                    "mode": "slider",
+                    "levels": [
+                        {"name": "低", "value": "low"},
+                        {"name": "高", "value": "high"},
+                        {"name": "最大", "value": "max"},
+                    ],
+                    "slider": {
+                        "min": 1,
+                        "max": 100,
+                        "step": 1,
+                        "snaps": [
+                            {"name": "低", "value": 20},
+                            {"name": "高", "value": 50},
+                            {"name": "极高", "value": 75},
+                            {"name": "最大", "value": 100},
+                        ],
+                    },
+                },
+                {
+                    "id": "qwen-3.8",
+                    "name": "Qwen-3.8",
+                    "mode": "levels",
+                    "levels": [
+                        {"name": "低", "value": "low"},
+                        {"name": "中", "value": "medium"},
+                        {"name": "极高", "value": "xhigh"},
+                    ],
+                    "slider": {"min": 1, "max": 100, "step": 1, "snaps": []},
+                },
+            ],
+        },
+        # Click-to-send phrases shown in the ChatUI input row. Content only:
+        # the menu truncates long text and reveals it on hover.
+        "quick_messages": {
+            "items": [],
+        },
+    },
     "platform": [],
     "platform_specific": {
         # 平台特异配置：按平台分类，平台下按功能分组

@@ -524,15 +524,25 @@
             <!-- Config profile quick-switch capsule: its label is the live
                  current config profile; switching is one click. -->
             <ConfigSelector variant="chip" />
-            <!-- Thinking effort override capsule. Selection state stays here
-                 in ChatInput; the chip's gear emits "edit" which opens the
-                 level editor dialog below. -->
+            <!-- Thinking effort capsule: renders the active preset (a level
+                 list or a free numeric track). Presets live in
+                 cmd_config.json; only config editors may rewrite them. -->
             <ThinkingEffortChip
               v-model="thinkingEffort"
               :levels="userEffortLevels"
               :mode="effortMode"
               :slider="effortSlider"
+              :preset-name="activeEffortPreset?.name ?? ''"
+              :can-edit="chatUiCanEdit"
               @edit="effortLevelsDialogOpen = true"
+            />
+            <!-- Click-to-send phrases. Same config section as the effort
+                 presets, same edit permission, same chip rhythm. -->
+            <QuickMessagesChip
+              :items="quickMessageItems"
+              :can-edit="chatUiCanEdit"
+              @send="handleQuickMessageSend"
+              @edit="quickMessagesDialogOpen = true"
             />
           </div>
           <div class="composer-toolbar__right">
@@ -670,10 +680,15 @@
 
     <ThinkingEffortLevelsDialog
       v-model="effortLevelsDialogOpen"
-      :mode="effortMode"
-      :levels="userEffortLevels"
-      :slider="effortSlider"
+      :presets="effortSettings.presets"
+      :active-preset="effortSettings.active_preset"
       @save="handleEffortEditorSave"
+    />
+
+    <QuickMessagesDialog
+      v-model="quickMessagesDialogOpen"
+      :items="quickMessageItems"
+      @save="handleQuickMessagesSave"
     />
   </div>
 </template>
@@ -695,20 +710,32 @@ import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import type { PendingFollowUp } from "@/composables/usePendingFollowUps";
 import { isComposingEnter } from "@/utils/imeInput.mjs";
 import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
-import { commandApi } from "@/api/v1";
+import { chatApi, commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
 import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
-import type { ThinkingEffortLevel } from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
 import type { ThinkingEffortEditorPayload } from "./ThinkingEffortLevelsDialog.vue";
+import QuickMessagesChip from "./QuickMessagesChip.vue";
+import QuickMessagesDialog from "./QuickMessagesDialog.vue";
+import type { QuickMessagesEditorPayload } from "./QuickMessagesDialog.vue";
 import {
   DEFAULT_THINKING_EFFORT_SLIDER,
-  normalizeEffortSliderConfig,
-  normalizeEffortValue,
   type ThinkingEffortSliderConfig,
 } from "@/composables/thinkingEffortSlider";
+import {
+  DEFAULT_EFFORT_VALUE,
+  findActivePreset,
+  normalizeEffortSettings,
+  settleEffortValue,
+  type ThinkingEffortLevel,
+  type ThinkingEffortSettings,
+} from "@/composables/thinkingEffortPresets";
+import {
+  normalizeQuickMessages,
+  type QuickMessage,
+} from "@/composables/quickMessages";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import CommandSuggestion from "./CommandSuggestion.vue";
 import {
@@ -884,17 +911,22 @@ const providerSelectorAvailable = ref(true);
 const isReplyClosing = ref(false);
 const isDragging = ref(false);
 
-// Per-message "thinking effort" (reasoning intensity) override, sent with
-// each chat request. Persisted locally. Two shapes share the same chip
-// (2026-10-03): a user-defined level list (name + raw value, stored in
-// localStorage "thinkingEffortLevels") and a numeric slider track for models
-// whose reasoning_effort is a free number (DeepSeek-V4.1-Flash: 1-100, with
-// low / high / xhigh / max as alias values; config in
-// "thinkingEffortSlider"). The shipped level defaults are low / high / max,
-// with max preselected.
-const DEFAULT_EFFORT = "max";
-const EFFORT_MODE_KEY = "thinkingEffortMode";
-const EFFORT_SLIDER_KEY = "thinkingEffortSlider";
+// Thinking effort (reasoning intensity) for outgoing requests. The presets
+// live in cmd_config.json (`chatui.thinking_effort`, 2026-10-08): one instance
+// shares one definition across browsers instead of every browser keeping its
+// own localStorage copy. The chip renders the active preset — a level list,
+// or a free numeric track for models whose reasoning_effort takes any number —
+// and `thinkingEffort` is the current selection that each chat request
+// carries as `thinking_effort`.
+const effortSettings = ref<ThinkingEffortSettings>({
+  active_preset: "",
+  value: DEFAULT_EFFORT_VALUE,
+  presets: [],
+});
+const quickMessageItems = ref<QuickMessage[]>([]);
+// Both editors write into the same `chatui` section, so one permission bit
+// covers them.
+const chatUiCanEdit = ref(false);
 
 const defaultThinkingEffortLevels = computed<ThinkingEffortLevel[]>(() => [
   { name: tm("input.thinkingEffortOptions.low"), value: "low" },
@@ -902,152 +934,132 @@ const defaultThinkingEffortLevels = computed<ThinkingEffortLevel[]>(() => [
   { name: tm("input.thinkingEffortOptions.max"), value: "max" },
 ]);
 
-function loadStoredEffortLevels(): ThinkingEffortLevel[] | null {
-  if (typeof localStorage === "undefined") return null;
-  try {
-    const raw = localStorage.getItem("thinkingEffortLevels");
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const levels = parsed
-      .filter(
-        (item): item is ThinkingEffortLevel =>
-          !!item &&
-          typeof item === "object" &&
-          typeof (item as ThinkingEffortLevel).name === "string" &&
-          typeof (item as ThinkingEffortLevel).value === "string" &&
-          (item as ThinkingEffortLevel).value.trim() !== "",
-      )
-      .map((item) => ({
-        name: (item as ThinkingEffortLevel).name,
-        value: (item as ThinkingEffortLevel).value.trim(),
-      }));
-    return levels.length > 0 ? levels : null;
-  } catch {
-    return null;
-  }
-}
+const activeEffortPreset = computed(() => findActivePreset(effortSettings.value));
 
-const storedEffortLevels = ref<ThinkingEffortLevel[] | null>(
-  loadStoredEffortLevels(),
-);
-
-/** User-defined levels, falling back to the i18n defaults when not customized. */
-const userEffortLevels = computed<ThinkingEffortLevel[]>(
-  () => storedEffortLevels.value ?? defaultThinkingEffortLevels.value,
-);
-
-function loadStoredEffortMode(): "levels" | "slider" {
-  if (typeof localStorage === "undefined") return "levels";
-  return localStorage.getItem(EFFORT_MODE_KEY) === "slider"
-    ? "slider"
-    : "levels";
-}
-
-function loadStoredEffortSlider(): ThinkingEffortSliderConfig {
-  if (typeof localStorage === "undefined") return DEFAULT_THINKING_EFFORT_SLIDER;
-  try {
-    const raw = localStorage.getItem(EFFORT_SLIDER_KEY);
-    return raw
-      ? normalizeEffortSliderConfig(JSON.parse(raw))
-      : DEFAULT_THINKING_EFFORT_SLIDER;
-  } catch {
-    return DEFAULT_THINKING_EFFORT_SLIDER;
-  }
-}
-
-const effortMode = ref<"levels" | "slider">(loadStoredEffortMode());
-const effortSlider = ref<ThinkingEffortSliderConfig>(loadStoredEffortSlider());
-
-function initialThinkingEffort(): ThinkingEffort {
-  const stored =
-    typeof localStorage === "undefined"
-      ? null
-      : localStorage.getItem("thinkingEffort");
-  if (effortMode.value !== "slider") {
-    return (stored as ThinkingEffort) || DEFAULT_EFFORT;
-  }
-  // Slider mode: land the stored string on the track — a numeric value is
-  // clamped, an alias name ("max") resolves to its snap value, and anything
-  // else ("auto" / "off" / empty) falls back to the track middle.
-  const trimmed = (stored ?? "").trim();
-  if (trimmed !== "" && Number.isFinite(Number(trimmed))) {
-    return String(normalizeEffortValue(Number(trimmed), effortSlider.value));
-  }
-  const alias = effortSlider.value.snaps.find(
-    (snap) => snap.name.toLowerCase() === trimmed.toLowerCase(),
-  );
-  if (alias) return String(alias.value);
-  // Track middle, aligned to the step grid so the readout matches the handle.
-  const track = effortSlider.value;
-  return String(
-    track.min + Math.round((track.max - track.min) / 2 / track.step) * track.step,
-  );
-}
-
-const thinkingEffort = ref<ThinkingEffort>(initialThinkingEffort());
-
-watch(thinkingEffort, (value) => {
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem("thinkingEffort", value);
-  }
+// An empty preset list is a legitimate state (the user deleted them all):
+// the row falls back to the localized built-in levels.
+const userEffortLevels = computed<ThinkingEffortLevel[]>(() => {
+  const levels = activeEffortPreset.value?.levels ?? [];
+  return levels.length > 0 ? levels : defaultThinkingEffortLevels.value;
 });
-// Keep the selection valid when the level list changes (e.g. a level
-// deleted, or a legacy stored "auto"/"off" value from before those
-// entries were removed from the menu). Slider values are free-form and
-// have no list to fall out of, so this only guards levels mode.
-watch(
-  userEffortLevels,
-  (levels) => {
-    if (effortMode.value !== "levels") return;
-    if (levels.some((level) => level.value === thinkingEffort.value)) return;
-    const fallback = levels.some((level) => level.value === DEFAULT_EFFORT)
-      ? DEFAULT_EFFORT
-      : levels[0]?.value;
-    if (fallback) thinkingEffort.value = fallback;
-  },
-  { immediate: true },
+
+const effortMode = computed<"levels" | "slider">(
+  () => activeEffortPreset.value?.mode ?? "levels",
 );
+const effortSlider = computed<ThinkingEffortSliderConfig>(
+  () => activeEffortPreset.value?.slider ?? DEFAULT_THINKING_EFFORT_SLIDER,
+);
+
+const thinkingEffort = ref<string>(DEFAULT_EFFORT_VALUE);
+
+/** Load the input-row settings once; a failure keeps the built-in defaults. */
+async function loadChatUiSettings() {
+  try {
+    const response = await chatApi.getUiSettings();
+    const data = response.data?.data ?? {};
+    effortSettings.value = normalizeEffortSettings(data.thinking_effort);
+    quickMessageItems.value = normalizeQuickMessages(data.quick_messages);
+    chatUiCanEdit.value = Boolean(data.can_edit);
+    thinkingEffort.value = settleEffortValue(
+      effortSettings.value.value,
+      activeEffortPreset.value,
+    );
+  } catch (error) {
+    console.error("Failed to load ChatUI settings:", error);
+  }
+}
+
+let effortValueTimer: number | null = null;
+
+async function persistEffortValue(value: string) {
+  try {
+    const response = await chatApi.updateThinkingEffortValue(value);
+    if (response.data?.status !== "ok") {
+      throw new Error(response.data?.message || "update failed");
+    }
+    effortSettings.value = normalizeEffortSettings(response.data?.data);
+    thinkingEffort.value = effortSettings.value.value;
+  } catch (error) {
+    console.error("Failed to persist thinking-effort value:", error);
+  }
+}
+
+// Dragging the slider emits one value per pixel, so selection changes are
+// debounced into a single config write. The equality guard swallows the echo
+// from a fresh load and from the server-normalized value written back after
+// a save.
+watch(thinkingEffort, (value) => {
+  if (value === effortSettings.value.value) return;
+  if (effortValueTimer !== null) window.clearTimeout(effortValueTimer);
+  effortValueTimer = window.setTimeout(() => {
+    void persistEffortValue(value);
+  }, 500);
+});
+
+// Keep the selection inside the active preset after a preset switch or a
+// fresh load: a level may have been removed, or a numeric value may not fit
+// the new track.
+watch(activeEffortPreset, (preset) => {
+  const settled = settleEffortValue(thinkingEffort.value, preset);
+  if (settled !== thinkingEffort.value) thinkingEffort.value = settled;
+});
 
 const effortLevelsDialogOpen = ref(false);
+const quickMessagesDialogOpen = ref(false);
 
-function handleEffortEditorSave(payload: ThinkingEffortEditorPayload) {
-  effortMode.value = payload.mode;
-  effortSlider.value = payload.slider;
-  // Levels are written back only when the list itself was edited: saving
-  // from slider mode must not freeze today's localized default names into
-  // storage as if they were user customization.
-  if (payload.mode === "levels") {
-    storedEffortLevels.value = payload.levels;
-  }
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(EFFORT_MODE_KEY, payload.mode);
-    localStorage.setItem(EFFORT_SLIDER_KEY, JSON.stringify(payload.slider));
-    if (payload.mode === "levels") {
-      localStorage.setItem(
-        "thinkingEffortLevels",
-        JSON.stringify(payload.levels),
-      );
+async function handleEffortEditorSave(payload: ThinkingEffortEditorPayload) {
+  const nextPreset =
+    payload.presets.find((preset) => preset.id === payload.activePreset) ?? null;
+  try {
+    const response = await chatApi.updateThinkingEffortPresets({
+      presets: payload.presets,
+      active_preset: payload.activePreset,
+      // The new shape has to accept the current selection: levels fall back
+      // to a level the preset actually offers, slider values land on the track.
+      value: settleEffortValue(thinkingEffort.value, nextPreset),
+    });
+    if (response.data?.status !== "ok") {
+      throw new Error(response.data?.message || "update failed");
     }
+    effortSettings.value = normalizeEffortSettings(response.data?.data);
+    thinkingEffort.value = effortSettings.value.value;
+  } catch (error) {
+    toastStore.add({
+      message: tm("input.thinkingEffortSaveFailed"),
+      color: "error",
+    });
+    console.error("Failed to save thinking-effort presets:", error);
   }
-  // The new shape still has to accept the current selection.
-  if (payload.mode === "slider") {
-    const parsed = Number(thinkingEffort.value);
-    thinkingEffort.value = String(
-      normalizeEffortValue(
-        Number.isFinite(parsed) ? parsed : payload.slider.min,
-        payload.slider,
-      ),
-    );
-    return;
+}
+
+/**
+ * Send a quick phrase through the normal send path: write it into the prompt
+ * first, then let the existing "send" emit run, so stop / streaming / resend
+ * state all behave exactly as if the text had been typed. The tick matters —
+ * Chat.vue reads its own prompt ref (and the canSend guard) when handling the
+ * event.
+ */
+function handleQuickMessageSend(content: string) {
+  emit("update:prompt", content);
+  void nextTick(() => sendMessage());
+}
+
+async function handleQuickMessagesSave(payload: QuickMessagesEditorPayload) {
+  try {
+    const response = await chatApi.updateQuickMessages({
+      items: payload.items,
+    });
+    if (response.data?.status !== "ok") {
+      throw new Error(response.data?.message || "update failed");
+    }
+    quickMessageItems.value = normalizeQuickMessages(response.data?.data);
+  } catch (error) {
+    toastStore.add({
+      message: tm("input.quickMessagesSaveFailed"),
+      color: "error",
+    });
+    console.error("Failed to save quick messages:", error);
   }
-  if (payload.levels.some((level) => level.value === thinkingEffort.value)) {
-    return;
-  }
-  const fallback =
-    payload.levels.find((level) => level.value === DEFAULT_EFFORT) ??
-    payload.levels[0];
-  if (fallback) thinkingEffort.value = fallback.value;
 }
 
 /** 2026-08-09 drag-reference: which drop overlay to show. "Files" drags
@@ -2332,6 +2344,9 @@ onMounted(() => {
   // has data to render on first paint.
   void codegraphStatus.refresh();
   void tcMemoryStatus.refresh();
+  // Input-row settings are shared instance state now, so the row starts from
+  // the built-in defaults and re-renders once the config lands.
+  void loadChatUiSettings();
   // Live polling every 30 s so the chip stays in sync when codegraph
   // state changes externally (e.g. the user toggles it via another
   // client or the bot restarts its MCP server). The interval is gated
@@ -2352,6 +2367,10 @@ onBeforeUnmount(() => {
   if (codegraphPollTimer !== null) {
     clearInterval(codegraphPollTimer);
     codegraphPollTimer = null;
+  }
+  if (effortValueTimer !== null) {
+    window.clearTimeout(effortValueTimer);
+    effortValueTimer = null;
   }
 });
 

@@ -280,6 +280,59 @@ export type ChatThreadMessageRequest = {
     flags?: ChatFlags;
 };
 
+/**
+ * One click-to-send phrase. Content only — the menu truncates long text and reveals it on hover.
+ */
+export type ChatUiQuickMessage = {
+    id: string;
+    content: string;
+};
+
+/**
+ * Click-to-send phrase list submitted by the ChatUI quick-message editor.
+ */
+export type ChatUiQuickMessagesRequest = {
+    items?: Array<ChatUiQuickMessage>;
+};
+
+/**
+ * One named thinking-effort shape. `mode` picks which half the input row renders; both halves are kept so switching modes never loses the other one.
+ */
+export type ChatUiThinkingEffortPreset = {
+    id: string;
+    name: string;
+    mode: 'levels' | 'slider';
+    levels?: Array<{
+        name: string;
+        value: string;
+    }>;
+    slider?: ChatUiThinkingEffortSlider;
+};
+
+export type mode2 = 'levels' | 'slider';
+
+/**
+ * Full thinking-effort definition submitted by the ChatUI preset editor. `active_preset` is normalized to the first preset when it names nothing; omitting `value` keeps the stored selection.
+ */
+export type ChatUiThinkingEffortPresetsRequest = {
+    presets?: Array<ChatUiThinkingEffortPreset>;
+    active_preset?: string;
+    value?: string;
+};
+
+/**
+ * Continuous effort track for models whose reasoning_effort accepts a free number; `snaps` are labelled shortcuts, not snapping points.
+ */
+export type ChatUiThinkingEffortSlider = {
+    min: number;
+    max: number;
+    step: number;
+    snaps?: Array<{
+        name: string;
+        value: number;
+    }>;
+};
+
 export type CommandPatchRequest = {
     enabled?: boolean;
     alias?: string;
@@ -1905,6 +1958,39 @@ export type BranchChatMessageError = unknown;
 export type ListChatConfigsResponse = (SuccessEnvelope);
 
 export type ListChatConfigsError = unknown;
+
+export type GetChatUiSettingsResponse = (SuccessEnvelope);
+
+export type GetChatUiSettingsError = unknown;
+
+export type UpdateChatUiEffortValueData = {
+    body: {
+        /**
+         * Free-form effort value forwarded to the provider (e.g. `max`, `xhigh`, `72`).
+         */
+        value: string;
+    };
+};
+
+export type UpdateChatUiEffortValueResponse = (SuccessEnvelope);
+
+export type UpdateChatUiEffortValueError = unknown;
+
+export type UpdateChatUiEffortPresetsData = {
+    body: ChatUiThinkingEffortPresetsRequest;
+};
+
+export type UpdateChatUiEffortPresetsResponse = (SuccessEnvelope);
+
+export type UpdateChatUiEffortPresetsError = unknown;
+
+export type UpdateChatUiQuickMessagesData = {
+    body: ChatUiQuickMessagesRequest;
+};
+
+export type UpdateChatUiQuickMessagesResponse = (SuccessEnvelope);
+
+export type UpdateChatUiQuickMessagesError = unknown;
 
 export type CreateChatThreadData = {
     body: ChatThreadCreateRequest;

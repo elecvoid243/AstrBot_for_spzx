@@ -37,10 +37,14 @@ from astrbot.dashboard.schemas import (
     ChatSubagentFollowUpRequest,
     ChatThreadCreateRequest,
     ChatThreadMessageRequest,
+    ChatUiQuickMessagesRequest,
+    ChatUiThinkingEffortPresetsRequest,
+    ChatUiThinkingEffortValueRequest,
     FileAccessModeSetRequest,
     FileAccessRootsSetRequest,
     GoalActionRequest,
 )
+from astrbot.dashboard.services.auth_service import CONFIG_EDIT_ADMIN_SCOPE
 from astrbot.dashboard.services.chat_service import (
     MAX_HISTORY_WINDOW_SIZE,
     ChatService,
@@ -63,6 +67,7 @@ def get_service(request: Request) -> ChatService:
 
 
 require_chat_scope = ScopeDependency("chat")
+require_config_scope = ScopeDependency("config")
 
 
 async def _json_or_empty(request: Request) -> dict[str, Any]:
@@ -869,6 +874,70 @@ async def chat_configs(
     _auth: AuthContext = Depends(require_chat_scope),
 ):
     return ok(request.app.state.services.config_profiles.list_profiles())
+
+
+@router.get("/chat/ui-settings")
+async def chat_ui_settings(
+    request: Request,
+    auth: AuthContext = Depends(require_chat_scope),
+):
+    """ChatUI input-row settings plus the caller's edit permission."""
+    service = get_service(request)
+    settings = {
+        "thinking_effort": service.get_chatui_thinking_effort(),
+        "quick_messages": service.get_chatui_quick_messages(),
+        "can_edit": bool(set(auth.scopes or ()) & {"*", "config"}),
+    }
+    return ok(settings)
+
+
+@router.put("/chat/ui-settings/value")
+async def update_chat_ui_effort_value(
+    payload: ChatUiThinkingEffortValueRequest,
+    request: Request,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    """Store the selected effort value; every ChatUI user may change it.
+
+    Preset definitions are admin territory, but *choosing* among them is a
+    normal use of the input row, so it stays on the chat scope.
+    """
+    service = get_service(request)
+    return await _run(lambda: service.set_chatui_thinking_effort_value(payload.value))
+
+
+@router.put(
+    "/chat/ui-settings/presets",
+    openapi_extra={"x-astrbot-sensitive-scopes": [CONFIG_EDIT_ADMIN_SCOPE]},
+)
+async def update_chat_ui_effort_presets(
+    payload: ChatUiThinkingEffortPresetsRequest,
+    request: Request,
+    _auth: AuthContext = Depends(require_config_scope),
+):
+    """Replace the preset list and the active selection as one unit."""
+    service = get_service(request)
+    return await _run(
+        lambda: service.replace_chatui_thinking_effort(
+            payload.presets,
+            payload.active_preset,
+            payload.value,
+        ),
+    )
+
+
+@router.put(
+    "/chat/ui-settings/quick-messages",
+    openapi_extra={"x-astrbot-sensitive-scopes": [CONFIG_EDIT_ADMIN_SCOPE]},
+)
+async def update_chat_ui_quick_messages(
+    payload: ChatUiQuickMessagesRequest,
+    request: Request,
+    _auth: AuthContext = Depends(require_config_scope),
+):
+    """Replace the click-to-send phrase list as one unit."""
+    service = get_service(request)
+    return await _run(lambda: service.replace_chatui_quick_messages(payload.items))
 
 
 @router.post("/chat/threads")

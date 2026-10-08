@@ -703,6 +703,11 @@ class LiveChatService:
                         pass
                     continue
 
+                # LLM request injection traces are ChatUI-only telemetry:
+                # never render the JSON blob as chat text on this transport.
+                if chain_type == "llm_request_injections":
+                    continue
+
                 outgoing = {"ct": "chat", **result}
                 await self.send_chat_payload(session, outgoing, send_json)
 

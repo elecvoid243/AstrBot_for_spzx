@@ -274,6 +274,7 @@ def build_bot_history_content(
     *,
     agent_stats: dict | None = None,
     file_changes: dict | None = None,
+    llm_request_injections: dict | None = None,
     refs: dict | None = None,
     include_reasoning_field: bool = True,
 ) -> dict[str, Any]:
@@ -286,6 +287,8 @@ def build_bot_history_content(
         content["agent_stats"] = agent_stats
     if file_changes:
         content["file_changes"] = file_changes
+    if llm_request_injections:
+        content["llm_request_injections"] = llm_request_injections
     if refs:
         content["refs"] = refs
     return content
@@ -416,6 +419,15 @@ class BotMessageAccumulator:
         # of letting it fall through) also keeps it from replacing pending
         # streamed text or being saved as a literal JSON part.
         if chain_type == "context_compression":
+            return
+
+        # Author: elecvoid243
+        # Date: 2026-10-08
+        # LLM request injection traces are ChatUI-only telemetry: the primary
+        # `_consume_chat_run` path handles them before reaching this
+        # accumulator, so only orphan turns arrive here. Dropping them keeps
+        # the JSON blob from being persisted as a literal text part.
+        if chain_type == "llm_request_injections":
             return
 
         # Author: elecvoid243
@@ -1118,6 +1130,7 @@ class ChatRunState:
     message_parts: list[dict] = field(default_factory=list)
     agent_stats: dict = field(default_factory=dict)
     file_changes: dict = field(default_factory=dict)
+    llm_request_injections: dict = field(default_factory=dict)
     refs: dict = field(default_factory=dict)
     revision: int = 0
     status: str = "running"
@@ -1374,6 +1387,7 @@ class ChatService:
         llm_checkpoint_id: str | None = None,
         platform_history_id: str = "webchat",
         file_changes: dict | None = None,
+        llm_request_injections: dict | None = None,
     ):
         return await self.platform_history_mgr.insert(
             platform_id=platform_history_id,
@@ -1382,6 +1396,7 @@ class ChatService:
                 message_parts,
                 agent_stats=agent_stats,
                 file_changes=file_changes,
+                llm_request_injections=llm_request_injections,
                 refs=refs,
             ),
             sender_id="bot",
@@ -1414,6 +1429,7 @@ class ChatService:
                         deepcopy(run.message_parts),
                         agent_stats=deepcopy(run.agent_stats),
                         file_changes=deepcopy(run.file_changes),
+                        llm_request_injections=deepcopy(run.llm_request_injections),
                         refs=deepcopy(run.refs),
                     ),
                 }
@@ -1513,6 +1529,7 @@ class ChatService:
                     deepcopy(run.message_parts),
                     agent_stats=deepcopy(run.agent_stats),
                     file_changes=deepcopy(run.file_changes),
+                    llm_request_injections=deepcopy(run.llm_request_injections),
                     refs=deepcopy(run.refs),
                 ),
             }
@@ -1713,6 +1730,7 @@ class ChatService:
                     run.llm_checkpoint_id,
                     run.platform_history_id,
                     file_changes=run.file_changes,
+                    llm_request_injections=run.llm_request_injections,
                 )
             else:
                 await self.platform_history_mgr.update(
@@ -1721,6 +1739,7 @@ class ChatService:
                         run.history_parts,
                         agent_stats=run.agent_stats,
                         file_changes=run.file_changes,
+                        llm_request_injections=run.llm_request_injections,
                         refs=run.refs,
                     ),
                     llm_checkpoint_id=run.llm_checkpoint_id,
@@ -1774,6 +1793,20 @@ class ChatService:
                     self._publish_chat_run(
                         run,
                         {"type": "file_changes", "data": run.file_changes},
+                    )
+                    continue
+
+                if chain_type == "llm_request_injections":
+                    try:
+                        run.llm_request_injections = json.loads(result_text)
+                    except (TypeError, json.JSONDecodeError):
+                        run.llm_request_injections = {}
+                    self._publish_chat_run(
+                        run,
+                        {
+                            "type": "llm_request_injections",
+                            "data": run.llm_request_injections,
+                        },
                     )
                     continue
 
@@ -1865,6 +1898,7 @@ class ChatService:
                                 run.history_parts,
                                 agent_stats=run.agent_stats,
                                 file_changes=run.file_changes,
+                                llm_request_injections=run.llm_request_injections,
                                 refs=run.refs,
                             ),
                             llm_checkpoint_id=run.llm_checkpoint_id,

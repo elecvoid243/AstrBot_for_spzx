@@ -257,12 +257,16 @@ def mock_event():
 
 @pytest.fixture
 def astrbot_config(temp_config_file: Path):
-    """创建 AstrBotConfig 实例。"""
+    """创建 AstrBotConfig 实例。
+
+    The temp path is passed at construction: instantiating with the default
+    path loads the operator's real config first, and the integrity check that
+    backfills missing keys writes it straight back to disk. Swapping the path
+    afterwards is too late.
+    """
     from astrbot.core.config.astrbot_config import AstrBotConfig
 
-    config = AstrBotConfig()
-    config._config_path = str(temp_config_file)  # noqa: SLF001
-    return config
+    return AstrBotConfig(config_path=str(temp_config_file))
 
 
 @pytest.fixture

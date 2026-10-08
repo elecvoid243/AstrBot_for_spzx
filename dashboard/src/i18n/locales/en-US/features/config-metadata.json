@@ -257,6 +257,10 @@
           "description": "Extra Whitelisted Directories for Workspace Mode",
           "hint": "When the file access mode is workspace, absolute paths that are additionally writable besides the session workspace and temporary directories."
         },
+        "file_remove_blacklist": {
+          "description": "File Deletion Blacklist Directories",
+          "hint": "Absolute path prefixes the astrbot_file_remove tool is forbidden to delete. Applied on top of the built-in system directory blacklist; a matching prefix (including its subpaths) rejects the deletion."
+        },
         "enable_default_workspace_path": {
           "description": "Enable Default Workspace Path",
           "hint": "When enabled, the session-specific default workspace path will be injected into the system prompt."

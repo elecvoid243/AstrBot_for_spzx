@@ -273,6 +273,10 @@
           "description": "工作区模式额外白名单目录",
           "hint": "文件访问模式为 workspace 时，除会话工作区与临时目录外额外允许写入的绝对路径列表。"
         },
+        "file_remove_blacklist": {
+          "description": "文件删除黑名单目录",
+          "hint": "禁止 astrbot_file_remove 工具删除的绝对路径前缀列表，与内置系统目录黑名单叠加生效；命中前缀（含其子路径）即拒绝删除。"
+        },
         "enable_default_workspace_path": {
           "description": "启用默认工作路径",
           "hint": "开启后，将在系统提示词中注入会话独立的默认工作目录路径"

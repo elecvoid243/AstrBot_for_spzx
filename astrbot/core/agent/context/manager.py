@@ -30,6 +30,14 @@ class ContextManager:
         """
         self.config = config
 
+        self.last_compression: dict | None = None
+        """Report of the compression performed by the latest ``process()`` call.
+
+        ``None`` means that call did not compress. Reset at the start of every
+        call: a stale report would make a later caller (the agent runner)
+        announce a compression that never happened for that step.
+        """
+
         self.token_counter = config.custom_token_counter or EstimateTokenCounter()
         self.truncator = ContextTruncator()
 
@@ -69,7 +77,14 @@ class ContextManager:
 
         Returns:
             The processed message list.
+
+        Notes:
+            Sets ``self.last_compression`` to this call's report (``None`` when
+            nothing was compressed); the report never carries over between
+            calls.
         """
+        self.last_compression = None
+
         try:
             result = messages
 
@@ -115,6 +130,10 @@ class ContextManager:
 
         Returns:
             The compressed/truncated message list.
+
+        Notes:
+            Records the outcome in ``self.last_compression`` so callers can
+            surface it to the user (webchat shows a transient notice).
         """
         logger.debug("Compress triggered, starting compression...")
 
@@ -142,6 +161,7 @@ class ContextManager:
         )
 
         # last check
+        halved = False
         if self.compressor.should_compress(
             messages, tokens_after_summary, self.config.max_context_tokens
         ):
@@ -150,5 +170,20 @@ class ContextManager:
             )
             # still need compress, truncate by half
             messages = self.truncator.truncate_by_halving(messages)
+            halved = True
+
+        self.last_compression = {
+            # Halving means the configured strategy did not get the request
+            # under the limit, so the effective outcome is a hard truncation.
+            "strategy": "truncate_by_halving"
+            if halved
+            else getattr(self.compressor, "strategy", "custom"),
+            "tokens_before": prev_tokens,
+            "tokens_after": (
+                self.token_counter.count_tokens(messages)
+                if halved
+                else tokens_after_summary
+            ),
+        }
 
         return messages

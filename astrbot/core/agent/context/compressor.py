@@ -30,6 +30,12 @@ class ContextCompressor(Protocol):
     """
     Protocol for context compressors.
     Provides an interface for compressing message lists.
+
+    Attributes:
+        strategy: Optional machine-readable strategy name (``"llm_compress"``
+            / ``"truncate_by_turns"``). ``ContextManager`` reads it to label
+            the compression report it hands to the UI; compressors that do not
+            define it are reported as ``"custom"``.
     """
 
     def should_compress(
@@ -72,6 +78,9 @@ class TruncateByTurnsCompressor:
     """Truncate by turns compressor implementation.
     Truncates the message list by removing older turns.
     """
+
+    strategy = "truncate_by_turns"
+    """Strategy label for the compression report consumed by the frontend."""
 
     def __init__(
         self,
@@ -177,6 +186,9 @@ class LLMSummaryCompressor:
         "If a task appears to be in progress, end the summary with the latest "
         "known result and the concrete next step to continue the task."
     )
+
+    strategy = "llm_compress"
+    """Strategy label for the compression report consumed by the frontend."""
 
     def __init__(
         self,

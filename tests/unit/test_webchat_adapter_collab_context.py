@@ -181,3 +181,46 @@ def test_agent_stats_chain_is_not_persisted(monkeypatch):
         )
     )
     assert not inserted
+
+
+def test_context_compression_chain_is_not_persisted(monkeypatch):
+    """Author: elecvoid243, 2026-10-08.
+
+    The compression notice is live-only telemetry (the dashboard renders a
+    toast). Orphan turns (goal-loop / collab) have no dashboard accumulator to
+    drop it, so this fallback must drop it too — otherwise the wire JSON would
+    be persisted as a bot reply carrying only that blob.
+    """
+    import asyncio
+
+    from astrbot.api.event import MessageChain
+    from astrbot.api.message_components import Json
+    from astrbot.core.platform.sources.webchat import webchat_event as we
+
+    inserted = []
+
+    async def fake_insert(**kwargs):
+        inserted.append(kwargs)
+        return None
+
+    monkeypatch.setattr(we.db_helper, "insert_platform_message_history", fake_insert)
+    notice_chain = MessageChain(
+        type="context_compression",
+        chain=[
+            Json(
+                data={
+                    "strategy": "llm_compress",
+                    "tokens_before": 900,
+                    "tokens_after": 348,
+                }
+            )
+        ],
+    )
+    asyncio.run(
+        we._persist_bot_reply_if_orphan(
+            session_id="webchat!alice!conv123",
+            request_id="mid-compression",
+            message_chain=notice_chain,
+        )
+    )
+    assert not inserted

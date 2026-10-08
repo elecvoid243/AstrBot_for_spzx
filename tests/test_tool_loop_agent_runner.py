@@ -2615,3 +2615,74 @@ async def test_all_follow_up_texts_includes_consumed_and_pending(
     assert t1 is not None and t2 is not None
     assert runner.all_follow_up_texts() == [(t1.seq, "first"), (t2.seq, "second")]
     assert runner.unconsumed_follow_up_texts() == [(t2.seq, "second")]
+
+
+@pytest.mark.asyncio
+async def test_step_reports_context_compression(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """A compression during the step is announced to the caller.
+
+    The notice must be emitted before the LLM request so the webchat UI can
+    explain the shape of the answer while the user is still waiting.
+    """
+    provider = MockProvider()
+    provider.max_calls_before_normal_response = 0
+    provider.provider_config["max_context_tokens"] = 100
+    provider_request.contexts = [
+        {"role": "user", "content": "u" * 300},
+        {"role": "assistant", "content": "a" * 300},
+    ]
+    provider_request.prompt = "p" * 50
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    responses = [response async for response in runner.step()]
+
+    notices = [
+        response for response in responses if response.type == "context_compression"
+    ]
+    assert len(notices) == 1
+    chain = notices[0].data["chain"]
+    assert chain.type == "context_compression"
+    report = chain.chain[0].data
+    assert report["strategy"] == "truncate_by_turns"
+    assert report["tokens_before"] > report["tokens_after"]
+    # The notice precedes the answer it belongs to.
+    assert responses.index(notices[0]) < next(
+        index
+        for index, response in enumerate(responses)
+        if response.type == "llm_result"
+    )
+
+
+@pytest.mark.asyncio
+async def test_step_omits_context_compression_when_under_limit(
+    runner, provider_request, mock_tool_executor, mock_hooks
+):
+    """No compression means no notice, so the UI is never told a lie."""
+    provider = MockProvider()
+    provider.max_calls_before_normal_response = 0
+    provider.provider_config["max_context_tokens"] = 100000
+
+    await runner.reset(
+        provider=provider,
+        request=provider_request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=mock_tool_executor,
+        agent_hooks=mock_hooks,
+        streaming=False,
+    )
+
+    responses = [response async for response in runner.step()]
+
+    assert not [
+        response for response in responses if response.type == "context_compression"
+    ]

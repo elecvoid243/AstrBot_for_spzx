@@ -993,6 +993,22 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self.run_context.messages = processed_messages
         self._simple_print_message_role("[AftCompact]", self.run_context.messages)
 
+        # Announce a compression that just happened: webchat turns it into a
+        # transient notice. Emitted before the LLM request so the user learns
+        # why this turn's context (and possibly its answer) changed shape while
+        # still waiting for the reply.
+        compression_report = self.request_context_manager.last_compression
+        if compression_report is not None:
+            yield AgentResponse(
+                type="context_compression",
+                data=AgentResponseData(
+                    chain=MessageChain(
+                        type="context_compression",
+                        chain=[Json(data=compression_report)],
+                    )
+                ),
+            )
+
         async for llm_response in self._iter_llm_responses_with_fallback():
             if llm_response.is_chunk:
                 if self.stats.time_to_first_token == 0:

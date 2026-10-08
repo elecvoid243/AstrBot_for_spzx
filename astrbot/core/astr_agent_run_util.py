@@ -207,6 +207,15 @@ async def run_agent(
                         await astr_event.send(resp.data["chain"])
                     continue
 
+                # Context compression notice: webchat surfaces it as a
+                # transient toast. Other platforms have no notice UI, so the
+                # payload is dropped rather than injected into their chat
+                # stream as text.
+                if resp.type == "context_compression":
+                    if astr_event.get_platform_name() == "webchat":
+                        await astr_event.send(resp.data["chain"])
+                    continue
+
                 if resp.type == "tool_call_result":
                     msg_chain = resp.data["chain"]
 

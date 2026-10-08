@@ -1019,6 +1019,102 @@ class TestContextManager:
         # Should have been compressed
         assert len(result) <= len(messages)
 
+    # ==================== Compression Report Tests ====================
+    # Author: elecvoid243
+    # Date: 2026-10-08
+
+    def create_long_rounds(self, rounds: int, chars: int = 500) -> list[Message]:
+        """Helper to create long alternating rounds.
+
+        Args:
+            rounds: Number of user/assistant pairs.
+            chars: Characters per message; the default 2 * 500 chars per
+                round estimates at ~300 tokens with EstimateTokenCounter.
+
+        Returns:
+            A user-starting message list of ``rounds * 2`` messages.
+        """
+        messages = []
+        for i in range(rounds):
+            messages.append(self.create_message("user", "u" * chars))
+            messages.append(self.create_message("assistant", "a" * chars))
+        return messages
+
+    @pytest.mark.asyncio
+    async def test_last_compression_none_when_not_triggered(self):
+        """No compression means no report, so no notice reaches the frontend."""
+        manager = ContextManager(ContextConfig(max_context_tokens=100000))
+        messages = [self.create_message("user", "Hi" * 50)]
+
+        result = await manager.process(messages)
+
+        assert result == messages
+        assert manager.last_compression is None
+
+    @pytest.mark.asyncio
+    async def test_last_compression_reports_truncate_by_turns(self):
+        """Token-triggered truncation reports its strategy and token delta."""
+        manager = ContextManager(
+            ContextConfig(
+                max_context_tokens=1000,
+                truncate_turns=1,
+                truncate_target_usage_ratio=0.1,
+            )
+        )
+        messages = self.create_long_rounds(3)  # ~900 tokens > 820 threshold
+        tokens_before = manager.token_counter.count_tokens(messages)
+
+        result = await manager.process(messages)
+
+        report = manager.last_compression
+        assert report is not None
+        assert report["strategy"] == "truncate_by_turns"
+        assert report["tokens_before"] == tokens_before
+        assert report["tokens_after"] == manager.token_counter.count_tokens(result)
+        assert report["tokens_after"] < report["tokens_before"]
+
+    @pytest.mark.asyncio
+    async def test_last_compression_reports_llm_compress(self):
+        """LLM summary compression reports its own strategy."""
+        provider = MockProvider()
+        manager = ContextManager(
+            ContextConfig(
+                llm_compress_provider=provider,  # type: ignore[arg-type]
+                llm_compress_keep_recent_ratio=0.15,
+                max_context_tokens=1000,
+            )
+        )
+        messages = self.create_long_rounds(3)
+        tokens_before = manager.token_counter.count_tokens(messages)
+
+        result = await manager.process(messages)
+
+        report = manager.last_compression
+        assert report is not None
+        assert report["strategy"] == "llm_compress"
+        assert report["tokens_before"] == tokens_before
+        assert report["tokens_after"] == manager.token_counter.count_tokens(result)
+        assert report["tokens_after"] < report["tokens_before"]
+
+    @pytest.mark.asyncio
+    async def test_last_compression_resets_between_process_calls(self):
+        """A later call without compression clears the previous report."""
+        provider = MockProvider()
+        manager = ContextManager(
+            ContextConfig(
+                llm_compress_provider=provider,  # type: ignore[arg-type]
+                llm_compress_keep_recent_ratio=0.15,
+                max_context_tokens=1000,
+            )
+        )
+
+        await manager.process(self.create_long_rounds(3))
+        assert manager.last_compression is not None
+
+        await manager.process([self.create_message("user", "hi")])
+
+        assert manager.last_compression is None
+
     # ==================== split_into_rounds Tests ====================
 
     def test_split_rounds_ensures_user_start(self):

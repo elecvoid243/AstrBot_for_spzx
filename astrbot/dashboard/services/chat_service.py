@@ -409,6 +409,16 @@ class BotMessageAccumulator:
             return
 
         # Author: elecvoid243
+        # Date: 2026-10-08
+        # The context compression notice is live-only: the frontend renders it
+        # as a toast, so nothing about it may reach the history row or the
+        # snapshot a reloading page re-attaches to. Dropping it here (instead
+        # of letting it fall through) also keeps it from replacing pending
+        # streamed text or being saved as a literal JSON part.
+        if chain_type == "context_compression":
+            return
+
+        # Author: elecvoid243
         # Date: 2026-07-05
         # Bug fix: history round-trip for `ask_user_choice` (Plan
         # `docs/superpowers/plans/2026-07-05-interactive-choice-history-roundtrip.md`).

@@ -246,6 +246,12 @@
     "duration": "所要時間",
     "ttft": "最初のトークンまでの時間"
   },
+  "contextCompression": {
+    "llm": "コンテキストを圧縮しました · {from} → {to} トークン",
+    "truncate": "コンテキストが上限を超えたため古い履歴を破棄しました · {from} → {to} トークン",
+    "halving": "圧縮後も上限を超えたため再度切り詰めました · {from} → {to} トークン",
+    "generic": "コンテキストを圧縮しました · {from} → {to} トークン"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} トークン（{percent}%）"
   },

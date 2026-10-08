@@ -493,6 +493,12 @@
     "duration": "Duration",
     "ttft": "Time to First Token"
   },
+  "contextCompression": {
+    "llm": "Context compacted · {from} → {to} tokens",
+    "truncate": "Context over the window limit — oldest history dropped · {from} → {to} tokens",
+    "halving": "Context still over the limit — truncated again · {from} → {to} tokens",
+    "generic": "Context compacted · {from} → {to} tokens"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens ({percent}%)",
     "tooltipWithCache": "{used} / {limit} tokens ({percent}%)\ncache hit {cachePercent}%"

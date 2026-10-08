@@ -493,6 +493,12 @@
     "duration": "耗时",
     "ttft": "首字时间"
   },
+  "contextCompression": {
+    "llm": "上下文已压缩 · {from} → {to} tokens",
+    "truncate": "上下文超出窗口，已丢弃最早的历史 · {from} → {to} tokens",
+    "halving": "压缩后仍超限，已二次截断 · {from} → {to} tokens",
+    "generic": "上下文已压缩 · {from} → {to} tokens"
+  },
   "tokenUsage": {
     "tooltip": "{used} / {limit} tokens（{percent}%）",
     "tooltipWithCache": "{used} / {limit} tokens（{percent}%）\n缓存命中率 {cachePercent}%"

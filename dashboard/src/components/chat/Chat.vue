@@ -1204,6 +1204,14 @@ import { useSpcodeCodegraphStatus } from "@/composables/useSpcodeCodegraphStatus
 import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodePlanMode } from "@/composables/useSpcodePlanMode";
 import { useFileAccessMode } from "@/composables/useFileAccessMode";
+// Author: elecvoid243
+// Date: 2026-10-08
+// Live-only context compression notice: identity for duplicate suppression
+// and the i18n toast the page shows when the runner compresses a request.
+import {
+  contextCompressionNoticeKey,
+  contextCompressionToast,
+} from "@/composables/contextCompressionNotice";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
 import ProjectDialog, {
   type ProjectFormData,
@@ -1314,6 +1322,12 @@ const spcodePlanMode = useSpcodePlanMode();
 const fileAccessMode = useFileAccessMode();
 const confirmDialog = useConfirmDialog();
 const toast = useToast();
+// Author: elecvoid243
+// Date: 2026-10-08
+// Identity of the last context compression notice shown as a toast. Bounded
+// to one slot on purpose: it suppresses a repeat of the same notice (same
+// turn, same token delta) without keeping a growing history of keys.
+let lastCompressionNoticeKey = "";
 // Sessions with an unanswered ask_user_choice prompt — drives the sidebar
 // highlight and the browser attention signals.
 const choiceAttention = useInteractiveChoiceAttentionStore();
@@ -2061,6 +2075,20 @@ const {
     if (sessionId === currSessionId.value && shouldStickToBottom(sessionId)) {
       scrollToBottom();
     }
+  },
+  // Author: elecvoid243
+  // Date: 2026-10-08
+  // The runner compressed this turn's context. The notice is live-only
+  // telemetry about the run (never persisted), so it is shown as a transient
+  // toast — and only for the session on screen: a compression in a background
+  // session must not interrupt what the user is reading.
+  onContextCompression: (sessionId, notice) => {
+    if (sessionId !== currSessionId.value) return;
+    const key = contextCompressionNoticeKey(sessionId, notice);
+    if (key === lastCompressionNoticeKey) return;
+    lastCompressionNoticeKey = key;
+    const { message, timeout } = contextCompressionToast(notice, tm);
+    toast.info(message, { timeout });
   },
   // Refresh the spcode "currently loaded project" chip every time a
   // bot response finishes, so commands like `/project load <dir>` or

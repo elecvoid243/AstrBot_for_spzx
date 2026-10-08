@@ -39,6 +39,14 @@ import {
 // leaf module so the ask_user_choice history-reload filter can be
 // unit-tested without pulling in `@/api`.
 import { normalizeMessageParts as normalizeMessagePartsFromLeaf } from "./normalizeMessageParts";
+// Author: elecvoid243
+// Date: 2026-10-08
+// Live-only context compression notice: the leaf owns the wire parsing and
+// the toast message so this consumer stays thin wiring (and testable).
+import {
+  parseContextCompressionNotice,
+  type ContextCompressionNotice,
+} from "./contextCompressionNotice";
 // Live reducer for structured subagent progress stream payloads.
 import { applySubAgentEvent } from "./subagentRunReducer";
 // spcode todo_* tool protocol: shared tool-name set + the history
@@ -322,6 +330,20 @@ interface UseMessagesOptions {
    */
   onInteractiveChoice?: (sessionId: string) => void;
   /**
+   * Fired when the agent runner compressed the request context
+   * (`chain_type: "context_compression"`).
+   *
+   * The notice is live-only: it is not persisted anywhere, so the consumer
+   * (the chat page) owns presentation — the page shows it as a transient
+   * toast. Args:
+   *   sessionId: Bare conversation id the run belongs to.
+   *   notice: Parsed notice with the strategy and the token delta.
+   */
+  onContextCompression?: (
+    sessionId: string,
+    notice: ContextCompressionNotice,
+  ) => void;
+  /**
    * Fired when the kernel goal loop pushes a `goal_state_changed` event over
    * the system stream. The payload is authoritative — replace the cached
    * state for the session.
@@ -465,6 +487,19 @@ export function useMessages(options: UseMessagesOptions) {
                 | { sessions?: ShellSessionListItem[] }
                 | undefined;
               options.onShellSessionsChanged?.(sessionId, data?.sessions ?? []);
+              return;
+            }
+            // Author: elecvoid243
+            // Date: 2026-10-08
+            // Context compression notice on the system stream (goal-loop /
+            // collab orphan turns). Handled inline like the session-scoped
+            // events above so the wire JSON never reaches the leaf's
+            // plain-text fall-through.
+            if (payload?.chain_type === "context_compression") {
+              const notice = parseContextCompressionNotice(payload.data);
+              if (notice) {
+                options.onContextCompression?.(sessionId, notice);
+              }
               return;
             }
             messagesBySession[sessionId] = messagesBySession[sessionId] || [];
@@ -1963,6 +1998,20 @@ export function useMessages(options: UseMessagesOptions) {
     }
 
     if (msgType === "plain") {
+      // Author: elecvoid243
+      // Date: 2026-10-08
+      // The context compression notice is telemetry about the run, not part
+      // of the answer: hand it to the page (which shows a toast) and stop.
+      // Handled before `markMessageStarted` on purpose — the answer has not
+      // arrived yet, so clearing the record's loading state here would leave
+      // the bubble empty and un-marked until the first delta.
+      if (chainType === "context_compression") {
+        const notice = parseContextCompressionNotice(data);
+        if (notice && sessionId) {
+          options.onContextCompression?.(sessionId, notice);
+        }
+        return;
+      }
       markMessageStarted(botRecord);
       if (chainType === "reasoning") {
         appendReasoningPart(botRecord, payloadText(data));

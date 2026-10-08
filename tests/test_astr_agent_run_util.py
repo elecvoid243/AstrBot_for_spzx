@@ -172,3 +172,67 @@ async def test_run_agent_drops_file_changes_off_webchat():
 
     assert chains == []
     assert event.sent_chains == []
+
+
+class _ContextCompressionRunner:
+    """Streaming runner that compresses context before its first step."""
+
+    streaming = True
+    req = None
+
+    def __init__(self, event: _WebchatEvent) -> None:
+        self.finished = False
+        self.run_context = SimpleNamespace(context=SimpleNamespace(event=event))
+
+    async def step(self):
+        self.finished = True
+        yield AgentResponse(
+            type="context_compression",
+            data={
+                "chain": MessageChain(
+                    type="context_compression",
+                    chain=[],
+                ).message("payload"),
+            },
+        )
+
+    def done(self) -> bool:
+        return self.finished
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_context_compression_on_webchat():
+    """Compression notices must reach webchat instead of being dropped.
+
+    Mirrors the agent_stats / file_changes dispatch: without an explicit
+    branch the streaming-mode fall-through silently discards the response,
+    so the ChatUI never learns that the context was compressed.
+    """
+    event = _WebchatEvent()
+    runner = _ContextCompressionRunner(event)
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert len(event.sent_chains) == 1
+    assert event.sent_chains[0].type == "context_compression"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_drops_context_compression_off_webchat():
+    """Non-webchat platforms have no notice UI: drop silently."""
+
+    class _OtherPlatformEvent(_FakeEvent):
+        def __init__(self) -> None:
+            self.sent_chains: list[MessageChain] = []
+
+        async def send(self, chain: MessageChain) -> None:
+            self.sent_chains.append(chain)
+
+    event = _OtherPlatformEvent()
+    runner = _ContextCompressionRunner(event)  # type: ignore[arg-type]
+
+    chains = [chain async for chain in run_agent(runner)]
+
+    assert chains == []
+    assert event.sent_chains == []

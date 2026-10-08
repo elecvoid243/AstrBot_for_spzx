@@ -46,8 +46,16 @@ async def _persist_bot_reply_if_orphan(
     if request_id in webchat_queue_mgr.list_back_request_ids(cid):
         return  # consumed by the dashboard stream path; it persists the record
     if message_chain is not None:
-        if getattr(message_chain, "type", "") == "agent_stats":
-            return  # telemetry blob, not a user-visible reply
+        # Telemetry blobs are not user-visible replies: persisting a record
+        # that carries only one of them renders as a JSON bubble after a
+        # reload. The compression notice is dropped by the dashboard
+        # accumulator on the primary path and shown as a toast; orphan turns
+        # reach this fallback instead and must drop it here.
+        if getattr(message_chain, "type", "") in (
+            "agent_stats",
+            "context_compression",
+        ):
+            return
         parts = await message_chain_to_storage_message_parts(
             message_chain,
             insert_attachment=db_helper.insert_attachment,

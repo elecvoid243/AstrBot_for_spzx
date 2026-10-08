@@ -4,6 +4,11 @@ import typing as T
 
 from astrbot import logger
 from astrbot.core.message.message_event_result import CommandResult, MessageEventResult
+from astrbot.core.pipeline.llm_request_trace import (
+    collect_changes,
+    record_injections,
+    snapshot,
+)
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.star.star import star_map
 from astrbot.core.star.star_handler import EventType, star_handlers_registry
@@ -92,7 +97,13 @@ async def call_event_hook(
         hook_type,
         plugins_name=event.plugins_name,
     )
+    # Trace plugin mutations of the shared request: `on_llm_request` handlers
+    # edit the ProviderRequest in place, so fingerprinting it around each call
+    # is the only way to attribute an injection to the plugin that made it.
+    tracing = hook_type is EventType.OnLLMRequestEvent and bool(args)
     for handler in handlers:
+        before = snapshot(args[0]) if tracing else None
+        failed = False
         try:
             assert inspect.iscoroutinefunction(handler.handler)
             logger.debug(
@@ -101,6 +112,20 @@ async def call_event_hook(
             await handler.handler(event, *args, **kwargs)
         except BaseException:
             logger.error(traceback.format_exc())
+            failed = True
+
+        if before is not None and not failed:
+            changes = collect_changes(args[0], before, snapshot(args[0]))
+            # A module without a star_map entry (dynamically created handler)
+            # must not abort dispatch for the remaining handlers.
+            star = star_map.get(handler.handler_module_path)
+            if changes and star is not None:
+                record_injections(
+                    event,
+                    star.name or "",
+                    handler.handler_name,
+                    changes,
+                )
 
         if event.is_stopped():
             logger.info(

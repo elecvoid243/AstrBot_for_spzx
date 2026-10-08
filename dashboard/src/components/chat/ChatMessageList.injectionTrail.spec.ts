@@ -70,7 +70,7 @@ const tooltipStub = defineComponent({
     ]),
 });
 
-const vuetifyStubs: Record<string, unknown> = {
+const vuetifyStubs = {
   ...Object.fromEntries(
     [
       "v-avatar",

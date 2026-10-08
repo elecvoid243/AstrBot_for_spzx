@@ -13,6 +13,9 @@ export interface LlmRequestInjectionChange {
   delta: number;
   lossy: boolean;
   preview: string;
+  /** Complete injected text (kernel-capped, ellipsis-marked when cut); the
+   * panel reveals it in place. Empty when there is nothing to expand. */
+  full?: string;
 }
 
 export interface LlmRequestInjectionItem {

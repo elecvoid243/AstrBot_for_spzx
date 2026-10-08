@@ -98,8 +98,9 @@ const INJECTIONS = {
           delta: 412,
           lossy: false,
           preview: "## 长期记忆",
+          full: "## 长期记忆\n- 用户偏好：机制优先\n- 约定：单一真源收敛",
         },
-        { field: "system_prompt", delta: -1200, lossy: true, preview: "" },
+        { field: "system_prompt", delta: -1200, lossy: true, preview: "", full: "" },
       ],
     },
   ],
@@ -145,5 +146,44 @@ describe("ChatMessageList injection trail", () => {
     expect(panel.text()).toContain("+412 字符");
     expect(panel.text()).toContain("已截断");
     expect(panel.html()).toContain("## 长期记忆");
+  });
+
+  it("renders an outline icon control on the rail (variant A)", () => {
+    const wrapper = mountList(botRecord("b1", INJECTIONS));
+    expect(wrapper.find(".injection-marker-icon").exists()).toBe(true);
+  });
+
+  it("reveals the full text of a change on click, collapsed by default", async () => {
+    const wrapper = mountList(botRecord("b1", INJECTIONS));
+    await wrapper.find(".injection-marker").trigger("click");
+
+    const panel = wrapper.find(".injection-panel");
+    // Collapsed by default: only the one-line preview.
+    expect(panel.find(".injection-change-full").exists()).toBe(false);
+    expect(panel.text()).toContain("## 长期记忆");
+    // Exactly one of the two changes carries expandable full text.
+    expect(panel.findAll(".injection-change-chevron").length).toBe(1);
+
+    const toggle = panel.find(".injection-change-row.is-expandable");
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger("click");
+
+    const full = wrapper.find(".injection-change-full");
+    expect(full.exists()).toBe(true);
+    expect(full.text()).toContain("约定：单一真源收敛");
+  });
+
+  it("opens the panel at the message head, above the reply", async () => {
+    const wrapper = mountList(botRecord("b1", INJECTIONS));
+    await wrapper.find(".injection-marker").trigger("click");
+
+    const html = wrapper.html();
+    const panelAt = html.indexOf("injection-panel");
+    const botBubbleAt = html.indexOf("message-bubble bot");
+    expect(panelAt).toBeGreaterThan(-1);
+    expect(botBubbleAt).toBeGreaterThan(-1);
+    // The disclosure must sit directly under its rail marker, so a long reply
+    // never separates it from the trigger.
+    expect(panelAt).toBeLessThan(botBubbleAt);
   });
 });

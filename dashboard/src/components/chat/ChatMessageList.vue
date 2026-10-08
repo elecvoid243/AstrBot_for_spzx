@@ -77,7 +77,18 @@
                 :aria-label="injectionTooltip(msg)"
                 @click="toggleInjectionTrail(msg, msgIndex)"
               >
-                <span class="injection-marker-dot" aria-hidden="true"></span>
+                <svg
+                  class="injection-marker-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <rect x="2.6" y="3.4" width="10.8" height="9.2" rx="2.2" />
+                  <path d="M8 6.4v3.2M6.4 8h3.2" />
+                </svg>
               </button>
             </template>
             <span>{{ injectionTooltip(msg) }}</span>
@@ -102,6 +113,14 @@
             </button>
           </div>
           <template v-else>
+            <!-- 2026-10-08 (elecvoid243): the injection panel opens at the
+                 message's head, directly under its rail marker, so a long
+                 reply never separates the disclosure from its trigger. -->
+            <LlmRequestInjectionsPanel
+              v-if="injectionTrailOpen(msg, msgIndex)"
+              :items="injectionItems(msg)"
+            />
+
             <div
               v-if="isUserMessage(msg) && userAttachmentParts(msg).length"
               class="sent-attachments"
@@ -439,11 +458,6 @@
                 />
               </template>
             </div>
-
-            <LlmRequestInjectionsPanel
-              v-if="injectionTrailOpen(msg, msgIndex)"
-              :items="injectionItems(msg)"
-            />
 
             <div v-if="showMessageMeta(msg, msgIndex)" class="message-meta">
               <span v-if="msg.created_at">{{
@@ -2225,49 +2239,49 @@ function formatDuration(seconds: number) {
 }
 
 /* 2026-10-08 (elecvoid243): LLM request injection trail. The rail is a fixed
-   16px column so rows never shift; the marker is silent at rest (a 6px
-   square) and enlarges on hover / stays dark while its panel is open. */
+   20px column so rows never shift. The marker is an outline icon control
+   (variant A): a visible boundary + glyph at rest, ink-filled while open. */
 .message-rail {
-  flex: 0 0 16px;
-  width: 16px;
+  flex: 0 0 20px;
+  width: 20px;
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 4px;
+  padding-top: 2px;
 }
 
 .injection-marker {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
   display: grid;
   place-items: center;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.22);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
   cursor: pointer;
-}
-
-.injection-marker-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-  background: rgba(var(--v-theme-on-surface), 0.22);
   transition:
-    width 0.12s ease-out,
-    height 0.12s ease-out,
+    border-color 0.12s ease-out,
+    color 0.12s ease-out,
     background 0.12s ease-out;
 }
 
-.injection-marker:hover .injection-marker-dot,
-.injection-marker.is-open .injection-marker-dot {
-  width: 8px;
-  height: 8px;
-  background: rgba(var(--v-theme-on-surface), 0.62);
+.injection-marker-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.injection-marker:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.34);
+  color: rgba(var(--v-theme-on-surface), 0.82);
+  background: rgba(var(--v-theme-on-surface), 0.07);
 }
 
 .injection-marker.is-open {
-  background: rgba(var(--v-theme-on-surface), 0.06);
+  background: rgb(var(--v-theme-on-surface));
+  border-color: rgb(var(--v-theme-on-surface));
+  color: rgb(var(--v-theme-surface));
 }
 
 .injection-marker:focus-visible {

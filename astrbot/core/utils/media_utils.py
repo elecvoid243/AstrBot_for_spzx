@@ -484,7 +484,7 @@ async def _materialize_media_ref(
         cleanup_paths.append(target_path)
         try:
             await download_file(media_ref, str(target_path))
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             _cleanup_paths(cleanup_paths)
             raise
         mime_type = _guess_mime_type(target_path)
@@ -1367,7 +1367,7 @@ async def prepare_model_image(
     output_dir: Path,
     quality: int = IMAGE_COMPRESS_DEFAULT_QUALITY,
     montage_max_size: int | None = None,
-) -> str | None:
+) -> tuple[str, bool] | None:
     """Prepare a single local model-ready image for the caller to own until consumption.
 
     Args:
@@ -1382,15 +1382,17 @@ async def prepare_model_image(
             ``max_size``.
 
     Returns:
-        An existing JPEG or PNG path, or None for a recoverable input or write
-        failure.
+        Tuple of an existing JPEG or PNG path and whether it is an animation
+        frame montage (including cache hits), or None for a recoverable input
+        or write failure.
         The caller owns this file; shared cache entries are never returned.
     """
     try:
         async with MediaResolver(image_ref, media_type="image").as_path() as source:
             image_bytes = await asyncio.to_thread(source.read_bytes)
         frame_count = await asyncio.to_thread(_inspect_image, image_bytes)
-        if frame_count > 1:
+        is_montage = frame_count > 1
+        if is_montage:
             converted_bytes, _ = await asyncio.to_thread(
                 _extract_animation_montage_sync,
                 image_bytes,
@@ -1415,7 +1417,7 @@ async def prepare_model_image(
         except BaseException:
             output_path.unlink(missing_ok=True)
             raise
-        return str(output_path)
+        return str(output_path), is_montage
     except Exception as exc:
         if not is_recoverable_image_error(exc):
             raise
@@ -1649,10 +1651,17 @@ async def convert_audio_format(
         Exception: Raised when ffmpeg is unavailable or conversion fails.
     """
     source_path = Path(audio_path)
-    if source_path.suffix.lower() == f".{output_format}" and (
-        not source_path.exists() or _get_audio_magic_type(audio_path) == output_format
-    ):
-        return audio_path
+    if source_path.suffix.lower() == f".{output_format}":
+        # The magic-byte probe performs synchronous file I/O. Keep it off the
+        # event loop because this helper is called while processing messages.
+        if not source_path.exists():
+            return audio_path
+
+        detected_format = await asyncio.to_thread(_get_audio_magic_type, audio_path)
+        if detected_format == output_format or (
+            output_format == "ogg" and detected_format == "opus"
+        ):
+            return audio_path
 
     if output_path is None:
         temp_dir = Path(get_astrbot_temp_path())

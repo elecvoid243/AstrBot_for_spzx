@@ -155,7 +155,7 @@
         },
         "showFullName": "Полное имя",
         "devDocs": "Документация для разработчиков",
-        "submitRepo": "Добавить репозиторий",
+        "submitRepo": "Добавить мой плагин",
         "customSource": "Свои источники",
         "source": "Источник",
         "availableSources": "Доступные источники",
@@ -321,6 +321,8 @@
         "enterUrl": "Ссылка на репозиторий"
     },
     "skills": {
+        "searchPlaceholder": "Поиск навыков...",
+        "noSearchResult": "Подходящие навыки не найдены",
         "modeLocal": "Локальные навыки",
         "modeNeo": "Навыки Neo",
         "actions": "Действия",

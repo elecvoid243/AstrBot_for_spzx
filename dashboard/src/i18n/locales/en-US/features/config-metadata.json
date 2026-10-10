@@ -338,11 +338,16 @@
         "filesystem": "File access scope",
         "scopes": {
           "workspace": "Workspace",
-          "host": "Host files"
+          "host": "Entire environment"
         },
         "scopeHints": {
-          "workspace": "Workspace: restricted access to the session workspace, temporary directories, and skill files.",
-          "host": "Host files: access files permitted by the account running AstrBot. In Docker, this means files inside the container and mounted files, not all files on the Docker host."
+          "none": "No file access allowed",
+          "workspace": "Restricted workspace, temporary directories, and skill files.",
+          "host": "All files in the environment where AstrBot runs."
+        },
+        "scopeDetails": {
+          "account": "1. Access is limited to files permitted by the account running AstrBot.",
+          "docker": "2. If deployed through Docker, only files inside the container and mounted files are accessible, not all files on the Docker host."
         },
         "roles": {
           "member": "Member",
@@ -354,9 +359,13 @@
           "files": "File access only",
           "full": "Unrestricted access"
         },
+        "modeHints": {
+          "files": "Read and write all files in the environment, without Shell/Python execution or network access.",
+          "full": "Read and write all files in the environment, with Shell/Python execution and network access."
+        },
         "unsupportedSelection": "Current policy is unsupported",
         "runtimeUnknown": "Runtime information is unavailable.",
-        "memberWarning": "Members have network or host file access.",
+        "memberWarning": "Members have network access or file access across the entire environment.",
         "runtime": {
           "os": "OS",
           "arch": "Architecture",

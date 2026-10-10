@@ -354,11 +354,16 @@
         "filesystem": "文件访问范围",
         "scopes": {
           "workspace": "工作区",
-          "host": "主机文件"
+          "host": "整个环境"
         },
         "scopeHints": {
-          "workspace": "工作区：在受限范围内访问会话工作区、临时目录和技能文件。",
-          "host": "主机文件：可访问 AstrBot 运行账户有权限访问的文件；Docker 部署时指容器内及挂载的文件，并非宿主机全部文件。"
+          "none": "不允许访问任何文件",
+          "workspace": "受限的工作区、临时目录和技能文件。",
+          "host": "AstrBot 所在运行环境的所有文件。"
+        },
+        "scopeDetails": {
+          "account": "1. 可访问 AstrBot 运行账户有权限访问的文件。",
+          "docker": "2. 如果通过 Docker 部署，则仅可访问容器内及挂载的文件，并非宿主机全部文件。"
         },
         "roles": {
           "member": "普通成员",
@@ -370,9 +375,13 @@
           "files": "仅文件访问",
           "full": "不受限访问"
         },
+        "modeHints": {
+          "files": "可读写整个环境的文件，但不能执行 Shell/Python 代码或联网。",
+          "full": "可读写整个环境的文件，并可执行 Shell/Python 代码和联网。"
+        },
         "unsupportedSelection": "当前策略不受支持",
         "runtimeUnknown": "运行环境信息不可用。",
-        "memberWarning": "普通成员已获得联网或主机文件访问权限。",
+        "memberWarning": "普通成员已获得联网或整个环境访问权限。",
         "runtime": {
           "os": "操作系统",
           "arch": "架构",

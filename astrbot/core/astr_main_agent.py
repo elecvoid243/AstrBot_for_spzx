@@ -1599,7 +1599,22 @@ async def collect_initial_request(
                 list(req.contexts) if isinstance(req.contexts, list) else req.contexts
             )
             if req.conversation:
-                req.contexts = json.loads(req.conversation.history)
+                # Handler requests can be prepared before the pipeline acquires
+                # the session lock. Reload the bound conversation here so queued
+                # turns include replies saved while they were waiting.
+                conversation = (
+                    await plugin_context.conversation_manager.get_conversation(
+                        event.unified_msg_origin, req.conversation.cid
+                    )
+                )
+                if conversation is None:
+                    _set_llm_error_message(
+                        event,
+                        "The requested conversation no longer exists. Please send a new message.",
+                    )
+                    return None, None
+                req.conversation = conversation
+                req.contexts = json.loads(conversation.history)
         else:
             req = ProviderRequest()
             req.prompt = ""
@@ -1652,7 +1667,17 @@ async def collect_initial_request(
                         TextPart(text=f"[Image Attachment: path {image_path}]")
                     )
                 elif isinstance(comp, Record):
-                    audio_path = await comp.convert_to_file_path()
+                    try:
+                        audio_path = await comp.convert_to_file_path()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Voice attachment is unavailable (%s).",
+                            type(exc).__name__,
+                        )
+                        req.extra_user_content_parts.append(
+                            TextPart(text="[Voice unavailable]")
+                        )
+                        continue
                     req.audio_urls.append(audio_path)
                     _append_audio_attachment(req, audio_path)
                 elif isinstance(comp, File):
@@ -1706,7 +1731,17 @@ async def collect_initial_request(
                                     event.track_temporary_local_file(image_path)
                             _append_quoted_image_attachment(req, image_path)
                         elif isinstance(reply_comp, Record):
-                            audio_path = await reply_comp.convert_to_file_path()
+                            try:
+                                audio_path = await reply_comp.convert_to_file_path()
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "Quoted voice is unavailable (%s).",
+                                    type(exc).__name__,
+                                )
+                                req.extra_user_content_parts.append(
+                                    TextPart(text="[Voice unavailable]")
+                                )
+                                continue
                             req.audio_urls.append(audio_path)
                             _append_quoted_audio_attachment(req, audio_path)
                         elif isinstance(reply_comp, File):

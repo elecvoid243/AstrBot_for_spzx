@@ -17,6 +17,7 @@ from PIL import Image as PILImage
 import astrbot.dashboard.services.config_service as config_service
 import astrbot.dashboard.services.stat_service as stat_service
 from astrbot.core import file_token_service
+from astrbot.core.config.default import VERSION
 from astrbot.core.utils import llm_metadata
 from astrbot.dashboard.api.app import create_dashboard_asgi_app
 from astrbot.dashboard.api.backups import download_backup as download_backup_route
@@ -1194,16 +1195,49 @@ async def test_version_routes_return_startup_runtime_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_public_versions_route_uses_static_folder(
+@pytest.mark.parametrize("desktop_auth", [False, True])
+@pytest.mark.parametrize("asset_version", [f"v{VERSION}", "v9.8.7", None])
+async def test_version_routes_and_update_checks_use_static_folder(
+    monkeypatch,
     fake_core_lifecycle,
     fake_db: FakeDb,
     tmp_path: Path,
+    desktop_auth,
+    asset_version,
 ):
+    """Use served assets even when an unrelated dist has a readable marker."""
     static_folder = tmp_path / "dist"
     assets_folder = static_folder / "assets"
     assets_folder.mkdir(parents=True)
     (static_folder / "index.html").write_text("<!doctype html>", encoding="utf-8")
-    (assets_folder / "version").write_text("v9.8.7", encoding="utf-8")
+    if asset_version is not None:
+        (assets_folder / "version").write_text(asset_version, encoding="utf-8")
+
+    stale_data = tmp_path / "data"
+    stale_dist = stale_data / "dist"
+    (stale_dist / "assets").mkdir(parents=True)
+    (stale_dist / "assets" / "version").write_text("v0.0.1", encoding="utf-8")
+    monkeypatch.setattr(
+        "astrbot.core.dashboard_assets.get_astrbot_data_path", lambda: str(stale_data)
+    )
+    monkeypatch.setattr(
+        "astrbot.core.dashboard_assets._get_bundled_dist_path",
+        lambda: tmp_path / "missing-bundled-dist",
+    )
+    monkeypatch.setattr(
+        stat_service, "is_desktop_session_auth_enabled", lambda: desktop_auth
+    )
+    monkeypatch.setattr(
+        stat_service, "is_password_storage_upgraded", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
+        stat_service,
+        "get_dashboard_password_hash",
+        lambda *args, **kwargs: "stored-hash",
+    )
+    monkeypatch.setattr(
+        stat_service.StatService, "is_default_cred", AsyncMock(return_value=False)
+    )
 
     app = create_dashboard_asgi_app(
         core_lifecycle=fake_core_lifecycle,
@@ -1216,15 +1250,40 @@ async def test_public_versions_route_uses_static_folder(
         transport=transport,
         base_url="http://testserver",
     ) as client:
-        response = await client.get("/api/v1/stats/versions")
+        for path in ("/api/v1/stats/versions", "/api/stat/versions"):
+            response = await client.get(path)
+            data = response.json()
+            assert response.status_code == 200
+            assert data["status"] == "ok"
+            assert data["data"]["webui_version"] == asset_version
+            assert data["data"]["astrbot_version"]
+            assert "astrbot_code_version" in data["data"]
 
-    data = response.json()
+        # Direct service callers also inherit the served directory by default.
+        assert (await app.state.services.stats.get_public_versions())[
+            "webui_version"
+        ] == asset_version
+        for path in ("/api/v1/stats/version", "/api/stat/version"):
+            response = await client.get(path, headers=_jwt_headers())
+            assert response.status_code == 200
+            assert response.json()["status"] == "ok"
+            assert response.json()["data"]["dashboard_version"] == asset_version
 
-    assert response.status_code == 200
-    assert data["status"] == "ok"
-    assert data["data"]["webui_version"] == "v9.8.7"
-    assert data["data"]["astrbot_version"]
-    assert "astrbot_code_version" in data["data"]
+        for path in ("/api/v1/updates/check", "/api/update/check"):
+            response = await client.get(path, headers=_jwt_headers())
+            assert response.status_code == 200
+            data = response.json()["data"]
+            assert data["dashboard_version"] == asset_version
+            assert data["dashboard_has_new_version"] is bool(
+                asset_version and asset_version != f"v{VERSION}"
+            )
+            response = await client.get(
+                path, params={"type": "dashboard"}, headers=_jwt_headers()
+            )
+            assert response.status_code == 200
+            data = response.json()["data"]
+            assert data["current_version"] == asset_version
+            assert data["has_new_version"] is (asset_version != f"v{VERSION}")
 
 
 def test_fastapi_app_adapter_registers_on_app_state():

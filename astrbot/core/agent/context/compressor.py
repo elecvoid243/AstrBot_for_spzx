@@ -387,12 +387,15 @@ class LLMSummaryCompressor:
         )
         log_context_sanitize_stats(sanitize_stats)
 
-        # Generate summary
+        # Generate summary. A single attempt is enough: on failure the caller
+        # falls back to truncation, so retrying (e.g. on an exhausted quota)
+        # would only hold up the reply.
         try:
             response = await self.provider.text_chat(
                 contexts=sanitized_summary_contexts,
                 func_tool=func_tool,
                 llm_params=self.llm_params or None,
+                request_max_retries=1,
             )
             summary_content = (response.completion_text or "").strip()
             if not summary_content and func_tool is not None:
@@ -407,6 +410,7 @@ class LLMSummaryCompressor:
                 response = await self.provider.text_chat(
                     contexts=sanitized_summary_contexts,
                     llm_params=self.llm_params or None,
+                    request_max_retries=1,
                 )
                 summary_content = (response.completion_text or "").strip()
         except Exception as e:

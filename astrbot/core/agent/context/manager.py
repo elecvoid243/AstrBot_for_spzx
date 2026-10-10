@@ -5,6 +5,7 @@ from astrbot import logger
 from ..message import Message
 from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
 from .config import ContextConfig
+from .round_utils import split_into_rounds
 from .token_counter import EstimateTokenCounter
 from .truncator import ContextTruncator
 
@@ -128,6 +129,11 @@ class ContextManager:
         """
         Compress/truncate the messages.
 
+        If the context still exceeds the limit after compression (for example
+        because the summary request failed), whole rounds are dropped, oldest
+        first, until it fits. The latest round is always kept, even when it
+        alone exceeds the limit.
+
         Args:
             messages: The original message list.
             prev_tokens: The token count before compression.
@@ -174,30 +180,49 @@ class ContextManager:
                 f"Compress completed. {prev_tokens} -> {tokens_after_summary} tokens.",
             )
 
-        # last check
-        halved = False
-        if self.compressor.should_compress(
-            messages, tokens_after_summary, self.config.max_context_tokens
-        ):
+        tokens = tokens_after_summary
+        needs_fallback = self.compressor.should_compress(
+            messages, tokens, self.config.max_context_tokens
+        )
+        if needs_fallback:
             logger.info(
-                "Context still exceeds max tokens after compression, applying halving truncation..."
+                "Context still exceeds max tokens after compression, dropping the oldest rounds..."
             )
-            # still need compress, truncate by half
-            messages = self.truncator.truncate_by_halving(messages)
-            halved = True
+            # Drop whole rounds so tool calls stay with their results. Recount
+            # after each removal and always preserve the current request.
+            first_non_system = next(
+                (i for i, msg in enumerate(messages) if msg.role != "system"),
+                len(messages),
+            )
+            system_messages = messages[:first_non_system]
+            rounds = [
+                [seg for seg in rnd if isinstance(seg, Message)]
+                for rnd in split_into_rounds(messages[first_non_system:])
+            ]
+            dropped_rounds = 0
+            while len(rounds) > 1 and self.compressor.should_compress(
+                messages, tokens, self.config.max_context_tokens
+            ):
+                rounds.pop(0)
+                dropped_rounds += 1
+                messages = system_messages + [msg for rnd in rounds for msg in rnd]
+                tokens = self.token_counter.count_tokens(messages)
+            logger.info(f"Dropped {dropped_rounds} oldest round(s).")
+
+            if self.compressor.should_compress(
+                messages, tokens, self.config.max_context_tokens
+            ):
+                logger.warning(
+                    "Context still exceeds max tokens with only the latest round left; "
+                    "sending it as is."
+                )
 
         self.last_compression = {
-            # Halving means the configured strategy did not get the request
-            # under the limit, so the effective outcome is a hard truncation.
-            "strategy": "truncate_by_halving"
-            if halved
+            # Reuse the existing lossy-truncation label in the WebUI notice.
+            "strategy": "truncate_by_turns"
+            if needs_fallback
             else getattr(self.compressor, "strategy", "custom"),
             "tokens_before": prev_tokens,
-            "tokens_after": (
-                self.token_counter.count_tokens(messages)
-                if halved
-                else tokens_after_summary
-            ),
+            "tokens_after": tokens,
         }
-
         return messages

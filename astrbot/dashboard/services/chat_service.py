@@ -35,6 +35,7 @@ from astrbot.core.utils.media_utils import (
     MEDIA_MIME_EXTENSIONS,
     detect_image_mime_type_async,
 )
+from astrbot.core.utils.upload import UploadTooLargeError
 from astrbot.dashboard.services.chatui_settings import (
     normalize_quick_messages,
     normalize_thinking_effort_settings,
@@ -42,9 +43,16 @@ from astrbot.dashboard.services.chatui_settings import (
     validate_quick_messages,
     validate_thinking_effort_presets,
 )
+from astrbot.dashboard.services.chunked_upload_service import (
+    ChunkedUploadError,
+    ChunkedUploadService,
+)
 
 SSE_HEARTBEAT = ": heartbeat\n\n"
 CHAT_RUN_SUBSCRIBER_QUEUE_SIZE = 256
+# Uploaded chat attachments larger than this are rejected.
+MAX_UPLOAD_FILE_SIZE_MB = 512
+MAX_UPLOAD_FILE_SIZE_BYTES = MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024
 # ChatUI history windowing: the dashboard chat asks for the most recent
 # HISTORY_WINDOW_SIZE records and loads older pages on demand via
 # /chat/sessions/{id}/history. The window is opt-in (`limit` query param)
@@ -76,6 +84,42 @@ def sanitize_upload_filename(filename: str | None) -> str:
     if name in ("", ".", ".."):
         return generate_timestamp_id()
     return name
+
+
+class LocalUploadFile:
+    """Adapt a merged local file to the upload contract save_uploaded_file() consumes.
+
+    Mirrors UploadFileAdapter (api/multipart.py) but sources bytes from a
+    local path; save() moves the file so the chunked-upload merge result
+    lands in the attachments directory without a second full copy.
+    """
+
+    def __init__(self, path: Path, filename: str, content_type: str | None) -> None:
+        self._path = path
+        self.filename = filename
+        self.content_type = content_type
+        self.headers: dict = {}
+        self.content_length = path.stat().st_size
+
+    async def save(
+        self, destination: str | Path, *, max_bytes: int | None = None
+    ) -> int:
+        """Move the assembled file without reading it back into memory.
+
+        Args:
+            destination: Final attachment path.
+            max_bytes: Optional upper bound on the file size.
+
+        Returns:
+            Number of bytes moved.
+
+        Raises:
+            UploadTooLargeError: The assembled file exceeds the limit.
+        """
+        if max_bytes is not None and self.content_length > max_bytes:
+            raise UploadTooLargeError(max_bytes)
+        await asyncio.to_thread(os.replace, self._path, destination)
+        return self.content_length
 
 
 def normalize_reasoning_message_parts(
@@ -1171,6 +1215,9 @@ class ChatService:
         self.running_convs: dict[str, bool] = {}
         self.chat_runs: dict[str, ChatRunState] = {}
         self.chat_runs_by_session: dict[str, set[str]] = {}
+        self.chunked_uploads = ChunkedUploadService(
+            Path(get_astrbot_data_path()) / "webchat" / ".chunks"
+        )
         # 2026-08-13: branch-relation cache moved to the db layer
         # (`BaseDatabase.get_branch_relations`) so every dashboard service
         # sharing the db instance sees the same relations — the project
@@ -1391,6 +1438,10 @@ class ChatService:
         return await self.resolve_attachment_file(attachment_id)
 
     async def save_uploaded_file(self, file) -> dict:
+        if (file.content_length or 0) > MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise ChatServiceError(
+                f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
+            )
         filename = sanitize_upload_filename(file.filename)
         content_type = file.content_type or "application/octet-stream"
 
@@ -1408,7 +1459,12 @@ class ChatService:
         if not file_path.is_relative_to(attachments_dir):
             raise ChatServiceError("Invalid filename")
 
-        await file.save(str(file_path))
+        try:
+            await file.save(str(file_path), max_bytes=MAX_UPLOAD_FILE_SIZE_BYTES)
+        except UploadTooLargeError as exc:
+            raise ChatServiceError(
+                f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
+            ) from exc
         if attach_type == "image":
             detected_mime_type = await detect_image_mime_type_async(
                 file_path,
@@ -1445,6 +1501,142 @@ class ChatService:
         if "file" not in files:
             raise ChatServiceError("Missing key: file")
         return await self.save_uploaded_file(files["file"])
+
+    def upload_init(self, data: object, *, owner: str = "") -> dict:
+        """Validate attachment metadata and create an owned upload session.
+
+        Args:
+            data: Filename, total size and optional MIME type.
+            owner: Authenticated username owning the session.
+
+        Returns:
+            Upload ID, chunk size and number of chunks.
+
+        Raises:
+            ChatServiceError: Metadata is invalid or exceeds the size limit.
+        """
+        payload = data if isinstance(data, dict) else {}
+        original_filename = str(payload.get("filename") or "")
+        total_size = payload.get("total_size", 0)
+
+        if not original_filename:
+            raise ChatServiceError("Missing key: filename")
+        if not isinstance(total_size, int) or total_size <= 0:
+            raise ChatServiceError("Invalid file size")
+        if total_size > MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise ChatServiceError(
+                f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
+            )
+
+        self.chunked_uploads.ensure_cleanup_task_started()
+        try:
+            session = self.chunked_uploads.init_session(
+                owner=owner,
+                purpose="chat_attachment",
+                filename=sanitize_upload_filename(original_filename),
+                original_filename=original_filename,
+                total_size=total_size,
+                meta={
+                    "content_type": payload.get("content_type")
+                    or "application/octet-stream"
+                },
+            )
+        except ChunkedUploadError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+        return {
+            "upload_id": session.id,
+            "chunk_size": session.chunk_size,
+            "total_chunks": session.total_chunks,
+        }
+
+    async def upload_chunk(
+        self,
+        *,
+        upload_id: str | None,
+        chunk_index_str: str | None,
+        chunk_file: Any | None,
+        owner: str = "",
+    ) -> dict:
+        if not upload_id or chunk_index_str is None or not chunk_file:
+            raise ChatServiceError("Missing required parameters")
+
+        try:
+            chunk_index = int(chunk_index_str)
+        except ValueError as exc:
+            raise ChatServiceError("Invalid chunk_index") from exc
+
+        try:
+            return await self.chunked_uploads.save_chunk(
+                upload_id, chunk_index, chunk_file, owner=owner
+            )
+        except ChunkedUploadError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+    async def upload_complete(self, data: object, *, owner: str = "") -> dict:
+        """Assemble uploaded chunks and use the normal attachment save path.
+
+        Args:
+            data: Request payload containing the upload ID.
+            owner: Authenticated username owning the session.
+
+        Returns:
+            Attachment metadata from the unified save operation.
+
+        Raises:
+            ChatServiceError: The session or its chunks cannot be used.
+        """
+        payload = data if isinstance(data, dict) else {}
+        upload_id = payload.get("upload_id")
+        if not upload_id:
+            raise ChatServiceError("Missing key: upload_id")
+
+        try:
+            session = self.chunked_uploads.get_session(upload_id, owner=owner)
+            # Merge outside the chunk dir: assemble() removes that dir on success.
+            merged_path = self.chunked_uploads.chunks_root / f"{upload_id}.merged"
+            await self.chunked_uploads.assemble(upload_id, merged_path, owner=owner)
+        except ChunkedUploadError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+        try:
+            upload = LocalUploadFile(
+                merged_path,
+                session.filename,
+                session.meta.get("content_type"),
+            )
+            result = await self.save_uploaded_file(upload)
+        finally:
+            merged_path.unlink(missing_ok=True)
+
+        logger.info(
+            f"Chunked attachment upload completed: {session.filename}, "
+            f"size={session.total_size}, chunks={session.total_chunks}"
+        )
+        return result
+
+    async def upload_abort(self, data: object, *, owner: str = "") -> None:
+        payload = data if isinstance(data, dict) else {}
+        upload_id = payload.get("upload_id")
+        if not upload_id:
+            return
+
+        try:
+            if await self.chunked_uploads.abort(upload_id, owner=owner):
+                logger.info(f"Aborted chunked attachment upload: {upload_id}")
+        except ChunkedUploadError as exc:
+            raise ChatServiceError(str(exc)) from exc
+
+    def upload_status(self, data: object, *, owner: str = "") -> dict:
+        payload = data if isinstance(data, dict) else {}
+        upload_id = payload.get("upload_id")
+        if not upload_id:
+            raise ChatServiceError("Missing key: upload_id")
+
+        try:
+            return self.chunked_uploads.session_status(upload_id, owner=owner)
+        except ChunkedUploadError as exc:
+            raise ChatServiceError(str(exc)) from exc
 
     async def delete_threads_by_ids(self, thread_ids: list[str], creator: str) -> None:
         for thread_id in thread_ids:

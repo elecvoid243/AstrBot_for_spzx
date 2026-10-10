@@ -253,6 +253,7 @@
             "restartNow": "Перезапустить сейчас",
             "failed": "Ошибка импорта",
             "retry": "Повторить",
+            "resumeUpload": "Продолжить загрузку",
             "version": {
                 "backupVersion": "Версия бэкапа",
                 "currentVersion": "Текущая версия",

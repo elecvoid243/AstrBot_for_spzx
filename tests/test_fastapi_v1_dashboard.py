@@ -1051,6 +1051,71 @@ def _jwt_headers() -> dict[str, str]:
 
 
 @pytest.mark.asyncio
+async def test_v1_chunked_file_upload_preserves_auth_and_attachment_flow(
+    asgi_app, asgi_client, monkeypatch, tmp_path
+):
+    """Exercise authenticated multipart chunks through the real API routes."""
+    from astrbot.dashboard.services.chunked_upload_service import ChunkedUploadService
+
+    service = asgi_app.state.services.chat
+    monkeypatch.setattr(service, "attachments_dir", str(tmp_path))
+    monkeypatch.setattr(
+        service, "chunked_uploads", ChunkedUploadService(tmp_path / "chunks")
+    )
+    insert = AsyncMock(
+        side_effect=lambda **kw: SimpleNamespace(attachment_id="uploaded", **kw)
+    )
+    monkeypatch.setattr(service.db, "insert_attachment", insert, raising=False)
+    payload = {"filename": "notes.txt", "total_size": 5, "content_type": "text/plain"}
+    denied = await asgi_client.post("/api/v1/files/upload/init", json=payload)
+    assert denied.status_code == 401
+    headers = _jwt_headers()
+    try:
+        response = await asgi_client.post(
+            "/api/v1/files/upload/init", json=payload, headers=headers
+        )
+        assert response.json()["status"] == "ok"
+        upload_id = response.json()["data"]["upload_id"]
+        status = await asgi_client.post(
+            "/api/v1/files/upload/status",
+            json={"upload_id": upload_id},
+            headers=headers,
+        )
+        assert status.json()["data"]["received_chunks"] == []
+        foreign_token = jwt.encode(
+            {"username": "other-user"}, JWT_SECRET, algorithm="HS256"
+        )
+        denied = await asgi_client.post(
+            "/api/v1/files/upload/status",
+            json={"upload_id": upload_id},
+            headers={"Authorization": f"Bearer {foreign_token}"},
+        )
+        assert denied.json()["status"] == "error"
+        response = await asgi_client.post(
+            "/api/v1/files/upload/chunk",
+            data={"upload_id": upload_id, "chunk_index": "0"},
+            files={"chunk": ("chunk.bin", b"hello", "application/octet-stream")},
+            headers=headers,
+        )
+        assert response.json()["status"] == "ok"
+        response = await asgi_client.post(
+            "/api/v1/files/upload/complete",
+            json={"upload_id": upload_id},
+            headers=headers,
+        )
+        assert response.json()["data"]["attachment_id"] == "uploaded"
+        saved_path = Path(insert.call_args.kwargs["path"])
+        assert saved_path.read_bytes() == b"hello"
+        assert insert.call_args.kwargs["mime_type"] == "text/plain"
+        assert not service.chunked_uploads.sessions
+    finally:
+        task = service.chunked_uploads._cleanup_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("desktop_auth", [False, True])
 @pytest.mark.parametrize("status", ["missing", "unavailable", "detected"])
 async def test_version_routes_return_startup_runtime_snapshot(
@@ -1809,7 +1874,6 @@ async def test_v1_system_config_update_preserves_independent_bot_provider_sectio
         "default_provider_id": "gpt-mini"
     }
     assert fake_core_lifecycle.reloaded_config_ids == ["default"]
-
 
 
 @pytest.mark.asyncio

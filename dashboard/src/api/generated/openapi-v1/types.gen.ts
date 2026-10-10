@@ -105,6 +105,12 @@ export type BotRegistrationRequest = {
 
 export type action = 'start' | 'poll';
 
+export type ChatChunkUploadRequest = {
+    upload_id: string;
+    chunk_index: number;
+    chunk: (Blob | File);
+};
+
 export type ChatFileChangeDiffRequest = {
     path: string;
     backup_id?: string;
@@ -331,6 +337,16 @@ export type ChatUiThinkingEffortSlider = {
         name: string;
         value: number;
     }>;
+};
+
+export type ChatUploadInitRequest = {
+    filename: string;
+    total_size: number;
+    content_type?: string;
+};
+
+export type ChatUploadSessionRequest = {
+    upload_id: string;
 };
 
 export type CommandPatchRequest = {
@@ -2170,6 +2186,46 @@ export type UploadFileResponse = (SuccessEnvelope);
 
 export type UploadFileError = unknown;
 
+export type InitFileUploadData = {
+    body: ChatUploadInitRequest;
+};
+
+export type InitFileUploadResponse = (SuccessEnvelope);
+
+export type InitFileUploadError = unknown;
+
+export type UploadFileChunkData = {
+    body: ChatChunkUploadRequest;
+};
+
+export type UploadFileChunkResponse = (SuccessEnvelope);
+
+export type UploadFileChunkError = unknown;
+
+export type CompleteFileUploadData = {
+    body: ChatUploadSessionRequest;
+};
+
+export type CompleteFileUploadResponse = (SuccessEnvelope);
+
+export type CompleteFileUploadError = unknown;
+
+export type AbortFileUploadData = {
+    body: ChatUploadSessionRequest;
+};
+
+export type AbortFileUploadResponse = (SuccessEnvelope);
+
+export type AbortFileUploadError = unknown;
+
+export type StatusFileUploadData = {
+    body: ChatUploadSessionRequest;
+};
+
+export type StatusFileUploadResponse = (SuccessEnvelope);
+
+export type StatusFileUploadError = unknown;
+
 export type UploadOpenApiFileData = {
     body: FileUploadRequest;
 };
@@ -3985,6 +4041,14 @@ export type AbortBackupUploadData = {
 export type AbortBackupUploadResponse = (SuccessEnvelope);
 
 export type AbortBackupUploadError = unknown;
+
+export type StatusBackupUploadData = {
+    body: BackupUploadSessionRequest;
+};
+
+export type StatusBackupUploadResponse = (SuccessEnvelope);
+
+export type StatusBackupUploadError = unknown;
 
 export type GetBackupProgressData = {
     path: {

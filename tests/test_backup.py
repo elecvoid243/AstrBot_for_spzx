@@ -5,6 +5,7 @@ import os
 import re
 import zipfile
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,8 +28,13 @@ from astrbot.core.config.default import VERSION
 from astrbot.core.db.po import (
     ConversationV2,
 )
+from astrbot.core.utils.upload import UploadTooLargeError
 from astrbot.core.utils.version_comparator import VersionComparator
 from astrbot.dashboard.services.backup_service import (
+    CHUNK_SIZE,
+    MAX_BACKUP_TOTAL_BYTES,
+    BackupService,
+    BackupServiceError,
     generate_unique_filename,
     secure_filename,
 )
@@ -1093,3 +1099,364 @@ class TestBackupIntegration:
             # 读取主数据库
             main_db = json.loads(zf.read("databases/main_db.json"))
             assert "platform_stats" in main_db
+
+
+class _StubUploadFile:
+    """Upload adapter stub enforcing the save contract."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+
+    async def save(self, destination, *, max_bytes=None) -> int:
+        if max_bytes is not None and len(self._data) > max_bytes:
+            raise UploadTooLargeError(max_bytes)
+        Path(destination).write_bytes(self._data)
+        return len(self._data)
+
+
+class TestBackupUploadLimits:
+    """Backup size, ownership, expiry and cleanup regressions."""
+
+    @pytest.fixture
+    def backup_service(self, tmp_path):
+        """Create an isolated backup service for each test."""
+        service = BackupService(db=MagicMock(), core_lifecycle=MagicMock())
+        service.backup_dir = str(tmp_path / "backups")
+        service.chunks_dir = str(tmp_path / "backups" / ".chunks")
+        service.chunked_uploads.chunks_root = Path(service.chunks_dir)
+        return service
+
+    def test_upload_init_rejects_oversized_total(self, backup_service):
+        """Upload init rejects oversized total."""
+        with pytest.raises(BackupServiceError, match="size limit"):
+            backup_service.upload_init(
+                {"filename": "b.zip", "total_size": MAX_BACKUP_TOTAL_BYTES + 1},
+                owner="tester",
+            )
+
+    @pytest.mark.asyncio
+    async def test_upload_chunk_rejects_oversized_chunk(self, backup_service):
+        """Upload chunk rejects oversized chunk."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": CHUNK_SIZE}, owner="tester"
+        )
+        big_chunk = _StubUploadFile(b"x" * (CHUNK_SIZE + 1))
+
+        with pytest.raises(BackupServiceError, match="Chunk exceeds the size limit"):
+            await backup_service.upload_chunk(
+                upload_id=session["upload_id"],
+                chunk_index_str="0",
+                chunk_file=big_chunk,
+                owner="tester",
+            )
+
+        await backup_service.cleanup_upload_session(session["upload_id"])
+
+    @pytest.mark.asyncio
+    async def test_upload_chunk_accepts_small_chunk(self, backup_service):
+        """Upload chunk accepts small chunk."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="tester"
+        )
+        result = await backup_service.upload_chunk(
+            upload_id=session["upload_id"],
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(b"x" * 100),
+            owner="tester",
+        )
+        assert result["received"] == 1
+        assert result["total"] == 1
+
+        await backup_service.cleanup_upload_session(session["upload_id"])
+
+    @pytest.mark.asyncio
+    async def test_upload_complete_rejects_size_mismatch(self, backup_service):
+        """Upload complete rejects size mismatch."""
+        declared = CHUNK_SIZE + 100
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": declared}, owner="tester"
+        )
+        await backup_service.upload_chunk(
+            upload_id=session["upload_id"],
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(b"x" * CHUNK_SIZE),
+            owner="tester",
+        )
+        await backup_service.upload_chunk(
+            upload_id=session["upload_id"],
+            chunk_index_str="1",
+            chunk_file=_StubUploadFile(b"x" * 100),
+            owner="tester",
+        )
+        # Byte-count checks reject short writes; corrupt the stored chunk directly
+        # to verify assembly still detects changes made outside the upload path.
+        chunk_path = (
+            backup_service.chunked_uploads.chunks_root / session["upload_id"] / "1.part"
+        )
+        chunk_path.write_bytes(b"x" * 50)
+
+        with pytest.raises(BackupServiceError, match="does not match"):
+            await backup_service.upload_complete(
+                {"upload_id": session["upload_id"]}, owner="tester"
+            )
+
+        await backup_service.cleanup_upload_session(session["upload_id"])
+
+    @pytest.mark.asyncio
+    async def test_session_rejects_other_owner(self, backup_service):
+        """Session rejects other owner."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            await backup_service.upload_chunk(
+                upload_id=session["upload_id"],
+                chunk_index_str="0",
+                chunk_file=_StubUploadFile(b"x" * 100),
+                owner="mallory",
+            )
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            await backup_service.upload_complete(
+                {"upload_id": session["upload_id"]}, owner="mallory"
+            )
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            await backup_service.upload_abort(
+                {"upload_id": session["upload_id"]}, owner="mallory"
+            )
+
+        # The original owner can still use the session after rejected requests.
+        result = await backup_service.upload_chunk(
+            upload_id=session["upload_id"],
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(b"x" * 100),
+            owner="alice",
+        )
+        assert result["received"] == 1
+
+        await backup_service.cleanup_upload_session(session["upload_id"])
+
+    @pytest.mark.asyncio
+    async def test_upload_status_reports_progress(self, backup_service):
+        """Upload status reports progress."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": CHUNK_SIZE * 2}, owner="tester"
+        )
+        # Send only chunk 1 to verify out-of-order progress reporting.
+        await backup_service.upload_chunk(
+            upload_id=session["upload_id"],
+            chunk_index_str="1",
+            chunk_file=_StubUploadFile(b"x" * CHUNK_SIZE),
+            owner="tester",
+        )
+
+        status = backup_service.upload_status(
+            {"upload_id": session["upload_id"]}, owner="tester"
+        )
+        assert status["received_chunks"] == [1]
+        assert status["total_chunks"] == 2
+        assert status["chunk_size"] == CHUNK_SIZE
+        assert 0 < status["expires_in"] <= 3600
+
+        await backup_service.cleanup_upload_session(session["upload_id"])
+
+    def test_upload_status_bound_to_owner(self, backup_service):
+        """Upload status bound to owner."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            backup_service.upload_status(
+                {"upload_id": session["upload_id"]}, owner="mallory"
+            )
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            backup_service.upload_status({"upload_id": "no-such-id"}, owner="alice")
+
+    def test_upload_status_does_not_extend_lifetime(self, backup_service):
+        """Upload status does not extend lifetime."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        inner = backup_service.chunked_uploads.get_session(
+            session["upload_id"], owner="alice"
+        )
+        inner.last_activity -= 100  # Simulate 100 seconds without activity.
+
+        status = backup_service.upload_status(
+            {"upload_id": session["upload_id"]}, owner="alice"
+        )
+        assert status["expires_in"] <= 3600 - 100 + 1
+        assert (
+            backup_service.chunked_uploads.get_session(
+                session["upload_id"], owner="alice"
+            ).last_activity
+            == inner.last_activity
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_chunk_retry_preserves_received_chunk(self, backup_service):
+        """Failed chunk retry preserves received chunk."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        upload_id = session["upload_id"]
+        good = b"x" * 100
+        await backup_service.upload_chunk(
+            upload_id=upload_id,
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(good),
+            owner="alice",
+        )
+
+        # Retrying with an oversized chunk must preserve the received data.
+        with pytest.raises(BackupServiceError, match="size limit"):
+            await backup_service.upload_chunk(
+                upload_id=upload_id,
+                chunk_index_str="0",
+                chunk_file=_StubUploadFile(b"y" * (CHUNK_SIZE + 1)),
+                owner="alice",
+            )
+
+        result = await backup_service.upload_complete(
+            {"upload_id": upload_id}, owner="alice"
+        )
+        assert result["size"] == 100
+        merged = Path(backup_service.backup_dir) / result["filename"]
+        assert merged.read_bytes() == good
+
+    @pytest.mark.asyncio
+    async def test_chunk_publish_failure_cleans_temp(self, backup_service, monkeypatch):
+        """Chunk publish failure cleans temp."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": CHUNK_SIZE + 100}, owner="alice"
+        )
+        upload_id = session["upload_id"]
+        await backup_service.upload_chunk(
+            upload_id=upload_id,
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(b"x" * CHUNK_SIZE),
+            owner="alice",
+        )
+
+        def _boom(*args, **kwargs):
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(
+            "astrbot.dashboard.services.chunked_upload_service.os.replace", _boom
+        )
+        with pytest.raises(OSError, match="simulated rename failure"):
+            await backup_service.upload_chunk(
+                upload_id=upload_id,
+                chunk_index_str="1",
+                chunk_file=_StubUploadFile(b"y" * 100),
+                owner="alice",
+            )
+
+        chunk_dir = backup_service.chunked_uploads.chunks_root / upload_id
+        assert not list(chunk_dir.glob("*.tmp"))
+        # Publishing failed: chunk 0 remains intact and chunk 1 is not registered.
+        status = backup_service.upload_status({"upload_id": upload_id}, owner="alice")
+        assert status["received_chunks"] == [0]
+        assert (chunk_dir / "0.part").read_bytes() == b"x" * CHUNK_SIZE
+
+        await backup_service.cleanup_upload_session(upload_id)
+
+    @pytest.mark.asyncio
+    async def test_expired_session_is_rejected_and_abortable(self, backup_service):
+        """Expired session is rejected and abortable."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        upload_id = session["upload_id"]
+        inner = backup_service.chunked_uploads.get_session(upload_id, owner="alice")
+        inner.last_activity -= (
+            7200  # Simulate two hours of inactivity, beyond the one-hour expiry.
+        )
+
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            backup_service.upload_status({"upload_id": upload_id}, owner="alice")
+        with pytest.raises(BackupServiceError, match="not found or expired"):
+            await backup_service.upload_chunk(
+                upload_id=upload_id,
+                chunk_index_str="0",
+                chunk_file=_StubUploadFile(b"x" * 100),
+                owner="alice",
+            )
+
+        # Expired sessions can still be aborted for cleanup.
+        await backup_service.upload_abort({"upload_id": upload_id}, owner="alice")
+        assert upload_id not in backup_service.chunked_uploads.sessions
+
+    @pytest.mark.asyncio
+    async def test_upload_init_starts_cleanup_task(self, backup_service):
+        """Upload init starts cleanup task."""
+        backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        task = backup_service.chunked_uploads._cleanup_task
+        assert task is not None and not task.done()
+        task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_keeps_session_for_retry(
+        self, backup_service, monkeypatch
+    ):
+        """Cleanup failure keeps session for retry."""
+        import shutil
+
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        upload_id = session["upload_id"]
+
+        calls = {"n": 0}
+        real_rmtree = shutil.rmtree
+
+        def _flaky(path, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("transient fs error")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "astrbot.dashboard.services.chunked_upload_service.shutil.rmtree", _flaky
+        )
+        await backup_service.chunked_uploads.cleanup_session(upload_id)
+        assert upload_id in backup_service.chunked_uploads.sessions
+
+        await backup_service.chunked_uploads.cleanup_session(upload_id)
+        assert upload_id not in backup_service.chunked_uploads.sessions
+
+    @pytest.mark.asyncio
+    async def test_short_write_chunk_is_rejected(self, backup_service):
+        """Short write chunk is rejected."""
+        session = backup_service.upload_init(
+            {"filename": "b.zip", "total_size": 100}, owner="alice"
+        )
+        upload_id = session["upload_id"]
+
+        with pytest.raises(BackupServiceError, match="size mismatch"):
+            await backup_service.upload_chunk(
+                upload_id=upload_id,
+                chunk_index_str="0",
+                chunk_file=_StubUploadFile(b"x" * 50),
+                owner="alice",
+            )
+
+        # The rejected chunk leaves no temporary file; resend the complete data.
+        chunk_dir = backup_service.chunked_uploads.chunks_root / upload_id
+        assert not list(chunk_dir.glob("*.tmp"))
+        status = backup_service.upload_status({"upload_id": upload_id}, owner="alice")
+        assert status["received_chunks"] == []
+
+        await backup_service.upload_chunk(
+            upload_id=upload_id,
+            chunk_index_str="0",
+            chunk_file=_StubUploadFile(b"y" * 100),
+            owner="alice",
+        )
+        result = await backup_service.upload_complete(
+            {"upload_id": upload_id}, owner="alice"
+        )
+        assert result["size"] == 100

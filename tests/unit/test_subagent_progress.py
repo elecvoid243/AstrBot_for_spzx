@@ -209,7 +209,14 @@ class TestConsumeRouting:
         saved = []
 
         async def _save(
-            session_id, parts, agent_stats, refs, checkpoint_id, platform_id
+            session_id,
+            parts,
+            agent_stats,
+            refs,
+            checkpoint_id,
+            platform_id,
+            file_changes=None,
+            llm_request_injections=None,
         ):
             saved.append(parts)
             return SimpleNamespace(id=7, created_at=datetime.now(UTC))

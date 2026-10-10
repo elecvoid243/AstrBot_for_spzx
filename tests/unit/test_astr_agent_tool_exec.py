@@ -1046,6 +1046,34 @@ async def test_handoff_registers_runner_while_running_and_unregisters_after(
 
 
 @pytest.mark.asyncio
+async def test_handoff_cancel_finishes_progress_and_unregisters_runner(handoff_env):
+    """Cancelled local subagents emit a terminal progress event and release handles."""
+    started = asyncio.Event()
+    provider = _HangingProvider(on_call=started.set)
+    SubAgentManager._execution_timeout = -1
+    tool, run_context = _live_handoff_args(provider)
+    results = FunctionToolExecutor._execute_handoff(tool, run_context, input="do it")
+    pending = asyncio.create_task(anext(results))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert _first_live_handle() is not None
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, 1)
+        assert _first_live_handle() is None
+        kinds = [p["data"]["kind"] for p in handoff_env.payloads]
+        assert kinds[-1] == "failed"
+        assert "completed" not in kinds
+        assert handoff_env.payloads[-1]["data"]["payload"]["error"] == (
+            "Subagent execution cancelled."
+        )
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await results.aclose()
+
+
+@pytest.mark.asyncio
 async def test_handoff_relays_unconsumed_follow_up_to_main_agent(handoff_env):
     def _on_call():
         handle = _first_live_handle()

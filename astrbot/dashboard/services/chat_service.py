@@ -86,6 +86,26 @@ def sanitize_upload_filename(filename: str | None) -> str:
     return name
 
 
+def unique_attachment_filename(filename: str) -> str:
+    """Create a distinct stored name within the filesystem byte limit.
+
+    Args:
+        filename: Sanitized client-facing filename.
+
+    Returns:
+        Timestamp-prefixed name of at most 255 UTF-8 bytes.
+    """
+    # Pasted screenshots are all named "image.png", so prefix the stored name
+    # to keep uploads apart, and stay within the 255-byte filename limit.
+    prefix = f"{generate_timestamp_id()}_"
+    budget = 255 - len(prefix.encode())
+    stem, suffix = os.path.splitext(filename)
+    if len(suffix.encode()) >= budget:
+        stem, suffix = filename, ""
+    stem = stem.encode()[: budget - len(suffix.encode())].decode(errors="ignore")
+    return f"{prefix}{stem}{suffix}"
+
+
 class LocalUploadFile:
     """Adapt a merged local file to the upload contract save_uploaded_file() consumes.
 
@@ -1455,7 +1475,9 @@ class ChatService:
             attach_type = "file"
 
         attachments_dir = Path(self.attachments_dir).resolve(strict=False)
-        file_path = (attachments_dir / filename).resolve(strict=False)
+        file_path = (attachments_dir / unique_attachment_filename(filename)).resolve(
+            strict=False
+        )
         if not file_path.is_relative_to(attachments_dir):
             raise ChatServiceError("Invalid filename")
 
@@ -1475,13 +1497,13 @@ class ChatService:
                 detected_suffix = MEDIA_MIME_EXTENSIONS.get(detected_mime_type)
                 if detected_suffix and file_path.suffix.lower() != detected_suffix:
                     target_path = file_path.with_suffix(detected_suffix)
-                    if target_path.exists():
-                        target_path = (
-                            attachments_dir
-                            / f"{generate_timestamp_id()}{detected_suffix}"
+                    if target_path.exists() or len(target_path.name.encode()) > 255:
+                        target_path = attachments_dir / unique_attachment_filename(
+                            os.path.splitext(filename)[0] + detected_suffix
                         )
                     await asyncio.to_thread(file_path.rename, target_path)
                     file_path = target_path
+                    filename = os.path.splitext(filename)[0] + detected_suffix
         attachment = await self.db.insert_attachment(
             path=str(file_path),
             type=attach_type,
@@ -1493,7 +1515,8 @@ class ChatService:
 
         return {
             "attachment_id": attachment.attachment_id,
-            "filename": os.path.basename(attachment.path),
+            "filename": filename,
+            "stored_filename": os.path.basename(attachment.path),
             "type": attach_type,
         }
 

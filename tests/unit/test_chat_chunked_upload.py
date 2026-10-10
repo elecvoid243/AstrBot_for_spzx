@@ -56,6 +56,28 @@ def service(monkeypatch, tmp_path):
 
 
 class TestChatChunkedUpload:
+    @pytest.mark.asyncio
+    async def test_same_name_chunked_uploads_keep_distinct_files(self, service):
+        saved = []
+        for content in [b"first", b"other"]:
+            session = service.upload_init(
+                {"filename": "notes.txt", "total_size": len(content)}, owner="alice"
+            )
+            await service.upload_chunk(
+                upload_id=session["upload_id"],
+                chunk_index_str="0",
+                chunk_file=_StubChunk(content),
+                owner="alice",
+            )
+            result = await service.upload_complete(
+                {"upload_id": session["upload_id"]}, owner="alice"
+            )
+            assert result["filename"] == "notes.txt"
+            saved.append(Path(service.db.inserted["path"]))
+        assert saved[0] != saved[1]
+        assert saved[0].read_bytes() == b"first"
+        assert saved[1].read_bytes() == b"other"
+
     def test_upload_init_validates_input(self, service):
         session = service.upload_init(
             {"filename": "report.pdf", "total_size": CHUNK_SIZE * 2 + 100},

@@ -277,7 +277,12 @@
             :key="'img-' + index"
             class="attachment-card image-preview"
           >
-            <img :src="img" class="preview-image" alt="attachment preview" />
+            <img
+              :src="img"
+              class="preview-image"
+              alt="attachment preview"
+              @click="imagePreview = { visible: true, url: img }"
+            />
             <v-btn
               @click="$emit('removeImage', index)"
               class="remove-attachment-btn"
@@ -690,6 +695,20 @@
       :items="quickMessageItems"
       @save="handleQuickMessagesSave"
     />
+
+    <v-overlay
+      v-model="imagePreview.visible"
+      class="image-preview-overlay"
+      scrim="rgba(0, 0, 0, 0.86)"
+      @click="imagePreview = { visible: false, url: '' }"
+    >
+      <img
+        :src="imagePreview.url"
+        class="preview-image-large"
+        alt="preview"
+        @click.stop
+      />
+    </v-overlay>
   </div>
 </template>
 
@@ -1124,6 +1143,22 @@ async function onRequestClearAll(): Promise<void> {
     fileComments.clearAll();
   }
 }
+
+const imagePreview = ref({ visible: false, url: "" });
+
+// Attachment removal revokes its blob URL; do not leave a stale preview open.
+watch(
+  [() => props.sessionId, () => props.stagedImagesUrl],
+  ([sessionId, images], [previousSessionId]) => {
+    if (
+      imagePreview.value.visible &&
+      (sessionId !== previousSessionId || !images.includes(imagePreview.value.url))
+    ) {
+      imagePreview.value = { visible: false, url: "" };
+    }
+  },
+  { deep: true },
+);
 
 // 命令提示相关状态
 const allCommands = ref<CommandItem[]>([]);
@@ -2850,6 +2885,20 @@ defineExpose({
   height: 100%;
   object-fit: cover;
   border-radius: 8px;
+  cursor: zoom-in;
+}
+
+.image-preview-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-image-large {
+  max-width: min(92vw, 1200px);
+  max-height: 90vh;
+  object-fit: contain;
+  cursor: zoom-out;
 }
 
 .attachment-icon {

@@ -733,6 +733,10 @@
           ref="messagesContainer"
           class="messages-panel"
           @scroll="handleMessagesScroll"
+          @wheel.passive="handleMessagesScrollIntent"
+          @touchstart.passive="handleMessagesScrollIntent"
+          @pointerdown="handleMessagesScrollIntent"
+          @keydown="handleMessagesScrollIntent"
         >
           <!-- 可拖动的 todo summary 浮窗 + 可展开悬浮菜单:
                初始位置: 页面顶部正中;
@@ -862,7 +866,11 @@
             <div class="welcome-title">{{ tm("welcome.title") }}</div>
           </div>
 
-          <div v-else-if="activeMessages.length" class="messages-list-shell">
+          <div
+            v-else-if="activeMessages.length"
+            ref="messagesListShell"
+            class="messages-list-shell"
+          >
             <ChatMessageList
               v-model:edit-draft="messageEditDraft"
               :messages="activeMessages"
@@ -1529,6 +1537,7 @@ const tokenModelMetadata = ref<Record<string, ProviderModelMetadata>>({});
 const selectedTokenProviderId = ref("");
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
+const messagesListShell = ref<HTMLElement | null>(null);
 const composerShell = ref<HTMLElement | null>(null);
 const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 // Per-session viewport state (2026-09-15, elecvoid243): every conversation
@@ -1552,21 +1561,35 @@ const viewportAnchorBySession = new Map<string, number>();
 // can still be paging history when the user switches again, and it must not
 // release the gate the newer switch has taken over in the meantime.
 let pendingViewportSessionId = "";
-// Scroll causation. `handleMessagesScroll` derives the stick-to-bottom intent
-// from the panel's geometry, but geometry cannot tell a reader's scroll from our
-// own follow snap: while a reply streams in the snap runs a tick behind the
-// growing content, so between chunks the panel reads as "scrolled away" (80px is
-// a few lines, one chunk clears it) and the intent switched itself off. Nothing
-// followed the output after that, and switching back restored a position the
-// reader had already left.
-//
-// Caused by us is decided by comparing the offset the panel reports with the one
-// we last wrote: our snap leaves the offset where we put it (content growing
-// underneath does not move it), so its echo is recognisable and carries no
-// opinion. A drag or a wheel moves the offset somewhere else, which is the
-// reader speaking. Timing is deliberately not involved — a gesture marker can be
-// out-raced by the next snap and then the follow fights the drag.
+// Session generations also reject A -> B -> A responses from the first open.
+let viewportSessionToken = 0;
+let viewportInteractionToken = 0;
+let bottomScrollFrame = 0;
+// Gestures suspend follow before the browser dispatches their scroll events.
+// Offset comparisons only filter our own echoes; layout changes are not intent.
 let selfScrollTop = -1;
+let userScrollPending = false;
+let scrollPointerActive = false;
+let userScrollSettleTimer = 0;
+
+watch(
+  currSessionId,
+  () => {
+    viewportSessionToken += 1;
+    viewportInteractionToken += 1;
+    pendingViewportSessionId = "";
+    userScrollPending = false;
+    scrollPointerActive = false;
+    selfScrollTop = -1;
+    window.clearTimeout(userScrollSettleTimer);
+    cancelAnimationFrame(bottomScrollFrame);
+    bottomScrollFrame = 0;
+    endJumpLanding();
+    endJumpScrollLock();
+    jumpInProgress.value = false;
+  },
+  { flush: "sync" },
+);
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
@@ -2463,6 +2486,10 @@ watch(
 );
 
 onMounted(async () => {
+  window.addEventListener("pointerup", endMessagesScrollGesture);
+  window.addEventListener("pointercancel", endMessagesScrollGesture);
+  window.addEventListener("touchend", endMessagesScrollGesture);
+  window.addEventListener("touchcancel", endMessagesScrollGesture);
   if (typeof ResizeObserver !== "undefined") {
     composerResizeObserver = new ResizeObserver(([entry]) => {
       const container = messagesContainer.value;
@@ -2501,6 +2528,16 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  viewportSessionToken += 1;
+  viewportInteractionToken += 1;
+  cancelAnimationFrame(bottomScrollFrame);
+  window.clearTimeout(userScrollSettleTimer);
+  endJumpLanding();
+  endJumpScrollLock();
+  window.removeEventListener("pointerup", endMessagesScrollGesture);
+  window.removeEventListener("pointercancel", endMessagesScrollGesture);
+  window.removeEventListener("touchend", endMessagesScrollGesture);
+  window.removeEventListener("touchcancel", endMessagesScrollGesture);
   composerResizeObserver?.disconnect();
   chatHeader.CLEAR_CONTEXT();
   cleanupMediaCache();
@@ -2573,12 +2610,13 @@ watch(
   { deep: true },
 );
 
-// Scroll marker strip: keep markers updated when container size changes
+// Observe content as well as the panel: async code blocks and media can change
+// scrollHeight without resizing the scrolling viewport itself.
 let markerResizeObserver: ResizeObserver | null = null;
 
 watch(
-  messagesContainer,
-  (container, _oldContainer) => {
+  [messagesContainer, messagesListShell],
+  ([container, content]) => {
     if (markerResizeObserver) {
       markerResizeObserver.disconnect();
       markerResizeObserver = null;
@@ -2587,8 +2625,10 @@ watch(
       updateScrollMarkers();
       markerResizeObserver = new ResizeObserver(() => {
         updateScrollMarkers();
+        scrollToBottom();
       });
       markerResizeObserver.observe(container);
+      if (content) markerResizeObserver.observe(content);
     }
   },
   { immediate: true },
@@ -3814,8 +3854,18 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // The incoming session owns the viewport from here: a landing that is
   // still settling would otherwise keep gliding the outgoing row.
   endJumpLanding();
-  pendingViewportSessionId = sessionId;
+  endJumpScrollLock();
+  jumpInProgress.value = false;
+  viewportInteractionToken += 1;
+  userScrollPending = false;
+  scrollPointerActive = false;
+  window.clearTimeout(userScrollSettleTimer);
+  cancelAnimationFrame(bottomScrollFrame);
+  bottomScrollFrame = 0;
   currSessionId.value = sessionId;
+  const sessionToken = ++viewportSessionToken;
+  const interactionToken = viewportInteractionToken;
+  pendingViewportSessionId = sessionId;
   // Per-session drafts: swap in the target session's saved composer text
   // ("" when it has none) — unsent text never leaks across sessions.
   draft.value = chatDrafts.draftFor(sessionId);
@@ -3823,6 +3873,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
   if (pushRoute && route.path !== `${basePath()}/${sessionId}`) {
     await router.push(`${basePath()}/${sessionId}`);
   }
+  if (sessionToken !== viewportSessionToken) return;
   // 2026-08-27: always refresh, even for already-loaded sessions. The
   // loadedSessions skip left stale content when background turns (goal-loop,
   // primary runs from another device) advanced or finished
@@ -3830,6 +3881,12 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // bubble plus everything from the switch moment onward. The merge inside
   // loadSessionMessages reconciles live records with the persisted snapshot.
   await loadSessionMessages(sessionId, true, false);
+  if (
+    sessionToken !== viewportSessionToken ||
+    interactionToken !== viewportInteractionToken
+  ) {
+    return;
+  }
   // Timing-safe backstop for spcode auto-load: the currSessionId watcher can
   // fire before loadSessionMessages populates the session→project reverse-map,
   // so resolveProjectForAutoLoad would miss on that tick. Re-evaluate now that
@@ -3845,7 +3902,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // session — bottom when it was following the bottom, its recorded anchor
   // otherwise — and is not awaited: it may page history, and neither the
   // sidebar nor the focus work below depends on where the viewport lands.
-  void restoreSessionViewport(sessionId);
+  void restoreSessionViewport(sessionId, sessionToken);
   closeMobileSidebar();
   await focusChatInput();
 }
@@ -4298,6 +4355,7 @@ function runJumpLanding(
   if (!container) return;
   endJumpLanding();
   const token = jumpLandingToken;
+  const sessionToken = viewportSessionToken;
   const startTop = container.scrollTop;
   const startedAt = performance.now();
   const initialTarget = resolveTarget(container);
@@ -4328,7 +4386,15 @@ function runJumpLanding(
     container.addEventListener(type, jumpLandingOnGesture, { passive: true });
   }
   const step = () => {
-    if (token !== jumpLandingToken) return;
+    if (
+      token !== jumpLandingToken ||
+      sessionToken !== viewportSessionToken ||
+      messagesContainer.value !== container ||
+      !props.active
+    ) {
+      if (token === jumpLandingToken) endJumpLanding();
+      return;
+    }
     const target = resolveTarget(container);
     if (target == null) {
       endJumpLanding();
@@ -4373,6 +4439,7 @@ function runJumpLanding(
  *   already was, not a place the user asked to travel to.
  */
 function scrollRowToCenter(row: HTMLElement, animate = true) {
+  setStickToBottom(currSessionId.value, false);
   runJumpLanding(
     (container) =>
       // The row can leave the document while the glide runs — a session reload
@@ -4381,31 +4448,6 @@ function scrollRowToCenter(row: HTMLElement, animate = true) {
       // landing rather than fly somewhere arbitrary.
       row.isConnected ? centerScrollTopFor(container, row) : null,
     animate,
-  );
-}
-
-/**
- * Snap the panel to the newest message and hold it there while the rows settle.
- *
- * Not animated: this runs when a conversation is opened, where the leftover
- * offset of the outgoing one makes the travel distance meaningless and the only
- * goal is to land on the newest message.
- *
- * The hold is the point of it. A one-shot `scrollTop = scrollHeight` is
- * evaluated against a single layout, so rows that grow afterwards — media
- * decoding into elements that had no intrinsic height yet — push the newest
- * message back under the fold while the offset stays put, and none of the other
- * re-snap paths catch that: they fire on message changes and stream chunks, not
- * on a pure layout change.
- */
-function scrollToBottomAndHold() {
-  // The bottom as an actual scroll offset (the container may be shorter than
-  // its viewport, where the only valid offset is 0) so the target stays
-  // comparable frame to frame.
-  runJumpLanding(
-    (container) =>
-      Math.max(0, container.scrollHeight - container.clientHeight),
-    false,
   );
 }
 
@@ -4447,6 +4489,8 @@ async function jumpToIndex(
 ): Promise<boolean> {
   const sessionId = currSessionId.value;
   if (!sessionId || jumpInProgress.value) return false;
+  const sessionToken = viewportSessionToken;
+  const interactionToken = ++viewportInteractionToken;
   setStickToBottom(sessionId, false);
   const container = messagesContainer.value;
   if (container) beginJumpScrollLock(container);
@@ -4455,7 +4499,12 @@ async function jumpToIndex(
   try {
     let guard = 0;
     while (guard++ < 100) {
-      if (currSessionId.value !== sessionId) return false;
+      if (
+        sessionToken !== viewportSessionToken ||
+        interactionToken !== viewportInteractionToken
+      ) {
+        return false;
+      }
       const paging = historyPagingBySession[sessionId];
       const offset = historyOffsetBySession[sessionId] ?? 0;
       if (paging?.loadingOlder) {
@@ -4468,6 +4517,12 @@ async function jumpToIndex(
         // only guarantees the row exists, not that it is laid out —
         // scrollRowToCenter() is what absorbs the layout that follows.
         await nextTick();
+        if (
+          sessionToken !== viewportSessionToken ||
+          interactionToken !== viewportInteractionToken
+        ) {
+          return false;
+        }
         scrolled = scrollToMessageIndex(targetIndex, animate);
         return scrolled;
       }
@@ -4475,17 +4530,25 @@ async function jumpToIndex(
       // re-request it and bail out of the no-progress check below.
       if (!paging?.hasMore || paging?.error) return false;
       await loadOlderMessages(sessionId);
+      if (
+        sessionToken !== viewportSessionToken ||
+        interactionToken !== viewportInteractionToken
+      ) {
+        return false;
+      }
       // No progress (e.g. failed request) — stop instead of spinning.
       if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
     }
     scrolled = scrollToMessageIndex(targetIndex, animate);
     return scrolled;
   } finally {
-    jumpInProgress.value = false;
-    // On success the lock is owned by the settle listener; a failed
-    // attempt (row missing, history exhausted, session switched) must
-    // release it right away.
-    if (!scrolled) endJumpScrollLock();
+    if (interactionToken === viewportInteractionToken) {
+      jumpInProgress.value = false;
+      // On success the lock is owned by the settle listener; a failed
+      // attempt (row missing, history exhausted, session switched) must
+      // release it right away.
+      if (!scrolled) endJumpScrollLock();
+    }
   }
 }
 
@@ -4573,10 +4636,14 @@ function updateScrollMarkers() {
 }
 
 function onBranchToggle(collapsed: boolean) {
-  // Branch history expand/collapse only toggles v-show inside
-  // ChatMessageList, so neither the messages watcher nor the container
-  // ResizeObserver fires. Track the state for the marker filter and
-  // recompute markers after the layout settles.
+  // The reader is anchoring the divider; follow must not undo the child's
+  // position compensation when the content ResizeObserver fires.
+  setStickToBottom(currSessionId.value, false);
+  viewportInteractionToken += 1;
+  pendingViewportSessionId = "";
+  endJumpLanding();
+  endJumpScrollLock();
+  jumpInProgress.value = false;
   branchHistoryCollapsed.value = collapsed;
   nextTick(() => updateScrollMarkers());
 }
@@ -5166,6 +5233,79 @@ async function stopRecording() {
   }
 }
 
+/**
+ * Hand the viewport to the reader before native scrolling starts.
+ *
+ * Args:
+ *   event: Wheel, touch, scrollbar pointer, or scroll-key gesture on the panel.
+ */
+function handleMessagesScrollIntent(event: Event) {
+  const container = messagesContainer.value;
+  if (!container) return;
+  // Content clicks do not drag the native scrollbar. Touch starts are handled
+  // separately so a finger drag can pause follow before its first scroll event.
+  if (event.type === "pointerdown" && event.target !== container) return;
+  let scrollingDown = false;
+  if (event.type === "wheel") {
+    const wheel = event as WheelEvent;
+    if (wheel.deltaY === 0) return;
+    scrollingDown = wheel.deltaY > 0;
+  } else if (event.type === "keydown") {
+    const keyboard = event as KeyboardEvent;
+    if (
+      ![
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
+        " ",
+      ].includes(keyboard.key) ||
+      keyboard.defaultPrevented ||
+      (event.target instanceof HTMLElement &&
+        (event.target.closest("input, textarea, select, [contenteditable]") ||
+          (keyboard.key === " " && event.target.closest("button, a"))))
+    ) {
+      return;
+    }
+    scrollingDown =
+      ["ArrowDown", "PageDown", "End"].includes(keyboard.key) ||
+      (keyboard.key === " " && !keyboard.shiftKey);
+  }
+  viewportInteractionToken += 1;
+  pendingViewportSessionId = "";
+  endJumpLanding();
+  endJumpScrollLock();
+  jumpInProgress.value = false;
+  scrollPointerActive =
+    event.type === "pointerdown" || event.type === "touchstart";
+  userScrollPending = true;
+  const distance =
+    container.scrollHeight - container.scrollTop - container.clientHeight;
+  setStickToBottom(currSessionId.value, scrollingDown && distance <= 2);
+  window.clearTimeout(userScrollSettleTimer);
+  userScrollSettleTimer = window.setTimeout(() => {
+    if (!scrollPointerActive) userScrollPending = false;
+  }, JUMP_SCROLL_SETTLE_MS);
+}
+
+/** Release a scrollbar drag or touch gesture, including releases off-panel. */
+function endMessagesScrollGesture() {
+  if (!scrollPointerActive) return;
+  scrollPointerActive = false;
+  const container = messagesContainer.value;
+  if (container) {
+    const distance =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    setStickToBottom(currSessionId.value, distance <= 2);
+  }
+  window.clearTimeout(userScrollSettleTimer);
+  userScrollSettleTimer = window.setTimeout(() => {
+    userScrollPending = false;
+  }, JUMP_SCROLL_SETTLE_MS);
+}
+
 function handleMessagesScroll() {
   threadSelection.visible = false;
   const container = messagesContainer.value;
@@ -5178,12 +5318,14 @@ function handleMessagesScroll() {
   const sessionId = currSessionId.value;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
-  // The reading of that distance is only the reader's when their scroll is what
-  // moved the panel. Our snap leaves the offset where we put it, so its echo is
-  // recognisable and must not be able to switch the intent off (see the note at
-  // the declaration).
-  if (Math.abs(container.scrollTop - selfScrollTop) > 1) {
-    setStickToBottom(sessionId, distance < 80);
+  if (userScrollPending && Math.abs(container.scrollTop - selfScrollTop) > 1) {
+    // An upward gesture must not immediately re-arm follow inside the old 80px
+    // tolerance. Follow resumes when the reader actually reaches the bottom.
+    setStickToBottom(sessionId, distance <= 2);
+    window.clearTimeout(userScrollSettleTimer);
+    userScrollSettleTimer = window.setTimeout(() => {
+      if (!scrollPointerActive) userScrollPending = false;
+    }, JUMP_SCROLL_SETTLE_MS);
   }
   // Keep the conversation's anchor fresh so switching back restores it instead
   // of the neighbouring session's offset. The rect reads share the layout pass
@@ -5197,6 +5339,7 @@ function handleMessagesScroll() {
     : null;
   if (
     container.scrollTop < 80 &&
+    !shouldStickToBottom(sessionId) &&
     !suppressHistoryAutoLoad.value &&
     paging?.hasMore &&
     !paging.loadingOlder &&
@@ -5209,22 +5352,45 @@ function handleMessagesScroll() {
 }
 
 /**
- * Prepend an older history page, anchoring the scroll height so the
- * viewport does not jump after the prepend.
+ * Prepend older history while preserving the position of an existing row.
  *
- * @param retry Clear a previous failure and request the page again — used by
- *   the "load older" button. The automatic scroll path leaves a failed page
- *   paused instead.
+ * Args:
+ *   retry: Retry a failed page when the reader uses the load-older button.
  */
 async function loadOlderHistory(retry = false) {
-  if (!currSessionId.value) return;
+  const sessionId = currSessionId.value;
+  if (!sessionId || historyPagingBySession[sessionId]?.loadingOlder) return;
+  const sessionToken = viewportSessionToken;
   const container = messagesContainer.value;
-  const prevHeight = container ? container.scrollHeight : null;
-  await loadOlderMessages(currSessionId.value, { retry });
-  if (container && prevHeight !== null) {
-    await nextTick();
-    container.scrollTop += container.scrollHeight - prevHeight;
+  const panelTop = container?.getBoundingClientRect().top ?? 0;
+  const anchor = Array.from(
+    container?.querySelectorAll<HTMLElement>(".message-row") ?? [],
+  ).find((row) => {
+    const rect = row.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom > panelTop;
+  });
+  const anchorTop =
+    anchor && container
+      ? anchor.getBoundingClientRect().top + container.scrollTop
+      : null;
+  await loadOlderMessages(sessionId, { retry });
+  await nextTick();
+  if (
+    sessionToken !== viewportSessionToken ||
+    container !== messagesContainer.value ||
+    !props.active ||
+    !container ||
+    !anchor?.isConnected ||
+    anchorTop === null
+  ) {
+    return;
   }
+  // Measure the original row instead of total height: streamed output below it
+  // and the reader's scrolling during the request are not prepend displacement.
+  const delta =
+    anchor.getBoundingClientRect().top + container.scrollTop - anchorTop;
+  container.scrollTop += delta;
+  selfScrollTop = container.scrollTop;
 }
 
 /**
@@ -5253,19 +5419,36 @@ function setStickToBottom(sessionId: string, stick: boolean): void {
 }
 
 function scrollToBottom() {
-  nextTick(() => {
+  if (
+    bottomScrollFrame ||
+    !props.active ||
+    !shouldStickToBottom(currSessionId.value)
+  ) {
+    return;
+  }
+  const sessionId = currSessionId.value;
+  const sessionToken = viewportSessionToken;
+  // Vue flushes pending DOM updates before the frame. Stream callbacks, message
+  // watches and ResizeObserver notifications share this single follow write.
+  bottomScrollFrame = requestAnimationFrame(() => {
+    bottomScrollFrame = 0;
     const container = messagesContainer.value;
-    if (!container) return;
-    // Re-check: a snap scheduled before the flag flipped (e.g. by a marker
-    // jump taking over the viewport) must not fire and cancel the jump
-    // animation.
-    const sessionId = currSessionId.value;
-    if (!shouldStickToBottom(sessionId)) return;
-    container.scrollTop = container.scrollHeight;
+    if (
+      !container ||
+      !props.active ||
+      sessionToken !== viewportSessionToken ||
+      pendingViewportSessionId ||
+      jumpInProgress.value ||
+      jumpLandingContainer ||
+      !shouldStickToBottom(sessionId)
+    ) {
+      return;
+    }
+    const target = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (Math.abs(container.scrollTop - target) > 1) container.scrollTop = target;
     // Read back: the write is clamped to the scrollable range and the echo this
     // later compares against is the clamped value (see the declaration note).
     selfScrollTop = container.scrollTop;
-    setStickToBottom(sessionId, true);
   });
 }
 
@@ -5313,9 +5496,21 @@ function recordViewportAnchor(sessionId: string) {
  * than travelling somewhere the user asked for, so it should be over as soon
  * as the switch is.
  *
- * @param sessionId: Conversation just loaded into the messages panel.
+ * Args:
+ *   sessionId: Conversation just loaded into the messages panel.
+ *   sessionToken: Generation of the selection that requested this restore.
  */
-async function restoreSessionViewport(sessionId: string) {
+async function restoreSessionViewport(
+  sessionId: string,
+  sessionToken = viewportSessionToken,
+) {
+  if (
+    currSessionId.value !== sessionId ||
+    sessionToken !== viewportSessionToken
+  ) {
+    return;
+  }
+  const interactionToken = viewportInteractionToken;
   try {
     // A conversation that is producing output has no useful remembered
     // position: what the user came back for is the reply being written, and
@@ -5331,13 +5526,19 @@ async function restoreSessionViewport(sessionId: string) {
       // opening at the newest message is the only sane default, and it still
       // beats inheriting the leftover offset of the previous conversation.
       await nextTick();
-      if (currSessionId.value !== sessionId) return;
+      if (
+        sessionToken !== viewportSessionToken ||
+        interactionToken !== viewportInteractionToken
+      ) {
+        return;
+      }
       // Landing at the bottom means following it. Without re-arming the intent
       // a session whose follow was switched off earlier (a marker jump, a
       // scroll up before the switch) would open at the bottom and then let the
       // output grow straight back out of view.
       setStickToBottom(sessionId, true);
-      scrollToBottomAndHold();
+      endJumpLanding();
+      scrollToBottom();
       return;
     }
     await jumpToIndex(anchorIndex, false);
@@ -5345,7 +5546,12 @@ async function restoreSessionViewport(sessionId: string) {
     // Released last, so the jump above runs while the panel still holds
     // pre-restore geometry, and only if this restore still owns the gate: a
     // newer switch may have taken it over while this one was paging.
-    if (pendingViewportSessionId === sessionId) pendingViewportSessionId = "";
+    if (
+      sessionToken === viewportSessionToken &&
+      pendingViewportSessionId === sessionId
+    ) {
+      pendingViewportSessionId = "";
+    }
   }
 }
 
@@ -6575,6 +6781,8 @@ function toggleTheme() {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Position is owned by follow, history anchoring, or a message jump. */
+  overflow-anchor: none;
   padding: 24px 0 0;
 }
 

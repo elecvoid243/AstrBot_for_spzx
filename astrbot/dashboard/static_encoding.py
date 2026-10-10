@@ -1,14 +1,18 @@
-"""Gzip encoding for dashboard static files.
+"""Gzip encoding for dashboard responses and static files.
 
-Only JS, CSS, and HTML are compressed, and only when the client accepts gzip.
-Images, fonts, and event streams are not handled here. Cache-Control is left
-to the caller.
+Static file helpers compress JS, CSS, and HTML when the client accepts gzip.
+The response middleware also handles API payloads, preserving event streams,
+Range requests, and clients that explicitly decline gzip.
 """
 
 from __future__ import annotations
 
 import gzip
 from collections.abc import Mapping
+
+from starlette.datastructures import Headers
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import Receive, Scope, Send
 
 # text/javascript is what the stdlib reports for .js on current CPython.
 # application/javascript is kept for older mimetypes maps.
@@ -24,6 +28,26 @@ COMPRESSIBLE_MEDIA_TYPES = frozenset(
 
 # Gzip of a few hundred bytes is often larger than the original.
 MIN_GZIP_BYTES = 1024
+
+
+class DashboardGZipMiddleware(GZipMiddleware):
+    """Compress responses while preserving explicit encoding and Range requests."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Apply compression only when the request permits it.
+
+        Args:
+            scope: Current ASGI connection scope.
+            receive: ASGI request receiver.
+            send: ASGI response sender.
+        """
+        if scope["type"] == "http":
+            headers = Headers(scope=scope)
+            # Starlette checks for the substring "gzip", including gzip;q=0.
+            if headers.get("range") or not accepts_gzip(headers.get("accept-encoding")):
+                await self.app(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
 
 
 def accepts_gzip(header: str | None) -> bool:

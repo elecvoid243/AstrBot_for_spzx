@@ -56,6 +56,7 @@ from astrbot.dashboard.services.update_service import (
     call_get_dashboard_version,
     call_pip_install,
 )
+from astrbot.dashboard.static_encoding import DashboardGZipMiddleware
 
 from .agent_collab import legacy_router as legacy_agent_collab_router
 from .agent_teams import legacy_router as legacy_agent_teams_router
@@ -185,6 +186,9 @@ def create_dashboard_asgi_app(
         redoc_url=f"{API_V1_PREFIX}/redoc",
         lifespan=_lifespan,
     )
+    # Compress JS/CSS and other sizable responses; Starlette's GZipMiddleware
+    # skips text/event-stream, so SSE endpoints are unaffected.
+    app.add_middleware(DashboardGZipMiddleware, minimum_size=1024)
     app.state.core_lifecycle = core_lifecycle
     app.state.db = db
     app.state.jwt_secret = jwt_secret

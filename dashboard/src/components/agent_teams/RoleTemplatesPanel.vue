@@ -467,6 +467,7 @@ async function openVersion(version: number) {
 }
 
 function payload() {
+  // Preserve null (inherit), [] (disable), and logical slots (custom) in storage.
   const content: Record<string, any> = {
     ...definition.value,
     prompt: promptMode.value === 'persona' ? null : definition.value.prompt,
@@ -507,6 +508,7 @@ function payload() {
 }
 
 async function preview() {
+  // Ignore responses for an earlier edit so stale values cannot appear current.
   const revision = editorRevision;
   previewing.value = true;
   errorMessage.value = '';
@@ -549,6 +551,7 @@ function fieldErrors(path: string) {
 }
 
 function focusIssue(path: string) {
+  // Binding errors name logical slots; reveal the section that owns that slot.
   const field = path.split('.')[1];
   const group = path.startsWith('installation.bindings.')
     ? resourceFields.find(

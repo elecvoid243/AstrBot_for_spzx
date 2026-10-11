@@ -11,6 +11,7 @@ import pytest
 
 from astrbot.core import astr_main_agent, core_lifecycle
 from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
@@ -56,6 +57,8 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "auto_cancel",
         "dag_routed",
         "auto_routed",
+        "dag_role",
+        "auto_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -332,6 +335,35 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         astrbot_config_mgr=acm,
         kb_manager=context.kb_manager,
     )
+    resolved_role = None
+    if mode.endswith("_role"):
+        assets = RoleAssetService(db, lifecycle)
+        role = await assets.save_role(
+            "alice",
+            {
+                "definition": {
+                    "name": "Writer",
+                    "prompt": "Write with evidence.",
+                    "persona_slot": "research-persona",
+                    "skills": ["research-skill"],
+                    "tools": [],
+                    "knowledge_bases": ["evidence"],
+                },
+                "installation": {
+                    "profile_id": "research",
+                    "bindings": {
+                        "model": "research-model",
+                        "research-persona": "researcher",
+                        "research-skill": "alpha",
+                        "evidence": (await knowledge.get_kb_by_name("research-evidence"))
+                        .kb.kb_id,
+                    },
+                },
+            },
+        )
+        resolved_role = await assets.resolve_role("alice", role["role_id"], 1)
+        assert resolved_role["ready"] is True, resolved_role["issues"]
+        assert await db.get_platform_sessions_by_creator("alice") == []
     teams = AgentTeamService(db=db, core_lifecycle=lifecycle, chat_service=chat)
     team = await teams.create_team(
         "alice",
@@ -345,22 +377,41 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         },
     )
     for member in team["members"]:
+        payload = {
+            "runner_config": {
+                **({"config_id": "research"} if "_routed" not in mode else {}),
+                "skills": ["alpha"],
+                "kb_names": []
+                if member["name"] == "Lead"
+                else ["research-evidence"],
+                "tools": ["team_dispatch", "team_finish"]
+                if member["name"] == "Lead"
+                else [],
+            },
+        }
+        if resolved_role is not None and member["name"] == "Writer":
+            effective = resolved_role["effective"]
+            # Test-only translation exercises both existing public contracts;
+            # production role-to-run binding belongs to the later run task.
+            payload = {
+                "persona_id": effective["persona_id"],
+                "provider_id": effective["provider_id"],
+                "system_prompt": effective["prompt"],
+                "runner_config": {
+                    "config_id": resolved_role["installation"]["profile_id"],
+                    "skills": effective["skills"],
+                    "tools": effective["tools"],
+                    "kb_names": effective["knowledge_bases"],
+                    "max_steps": effective["max_steps"],
+                    "tool_call_timeout": effective["tool_call_timeout"],
+                    "context_length": effective["context_length"],
+                },
+            }
         team = await teams.update_member(
             "alice",
             team["team_id"],
             member["member_id"],
-            {
-                "runner_config": {
-                    **({"config_id": "research"} if "_routed" not in mode else {}),
-                    "skills": ["alpha"],
-                    "kb_names": []
-                    if member["name"] == "Lead"
-                    else ["research-evidence"],
-                    "tools": ["team_dispatch", "team_finish"]
-                    if member["name"] == "Lead"
-                    else [],
-                },
-            },
+            payload,
         )
         if mode.endswith("_routed"):
             await acm.ucr.update_route(member["umo"], "research")
@@ -401,7 +452,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "alice",
                 team["team_id"],
                 {
-                    "mode": mode.removesuffix("_cancel").removesuffix("_routed"),
+                    "mode": mode.removesuffix("_cancel")
+                    .removesuffix("_routed")
+                    .removesuffix("_role"),
                     "input": "Research.",
                     **(
                         {"workflow_id": workflow["workflow_id"]}

@@ -11,6 +11,8 @@ from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
 from astrbot.core.persona_mgr import PersonaManager
 from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.skills.skill_manager import SkillManager
+from astrbot.core.star import star
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
 
@@ -262,4 +264,136 @@ async def test_preview_inherits_the_live_profile_context_budget(tmp_path, monkey
         assert overridden["sources"]["context_length"] == "task"
     finally:
         await preferences.close()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_skill_readiness_uses_the_selected_runtime_and_plugin_scope(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path))
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    preferences = SharedPreferences(db, str(tmp_path / "preferences.json"))
+    config = AstrBotConfig(config_path=str(tmp_path / "config.json"))
+    config["provider_settings"]["computer_use_runtime"] = "local"
+    config["plugin_set"] = []
+    profiles = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
+    sandbox = AstrBotConfig(config_path=str(tmp_path / "sandbox.json"))
+    sandbox["provider_settings"]["computer_use_runtime"] = "sandbox"
+    sandbox["plugin_set"] = ["research-plugin"]
+    profiles.confs["sandbox"] = sandbox
+    personas = PersonaManager(db, profiles)
+    providers = ProviderManager(profiles, db, personas)
+    skills = SkillManager()
+    plugin_skill = (
+        tmp_path / "data" / "plugins" / "research_plugin" / "skills" / "evidence"
+    )
+    plugin_skill.mkdir(parents=True)
+    (plugin_skill / "SKILL.md").write_text("# Evidence\n", encoding="utf-8")
+    plugin = star.StarMetadata(
+        name="research-plugin", root_dir_name="research_plugin", activated=True
+    )
+    monkeypatch.setattr(star, "star_registry", [plugin])
+    skills.set_sandbox_skills_cache(
+        [{"name": "sandbox-evidence", "description": "Sandbox evidence"}]
+    )
+    service = RoleAssetService(
+        db,
+        SimpleNamespace(
+            astrbot_config_mgr=profiles,
+            provider_manager=providers,
+            persona_mgr=personas,
+            kb_manager=KnowledgeBaseManager(providers),
+        ),
+    )
+    payload = {
+        "definition": {"name": "Researcher", "prompt": "Check evidence."},
+        "installation": {"profile_id": "sandbox"},
+    }
+    try:
+        assert (await service.preview_role(payload))["effective"]["skills"] == [
+            "evidence",
+            "sandbox-evidence",
+        ]
+        payload["installation"]["profile_id"] = "default"
+        assert (await service.preview_role(payload))["effective"]["skills"] == []
+        payload["definition"]["skills"] = ["remote"]
+        payload["installation"]["bindings"] = {"remote": "sandbox-evidence"}
+        blocked = await service.preview_role(payload)
+        assert {
+            "path": "installation.bindings.remote",
+            "code": "FORBIDDEN",
+            "message": "Resource is unavailable: sandbox-evidence",
+        } in blocked["issues"]
+        payload["installation"]["profile_id"] = "sandbox"
+        assert not any(
+            issue["path"] == "installation.bindings.remote"
+            for issue in (await service.preview_role(payload))["issues"]
+        )
+        payload["definition"]["skills"] = None
+        plugin.activated = False
+        assert (await service.preview_role(payload))["effective"]["skills"] == [
+            "sandbox-evidence"
+        ]
+    finally:
+        await preferences.close()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_capabilities_cannot_expand_persona_allowlists(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+
+    async def load_inventory():
+        return {
+            "profiles": [{"id": "default"}],
+            "models": [{"id": "m"}],
+            "personas": [{"id": "restricted", "tools": ["a"], "skills": ["a"]}],
+            "tools": [
+                {"id": "a"},
+                {"id": "b"},
+                {"id": "builtin", "persona_restricted": False},
+            ],
+            "skills": [{"id": "a"}, {"id": "b"}],
+            "knowledge_bases": [],
+        }
+
+    service = RoleAssetService(db, catalog_loader=load_inventory)
+    try:
+        preview = await service.preview_role(
+            {
+                "definition": {
+                    "name": "Researcher",
+                    "prompt": "Check evidence.",
+                    "persona_slot": "persona",
+                    "tools": ["tool", "builtin-tool"],
+                    "skills": ["skill"],
+                },
+                "installation": {
+                    "bindings": {
+                        "model": "m",
+                        "persona": "restricted",
+                        "tool": "b",
+                        "builtin-tool": "builtin",
+                        "skill": "b",
+                    }
+                },
+            }
+        )
+        assert preview["ready"] is False
+        assert preview["effective"]["tools"] == ["builtin"]
+        assert preview["effective"]["skills"] == []
+        assert preview["issues"] == [
+            {
+                "path": "installation.bindings.tool",
+                "code": "FORBIDDEN",
+                "message": "Resource is excluded by persona: b",
+            },
+            {
+                "path": "installation.bindings.skill",
+                "code": "FORBIDDEN",
+                "message": "Resource is excluded by persona: b",
+            },
+        ]
+    finally:
         await db.engine.dispose()

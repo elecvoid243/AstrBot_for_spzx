@@ -189,6 +189,7 @@ class RoleAssetService:
                     "id": tool.name,
                     "name": tool.name,
                     "enabled": tool.active,
+                    "persona_restricted": not tool_mgr.is_builtin_tool(tool.name),
                     "enabled_profiles": [
                         status["conf_id"] for status in statuses if status["enabled"]
                     ]
@@ -197,11 +198,40 @@ class RoleAssetService:
                 }
             )
         from astrbot.core.skills.skill_manager import SkillManager
+        from astrbot.core.star.star import star_registry
 
-        for skill in SkillManager().list_skills():
-            catalog["skills"].append(
-                {"id": skill.name, "name": skill.name, "enabled": skill.active}
+        skill_manager = SkillManager()
+        skills_by_name: dict[str, dict] = {}
+        plugins = {plugin.root_dir_name: plugin for plugin in star_registry}
+        # Match the main pipeline's runtime and plugin availability per profile.
+        for profile_id, config in core.astrbot_config_mgr.confs.items():
+            runtime = config.get("provider_settings", {}).get(
+                "computer_use_runtime", "none"
             )
+            plugin_set = config.get("plugin_set", ["*"])
+            for skill in skill_manager.list_skills(runtime=runtime):
+                resource = skills_by_name.setdefault(
+                    skill.name,
+                    {
+                        "id": skill.name,
+                        "name": skill.name,
+                        "enabled": skill.active,
+                        "enabled_profiles": [],
+                    },
+                )
+                if skill.source_type == "plugin":
+                    plugin = plugins.get(skill.plugin_name)
+                    if not plugin or not plugin.activated:
+                        continue
+                    if (
+                        not plugin.reserved
+                        and isinstance(plugin_set, list)
+                        and "*" not in plugin_set
+                        and plugin.name not in {str(name) for name in plugin_set}
+                    ):
+                        continue
+                resource["enabled_profiles"].append(profile_id)
+        catalog["skills"] = [skills_by_name[name] for name in sorted(skills_by_name)]
         for kb in await core.kb_manager.list_kbs():
             catalog["knowledge_bases"].append({"id": kb.kb_id, "name": kb.kb_name})
         return catalog
@@ -418,6 +448,26 @@ class RoleAssetService:
                                 "message": f"Resource is unavailable: {resource_id or reference}",
                             }
                         )
+                    # Invocation allowlists narrow persona capabilities; they do
+                    # not restore skills or registered tools removed by a persona.
+                    if (
+                        len(matches) == 1
+                        and field in ("tools", "skills")
+                        and persona.get(field) is not None
+                        and resource_id not in persona[field]
+                        and (
+                            field == "skills"
+                            or matches[0].get("persona_restricted", True)
+                        )
+                    ):
+                        issues.append(
+                            {
+                                "path": path,
+                                "code": "FORBIDDEN",
+                                "message": f"Resource is excluded by persona: {resource_id}",
+                            }
+                        )
+                        continue
                     resolved.append(
                         matches[0]["id"] if len(matches) == 1 else resource_id
                     )

@@ -11,6 +11,8 @@ Open **More Features → Agent Teams → Role templates**, then choose **New rol
 
 Inline prompts are portable definition content and appear explicitly in the preview. A persona reference declares a dependency; its local prompt is not embedded in the definition. Complete asset package import and export are delivered by a subsequent ticket.
 
+Skill availability follows the selected profile's runtime and enabled plugins. Local overrides also respect the bound persona's tool and skill allowlists; an excluded binding receives a field diagnostic instead of being shown as ready. Built-in tools follow their own profile availability, as in the existing main Agent pipeline.
+
 ![Role configuration and missing-resource diagnostics in the actual WebUI](/images/agent-team-roles-en.jpg)
 
 ## Previous entries and the new entry

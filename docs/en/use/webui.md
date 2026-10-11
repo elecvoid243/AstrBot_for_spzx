@@ -63,6 +63,8 @@ AstrBot includes a built-in ChatUI for talking to configured models directly in 
 
 The model menu in the header remembers each conversation's selected provider and model and restores them when you return. Selecting a model, sending a message, or regenerating a reply saves the choice; conversations without a saved choice keep the current selection. These records stay in the current browser, do not sync across devices, and do not change thinking effort. Switching projects focuses the composer automatically; switching conversations still restores your reading position.
 
+The reasoning sidebar follows the latest activity when opened. Scrolling up or dragging its scrollbar pauses following; scrolling back down to the bottom resumes it. Opening the sidebar through search or a file-change entry prioritizes that location, and streaming updates do not pull it back to the bottom.
+
 ChatUI supports these common workflows:
 
 - Create, rename, and delete conversations, and switch previous conversations from the sidebar.

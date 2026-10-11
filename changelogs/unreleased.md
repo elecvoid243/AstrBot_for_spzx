@@ -1,5 +1,8 @@
 # Unreleased
 
+- Preserve the last Data & Logs tab when leaving the workspace, and restore playback and downloads for sent ChatUI audio and video attachments.
+- Prepare direct and quoted file attachments before acquiring the session lock, with stop and LLM-enable checks around queued work. Follow streamed reasoning activity while respecting manual scrolling and search/file positioning.
+
 - Remember the ChatUI model selection per conversation and focus the composer after switching projects. Share model state across the header, requests, and context usage display while preserving conversation reading positions and thinking effort settings.
 
 - Generate numbered original-path notices in the image preparation stage during main-agent construction, including quoted images. After request hooks, apply the same size and format policy only to newly introduced image references and refresh their notices. Skipped and captioned attachments retain explicit status without taking a visual index; animation labels identify frame montages.

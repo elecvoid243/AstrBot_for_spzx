@@ -234,7 +234,7 @@ describe("ChatMessageList sent media", () => {
     const get = vi.spyOn(axios, "get").mockResolvedValue({ data: new Blob(["audio"]) });
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:voice");
     const revokeUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       expect(this.download).toBe("voice.wav");
     });
     try {

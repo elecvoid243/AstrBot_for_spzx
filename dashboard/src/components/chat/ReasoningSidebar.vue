@@ -7,17 +7,24 @@
       :style="{ width: sidebarWidth + 'px' }"
     >
       <!-- Drag handle -->
-      <div
-        class="reasoning-sidebar-resizer"
-        @mousedown="startResize"
-      />
+      <div class="reasoning-sidebar-resizer" @mousedown="startResize" />
 
       <div class="reasoning-sidebar-header">
         <div class="reasoning-sidebar-title">{{ reasoningTitle }}</div>
         <v-btn icon="mdi-close" size="small" variant="text" @click="close" />
       </div>
 
-      <div class="reasoning-sidebar-body">
+      <div
+        ref="sidebarBody"
+        class="reasoning-sidebar-body"
+        tabindex="0"
+        @scroll="handleSidebarScroll"
+        @wheel.passive="handleSidebarInteraction"
+        @touchstart.passive="handleSidebarInteraction"
+        @touchmove.passive="handleSidebarInteraction"
+        @pointerdown="handleSidebarInteraction"
+        @keydown="handleSidebarInteraction"
+      >
         <ReasoningTimeline
           v-if="parts.length || reasoning"
           ref="timelineRef"
@@ -62,6 +69,13 @@ const props = defineProps<{
   focusQuery?: string | null;
 }>();
 
+const sidebarBody = ref<HTMLElement | null>(null);
+const shouldStickToBottom = ref(true);
+let lastSidebarScrollTop = 0;
+let touchScrollY = 0;
+let scrollIntent = 0;
+let sidebarScrollFrame = 0;
+
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
 }>();
@@ -80,6 +94,97 @@ function close() {
   emit("update:modelValue", false);
 }
 
+function scrollToLatestActivity() {
+  if (!props.modelValue || !shouldStickToBottom.value || sidebarScrollFrame)
+    return;
+  // Streaming updates share one frame so they cannot compete for the viewport.
+  sidebarScrollFrame = window.requestAnimationFrame(() => {
+    sidebarScrollFrame = 0;
+    const body = sidebarBody.value;
+    if (!props.modelValue || !body || !shouldStickToBottom.value) return;
+    body.scrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+    lastSidebarScrollTop = Math.max(0, body.scrollTop);
+  });
+}
+
+// Record user input separately from scroll events caused by rendering or focus.
+function handleSidebarInteraction(
+  event: WheelEvent | TouchEvent | PointerEvent | KeyboardEvent,
+) {
+  if (event instanceof WheelEvent) {
+    if (event.ctrlKey || event.deltaY === 0) return;
+    scrollIntent = Math.sign(event.deltaY);
+  } else if (event.type === "touchstart" || event.type === "touchmove") {
+    const touch = (event as TouchEvent).touches[0];
+    if (!touch) return;
+    if (event.type === "touchstart") {
+      touchScrollY = touch.clientY;
+      return;
+    }
+    scrollIntent = Math.sign(touchScrollY - touch.clientY);
+    touchScrollY = touch.clientY;
+  } else if (event instanceof KeyboardEvent) {
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, select, [contenteditable], button, a"))
+      return;
+    if (
+      ["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+      (event.key === " " && event.shiftKey)
+    ) {
+      scrollIntent = -1;
+    } else if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) {
+      scrollIntent = 1;
+    } else {
+      return;
+    }
+  } else {
+    if (event.target !== sidebarBody.value) return;
+    scrollIntent = 0;
+    shouldStickToBottom.value = false;
+  }
+  if (scrollIntent < 0) shouldStickToBottom.value = false;
+}
+
+function handleSidebarScroll() {
+  const body = sidebarBody.value;
+  if (!body) return;
+  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+  const scrollTop = Math.max(0, body.scrollTop);
+  // Collapsing timeline entries can clamp the viewport without user scrolling.
+  const previousTop = Math.min(lastSidebarScrollTop, maxScrollTop);
+  const isAwayFromBottom = maxScrollTop - scrollTop > 2;
+  if (scrollTop < previousTop) {
+    shouldStickToBottom.value = false;
+  } else if (
+    scrollTop > previousTop &&
+    !isAwayFromBottom &&
+    scrollIntent >= 0
+  ) {
+    shouldStickToBottom.value = true;
+  }
+  lastSidebarScrollTop = scrollTop;
+}
+
+watch(
+  () => props.modelValue,
+  (open) => {
+    window.cancelAnimationFrame(sidebarScrollFrame);
+    sidebarScrollFrame = 0;
+    if (!open) return;
+    // A search/file target owns the viewport until the user returns to bottom.
+    shouldStickToBottom.value = !props.focusCallId && !props.focusQuery;
+    scrollIntent = shouldStickToBottom.value ? 0 : -1;
+    lastSidebarScrollTop = 0;
+    scrollToLatestActivity();
+  },
+  { flush: "post", immediate: true },
+);
+
+watch(() => [props.reasoning, props.parts], scrollToLatestActivity, {
+  deep: true,
+  flush: "post",
+});
+
 // 2026-08-11 file-change visibility: after the sidebar opens with a
 // focus target, scroll the matching pinned card into view.
 const timelineRef = ref<{
@@ -91,9 +196,15 @@ watch(
   [() => props.modelValue, () => props.focusCallId],
   async ([open, callId]) => {
     if (!open || !callId) return;
+    shouldStickToBottom.value = false;
+    scrollIntent = -1;
+    window.cancelAnimationFrame(sidebarScrollFrame);
+    sidebarScrollFrame = 0;
     await nextTick();
+    if (!props.modelValue || props.focusCallId !== callId) return;
     await timelineRef.value?.scrollToFile(callId);
   },
+  { flush: "post", immediate: true },
 );
 
 // Message-search reveal: land on the thought that holds the keyword (the
@@ -102,9 +213,15 @@ watch(
   [() => props.modelValue, () => props.focusQuery],
   async ([open, query]) => {
     if (!open || !query) return;
+    shouldStickToBottom.value = false;
+    scrollIntent = -1;
+    window.cancelAnimationFrame(sidebarScrollFrame);
+    sidebarScrollFrame = 0;
     await nextTick();
+    if (!props.modelValue || props.focusQuery !== query) return;
     await timelineRef.value?.scrollToText(query);
   },
+  { flush: "post", immediate: true },
 );
 
 // ── Drag resize ────────────────────────────────────────────────────
@@ -148,6 +265,7 @@ function onMouseUp() {
 }
 
 onBeforeUnmount(() => {
+  window.cancelAnimationFrame(sidebarScrollFrame);
   onMouseUp();
 });
 </script>
@@ -241,6 +359,13 @@ onBeforeUnmount(() => {
   .reasoning-sidebar-body :deep(.chat-markdown.markstream-vue) {
     --ms-text-body: 0.875rem; /* 桌面端:0.9375rem 下调一档 */
   }
+}
+
+.reasoning-sidebar-body :deep(.reasoning-text) {
+  --ms-text-body: 0.8125rem;
+  --ms-leading-body: 1.55;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .reasoning-sidebar-empty {

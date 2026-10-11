@@ -168,7 +168,16 @@ class AstrBotConfigManager:
 
         execution = current_team_execution.get()
         if execution and execution.config_id and (not umo or umo == execution.umo):
-            return self.confs[execution.config_id]
+            config = self.confs[execution.config_id]
+            if execution.profile_snapshot is not None:
+                import copy
+
+                original = config
+                config = dict.__new__(AstrBotConfig)
+                config.__dict__.update(vars(original))
+                config.update(copy.deepcopy(dict(original)))
+                config.update(copy.deepcopy(execution.profile_snapshot))
+            return config
         if not umo:
             return self.confs["default"]
 

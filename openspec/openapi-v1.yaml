@@ -6312,6 +6312,225 @@ paths:
           type: integer
           minimum: 1
 
+  /api/v1/workflow_assets:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Assets
+      operationId: list_assets_api_v1_workflow_assets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Save Asset
+      operationId: save_asset_api_v1_workflow_assets_post
+      parameters:
+      - name: asset_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowSaveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Asset
+      operationId: get_asset_api_v1_workflow_assets__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Agent Teams workflows
+      summary: Save Asset
+      operationId: save_asset_api_v1_workflow_assets__asset_id__put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowSaveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/runs:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Start Run
+      operationId: start_run_api_v1_workflow_assets__asset_id__runs_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowStartRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Runs
+      operationId: list_runs_api_v1_workflow_runs_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Run
+      operationId: get_run_api_v1_workflow_runs__run_id__get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/result:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Result
+      operationId: get_result_api_v1_workflow_runs__run_id__result_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -8281,3 +8500,115 @@ components:
           title: Max Depth
       title: RoleOverrides
       type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    WorkflowDefinition:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+        role_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+        role_version:
+          type: integer
+          minimum: 1.0
+          title: Role Version
+        task:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Task
+        required_inputs:
+          items:
+            type: string
+          type: array
+          maxItems: 30
+          title: Required Inputs
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - role_id
+      - role_version
+      - task
+      title: WorkflowDefinition
+      description: 'The minimal executable workflow: one role, task and text input contract.'
+    WorkflowSaveRequest:
+      properties:
+        definition:
+          $ref: '#/components/schemas/WorkflowDefinition'
+        expected_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - definition
+      title: WorkflowSaveRequest
+      description: Create an asset or append an immutable version using optimistic locking.
+    WorkflowStartRequest:
+      properties:
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        inputs:
+          additionalProperties:
+            type: string
+          type: object
+          title: Inputs
+        source:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Source
+          default: dashboard
+      additionalProperties: false
+      type: object
+      required:
+      - version
+      title: WorkflowStartRequest
+      description: Start a pinned version with explicit inputs and source identity.

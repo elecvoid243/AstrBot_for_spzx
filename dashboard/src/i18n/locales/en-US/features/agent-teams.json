@@ -274,5 +274,42 @@
     "saveFailed": "Unable to save role",
     "provider_id": "Model binding",
     "persona_id": "Persona binding"
+  },
+  "v2": {
+    "assets": "Workflow Assets",
+    "runs": "Independent Runs",
+    "scope": "Single-task workflows use pinned role versions and explicit text submission. Invocation recovery is not available on this path yet.",
+    "create": "New Workflow",
+    "emptyAssets": "No workflow assets yet. Create a role template, then save a single-task workflow.",
+    "emptyRuns": "No independent runs yet.",
+    "role": "Role template",
+    "edit": "Edit Asset",
+    "start": "Start Run",
+    "details": "View Run",
+    "snapshot": "Run Snapshot (read only)",
+    "assetVersion": "Asset version",
+    "member": "Run member",
+    "attempt": "Attempt",
+    "result": "Submitted Result",
+    "noResult": "No completed text result has been submitted.",
+    "effective": "Frozen effective configuration",
+    "process": "Saved member process",
+    "name": "Workflow name",
+    "roleVersion": "Pinned role version",
+    "inputNames": "Required text inputs (comma separated)",
+    "inputHint": "Use unique names such as topic, audience.",
+    "task": "Task instructions",
+    "taskHint": "Use {topic} to insert a declared input. Double braces escape literal braces.",
+    "close": "Close",
+    "save": "Save New Version",
+    "required": "This input is required",
+    "states": {
+      "running": "Running",
+      "completed": "Completed",
+      "awaiting_result": "Awaiting explicit result",
+      "blocked": "Blocked by resource",
+      "failed": "Failed",
+      "interrupted": "Interrupted; not replayed"
+    }
   }
 }

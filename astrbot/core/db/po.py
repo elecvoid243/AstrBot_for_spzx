@@ -237,6 +237,31 @@ class AgentRoleInstallation(SQLModel, table=True):
     installation: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentWorkflowVersion(TimestampMixin, SQLModel, table=True):
+    """Immutable single-task workflow assets with pinned role references."""
+
+    __tablename__: str = "agent_workflow_versions"
+    asset_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    definition: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowRun(TimestampMixin, SQLModel, table=True):
+    """Independent v2 runs; one task and attempt are stored atomically."""
+
+    __tablename__: str = "agent_workflow_runs"
+    run_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    status: str = Field(default="running", index=True)
+    snapshot: dict = Field(sa_type=JSON)
+    state: dict = Field(default_factory=dict, sa_type=JSON)
+    pending_result: dict | None = Field(
+        default=None, sa_column=Column(JSON(none_as_null=True))
+    )
+    result: dict | None = Field(default=None, sa_column=Column(JSON(none_as_null=True)))
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

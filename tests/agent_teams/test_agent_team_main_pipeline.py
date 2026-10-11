@@ -8,9 +8,11 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
@@ -60,6 +62,9 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "auto_role",
         "dag_inherited_role",
         "auto_inherited_role",
+        "v2_role",
+        "v2_plain_role",
+        "v2_failing_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -92,6 +97,10 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     research["agent_runner"]["config"]["model"]["provider_id"] = "research-model"
     research["agent_runner"]["config"]["persona"]["persona_id"] = "researcher"
     research["test_profile"] = "research"
+    if mode == "v2_failing_role":
+        research["agent_runner"]["config"]["model"]["fallback_provider_ids"] = [
+            "default-model"
+        ]
     config["test_profile"] = "default"
     acm.confs["research"] = research
     acm.abconf_data["research"] = {"name": "Research", "path": "research.json"}
@@ -108,6 +117,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     ]
     model_started = asyncio.Event()
     model_cancelled = asyncio.Event()
+    model_requests = []
 
     class ScriptedProvider(Provider):
         """External model double observing actual prompts and requesting team tools."""
@@ -165,6 +175,12 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 asyncio.CancelledError: When the real pipeline cancels the model.
             """
             tools = kwargs.get("func_tool")
+            model_requests.append(self.provider_config["id"])
+            if (
+                mode == "v2_failing_role"
+                and self.provider_config["id"] == "research-model"
+            ):
+                raise RuntimeError("Bound model unavailable")
             names = tools.names() if tools else []
             prompt = "\n".join(
                 str(message.get("content", ""))
@@ -172,6 +188,40 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if message.get("role") == "system"
             )
             session = kwargs.get("session_id", "")
+            if mode in ("v2_role", "v2_crash_role") and "submit_task_result" in names:
+                self.turns[session] = self.turns.get(session, 0) + 1
+                if self.turns[session] <= 2:
+                    if self.turns[session] == 1:
+                        # Mutate live templates while this run is executing.
+                        # Its next model call must still use the frozen persona.
+                        personas.get_persona_v3_by_id("researcher")["prompt"] = (
+                            "Changed persona."
+                        )
+                        research["test_profile"] = "changed"
+                        args = {"text": " "}
+                    else:
+                        args = {
+                            "text": json.dumps(
+                                {
+                                    "persona": "Use verified research evidence."
+                                    in prompt,
+                                    "hook": "profile=research;sender=alice;role=member"
+                                    in prompt,
+                                    "skill": "Alpha research skill" in prompt,
+                                    "knowledge": "Verified research knowledge"
+                                    in str(kwargs),
+                                    "tools": names,
+                                    "correction_context": "Provide non-empty text"
+                                    in str(kwargs),
+                                }
+                            )
+                        }
+                    return LLMResponse(
+                        role="tool",
+                        tools_call_name=["submit_task_result"],
+                        tools_call_args=[args],
+                        tools_call_ids=[f"submit-{self.turns[session]}"],
+                    )
             if "team_dispatch" in names:
                 self.turns[session] = self.turns.get(session, 0) + 1
                 number = self.turns[session]
@@ -372,6 +422,110 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         resolved_role = await assets.resolve_role("alice", role["role_id"], 1)
         assert resolved_role["ready"] is True, resolved_role["issues"]
         assert await db.get_platform_sessions_by_creator("alice") == []
+    if mode.startswith("v2"):
+        if mode == "v2_crash_role":
+            # Hold cleanup after a completion-write fault, leaving the real
+            # pipeline's saved safe point and submission intent on disk.
+            async with db.get_db() as session:
+                await session.execute(
+                    text(
+                        "CREATE TRIGGER reject_completion BEFORE UPDATE OF status ON "
+                        "agent_workflow_runs WHEN NEW.status = 'completed' "
+                        "BEGIN SELECT RAISE(FAIL, 'completion write failed'); END"
+                    )
+                )
+                await session.commit()
+
+        def workflow_ports(username):
+            """Bind the real queues and optionally hold the process-loss boundary.
+
+            Args:
+                username: Actual run owner.
+
+            Returns:
+                Existing delivery and collection ports.
+            """
+            ports = build_ports_for_test(queue_manager, username, lambda event: None)
+            if mode == "v2_crash_role":
+                close = ports.close
+
+                async def hold_cleanup():
+                    """Expose the persisted safe point before abrupt termination.
+
+                    Returns:
+                        None; the process is terminated while awaiting cleanup.
+                    """
+                    await close()
+                    (tmp_path / "crash-ready.json").write_text(
+                        json.dumps({"run_id": run["run_id"], "db_path": db.db_path}),
+                        encoding="utf-8",
+                    )
+                    await asyncio.Future()
+
+                ports.close = hold_cleanup
+            return ports
+
+        service = WorkflowService(
+            db,
+            assets,
+            ports_factory=workflow_ports,
+        )
+        asset = await service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Independent report",
+                    "role_id": role["role_id"],
+                    "role_version": 1,
+                    "task": "Write evidence.",
+                }
+            },
+        )
+        dispatch_task = asyncio.create_task(event_bus.dispatch())
+        try:
+            run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+            for _ in range(1000):
+                current = await service.get_run("alice", run["run_id"])
+                if current["status"] != "running":
+                    break
+                await asyncio.sleep(0.01)
+            if mode == "v2_role":
+                assert current["status"] == "completed", current
+                assert json.loads(
+                    (await service.get_result("alice", run["run_id"]))["text"]
+                ) == {
+                    "persona": True,
+                    "hook": True,
+                    "skill": True,
+                    "knowledge": True,
+                    "tools": ["submit_task_result"],
+                    "correction_context": True,
+                }
+            else:
+                assert current["status"] == "awaiting_result", current
+                with pytest.raises(ValueError, match="no completed result"):
+                    await service.get_result("alice", run["run_id"])
+            assert (
+                current["state"]["response"]["attempt_id"] == run["state"]["attempt_id"]
+            )
+            if mode == "v2_failing_role":
+                assert model_requests == ["research-model"]
+            else:
+                assert any(
+                    part["type"] == "think"
+                    for part in current["state"]["response"]["parts"]
+                )
+            assert current["snapshot"]["engine"] == "single_task_v2"
+            assert current["snapshot"]["profile"]["test_profile"] == "research"
+        finally:
+            await service.shutdown()
+            dispatch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dispatch_task
+            await preferences.close()
+            await knowledge.terminate()
+            await db.engine.dispose()
+        return
     teams = AgentTeamService(db=db, core_lifecycle=lifecycle, chat_service=chat)
     team = await teams.create_team(
         "alice",

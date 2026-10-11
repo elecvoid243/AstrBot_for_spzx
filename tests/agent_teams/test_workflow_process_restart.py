@@ -1,0 +1,112 @@
+"""Accepted results survive abrupt process loss without replaying Agent work."""
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def test_saved_safe_submission_finishes_after_process_termination(tmp_path):
+    """Exercise the real pipeline, on-disk SQLite, termination and fresh services.
+
+    Args:
+        tmp_path: Data directory shared only by the two isolated processes.
+    """
+    first_script = """
+import asyncio
+import sys
+from pathlib import Path
+from pytest import MonkeyPatch
+from tests.agent_teams.test_agent_team_main_pipeline import (
+    test_main_pipeline_applies_role_capabilities_and_hooks,
+)
+asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
+    Path(sys.argv[1]), MonkeyPatch(), "v2_crash_role",
+))
+"""
+    root = Path(__file__).resolve().parents[2]
+    with (tmp_path / "first-process.log").open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [sys.executable, "-c", first_script, str(tmp_path)],
+            cwd=root,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            marker = tmp_path / "crash-ready.json"
+            deadline = time.monotonic() + 30
+            while not marker.exists():
+                assert process.poll() is None, (
+                    tmp_path / "first-process.log"
+                ).read_text(encoding="utf-8")
+                assert time.monotonic() < deadline, (
+                    "Pipeline did not save the safe point"
+                )
+                time.sleep(0.05)
+            identities = json.loads(marker.read_text(encoding="utf-8"))
+            # TerminateProcess on Windows and SIGTERM on POSIX: no async cleanup.
+            process.terminate()
+            process.wait(timeout=10)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+    second_script = """
+import asyncio
+import json
+import sys
+from pathlib import Path
+from sqlalchemy import text
+from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.sqlite import SQLiteDatabase
+
+async def main():
+    folder = Path(sys.argv[1])
+    identities = json.loads((folder / "crash-ready.json").read_text(encoding="utf-8"))
+    db = SQLiteDatabase(identities["db_path"])
+    def forbid_dispatch(username):
+        raise AssertionError("Recovery must not dispatch a model or tool")
+    service = WorkflowService(db, RoleAssetService(db), ports_factory=forbid_dispatch)
+    run_id = identities["run_id"]
+    before = await service.get_run("alice", run_id)
+    await service.boot_sweep()
+    interrupted = await service.get_run("alice", run_id)
+    async with db.get_db() as session:
+        await session.execute(text("DROP TRIGGER reject_completion"))
+        await session.commit()
+    finished = await service.finish_submission("alice", run_id)
+    repeated = await service.finish_submission("alice", run_id)
+    (folder / "restarted.json").write_text(json.dumps({
+        "before": before,
+        "interrupted": interrupted,
+        "finished": finished,
+        "repeated": repeated,
+        "result": await service.get_result("alice", run_id),
+    }), encoding="utf-8")
+    await db.engine.dispose()
+asyncio.run(main())
+"""
+    second = subprocess.run(
+        [sys.executable, "-c", second_script, str(tmp_path)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert second.returncode == 0, second.stdout + second.stderr
+    evidence = json.loads((tmp_path / "restarted.json").read_text(encoding="utf-8"))
+    before = evidence["before"]
+    assert before["status"] == "running"
+    assert before["state"]["safe_to_finish"] is True
+    assert before["pending_result"] is not None
+    assert before["result"] is None
+    assert evidence["interrupted"]["status"] == "interrupted"
+    assert evidence["finished"]["status"] == "completed"
+    assert evidence["finished"]["run_id"] == identities["run_id"]
+    assert evidence["finished"]["snapshot"] == before["snapshot"]
+    assert evidence["finished"]["state"] == before["state"]
+    assert evidence["repeated"] == evidence["finished"]
+    assert evidence["result"] == before["pending_result"]
+    assert json.loads(evidence["result"]["text"])["correction_context"] is True

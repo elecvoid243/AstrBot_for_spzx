@@ -1,0 +1,45 @@
+import { httpClient } from "./http";
+import type {
+  WorkflowSaveRequest,
+  WorkflowStartRequest,
+} from "./generated/openapi-v1";
+
+export const workflowAssetsApi = {
+  async list() {
+    return (await httpClient.get("/api/v1/workflow_assets")).data.data;
+  },
+  async get(assetId: string, version?: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}`,
+        { params: { version } },
+      )
+    ).data.data;
+  },
+  async save(assetId: string | null, payload: WorkflowSaveRequest) {
+    return (
+      assetId
+        ? await httpClient.put(
+            `/api/v1/workflow_assets/${encodeURIComponent(assetId)}`,
+            payload,
+          )
+        : await httpClient.post("/api/v1/workflow_assets", payload)
+    ).data.data;
+  },
+  async start(assetId: string, payload: WorkflowStartRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/runs`,
+        payload,
+      )
+    ).data.data;
+  },
+  async runs() {
+    return (await httpClient.get("/api/v1/workflow_runs")).data.data;
+  },
+  async run(runId: string) {
+    return (
+      await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
+    ).data.data;
+  },
+};

@@ -94,9 +94,10 @@ def build_ports_for_test(
         text: str,
         context: str | None = None,
         execution_token: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         cid = _conversation_id(session_id)
-        message_id = uuid.uuid4().hex
+        message_id = message_id or uuid.uuid4().hex
         llm_checkpoint_id = uuid.uuid4().hex
         queue = mgr.get_or_create_queue(cid)
         subscriptions.setdefault(cid, mgr.subscribe_system(cid))

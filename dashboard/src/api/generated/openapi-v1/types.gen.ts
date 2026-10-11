@@ -455,6 +455,10 @@ export type GhproxyTestRequest = {
     proxy_url: string;
 };
 
+export type HTTPValidationError = {
+    detail?: Array<ValidationError>;
+};
+
 export type ImMessageRequest = {
     umo: string;
     message: (string | Array<MessagePart>);
@@ -965,6 +969,28 @@ export type UpdateSourcesRequest = {
     dashboard_registry_url_template?: string;
 };
 
+export type ValidationError = {
+    loc: Array<(string | number)>;
+    msg: string;
+    type: string;
+    input?: unknown;
+    ctx?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * The minimal executable workflow: one role, task and text input contract.
+ */
+export type WorkflowDefinition = {
+    name: string;
+    role_id: string;
+    role_version: number;
+    task: string;
+    required_inputs?: Array<(string)>;
+    overrides?: RoleOverrides;
+};
+
 export type WorkflowEdge = {
     from: string;
     to: string;
@@ -980,6 +1006,25 @@ export type WorkflowNode = {
     member_id: string;
     task: string;
     title?: (string) | null;
+};
+
+/**
+ * Create an asset or append an immutable version using optimistic locking.
+ */
+export type WorkflowSaveRequest = {
+    definition: WorkflowDefinition;
+    expected_version?: (number | null);
+};
+
+/**
+ * Start a pinned version with explicit inputs and source identity.
+ */
+export type WorkflowStartRequest = {
+    version: number;
+    inputs?: {
+        [key: string]: (string);
+    };
+    source?: string;
 };
 
 export type LoginData = {
@@ -4684,3 +4729,83 @@ export type ResolveRoleAssetData = {
 export type ResolveRoleAssetResponse = (SuccessEnvelope);
 
 export type ResolveRoleAssetError = (unknown);
+
+export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
+
+export type ListAssetsApiV1WorkflowAssetsGetError = unknown;
+
+export type SaveAssetApiV1WorkflowAssetsPostData = {
+    body: WorkflowSaveRequest;
+    query?: {
+        asset_id?: (string | null);
+    };
+};
+
+export type SaveAssetApiV1WorkflowAssetsPostResponse = (unknown);
+
+export type SaveAssetApiV1WorkflowAssetsPostError = (HTTPValidationError);
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetResponse = (unknown);
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetError = (HTTPValidationError);
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
+    body: WorkflowSaveRequest;
+    path: {
+        asset_id: (string | null);
+    };
+};
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
+    body: WorkflowStartRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type ListRunsApiV1WorkflowRunsGetData = {
+    query?: {
+        limit?: number;
+    };
+};
+
+export type ListRunsApiV1WorkflowRunsGetResponse = (unknown);
+
+export type ListRunsApiV1WorkflowRunsGetError = (HTTPValidationError);
+
+export type GetRunApiV1WorkflowRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
+
+export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetResponse = (unknown);
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetError = (HTTPValidationError);

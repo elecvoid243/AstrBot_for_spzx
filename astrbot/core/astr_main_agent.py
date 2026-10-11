@@ -317,8 +317,26 @@ async def _select_provider(
 async def _get_session_conv(
     event: AstrMessageEvent, plugin_context: Context
 ) -> Conversation:
+    """Read the member's pinned context or the ordinary selected conversation.
+
+    Args:
+        event: Current invocation and its optional member context binding.
+        plugin_context: Existing conversation service.
+
+    Returns:
+        The conversation belonging to this invocation.
+
+    Raises:
+        RuntimeError: The pinned member context was deleted or cannot be created.
+    """
     conv_mgr = plugin_context.conversation_manager
     umo = event.unified_msg_origin
+    execution = event.get_extra("agent_team_execution")
+    if conversation_id := getattr(execution, "conversation_id", None):
+        conversation = await conv_mgr.get_conversation(umo, conversation_id)
+        if conversation is None:
+            raise RuntimeError("The bound member conversation is no longer available.")
+        return conversation
     cid = await conv_mgr.get_curr_conversation_id(umo)
     if not cid:
         cid = await conv_mgr.new_conversation(umo, event.get_platform_id())
@@ -629,7 +647,11 @@ async def _ensure_persona_and_skills(
     persona_id = None
     persona = None
     use_webchat_special_default = False
-    if node_persona_id:
+    frozen_persona = getattr(execution, "profile_snapshot", None) is not None
+    if frozen_persona:
+        persona = copy.deepcopy(execution.persona_snapshot)
+        persona_id = node_persona_id
+    elif node_persona_id:
         # Node-level persona override: resolve the persona directly instead of
         # going through the conversation/umo resolution.
         persona = plugin_context.persona_manager.get_persona_v3_by_id(node_persona_id)
@@ -640,7 +662,7 @@ async def _ensure_persona_and_skills(
                 "falling back to conversation persona resolution.",
                 node_persona_id,
             )
-    if persona is None:
+    if persona is None and not frozen_persona:
         (
             persona_id,
             persona,
@@ -2134,8 +2156,14 @@ async def build_main_agent(
             )
         )
 
-    fallback_providers = _get_fallback_chat_providers(
-        provider, plugin_context, config.fallback_provider_ids
+    execution = event.get_extra("agent_team_execution")
+    # A v2 workflow must retain its bound model even when that model fails.
+    fallback_providers = (
+        []
+        if getattr(execution, "profile_snapshot", None) is not None
+        else _get_fallback_chat_providers(
+            provider, plugin_context, config.fallback_provider_ids
+        )
     )
     selected_provider = _select_image_chat_provider(provider, req, fallback_providers)
     if selected_provider is not provider:

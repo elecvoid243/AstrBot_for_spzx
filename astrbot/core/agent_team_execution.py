@@ -66,6 +66,12 @@ class NodeExecutionBinding:
     """Message identity used to cancel this invocation."""
     source_umo: str | None = None
     """Original transport source before routing to the member's conversation."""
+    profile_snapshot: dict | None = None
+    """Frozen v2 pipeline settings; absent for legacy team invocations."""
+    persona_snapshot: dict | None = None
+    """Frozen persona content; current authorization is checked before dispatch."""
+    conversation_id: str | None = None
+    """V2 member context identity saved before the first model invocation."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -135,6 +141,10 @@ async def execute_team_turn(
         kb_names=execution.get("kb_names"),
         context_length=execution.get("context_length"),
         turn_id=turn_id,
+        message_id=execution.get("message_id"),
+        profile_snapshot=execution.get("profile_snapshot"),
+        persona_snapshot=execution.get("persona_snapshot"),
+        conversation_id=member.get("conversation_id"),
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (
@@ -142,8 +152,11 @@ async def execute_team_turn(
         or None
     )
     try:
+        delivery_options = {"execution_token": token}
+        if binding.message_id is not None:
+            delivery_options["message_id"] = binding.message_id
         binding.message_id = await ports.deliver(
-            member["session_id"], text, framing, execution_token=token
+            member["session_id"], text, framing, **delivery_options
         )
         if on_delivered is not None:
             await on_delivered(binding.message_id)

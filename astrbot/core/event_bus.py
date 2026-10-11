@@ -11,6 +11,7 @@ class:
 """
 
 import asyncio
+import copy
 from asyncio import Queue
 from contextvars import copy_context
 
@@ -95,6 +96,24 @@ class EventBus:
                     f"PipelineScheduler not found for id: {conf_id}, event ignored."
                 )
                 continue
+            if binding is not None and binding.profile_snapshot is not None:
+                from astrbot.core.pipeline.context import PipelineContext
+
+                # A v2 run owns its settings, while providers and plugin services
+                # remain live references subject to current authorization.
+                frozen_config = dict.__new__(type(scheduler.ctx.astrbot_config))
+                frozen_config.__dict__.update(vars(scheduler.ctx.astrbot_config))
+                frozen_config.update(copy.deepcopy(dict(scheduler.ctx.astrbot_config)))
+                frozen_config.update(copy.deepcopy(binding.profile_snapshot))
+                scheduler = PipelineScheduler(
+                    PipelineContext(
+                        astrbot_config=frozen_config,
+                        plugin_manager=scheduler.ctx.plugin_manager,
+                        astrbot_config_id=binding.config_id or conf_id,
+                        db_helper=scheduler.ctx.db_helper,
+                    )
+                )
+                await scheduler.initialize()
             from astrbot.core.agent_team_execution import current_team_execution
 
             execution_context = copy_context()

@@ -280,6 +280,14 @@ class AstrBotCoreLifecycle:
             self.astrbot_config_mgr,
         )
 
+        from astrbot.core.agent_teams.assets import RoleAssetService
+        from astrbot.core.agent_teams.workflows import WorkflowService
+
+        self.workflow_service = WorkflowService(
+            self.db, RoleAssetService(self.db, self)
+        )
+        await self.workflow_service.boot_sweep()
+
         # 记录启动时间
         self.start_time = int(time.time())
 
@@ -381,6 +389,8 @@ class AstrBotCoreLifecycle:
 
     async def stop(self) -> None:
         """停止 AstrBot 核心生命周期管理类, 取消所有当前任务并终止各个管理器."""
+        if hasattr(self, "workflow_service"):
+            await self.workflow_service.shutdown()
         if self.temp_dir_cleaner:
             await self.temp_dir_cleaner.stop()
 
@@ -426,6 +436,8 @@ class AstrBotCoreLifecycle:
 
     async def restart(self) -> None:
         """重启 AstrBot 核心生命周期管理类, 终止各个管理器并重新加载平台实例"""
+        if hasattr(self, "workflow_service"):
+            await self.workflow_service.shutdown()
         await shutdown_local_booter()
         await self.provider_manager.terminate()
         await self.platform_manager.terminate()

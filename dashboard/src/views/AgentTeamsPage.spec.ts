@@ -28,6 +28,7 @@ const runMocks = vi.hoisted(() => ({ openRun: vi.fn() }));
 const removeMemberApiMock = vi.hoisted(() => vi.fn());
 
 const toastMocks = vi.hoisted(() => ({ error: vi.fn() }));
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
 
 vi.mock('@/composables/useAgentTeams', async () => {
   const { computed, ref } = await vi.importActual<typeof import('vue')>('vue');
@@ -120,6 +121,7 @@ const TEAMS = [
 const TABS_KEY = Symbol('tabs-stub');
 
 const stubs = {
+  WorkflowWorkspacePanel: { template: '<div class="workflow-workspace-stub" />' },
   'v-container': { template: '<div class="container-stub"><slot /></div>' },
   'v-btn': {
     props: {
@@ -232,7 +234,7 @@ describe('AgentTeamsPage', () => {
   it('renders role templates alongside the existing team panels', () => {
     const wrapper = mountPage();
     const labels = wrapper.findAll('.tab-stub').map((tab) => tab.text());
-    expect(labels).toEqual(['角色模板', '工作流编排', '运行监控', '历史', '成员']);
+    expect(labels).toEqual(['工作流资产', '独立运行', '角色模板', '工作流编排', '运行监控', '历史', '成员']);
   });
 
   it('opens reusable role templates independently of a team selection', async () => {

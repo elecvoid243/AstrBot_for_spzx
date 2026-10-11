@@ -274,5 +274,42 @@
     "saveFailed": "无法保存角色",
     "provider_id": "模型绑定",
     "persona_id": "人格绑定"
+  },
+  "v2": {
+    "assets": "工作流资产",
+    "runs": "独立运行",
+    "scope": "单任务工作流固定角色版本，通过显式工具提交文本结果。本路径暂不支持调用级恢复。",
+    "create": "新建工作流",
+    "emptyAssets": "暂无工作流资产。先创建角色模板，再保存单任务工作流。",
+    "emptyRuns": "暂无独立运行。",
+    "role": "角色模板",
+    "edit": "编辑资产",
+    "start": "启动运行",
+    "details": "查看运行",
+    "snapshot": "运行快照（只读）",
+    "assetVersion": "资产版本",
+    "member": "运行成员",
+    "attempt": "执行尝试",
+    "result": "已提交结果",
+    "noResult": "尚无已完成的文本结果。",
+    "effective": "固定的有效配置",
+    "process": "已保存的成员过程",
+    "name": "工作流名称",
+    "roleVersion": "固定角色版本",
+    "inputNames": "必填文本输入（逗号分隔）",
+    "inputHint": "使用唯一名称，例如 topic、audience。",
+    "task": "任务指令",
+    "taskHint": "使用 {topic} 引用已声明的输入；字面大括号使用双大括号。",
+    "close": "关闭",
+    "save": "保存新版本",
+    "required": "该输入为必填项",
+    "states": {
+      "running": "执行中",
+      "completed": "已完成",
+      "awaiting_result": "等待显式结果",
+      "blocked": "资源阻塞",
+      "failed": "执行失败",
+      "interrupted": "已中断，未重跑"
+    }
   }
 }

@@ -33,6 +33,8 @@
 
         <div class="agent-teams-main">
           <v-tabs v-model="tab" color="primary" density="comfortable">
+            <v-tab value="assets">{{ tm('v2.assets') }}</v-tab>
+            <v-tab value="runs">{{ tm('v2.runs') }}</v-tab>
             <v-tab value="roles">{{ tm('roles.title') }}</v-tab>
             <v-tab value="editor">{{ tm('tabs.editor') }}</v-tab>
             <v-tab value="monitor">{{ tm('tabs.monitor') }}</v-tab>
@@ -41,6 +43,12 @@
           </v-tabs>
 
           <v-window v-model="tab" class="mt-4">
+            <v-window-item value="assets">
+              <WorkflowWorkspacePanel v-if="tab === 'assets'" mode="assets" @started="tab = 'runs'" />
+            </v-window-item>
+            <v-window-item value="runs">
+              <WorkflowWorkspacePanel v-if="tab === 'runs'" mode="runs" />
+            </v-window-item>
             <v-window-item value="roles">
               <RoleTemplatesPanel v-if="tab === 'roles'" />
             </v-window-item>
@@ -93,6 +101,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
 import MemberAddDialog from '@/components/agent_teams/MemberAddDialog.vue';
@@ -102,6 +111,7 @@ import RunsHistory from '@/components/agent_teams/RunsHistory.vue';
 import TeamCreateDialog from '@/components/agent_teams/TeamCreateDialog.vue';
 import WorkflowEditor from '@/components/agent_teams/WorkflowEditor.vue';
 import RoleTemplatesPanel from '@/components/agent_teams/RoleTemplatesPanel.vue';
+import WorkflowWorkspacePanel from '@/components/agent_teams/WorkflowWorkspacePanel.vue';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
@@ -122,7 +132,8 @@ const {
 const { openRun } = useAgentTeamsRun();
 const confirmDialog = useConfirmDialog();
 
-const tab = ref('editor');
+const route = useRoute();
+const tab = ref(route.query.workflow_run ? 'runs' : 'editor');
 // Workflow preselected for the monitor by the editor's 保存并运行 handoff.
 const presetWorkflowId = ref('');
 const showCreateDialog = ref(false);

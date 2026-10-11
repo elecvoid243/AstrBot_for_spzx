@@ -533,11 +533,16 @@ class Image(BaseMessageComponent):
         return Image.fromBytes(IO.read())
 
     async def convert_to_file_path(self) -> str:
-        """将这个图片统一转换为本地文件路径。这个方法避免了手动判断图片数据类型，直接返回图片数据的本地路径（如果是网络 URL, 则会自动进行下载）。
+        """Resolve the image to a local file, downloading remote sources as needed.
 
         Returns:
-            str: 图片的本地路径，以绝对路径表示。
+            The absolute path of the resolved image file.
 
+        Raises:
+            FileNotFoundError: The reference is neither an existing local file,
+                a downloadable URL, nor valid base64 data.
+            ValueError: The reference points to a non-regular file, such as a
+                directory, or both the URL and file reference are empty.
         """
         url = self.url or self.file
         if not url:

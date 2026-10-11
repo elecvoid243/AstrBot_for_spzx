@@ -38,7 +38,7 @@
                         class="config-menu-item"
                         @click="handleChipSelect(config.id)"
                     >
-                        <v-list-item-title class="config-item-title">{{ config.name }}</v-list-item-title>
+                        <v-list-item-title class="config-item-title">{{ configDisplayName(config) }}</v-list-item-title>
                         <v-list-item-subtitle v-if="config.name !== config.id" class="config-item-subtitle">
                             {{ config.id }}
                         </v-list-item-subtitle>
@@ -101,7 +101,7 @@
                             variant="text"
                             @click="tempSelectedConfig = config.id"
                         >
-                            <v-list-item-title>{{ config.name }}</v-list-item-title>
+                            <v-list-item-title>{{ configDisplayName(config) }}</v-list-item-title>
                             <v-list-item-subtitle class="text-caption text-grey">
                                 {{ config.id }}
                             </v-list-item-subtitle>
@@ -133,9 +133,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useModuleI18n } from '@/i18n/composables';
-import { useChatConfigSelection } from '@/composables/useChatConfigSelection';
+import { useChatConfigSelection, type ConfigInfo } from '@/composables/useChatConfigSelection';
 
 withDefaults(defineProps<{
     variant?: 'menu' | 'chip';
@@ -144,15 +144,36 @@ withDefaults(defineProps<{
 });
 
 const { tm } = useModuleI18n('features/chat');
+const { tm: tmConfig } = useModuleI18n('features/config');
 
 const {
     configOptions,
     loadingConfigs,
     selectedConfigId,
-    selectedConfigLabel,
     saving,
     selectConfig
 } = useChatConfigSelection();
+
+/**
+ * Render a profile consistently in the chip, menu, and selection dialog.
+ *
+ * Args:
+ *   config: Profile whose display name is needed.
+ *
+ * Returns:
+ *   Localized default name, or the custom name with its ID as fallback.
+ */
+function configDisplayName(config: ConfigInfo): string {
+    return config.id === 'default'
+        ? tmConfig('configSelection.defaultConfig')
+        : config.name || config.id;
+}
+
+const selectedConfigLabel = computed(() => {
+    const id = selectedConfigId.value || 'default';
+    const target = configOptions.value.find((item) => item.id === id);
+    return configDisplayName(target ?? { id, name: id });
+});
 
 const dialog = ref(false);
 const tempSelectedConfig = ref('');

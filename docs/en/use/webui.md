@@ -71,6 +71,8 @@ ChatUI supports these common workflows:
 - Edit a user message and continue generation from that point, or start a thread from a specific excerpt.
 - Switch between streaming/normal response modes and SSE/WebSocket transport modes.
 
+The config chip in the composer, the `+ → Configuration` menu, and the selection dialog display the built-in `default` profile as `Default Config` (`默认配置` in Chinese). Its ID remains `default`, and custom profiles keep their names.
+
 Chat attachments can be up to 512 MiB. Files of 32 MiB or more upload in chunks: the attachment card shows the percentage and a cancel button. If an upload fails, use its retry button to upload the missing chunks, or remove the failed card to discard it. Keep the page open while retrying; refreshing the page or restarting AstrBot loses the resumable session, and a session expires after one hour without upload activity. Existing image previews remain available.
 
 Each upload is saved under a distinct filename, while chat continues to display the original name. Uploading different screenshots both named `image.png` keeps both files, and deleting one attachment leaves the other intact. Existing attachments do not need to be renamed.

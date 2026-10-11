@@ -645,6 +645,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             "contexts": contexts,
             "func_tool": func_tool,
             "session_id": self.req.session_id,
+            "conversation_id": (
+                self.req.conversation.cid if self.req.conversation else None
+            ),
             "extra_user_content_parts": self.req.extra_user_content_parts,  # list[ContentPart]
             "abort_signal": self._abort_signal,
             "request_max_retries": self.request_max_retries,

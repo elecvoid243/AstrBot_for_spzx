@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -32,7 +33,6 @@ async def test_gemini_thinking_level_is_serialized_on_every_request():
     assert second_config.thinking_config.model_dump(exclude_none=True) == {
         "thinking_level": types.ThinkingLevel.HIGH,
     }
-
 
 
 @pytest.mark.asyncio
@@ -333,6 +333,43 @@ async def test_gemini_stream_keeps_narration_emitted_before_tool_call(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_gemini_stream_keeps_conversation_header_until_consumed(
+    monkeypatch,
+):
+    """The conversation header must be present while the stream is consumed."""
+    provider = _gemini_stream_provider()
+    headers: dict[str, str] = {}
+    provider.client._api_client = SimpleNamespace(
+        _http_options=SimpleNamespace(headers=headers),
+    )
+    observed_headers: list[str | None] = []
+
+    async def fake_stream():
+        observed_headers.append(headers.get("x-astrbot-conversation-id"))
+        yield _gemini_stream_chunk(text="ok")
+
+    async def fake_retry(provider_name, request_factory, max_attempts=None):
+        return fake_stream()
+
+    monkeypatch.setattr(gemini_source, "retry_provider_request", fake_retry)
+    responses = [
+        response
+        async for response in provider._query_stream(
+            payloads={
+                "messages": [{"role": "user", "content": "hello"}],
+                "model": "gemini-3.7-flash",
+            },
+            tools=None,
+            conversation_id="conversation-1",
+        )
+    ]
+
+    assert responses[-1].completion_text == "ok"
+    assert observed_headers == ["conversation-1"]
+    assert "x-astrbot-conversation-id" not in headers
+
+
+@pytest.mark.asyncio
 async def test_gemini_stream_keeps_reasoning_from_tool_call_chunk(monkeypatch):
     """Reasoning on the tool-call chunk itself must not be overwritten."""
     provider = _gemini_stream_provider()
@@ -354,3 +391,69 @@ async def test_gemini_stream_keeps_reasoning_from_tool_call_chunk(monkeypatch):
 
     final = responses[-1]
     assert final.reasoning_content == "weighing optionsdeciding to call"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_id", [None, "conversation-2"])
+async def test_gemini_conversation_headers_are_isolated_between_requests(second_id):
+    """Concurrent requests must not inherit another conversation's header.
+
+    Args:
+        second_id: The ID of the concurrent request, including no ID.
+    """
+    provider = _gemini_stream_provider()
+    header_name = "x-astrbot-conversation-id"
+    headers = {"User-Agent": "custom-agent"}
+    provider.client._api_client = SimpleNamespace(
+        _http_options=SimpleNamespace(headers=headers)
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    observed = []
+
+    async def first_request():
+        async with provider._conversation_header("conversation-1"):
+            entered.set()
+            await release.wait()
+            observed.append(headers.get(header_name))
+
+    async def second_request():
+        async with provider._conversation_header(second_id):
+            observed.append(headers.get(header_name))
+
+    first = asyncio.create_task(first_request())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = asyncio.create_task(second_request())
+    try:
+        await asyncio.sleep(0)
+        assert not second.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+    assert observed == ["conversation-1", second_id]
+    assert headers == {"User-Agent": "custom-agent"}
+
+
+@pytest.mark.asyncio
+async def test_gemini_cancelled_request_restores_configured_headers():
+    """Cancellation must restore the original header and release the request lock."""
+    provider = _gemini_stream_provider()
+    header_name = "x-astrbot-conversation-id"
+    headers = {header_name: "configured-id", "User-Agent": "custom-agent"}
+    provider.client._api_client = SimpleNamespace(
+        _http_options=SimpleNamespace(headers=headers)
+    )
+    entered = asyncio.Event()
+
+    async def request():
+        async with provider._conversation_header("temporary-id"):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(request())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert headers == {header_name: "configured-id", "User-Agent": "custom-agent"}
+    assert not provider._request_lock.locked()

@@ -39,9 +39,12 @@
         >
         <v-card-text class="text-wrap">
           <p>
-            {{ tm("v2.role") }}: {{ roleName(asset.definition.role_id) }} · v{{
-              asset.definition.role_version
+            {{ tm("v2.role") }}:
+            {{
+              roles.find((role) => role.role_id === asset.definition.role_id)
+                ?.definition.name ?? asset.definition.role_id
             }}
+            · v{{ asset.definition.role_version }}
           </p>
           <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
@@ -266,10 +269,6 @@ const roleVersions = computed(
 );
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
-
-function roleName(id: string) {
-  return roles.value.find((role) => role.role_id === id)?.definition.name ?? id;
-}
 
 async function refresh() {
   if (loading.value) return;

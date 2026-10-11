@@ -289,6 +289,87 @@ class RoleAssetService:
         role = await self.get_role(username, role_id, version)
         return {**role, **await self.preview_role(role, overrides)}
 
+    async def validate_frozen_role(self, role: dict) -> None:
+        """Check current access and compatibility without changing saved values.
+
+        Args:
+            role: Pinned role definition, installation and effective configuration.
+
+        Raises:
+            RoleAssetError: A frozen binding is unavailable or incompatible.
+        """
+        catalog = await self.get_resources()
+        profile_id = role["installation"]["profile_id"]
+        effective = role["effective"]
+        profiles = [p for p in catalog["profiles"] if p["id"] == profile_id]
+        profile = profiles[0] if len(profiles) == 1 else {}
+        issues = []
+        if not profile:
+            issues.append(
+                {
+                    "path": "installation.profile_id",
+                    "code": "MISSING",
+                    "message": "Bound profile is missing or ambiguous",
+                }
+            )
+        persona = next(
+            (p for p in catalog["personas"] if p["id"] == effective.get("persona_id")),
+            {},
+        )
+        for field, kind in (
+            ("provider_id", "models"),
+            ("persona_id", "personas"),
+            ("tools", "tools"),
+            ("skills", "skills"),
+            ("knowledge_bases", "knowledge_bases"),
+        ):
+            value = effective.get(field)
+            ids = value if isinstance(value, list) else [value] if value else []
+            for resource_id in ids:
+                resources = [r for r in catalog[kind] if r["id"] == resource_id]
+                pool = profile.get(
+                    "provider_pool" if kind == "models" else "persona_pool", ["*"]
+                )
+                if (
+                    len(resources) != 1
+                    or not resources[0].get("enabled", True)
+                    or profile_id
+                    not in resources[0].get("enabled_profiles", [profile_id])
+                    or (
+                        kind in ("models", "personas")
+                        and "*" not in pool
+                        and resource_id not in pool
+                    )
+                    or (
+                        kind in ("tools", "skills")
+                        and persona.get(kind) is not None
+                        and resource_id not in persona[kind]
+                        and (
+                            kind == "skills"
+                            or resources[0].get("persona_restricted", True)
+                        )
+                    )
+                ):
+                    issues.append(
+                        {
+                            "path": f"effective.{field}",
+                            "code": "UNAVAILABLE",
+                            "message": f"Bound resource is unavailable: {resource_id}",
+                        }
+                    )
+                elif kind == "models" and not set(
+                    role["definition"]["model_capabilities"]
+                ).issubset(resources[0].get("capabilities", [])):
+                    issues.append(
+                        {
+                            "path": "effective.provider_id",
+                            "code": "INCOMPATIBLE",
+                            "message": "Bound model no longer declares the required capabilities",
+                        }
+                    )
+        if issues:
+            raise RoleAssetError("Frozen resources are no longer available", issues)
+
     async def preview_role(self, payload: dict, overrides: dict | None = None) -> dict:
         """Resolve unsaved configuration without creating an asset or session.
 

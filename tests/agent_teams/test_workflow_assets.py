@@ -1,6 +1,7 @@
 """Single-task assets and runs through the shared public service boundary."""
 
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -383,6 +384,49 @@ async def test_removed_or_disallowed_bindings_cannot_fall_back_to_another_model(
     assert (await env.service.get_run("alice", run["run_id"]))["snapshot"]["effective"][
         "provider_id"
     ] == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_model_losing_required_capability_before_dispatch_is_blocked(
+    workflow_env,
+):
+    env = workflow_env
+    env.inventory["models"][0]["capabilities"] = ["image"]
+    definition = dict(env.role["definition"], model_capabilities=["image"])
+    await env.roles.save_role(
+        "alice",
+        {
+            "definition": definition,
+            "installation": env.role["installation"],
+            "expected_version": 1,
+        },
+        env.role["role_id"],
+    )
+    await env.service.save_asset(
+        "alice",
+        {
+            "definition": dict(env.asset["definition"], role_version=2),
+            "expected_version": 1,
+        },
+        env.asset["asset_id"],
+    )
+    lookups = 0
+
+    async def inventory():
+        nonlocal lookups
+        lookups += 1
+        catalog = copy.deepcopy(env.inventory)
+        if lookups >= 3:
+            catalog["models"][0]["capabilities"] = []
+        return catalog
+
+    env.roles.catalog_loader = inventory
+    run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 2})
+    blocked = await completed_run(env.service, run["run_id"])
+    assert blocked["status"] == "blocked"
+    assert blocked["state"]["issues"][0]["code"] == "INCOMPATIBLE"
+    assert blocked["snapshot"]["role"]["definition"]["model_capabilities"] == ["image"]
+    assert env.observations == []
 
 
 @pytest.mark.asyncio

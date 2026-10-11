@@ -6,12 +6,18 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 
-def test_saved_safe_submission_finishes_after_process_termination(tmp_path):
+
+@pytest.mark.parametrize("safe", [True, False])
+def test_saved_submission_rebuilds_without_dispatch_after_process_termination(
+    tmp_path, safe
+):
     """Exercise the real pipeline, on-disk SQLite, termination and fresh services.
 
     Args:
         tmp_path: Data directory shared only by the two isolated processes.
+        safe: Whether the real pipeline reached its saved completion boundary.
     """
     first_script = """
 import asyncio
@@ -22,13 +28,19 @@ from tests.agent_teams.test_agent_team_main_pipeline import (
     test_main_pipeline_applies_role_capabilities_and_hooks,
 )
 asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
-    Path(sys.argv[1]), MonkeyPatch(), "v2_crash_role",
+    Path(sys.argv[1]), MonkeyPatch(), sys.argv[2],
 ))
 """
     root = Path(__file__).resolve().parents[2]
     with (tmp_path / "first-process.log").open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
-            [sys.executable, "-c", first_script, str(tmp_path)],
+            [
+                sys.executable,
+                "-c",
+                first_script,
+                str(tmp_path),
+                "v2_crash_role" if safe else "v2_unsafe_role",
+            ],
             cwd=root,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -59,6 +71,7 @@ import sys
 from pathlib import Path
 from sqlalchemy import text
 from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.sqlite import SQLiteDatabase
 
@@ -71,19 +84,29 @@ async def main():
     service = WorkflowService(db, RoleAssetService(db), ports_factory=forbid_dispatch)
     run_id = identities["run_id"]
     before = await service.get_run("alice", run_id)
+    if before["state"]["safe_to_finish"]:
+        async with db.get_db() as session:
+            await session.execute(text("DROP TRIGGER reject_completion"))
+            await session.commit()
     await service.boot_sweep()
-    interrupted = await service.get_run("alice", run_id)
-    async with db.get_db() as session:
-        await session.execute(text("DROP TRIGGER reject_completion"))
-        await session.commit()
-    finished = await service.finish_submission("alice", run_id)
-    repeated = await service.finish_submission("alice", run_id)
+    finished = await service.get_run("alice", run_id)
+    if before["state"]["safe_to_finish"]:
+        repeated = await service.finish_submission("alice", run_id)
+        result = await service.get_result("alice", run_id)
+    else:
+        try:
+            await service.finish_submission("alice", run_id)
+        except RoleAssetError as exc:
+            assert exc.status == 409
+        else:
+            raise AssertionError("Unsafe pending result must not complete")
+        repeated = None
+        result = None
     (folder / "restarted.json").write_text(json.dumps({
         "before": before,
-        "interrupted": interrupted,
         "finished": finished,
         "repeated": repeated,
-        "result": await service.get_result("alice", run_id),
+        "result": result,
     }), encoding="utf-8")
     await db.engine.dispose()
 asyncio.run(main())
@@ -99,14 +122,17 @@ asyncio.run(main())
     evidence = json.loads((tmp_path / "restarted.json").read_text(encoding="utf-8"))
     before = evidence["before"]
     assert before["status"] == "running"
-    assert before["state"]["safe_to_finish"] is True
+    assert before["state"]["safe_to_finish"] is safe
     assert before["pending_result"] is not None
     assert before["result"] is None
-    assert evidence["interrupted"]["status"] == "interrupted"
-    assert evidence["finished"]["status"] == "completed"
+    assert evidence["finished"]["status"] == ("completed" if safe else "interrupted")
     assert evidence["finished"]["run_id"] == identities["run_id"]
     assert evidence["finished"]["snapshot"] == before["snapshot"]
     assert evidence["finished"]["state"] == before["state"]
-    assert evidence["repeated"] == evidence["finished"]
-    assert evidence["result"] == before["pending_result"]
-    assert json.loads(evidence["result"]["text"])["correction_context"] is True
+    if safe:
+        assert evidence["repeated"] == evidence["finished"]
+        assert evidence["result"] == before["pending_result"]
+        assert json.loads(evidence["result"]["text"])["correction_context"] is True
+    else:
+        assert evidence["finished"]["result"] is None
+        assert evidence["finished"]["pending_result"] == before["pending_result"]

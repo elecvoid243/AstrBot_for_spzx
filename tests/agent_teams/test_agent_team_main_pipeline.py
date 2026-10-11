@@ -188,8 +188,17 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if message.get("role") == "system"
             )
             session = kwargs.get("session_id", "")
-            if mode in ("v2_role", "v2_crash_role") and "submit_task_result" in names:
+            if (
+                mode in ("v2_role", "v2_crash_role", "v2_unsafe_role")
+                and "submit_task_result" in names
+            ):
                 self.turns[session] = self.turns.get(session, 0) + 1
+                if mode == "v2_unsafe_role" and self.turns[session] == 3:
+                    (tmp_path / "crash-ready.json").write_text(
+                        json.dumps({"run_id": run["run_id"], "db_path": db.db_path}),
+                        encoding="utf-8",
+                    )
+                    await asyncio.Future()
                 if self.turns[session] <= 2:
                     if self.turns[session] == 1:
                         # Mutate live templates while this run is executing.

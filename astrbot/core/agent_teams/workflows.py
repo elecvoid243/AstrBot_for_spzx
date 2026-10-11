@@ -567,12 +567,31 @@ class WorkflowService:
         return run["result"]
 
     async def boot_sweep(self) -> None:
-        """Mark abandoned executions interrupted without replaying any task.
+        """Finish saved safe intents and interrupt other abandoned executions.
 
         Returns:
-            None. Persisted snapshots and submission intents remain readable.
+            None. No model or tool is dispatched; unsafe intents remain readable.
         """
         async with self.db.get_db() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.status).in_(
+                                ["running", "interrupted", "failed"]
+                            ),
+                            col(AgentWorkflowRun.pending_result).is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            safe_intents = [
+                (row.owner_username, row.run_id)
+                for row in rows
+                if row.state.get("safe_to_finish")
+            ]
             await session.execute(
                 update(AgentWorkflowRun)
                 .where(
@@ -581,6 +600,14 @@ class WorkflowService:
                 .values(status="interrupted")
             )
             await session.commit()
+
+        for username, run_id in safe_intents:
+            try:
+                await self.finish_submission(username, run_id)
+            except Exception:
+                logger.exception(
+                    "Failed to finish saved workflow submission: %s", run_id
+                )
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -606,70 +633,7 @@ class WorkflowService:
         ports = None
         status = "failed"
         try:
-            catalog = await self.roles.get_resources()
-            profile = next(
-                (p for p in catalog["profiles"] if p["id"] == snapshot["profile_id"]),
-                None,
-            )
-            issues = []
-            if profile is None:
-                issues.append(
-                    {
-                        "path": "installation.profile_id",
-                        "code": "MISSING",
-                        "message": "Bound profile is missing",
-                    }
-                )
-            persona = next(
-                (
-                    p
-                    for p in catalog["personas"]
-                    if p["id"] == effective.get("persona_id")
-                ),
-                {},
-            )
-            for field, kind in (
-                ("provider_id", "models"),
-                ("persona_id", "personas"),
-                ("tools", "tools"),
-                ("skills", "skills"),
-                ("knowledge_bases", "knowledge_bases"),
-            ):
-                value = effective.get(field)
-                ids = value if isinstance(value, list) else [value] if value else []
-                for resource_id in ids:
-                    resources = [r for r in catalog[kind] if r["id"] == resource_id]
-                    pool = (profile or {}).get(
-                        "provider_pool" if kind == "models" else "persona_pool", ["*"]
-                    )
-                    if (
-                        len(resources) != 1
-                        or not resources[0].get("enabled", True)
-                        or snapshot["profile_id"]
-                        not in resources[0].get(
-                            "enabled_profiles", [snapshot["profile_id"]]
-                        )
-                        or (
-                            kind in ("models", "personas")
-                            and "*" not in pool
-                            and resource_id not in pool
-                        )
-                        or (
-                            kind in ("tools", "skills")
-                            and persona.get(kind) is not None
-                            and resource_id not in persona[kind]
-                            and resources[0].get("persona_restricted", True)
-                        )
-                    ):
-                        issues.append(
-                            {
-                                "path": f"effective.{field}",
-                                "code": "UNAVAILABLE",
-                                "message": f"Bound resource is unavailable: {resource_id}",
-                            }
-                        )
-            if issues:
-                raise RoleAssetError("Frozen resources are no longer available", issues)
+            await self.roles.validate_frozen_role(snapshot["role"])
             ports = self.ports_factory(username)
 
             async def accept(payload: dict) -> None:

@@ -12,7 +12,7 @@ Every run creates a new member identity and isolated conversation. The role, inp
 
 The Agent must call `submit_task_result(text)` with non-empty text. An ordinary reply does not complete the task; it leaves the run **Awaiting explicit result**. A valid submission first persists an intent. The result and completed status are written consistently after execution reaches a saved safe point. The complete text is retained instead of inferring a result from the last natural-language reply.
 
-Switching or closing the page does not stop core execution. Refreshing a URL with `workflow_run` reads that run again; the run list also reopens past executions. A core restart marks unfinished executions **Interrupted; not replayed**. This path does not restore model-response checkpoints or replay unfinished tasks. The public service can finish a saved result intent idempotently only at a persisted safe point.
+Switching or closing the page does not stop core execution. Refreshing a URL with `workflow_run` reads that run again; the run list also reopens past executions. A core restart automatically finishes accepted result intents at persisted safe points, idempotently. Other unfinished executions become **Interrupted; not replayed**. This path does not restore model-response checkpoints or replay unfinished tasks; intents without a saved safe point remain pending.
 
 ![Independent run and read-only result in the actual WebUI](/images/agent-workflow-run-en.jpg)
 

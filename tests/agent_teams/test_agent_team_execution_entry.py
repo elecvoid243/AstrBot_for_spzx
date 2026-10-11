@@ -87,6 +87,11 @@ async def test_run_entries_use_member_profile_and_preserve_initiator(
             self.profile = profile
 
         async def execute(self, event):
+            """Drive coordinator tools, then mirror the scoped reply and end marker.
+
+            Args:
+                event: Real adapter event carrying the initiating user and binding.
+            """
             nonlocal coordinator_turns
             executed.append(event.message_str)
             username, cid, payload = event.message_obj.raw_message

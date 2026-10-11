@@ -47,7 +47,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mode", ["dag", "auto", "ordinary", "dag_cancel", "auto_cancel"]
+    "mode", ["dag", "auto", "ordinary", "dag_cancel", "auto_cancel", "dag_routed", "auto_routed"]
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
     tmp_path, monkeypatch, mode
@@ -81,6 +81,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     research["test_profile"] = "research"
     config["test_profile"] = "default"
     acm.confs["research"] = research
+    acm.abconf_data["research"] = {"name": "Research", "path": "research.json"}
     personas = PersonaManager(db, acm)
     await personas.create_persona("researcher", "Use verified research evidence.")
     providers = ProviderManager(acm, db, personas)
@@ -116,6 +117,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             )
 
         async def text_chat_stream(self, **kwargs):
+            """Yield assistant deltas followed by the provider's final response.
+
+            Args:
+                **kwargs: Actual main-runner model request.
+
+            Yields:
+                Streaming text/reasoning chunks or the final tool/assistant result.
+            """
             response = await self.text_chat(**kwargs)
             if response.role == "assistant":
                 yield LLMResponse(
@@ -127,6 +136,21 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             yield response
 
         async def text_chat(self, **kwargs):
+            """Dispatch in the first coordinator round and finish in the next one.
+
+            Each tool round is followed by an assistant response, so coordinator
+            requests 1 and 3 select dispatch and finish respectively. Cancellation
+            cases block the member request until the real runner aborts it.
+
+            Args:
+                **kwargs: Provider request containing prompts, tools, and session.
+
+            Returns:
+                A team control tool call or the observed execution capabilities.
+
+            Raises:
+                asyncio.CancelledError: When the real pipeline cancels the model.
+            """
             tools = kwargs.get("func_tool")
             names = tools.names() if tools else []
             prompt = "\n".join(
@@ -318,7 +342,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             member["member_id"],
             {
                 "runner_config": {
-                    "config_id": "research",
+                    **({"config_id": "research"} if "_routed" not in mode else {}),
                     "skills": ["alpha"],
                     "kb_names": []
                     if member["name"] == "Lead"
@@ -329,6 +353,8 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 },
             },
         )
+        if mode.endswith("_routed"):
+            await acm.ucr.update_route(member["umo"], "research")
     runs = AgentTeamRunService(db, chat, config_checker=lambda cid: cid in acm.confs)
     runs.ports_factory = lambda username, emit: build_ports_for_test(
         queue_manager, username, emit
@@ -366,7 +392,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "alice",
                 team["team_id"],
                 {
-                    "mode": mode.removesuffix("_cancel"),
+                    "mode": mode.removesuffix("_cancel").removesuffix("_routed"),
                     "input": "Research.",
                     **(
                         {"workflow_id": workflow["workflow_id"]}

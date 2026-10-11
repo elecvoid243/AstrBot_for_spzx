@@ -47,7 +47,7 @@ class EventBus:
             scheduler = None
             binding = None
             token = event.get_extra("execution_token")
-            if token:
+            if isinstance(token, str) and token:
                 from astrbot.core.agent_team_execution import (
                     AgentTeamExecutionRegistry,
                 )
@@ -56,6 +56,7 @@ class EventBus:
                     token, umo=event.unified_msg_origin
                 )
                 if binding is not None:
+                    binding.message_id = str(event.message_obj.message_id)
                     binding.source_umo = event.unified_msg_origin
                     event.unified_msg_origin = binding.umo
                     event.set_extra("agent_team_execution", binding)
@@ -83,6 +84,9 @@ class EventBus:
             conf_info = self.astrbot_config_mgr.get_conf_info(event.unified_msg_origin)
             conf_id = conf_info["id"]
             conf_name = conf_info.get("name") or conf_id
+            if binding is not None:
+                binding.config_id = binding.config_id or conf_id
+                conf_name = binding.config_id
             self._print_event(event, conf_name)
             if scheduler is None:
                 scheduler = self.pipeline_scheduler_mapping.get(conf_id)

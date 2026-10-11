@@ -3297,3 +3297,53 @@ class TestApplySandboxTools:
 
         assert isinstance(req.system_prompt, str)
         assert "sandboxed environment" in req.system_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "message", "expected"),
+    [
+        ("webchat", "hello", "hello"),
+        ("webchat", "/hello", "hello"),
+        ("test_platform", "hello", None),
+        ("test_platform", "/hello", "hello"),
+    ],
+)
+async def test_collect_request_wake_prefix_keeps_webchat_and_thinking_effort(
+    mock_event,
+    mock_context,
+    mock_conversation,
+    monkeypatch,
+    platform,
+    message,
+    expected,
+):
+    """WebChat bypasses prefix gating while retaining local model parameters.
+
+    Args:
+        mock_event: Incoming event fixture.
+        mock_context: Plugin context fixture.
+        mock_conversation: Stored conversation fixture.
+        monkeypatch: Fixture for replacing conversation lookup.
+        platform: Event platform name.
+        message: Incoming text with or without the configured prefix.
+        expected: Collected prompt, or None for rejected messages.
+    """
+    mock_event.get_platform_name.return_value = platform
+    mock_event.message_str = message
+    mock_event.get_extra.side_effect = lambda name: (
+        "xhigh" if name == "thinking_effort" else None
+    )
+    monkeypatch.setattr(
+        ama, "_get_session_conv", AsyncMock(return_value=mock_conversation)
+    )
+    req, _ = await ama.collect_initial_request(
+        mock_event,
+        mock_context,
+        ama.MainAgentBuildConfig(tool_call_timeout=60, provider_wake_prefix="/"),
+    )
+    if expected is None:
+        assert req is None
+    else:
+        assert req.prompt == expected
+        assert req.llm_params["thinking_effort"] == "xhigh"

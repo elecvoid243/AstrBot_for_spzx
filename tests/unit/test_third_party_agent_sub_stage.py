@@ -5,8 +5,8 @@ import pytest
 
 from astrbot.core.message.components import Image, Record
 from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.pipeline.process_stage.method.agent_sub_stages import third_party
+from astrbot.core.provider.entities import LLMResponse
 
 
 @pytest.mark.asyncio
@@ -96,6 +96,7 @@ async def test_third_party_runner_receives_inline_profile_config(
     assert runner.reset.await_args.kwargs["provider_config"] is inline_config
     assert runner_factory_calls == [True]
 
+
 @pytest.mark.asyncio
 async def test_third_party_skips_unavailable_voice_attachment(
     monkeypatch: pytest.MonkeyPatch,
@@ -176,6 +177,7 @@ async def test_third_party_skips_unavailable_voice_attachment(
     assert request.audio_urls == []
     assert request.prompt == "hello"
 
+
 @pytest.mark.asyncio
 async def test_third_party_skips_unavailable_image_attachment(
     monkeypatch: pytest.MonkeyPatch,
@@ -255,3 +257,39 @@ async def test_third_party_skips_unavailable_image_attachment(
     request = runner.reset.await_args.kwargs["request"]
     assert request.image_urls == []
     assert request.prompt == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "message", "expected"),
+    [
+        ("webchat", "hello", "hello"),
+        ("webchat", "/hello", "hello"),
+        ("test_platform", "hello", None),
+        ("test_platform", "/hello", "hello"),
+    ],
+)
+async def test_third_party_wake_prefix_exempts_webchat(
+    monkeypatch, platform, message, expected
+):
+    """Third-party runners must apply the same WebChat wake-prefix policy.
+
+    Args:
+        monkeypatch: Fixture for intercepting the prepared request.
+        platform: Event platform name.
+        message: Incoming text with or without a prefix.
+        expected: Collected prompt, or None for rejected messages.
+    """
+    stage = third_party.ThirdPartyAgentSubStage()
+    stage._resolve_persona_custom_error_message = AsyncMock(return_value=None)
+    event = MagicMock()
+    event.get_platform_name.return_value = platform
+    event.message_str = message
+    event.message_obj.message = []
+    hook = AsyncMock(return_value=True)
+    monkeypatch.setattr(third_party, "call_event_hook", hook)
+    assert [item async for item in stage.process(event, "/")] == []
+    if expected is None:
+        hook.assert_not_awaited()
+    else:
+        assert hook.await_args.args[2].prompt == expected

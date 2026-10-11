@@ -1627,12 +1627,22 @@ async def collect_initial_request(
                     # Values are free-form (e.g. "max" on deepseek, "xhigh" on
                     # llama.cpp); "auto" means "use the provider static config".
                     req.llm_params["thinking_effort"] = thinking_effort
-            if config.provider_wake_prefix and not event.message_str.startswith(
-                config.provider_wake_prefix
+            provider_wake_prefix = config.provider_wake_prefix
+            # WebChat is a point-to-point panel session, so like the waking
+            # stage (#9215) it is exempt from wake-prefix gating; otherwise a
+            # configured provider wake prefix silently drops every message.
+            if (
+                provider_wake_prefix
+                and event.get_platform_name() != "webchat"
+                and not event.message_str.startswith(provider_wake_prefix)
             ):
                 return None, None
 
-            req.prompt = event.message_str[len(config.provider_wake_prefix) :]
+            req.prompt = event.message_str
+            if provider_wake_prefix and event.message_str.startswith(
+                provider_wake_prefix
+            ):
+                req.prompt = event.message_str[len(provider_wake_prefix) :]
 
             # media files attachments
             for comp in event.message_obj.message:

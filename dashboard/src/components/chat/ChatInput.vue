@@ -795,6 +795,7 @@ import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
 import { chatApi, commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
+import { useProviderModelSelection } from "@/composables/useProviderModelSelection";
 import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
@@ -2273,16 +2274,16 @@ chatConfigSelection.bindContext(
 );
 onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
 
+const providerModelSelection = useProviderModelSelection();
+
 function getCurrentSelection() {
   if (!props.showProviderSelector || !providerSelectorAvailable.value) {
     return null;
   }
-  // The composer no longer hosts a model selector (2026-10-03): the page
-  // header's ProviderSelectMenu owns switching and persists to the same
-  // localStorage keys, so read them directly.
+  // The header owns model switching; requests read the same reactive state.
   return {
-    providerId: localStorage.getItem("selectedProvider") || "",
-    modelName: localStorage.getItem("selectedProviderModel") || "",
+    providerId: providerModelSelection.selectedProviderId.value,
+    modelName: providerModelSelection.selectedModelName.value,
   };
 }
 

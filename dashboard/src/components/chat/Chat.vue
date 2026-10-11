@@ -1274,6 +1274,7 @@ import { useMediaHandling } from "@/composables/useMediaHandling";
 import { useRecording } from "@/composables/useRecording";
 import { useProjects } from "@/composables/useProjects";
 import { useDragUpload } from "@/composables/useDragUpload";
+import { useProviderModelSelection } from "@/composables/useProviderModelSelection";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useCustomizerStore } from "@/stores/customizer";
 import ProviderChatCompletionPanel from "@/components/provider/ProviderChatCompletionPanel.vue";
@@ -1544,7 +1545,11 @@ watch(draft, (text) => {
 });
 const tokenProviderConfigs = ref<TokenProviderConfig[]>([]);
 const tokenModelMetadata = ref<Record<string, ProviderModelMetadata>>({});
-const selectedTokenProviderId = ref("");
+const {
+  selectedProviderId: selectedTokenProviderId,
+  selectedModelName: currentModelName,
+  writeSessionProviderSelection,
+} = useProviderModelSelection(currSessionId);
 const commandSending = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
 const messagesListShell = ref<HTMLElement | null>(null);
@@ -2414,16 +2419,14 @@ const tokenUsageIndicator = computed(() => {
 function getSelectedProviderSelection() {
   const inputSelection = inputRef.value?.getCurrentSelection();
   if (inputSelection?.providerId) {
-    selectedTokenProviderId.value = inputSelection.providerId;
     return inputSelection;
   }
   if (typeof window === "undefined") {
     return { providerId: "", modelName: "" };
   }
-  syncSelectedTokenProvider();
   return {
-    providerId: localStorage.getItem("selectedProvider") || "",
-    modelName: localStorage.getItem("selectedProviderModel") || "",
+    providerId: selectedTokenProviderId.value,
+    modelName: currentModelName.value,
   };
 }
 
@@ -2938,14 +2941,7 @@ function sessionTitle(session: Session) {
   return session.display_name?.trim() || tm("conversation.newConversation");
 }
 
-function syncSelectedTokenProvider() {
-  if (typeof window === "undefined") return;
-  selectedTokenProviderId.value =
-    localStorage.getItem("selectedProvider") || "";
-}
-
 async function loadTokenProviders() {
-  syncSelectedTokenProvider();
   try {
     const response = await providerApi.listByProviderType("chat_completion");
     if (response.data.status === "ok") {
@@ -3026,6 +3022,7 @@ async function selectProject(projectId: string) {
   await router.push(basePath());
   await loadProjectSessions(projectId);
   closeMobileSidebar();
+  await focusChatInput();
 }
 
 async function loadProjectSessions(projectId = selectedProjectId.value) {
@@ -4031,6 +4028,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const outgoingParts = buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
+    writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
       messageId,
@@ -4794,6 +4792,7 @@ async function handleRegenerateMessage(
   if (!currSessionId.value || isUserMessage(message)) return;
   message.threads = [];
   const effectiveSelection = selection ?? getSelectedProviderSelection();
+  writeSessionProviderSelection(currSessionId.value, effectiveSelection);
   await regenerateMessage(
     currSessionId.value,
     message,

@@ -531,21 +531,20 @@ class WorkflowService:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is None or row.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            if row.status == "completed":
-                return await self.get_run(username, run_id)
-            if row.pending_result is None or not row.state.get("safe_to_finish"):
-                raise RoleAssetError("No result at a saved safe point", status=409)
-            await session.execute(
-                update(AgentWorkflowRun)
-                .where(
-                    col(AgentWorkflowRun.run_id) == run_id,
-                    col(AgentWorkflowRun.status).in_(
-                        ["running", "interrupted", "failed"]
-                    ),
+            if row.status != "completed":
+                if row.pending_result is None or not row.state.get("safe_to_finish"):
+                    raise RoleAssetError("No result at a saved safe point", status=409)
+                await session.execute(
+                    update(AgentWorkflowRun)
+                    .where(
+                        col(AgentWorkflowRun.run_id) == run_id,
+                        col(AgentWorkflowRun.status).in_(
+                            ["running", "interrupted", "failed"]
+                        ),
+                    )
+                    .values(status="completed", result=row.pending_result)
                 )
-                .values(status="completed", result=row.pending_result)
-            )
-            await session.commit()
+                await session.commit()
         return await self.get_run(username, run_id)
 
     async def get_result(self, username: str, run_id: str) -> dict:

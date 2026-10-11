@@ -364,6 +364,22 @@ async def test_saved_result_intent_can_finish_idempotently_after_completion_writ
 
 
 @pytest.mark.asyncio
+async def test_concurrent_idempotent_finish_does_not_exhaust_real_database_pool(
+    workflow_env,
+):
+    env = workflow_env
+    run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
+    expected = await completed_run(env.service, run["run_id"])
+    snapshots = await asyncio.wait_for(
+        asyncio.gather(
+            *(env.service.finish_submission("alice", run["run_id"]) for _ in range(15))
+        ),
+        timeout=5,
+    )
+    assert all(snapshot == expected for snapshot in snapshots)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["missing", "forbidden", "disabled"])
 async def test_removed_or_disallowed_bindings_cannot_fall_back_to_another_model(
     workflow_env, failure

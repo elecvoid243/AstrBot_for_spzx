@@ -766,6 +766,64 @@ export type ReorderRequest = {
 };
 
 /**
+ * Portable role content; resource names refer to logical slots.
+ */
+export type RoleDefinition = {
+    prompt?: (string | null);
+    tools?: (Array<(string)> | null);
+    skills?: (Array<(string)> | null);
+    knowledge_bases?: (Array<(string)> | null);
+    max_steps?: (number | null);
+    tool_call_timeout?: (number | null);
+    context_length?: (number | null);
+    max_instances?: (number | null);
+    max_parallel?: (number | null);
+    max_iterations?: (number | null);
+    max_depth?: (number | null);
+    name: string;
+    description?: string;
+    model_slot?: string;
+    persona_slot?: (string | null);
+    model_capabilities?: Array<('tool_use' | 'image' | 'audio')>;
+};
+
+/**
+ * Machine-local configuration stored separately from the definition.
+ */
+export type RoleInstallation = {
+    profile_id?: string;
+    bindings?: {
+        [key: string]: (string);
+    };
+};
+
+/**
+ * Optional configuration; null inherits and an empty list disables.
+ */
+export type RoleOverrides = {
+    prompt?: (string | null);
+    tools?: (Array<(string)> | null);
+    skills?: (Array<(string)> | null);
+    knowledge_bases?: (Array<(string)> | null);
+    max_steps?: (number | null);
+    tool_call_timeout?: (number | null);
+    context_length?: (number | null);
+    max_instances?: (number | null);
+    max_parallel?: (number | null);
+    max_iterations?: (number | null);
+    max_depth?: (number | null);
+};
+
+/**
+ * A complete replacement definition and its local installation.
+ */
+export type RoleSaveRequest = {
+    definition: RoleDefinition;
+    installation?: RoleInstallation;
+    expected_version?: (number | null);
+};
+
+/**
  * The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.
  */
 export type RuntimeInfo = {
@@ -4564,3 +4622,65 @@ export type StreamAgentTeamRunData = {
 export type StreamAgentTeamRunResponse = (string);
 
 export type StreamAgentTeamRunError = unknown;
+
+export type ListRoleAssetsResponse = (SuccessEnvelope);
+
+export type ListRoleAssetsError = (unknown);
+
+export type CreateRoleAssetData = {
+    body: RoleSaveRequest;
+};
+
+export type CreateRoleAssetResponse = (SuccessEnvelope);
+
+export type CreateRoleAssetError = (unknown);
+
+export type GetRoleResourcesResponse = (SuccessEnvelope);
+
+export type GetRoleResourcesError = (unknown);
+
+export type PreviewRoleAssetData = {
+    body: RoleSaveRequest;
+};
+
+export type PreviewRoleAssetResponse = (SuccessEnvelope);
+
+export type PreviewRoleAssetError = (unknown);
+
+export type GetRoleAssetData = {
+    path: {
+        role_id: string;
+    };
+    query?: {
+        version?: number;
+    };
+};
+
+export type GetRoleAssetResponse = (SuccessEnvelope);
+
+export type GetRoleAssetError = (unknown);
+
+export type ReviseRoleAssetData = {
+    body: RoleSaveRequest;
+    path: {
+        role_id: string;
+    };
+};
+
+export type ReviseRoleAssetResponse = (SuccessEnvelope);
+
+export type ReviseRoleAssetError = (unknown);
+
+export type ResolveRoleAssetData = {
+    body: RoleOverrides;
+    path: {
+        role_id: string;
+    };
+    query: {
+        version: number;
+    };
+};
+
+export type ResolveRoleAssetResponse = (SuccessEnvelope);
+
+export type ResolveRoleAssetError = (unknown);

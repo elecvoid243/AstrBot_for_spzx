@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
+from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.log import LogManager
@@ -261,6 +262,7 @@ def create_dashboard_asgi_app(
         chat_service=chat,
         busy_checker=lambda session_id: bool(chat.chat_runs_by_session.get(session_id)),
     )
+    services.role_assets = RoleAssetService(db, core_lifecycle)
     services.agent_team_runs = AgentTeamRunService(
         db=db,
         chat_service=chat,

@@ -216,6 +216,27 @@ class CronJob(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, sa_type=Text)
 
 
+class AgentRoleVersion(TimestampMixin, SQLModel, table=True):
+    """Immutable reusable role definitions, independent of member sessions."""
+
+    __tablename__: str = "agent_role_versions"
+
+    role_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    definition: dict = Field(sa_type=JSON)
+
+
+class AgentRoleInstallation(SQLModel, table=True):
+    """Local resource bindings for a specific role version."""
+
+    __tablename__: str = "agent_role_installations"
+
+    role_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    installation: dict = Field(default_factory=dict, sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

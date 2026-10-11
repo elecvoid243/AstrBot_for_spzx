@@ -33,6 +33,7 @@
 
         <div class="agent-teams-main">
           <v-tabs v-model="tab" color="primary" density="comfortable">
+            <v-tab value="roles">{{ tm('roles.title') }}</v-tab>
             <v-tab value="editor">{{ tm('tabs.editor') }}</v-tab>
             <v-tab value="monitor">{{ tm('tabs.monitor') }}</v-tab>
             <v-tab value="history">{{ tm('tabs.history') }}</v-tab>
@@ -40,6 +41,9 @@
           </v-tabs>
 
           <v-window v-model="tab" class="mt-4">
+            <v-window-item value="roles">
+              <RoleTemplatesPanel v-if="tab === 'roles'" />
+            </v-window-item>
             <v-window-item value="editor">
               <section v-if="tab === 'editor'" class="agent-teams-panel-editor">
                 <WorkflowEditor
@@ -97,6 +101,7 @@ import RunMonitor from '@/components/agent_teams/RunMonitor.vue';
 import RunsHistory from '@/components/agent_teams/RunsHistory.vue';
 import TeamCreateDialog from '@/components/agent_teams/TeamCreateDialog.vue';
 import WorkflowEditor from '@/components/agent_teams/WorkflowEditor.vue';
+import RoleTemplatesPanel from '@/components/agent_teams/RoleTemplatesPanel.vue';
 import { useAgentTeams } from '@/composables/useAgentTeams';
 import { useAgentTeamsRun } from '@/composables/useAgentTeamsRun';
 import { useModuleI18n } from '@/i18n/composables';
@@ -286,6 +291,10 @@ onMounted(() => {
   }
 
   .agent-teams-sidebar {
+    width: 100%;
+  }
+
+  .agent-teams-main {
     width: 100%;
   }
 }

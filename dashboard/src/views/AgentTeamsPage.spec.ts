@@ -186,6 +186,10 @@ const stubs = {
     emits: ['updateTeam'],
     template: '<div class="member-config-panel-stub" />',
   },
+  RoleTemplatesPanel: {
+    name: 'RoleTemplatesPanelStub',
+    template: '<div class="role-templates-panel-stub" />',
+  },
   TeamCreateDialog: {
     name: 'TeamCreateDialogStub',
     props: ['modelValue', 'team'],
@@ -225,10 +229,17 @@ describe('AgentTeamsPage', () => {
     expect(wrapper.text()).toContain('Beta 团队');
   });
 
-  it('renders the four tab labels', () => {
+  it('renders role templates alongside the existing team panels', () => {
     const wrapper = mountPage();
     const labels = wrapper.findAll('.tab-stub').map((tab) => tab.text());
-    expect(labels).toEqual(['工作流编排', '运行监控', '历史', '成员']);
+    expect(labels).toEqual(['角色模板', '工作流编排', '运行监控', '历史', '成员']);
+  });
+
+  it('opens reusable role templates independently of a team selection', async () => {
+    const wrapper = mountPage();
+    await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '角色模板')!.trigger('click');
+    expect(wrapper.find('.role-templates-panel-stub').exists()).toBe(true);
+    expect(wrapper.find('.agent-teams-panel-editor').exists()).toBe(false);
   });
 
   it('shows the editor panel by default and swaps panels when a tab is clicked', async () => {

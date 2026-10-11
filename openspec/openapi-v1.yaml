@@ -6154,6 +6154,164 @@ paths:
               schema:
                 type: string
 
+  /api/v1/agent_roles:
+    get:
+      tags:
+      - AgentTeams
+      summary: List reusable role templates
+      operationId: listRoleAssets
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+    post:
+      tags:
+      - AgentTeams
+      summary: Save a role without creating a member session
+      operationId: createRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+  /api/v1/agent_roles/resources:
+    get:
+      tags:
+      - AgentTeams
+      summary: List local resources without credentials
+      operationId: getRoleResources
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+  /api/v1/agent_roles/preview:
+    post:
+      tags:
+      - AgentTeams
+      summary: Preview effective configuration without saving
+      operationId: previewRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+  /api/v1/agent_roles/{role_id}:
+    get:
+      tags:
+      - AgentTeams
+      summary: Read a pinned or latest role version
+      operationId: getRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+    put:
+      tags:
+      - AgentTeams
+      summary: Append a role version, preserving history
+      operationId: reviseRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/v1/agent_roles/{role_id}/resolve:
+    post:
+      tags:
+      - AgentTeams
+      summary: Resolve a pinned role with optional task overrides
+      operationId: resolveRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleOverrides'
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: query
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -7848,3 +8006,278 @@ components:
         mode: { type: string, enum: [auto, dag] }
         input: { type: string }
         workflow_id: { type: [string, "null"] }
+
+    RoleDefinition:
+      additionalProperties: false
+      description: Portable role content; resource names refer to logical slots.
+      properties:
+        prompt:
+          anyOf:
+          - maxLength: 100000
+            type: string
+          - type: 'null'
+          default: null
+          title: Prompt
+        tools:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Tools
+        skills:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Skills
+        knowledge_bases:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Knowledge Bases
+        max_steps:
+          anyOf:
+          - maximum: 200
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Steps
+        tool_call_timeout:
+          anyOf:
+          - exclusiveMinimum: 0
+            maximum: 3600
+            type: number
+          - type: 'null'
+          default: null
+          title: Tool Call Timeout
+        context_length:
+          anyOf:
+          - maximum: 1000000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Context Length
+        max_instances:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Instances
+        max_parallel:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Parallel
+        max_iterations:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Iterations
+        max_depth:
+          anyOf:
+          - maximum: 20
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Depth
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        description:
+          default: ''
+          maxLength: 2000
+          title: Description
+          type: string
+        model_slot:
+          default: model
+          maxLength: 128
+          minLength: 1
+          title: Model Slot
+          type: string
+        persona_slot:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Persona Slot
+        model_capabilities:
+          items:
+            enum:
+            - tool_use
+            - image
+            - audio
+            type: string
+          title: Model Capabilities
+          type: array
+      required:
+      - name
+      title: RoleDefinition
+      type: object
+    RoleInstallation:
+      additionalProperties: false
+      description: Machine-local configuration stored separately from the definition.
+      properties:
+        profile_id:
+          default: default
+          maxLength: 128
+          minLength: 1
+          title: Profile Id
+          type: string
+        bindings:
+          additionalProperties:
+            maxLength: 128
+            minLength: 1
+            type: string
+          propertyNames:
+            maxLength: 128
+            minLength: 1
+          title: Bindings
+          type: object
+      title: RoleInstallation
+      type: object
+    RoleSaveRequest:
+      additionalProperties: false
+      description: A complete replacement definition and its local installation.
+      properties:
+        definition:
+          $ref: '#/components/schemas/RoleDefinition'
+        installation:
+          $ref: '#/components/schemas/RoleInstallation'
+        expected_version:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Expected Version
+      required:
+      - definition
+      title: RoleSaveRequest
+      type: object
+    RoleOverrides:
+      additionalProperties: false
+      description: Optional configuration; null inherits and an empty list disables.
+      properties:
+        prompt:
+          anyOf:
+          - maxLength: 100000
+            type: string
+          - type: 'null'
+          default: null
+          title: Prompt
+        tools:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Tools
+        skills:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Skills
+        knowledge_bases:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Knowledge Bases
+        max_steps:
+          anyOf:
+          - maximum: 200
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Steps
+        tool_call_timeout:
+          anyOf:
+          - exclusiveMinimum: 0
+            maximum: 3600
+            type: number
+          - type: 'null'
+          default: null
+          title: Tool Call Timeout
+        context_length:
+          anyOf:
+          - maximum: 1000000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Context Length
+        max_instances:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Instances
+        max_parallel:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Parallel
+        max_iterations:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Iterations
+        max_depth:
+          anyOf:
+          - maximum: 20
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Depth
+      title: RoleOverrides
+      type: object

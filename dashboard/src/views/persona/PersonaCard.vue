@@ -10,7 +10,13 @@
   >
     <div class="persona-card-content">
       <div class="persona-main">
-        <div class="persona-name text-truncate">{{ persona.persona_id }}</div>
+        <div class="persona-name text-truncate">
+          {{
+            persona.persona_id === "default"
+              ? sharedTm("personaSelector.defaultPersona")
+              : persona.persona_id
+          }}
+        </div>
         <div class="system-prompt-preview">
           {{ truncateText(persona.system_prompt, 160) }}
         </div>
@@ -48,7 +54,11 @@
             <v-list-item-title>{{ tm("buttons.export") }}</v-list-item-title>
           </v-list-item>
           <v-divider class="my-1" />
-          <v-list-item @click.stop="$emit('delete')" class="text-error">
+          <v-list-item
+            v-if="persona.persona_id !== 'default'"
+            @click.stop="$emit('delete')"
+            class="text-error"
+          >
             <template v-slot:prepend>
               <v-icon size="small" color="error">mdi-delete</v-icon>
             </template>
@@ -120,7 +130,11 @@
   <!-- Custom Drag Preview -->
   <div ref="dragPreview" class="drag-preview">
     <v-icon size="small" class="mr-2">mdi-account</v-icon>
-    <span class="text-subtitle-2">{{ persona.persona_id }}</span>
+    <span class="text-subtitle-2">{{
+      persona.persona_id === "default"
+        ? sharedTm("personaSelector.defaultPersona")
+        : persona.persona_id
+    }}</span>
   </div>
 </template>
 
@@ -152,7 +166,8 @@ export default defineComponent({
   emits: ["view", "edit", "move", "delete", "export"],
   setup() {
     const { tm } = useModuleI18n("features/persona");
-    return { tm };
+    const { tm: sharedTm } = useModuleI18n("core.shared");
+    return { tm, sharedTm };
   },
   data() {
     return {

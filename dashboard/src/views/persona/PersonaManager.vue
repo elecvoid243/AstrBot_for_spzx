@@ -199,7 +199,11 @@
         <v-card-title
           class="text-h3 pa-4 pb-0 pl-6 d-flex justify-space-between align-center"
         >
-          <span>{{ viewingPersona.persona_id }}</span>
+          <span>{{
+            viewingPersona.persona_id === "default"
+              ? sharedTm("personaSelector.defaultPersona")
+              : viewingPersona.persona_id
+          }}</span>
           <div class="d-flex align-center ga-1">
             <v-btn
               color="primary"
@@ -514,8 +518,9 @@ export default defineComponent({
   setup() {
     const { t } = useI18n();
     const { tm } = useModuleI18n("features/persona");
+    const { tm: sharedTm } = useModuleI18n("core.shared");
     const confirmDialog = useConfirmDialog();
-    return { t, tm, confirmDialog };
+    return { t, tm, sharedTm, confirmDialog };
   },
   data() {
     return {

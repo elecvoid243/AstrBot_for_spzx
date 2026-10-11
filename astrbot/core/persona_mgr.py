@@ -6,9 +6,20 @@ from astrbot.core.db.po import Persona, PersonaFolder, Personality
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.sentinels import NOT_GIVEN
 
+SYSTEM_DEFAULT_PERSONA_ID = "default"
+"""Reserved persona id for the built-in system default persona.
+
+Its value is intentionally the literal string ``"default"``. The Agent Runner
+config schema (``astrbot.core.config.agent_runner``), the migration helper and
+the WebUI contract still rely on that raw string, so this constant only
+centralizes the in-module usages; keep it in sync with those call sites if the
+reserved id ever changes.
+"""
+
+
 DEFAULT_PERSONALITY = Personality(
     prompt="You are a helpful and friendly assistant.",
-    name="default",
+    name=SYSTEM_DEFAULT_PERSONA_ID,
     begin_dialogs=[],
     mood_imitation_dialogs=[],
     tools=None,
@@ -26,9 +37,11 @@ class PersonaManager:
         default_runner = acm.default_conf.get("agent_runner", {})
         default_runner_config = default_runner.get("config", {})
         self.default_persona: str = (
-            default_runner_config.get("persona", {}).get("persona_id", "default")
+            default_runner_config.get("persona", {}).get(
+                "persona_id", SYSTEM_DEFAULT_PERSONA_ID
+            )
             if default_runner.get("runner_type") == "local"
-            else default_runner_config.get("persona_id", "default")
+            else default_runner_config.get("persona_id", SYSTEM_DEFAULT_PERSONA_ID)
         )
         self.personas: list[Persona] = []
         self.selected_default_persona: Persona | None = None
@@ -39,6 +52,14 @@ class PersonaManager:
 
     async def initialize(self) -> None:
         self.personas = await self.get_all_personas()
+        if not any(
+            persona.persona_id == SYSTEM_DEFAULT_PERSONA_ID for persona in self.personas
+        ):
+            default_persona = await self.db.insert_persona(
+                persona_id=SYSTEM_DEFAULT_PERSONA_ID,
+                system_prompt=DEFAULT_PERSONALITY["prompt"],
+            )
+            self.personas.append(default_persona)
         self.get_v3_persona_data()
         logger.info("Loaded %s personas.", len(self.personas))
 
@@ -50,20 +71,37 @@ class PersonaManager:
         return persona
 
     def get_persona_v3_by_id(self, persona_id: str | None) -> Personality | None:
-        """Resolve a v3 persona object by id.
+        """Resolve a persona, preferring the editable stored default.
 
-        - None/empty id returns None.
-        - "default" maps to in-memory DEFAULT_PERSONALITY.
-        - Otherwise search in personas_v3 by persona name.
+        Args:
+            persona_id: Persona identity, or None to request no persona.
+
+        Returns:
+            The stored persona, the built-in default when its record is absent,
+            or None when no matching persona exists.
         """
         if not persona_id:
+            logger.debug("[persona] get_persona_v3_by_id(None) -> None")
             return None
-        if persona_id == "default":
-            return DEFAULT_PERSONALITY
-        return next(
+        persona = next(
             (persona for persona in self.personas_v3 if persona["name"] == persona_id),
             None,
         )
+        if persona is not None:
+            logger.debug(
+                "[persona] get_persona_v3_by_id(%r) -> matched stored persona",
+                persona_id,
+            )
+            return persona
+        if persona_id == SYSTEM_DEFAULT_PERSONA_ID:
+            logger.debug(
+                "[persona] get_persona_v3_by_id(%r) -> built-in "
+                "DEFAULT_PERSONALITY (no stored persona with that name)",
+                SYSTEM_DEFAULT_PERSONA_ID,
+            )
+            return DEFAULT_PERSONALITY
+        logger.debug("[persona] get_persona_v3_by_id(%r) -> None", persona_id)
+        return None
 
     async def get_default_persona_v3(
         self,
@@ -74,9 +112,11 @@ class PersonaManager:
         agent_runner = cfg.get("agent_runner", {})
         runner_config = agent_runner.get("config", {})
         default_persona_id = (
-            runner_config.get("persona", {}).get("persona_id", "default")
+            runner_config.get("persona", {}).get(
+                "persona_id", SYSTEM_DEFAULT_PERSONA_ID
+            )
             if agent_runner.get("runner_type") == "local"
-            else runner_config.get("persona_id", "default")
+            else runner_config.get("persona_id", SYSTEM_DEFAULT_PERSONA_ID)
         )
         return self.get_persona_v3_by_id(default_persona_id) or DEFAULT_PERSONALITY
 
@@ -130,15 +170,38 @@ class PersonaManager:
                 agent_runner = cfg.get("agent_runner", {})
                 runner_config = agent_runner.get("config", {})
                 persona_id = (
-                    runner_config.get("persona", {}).get("persona_id", "default")
+                    runner_config.get("persona", {}).get(
+                        "persona_id", SYSTEM_DEFAULT_PERSONA_ID
+                    )
                     if agent_runner.get("runner_type") == "local"
-                    else runner_config.get("persona_id", "default")
+                    else runner_config.get("persona_id", SYSTEM_DEFAULT_PERSONA_ID)
                 )
 
         persona = next(
             (item for item in self.personas_v3 if item["name"] == persona_id),
             None,
         )
+        is_implicit_system_default = (
+            force_applied_persona_id is None
+            and conversation_persona_id is None
+            and persona_id == SYSTEM_DEFAULT_PERSONA_ID
+        )
+        logger.debug(
+            "[persona] resolve_selected_persona: umo=%s conversation_persona_id=%r "
+            "force_applied=%r -> persona_id=%r matched_persona=%r "
+            "implicit_system_default=%s",
+            umo,
+            conversation_persona_id,
+            force_applied_persona_id,
+            persona_id,
+            persona["name"] if persona else None,
+            is_implicit_system_default,
+        )
+
+        if is_implicit_system_default and platform_name == "webchat":
+            # WebChat keeps its dedicated ChatUI default prompt (gated by the
+            # request flag) instead of the editable system default persona.
+            persona = None
 
         use_webchat_special_default = False
         if not persona and platform_name == "webchat" and persona_id != "[%None]":
@@ -153,7 +216,16 @@ class PersonaManager:
         )
 
     async def delete_persona(self, persona_id: str) -> None:
-        """删除指定 persona"""
+        """Delete a persona while protecting the system default.
+
+        Args:
+            persona_id: Identity of the persona to delete.
+
+        Raises:
+            ValueError: The persona is the system default or does not exist.
+        """
+        if persona_id == SYSTEM_DEFAULT_PERSONA_ID:
+            raise ValueError("The system default persona cannot be deleted.")
         if not await self.db.get_persona_by_id(persona_id):
             raise ValueError(f"Persona with ID {persona_id} does not exist.")
         await self.db.delete_persona(persona_id)
@@ -349,17 +421,28 @@ class PersonaManager:
         folder_id: str | None = None,
         sort_order: int = 0,
     ) -> Persona:
-        """创建新的 persona。
+        """Create a persona with a non-reserved identity.
 
         Args:
-            persona_id: Persona 唯一标识
-            system_prompt: 系统提示词
-            begin_dialogs: 预设对话列表
-            tools: 工具列表，None 表示使用所有工具，空列表表示不使用任何工具
-            skills: Skills 列表，None 表示使用所有 Skills，空列表表示不使用任何 Skills
-            folder_id: 所属文件夹 ID，None 表示根目录
-            sort_order: 排序顺序
+            persona_id: Unique persona identity.
+            system_prompt: System instructions for the persona.
+            begin_dialogs: Preset conversation messages.
+            tools: Allowed tools; None means all and an empty list means none.
+            skills: Allowed skills; None means all and an empty list means none.
+            custom_error_message: Optional reply used when model execution fails.
+            folder_id: Parent folder identity, or None for the root.
+            sort_order: Position within the folder.
+
+        Returns:
+            The newly stored persona.
+
+        Raises:
+            ValueError: The identity is reserved or already exists.
         """
+        if persona_id == SYSTEM_DEFAULT_PERSONA_ID:
+            raise ValueError(
+                "Persona ID 'default' is reserved for the system default persona."
+            )
         if await self.db.get_persona_by_id(persona_id):
             raise ValueError(f"Persona with ID {persona_id} already exists.")
         new_persona = await self.db.insert_persona(

@@ -1487,6 +1487,11 @@ class ChatService:
             raise ChatServiceError(
                 f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
             ) from exc
+        if file_path.stat().st_size > MAX_UPLOAD_FILE_SIZE_BYTES:
+            file_path.unlink(missing_ok=True)
+            raise ChatServiceError(
+                f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
+            )
         if attach_type == "image":
             detected_mime_type = await detect_image_mime_type_async(
                 file_path,

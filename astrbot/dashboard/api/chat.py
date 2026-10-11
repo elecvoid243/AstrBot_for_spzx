@@ -47,6 +47,8 @@ from astrbot.dashboard.schemas import (
 from astrbot.dashboard.services.auth_service import CONFIG_EDIT_ADMIN_SCOPE
 from astrbot.dashboard.services.chat_service import (
     MAX_HISTORY_WINDOW_SIZE,
+    MAX_UPLOAD_FILE_SIZE_BYTES,
+    MAX_UPLOAD_FILE_SIZE_MB,
     ChatService,
     ChatServiceError,
 )
@@ -1227,6 +1229,11 @@ async def dashboard_post_file(
     service: ChatService = Depends(get_service),
 ):
     try:
+        content_length = int(request.headers.get("content-length") or 0)
+        if content_length > MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise ChatServiceError(
+                f"File too large (limit {MAX_UPLOAD_FILE_SIZE_MB} MB)"
+            )
         upload = await single_upload(request)
         if upload is None:
             raise ChatServiceError("Missing key: file")

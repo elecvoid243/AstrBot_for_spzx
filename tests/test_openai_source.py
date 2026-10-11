@@ -1,10 +1,12 @@
 import base64
 import builtins
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from PIL import Image as PILImage
@@ -15,8 +17,6 @@ from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.sources.groq_source import ProviderGroq
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
-from pathlib import Path
-
 from astrbot.core.utils.media_utils import ResolvedMediaData, file_uri_to_path
 
 
@@ -60,6 +60,60 @@ def _make_groq_provider(overrides: dict | None = None) -> ProviderGroq:
         provider_config=provider_config,
         provider_settings={},
     )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_client"),
+    [
+        ({}, AsyncOpenAI),
+        (
+            {
+                "api_version": "2024-02-01",
+                "api_base": "https://example.openai.azure.com/openai",
+            },
+            AsyncAzureOpenAI,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_provider_client_disables_sdk_builtin_retries(overrides, expected_client):
+    provider = _make_provider(overrides)
+    try:
+        assert isinstance(provider.client, expected_client)
+        assert provider.client.max_retries == 0
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_query_attempts_exactly_request_max_retries_times(monkeypatch):
+    monkeypatch.setattr(request_retry, "REQUEST_RETRY_WAIT_MIN_S", 0)
+    monkeypatch.setattr(request_retry, "REQUEST_RETRY_WAIT_MAX_S", 0)
+
+    provider = _make_provider()
+    try:
+        calls = 0
+
+        async def failing_create(**kwargs):
+            nonlocal calls
+            calls += 1
+            raise httpx.ConnectError("temporary connection failure")
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", failing_create)
+
+        with pytest.raises(httpx.ConnectError):
+            await provider._query(
+                payloads={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                tools=None,
+                request_max_retries=2,
+            )
+
+        assert calls == 2
+    finally:
+        await provider.terminate()
 
 
 def test_create_http_client_uses_openai_httpx_module(monkeypatch):
@@ -1284,7 +1338,10 @@ async def test_prepare_chat_payload_keeps_original_context_image_when_materializ
 
 
 @pytest.mark.asyncio
-async def test_apply_provider_specific_request_overrides_disables_ollama_thinking():
+@pytest.mark.parametrize("explicit_effort", [None, "low"])
+async def test_apply_provider_specific_request_overrides_disables_ollama_thinking(
+    explicit_effort,
+):
     provider = _make_provider(
         {
             "provider": "ollama",
@@ -1294,14 +1351,15 @@ async def test_apply_provider_specific_request_overrides_disables_ollama_thinkin
     try:
         extra_body = {
             "reasoning": {"effort": "high"},
-            "reasoning_effort": "low",
             "think": True,
             "temperature": 0.2,
         }
+        if explicit_effort is not None:
+            extra_body["reasoning_effort"] = explicit_effort
 
         provider._apply_provider_specific_request_overrides({}, extra_body)
 
-        assert extra_body["reasoning_effort"] == "none"
+        assert extra_body["reasoning_effort"] == (explicit_effort or "none")
         assert "reasoning" not in extra_body
         assert "think" not in extra_body
         assert extra_body["temperature"] == 0.2

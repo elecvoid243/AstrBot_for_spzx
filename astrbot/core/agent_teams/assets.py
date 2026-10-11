@@ -128,12 +128,23 @@ class RoleAssetService:
         for profile_id, config in core.astrbot_config_mgr.confs.items():
             misc = config.get("agent_runner", {}).get("config", {}).get("misc", {})
             settings = config.get("provider_settings", {})
+            runner = config.get("agent_runner", {})
+            runner_config = runner.get("config", {})
+            persona_id = (
+                runner_config.get("persona", {}).get("persona_id", "default")
+                if runner.get("runner_type") == "local"
+                else runner_config.get("persona_id", "default")
+            )
             catalog["profiles"].append(
                 {
                     "id": profile_id,
                     "name": profile_id,
                     "provider_pool": settings.get("provider_pool", ["*"]),
                     "persona_pool": settings.get("persona_pool", ["*"]),
+                    # Implicit Webchat defaults do not apply a stored persona.
+                    "persona_id": None
+                    if persona_id in ("default", "[%None]")
+                    else persona_id,
                     "max_steps": misc.get("max_steps", 30),
                     "tool_call_timeout": misc.get("tool_call_timeout", 60),
                     "context_length": config.get("agent_runner", {})
@@ -167,6 +178,8 @@ class RoleAssetService:
                 }
             )
         tool_mgr = core.provider_manager.llm_tools
+        from astrbot.core.agent.mcp_client import MCPTool
+        from astrbot.core.star.star import star_map
         from astrbot.core.tools.registry import get_builtin_tool_config_statuses
 
         tools = list(tool_mgr.func_list)
@@ -184,17 +197,33 @@ class RoleAssetService:
                     for profile_id, config in core.astrbot_config_mgr.confs.items()
                 ],
             )
+            enabled_profiles = (
+                [status["conf_id"] for status in statuses if status["enabled"]]
+                if statuses
+                else list(core.astrbot_config_mgr.confs)
+            )
+            plugin = star_map.get(tool.handler_module_path)
+            # Preserve MCP, unowned and reserved tools, as the main pipeline does.
+            if plugin and not plugin.reserved and not isinstance(tool, MCPTool):
+                enabled_profiles = [
+                    profile_id
+                    for profile_id in enabled_profiles
+                    if core.astrbot_config_mgr.confs[profile_id].get(
+                        "plugin_set", ["*"]
+                    )
+                    == ["*"]
+                    or plugin.name
+                    in core.astrbot_config_mgr.confs[profile_id].get(
+                        "plugin_set", ["*"]
+                    )
+                ]
             catalog["tools"].append(
                 {
                     "id": tool.name,
                     "name": tool.name,
                     "enabled": tool.active,
                     "persona_restricted": not tool_mgr.is_builtin_tool(tool.name),
-                    "enabled_profiles": [
-                        status["conf_id"] for status in statuses if status["enabled"]
-                    ]
-                    if statuses
-                    else list(core.astrbot_config_mgr.confs),
+                    "enabled_profiles": enabled_profiles,
                 }
             )
         from astrbot.core.skills.skill_manager import SkillManager
@@ -324,16 +353,27 @@ class RoleAssetService:
             requirements.insert(
                 0, ("persona_id", "personas", definition["persona_slot"])
             )
+        elif profile.get("persona_id"):
+            requirements.insert(0, ("persona_id", "personas", profile["persona_id"]))
         for field, kind, slot in requirements:
-            resource_id = bindings.get(slot)
+            inherited_persona = field == "persona_id" and not definition.get(
+                "persona_slot"
+            )
+            resource_id = slot if inherited_persona else bindings.get(slot)
             matches = (
                 [r for r in catalog[kind] if r["id"] == resource_id]
                 if resource_id
                 else []
             )
-            path = f"installation.bindings.{slot}"
+            path = (
+                "installation.profile_id"
+                if inherited_persona
+                else f"installation.bindings.{slot}"
+            )
             effective[field] = resource_id
-            sources[field] = f"installation:{slot}"
+            sources[field] = (
+                f"profile:{profile_id}" if inherited_persona else f"installation:{slot}"
+            )
             if len(matches) != 1:
                 code = "AMBIGUOUS" if len(matches) > 1 else "MISSING"
                 issues.append(
@@ -386,12 +426,14 @@ class RoleAssetService:
         for field, default in defaults.items():
             value = profile.get(field, default)
             source = f"profile:{profile_id}"
-            if field in ("prompt", "tools", "skills") and definition.get(
-                "persona_slot"
+            if field in ("prompt", "tools", "skills") and (
+                definition.get("persona_slot") or (field != "prompt" and persona)
             ):
                 value, source = (
                     persona.get(field),
-                    f"persona:{definition['persona_slot']}",
+                    f"persona:{definition['persona_slot']}"
+                    if definition.get("persona_slot")
+                    else f"profile:{profile_id}",
                 )
             logical = False
             if definition.get(field) is not None:

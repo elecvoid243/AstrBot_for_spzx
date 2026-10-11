@@ -5,9 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from astrbot.api import AstrBotConfig
+from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.db.sqlite import SQLiteDatabase
-from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
 from astrbot.core.persona_mgr import PersonaManager
 from astrbot.core.provider.manager import ProviderManager
@@ -268,7 +269,7 @@ async def test_preview_inherits_the_live_profile_context_budget(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_skill_readiness_uses_the_selected_runtime_and_plugin_scope(
+async def test_capability_readiness_uses_the_selected_runtime_and_plugin_scope(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path))
@@ -294,6 +295,15 @@ async def test_skill_readiness_uses_the_selected_runtime_and_plugin_scope(
         name="research-plugin", root_dir_name="research_plugin", activated=True
     )
     monkeypatch.setattr(star, "star_registry", [plugin])
+    monkeypatch.setitem(star.star_map, "research_plugin.tools", plugin)
+    providers.llm_tools.func_list = [
+        FunctionTool(
+            name="plugin-search",
+            description="Search plugin evidence.",
+            parameters={"type": "object", "properties": {}},
+            handler_module_path="research_plugin.tools",
+        )
+    ]
     skills.set_sandbox_skills_cache(
         [{"name": "sandbox-evidence", "description": "Sandbox evidence"}]
     )
@@ -315,10 +325,25 @@ async def test_skill_readiness_uses_the_selected_runtime_and_plugin_scope(
             "evidence",
             "sandbox-evidence",
         ]
+        assert (
+            "plugin-search"
+            in (await service.preview_role(payload))["effective"]["tools"]
+        )
         payload["installation"]["profile_id"] = "default"
         assert (await service.preview_role(payload))["effective"]["skills"] == []
+        assert (
+            "plugin-search"
+            not in (await service.preview_role(payload))["effective"]["tools"]
+        )
+        payload["definition"]["tools"] = ["search"]
+        payload["installation"]["bindings"] = {"search": "plugin-search"}
+        assert {
+            "path": "installation.bindings.search",
+            "code": "FORBIDDEN",
+            "message": "Resource is unavailable: plugin-search",
+        } in (await service.preview_role(payload))["issues"]
         payload["definition"]["skills"] = ["remote"]
-        payload["installation"]["bindings"] = {"remote": "sandbox-evidence"}
+        payload["installation"]["bindings"]["remote"] = "sandbox-evidence"
         blocked = await service.preview_role(payload)
         assert {
             "path": "installation.bindings.remote",
@@ -396,4 +421,66 @@ async def test_explicit_capabilities_cannot_expand_persona_allowlists(tmp_path):
             },
         ]
     finally:
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_capability_inheritance_uses_the_profiles_default_persona(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path))
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    await db.initialize()
+    preferences = SharedPreferences(db, str(tmp_path / "preferences.json"))
+    config = AstrBotConfig(config_path=str(tmp_path / "config.json"))
+    config["agent_runner"]["config"]["persona"]["persona_id"] = "restricted"
+    profiles = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
+    personas = PersonaManager(db, profiles)
+    await personas.create_persona(
+        "restricted", "Be careful.", tools=["a"], skills=["a"]
+    )
+    providers = ProviderManager(profiles, db, personas)
+    providers.llm_tools.func_list = [
+        FunctionTool(
+            name=name,
+            description="Research evidence.",
+            parameters={"type": "object", "properties": {}},
+        )
+        for name in ("a", "b")
+    ]
+    for name in ("a", "b"):
+        skill = tmp_path / "data" / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    service = RoleAssetService(
+        db,
+        SimpleNamespace(
+            astrbot_config_mgr=profiles,
+            provider_manager=providers,
+            persona_mgr=personas,
+            kb_manager=KnowledgeBaseManager(providers),
+        ),
+    )
+    payload = {"definition": {"name": "Researcher", "prompt": "Check evidence."}}
+    try:
+        preview = await service.preview_role(payload)
+        assert preview["effective"]["tools"] == ["a"]
+        assert preview["effective"]["skills"] == ["a"]
+        assert preview["effective"]["persona_id"] == "restricted"
+        assert preview["sources"]["skills"] == "profile:default"
+        assert preview["effective"]["prompt"] == "Check evidence."
+        await personas.delete_persona("restricted")
+        assert {
+            "path": "installation.profile_id",
+            "code": "MISSING",
+            "message": "Resource is missing: restricted",
+        } in (await service.preview_role(payload))["issues"]
+        # Webchat's implicit system default has no stored persona allowlist.
+        config["agent_runner"]["config"]["persona"]["persona_id"] = "default"
+        assert (await service.preview_role(payload))["effective"]["skills"] == [
+            "a",
+            "b",
+        ]
+    finally:
+        await preferences.close()
         await db.engine.dispose()

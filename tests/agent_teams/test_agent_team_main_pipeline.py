@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrbot.core import astr_main_agent, core_lifecycle
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
@@ -59,6 +58,8 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "auto_routed",
         "dag_role",
         "auto_role",
+        "dag_inherited_role",
+        "auto_inherited_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -344,7 +345,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "definition": {
                     "name": "Writer",
                     "prompt": "Write with evidence.",
-                    "persona_slot": "research-persona",
+                    "persona_slot": None
+                    if "_inherited" in mode
+                    else "research-persona",
                     "skills": ["research-skill"],
                     "tools": [],
                     "knowledge_bases": ["evidence"],
@@ -353,7 +356,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "profile_id": "research",
                     "bindings": {
                         "model": "research-model",
-                        "research-persona": "researcher",
+                        **(
+                            {"research-persona": "researcher"}
+                            if "_inherited" not in mode
+                            else {}
+                        ),
                         "research-skill": "alpha",
                         "evidence": (
                             await knowledge.get_kb_by_name("research-evidence")
@@ -451,9 +458,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "alice",
                 team["team_id"],
                 {
-                    "mode": mode.removesuffix("_cancel")
-                    .removesuffix("_routed")
-                    .removesuffix("_role"),
+                    "mode": mode.split("_")[0],
                     "input": "Research.",
                     **(
                         {"workflow_id": workflow["workflow_id"]}

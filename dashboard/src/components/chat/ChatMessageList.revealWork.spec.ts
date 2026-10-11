@@ -23,6 +23,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { defineComponent, h } from "vue";
+import axios from "axios";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import type { ChatContent, ChatRecord } from "@/composables/useMessages";
 
@@ -202,5 +203,51 @@ describe("ChatMessageList thinking reveal", () => {
   it("keeps the sidebar closed when the reveal carries no keyword", () => {
     const wrapper = mountList({ revealWorkIndex: 1 });
     expect(wrapper.emitted("openReasoning")).toBeUndefined();
+  });
+});
+
+describe("ChatMessageList sent media", () => {
+  it("renders audio and video controls beside downloadable sent attachments", async () => {
+    const wrapper = mountList({
+      messages: [{
+        id: "media",
+        content: {
+          type: "user",
+          message: [
+            { type: "record", filename: "voice.wav", embedded_url: "/voice" },
+            { type: "video", filename: "movie.mp4", embedded_url: "/movie" },
+            { type: "file", filename: "notes.txt", embedded_url: "/notes" },
+            { type: "image", filename: "picture.png", embedded_url: "/picture" },
+          ],
+        },
+      }],
+    });
+    expect(wrapper.find("audio").attributes("src")).toBe("/voice");
+    expect(wrapper.find("video").attributes("src")).toBe("/movie");
+    expect(wrapper.find("audio").attributes()).toHaveProperty("controls");
+    expect(wrapper.find("video").attributes()).toHaveProperty("controls");
+    expect(wrapper.findAll(".sent-media-card")).toHaveLength(2);
+    expect(wrapper.findAll(".sent-file-card [icon='mdi-download']")).toHaveLength(3);
+    expect(wrapper.find(".sent-image-card img").attributes("src")).toBe("/picture");
+    expect(wrapper.find(".sent-attachments").classes()).toContain("has-media");
+
+    const get = vi.spyOn(axios, "get").mockResolvedValue({ data: new Blob(["audio"]) });
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:voice");
+    const revokeUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      expect(this.download).toBe("voice.wav");
+    });
+    try {
+      await wrapper.find(".sent-media-card [icon='mdi-download']").trigger("click");
+      await vi.waitFor(() => expect(revokeUrl).toHaveBeenCalledWith("blob:voice"));
+      expect(get).toHaveBeenCalledWith("/voice", { responseType: "blob" });
+      expect(click).toHaveBeenCalledOnce();
+    } finally {
+      get.mockRestore();
+      createUrl.mockRestore();
+      revokeUrl.mockRestore();
+      click.mockRestore();
+      wrapper.unmount();
+    }
   });
 });

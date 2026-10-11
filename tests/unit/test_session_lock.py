@@ -179,6 +179,7 @@ class TestConcurrency:
             message_obj=SimpleNamespace(message=[]),
             get_extra=lambda _key: None,
             get_sender_id=lambda: "user-1",
+            is_stopped=lambda: False,
             send_typing=send_typing,
             send=AsyncMock(),
             stop_typing=AsyncMock(),

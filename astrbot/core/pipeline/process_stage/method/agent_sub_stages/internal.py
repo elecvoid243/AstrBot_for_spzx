@@ -17,6 +17,7 @@ from astrbot.core.astr_main_agent import (
     LLM_ERROR_MESSAGE_EXTRA_KEY,
     MainAgentBuildConfig,
     MainAgentBuildResult,
+    _matches_provider_wake_prefix,
     _provider_supports_modality,
     build_main_agent,
 )
@@ -318,16 +319,53 @@ class InternalAgentSubStage(Stage):
             if await call_event_hook(event, EventType.OnWaitingLLMRequestEvent):
                 return
 
+            if event.get_extra(
+                "provider_request"
+            ) is None and not _matches_provider_wake_prefix(
+                event,
+                provider_wake_prefix,
+            ):
+                return
+
+            preflight_config = self.ctx.plugin_manager.context.get_config(
+                umo=event.unified_msg_origin
+            )
+            if (
+                event.is_stopped()
+                or event.get_extra("agent_stop_requested")
+                or not preflight_config.get("provider_settings", {}).get("enable", True)
+                or not await SessionServiceManager.should_process_llm_request(event)
+            ):
+                return
+
+            # Download direct and quoted files without holding the session lock.
+            # get_file() reuses these local paths when the request is built later.
+            for component in event.message_obj.message:
+                if isinstance(component, File):
+                    await component.get_file()
+                elif isinstance(component, Reply) and component.chain:
+                    for reply_component in component.chain:
+                        if isinstance(reply_component, File):
+                            await reply_component.get_file()
+
+            if event.is_stopped() or event.get_extra("agent_stop_requested"):
+                return
+
             async with session_lock_manager.acquire_lock(event.unified_msg_origin):
                 logger.debug("acquired session lock for llm request")
                 current_config = self.ctx.plugin_manager.context.get_config(
                     umo=event.unified_msg_origin
                 )
-                if not current_config.get("provider_settings", {}).get(
-                    "enable", True
-                ) or not await SessionServiceManager.should_process_llm_request(event):
+                if (
+                    event.is_stopped()
+                    or event.get_extra("agent_stop_requested")
+                    or not current_config.get("provider_settings", {}).get(
+                        "enable", True
+                    )
+                    or not await SessionServiceManager.should_process_llm_request(event)
+                ):
                     logger.debug(
-                        "LLM was disabled while waiting for the session lock; "
+                        "LLM was disabled or stopped while waiting for the session lock; "
                         "skipping request for %s.",
                         event.unified_msg_origin,
                     )

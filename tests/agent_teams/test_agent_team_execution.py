@@ -3,8 +3,8 @@
 Covers `AgentTeamExecutionRegistry` / `NodeExecutionBinding`: per-turn token
 issuance, umo-scoped resolution (forged/foreign token defense), and
 runner-owned lifecycle (resolve does not unregister; unregister is idempotent).
-Also covers EventBus token routing (profile scheduler selection, fallback to
-umo-based routing) and the webchat adapter `execution_token` passthrough.
+Also covers EventBus token routing (profile selection and expired invocation
+rejection) and the webchat adapter `execution_token` passthrough.
 """
 
 import asyncio
@@ -268,7 +268,7 @@ async def test_eventbus_routes_token_event_to_profile_scheduler():
 
 
 @pytest.mark.asyncio
-async def test_eventbus_foreign_token_falls_back_to_default():
+async def test_eventbus_foreign_token_is_rejected():
     # Token is bound to UMO but the event arrives from another conversation.
     token = AgentTeamExecutionRegistry.register(make_binding())
     bus, default, profile = make_bus()
@@ -276,37 +276,42 @@ async def test_eventbus_foreign_token_falls_back_to_default():
         "webchat:FriendMessage:conv-2", extras={"execution_token": token}
     )
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     assert event.get_extra("agent_team_execution") is None
     AgentTeamExecutionRegistry.unregister(token)
 
 
 @pytest.mark.asyncio
-async def test_eventbus_unknown_token_falls_back_to_default():
+async def test_eventbus_unknown_token_is_rejected():
     bus, default, profile = make_bus()
     event = TeamNodeEvent(UMO, extras={"execution_token": "0" * 32})
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     assert event.get_extra("agent_team_execution") is None
 
 
 @pytest.mark.asyncio
-async def test_eventbus_unknown_config_id_falls_back_with_binding_set():
-    # Defense-in-depth: a resolved binding whose config profile has no
-    # scheduler falls back to umo routing, but the binding extra stays set.
+async def test_eventbus_unknown_config_id_is_rejected():
+    # A missing profile must not silently execute with a different model.
     token = AgentTeamExecutionRegistry.register(make_binding(config_id="cfg-gone"))
     bus, default, profile = make_bus()
     event = TeamNodeEvent(UMO, extras={"execution_token": token})
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     resolved_extra = event.get_extra("agent_team_execution")
     assert resolved_extra is not None
@@ -1282,9 +1287,12 @@ async def test_runner_deliver_failure_still_unregisters_token(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
-    """Nodes without an execution block deliver with execution_token=None;
-    auto-mode member turns behave the same by design (spec §2.2)."""
+async def test_runner_node_without_execution_still_correlates_turn(tmp_path):
+    """Default-profile turns also carry a scoped execution identity.
+
+    Args:
+        tmp_path: Isolated database directory.
+    """
     db = SQLiteDatabase(str(tmp_path / "rnotok.db"))
     await db.initialize()
     captured: dict = {}
@@ -1311,7 +1319,8 @@ async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
     await runner.run()
 
     assert runner.status == "completed"
-    assert captured["token"] is None
+    assert captured["token"]
+    assert AgentTeamExecutionRegistry.resolve(captured["token"]) is None
 
 
 @pytest.mark.asyncio

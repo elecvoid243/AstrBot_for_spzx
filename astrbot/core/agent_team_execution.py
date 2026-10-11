@@ -10,14 +10,20 @@ PipelineScheduler instead of the sender conversation's default one.
 Trust model: tokens are in-process secrets. `resolve` refuses to hand out a
 binding whose registered umo does not match the requesting event's umo, so a
 token replayed or forged into another conversation resolves to nothing and the
-event falls back to default routing. The registry is deliberately dumb: it only
+event is rejected. The registry is deliberately dumb: it only
 stores and retrieves bindings. Lifecycle ownership (register on node dispatch,
 unregister when the runner finishes the turn) lives in the team runner, never
 in `resolve`.
 """
 
 import uuid
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from astrbot.dashboard.services.agent_team_ports import TeamPorts
 
 
 @dataclass
@@ -54,6 +60,111 @@ class NodeExecutionBinding:
     """Knowledge base names override (kb_names)."""
     context_length: int | None = None
     """Context length override (request-level model/compression cap)."""
+    turn_id: str | None = None
+    """Turn identity shared by execution, process events, and transcript rows."""
+    message_id: str | None = None
+    """Message identity used to cancel this invocation."""
+    source_umo: str | None = None
+    """Original transport source before routing to the member's conversation."""
+
+
+current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
+    "current_team_execution", default=None
+)
+
+
+async def execute_team_turn(
+    *,
+    ports: "TeamPorts",
+    member: dict,
+    run_id: str,
+    team_id: str,
+    username: str,
+    turn_id: str,
+    text: str,
+    execution: dict,
+    node_id: str | None = None,
+    context: str | None = None,
+    config_checker: Callable[[str], bool] | None = None,
+    on_delivered: Callable[[str], Awaitable[None]] | None = None,
+    on_event: Callable[[dict], None] | None = None,
+) -> tuple[str, list]:
+    """Execute a member or coordinator turn through the existing pipeline ports.
+
+    Args:
+        ports: Existing injectable delivery and result collection boundary.
+        member: Member identity and conversation, including its role prompt.
+        run_id: Owning run.
+        team_id: Owning team.
+        username: Actual initiating user, never an implicit administrator.
+        turn_id: Correlation shared with process events and transcript rows.
+        text: Task input.
+        execution: Effective member configuration with task overrides applied.
+        node_id: Workflow node, when applicable.
+        context: Temporary task framing.
+        config_checker: Optional check that the selected profile still exists.
+        on_delivered: Persists or publishes the dispatched message association.
+        on_event: Receives interactive waiting events from collection.
+
+    Returns:
+        Full reply text and existing chat message parts.
+
+    Raises:
+        ValueError: When the selected configuration profile was deleted.
+        Exception: When dispatch or collection fails. The invocation is stopped.
+    """
+    from astrbot.core.utils.active_event_registry import active_event_registry
+
+    config_id = execution.get("config_id") or None
+    if config_id and config_checker is not None and not config_checker(config_id):
+        raise ValueError("Configuration profile has been deleted.")
+    binding = NodeExecutionBinding(
+        run_id=run_id,
+        team_id=team_id,
+        member_id=member["member_id"],
+        node_id=node_id,
+        umo=member["umo"],
+        owner_username=username,
+        config_id=config_id,
+        persona_id=execution.get("persona_id") or None,
+        provider_id=execution.get("provider_id") or None,
+        tools=execution.get("tools"),
+        skills=execution.get("skills"),
+        max_steps=execution.get("max_steps"),
+        tool_call_timeout=execution.get("tool_call_timeout"),
+        kb_names=execution.get("kb_names"),
+        context_length=execution.get("context_length"),
+        turn_id=turn_id,
+    )
+    token = AgentTeamExecutionRegistry.register(binding)
+    framing = (
+        "\n\n".join(value for value in (member.get("system_prompt"), context) if value)
+        or None
+    )
+    try:
+        binding.message_id = await ports.deliver(
+            member["session_id"], text, framing, execution_token=token
+        )
+        if on_delivered is not None:
+            await on_delivered(binding.message_id)
+        if on_event is not None:
+            return await ports.collect(
+                member["session_id"],
+                binding.message_id,
+                member["member_id"],
+                on_event=on_event,
+            )
+        return await ports.collect(
+            member["session_id"], binding.message_id, member["member_id"]
+        )
+    except BaseException:
+        if binding.message_id is not None:
+            active_event_registry.request_agent_stop_all(
+                binding.umo, message_id=binding.message_id
+            )
+        raise
+    finally:
+        AgentTeamExecutionRegistry.unregister(token)
 
 
 # Registry storage keyed by execution token. Module-level on purpose: the
@@ -106,7 +217,14 @@ class AgentTeamExecutionRegistry:
         if binding is None:
             return None
         if umo is not None and binding.umo != umo:
-            return None
+            # The WebChat adapter includes the sender in the transport source;
+            # team definitions retain the raw conversation UMO. Accept only
+            # the equivalent source for this binding's actual owner.
+            prefix = "webchat:FriendMessage:"
+            if not binding.umo.startswith(prefix) or umo != (
+                f"{prefix}webchat!{binding.owner_username}!{binding.umo[len(prefix) :]}"
+            ):
+                return None
         return binding
 
     @classmethod

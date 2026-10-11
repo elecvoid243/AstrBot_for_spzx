@@ -657,19 +657,23 @@ class Context:
         return prov
 
     def get_config(self, umo: str | None = None) -> AstrBotConfig:
-        """获取 AstrBot 的配置。
+        """Get the configuration effective for an invocation or conversation.
 
         Args:
-            umo: unified_message_origin 值，用于获取特定会话的配置。
+            umo: Optional unified message origin for a specific conversation.
 
         Returns:
-            AstrBot 配置对象。
+            Active team configuration when applicable, otherwise the requested
+            conversation configuration or the default configuration.
 
-        Note:
-            如果不提供 umo 参数，将返回默认配置。
+        Raises:
+            KeyError: When the active team configuration was deleted.
         """
+        from astrbot.core.agent_team_execution import current_team_execution
+
+        if current_team_execution.get() is not None:
+            return self.astrbot_config_mgr.get_conf(umo)
         if not umo:
-            # 使用默认配置
             return self._config
         return self.astrbot_config_mgr.get_conf(umo)
 

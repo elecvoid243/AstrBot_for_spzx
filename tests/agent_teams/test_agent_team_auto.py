@@ -267,7 +267,7 @@ async def test_auto_run_member_wave(tmp_path):
     # Member deliveries carry the per-turn team framing with the round number.
     wave_delivery = next(d for d in delivered if d[0] == "conv-1")
     assert wave_delivery[1] == "写初稿"
-    assert wave_delivery[2] == "[团队任务] 来自协调者（第 1 轮）"
+    assert wave_delivery[2] == "你是写手\n\n[团队任务] 来自协调者（第 1 轮）"
     # Reply events are tagged with the executing member's member_id.
     replies = [e for e in bus.history() if e.get("direction") == "reply"]
     assert {e["member_id"] for e in replies if e["member_id"] != "mA"} == {"mB", "mC"}

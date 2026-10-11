@@ -355,8 +355,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         "model": "research-model",
                         "research-persona": "researcher",
                         "research-skill": "alpha",
-                        "evidence": (await knowledge.get_kb_by_name("research-evidence"))
-                        .kb.kb_id,
+                        "evidence": (
+                            await knowledge.get_kb_by_name("research-evidence")
+                        ).kb.kb_id,
                     },
                 },
             },
@@ -381,9 +382,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             "runner_config": {
                 **({"config_id": "research"} if "_routed" not in mode else {}),
                 "skills": ["alpha"],
-                "kb_names": []
-                if member["name"] == "Lead"
-                else ["research-evidence"],
+                "kb_names": [] if member["name"] == "Lead" else ["research-evidence"],
                 "tools": ["team_dispatch", "team_finish"]
                 if member["name"] == "Lead"
                 else [],

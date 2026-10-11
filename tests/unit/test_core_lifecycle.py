@@ -385,13 +385,14 @@ class TestAstrBotCoreLifecycleInitialize:
 
     @pytest.mark.asyncio
     async def test_initialize_sets_up_all_components(
-        self, mock_log_broker, mock_db, mock_astrbot_config
+        self, mock_log_broker, mock_db, mock_astrbot_config, temp_db
     ):
         """Test that initialize sets up all required components in correct order."""
         lifecycle = AstrBotCoreLifecycle(mock_log_broker, mock_db)
 
         # Mock all the dependencies
-        mock_db.initialize = AsyncMock()
+        mock_db.initialize = AsyncMock(side_effect=temp_db.initialize)
+        mock_db.get_db = temp_db.get_db
         mock_html_renderer = MagicMock()
         mock_html_renderer.initialize = AsyncMock()
 
@@ -529,12 +530,13 @@ class TestAstrBotCoreLifecycleInitialize:
 
     @pytest.mark.asyncio
     async def test_initialize_handles_migration_failure(
-        self, mock_log_broker, mock_db, mock_astrbot_config
+        self, mock_log_broker, mock_db, mock_astrbot_config, temp_db
     ):
         """Test that initialize handles migration failures gracefully."""
         lifecycle = AstrBotCoreLifecycle(mock_log_broker, mock_db)
 
-        mock_db.initialize = AsyncMock()
+        mock_db.initialize = AsyncMock(side_effect=temp_db.initialize)
+        mock_db.get_db = temp_db.get_db
 
         mock_html_renderer = MagicMock()
         mock_html_renderer.initialize = AsyncMock()

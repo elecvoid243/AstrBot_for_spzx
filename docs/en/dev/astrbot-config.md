@@ -77,7 +77,7 @@ The default AstrBot configuration is as follows:
         "streaming_response": False,
         "show_tool_use_status": False,
         "streaming_segmented": False,
-        "max_agent_step": 30,
+        "max_agent_step": 128,
         "tool_call_timeout": 120,
     },
     "provider_stt_settings": {
@@ -370,7 +370,7 @@ Whether platforms that don't support streaming responses should fall back to seg
 
 #### `provider_settings.max_agent_step`
 
-Limit on the maximum number of Agent steps. Default is `30`. Each tool call by the model counts as one step.
+Limit on the maximum number of Agent steps. Default is `128`. Each model execution round counts as one step, even when it calls multiple tools.
 
 #### `provider_settings.tool_call_timeout`
 

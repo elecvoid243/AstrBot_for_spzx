@@ -29,7 +29,7 @@ AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             "fallback_max_tokens": 128000,
         },
         "misc": {
-            "max_steps": 30,
+            "max_steps": 128,
             "tool_schema_mode": "full",
             "tool_call_timeout": 120,
             "tool_call_timeout_exclude": [

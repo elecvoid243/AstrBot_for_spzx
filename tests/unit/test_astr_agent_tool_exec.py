@@ -27,6 +27,7 @@ from astrbot.core.subagent_manager import (
     SubAgentSession,
     SubAgentStatus,
 )
+from astrbot.core.tools.computer_tools.shell import ShellSessionTool
 from astrbot.core.utils.active_event_registry import ActiveEventRegistry
 
 
@@ -59,6 +60,47 @@ def _build_run_context(message_components: list[object] | None = None):
     event = _DummyEvent(message_components=message_components)
     ctx = SimpleNamespace(event=event, context=SimpleNamespace())
     return ContextWrapper(context=ctx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["poll", "write", "write_line", "interrupt"])
+@pytest.mark.parametrize("excluded", [False, True])
+@pytest.mark.parametrize(
+    ("yield_time_ms", "configured_timeout", "expected_timeout"),
+    [(300_000, 120, 305), (5_000, 120, 120), (300_000, 600, 600)],
+)
+async def test_shell_session_wait_fits_inside_tool_timeout(
+    monkeypatch, action, excluded, yield_time_ms, configured_timeout, expected_timeout
+):
+    from astrbot.core import astr_agent_tool_exec as tool_exec
+
+    tool = ShellSessionTool()
+    monkeypatch.setattr(tool, "call", AsyncMock(return_value="output"))
+    run_context = _build_run_context()
+    run_context.tool_call_timeout = configured_timeout
+    run_context.tool_call_timeout_exclude = [tool.name] if excluded else []
+    wait_for = AsyncMock(wraps=asyncio.wait_for)
+    monkeypatch.setattr(tool_exec.asyncio, "wait_for", wait_for)
+
+    results = [
+        result
+        async for result in FunctionToolExecutor._execute_local(
+            tool,
+            run_context,
+            action=action,
+            session_id="sh_test",
+            yield_time_ms=yield_time_ms,
+        )
+    ]
+
+    assert results[0].content[0].text == "output"
+    if excluded:
+        wait_for.assert_not_awaited()
+    else:
+        assert wait_for.await_count > 0
+    assert all(
+        call.kwargs["timeout"] == expected_timeout for call in wait_for.await_args_list
+    )
 
 
 class _DoneRunner:
@@ -500,8 +542,8 @@ async def test_background_wakeup_passes_history_and_provider_settings_to_main_ag
     ("provider_settings", "expected_max_step"),
     [
         pytest.param({"max_agent_step": 50}, 50, id="configured"),
-        pytest.param({}, 30, id="missing_falls_back_to_default"),
-        pytest.param({"max_agent_step": True}, 30, id="boolean_falls_back_to_default"),
+        pytest.param({}, 128, id="missing_falls_back_to_default"),
+        pytest.param({"max_agent_step": True}, 128, id="boolean_falls_back_to_default"),
         pytest.param({"max_agent_step": "50"}, 50, id="numeric_string_coerced"),
         pytest.param({"max_agent_step": 0}, 1, id="zero_clamped_to_min"),
     ],
@@ -555,7 +597,7 @@ async def test_background_wakeup_applies_max_agent_step(
             "agent_runner": {
                 "runner_type": "local",
                 "config": {
-                    "misc": {"max_steps": provider_settings.get("max_agent_step", 30)}
+                    "misc": {"max_steps": provider_settings.get("max_agent_step", 128)}
                 },
             },
         },

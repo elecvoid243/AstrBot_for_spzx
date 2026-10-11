@@ -551,8 +551,8 @@ class CronJobManager:
         )
         notice_cfg = misc_config.get("repeated_tool_call_notice", {})
         agent_max_step = coerce_int_config(
-            misc_config.get("max_steps", 30),
-            default=30,
+            misc_config.get("max_steps", 128),
+            default=128,
             min_value=1,
             field_name="agent_runner.config.misc.max_steps",
         )

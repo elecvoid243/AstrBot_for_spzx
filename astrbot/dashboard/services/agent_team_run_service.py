@@ -7,8 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from astrbot import logger
 from astrbot.core.agent_team_execution import (
-    AgentTeamExecutionRegistry,
-    NodeExecutionBinding,
+    execute_team_turn,
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
 from astrbot.core.utils.active_event_registry import active_event_registry
@@ -515,64 +514,36 @@ class DAGRunner:
                 state.update(status="pending", started_at=None)
                 await self._persist()
             return
-        # Per-turn execution binding (spec §2.3): a node carrying a resolved
-        # profile (its execution block or the member's runner_config/pins)
-        # dispatches under a token the EventBus resolves to the binding's own
-        # PipelineScheduler. Registered here, unregistered in the delivery
-        # try's finally below — the token lives exactly for this turn. The
-        # merged dict always carries persona_id/provider_id keys (None when
-        # unset), so an explicit non-None scan guards default nodes: a node
-        # with neither block nor member config dispatches with no token, as
-        # before.
-        token = None
-        if any(value is not None for value in execution.values()):
-            token = AgentTeamExecutionRegistry.register(
-                NodeExecutionBinding(
-                    run_id=self.run_id,
-                    team_id=self.team_id,
-                    member_id=member["member_id"],
-                    node_id=node_id,
-                    umo=member["umo"],
-                    owner_username=self.username,
-                    config_id=execution.get("config_id") or None,
-                    persona_id=execution.get("persona_id") or None,
-                    tools=execution.get("tools"),
-                    skills=execution.get("skills"),
-                    provider_id=execution.get("provider_id") or None,
-                    max_steps=execution.get("max_steps"),
-                    tool_call_timeout=execution.get("tool_call_timeout"),
-                    kb_names=execution.get("kb_names"),
-                    context_length=execution.get("context_length"),
-                )
-            )
         # Stream deltas for this turn are tagged via the session -> turn_id
         # map; cleared in the finally below (every exit path).
         self._turn_by_session[member["session_id"]] = turn_id
         try:
-            # deliver stays inside the try so a delivery failure fails the
-            # node instead of escaping gather while sibling wave coroutines
-            # keep persisting transitions after the run went terminal.
-            message_id = await self.ports.deliver(
-                member["session_id"], task_text, None, execution_token=token
-            )
-            self._emit(
-                {
-                    "type": "message",
-                    "direction": "sent",
-                    "member_id": member["member_id"],
-                    "session_id": member["session_id"],
-                    "text": task_text,
-                    "turn_id": turn_id,
-                    "run_id": self.run_id,
-                }
-            )
-            await self._transcript(
-                "sent",
-                task_text,
-                member_id=member["member_id"],
-                node_id=node_id,
-                turn_id=turn_id,
-            )
+
+            async def _on_delivered(message_id: str) -> None:
+                """Record the dispatched turn before collecting its reply.
+
+                Args:
+                    message_id: Message identity assigned by the chat transport.
+                """
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "sent",
+                        "member_id": member["member_id"],
+                        "session_id": member["session_id"],
+                        "text": task_text,
+                        "turn_id": turn_id,
+                        "run_id": self.run_id,
+                    }
+                )
+                await self._transcript(
+                    "sent",
+                    task_text,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    turn_id=turn_id,
+                )
+
             # Race the reply collection against the stop request and the
             # reply deadline: a stop mid-turn abandons the collection right
             # away instead of waiting out the remaining reply_timeout, and a
@@ -603,10 +574,18 @@ class DAGRunner:
                     choice_pending = False
 
             collect_task = asyncio.ensure_future(
-                self.ports.collect(
-                    member["session_id"],
-                    message_id,
-                    member["member_id"],
+                execute_team_turn(
+                    ports=self.ports,
+                    member=member,
+                    run_id=self.run_id,
+                    team_id=self.team_id,
+                    username=self.username,
+                    turn_id=turn_id,
+                    text=task_text,
+                    execution=execution,
+                    node_id=node_id,
+                    config_checker=self.config_checker,
+                    on_delivered=_on_delivered,
                     on_event=_on_choice_event,
                 )
             )
@@ -689,11 +668,6 @@ class DAGRunner:
                 )
         finally:
             self._turn_by_session.pop(member["session_id"], None)
-            # Every exit path (stop abandonment, timeout, delivery failure)
-            # releases the token; late foreign events fall back to default
-            # routing once it is gone.
-            if token:
-                AgentTeamExecutionRegistry.unregister(token)
         await self._persist()
         self._emit(
             {
@@ -865,6 +839,7 @@ class AutoOrchestrator:
         username: str,
         rounds: list[dict] | None = None,
         on_member_stop: Callable[[dict], None] | None = None,
+        config_checker: Callable[[str], bool] | None = None,
         transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.run_id = run_id
@@ -882,6 +857,7 @@ class AutoOrchestrator:
         # next round number is len(self.rounds) + 1.
         self.rounds: list[dict] = list(rounds or [])
         self.on_member_stop = on_member_stop
+        self.config_checker = config_checker
         # Optional transcript sink: a single-row async callable the service
         # wires to the DB (tests script recording sinks). Every sink call is
         # best-effort — a transcript failure never fails the run.
@@ -1130,12 +1106,12 @@ class AutoOrchestrator:
             # turn_id map; cleared in the method's finally (every exit path).
             self._turn_by_session[session_id] = turn_id
 
-            async def _turn_io() -> None:
-                # Auto mode has no per-node execution blocks: turns run under
-                # member defaults by design (spec §2.2).
-                message_id = await self.ports.deliver(
-                    session_id, body, None, execution_token=None
-                )
+            async def _on_delivered(message_id: str) -> None:
+                """Record the coordinator turn before collecting its reply.
+
+                Args:
+                    message_id: Message identity assigned by the chat transport.
+                """
                 self._emit(
                     {
                         "type": "message",
@@ -1154,8 +1130,19 @@ class AutoOrchestrator:
                     round=n,
                     turn_id=turn_id,
                 )
-                reply, reply_parts = await self.ports.collect(
-                    session_id, message_id, member_id
+
+            async def _turn_io() -> None:
+                reply, reply_parts = await execute_team_turn(
+                    ports=self.ports,
+                    member=self.coordinator,
+                    run_id=self.run_id,
+                    team_id=self.team_id,
+                    username=self.username,
+                    turn_id=turn_id,
+                    text=body,
+                    execution=_merged_member_execution(self.coordinator, None),
+                    config_checker=self.config_checker,
+                    on_delivered=_on_delivered,
                 )
                 self._emit(
                     {
@@ -1260,29 +1247,32 @@ class AutoOrchestrator:
                     turn_id = uuid.uuid4().hex[:12]
                     try:
                         task = str(assignment.get("task") or "")
-                        # Auto mode has no per-node execution blocks: turns
-                        # run under member defaults by design (spec §2.2).
-                        message_id = await self.ports.deliver(
-                            member["session_id"], task, context, execution_token=None
-                        )
-                        self._emit(
-                            {
-                                "type": "message",
-                                "direction": "sent",
-                                "member_id": member["member_id"],
-                                "session_id": member["session_id"],
-                                "text": task,
-                                "turn_id": turn_id,
-                                "run_id": self.run_id,
-                            }
-                        )
-                        await self._transcript(
-                            "sent",
-                            task,
-                            member_id=member["member_id"],
-                            round=n,
-                            turn_id=turn_id,
-                        )
+
+                        async def _on_delivered(message_id: str) -> None:
+                            """Record the member turn before collecting its reply.
+
+                            Args:
+                                message_id: Message identity assigned by chat.
+                            """
+                            self._emit(
+                                {
+                                    "type": "message",
+                                    "direction": "sent",
+                                    "member_id": member["member_id"],
+                                    "session_id": member["session_id"],
+                                    "text": task,
+                                    "turn_id": turn_id,
+                                    "run_id": self.run_id,
+                                }
+                            )
+                            await self._transcript(
+                                "sent",
+                                task,
+                                member_id=member["member_id"],
+                                round=n,
+                                turn_id=turn_id,
+                            )
+
                         # Stream deltas for this turn are tagged via the
                         # session -> turn_id map; cleared in the finally below
                         # (every exit path from the collect race).
@@ -1292,10 +1282,18 @@ class AutoOrchestrator:
                         # the remaining reply_timeout (spec §6.3/§10).
                         collect_task = asyncio.ensure_future(
                             asyncio.wait_for(
-                                self.ports.collect(
-                                    member["session_id"],
-                                    message_id,
-                                    member["member_id"],
+                                execute_team_turn(
+                                    ports=self.ports,
+                                    member=member,
+                                    run_id=self.run_id,
+                                    team_id=self.team_id,
+                                    username=self.username,
+                                    turn_id=turn_id,
+                                    text=task,
+                                    context=context,
+                                    execution=_merged_member_execution(member, None),
+                                    config_checker=self.config_checker,
+                                    on_delivered=_on_delivered,
                                 ),
                                 timeout=float(self.config["reply_timeout"]),
                             )
@@ -1832,6 +1830,7 @@ class AgentTeamRunService:
             username=username,
             rounds=rounds,
             on_member_stop=self.on_member_stop,
+            config_checker=self.config_checker,
             transcript_sink=transcript_sink,
         )
         self._runners[run_id] = orchestrator

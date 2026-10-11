@@ -150,11 +150,27 @@ class AstrBotConfigManager:
         await self._persist_abconf_mapping(abconf_data)
 
     def get_conf(self, umo: str | MessageSession | None) -> AstrBotConfig:
-        """获取指定 umo 的配置文件。如果不存在，则 fallback 到默认配置文件。"""
-        if not umo:
-            return self.confs["default"]
+        """Resolve the active invocation profile or the conversation configuration.
+
+        Args:
+            umo: Conversation origin, or None for the active/default profile.
+
+        Returns:
+            The configuration effective for this invocation or conversation.
+
+        Raises:
+            KeyError: When an active team invocation's profile was deleted.
+        """
         if isinstance(umo, MessageSession):
             umo = f"{umo.platform_id}:{umo.message_type}:{umo.session_id}"
+
+        from astrbot.core.agent_team_execution import current_team_execution
+
+        execution = current_team_execution.get()
+        if execution and execution.config_id and (not umo or umo == execution.umo):
+            return self.confs[execution.config_id]
+        if not umo:
+            return self.confs["default"]
 
         uuid_ = self._load_conf_mapping(umo)["id"]
 

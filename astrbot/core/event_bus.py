@@ -12,6 +12,7 @@ class:
 
 import asyncio
 from asyncio import Queue
+from contextvars import copy_context
 
 from astrbot.core import logger
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
@@ -41,10 +42,10 @@ class EventBus:
             event: AstrMessageEvent = await self.event_queue.get()
             # Agent team node turns (spec §2.3) carry a per-turn execution
             # token. Resolve it BEFORE the usual umo-based routing so the turn
-            # runs on the binding's own config profile scheduler. Unknown or
-            # foreign tokens fall back to default routing; the runner owns
-            # token unregistration, so resolution never consumes the token.
+            # runs on the binding's own config profile scheduler. Expired or
+            # foreign tokens must not start a replacement default invocation.
             scheduler = None
+            binding = None
             token = event.get_extra("execution_token")
             if token:
                 from astrbot.core.agent_team_execution import (
@@ -54,22 +55,31 @@ class EventBus:
                 binding = AgentTeamExecutionRegistry.resolve(
                     token, umo=event.unified_msg_origin
                 )
-                if binding is None:
-                    logger.warning(
-                        "agent team execution token invalid or foreign (umo=%s); ignoring",
-                        event.unified_msg_origin,
-                    )
-                else:
+                if binding is not None:
+                    binding.source_umo = event.unified_msg_origin
+                    event.unified_msg_origin = binding.umo
                     event.set_extra("agent_team_execution", binding)
                     if binding.config_id:
                         scheduler = self.pipeline_scheduler_mapping.get(
                             binding.config_id
                         )
-                        if scheduler is None:
-                            logger.warning(
-                                "agent team execution config %r not found; falling back to umo routing",
-                                binding.config_id,
+                if binding is None or (binding.config_id and scheduler is None):
+                    logger.warning(
+                        "Agent team invocation expired, foreign, or missing its profile (umo=%s).",
+                        event.unified_msg_origin,
+                    )
+                    from astrbot.core.platform.sources.webchat.webchat_event import (
+                        WebChatMessageEvent,
+                    )
+
+                    if isinstance(event, WebChatMessageEvent):
+                        await event.send(
+                            event.plain_result(
+                                "Team invocation is no longer available."
                             )
+                        )
+                        await event.send(None)
+                    continue
             conf_info = self.astrbot_config_mgr.get_conf_info(event.unified_msg_origin)
             conf_id = conf_info["id"]
             conf_name = conf_info.get("name") or conf_id
@@ -81,7 +91,11 @@ class EventBus:
                     f"PipelineScheduler not found for id: {conf_id}, event ignored."
                 )
                 continue
-            task = asyncio.create_task(scheduler.execute(event))
+            from astrbot.core.agent_team_execution import current_team_execution
+
+            execution_context = copy_context()
+            execution_context.run(current_team_execution.set, binding)
+            task = execution_context.run(asyncio.create_task, scheduler.execute(event))
             self._pending_tasks.add(task)
             task.add_done_callback(self._on_task_done)
 

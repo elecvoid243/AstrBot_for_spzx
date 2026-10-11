@@ -1982,8 +1982,8 @@ async def build_main_agent(
         req, quote_image_ref = await collect_initial_request(
             event, plugin_context, config, req=req, quoted_image_refs=quoted_image_refs
         )
-        if req is None:
-            return None
+    if req is None:
+        return None
 
     # Agent collab: per-turn collaborative framing (roster/topic/roles) is
     # injected as a temp extra — visible to the provider this turn only,
@@ -1992,6 +1992,8 @@ async def build_main_agent(
         req.extra_user_content_parts.append(
             TextPart(text=collab_context).mark_as_temp()
         )
+    if team_context := event.get_extra("team_context"):
+        req.extra_user_content_parts.append(TextPart(text=team_context).mark_as_temp())
     cfg = config.provider_settings or plugin_context.get_config(
         umo=event.unified_msg_origin
     ).get("provider_settings", {})
@@ -2212,6 +2214,14 @@ async def build_main_agent(
         captioned_refs=captioned_refs,
         supports_image=_provider_supports_modality(provider, "image"),
     )
+
+    # Enforce the role allowlist after built-in tools have also been added.
+    execution = event.get_extra("agent_team_execution")
+    allowed_tools = getattr(execution, "tools", None)
+    if allowed_tools is not None and req.func_tool:
+        req.func_tool = ToolSet(
+            tools=[tool for tool in req.func_tool.tools if tool.name in allowed_tools]
+        )
 
     reset_coro = agent_runner.reset(
         provider=provider,

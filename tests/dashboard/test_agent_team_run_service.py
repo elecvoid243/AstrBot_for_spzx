@@ -239,8 +239,12 @@ async def test_execute_node_registers_member_runner_config_without_node_block(
 
 
 @pytest.mark.asyncio
-async def test_execute_node_default_node_dispatches_no_token(tmp_path):
-    """No execution block + no member config: no token, no binding (as before)."""
+async def test_execute_node_default_node_still_correlates_turn(tmp_path):
+    """Default-profile turns retain execution correlation and token cleanup.
+
+    Args:
+        tmp_path: Isolated database directory.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()
     captured: dict = {}
@@ -267,7 +271,8 @@ async def test_execute_node_default_node_dispatches_no_token(tmp_path):
     await runner.run()
 
     assert runner.status == "completed"
-    assert captured["token"] is None
+    assert captured["token"]
+    assert AgentTeamExecutionRegistry.resolve(captured["token"]) is None
 
 
 @pytest.mark.asyncio

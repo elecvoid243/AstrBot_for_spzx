@@ -47,7 +47,16 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mode", ["dag", "auto", "ordinary", "dag_cancel", "auto_cancel", "dag_routed", "auto_routed"]
+    "mode",
+    [
+        "dag",
+        "auto",
+        "ordinary",
+        "dag_cancel",
+        "auto_cancel",
+        "dag_routed",
+        "auto_routed",
+    ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
     tmp_path, monkeypatch, mode

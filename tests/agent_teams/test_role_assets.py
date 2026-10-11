@@ -1,9 +1,18 @@
 """Role assets through the shared public service and real SQLite storage."""
 
+from types import SimpleNamespace
+
 import pytest
 
+from astrbot.api import AstrBotConfig
+from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
+from astrbot.core.knowledge_base.kb_mgr import KnowledgeBaseManager
+from astrbot.core.persona_mgr import PersonaManager
+from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.umop_config_router import UmopConfigRouter
+from astrbot.core.utils.shared_preferences import SharedPreferences
 
 
 @pytest.mark.asyncio
@@ -213,3 +222,44 @@ async def test_profile_disabled_tools_are_excluded_from_inheritance_and_reported
         }
     ]
     await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_inherits_the_live_profile_context_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTRBOT_ROOT", str(tmp_path))
+    db = SQLiteDatabase(str(tmp_path / "roles.db"))
+    preferences = SharedPreferences(db, str(tmp_path / "preferences.json"))
+    config = AstrBotConfig(config_path=str(tmp_path / "config.json"))
+    config["agent_runner"]["config"]["compression"]["fallback_max_tokens"] = 54321
+    profiles = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
+    personas = PersonaManager(db, profiles)
+    providers = ProviderManager(profiles, db, personas)
+    # Compose real resource managers without replacing any internal methods.
+    core = SimpleNamespace(
+        astrbot_config_mgr=profiles,
+        provider_manager=providers,
+        persona_mgr=personas,
+        kb_manager=KnowledgeBaseManager(providers),
+    )
+    service = RoleAssetService(db, core)
+    try:
+        resources = await service.get_resources()
+        assert resources["profiles"][0]["context_length"] == 54321
+        preview = await service.preview_role(
+            {"definition": {"name": "Researcher", "prompt": "Check evidence."}}
+        )
+        assert preview["effective"]["context_length"] == 54321
+        assert preview["sources"]["context_length"] == "profile:default"
+        del config["agent_runner"]["config"]["compression"]["fallback_max_tokens"]
+        assert (await service.get_resources())["profiles"][0][
+            "context_length"
+        ] == 128000
+        overridden = await service.preview_role(
+            {"definition": {"name": "Researcher", "prompt": "Check evidence."}},
+            {"context_length": 8192},
+        )
+        assert overridden["effective"]["context_length"] == 8192
+        assert overridden["sources"]["context_length"] == "task"
+    finally:
+        await preferences.close()
+        await db.engine.dispose()

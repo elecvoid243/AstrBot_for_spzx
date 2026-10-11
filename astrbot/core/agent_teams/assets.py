@@ -66,6 +66,13 @@ class RoleAssetError(ValueError):
     def __init__(
         self, message: str, fields: list[dict] | None = None, status: int = 400
     ):
+        """Create an error that dashboard callers can present directly.
+
+        Args:
+            message: User-visible description of the failure.
+            fields: Optional diagnostics containing path, code and message keys.
+            status: HTTP response status for this failure, defaulting to 400.
+        """
         super().__init__(message)
         self.fields = fields or []
         self.status = status
@@ -80,6 +87,18 @@ class RoleAssetService:
         core_lifecycle=None,
         catalog_loader: Callable[[], Awaitable[dict]] | None = None,
     ):
+        """Connect persistence and the current machine's resource inventory.
+
+        Args:
+            db: Database used to persist immutable versions and installations.
+            core_lifecycle: Optional running core whose managers supply local
+                resources. Without it or a loader, the resource lists are empty.
+            catalog_loader: Optional asynchronous inventory source, taking
+                precedence over core_lifecycle. Returns profiles, models,
+                personas, tools, skills and knowledge_bases lists. Each resource
+                has id and name keys, plus the configuration and availability
+                metadata consumed by preview_role.
+        """
         self.db = db
         self.core_lifecycle = core_lifecycle
         self.catalog_loader = catalog_loader
@@ -117,9 +136,10 @@ class RoleAssetService:
                     "persona_pool": settings.get("persona_pool", ["*"]),
                     "max_steps": misc.get("max_steps", 30),
                     "tool_call_timeout": misc.get("tool_call_timeout", 60),
-                    "context_length": config.get("provider_ltm", {}).get(
-                        "max_context_length", 0
-                    ),
+                    "context_length": config.get("agent_runner", {})
+                    .get("config", {})
+                    .get("compression", {})
+                    .get("fallback_max_tokens", 128000),
                     "knowledge_bases": config.get("kb_names", []),
                     "skills": None,
                     "tools": None,
@@ -327,7 +347,7 @@ class RoleAssetService:
             "max_iterations": 20,
             "max_steps": 30,
             "tool_call_timeout": 60,
-            "context_length": 0,
+            "context_length": 128000,
             "prompt": None,
             "tools": None,
             "skills": None,

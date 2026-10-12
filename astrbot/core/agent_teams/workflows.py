@@ -2116,28 +2116,66 @@ class WorkflowService:
                 checkpoint.result_submission and row.pending_result is not None
             )
             if finish_result:
+                for call in calls:
+                    if call["status"] in {"result_saved", "applied"}:
+                        continue
+                    payload = call["args"]
+                    if row.snapshot["definition"].get("output_contract") is not None:
+                        try:
+                            payload = (
+                                json.loads(payload["result_json"])
+                                if set(payload) == {"result_json"}
+                                else None
+                            )
+                        except (TypeError, ValueError):
+                            payload = None
+                    if payload != row.pending_result:
+                        finish_result = False
+                        break
+            if finish_result:
                 state["safe_to_finish"] = True
                 # The accepted intent proves this internal transaction's outcome,
                 # even if the tool return was interrupted before being recorded.
                 for call in calls:
                     if call["name"] != "submit_task_result":
                         continue
-                    raw = CallToolResult(
-                        content=[TextContent(type="text", text="Result accepted.")]
-                    ).model_dump(mode="json")
-                    call["status"] = "result_saved"
-                    call["raw_results"] = [raw]
-                    stored = await session.get(AgentWorkflowToolCall, call["record_id"])
-                    assert stored is not None
-                    stored.status = "result_saved"
-                    stored.raw_results = [raw]
-                    stored.execution_id = execution_id
-                    session.add(stored)
-                    identity = uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"{run_id}:{state['attempt_id']}:{call['record_id']}:raw:0",
-                    ).hex
-                    if await session.get(AgentWorkflowProcess, identity) is None:
+                    records = call.get("process_records", [])
+                    if call["status"] not in {"result_saved", "applied"}:
+                        raw = CallToolResult(
+                            content=[TextContent(type="text", text="Result accepted.")]
+                        ).model_dump(mode="json")
+                        call["status"] = "result_saved"
+                        call["raw_results"] = [raw]
+                        stored = await session.get(
+                            AgentWorkflowToolCall, call["record_id"]
+                        )
+                        assert stored is not None
+                        stored.status = "result_saved"
+                        stored.raw_results = [raw]
+                        stored.execution_id = execution_id
+                        session.add(stored)
+                        records = [
+                            {
+                                "id": call["record_id"] + ":raw:0",
+                                "data": {
+                                    "id": call["call_id"],
+                                    "name": call["name"],
+                                    "raw_result": raw,
+                                },
+                            }
+                        ]
+                        checkpoint.phase = "tool_result"
+                        checkpoint.data["phase"] = "tool_result"
+                    for record in records:
+                        identity = uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{run_id}:{state['attempt_id']}:{record['id']}",
+                        ).hex
+                        if (
+                            await session.get(AgentWorkflowProcess, identity)
+                            is not None
+                        ):
+                            continue
                         session.add(
                             AgentWorkflowProcess(
                                 record_id=identity,
@@ -2146,11 +2184,7 @@ class WorkflowService:
                                 attempt_id=state["attempt_id"],
                                 member_id=row.snapshot["member"]["member_id"],
                                 kind="tool_result",
-                                data={
-                                    "id": call["call_id"],
-                                    "name": call["name"],
-                                    "raw_result": raw,
-                                },
+                                data=record["data"],
                             )
                         )
                         session.add(
@@ -2164,8 +2198,6 @@ class WorkflowService:
                             )
                         )
                 if calls:
-                    checkpoint.phase = "tool_result"
-                    checkpoint.data["phase"] = "tool_result"
                     session.add(checkpoint)
             elif checkpoint.result_submission:
                 # Result submission is an internal idempotent transaction. This

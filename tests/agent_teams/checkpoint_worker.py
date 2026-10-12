@@ -265,6 +265,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
+                if scenario == "submit_conflict_result" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "submission-conflict":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario in {"submit_conflict_applied", "submit_conflict_pre"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "response") and row.data["response"]["id"] == "submission-conflict":
+                    session.info["kill_boundary"] = row.run_id
                 if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "legacy_response", "legacy_upgrade_failure"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":

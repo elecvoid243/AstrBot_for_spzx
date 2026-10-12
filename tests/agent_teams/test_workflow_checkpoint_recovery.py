@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -100,6 +100,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                 context = json.dumps(payload["contexts"])
                 if "submit-original" in context:
                     response = {"role": "assistant", "completion_text": "Submitted."}
+                    if scenario.startswith("submit_conflict") and "submit-conflict" not in context:
+                        response = {"role": "tool", "id": "submission-conflict", "tools_call_name": ["submit_task_result"], "tools_call_args": [{"text": "Conflicting report."}], "tools_call_ids": ["submit-conflict"]}
                 elif "evidence-original" in context:
                     response = {"role": "tool", "id": "submission-original", "tools_call_name": ["submit_task_result"], "tools_call_args": [{"text": "Original verified report."}], "tools_call_ids": ["submit-original"]}
                     if scenario.startswith(("submit_custom", "submit_file")):
@@ -154,7 +156,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     assert worker.poll() is None, (tmp_path / "first.log").read_text(encoding="utf-8")
                     assert time.monotonic() < deadline, (tmp_path / "first.log").read_text(encoding="utf-8")
                     time.sleep(0.05)
-                assert len(requests) == (3 if repair_mode or scenario.startswith("submit_file") else 2 if scenario.startswith("submit_") or parameter_mode else 1)
+                assert len(requests) == (3 if repair_mode or scenario.startswith(("submit_file", "submit_conflict")) else 2 if scenario.startswith("submit_") or parameter_mode else 1)
                 assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario == "completed_generator" else [{"value": "original-plan", "part": "initial"}] if scenario in {"partial_generator", "generator_error"} else [{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_")) or scenario == "parameters_tool_result" else [])
                 worker.kill()
                 worker.wait(timeout=10)
@@ -168,6 +170,27 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario.startswith("submit_conflict"):
+            before = next(call for call in evidence["before"]["tool_calls"] if call["call_id"] == "submit-conflict")
+            after = next(call for call in evidence["after"]["tool_calls"] if call["call_id"] == "submit-conflict")
+            assert "A different result was already submitted" in after["raw_results"][0]["content"][0]["text"]
+            if scenario.endswith("pre"):
+                assert before["raw_results"] == []
+                assert after["status"] == "applied"
+                assert after["context_position"] is not None
+            else:
+                assert before["status"] == ("applied" if scenario.endswith("applied") else "result_saved")
+                assert before["context_position"] == (7 if scenario.endswith("applied") else None)
+                assert after == before
+            recorded = [record["data"]["raw_result"] for record in evidence["after"]["process"] if record["kind"] == "tool_result" and record["data"]["id"] == "submit-conflict"]
+            assert recorded == after["raw_results"]
+            assert evidence["after"]["status"] == "completed"
+            assert evidence["result"] == {"text": "Original verified report."}
+            assert len(evidence["after"]["artifacts"]) == 1
+            assert sum(event["kind"] == "task.completed" for event in evidence["after"]["events"]) == 1
+            assert len(requests) == (4 if scenario.endswith("pre") else 3)
+            assert effects == [{"value": "original-plan"}]
+            return
         if scenario in {"legacy_response", "legacy_upgrade_failure"}:
             assert evidence["before"]["tool_calls"] == []
         if scenario in {"partial_generator", "generator_error"}:

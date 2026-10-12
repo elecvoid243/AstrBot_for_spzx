@@ -455,6 +455,7 @@ const roleVersions = computed(
 );
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
+let artifactRead = 0;
 
 async function refresh() {
   if (loading.value) return;
@@ -474,13 +475,16 @@ async function refresh() {
       runs.value = (await workflowAssetsApi.runs()).runs;
       const id = selectedRun.value?.run_id ?? route.query.workflow_run;
       if (typeof id === "string" && id) {
+        const artifactId = selectedRun.value?.result_ref?.artifact_id;
         selectedRun.value = await workflowAssetsApi.run(id);
+        if (artifactId !== selectedRun.value.result_ref?.artifact_id) {
+          artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
+        }
         if (
           !selectedArtifact.value ||
           selectedArtifact.value.artifact_id !==
             selectedRun.value.result_ref?.artifact_id
         ) {
-          artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
           await loadArtifact();
         }
       }
@@ -601,16 +605,21 @@ async function openRun(runId: string) {
 }
 
 async function loadArtifact() {
+  const read = ++artifactRead;
   const ref = selectedRun.value?.result_ref;
   if (!ref) return;
   selectedArtifact.value = null;
   try {
-    selectedArtifact.value = await workflowAssetsApi.artifact(
+    const artifact = await workflowAssetsApi.artifact(
       ref.artifact_id,
       Number(artifactVersion.value),
     );
+    // A slower response must not overwrite a more recent version selection.
+    if (read === artifactRead) selectedArtifact.value = artifact;
   } catch (err) {
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (read === artifactRead) {
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    }
   }
 }
 

@@ -271,6 +271,74 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
+  it.each([
+    ["success", false],
+    ["failure", false],
+    ["success", true],
+    ["failure", true],
+  ])(
+    "keeps the selected version when an earlier read ends in %s (refresh: %s)",
+    async (response, refreshWhileReading) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({
+        ...run,
+        status: "completed",
+        result_ref: { artifact_id: "artifact-1", version: 1 },
+        artifacts: [{ version: 1 }, { version: 2 }],
+      });
+      const first = {
+        artifact_id: "artifact-1",
+        version: 1,
+        content: { text: "Version one" },
+      };
+      api.artifact.mockResolvedValue(first);
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      await flushPromises();
+      let settle!: () => void;
+      const delayed = new Promise((resolve, reject) => {
+        settle = () =>
+          response === "success"
+            ? resolve({
+                ...first,
+                version: 2,
+                content: { text: "Version two" },
+              })
+            : reject(new Error("Outdated read failure"));
+      });
+      api.artifact.mockImplementation(async (_id: string, version: number) =>
+        version === 2 ? delayed : first,
+      );
+      const selector = wrapper.find('[data-testid="artifact-version"]');
+      await selector.setValue("2");
+      if (refreshWhileReading) {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushPromises();
+        expect((selector.element as HTMLSelectElement).value).toBe("2");
+      }
+      await selector.setValue("1");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="result-text"]').text()).toBe(
+        "Version one",
+      );
+      settle();
+      await flushPromises();
+      expect((selector.element as HTMLSelectElement).value).toBe("1");
+      expect(wrapper.find('[data-testid="result-text"]').text()).toBe(
+        "Version one",
+      );
+      expect(wrapper.text()).not.toContain("Outdated read failure");
+      wrapper.unmount();
+    },
+  );
+
   it.each(["properties", "allOf", "$ref"])(
     "attaches a selected ready file with a %s contract and creates a revision",
     async (contractForm) => {

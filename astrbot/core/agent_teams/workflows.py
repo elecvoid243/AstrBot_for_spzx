@@ -963,7 +963,8 @@ class WorkflowService:
                             missing = False
                             for key, ref in task["inputs"].items():
                                 if ref.get("input") is not None:
-                                    inputs[key] = inputs[ref["input"]]
+                                    # Earlier task aliases must not change the source.
+                                    inputs[key] = root.snapshot["inputs"][ref["input"]]
                                 else:
                                     source = rows[ref["task_id"]]
                                     assert source is not None

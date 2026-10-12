@@ -282,6 +282,7 @@ async def graph_script(workflow_env):
         holds={},
         failures=set(),
         starts=[],
+        texts=[],
         active=set(),
         overlap=False,
         outputs={},
@@ -297,6 +298,7 @@ async def graph_script(workflow_env):
         script.active.add(session_id)
         bindings[message_id] = binding
         script.starts.append(binding)
+        script.texts.append(text)
         return message_id
 
     async def collect(session_id, message_id, member_id):
@@ -349,6 +351,65 @@ async def wait_graph(service, run_id):
             return run
         await asyncio.sleep(0.01)
     raise AssertionError("Workflow did not settle")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("source", ["workflow", "result"])
+async def test_task_aliases_resolve_from_frozen_workflow_inputs(
+    graph_script, reverse, source
+):
+    script, env = graph_script, graph_script.env
+    aliases = {
+        "a": {"input": "b"}
+        if source == "workflow"
+        else {"task_id": "first", "field": "text"},
+        "copy_a": {"input": "a"},
+    }
+    if reverse:
+        aliases = dict(reversed(list(aliases.items())))
+    first = {
+        "id": "first",
+        "name": "First",
+        "member": "writer",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "First",
+    }
+    consumer = {
+        **first,
+        "id": "consumer",
+        "task": "alias={a}; original={copy_a}",
+        "inputs": aliases,
+    }
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Input aliases",
+                "required_inputs": ["a", "b"],
+                "tasks": [first, consumer] if source == "result" else [consumer],
+                "edges": [{"source": "first", "target": "consumer"}]
+                if source == "result"
+                else [],
+            }
+        },
+    )
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"a": "ORIGINAL_A", "b": "ORIGINAL_B"}},
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed"
+    expected_alias = "ORIGINAL_B" if source == "workflow" else "Validated first"
+    assert script.texts[-1] == f"alias={expected_alias}; original=ORIGINAL_A"
+    assert finished["snapshot"]["inputs"] == {"a": "ORIGINAL_A", "b": "ORIGINAL_B"}
+    assert finished["tasks"][-1]["snapshot"]["inputs"] == {
+        "a": expected_alias,
+        "b": "ORIGINAL_B",
+        "copy_a": "ORIGINAL_A",
+    }
 
 
 @pytest.mark.asyncio

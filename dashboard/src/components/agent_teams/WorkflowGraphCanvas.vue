@@ -17,7 +17,13 @@
           v-model="selectedEdgeKey"
           :items="
             draft.edges.map((edge) => ({
-              title: `${draft.tasks.find((task) => task.id === edge.source)?.name ?? edge.source} → ${draft.tasks.find((task) => task.id === edge.target)?.name ?? edge.target}`,
+              title: `${
+                draft.tasks.find((task) => task.id === edge.source)?.name ??
+                edge.source
+              } → ${
+                draft.tasks.find((task) => task.id === edge.target)?.name ??
+                edge.target
+              }`,
               value: `${edge.source}:${edge.target}`,
             }))
           "
@@ -94,6 +100,7 @@
           :edges="edges"
           :mode="readonly ? 'monitor' : 'edit'"
           :minimap-visible="minimap"
+          commit-positions-on-drag-stop
           :selected-edge-id="selectedEdgeKey"
           @drop-at="addTask"
           @connect="connect"
@@ -173,10 +180,10 @@
               "
               @update:focused="
                 !$event &&
-                renameInput(
-                  String(alias),
-                  aliasTexts[`${selectedTask.id}:${alias}`] ?? String(alias),
-                )
+                  renameInput(
+                    String(alias),
+                    aliasTexts[`${selectedTask.id}:${alias}`] ?? String(alias),
+                  )
               "
             />
             <v-select
@@ -334,10 +341,11 @@ const historyIndex = ref(0);
 const selectedTask = computed(() =>
   draft.value.tasks.find((task) => task.id === selectedNode.value),
 );
-const selectedEdge = computed(() =>
-  draft.value.edges?.find(
-    (edge) => `${edge.source}:${edge.target}` === selectedEdgeKey.value,
-  ),
+const selectedEdge = computed(
+  () =>
+    draft.value.edges?.find(
+      (edge) => `${edge.source}:${edge.target}` === selectedEdgeKey.value,
+    ),
 );
 const selectedRole = computed(() =>
   props.roles.find((role) => role.role_id === selectedTask.value?.role_id),
@@ -365,12 +373,16 @@ const nodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        memberName: `${role?.definition.name ?? running?.snapshot.member.name ?? task.role_id} · ${task.member}`,
+        memberName: `${
+          role?.definition.name ?? running?.snapshot.member.name ?? task.role_id
+        } · ${task.member}`,
         memberColor: collabMemberColor(task.member),
         taskPreview: task.task,
         nodeNumber: index + 1,
         configLabel: `v${task.role_version}`,
-        inputLabel: `${tm("graph.inputs")} · ${Object.keys(task.inputs ?? {}).length}`,
+        inputLabel: `${tm("graph.inputs")} · ${
+          Object.keys(task.inputs ?? {}).length
+        }`,
         outputLabel: task.output_contract
           ? tm("graph.structured")
           : tm("graph.text"),
@@ -378,10 +390,10 @@ const nodes = computed<FlowNode[]>(() =>
           state === "completed"
             ? "done"
             : ["blocked", "dependency_failed", "awaiting_result"].includes(
-                  state,
-                )
-              ? "failed"
-              : state,
+                state,
+              )
+            ? "failed"
+            : state,
         statusLabel: state ? tm(`v2.states.${state}`) : "",
         error: running?.state.reason ?? "",
         inDegree:
@@ -397,7 +409,9 @@ const edges = computed(() =>
     source: edge.source,
     target: edge.target,
     label: edge.condition
-      ? `${edge.condition.field} ${edge.condition.operator} ${JSON.stringify(edge.condition.value)}`
+      ? `${edge.condition.field} ${edge.condition.operator} ${JSON.stringify(
+          edge.condition.value,
+        )}`
       : undefined,
   })),
 );

@@ -194,7 +194,10 @@ class WorkflowService:
                     asset_id=asset_id,
                     version=version,
                     owner_username=username,
-                    definition=definition.model_dump(exclude_none=True),
+                    # Null is a meaningful condition value, not an unset option.
+                    definition=definition.model_dump(
+                        exclude_none=not isinstance(definition, GraphDefinition)
+                    ),
                 )
             )
             try:
@@ -1083,7 +1086,7 @@ class WorkflowService:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is None or row.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            if row.state["attempt_id"] != attempt_id:
+            if row.state.get("attempt_id") != attempt_id:
                 raise RoleAssetError("Attempt is no longer active", status=409)
             if row.pending_result is not None:
                 if row.pending_result == payload:
@@ -1122,6 +1125,7 @@ class WorkflowService:
                     col(AgentWorkflowRun.run_id) == run_id,
                     col(AgentWorkflowRun.status) == "running",
                     col(AgentWorkflowRun.pending_result).is_(None),
+                    col(AgentWorkflowRun.state)["attempt_id"].as_string() == attempt_id,
                 )
                 .values(pending_result=payload)
             )
@@ -1129,7 +1133,7 @@ class WorkflowService:
                 await session.rollback()
                 await session.refresh(row)
                 if (
-                    row.state["attempt_id"] == attempt_id
+                    row.state.get("attempt_id") == attempt_id
                     and row.pending_result == payload
                 ):
                     return
@@ -1255,7 +1259,8 @@ class WorkflowService:
                     consumer is None
                     or consumer.owner_username != username
                     or consumer.status != "running"
-                    or consumer.state["attempt_id"] != attempt_id
+                    or not attempt_id
+                    or consumer.state.get("attempt_id") != attempt_id
                 ):
                     raise RoleAssetError(
                         "Consumer attempt is no longer active", status=409
@@ -1454,12 +1459,12 @@ class WorkflowService:
             run = await session.get(AgentWorkflowRun, run_id)
             if run is None or run.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            if not (
+            if not run.state.get("attempt_id") or not (
                 (attempt_id is None and run.status == "completed")
                 or (
                     attempt_id is not None
                     and run.status == "running"
-                    and run.state["attempt_id"] == attempt_id
+                    and run.state.get("attempt_id") == attempt_id
                 )
             ):
                 raise RoleAssetError("Attempt is no longer active", status=409)
@@ -1707,6 +1712,8 @@ class WorkflowService:
                     .where(
                         col(AgentWorkflowRun.run_id) == run_id,
                         col(AgentWorkflowRun.status) == "running",
+                        col(AgentWorkflowRun.state)["attempt_id"].as_string()
+                        == state["attempt_id"],
                     )
                     .values(state=state)
                 )
@@ -1738,6 +1745,8 @@ class WorkflowService:
                 .where(
                     col(AgentWorkflowRun.run_id) == run_id,
                     col(AgentWorkflowRun.status) == "running",
+                    col(AgentWorkflowRun.state)["attempt_id"].as_string()
+                    == state["attempt_id"],
                 )
                 .values(status=status, state=state)
             )

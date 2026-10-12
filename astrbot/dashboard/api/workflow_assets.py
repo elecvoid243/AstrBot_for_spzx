@@ -203,7 +203,9 @@ async def store_file(
             content.extend(chunk)
             if len(content) > 50 * 1024 * 1024:
                 raise RoleAssetError("Files must be at most 50 MiB", status=413)
-        attempt = None if run["status"] == "completed" else run["state"]["attempt_id"]
+        attempt = (
+            None if run["status"] == "completed" else run["state"].get("attempt_id")
+        )
         return ok(
             await service.store_file(
                 username, run_id, attempt, filename, bytes(content)

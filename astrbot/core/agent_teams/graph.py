@@ -115,12 +115,24 @@ def field_schema(contract: dict | None, path: str) -> dict:
             )
         current = properties[name]
     visited = set()
-    while isinstance(current, dict) and "$ref" in current:
-        if id(current) in visited:
-            raise ValueError(f"Field {path} must resolve to a scalar type")
-        visited.add(id(current))
-        current = resolver.lookup(current["$ref"]).contents
-    if not isinstance(current, dict) or current.get("type") not in {
+    candidates = [current]
+    declared: set[str] | None = None
+    while candidates:
+        item = candidates.pop()
+        if not isinstance(item, dict) or id(item) in visited:
+            continue
+        visited.add(id(item))
+        kinds = item.get("type")
+        if kinds is not None:
+            kinds = set(kinds if isinstance(kinds, list) else [kinds])
+            # JSON Schema's number includes integer; allOf intersects types.
+            if "number" in kinds:
+                kinds.add("integer")
+            declared = kinds if declared is None else declared & kinds
+        candidates.extend(item.get("allOf", []))
+        if "$ref" in item:
+            candidates.append(resolver.lookup(item["$ref"]).contents)
+    if not declared or not declared <= {
         "string",
         "boolean",
         "integer",
@@ -128,7 +140,7 @@ def field_schema(contract: dict | None, path: str) -> dict:
         "null",
     }:
         raise ValueError(f"Field {path} must declare a scalar type")
-    return current
+    return {"type": sorted(declared)}
 
 
 def validate_graph(definition: GraphDefinition) -> None:
@@ -186,18 +198,18 @@ def validate_graph(definition: GraphDefinition) -> None:
             rule = edge.condition
             try:
                 schema = field_schema(tasks[edge.source].output_contract, rule.field)
-                kind = schema["type"]
+                kinds = set(schema["type"])
                 value = rule.value
                 valid = (
-                    (kind == "boolean" and isinstance(value, bool))
-                    or (kind == "string" and isinstance(value, str))
-                    or (kind == "null" and value is None)
-                    or (kind == "integer" and type(value) is int)
-                    or (kind == "number" and type(value) in (int, float))
+                    ("boolean" in kinds and isinstance(value, bool))
+                    or ("string" in kinds and isinstance(value, str))
+                    or ("null" in kinds and value is None)
+                    or ("integer" in kinds and type(value) is int)
+                    or ("number" in kinds and type(value) in (int, float))
                 )
                 if not valid or (
                     rule.operator not in {"eq", "ne"}
-                    and kind not in {"integer", "number"}
+                    and not kinds <= {"integer", "number"}
                 ):
                     raise ValueError(
                         "Comparison and value must match the declared field type"

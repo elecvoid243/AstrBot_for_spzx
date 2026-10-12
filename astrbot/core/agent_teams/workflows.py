@@ -162,6 +162,7 @@ class WorkflowService:
                 if definition.output_contract.get("type") != "object":
                     raise ValueError("Result contracts must declare an object")
                 remaining: list[Schema] = [definition.output_contract]
+                visited: set[int] = set()
                 resolver = (
                     Registry()
                     .with_resource(
@@ -175,6 +176,9 @@ class WorkflowService:
                 )
                 while remaining:
                     value = remaining.pop()
+                    if id(value) in visited:
+                        continue
+                    visited.add(id(value))
                     if isinstance(value, dict):
                         if "$id" in value:
                             raise ValueError(
@@ -186,7 +190,10 @@ class WorkflowService:
                                     "Only local schema references are allowed"
                                 )
                             if key in value:
-                                resolver.lookup(value[key])
+                                # References can turn annotation data into schemas.
+                                target = resolver.lookup(value[key]).contents
+                                Draft202012Validator.check_schema(target)
+                                remaining.append(target)
                         # Only schema locations contain schema keywords; values in
                         # const, enum and default are ordinary result data.
                         remaining.extend(DRAFT202012.subresources_of(value))

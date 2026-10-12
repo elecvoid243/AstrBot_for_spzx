@@ -338,7 +338,9 @@ async def test_revision_preserves_pinned_consumers_and_full_content(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("schema_location", ["properties", "const", "enum", "default"])
+@pytest.mark.parametrize(
+    "schema_location", ["properties", "const", "enum", "default", "referenced_default"]
+)
 async def test_schema_keywords_in_result_data_are_preserved(
     workflow_env, scripted_workflow, schema_location
 ):
@@ -348,13 +350,15 @@ async def test_schema_keywords_in_result_data_are_preserved(
         "$dynamicRef": "https://source.test/other",
         "$id": "evidence-1",
     }
-    if schema_location == "properties":
+    if schema_location in {"properties", "referenced_default"}:
         contract = {
             "type": "object",
             "properties": {name: {"type": "string"} for name in result},
             "required": list(result),
             "additionalProperties": False,
         }
+        if schema_location == "referenced_default":
+            contract = {"type": "object", "$ref": "#/default", "default": contract}
     else:
         contract = {
             "type": "object",
@@ -379,6 +383,37 @@ async def test_schema_keywords_in_result_data_are_preserved(
 
 
 @pytest.mark.asyncio
+async def test_recursive_local_contract_can_be_saved_and_consumed(
+    workflow_env, scripted_workflow
+):
+    env = workflow_env
+    contract = {
+        "type": "object",
+        "properties": {"next": {"anyOf": [{"type": "null"}, {"$ref": "#"}]}},
+        "required": ["next"],
+        "additionalProperties": False,
+    }
+    asset = await env.service.save_asset(
+        "alice",
+        {"definition": {**env.asset["definition"], "output_contract": contract}},
+    )
+    result = {"next": {"next": None}}
+
+    async def collect(session_id, message_id, member_id):
+        tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
+        assert await tool.call(None, **result) == "Result accepted."
+        return "Done", []
+
+    service = scripted_workflow(collect)
+    run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+    done = await completed_run(service, run["run_id"])
+    assert done["status"] == "completed", done
+    assert (await service.read_artifact("alice", **done["result_ref"]))[
+        "content"
+    ] == result
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "schema",
     [
@@ -398,6 +433,13 @@ async def test_schema_keywords_in_result_data_are_preserved(
             "type": "object",
             "properties": {"value": {"$id": "https://example.test/schema"}},
         },
+        {
+            "type": "object",
+            "$ref": "#/default",
+            "default": {"$ref": "https://example.test/schema"},
+        },
+        {"type": "object", "$ref": "#/default", "default": {"type": "invalid"}},
+        {"type": "object", "$ref": "#/default", "default": "ordinary data"},
     ],
 )
 async def test_invalid_contracts_are_rejected_before_an_asset_can_start(

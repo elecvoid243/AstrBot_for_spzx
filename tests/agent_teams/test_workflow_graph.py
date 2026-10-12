@@ -522,6 +522,10 @@ async def test_failure_only_blocks_related_dependencies(graph_script):
     )
     assert len(overview["artifacts"]) == 2
     assert all(
+        task["cursor"] == task["events"][-1]["cursor"]
+        for task in finished["tasks"]
+    )
+    assert all(
         "process" not in task and "events" not in task for task in overview["tasks"]
     )
     unchanged = await env.service.get_events("alice", run["run_id"], finished["cursor"])

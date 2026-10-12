@@ -3969,7 +3969,8 @@ export const startRunApiV1WorkflowAssetsAssetIdRunsPost = <ThrowOnError extends 
  * service: Shared public run service.
  *
  * Returns:
- * Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+ * Goal previews of at most 200 characters, statuses, task progress, waiting
+ * reasons, attempts and artifact entries. Complete input values are omitted.
  * Read a selected run's detail for complete frozen inputs and saved records.
  */
 export const listRunsApiV1WorkflowRunsGet = <ThrowOnError extends boolean = false>(options?: OptionsLegacyParser<ListRunsApiV1WorkflowRunsGetData, ThrowOnError>) => {

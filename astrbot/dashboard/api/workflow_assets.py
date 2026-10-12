@@ -99,7 +99,8 @@ async def list_runs(
         service: Shared public run service.
 
     Returns:
-        Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+        Goal previews of at most 200 characters, statuses, task progress, waiting
+        reasons, attempts and artifact entries. Complete input values are omitted.
         Read a selected run's detail for complete frozen inputs and saved records.
     """
     return ok(await service.list_runs(username, limit))

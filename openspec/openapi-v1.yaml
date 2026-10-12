@@ -6467,7 +6467,8 @@ paths:
             service: Shared public run service.
 
         Returns:
-            Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+            Goal previews of at most 200 characters, statuses, task progress, waiting
+            reasons, attempts and artifact entries. Complete input values are omitted.
             Read a selected run's detail for complete frozen inputs and saved records.
       operationId: list_runs_api_v1_workflow_runs_get
       parameters:

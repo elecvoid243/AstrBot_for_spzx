@@ -57,8 +57,17 @@ async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_k
     workflow_env,
 ):
     env = workflow_env
+    evidence = "INITIAL_INPUT " + "Long evidence. " * 4000 + "UNSELECTED_INPUT_END"
+    asset = await env.service.save_asset(
+        "alice",
+        {"definition": {
+            **env.asset["definition"],
+            "task": "Report {evidence}",
+            "required_inputs": ["evidence"],
+        }},
+    )
     historical = await env.service.start_run(
-        "alice", env.asset["asset_id"], {"version": 1}
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"evidence": evidence}}
     )
     await completed_run(env.service, historical["run_id"])
     selected = await env.service.start_run(
@@ -88,7 +97,9 @@ async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_k
         "waiting": 0,
     }
     assert summary["snapshot"]["definition"]["name"] == "Report"
-    assert summary["snapshot"]["task"] == "Write a report"
+    assert summary["snapshot"]["task"].startswith("Report INITIAL_INPUT ")
+    assert len(summary["snapshot"]["task"]) <= 200
+    assert "inputs" not in summary["snapshot"]
     assert summary["state"]["attempt_id"] == historical["state"]["attempt_id"]
     assert summary["state"]["reason"] is None
     assert summary["artifacts"][0]["artifact_id"] == historical["run_id"]
@@ -98,6 +109,7 @@ async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_k
     assert "response" not in summary["state"]
     assert "profile" not in summary["snapshot"]
     assert "UNSELECTED_HISTORY" not in json.dumps(listed)
+    assert "UNSELECTED_INPUT_END" not in json.dumps(listed)
     selected_detail = await observer.get_run("alice", selected["run_id"])
     assert await observer.get_events(
         "alice", selected["run_id"], selected_detail["cursor"]
@@ -109,6 +121,8 @@ async def test_run_list_and_unchanged_poll_omit_history_but_detail_and_changes_k
     }
     detail = await observer.get_run("alice", historical["run_id"])
     assert detail["process"][0]["data"] == complete
+    assert detail["snapshot"]["inputs"] == {"evidence": evidence}
+    assert detail["snapshot"]["task"] == "Report " + evidence
     await env.service.record_process(
         "alice",
         historical["run_id"],

@@ -692,6 +692,7 @@ class WorkflowService:
                             "state": current.state,
                             "result": current.result,
                             "pending_result": current.pending_result,
+                            "cursor": current_events[-1].id if current_events else 0,
                             "process": [
                                 record.model_dump(mode="json")
                                 for record in process
@@ -732,8 +733,6 @@ class WorkflowService:
                                         "asset_id",
                                         "asset_version",
                                         "source",
-                                        "task",
-                                        "inputs",
                                         "node_id",
                                     )
                                     if key in current.snapshot
@@ -741,6 +740,9 @@ class WorkflowService:
                                 "definition": {
                                     "name": current.snapshot["definition"]["name"]
                                 },
+                                "task": current.snapshot.get(
+                                    "task", current.snapshot["definition"]["name"]
+                                )[:200],
                             },
                             "state": {
                                 key: current.state[key]

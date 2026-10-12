@@ -166,4 +166,46 @@ describe("useMessages windowed history failures", () => {
     expect(composable.historyPagingBySession["s1"].oldestLoadedId).toBe(6);
     expect(composable.historyOffsetBySession["s1"]).toBe(5);
   });
+
+  it("captures the viewport immediately before inserting a nonempty page", async () => {
+    api.getSession.mockResolvedValue(
+      sessionPayload([6, 7, 8, 9, 10].map(record), 10, true),
+    );
+    const composable = createComposable();
+    await composable.loadSessionMessages("s1");
+    const capture = vi.fn(() => {
+      expect(loadedIds(composable.messagesBySession.s1)).toEqual([
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+      ]);
+    });
+    api.getHistory.mockResolvedValueOnce(
+      historyPayload([1, 2, 3, 4, 5].map(record), true),
+    );
+    await composable.loadOlderMessages("s1", { beforePrepend: capture });
+    expect(capture).toHaveBeenCalledOnce();
+    expect(loadedIds(composable.messagesBySession.s1)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+    ]);
+    const duplicateCapture = vi.fn();
+    api.getHistory.mockResolvedValueOnce(
+      historyPayload([1, 2].map(record), false),
+    );
+    await composable.loadOlderMessages("s1", {
+      beforePrepend: duplicateCapture,
+    });
+    expect(duplicateCapture).not.toHaveBeenCalled();
+  });
 });

@@ -809,17 +809,18 @@ export function useMessages(options: UseMessagesOptions) {
 
   /**
    * Prepends one page of older history for a session (before_id cursor).
-   * The caller is responsible for preserving the scroll position across the
-   * prepend (scroll-height anchoring) — see Chat.vue load older flow.
+   * The caller can capture the current viewport immediately before insertion.
    *
-   * @param options.retry Explicit retry (the "load older" / "retry" button)
-   *   runs the request even after a failure; the automatic scroll-to-top path
-   *   leaves a failed page paused instead of hammering it on every scroll
-   *   event.
+   * Args:
+   *   sessionId: Session whose older records should be loaded.
+   *   options: Retry a failed page when requested explicitly, and optionally
+   *     capture the viewport with beforePrepend immediately before insertion,
+   *     after fetching and resolving media. Automatic retries remain paused
+   *     after a failure.
    */
   async function loadOlderMessages(
     sessionId: string,
-    options: { retry?: boolean } = {},
+    options: { retry?: boolean; beforePrepend?: () => void } = {},
   ) {
     const paging = historyPagingBySession[sessionId];
     if (!paging || paging.loadingOlder || !paging.hasMore) return;
@@ -849,6 +850,7 @@ export function useMessages(options: UseMessagesOptions) {
         (r) => r.id == null || !existingIds.has(String(r.id)),
       );
       if (deduped.length) {
+        options.beforePrepend?.();
         messagesBySession[sessionId] = [...deduped, ...existing];
       }
       const oldestRecord = deduped.find((r) => Number.isFinite(Number(r.id)));

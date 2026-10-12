@@ -133,7 +133,7 @@
             >
               <template
                 v-for="(part, attachmentIndex) in userAttachmentParts(msg)"
-                :key="`${msgIndex}-attachment-${attachmentIndex}-${part.type}`"
+                :key="`attachment-${attachmentIndex}-${part.type}`"
               >
                 <button
                   v-if="part.type === 'image'"
@@ -276,7 +276,7 @@
                 </button>
                 <template
                   v-for="(entry, blockIndex) in visibleBlocks(msg, msgIndex)"
-                  :key="`${msgIndex}-block-${entry.index}-${entry.block.kind}`"
+                  :key="`block-${entry.index}-${entry.block.kind}`"
                 >
                   <ReasoningBlock
                     v-if="entry.block.kind === 'thinking'"
@@ -306,7 +306,7 @@
                   <template v-else>
                     <template
                       v-for="(part, partIndex) in entry.block.parts"
-                      :key="`${msgIndex}-${entry.index}-${partIndex}-${part.type}`"
+                      :key="`${entry.index}-${partIndex}-${part.type}`"
                     >
                       <button
                         v-if="part.type === 'reply'"
@@ -1287,10 +1287,8 @@ function canBranchMessage(message: ChatRecord, messageIndex: number) {
 const branchCollapsed = ref(true);
 
 function toggleBranchCollapsed() {
-  // Manual scroll anchoring: the inherited history sits above the divider,
-  // so toggling shifts the divider by the revealed/hidden height. Compensate
-  // scrollTop by the scrollHeight delta to keep the divider visually stable,
-  // otherwise expanding can push it out of the viewport entirely.
+  // Keep the clicked divider stable by correcting its actual displacement,
+  // excluding unrelated content changes elsewhere in the list.
   let scroller = listRoot.value?.parentElement ?? null;
   while (
     scroller &&
@@ -1298,12 +1296,18 @@ function toggleBranchCollapsed() {
   ) {
     scroller = scroller.parentElement;
   }
-  const prevScrollHeight = scroller?.scrollHeight ?? 0;
+  const divider = listRoot.value?.querySelector<HTMLElement>(
+    ".branch-divider-row",
+  );
+  const previousTop = divider?.getBoundingClientRect().top;
   branchCollapsed.value = !branchCollapsed.value;
   const scrollEl = scroller;
-  if (scrollEl) {
+  if (scrollEl && divider && previousTop != null) {
     nextTick(() => {
-      scrollEl.scrollTop += scrollEl.scrollHeight - prevScrollHeight;
+      if (divider.isConnected) {
+        const delta = divider.getBoundingClientRect().top - previousTop;
+        if (Math.abs(delta) > 1) scrollEl.scrollTop += delta;
+      }
     });
   }
   // Notify the parent so scroll markers can be recomputed against the new

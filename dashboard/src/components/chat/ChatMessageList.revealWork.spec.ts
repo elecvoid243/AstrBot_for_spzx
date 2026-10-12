@@ -117,6 +117,93 @@ function capsuleExpanded(wrapper: ReturnType<typeof mountList>) {
   return pill.attributes("aria-expanded") === "true";
 }
 
+describe("ChatMessageList inherited-history anchoring", () => {
+  it("keeps existing Markdown nodes when older messages are prepended", async () => {
+    const user = userRecord("u1");
+    const bot = workedBotRecord("b1");
+    const wrapper = mountList({ messages: [user, bot] });
+    const original = wrapper
+      .findAll(".message-row")
+      .at(-1)!
+      .findComponent({ name: "MarkdownMessagePart" });
+    expect(original.exists()).toBe(true);
+    const element = original.element;
+    try {
+      await wrapper.setProps({ messages: [userRecord("older"), user, bot] });
+      expect(
+        wrapper
+          .findAll(".message-row")
+          .at(-1)!
+          .findComponent({ name: "MarkdownMessagePart" }).element,
+      ).toBe(element);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps the existing media player when older messages are prepended", async () => {
+    const media = {
+      id: "voice",
+      content: {
+        type: "user",
+        message: [{ type: "record", url: "/voice", filename: "voice.wav" }],
+      },
+    };
+    const wrapper = mountList({ messages: [media] });
+    const audio = wrapper.find("audio").element;
+    try {
+      await wrapper.setProps({ messages: [userRecord("older"), media] });
+      expect(wrapper.find("audio").element).toBe(audio);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each([
+    { afterTop: 180, expectedScroll: 300 },
+    { afterTop: 260, expectedScroll: 380 },
+  ])(
+    "corrects only the divider displacement left at $afterTop",
+    async ({ afterTop, expectedScroll }) => {
+      const parent = document.createElement("div");
+      parent.style.overflowY = "auto";
+      parent.scrollTop = 300;
+      let heightReads = 0;
+      Object.defineProperty(parent, "scrollHeight", {
+        get: () => (heightReads++ === 0 ? 1000 : 1500),
+      });
+      document.body.appendChild(parent);
+      const wrapper = mountList({
+        messages: [
+          userRecord("u1"),
+          {
+            id: "divider",
+            content: {
+              type: "branch_info",
+              source_session_id: "source",
+              inherited_count: 1,
+            },
+          },
+        ],
+      });
+      parent.appendChild(wrapper.element);
+      const divider = wrapper.find(".branch-divider-row").element;
+      const rect = vi
+        .spyOn(divider, "getBoundingClientRect")
+        .mockReturnValueOnce({ top: 180 } as DOMRect)
+        .mockReturnValue({ top: afterTop } as DOMRect);
+      try {
+        await wrapper.find(".branch-divider-toggle").trigger("click");
+        expect(parent.scrollTop).toBe(expectedScroll);
+      } finally {
+        rect.mockRestore();
+        wrapper.unmount();
+        parent.remove();
+      }
+    },
+  );
+});
+
 describe("ChatMessageList agent-work reveal", () => {
   beforeEach(() => {
     vi.clearAllMocks();

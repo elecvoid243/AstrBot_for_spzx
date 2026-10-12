@@ -1585,6 +1585,14 @@ let bottomScrollFrame = 0;
 let selfScrollTop = -1;
 let lastMessagesScrollTop = 0;
 let scrollGestureDirection = 0;
+let readingViewportAnchor: {
+  target: HTMLElement | Text;
+  offset: number;
+  top: number;
+  scrollTop: number;
+  container: HTMLElement;
+  sessionToken: number;
+} | null = null;
 let userScrollPending = false;
 let scrollPointerActive = false;
 let userScrollSettleTimer = 0;
@@ -1600,6 +1608,7 @@ watch(
     selfScrollTop = -1;
     lastMessagesScrollTop = 0;
     scrollGestureDirection = 0;
+    readingViewportAnchor = null;
     window.clearTimeout(userScrollSettleTimer);
     cancelAnimationFrame(bottomScrollFrame);
     bottomScrollFrame = 0;
@@ -2551,6 +2560,9 @@ onBeforeUnmount(() => {
   window.clearTimeout(userScrollSettleTimer);
   endJumpLanding();
   endJumpScrollLock();
+  historyLayoutObserver?.disconnect();
+  historyLayoutObserver = null;
+  readingViewportAnchor = null;
   window.removeEventListener("pointerup", endMessagesScrollGesture);
   window.removeEventListener("pointercancel", endMessagesScrollGesture);
   window.removeEventListener("touchend", endMessagesScrollGesture);
@@ -2630,10 +2642,13 @@ watch(
 // Observe content as well as the panel: async code blocks and media can change
 // scrollHeight without resizing the scrolling viewport itself.
 let markerResizeObserver: ResizeObserver | null = null;
+let historyLayoutObserver: MutationObserver | null = null;
 
 watch(
   [messagesContainer, messagesListShell],
   ([container, content]) => {
+    historyLayoutObserver?.disconnect();
+    historyLayoutObserver = null;
     if (markerResizeObserver) {
       markerResizeObserver.disconnect();
       markerResizeObserver = null;
@@ -2642,10 +2657,34 @@ watch(
       updateScrollMarkers();
       markerResizeObserver = new ResizeObserver(() => {
         updateScrollMarkers();
-        scrollToBottom();
+        if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
+        else preserveReadingAnchor();
       });
       markerResizeObserver.observe(container);
       if (content) markerResizeObserver.observe(content);
+      if (content) {
+        // Correct deferred rendering before paint, including changes whose
+        // total height cancels out and therefore produces no resize event.
+        historyLayoutObserver = new MutationObserver(() => {
+          if (!shouldStickToBottom(currSessionId.value))
+            preserveReadingAnchor();
+        });
+        historyLayoutObserver.observe(content, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: [
+            "style",
+            "class",
+            "src",
+            "width",
+            "height",
+            "hidden",
+            "open",
+          ],
+        });
+      }
     }
   },
   { immediate: true },
@@ -4310,6 +4349,7 @@ function beginJumpScrollLock(container: HTMLElement) {
  */
 function endJumpLanding() {
   jumpLandingToken += 1;
+  const wasLanding = Boolean(jumpLandingContainer);
   if (jumpLandingOnGesture && jumpLandingContainer) {
     for (const type of JUMP_LANDING_CANCEL_EVENTS) {
       jumpLandingContainer.removeEventListener(type, jumpLandingOnGesture);
@@ -4317,6 +4357,7 @@ function endJumpLanding() {
   }
   jumpLandingOnGesture = null;
   jumpLandingContainer = null;
+  if (wasLanding) captureReadingAnchor();
 }
 
 /**
@@ -4393,6 +4434,7 @@ function runJumpLanding(
   // fires no `wheel` event, so without it the glide would yank the viewport
   // back mid-drag.
   jumpLandingContainer = container;
+  readingViewportAnchor = null;
   jumpLandingOnGesture = () => endJumpLanding();
   for (const type of JUMP_LANDING_CANCEL_EVENTS) {
     container.addEventListener(type, jumpLandingOnGesture, { passive: true });
@@ -4649,6 +4691,7 @@ function updateScrollMarkers() {
 }
 
 function onBranchToggle(collapsed: boolean) {
+  readingViewportAnchor = null;
   // The reader is anchoring the divider; follow must not undo the child's
   // position compensation when the content ResizeObserver fires.
   setStickToBottom(currSessionId.value, false);
@@ -4658,7 +4701,15 @@ function onBranchToggle(collapsed: boolean) {
   endJumpScrollLock();
   jumpInProgress.value = false;
   branchHistoryCollapsed.value = collapsed;
-  nextTick(() => updateScrollMarkers());
+  nextTick(() => {
+    const container = messagesContainer.value;
+    if (container) {
+      selfScrollTop = container.scrollTop;
+      lastMessagesScrollTop = container.scrollTop;
+      captureReadingAnchor();
+    }
+    updateScrollMarkers();
+  });
 }
 
 function onStripClick(event: MouseEvent) {
@@ -5258,7 +5309,11 @@ function handleMessagesScrollIntent(event: Event) {
   if (!container) return;
   // Content clicks do not drag the native scrollbar. Touch starts are handled
   // separately so a finger drag can pause follow before its first scroll event.
-  if (event.type === "pointerdown" && event.target !== container) return;
+  if (event.type === "pointerdown" && event.target !== container) {
+    // A content interaction can intentionally collapse or reveal a block.
+    readingViewportAnchor = null;
+    return;
+  }
   let scrollingDown = false;
   if (event.type === "wheel") {
     const wheel = event as WheelEvent;
@@ -5300,6 +5355,7 @@ function handleMessagesScrollIntent(event: Event) {
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
   setStickToBottom(currSessionId.value, scrollingDown && distance <= 2);
+  preserveReadingAnchor();
   window.clearTimeout(userScrollSettleTimer);
   userScrollSettleTimer = window.setTimeout(() => {
     if (!scrollPointerActive) userScrollPending = false;
@@ -5374,6 +5430,10 @@ function handleMessagesScroll() {
     }
   }
   lastMessagesScrollTop = top;
+  if (!shouldStickToBottom(sessionId)) {
+    preserveReadingAnchor();
+    if (!isSelfScroll && (movedUp || movedDown)) captureReadingAnchor();
+  }
   if (userScrollPending) {
     window.clearTimeout(userScrollSettleTimer);
     userScrollSettleTimer = window.setTimeout(() => {
@@ -5405,7 +5465,148 @@ function handleMessagesScroll() {
 }
 
 /**
- * Prepend older history while preserving the position of an existing row.
+ * Capture a visible reading point for subsequent layout corrections.
+ */
+function captureReadingAnchor() {
+  readingViewportAnchor = null;
+  const container = messagesContainer.value;
+  if (
+    !container ||
+    !props.active ||
+    pendingViewportSessionId ||
+    jumpLandingContainer ||
+    shouldStickToBottom(currSessionId.value)
+  )
+    return;
+  const panelRect = container.getBoundingClientRect();
+  const y = panelRect.top + container.clientHeight / 3;
+  const caret = document.caretRangeFromPoint?.(
+    panelRect.left + container.clientWidth / 2,
+    y,
+  );
+  if (
+    caret?.startContainer.nodeType === Node.TEXT_NODE &&
+    container.contains(caret.startContainer)
+  ) {
+    const text = caret.startContainer as Text;
+    // Inner code/media panes own their own scrolling. Anchor their box so
+    // scrolling inside one cannot be mistaken for a main-panel layout shift.
+    let owner = text.parentElement;
+    while (owner && owner !== container) {
+      if (/^(auto|scroll)$/.test(getComputedStyle(owner).overflowY)) {
+        const rect = owner.getBoundingClientRect();
+        if (
+          rect.height <= 0 ||
+          rect.bottom <= panelRect.top ||
+          rect.top >= panelRect.bottom
+        )
+          break;
+        readingViewportAnchor = {
+          target: owner,
+          offset: 0,
+          top: rect.top,
+          scrollTop: container.scrollTop,
+          container,
+          sessionToken: viewportSessionToken,
+        };
+        return;
+      }
+      owner = owner.parentElement;
+    }
+    const offset = Math.min(caret.startOffset, text.length - 1);
+    if (offset >= 0) {
+      caret.setStart(text, offset);
+      caret.setEnd(text, offset + 1);
+      const rect = caret.getBoundingClientRect();
+      if (
+        rect.height > 0 &&
+        rect.bottom > panelRect.top &&
+        rect.top < panelRect.bottom
+      ) {
+        readingViewportAnchor = {
+          target: text,
+          offset,
+          top: rect.top,
+          scrollTop: container.scrollTop,
+          container,
+          sessionToken: viewportSessionToken,
+        };
+        return;
+      }
+    }
+  }
+  const row = Array.from(
+    container.querySelectorAll<HTMLElement>(".message-row"),
+  ).find((row) => {
+    const rect = row.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom > y && rect.top < panelRect.bottom;
+  });
+  if (row)
+    readingViewportAnchor = {
+      target: row,
+      offset: 0,
+      top: row.getBoundingClientRect().top,
+      scrollTop: container.scrollTop,
+      container,
+      sessionToken: viewportSessionToken,
+    };
+}
+
+/** Preserve the reading point while accounting for the reader's own scrolling. */
+function preserveReadingAnchor() {
+  const container = messagesContainer.value;
+  if (
+    !container ||
+    !props.active ||
+    pendingViewportSessionId ||
+    jumpLandingContainer ||
+    shouldStickToBottom(currSessionId.value)
+  ) {
+    readingViewportAnchor = null;
+    return;
+  }
+  const anchor = readingViewportAnchor;
+  if (
+    !anchor ||
+    anchor.container !== container ||
+    anchor.sessionToken !== viewportSessionToken ||
+    !anchor.target.isConnected
+  ) {
+    captureReadingAnchor();
+    return;
+  }
+  let rect: DOMRect;
+  if (anchor.target instanceof Text) {
+    if (!anchor.target.length) {
+      captureReadingAnchor();
+      return;
+    }
+    const range = document.createRange();
+    const offset = Math.min(anchor.offset, anchor.target.length - 1);
+    range.setStart(anchor.target, offset);
+    range.setEnd(anchor.target, offset + 1);
+    rect = range.getBoundingClientRect();
+  } else rect = anchor.target.getBoundingClientRect();
+  const top = Math.max(0, container.scrollTop);
+  const max = Math.max(0, container.scrollHeight - container.clientHeight);
+  // Exclude range clamping from user movement. Layout displacement and the
+  // reader's scroll can happen in the same frame and must remain independent.
+  const expectedTop = anchor.top - (top - Math.min(anchor.scrollTop, max));
+  const idealTop = top + rect.top - expectedTop;
+  const target = Math.max(0, Math.min(max, idealTop));
+  if (Math.abs(target - top) > 0.5) {
+    container.scrollTop = target;
+    selfScrollTop = container.scrollTop;
+    lastMessagesScrollTop = container.scrollTop;
+  }
+  // Store the clamped result so an impossible offset does not cause a loop.
+  anchor.top =
+    target === idealTop ? expectedTop : rect.top - (container.scrollTop - top);
+  anchor.scrollTop = container.scrollTop;
+}
+
+/**
+ * Prepend older history while keeping the latest visible reading point.
  *
  * Args:
  *   retry: Retry a failed page when the reader uses the load-older button.
@@ -5415,36 +5616,26 @@ async function loadOlderHistory(retry = false) {
   if (!sessionId || historyPagingBySession[sessionId]?.loadingOlder) return;
   const sessionToken = viewportSessionToken;
   const container = messagesContainer.value;
-  const panelTop = container?.getBoundingClientRect().top ?? 0;
-  const anchor = Array.from(
-    container?.querySelectorAll<HTMLElement>(".message-row") ?? [],
-  ).find((row) => {
-    const rect = row.getBoundingClientRect();
-    return rect.height > 0 && rect.bottom > panelTop;
+  if (retry) {
+    setStickToBottom(sessionId, false);
+    captureReadingAnchor();
+  }
+  await loadOlderMessages(sessionId, {
+    retry,
+    beforePrepend: () => {
+      if (
+        sessionToken === viewportSessionToken &&
+        container === messagesContainer.value
+      )
+        captureReadingAnchor();
+    },
   });
-  const anchorTop =
-    anchor && container
-      ? anchor.getBoundingClientRect().top + container.scrollTop
-      : null;
-  await loadOlderMessages(sessionId, { retry });
   await nextTick();
   if (
-    sessionToken !== viewportSessionToken ||
-    container !== messagesContainer.value ||
-    !props.active ||
-    !container ||
-    !anchor?.isConnected ||
-    anchorTop === null
-  ) {
-    return;
-  }
-  // Measure the original row instead of total height: streamed output below it
-  // and the reader's scrolling during the request are not prepend displacement.
-  const delta =
-    anchor.getBoundingClientRect().top + container.scrollTop - anchorTop;
-  container.scrollTop += delta;
-  selfScrollTop = container.scrollTop;
-  lastMessagesScrollTop = container.scrollTop;
+    sessionToken === viewportSessionToken &&
+    container === messagesContainer.value
+  )
+    preserveReadingAnchor();
 }
 
 /**
@@ -6837,7 +7028,7 @@ function toggleTheme() {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* Position is owned by follow, history anchoring, or a message jump. */
+  /* The reader's text anchor, follow, or an explicit jump owns the viewport. */
   overflow-anchor: none;
   padding: 24px 0 0;
 }

@@ -21,6 +21,8 @@ const functions = new Set([
   "endMessagesScrollGesture",
   "handleMessagesScroll",
   "loadOlderHistory",
+  "captureReadingAnchor",
+  "preserveReadingAnchor",
   "shouldStickToBottom",
   "setStickToBottom",
   "scrollToBottom",
@@ -50,6 +52,7 @@ const variables = new Set([
   "selfScrollTop",
   "lastMessagesScrollTop",
   "scrollGestureDirection",
+  "readingViewportAnchor",
   "userScrollPending",
   "scrollPointerActive",
   "userScrollSettleTimer",
@@ -68,6 +71,7 @@ const variables = new Set([
   "jumpLandingContainer",
   "jumpLandingOnGesture",
   "markerResizeObserver",
+  "historyLayoutObserver",
 ]);
 const declarations = ast.statements
   .filter((node) => {
@@ -142,6 +146,7 @@ function scrollHarness() {
     callback: ResizeObserverCallback;
     observe: ReturnType<typeof vi.fn>;
   }> = [];
+  const mutations: Array<{ callback: MutationCallback }> = [];
   class Observer {
     observe = vi.fn();
     disconnect = vi.fn();
@@ -161,11 +166,22 @@ function scrollHarness() {
     >,
     historyOffsetBySession: {} as Record<string, number>,
     threadSelection: { visible: false },
-    loadOlderMessages: vi.fn(async () => {}),
+    loadOlderMessages: vi.fn(
+      async (_id: string, options?: { beforePrepend?: () => void }) => {
+        options?.beforePrepend?.();
+      },
+    ),
     isSessionRunning: vi.fn(() => false),
     hasLiveSystemRecord: vi.fn(() => false),
     updateScrollMarkers: vi.fn(),
     ResizeObserver: Observer,
+    MutationObserver: class {
+      observe = vi.fn();
+      disconnect = vi.fn();
+      constructor(callback: MutationCallback) {
+        mutations.push({ callback });
+      }
+    },
     requestAnimationFrame: (callback: FrameRequestCallback) => {
       frames.set(++frameId, callback);
       return frameId;
@@ -204,6 +220,7 @@ function scrollHarness() {
     row,
     writes,
     observers,
+    mutations,
     setLayout(values: { height?: number; top?: number; rowTop?: number }) {
       height = values.height ?? height;
       top = values.top ?? top;
@@ -376,6 +393,15 @@ describe("Chat viewport ownership", () => {
     expect(h.controller.shouldStickToBottom("A")).toBe(false);
   });
 
+  it("does not re-arm follow from the inherited divider's own compensation", async () => {
+    const h = scrollHarness();
+    h.controller.onBranchToggle(false);
+    h.setLayout({ height: 1800, top: 1400 });
+    await nextTick();
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+  });
+
   it("lets touch taps resume follow and scroll keys pause it without intercepting editing", () => {
     const h = scrollHarness();
     h.controller.handleMessagesScrollIntent(new Event("touchstart"));
@@ -414,14 +440,129 @@ describe("Chat viewport ownership", () => {
     const h = scrollHarness();
     h.setLayout({ top: 400, rowTop: 500 });
     h.controller.setStickToBottom("A", false);
-    h.loadOlderMessages.mockImplementation(async () => {
+    h.loadOlderMessages.mockImplementation(async (_id, options) => {
       // 200px prepended, 300px streamed at the tail, and 50px reader movement.
+      h.setLayout({ top: 350 });
+      options?.beforePrepend?.();
       h.setLayout({ height: 2100, rowTop: 700, top: 350 });
     });
     await h.controller.loadOlderHistory();
     expect(h.panel.scrollTop).toBe(550);
     h.controller.handleMessagesScroll();
     expect(h.controller.shouldStickToBottom("A")).toBe(false);
+  });
+
+  it("does not correct a prepend twice when the resize observer runs before paging completes", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    h.loadOlderMessages.mockImplementation(async (_id, options) => {
+      options?.beforePrepend?.();
+      h.setLayout({ height: 2100, rowTop: 700 });
+      h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    });
+    await h.controller.loadOlderHistory();
+    expect(h.panel.scrollTop).toBe(600);
+    expect(h.writes).toEqual([600]);
+  });
+
+  it("preserves the reading position at the exact top where native anchoring is inactive", async () => {
+    const h = scrollHarness();
+    h.setLayout({ top: 0, rowTop: 0 });
+    h.controller.setStickToBottom("A", false);
+    h.loadOlderMessages.mockImplementation(async (_id, options) => {
+      options?.beforePrepend?.();
+      h.setLayout({ height: 2200, rowTop: 600 });
+    });
+    await h.controller.loadOlderHistory();
+    expect(h.panel.scrollTop).toBe(600);
+    expect(h.row.getBoundingClientRect().top).toBe(0);
+  });
+
+  it("preserves later growth and shrinkage above the reader while accounting for continued scrolling", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    await h.controller.loadOlderHistory();
+    h.setLayout({ height: 1900, rowTop: 800, top: 350 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(650);
+    expect(h.row.getBoundingClientRect().top).toBe(150);
+    h.setLayout({ height: 1700, rowTop: 600 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(450);
+    expect(h.row.getBoundingClientRect().top).toBe(150);
+  });
+
+  it("preserves layout movement even when changes above and below cancel the total height", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    await h.controller.loadOlderHistory();
+    h.setLayout({ rowTop: 700 });
+    h.mutations.at(-1)!.callback([], {} as MutationObserver);
+    expect(h.panel.scrollTop).toBe(600);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+    h.controller.handleMessagesScroll();
+    h.setLayout({ rowTop: 750 });
+    h.mutations.at(-1)!.callback([], {} as MutationObserver);
+    expect(h.panel.scrollTop).toBe(650);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+  });
+
+  it("does not compensate the main panel for scrolling inside a code pane", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    const pane = document.createElement("div");
+    pane.style.overflowY = "auto";
+    pane.textContent = "Code inside a separately scrolling pane";
+    pane.getBoundingClientRect = h.row.getBoundingClientRect;
+    h.row.appendChild(pane);
+    const caret = document.createRange();
+    caret.setStart(pane.firstChild!, 0);
+    caret.setEnd(pane.firstChild!, 1);
+    const original = Object.getOwnPropertyDescriptor(
+      document,
+      "caretRangeFromPoint",
+    );
+    Object.defineProperty(document, "caretRangeFromPoint", {
+      configurable: true,
+      value: () => caret,
+    });
+    try {
+      await h.controller.loadOlderHistory();
+      pane.scrollTop = 80;
+      h.mutations.at(-1)!.callback([], {} as MutationObserver);
+      expect(h.panel.scrollTop).toBe(400);
+      expect(h.writes).toEqual([]);
+    } finally {
+      if (original)
+        Object.defineProperty(document, "caretRangeFromPoint", original);
+      else Reflect.deleteProperty(document, "caretRangeFromPoint");
+    }
+  });
+
+  it("yields reading corrections to an explicit history jump and resumes when it finishes", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.setStickToBottom("A", false);
+    await h.controller.loadOlderHistory();
+    h.controller.runJumpLanding(() => 450, false);
+    h.frame();
+    h.writes.length = 0;
+    h.setLayout({ height: 1900, rowTop: 700 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.writes).toEqual([]);
+    h.controller.endJumpLanding();
+    h.setLayout({ height: 2000, rowTop: 800 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(550);
   });
 
   it("rejects a paging completion after A -> B -> A instead of moving the fresh viewport", async () => {

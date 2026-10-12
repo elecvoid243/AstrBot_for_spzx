@@ -168,6 +168,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
+            assert evidence["before"]["tool_calls"] == []
         if scenario in {"partial_generator", "generator_error"}:
             assert evidence["error"]["status"] == 409
             assert evidence["after"]["status"] in {"interrupted", "blocked"}
@@ -245,6 +247,9 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert evidence["after"]["snapshot"] == blocked["snapshot"]
             assert evidence["after"]["state"]["attempt_id"] == blocked["state"]["attempt_id"]
         assert evidence["after"]["status"] == "completed"
+        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
+            assert [call["call_id"] for call in evidence["after"]["tool_calls"]] == ["evidence-original", "submit-original"]
+            assert all(call["status"] == "applied" for call in evidence["after"]["tool_calls"])
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
         if scenario.startswith("submit_file"):

@@ -246,9 +246,11 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 for checkpoint in [*session.new, *session.dirty]:
                     if isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
                         checkpoint.data = {**{key: value for key, value in checkpoint.data.items() if key != "tool_calls"}, "format_version": 1}
-                        for call in list(session.new):
-                            if isinstance(call, AgentWorkflowToolCall) and call.run_id == checkpoint.run_id:
-                                session.expunge(call)
+                        session.info["legacy_response_run_id"] = checkpoint.run_id
+                # Autoflush can persist the checkpoint before its call rows are added.
+                for call in list(session.new):
+                    if isinstance(call, AgentWorkflowToolCall) and call.run_id == session.info.get("legacy_response_run_id"):
+                        session.expunge(call)
             sql_event.listen(Session, "before_flush", before_flush)
         # Fault injection runs only AFTER the real response transaction commits.
         # Correctness assertions use public services and the external HTTP ledger.

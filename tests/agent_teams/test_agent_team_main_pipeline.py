@@ -196,7 +196,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         role="tool",
                         tools_call_name=["submit_task_result"],
                         tools_call_args=[
-                            {"text": "Report", "files": [{"file_id": "missing"}]}
+                            {
+                                "result_json": json.dumps(
+                                    {
+                                        "text": "Report",
+                                        "files": [{"file_id": "missing"}],
+                                    }
+                                )
+                            }
                         ],
                         tools_call_ids=["invalid-file"],
                     )
@@ -230,8 +237,12 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         tools_call_name=["submit_task_result"],
                         tools_call_args=[
                             {
-                                "text": "Full file report",
-                                "files": [{"file_id": stored["file_id"]}],
+                                "result_json": json.dumps(
+                                    {
+                                        "text": "Full file report",
+                                        "files": [{"file_id": stored["file_id"]}],
+                                    }
+                                ),
                             }
                         ],
                         tools_call_ids=["submit-file"],

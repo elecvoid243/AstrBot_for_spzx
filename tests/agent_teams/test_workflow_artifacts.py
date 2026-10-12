@@ -90,13 +90,25 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
 
     async def collect(session_id, message_id, member_id):
         tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
-        missing = await tool.call(None)
+        for arguments in (
+            {},
+            {"result_json": {}},
+            {"result_json": "{"},
+            {"result_json": "[]"},
+            {"result_json": "null"},
+        ):
+            assert "Error: result_json:" in await tool.call(None, **arguments)
+        missing = await tool.call(None, result_json="{}")
         assert "result.approved" in missing and "result.evidence" in missing
-        errors.append(await tool.call(None, approved="yes", evidence=[]))
+        errors.append(
+            await tool.call(None, result_json='{"approved":"yes","evidence":[]}')
+        )
         reached.set()
         await release.wait()
         assert (
-            await tool.call(None, approved=True, evidence=["Verified source"])
+            await tool.call(
+                None, result_json='{"approved":true,"evidence":["Verified source"]}'
+            )
             == "Result accepted."
         )
         return "Done", []
@@ -173,14 +185,19 @@ async def test_ready_file_reference_remains_readable_after_reopening(
         tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
         assert "store_task_file" in [tool.name for tool in tools]
         assert "Error" in await tools[0].call(
-            None, text="Report", files=[{"file_id": "missing"}]
+            None, result_json='{"text":"Report","files":[{"file_id":"missing"}]}'
         )
         assert "Error" in await tools[1].call(None, path=str(path))
         stored = json.loads(
             await tools[1].call(None, filename=path.name, content=expected.decode())
         )
         path.unlink()
-        await tools[0].call(None, text="Report", files=[{"file_id": stored["file_id"]}])
+        await tools[0].call(
+            None,
+            result_json=json.dumps(
+                {"text": "Report", "files": [{"file_id": stored["file_id"]}]}
+            ),
+        )
         return "Done", []
 
     service = scripted_workflow(collect)
@@ -371,7 +388,9 @@ async def test_schema_keywords_in_result_data_are_preserved(
 
     async def collect(session_id, message_id, member_id):
         tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
-        assert await tool.call(None, **result) == "Result accepted."
+        assert (
+            await tool.call(None, result_json=json.dumps(result)) == "Result accepted."
+        )
         return "Done", []
 
     service = scripted_workflow(collect)
@@ -401,7 +420,9 @@ async def test_recursive_local_contract_can_be_saved_and_consumed(
 
     async def collect(session_id, message_id, member_id):
         tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
-        assert await tool.call(None, **result) == "Result accepted."
+        assert (
+            await tool.call(None, result_json=json.dumps(result)) == "Result accepted."
+        )
         return "Done", []
 
     service = scripted_workflow(collect)

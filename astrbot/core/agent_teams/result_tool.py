@@ -219,16 +219,33 @@ class SubmitTaskResultTool(FunctionTool):
             accept: Public service operation validating and persisting the intent.
             contract: Pinned task output schema, or the default text contract.
         """
-        super().__init__(
-            name="submit_task_result",
-            description="Submit the final task result according to its output contract. Correct field errors within the remaining execution budget.",
-            parameters=contract
-            or {
+        description = "Submit the final task result according to its output contract. Correct field errors within the remaining execution budget."
+        parameters = {
+            "type": "object",
+            "properties": {"text": {"type": "string", "minLength": 1}},
+            "required": ["text"],
+            "additionalProperties": False,
+        }
+        if contract is not None:
+            # Provider serializers support different subsets of JSON Schema.
+            # A string transports every contract without weakening validation.
+            parameters = {
                 "type": "object",
-                "properties": {"text": {"type": "string", "minLength": 1}},
-                "required": ["text"],
+                "properties": {
+                    "result_json": {
+                        "type": "string",
+                        "description": "Complete result object encoded as JSON text.",
+                    }
+                },
+                "required": ["result_json"],
                 "additionalProperties": False,
-            },
+            }
+            description += (
+                " Encode the complete result in result_json. Output contract: "
+                + json.dumps(contract, ensure_ascii=False)
+            )
+        super().__init__(
+            name="submit_task_result", description=description, parameters=parameters
         )
         self.accept = accept
         self.contract = contract
@@ -238,13 +255,25 @@ class SubmitTaskResultTool(FunctionTool):
 
         Args:
             context: Existing Agent context.
-            **kwargs: Complete result fields validated against the frozen contract.
+            **kwargs: Default text fields or result_json for a custom contract.
 
         Returns:
             Acceptance or field errors for correction within the current budget.
         """
+        payload = kwargs
+        if self.contract is not None:
+            if set(kwargs) != {"result_json"} or not isinstance(
+                kwargs["result_json"], str
+            ):
+                return "Error: result_json: Encode the complete result object as JSON text in this single argument."
+            try:
+                payload = json.loads(kwargs["result_json"])
+            except json.JSONDecodeError as exc:
+                return f"Error: result_json: Invalid JSON ({exc.msg})."
+            if not isinstance(payload, dict):
+                return "Error: result_json: Submit a JSON object."
         try:
-            await self.accept(kwargs)
+            await self.accept(payload)
         except RoleAssetError as exc:
             return f"Error: {exc}; fields={exc.fields}"
         return "Result accepted."

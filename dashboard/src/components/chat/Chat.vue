@@ -1583,6 +1583,8 @@ let bottomScrollFrame = 0;
 // Gestures suspend follow before the browser dispatches their scroll events.
 // Offset comparisons only filter our own echoes; layout changes are not intent.
 let selfScrollTop = -1;
+let lastMessagesScrollTop = 0;
+let scrollGestureDirection = 0;
 let userScrollPending = false;
 let scrollPointerActive = false;
 let userScrollSettleTimer = 0;
@@ -1596,6 +1598,8 @@ watch(
     userScrollPending = false;
     scrollPointerActive = false;
     selfScrollTop = -1;
+    lastMessagesScrollTop = 0;
+    scrollGestureDirection = 0;
     window.clearTimeout(userScrollSettleTimer);
     cancelAnimationFrame(bottomScrollFrame);
     bottomScrollFrame = 0;
@@ -4421,6 +4425,7 @@ function runJumpLanding(
     // Read back: the write is clamped, and the echo compared against later is
     // the clamped value (see the declaration note).
     selfScrollTop = container.scrollTop;
+    lastMessagesScrollTop = container.scrollTop;
     if (Math.abs(target - lastTarget) >= 1) {
       lastTarget = target;
       lastChangeAt = now;
@@ -5289,6 +5294,8 @@ function handleMessagesScrollIntent(event: Event) {
   jumpInProgress.value = false;
   scrollPointerActive =
     event.type === "pointerdown" || event.type === "touchstart";
+  scrollGestureDirection = scrollPointerActive ? 0 : scrollingDown ? 1 : -1;
+  lastMessagesScrollTop = Math.max(0, container.scrollTop);
   userScrollPending = true;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
@@ -5307,7 +5314,11 @@ function endMessagesScrollGesture() {
   if (container) {
     const distance =
       container.scrollHeight - container.scrollTop - container.clientHeight;
-    setStickToBottom(currSessionId.value, distance <= 2);
+    // A layout clamp during an upward drag is not a return to the bottom.
+    setStickToBottom(
+      currSessionId.value,
+      distance <= 2 && scrollGestureDirection >= 0,
+    );
   }
   window.clearTimeout(userScrollSettleTimer);
   userScrollSettleTimer = window.setTimeout(() => {
@@ -5325,12 +5336,45 @@ function handleMessagesScroll() {
   // older history for the incoming session from the outgoing position.
   if (pendingViewportSessionId) return;
   const sessionId = currSessionId.value;
-  const distance =
-    container.scrollHeight - container.scrollTop - container.clientHeight;
-  if (userScrollPending && Math.abs(container.scrollTop - selfScrollTop) > 1) {
-    // An upward gesture must not immediately re-arm follow inside the old 80px
-    // tolerance. Follow resumes when the reader actually reaches the bottom.
-    setStickToBottom(sessionId, distance <= 2);
+  const maxScrollTop = Math.max(
+    0,
+    container.scrollHeight - container.clientHeight,
+  );
+  const top = Math.max(0, container.scrollTop);
+  // Shrinking content can clamp scrollTop without the reader moving at all.
+  const previousTop = Math.min(lastMessagesScrollTop, maxScrollTop);
+  const movedUp = top < previousTop - 1;
+  const movedDown = top > previousTop + 1;
+  const isSelfScroll =
+    Math.abs(top - selfScrollTop) <= 1 &&
+    Math.abs(top - lastMessagesScrollTop) <= 1;
+  if (!isSelfScroll) {
+    if ((movedUp || movedDown) && jumpLandingContainer) {
+      // A native scroll without a preceding gesture must also cancel a landing.
+      viewportInteractionToken += 1;
+      endJumpLanding();
+      endJumpScrollLock();
+      jumpInProgress.value = false;
+    }
+    // Scroll events are the fallback for inputs that deliver no wheel/pointer
+    // event. Explicit wheel/key direction remains authoritative during layout.
+    if (scrollPointerActive || !userScrollPending) {
+      if (movedUp) scrollGestureDirection = -1;
+      else if (movedDown) scrollGestureDirection = 1;
+    }
+    if (movedUp) {
+      setStickToBottom(sessionId, false);
+    } else if (
+      movedDown &&
+      maxScrollTop - top <= 2 &&
+      scrollGestureDirection > 0 &&
+      !scrollPointerActive
+    ) {
+      setStickToBottom(sessionId, true);
+    }
+  }
+  lastMessagesScrollTop = top;
+  if (userScrollPending) {
     window.clearTimeout(userScrollSettleTimer);
     userScrollSettleTimer = window.setTimeout(() => {
       if (!scrollPointerActive) userScrollPending = false;
@@ -5400,6 +5444,7 @@ async function loadOlderHistory(retry = false) {
     anchor.getBoundingClientRect().top + container.scrollTop - anchorTop;
   container.scrollTop += delta;
   selfScrollTop = container.scrollTop;
+  lastMessagesScrollTop = container.scrollTop;
 }
 
 /**
@@ -5454,10 +5499,12 @@ function scrollToBottom() {
       return;
     }
     const target = Math.max(0, container.scrollHeight - container.clientHeight);
-    if (Math.abs(container.scrollTop - target) > 1) container.scrollTop = target;
+    if (Math.abs(container.scrollTop - target) > 1)
+      container.scrollTop = target;
     // Read back: the write is clamped to the scrollable range and the echo this
     // later compares against is the clamped value (see the declaration note).
     selfScrollTop = container.scrollTop;
+    lastMessagesScrollTop = container.scrollTop;
   });
 }
 

@@ -48,6 +48,8 @@ const variables = new Set([
   "viewportInteractionToken",
   "bottomScrollFrame",
   "selfScrollTop",
+  "lastMessagesScrollTop",
+  "scrollGestureDirection",
   "userScrollPending",
   "scrollPointerActive",
   "userScrollSettleTimer",
@@ -250,6 +252,9 @@ describe("Chat viewport ownership", () => {
     expect(h.panel.scrollTop).toBe(1160);
     expect(h.writes).toEqual([]);
     expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.controller.handleMessagesScrollIntent(
+      new WheelEvent("wheel", { deltaY: 40 }),
+    );
     h.setLayout({ top: 1400 });
     h.controller.handleMessagesScroll();
     expect(h.controller.shouldStickToBottom("A")).toBe(true);
@@ -267,13 +272,97 @@ describe("Chat viewport ownership", () => {
     expect(h.controller.shouldStickToBottom("A")).toBe(true);
   });
 
-  it("does not treat a layout-driven scroll as the reader's follow intent", () => {
+  it("keeps follow when shrinking content only clamps the idle viewport to bottom", () => {
     const h = scrollHarness();
     h.controller.scrollToBottom();
     h.frame();
-    h.setLayout({ top: 1000, height: 1900 });
+    h.setLayout({ top: 1000, height: 1400 });
     h.controller.handleMessagesScroll();
     expect(h.controller.shouldStickToBottom("A")).toBe(true);
+  });
+
+  it("does not resume follow when shrinking content clamps an upward gesture to bottom", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.writes.length = 0;
+    h.controller.handleMessagesScrollIntent(
+      new WheelEvent("wheel", { deltaY: -40 }),
+    );
+    h.setLayout({ top: 1160, height: 1560 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.setLayout({ height: 1900 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    h.frame();
+    expect(h.panel.scrollTop).toBe(1160);
+    expect(h.writes).toEqual([]);
+  });
+
+  it("yields to upward scrolls without an input event and resumes on a real downward return", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.writes.length = 0;
+    h.setLayout({ top: 1000 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.setLayout({ height: 1900 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    h.frame();
+    expect(h.writes).toEqual([]);
+    h.setLayout({ top: 1500 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+  });
+
+  it("does not resume follow on releasing an upward drag after a layout clamp", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.writes.length = 0;
+    const event = new Event("pointerdown");
+    Object.defineProperty(event, "target", { value: h.panel });
+    h.controller.handleMessagesScrollIntent(event);
+    h.setLayout({ top: 1160 });
+    h.controller.handleMessagesScroll();
+    h.setLayout({ height: 1560 });
+    h.controller.handleMessagesScroll();
+    h.controller.endMessagesScrollGesture();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.setLayout({ height: 1900 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    h.frame();
+    expect(h.writes).toEqual([]);
+  });
+
+  it("resumes follow when a drag actually returns downward to bottom", () => {
+    const h = scrollHarness();
+    const event = new Event("pointerdown");
+    Object.defineProperty(event, "target", { value: h.panel });
+    h.controller.handleMessagesScrollIntent(event);
+    h.setLayout({ top: 800 });
+    h.controller.handleMessagesScroll();
+    h.setLayout({ top: 1200 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.controller.endMessagesScrollGesture();
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+  });
+
+  it("cancels a settling history landing on a native scroll without a gesture event", () => {
+    const h = scrollHarness();
+    h.controller.runJumpLanding(() => 600, false);
+    h.frame();
+    h.writes.length = 0;
+    h.setLayout({ top: 500 });
+    h.controller.handleMessagesScroll();
+    h.frame();
+    expect(h.panel.scrollTop).toBe(500);
+    expect(h.writes).toEqual([]);
   });
 
   it("does not pull the reader back when expanding inherited history", async () => {

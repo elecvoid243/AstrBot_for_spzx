@@ -3542,6 +3542,10 @@ class WorkflowService:
                 .all()
             )
             for run in abandoned:
+                await self._lock_control(session, run)
+                await session.refresh(run)
+                if run.status not in {"running", "interrupted"}:
+                    continue
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run.run_id)
                 if (
                     run.snapshot.get("parent_run_id")

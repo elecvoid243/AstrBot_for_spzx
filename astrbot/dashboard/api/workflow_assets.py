@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, Response
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
+    HumanAnswerRequest,
     ToolResolutionRequest,
     WorkflowControlRequest,
     WorkflowRetryRequest,
@@ -184,6 +185,62 @@ async def control_run(
     """
     try:
         return ok(await service.control_run(username, run_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/todos/{todo_id}/answer")
+async def answer_todo(
+    run_id: str,
+    todo_id: str,
+    payload: HumanAnswerRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Save a response to a frozen human request, including while paused.
+
+    Args:
+        run_id: Root run owned by the authenticated user.
+        todo_id: Persistent human request identity.
+        payload: Idempotent answer or approval/rejection with feedback.
+        username: Authenticated owner.
+        service: Shared application service.
+
+    Returns:
+        Persisted run with the saved response and its consumption state.
+    """
+    try:
+        return ok(
+            await service.answer_todo(username, run_id, todo_id, payload.model_dump())
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflow_artifacts/{artifact_id}/versions/{version}/export")
+async def export_artifact(
+    artifact_id: str,
+    version: int,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read an approved immutable version for delivery.
+
+    Args:
+        artifact_id: Stable artifact identity.
+        version: Exact approved version.
+        username: Authenticated owner.
+        service: Shared application service.
+
+    Returns:
+        Full approved content and exact file references, or an access error.
+    """
+    try:
+        return ok(await service.export_artifact(username, artifact_id, version))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status
@@ -394,7 +451,9 @@ async def get_file(
         Complete bytes and safe display headers, or an access error.
     """
     try:
-        file = await service.get_file(username, artifact_id, version, file_id)
+        file = await service.get_file(
+            username, artifact_id, version, file_id, download=download
+        )
         disposition = "attachment" if download else "inline"
         return Response(
             file["content"],

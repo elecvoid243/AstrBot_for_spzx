@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   resolveTool: vi.fn(),
   control: vi.fn(),
   retry: vi.fn(),
+  answer: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -114,6 +115,123 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("releases answer busy state so the next request and controls can run", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const todo = {
+      todo_id: "q",
+      task_run_id: "q",
+      kind: "question",
+      question: "Which region?",
+      status: "pending",
+      constraints: { choices: [], max_length: 100 },
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      todos: [todo],
+      control: { status: "active", revision: 0 },
+    });
+    api.answer.mockResolvedValue({
+      ...run,
+      todos: [{ ...todo, status: "completed", response: { answer: "Asia" } }],
+      control: { status: "active", revision: 0 },
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.get('[data-testid="pause-run"]').attributes("disabled"),
+      ).toBeUndefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+  it.each(["success", "failure"])(
+    "fences a late human answer after switching runs (%s)",
+    async (outcome) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const todo = {
+        todo_id: "q",
+        task_run_id: "q",
+        kind: "question",
+        question: "Which region?",
+        status: "pending",
+        constraints: { choices: [], max_length: 100 },
+      };
+      api.run.mockImplementation(async (id: string) =>
+        id === "run-1"
+          ? { ...run, todos: [todo] }
+          : {
+              ...run,
+              run_id: "run-2",
+              snapshot: {
+                ...run.snapshot,
+                definition: { ...asset.definition, name: "Second report" },
+              },
+            },
+      );
+      api.runs.mockResolvedValue({
+        runs: [
+          runOverview,
+          {
+            ...runOverview,
+            run_id: "run-2",
+            snapshot: {
+              ...runOverview.snapshot,
+              definition: { name: "Second report" },
+            },
+          },
+        ],
+      });
+      let finish!: (value: any) => void;
+      let fail!: (err: Error) => void;
+      api.answer.mockReturnValue(
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+        await wrapper.get('[data-testid="human-submit"]').trigger("click");
+        await wrapper.get('[data-testid="human-submit"]').trigger("click");
+        expect(api.answer).toHaveBeenCalledTimes(1);
+        await wrapper
+          .findAll("button")
+          .filter((button) => button.text() === "v2.details")[1]
+          .trigger("click");
+        await flushPromises();
+        if (outcome === "success")
+          finish({ ...run, todos: [{ ...todo, status: "completed" }] });
+        else fail(new Error("Old answer failed"));
+        await flushPromises();
+        expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+          "Second report",
+        );
+        expect(wrapper.text()).not.toContain("Old answer failed");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
   it.each([
     ["runs", "success"],
     ["events", "success"],

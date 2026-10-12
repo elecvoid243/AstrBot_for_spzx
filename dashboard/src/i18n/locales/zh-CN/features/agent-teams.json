@@ -313,7 +313,9 @@
       "pending": "等待依赖或容量",
       "skipped": "条件路径已跳过",
       "dependency_failed": "上游任务失败",
-      "cancelled": "已取消"
+      "cancelled": "已取消",
+      "waiting_human": "等待人工",
+      "rejected": "人工拒绝"
     },
     "contract": "输出契约（JSON Schema）",
     "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
@@ -456,5 +458,31 @@
     "usageRetained": "旧消耗和完整过程记录保留在“已保存的成员过程”中，按 Attempt 关联。",
     "retryHint": "使用以下原始输入创建新 Attempt。不会自动选取新版产物；失败详情、旧消耗和历史都会保留。",
     "cancelHint": "停止新派工，并向当前执行者请求取消。已保存结果、历史与外部效果都会保留。"
+  },
+  "human": {
+    "title": "人工待办",
+    "questionNode": "人工问题",
+    "approvalNode": "版本批准",
+    "question": "问题／批准原因",
+    "artifactTask": "产物任务",
+    "choices": "允许的回答（每行一个；留空允许自由文本）",
+    "maxLength": "回答长度上限",
+    "pinHint": "请将产物任务连接为依赖。预览和批准固定读取这里指定的版本。",
+    "localWait": "人工等待释放容量，独立分支继续执行；全局暂停是单独的控制状态。",
+    "savedWaiting": "回答已保存，将在整个运行继续后消费。",
+    "answer": "回答",
+    "feedback": "反馈（拒绝时必填）",
+    "submit": "提交回答",
+    "approve": "批准此版本",
+    "reject": "拒绝并反馈",
+    "preview": "预览批准对象",
+    "export": "导出已批准版本",
+    "status": {
+      "pending": "等待处理",
+      "answered": "回答已保存，等待消费",
+      "approved": "版本已批准",
+      "completed": "回答已消费",
+      "rejected": "已拒绝并反馈"
+    }
   }
 }

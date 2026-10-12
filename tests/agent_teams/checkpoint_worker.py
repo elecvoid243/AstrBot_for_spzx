@@ -475,6 +475,11 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("human_") and action != "serve":
+            from tests.agent_teams.human_worker import run_human_scenario
+
+            await run_human_scenario(folder, action, scenario, service, roles)
+            return
         if action == "serve":
             from fastapi import FastAPI
             from fastapi.responses import HTMLResponse
@@ -508,7 +513,7 @@ async def run_worker(
                 return HTMLResponse(content.replace("<head>", "<head><script>localStorage.setItem('token','local-qa');localStorage.setItem('user','alice');</script>"))
 
             config = Config()
-            config.bind = ["127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
+            config.bind = ["127.0.0.1:6201" if scenario.startswith("human_") else "127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
             (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__('os').getpid()}), encoding="utf-8")
             await serve(app, config)
             return

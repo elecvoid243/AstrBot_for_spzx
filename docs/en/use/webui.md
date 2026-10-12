@@ -20,6 +20,7 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Custom Rules / Future Tasks / SubAgents | More Features → The corresponding feature |
 | Agent Teams → Members (retained legacy configuration) | Reusable definitions use More Features → Agent Teams → Role templates; legacy members are not migrated automatically |
 | Agent Teams → Workflow Editor, Run Monitor, History (retained legacy runs) | New single-task and dependency runs use Agent Teams → Workflow Assets → Start Run; New Canvas Workflow opens the versioned graph editor, and Independent Runs displays read-only snapshots and task results |
+| New runs only showed waiting reasons | Agent Teams → Workflow Assets → Edit Asset configures human questions / version approval; Independent Runs → View Run → Human requests handles answers, previews, approvals or rejection and exact-version exports |
 
 Old log, trace, conversation, and statistics URLs still redirect to the corresponding tabs. Agent runners are now saved in each profile; they are no longer created as model providers. See [Agent Runners](./agent-runner.md) for the setup steps.
 

@@ -89,6 +89,21 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 
 ![A retried task retains the previous failure, exact inputs and saved usage](/images/agent-workflow-retry-history.jpg)
 
+## Human requests and version approval
+
+1. Open **Workflow Assets → New Canvas Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
+2. For approval, select the upstream **Artifact task** and exact **Artifact version**, and connect the artifact task as a dependency. Save a new asset version and start it; existing runs retain their definition.
+3. Open **Independent Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.
+4. Choose or enter an answer and select **Submit answer**. For approval, first **Preview approval version** to read the complete pinned content, then **Approve this version**. Files can be previewed. **Reject with feedback** requires feedback, preserves rejection evidence and blocks the affected path. This does not create a revision loop.
+5. **Export approved version** downloads JSON containing complete content and exact file references; after previewing, download files of that version. File downloads for an artifact governed by an approval node reject unapproved versions. Creating v2 never inherits v1 approval, changes its preview or automatically reruns downstream tasks.
+6. Refresh or reopen after restart to continue handling requests. Repeated identical answers are consumed once; another answer cannot replace one already saved. You may answer while globally paused: **Response saved. It will be consumed after the whole run continues.** Continuing preserves unanswered requests; cancellation retains requests and response history while preventing further consumption. Ordinary task retry cannot replace human answers.
+
+![Persistent human requests and their pinned approval preview in the actual WebUI](/images/agent-workflow-human-en.jpg)
+
+![An approved v1 remains the preview and export object after a v2 revision](/images/agent-workflow-human-approval-en.jpg)
+
+![Rejection feedback remains visible with its task and exact version](/images/agent-workflow-human-rejected-en.jpg)
+
 ## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.
@@ -121,5 +136,6 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
+| New workflows had no persistent human entry | Workflow Assets → Edit Asset → Human question / Version approval; Independent Runs → View Run → Human requests. Legacy Workflow Editor human entries remain separate. |
 
-Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops and team orchestration connect to this protocol in subsequent tasks. Unknown tool decisions are available inside the selected task's process details.
+Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops and team orchestration connect in subsequent tasks. Unknown tool decisions are available inside the selected task's process details.

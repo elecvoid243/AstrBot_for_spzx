@@ -511,10 +511,11 @@ export type GraphEdge = {
 export type GraphTask = {
     id: string;
     name: string;
-    member: string;
-    role_id: string;
-    role_version: number;
-    task: string;
+    member?: string;
+    role_id?: (string | null);
+    role_version?: (number | null);
+    task?: string;
+    human?: (HumanTask | null);
     inputs?: {
         [key: string]: TaskInput;
     };
@@ -530,6 +531,32 @@ export type GraphTask = {
 export type HTTPValidationError = {
     detail?: Array<ValidationError>;
 };
+
+/**
+ * Idempotent answer or explicit version decision with rejection feedback.
+ */
+export type HumanAnswerRequest = {
+    request_id: string;
+    action: 'answer' | 'approve' | 'reject';
+    answer?: (string | null);
+    feedback?: (string | null);
+};
+
+export type action2 = 'answer' | 'approve' | 'reject';
+
+/**
+ * A frozen question or approval of one upstream artifact version.
+ */
+export type HumanTask = {
+    kind: 'question' | 'approval';
+    question: string;
+    choices?: Array<(string)>;
+    max_length?: number;
+    artifact_task_id?: (string | null);
+    artifact_version?: number;
+};
+
+export type kind = 'question' | 'approval';
 
 export type ImMessageRequest = {
     umo: string;
@@ -1007,7 +1034,7 @@ export type ToolResolutionRequest = {
     result?: (string | null);
 };
 
-export type action2 = 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
+export type action3 = 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
 
 export type TotpSetupRequest = {
     code?: string;
@@ -1081,7 +1108,7 @@ export type WorkflowControlRequest = {
     expected_revision?: (number | null);
 };
 
-export type action3 = 'pause' | 'continue' | 'cancel';
+export type action4 = 'pause' | 'continue' | 'cancel';
 
 /**
  * A single task with a pinned role and declared input/output contracts.
@@ -5033,3 +5060,26 @@ export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGet
 export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetResponse = (unknown);
 
 export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetError = (HTTPValidationError);
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostData = {
+    body: HumanAnswerRequest;
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetData = {
+    path: {
+        artifact_id: string;
+        version: number;
+    };
+};
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetResponse = (unknown);
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetError = (HTTPValidationError);

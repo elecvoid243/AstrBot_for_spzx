@@ -313,7 +313,9 @@
       "pending": "Waiting for dependencies or capacity",
       "skipped": "Conditional path skipped",
       "dependency_failed": "Upstream task failed",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "waiting_human": "Waiting for human",
+      "rejected": "Human rejected"
     },
     "contract": "Output contract (JSON Schema)",
     "contractHint": "Leave empty for non-empty text. Use an object schema for structured results; files contains stable file_id references.",
@@ -456,5 +458,31 @@
     "usageRetained": "Previous consumption and full process records remain in Saved member process, associated with their Attempt.",
     "retryHint": "Create a new Attempt with these original inputs. New artifact versions are not selected automatically; existing failures, consumption and history are retained.",
     "cancelHint": "Stop new dispatch and request cancellation from current executors. Saved results, history and external effects are retained."
+  },
+  "human": {
+    "title": "Human requests",
+    "questionNode": "Human question",
+    "approvalNode": "Version approval",
+    "question": "Question / approval reason",
+    "artifactTask": "Artifact task",
+    "choices": "Allowed answers (one per line; empty for free text)",
+    "maxLength": "Maximum answer length",
+    "pinHint": "Connect the artifact task as a dependency. Preview and approval use this exact version.",
+    "localWait": "Human waits release capacity. Independent branches continue; global pause is separate.",
+    "savedWaiting": "Response saved. It will be consumed after the whole run continues.",
+    "answer": "Answer",
+    "feedback": "Feedback (required to reject)",
+    "submit": "Submit answer",
+    "approve": "Approve this version",
+    "reject": "Reject with feedback",
+    "preview": "Preview approval version",
+    "export": "Export approved version",
+    "status": {
+      "pending": "Awaiting response",
+      "answered": "Response saved, awaiting consumption",
+      "approved": "Version approved",
+      "completed": "Answer consumed",
+      "rejected": "Rejected with feedback"
+    }
   }
 }

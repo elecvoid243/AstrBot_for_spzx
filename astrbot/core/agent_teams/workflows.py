@@ -55,6 +55,7 @@ from astrbot.core.db.po import (
     AgentWorkflowProcess,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
+    AgentWorkflowTodo,
     AgentWorkflowToolCall,
     AgentWorkflowToolRecovery,
     AgentWorkflowVersion,
@@ -143,6 +144,16 @@ class WorkflowRetryRequest(BaseModel):
     input_policy: Literal["original"]
 
 
+class HumanAnswerRequest(BaseModel):
+    """Idempotent answer or explicit version decision with rejection feedback."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    request_id: str = Field(min_length=1, max_length=128)
+    action: Literal["answer", "approve", "reject"]
+    answer: str | None = Field(default=None, min_length=1, max_length=100_000)
+    feedback: str | None = Field(default=None, min_length=1, max_length=100_000)
+
+
 class WorkflowService:
     """Public asset/run boundary backed by the existing database and execution port."""
 
@@ -204,7 +215,11 @@ class WorkflowService:
             ) from exc
         definition = request.definition
         if isinstance(definition, GraphDefinition):
+            validate_graph(definition)
             for task in definition.tasks:
+                if task.human is not None:
+                    continue
+                assert task.role_id is not None and task.role_version is not None
                 await self._validate_task_definition(
                     username,
                     WorkflowDefinition(
@@ -755,6 +770,17 @@ class WorkflowService:
                     else []
                 )
             }
+            todos = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowTodo).where(
+                            col(AgentWorkflowTodo.task_run_id).in_(identities)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
             attempts = (
                 (
                     await session.execute(
@@ -821,6 +847,18 @@ class WorkflowService:
                         }
                         for a in current_artifacts
                     ],
+                    "todos": [
+                        {
+                            "todo_id": todo.todo_id,
+                            "root_run_id": todo.root_run_id,
+                            "task_run_id": todo.task_run_id,
+                            **todo.data,
+                        }
+                        for todo in todos
+                        if todo.task_run_id == current.run_id
+                    ]
+                    if include_details
+                    else [],
                 }
                 if include_details:
                     results[current.run_id].update(
@@ -991,6 +1029,9 @@ class WorkflowService:
                 artifact for task in result["tasks"] for artifact in task["artifacts"]
             ]
             result["result_ref"] = None
+            result["todos"] = [
+                todo for task in result["tasks"] for todo in task["todos"]
+            ]
         if include_details:
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0
@@ -1265,6 +1306,11 @@ class WorkflowService:
             else:
                 if control.status == "cancelled":
                     raise RoleAssetError("The run was cancelled", status=409)
+                if row.snapshot.get("engine") == "human_task_v2":
+                    raise RoleAssetError(
+                        "Human requests retain their original answer and cannot be retried as agent tasks",
+                        status=409,
+                    )
                 if row.state.get("attempt_id") != request.attempt_id:
                     raise RoleAssetError("Attempt is no longer active", status=409)
                 if row.pending_result is not None:
@@ -1585,6 +1631,9 @@ class WorkflowService:
         members = {}
         role_counts: dict[str, int] = {}
         for task in definition.tasks:
+            if task.human is not None:
+                continue
+            assert task.role_id is not None
             if task.member not in members:
                 frozen = await self._freeze_member(
                     username, task.model_dump(exclude_none=True)
@@ -1667,13 +1716,19 @@ class WorkflowService:
                         owner_username=username,
                         status="pending",
                         snapshot={
-                            "engine": "single_task_v2",
+                            "engine": "human_task_v2"
+                            if task.human
+                            else "single_task_v2",
                             "parent_run_id": run_id,
                             "node_id": task.id,
                             "asset_id": asset["asset_id"],
                             "asset_version": asset["version"],
                             "definition": child_definition,
-                            **members[task.member],
+                            **(
+                                members[task.member]
+                                if task.human is None
+                                else {"human": task.human.model_dump()}
+                            ),
                             "inputs": request.inputs,
                             "input_artifacts": snapshot["input_artifacts"],
                             "source": request.source,
@@ -1748,6 +1803,61 @@ class WorkflowService:
                     node_id: await session.get(AgentWorkflowRun, identity)
                     for node_id, identity in root.snapshot["task_runs"].items()
                 }
+                # A saved answer is consumed under the same root admission lock
+                # as successor claims. Pause retains it; cancel cannot release it.
+                for row in rows.values():
+                    if row is None or row.status != "waiting_human":
+                        continue
+                    todo = await session.get(AgentWorkflowTodo, row.run_id)
+                    if todo is None or todo.data["status"] != "answered":
+                        continue
+                    response = todo.data["response"]
+                    rejected = response["action"] == "reject"
+                    result = {
+                        "text": response.get("answer")
+                        or response.get("feedback")
+                        or "Approved."
+                    }
+                    if todo.data["kind"] == "approval":
+                        result["approved"] = not rejected
+                    row.result = result
+                    row.status = "rejected" if rejected else "completed"
+                    row.state = {
+                        **row.state,
+                        "reason": response.get("feedback") if rejected else None,
+                    }
+                    todo.data = {
+                        **todo.data,
+                        "status": "rejected"
+                        if rejected
+                        else "approved"
+                        if todo.data["kind"] == "approval"
+                        else "completed",
+                        "consumed_at": time.time(),
+                    }
+                    session.add(todo)
+                    session.add(row)
+                    session.add(
+                        AgentWorkflowArtifact(
+                            artifact_id=row.run_id,
+                            version=1,
+                            run_id=row.run_id,
+                            submission_id=response["request_id"],
+                            contract=row.snapshot["definition"].get("output_contract"),
+                            content=result,
+                        )
+                    )
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=row.run_id,
+                            kind="human.consumed",
+                            data={
+                                "todo_id": todo.todo_id,
+                                "request_id": response["request_id"],
+                                "attempt_id": row.state["attempt_id"],
+                            },
+                        )
+                    )
                 active = [
                     row
                     for row in rows.values()
@@ -1779,7 +1889,7 @@ class WorkflowService:
                         for edge in incoming:
                             source = rows[edge["source"]]
                             assert source is not None
-                            if source.status in {"pending", "running"}:
+                            if source.status in {"pending", "running", "waiting_human"}:
                                 unresolved = True
                             elif source.status == "completed":
                                 rule = edge.get("condition")
@@ -1827,6 +1937,63 @@ class WorkflowService:
                                 "reason": "No incoming path matched its field conditions.",
                             }
                         else:
+                            if task.get("human"):
+                                human = task["human"]
+                                ref = None
+                                if human["kind"] == "approval":
+                                    source = rows[human["artifact_task_id"]]
+                                    assert source is not None
+                                    ref = {
+                                        "artifact_id": source.run_id,
+                                        "version": human["artifact_version"],
+                                    }
+                                    artifact = await session.get(
+                                        AgentWorkflowArtifact,
+                                        (ref["artifact_id"], ref["version"]),
+                                    )
+                                    if artifact is None:
+                                        row.status = "blocked"
+                                        row.state = {
+                                            **row.state,
+                                            "reason": "The configured artifact version is not available.",
+                                        }
+                                        session.add(row)
+                                        progress = True
+                                        continue
+                                todo = AgentWorkflowTodo(
+                                    todo_id=row.run_id,
+                                    root_run_id=run_id,
+                                    task_run_id=row.run_id,
+                                    data={
+                                        "kind": human["kind"],
+                                        "question": human["question"],
+                                        "constraints": {
+                                            "choices": human["choices"],
+                                            "max_length": human["max_length"],
+                                        },
+                                        "artifact_ref": ref,
+                                        "attempt_id": row.state["attempt_id"],
+                                        "status": "pending",
+                                        "response": None,
+                                        "consumed_at": None,
+                                    },
+                                )
+                                session.add(todo)
+                                row.status = "waiting_human"
+                                row.state = {**row.state, "reason": human["question"]}
+                                session.add(row)
+                                session.add(
+                                    AgentWorkflowEvent(
+                                        run_id=row.run_id,
+                                        kind="human.waiting",
+                                        data={
+                                            "todo_id": todo.todo_id,
+                                            "artifact_ref": ref,
+                                        },
+                                    )
+                                )
+                                progress = True
+                                continue
                             member_id = row.snapshot["member"]["member_id"]
                             role_id = row.snapshot["definition"]["role_id"]
                             role_limit = row.snapshot["effective"].get("max_parallel")
@@ -1909,7 +2076,8 @@ class WorkflowService:
                         )
                         progress = True
                 if all(
-                    row is not None and row.status not in {"pending", "running"}
+                    row is not None
+                    and row.status not in {"pending", "running", "waiting_human"}
                     for row in rows.values()
                 ):
                     success = all(
@@ -1966,6 +2134,88 @@ class WorkflowService:
                         pass
             current = await self.get_run(username, run_id)
         return current
+
+    async def answer_todo(
+        self, username: str, run_id: str, todo_id: str, payload: dict
+    ) -> dict:
+        """Save a human response before attempting any dependency release.
+
+        Args:
+            username: Authenticated run owner.
+            run_id: Root run containing the request.
+            todo_id: Frozen request identity shown with its preview.
+            payload: Unique response identity, answer or explicit decision.
+
+        Returns:
+            Current persisted run, including a response awaiting resume if paused.
+
+        Raises:
+            RoleAssetError: Inaccessible request, invalid answer or conflicting response.
+        """
+        try:
+            request = HumanAnswerRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError("Invalid human response") from exc
+        async with self.db.get_db() as session:
+            root = await session.get(AgentWorkflowRun, run_id)
+            if root is None or root.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, root)
+            todo = await session.get(AgentWorkflowTodo, todo_id)
+            if todo is None or todo.root_run_id != run_id:
+                raise RoleAssetError("Human request not found", status=404)
+            decision = request.model_dump()
+            previous = todo.data["response"]
+            if previous is not None:
+                if previous != decision:
+                    raise RoleAssetError("Human request already answered", status=409)
+            else:
+                if control.status == "cancelled":
+                    raise RoleAssetError("Run was cancelled", status=409)
+                if request.action == "reject":
+                    if not request.feedback or request.answer is not None:
+                        raise RoleAssetError(
+                            "Rejection requires feedback and no answer"
+                        )
+                elif todo.data["kind"] == "approval":
+                    if request.action != "approve" or request.answer is not None:
+                        raise RoleAssetError(
+                            "Choose approve or reject for this exact version"
+                        )
+                elif request.action != "answer" or not request.answer:
+                    raise RoleAssetError("Provide an answer to this question")
+                else:
+                    constraints = todo.data["constraints"]
+                    if (
+                        len(request.answer) > constraints["max_length"]
+                        or constraints["choices"]
+                        and request.answer not in constraints["choices"]
+                    ):
+                        raise RoleAssetError(
+                            "Answer does not satisfy the saved constraints"
+                        )
+                todo.data = {**todo.data, "status": "answered", "response": decision}
+                session.add(todo)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=todo.task_run_id,
+                        kind="human.answered",
+                        data={
+                            "todo_id": todo_id,
+                            "request_id": request.request_id,
+                            "action": request.action,
+                        },
+                    )
+                )
+            await session.commit()
+        if control.status == "active":
+            try:
+                await self.advance_run(username, run_id)
+            except Exception:
+                # Submission already succeeded. Recovery/continue retries the
+                # durable scheduling fact without changing the saved answer.
+                logger.exception("Saved human response awaits scheduling: %s", todo_id)
+        return await self.get_run(username, run_id)
 
     async def _execute_graph_task(
         self,
@@ -2248,6 +2498,45 @@ class WorkflowService:
                     )
             return {**ref, "content": artifact.content, "files": files}
 
+    async def export_artifact(
+        self, username: str, artifact_id: str, version: int
+    ) -> dict:
+        """Export precisely the version consumed by a durable human approval.
+
+        Args:
+            username: Authenticated artifact owner.
+            artifact_id: Immutable artifact identity shown in the preview.
+            version: Approved version, never resolved to the latest revision.
+
+        Returns:
+            Full approved content and its exact reference and file metadata.
+
+        Raises:
+            RoleAssetError: Version is inaccessible or has no consumed approval.
+        """
+        artifact = await self.read_artifact(username, artifact_id, version)
+        async with self.db.get_db() as session:
+            approvals = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowTodo).where(
+                            AgentWorkflowTodo.data["status"].as_string() == "approved",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not any(
+                todo.data.get("artifact_ref")
+                == {"artifact_id": artifact_id, "version": version}
+                for todo in approvals
+            ):
+                raise RoleAssetError(
+                    "This artifact version has not been approved", status=409
+                )
+        return artifact
+
     async def revise_artifact(
         self, username: str, artifact_id: str, payload: dict
     ) -> dict:
@@ -2425,7 +2714,13 @@ class WorkflowService:
             return {"file_id": file_id, "filename": filename, "media_type": media_type}
 
     async def get_file(
-        self, username: str, artifact_id: str, version: int, file_id: str
+        self,
+        username: str,
+        artifact_id: str,
+        version: int,
+        file_id: str,
+        *,
+        download: bool = True,
     ) -> dict:
         """Read ready file bytes through a committed immutable artifact version.
 
@@ -2434,6 +2729,7 @@ class WorkflowService:
             artifact_id: Stable artifact identity.
             version: Exact version whose file is being read.
             file_id: Stable managed file reference in that version.
+            download: Require the exact approval for files governed by an approval node.
 
         Returns:
             Complete bytes, filename and MIME type for preview or download.
@@ -2442,6 +2738,21 @@ class WorkflowService:
             RoleAssetError: Inaccessible or uncommitted file reference.
         """
         artifact = await self.read_artifact(username, artifact_id, version)
+        if download:
+            async with self.db.get_db() as session:
+                origin = await session.get(AgentWorkflowRun, artifact_id)
+                assert origin is not None
+                root_id = origin.snapshot.get("parent_run_id")
+                root = await session.get(AgentWorkflowRun, root_id) if root_id else None
+                governed = root is not None and any(
+                    task.get("human")
+                    and task["human"]["kind"] == "approval"
+                    and task["human"]["artifact_task_id"]
+                    == origin.snapshot.get("node_id")
+                    for task in root.snapshot["definition"]["tasks"]
+                )
+            if governed:
+                await self.export_artifact(username, artifact_id, version)
         if {"file_id": file_id} not in artifact["content"].get("files", []):
             raise RoleAssetError("Artifact file not found", status=404)
         async with self.db.get_db() as session:
@@ -3225,8 +3536,19 @@ class WorkflowService:
                 .all()
             )
             for run in abandoned:
-                run.status = "interrupted"
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run.run_id)
+                if (
+                    run.snapshot.get("parent_run_id")
+                    and not run.state.get("execution_id")
+                    and checkpoint is None
+                ):
+                    # Admission committed before any executor acquired this
+                    # attempt. Reclaim its frozen inputs without replaying work.
+                    run.status = "pending"
+                    run.state = {**run.state, "retry_pending": True}
+                    session.add(run)
+                    continue
+                run.status = "interrupted"
                 if checkpoint:
                     data = copy.deepcopy(checkpoint.data)
                     for call in data.get("tool_calls", []):

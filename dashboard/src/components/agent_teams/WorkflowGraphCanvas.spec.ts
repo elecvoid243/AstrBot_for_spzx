@@ -9,6 +9,47 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("authors human question and approval nodes without requiring a role", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: { definition: { name: "Human graph", tasks: [], edges: [] } },
+      global: {
+        stubs: {
+          VueFlow: true,
+          Background: true,
+          Controls: true,
+          MiniMap: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-select": true,
+          "v-textarea": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": true,
+        },
+      },
+    });
+    try {
+      await wrapper.get('[data-testid="add-human-question"]').trigger("click");
+      let saved: any = wrapper.emitted("update:definition")?.at(-1)?.[0];
+      expect(saved.tasks[0].human.kind).toBe("question");
+      expect(saved.tasks[0].role_id).toBeUndefined();
+      const field = wrapper.getComponent({ name: "v-textarea" });
+      field.vm.$emit("update:modelValue", "Choose a region");
+      await flushPromises();
+      saved = wrapper.emitted("update:definition")?.at(-1)?.[0];
+      expect(saved.tasks[0].human.question).toBe("Choose a region");
+      await wrapper.get('[data-testid="add-human-approval"]').trigger("click");
+      saved = wrapper.emitted("update:definition")?.at(-1)?.[0];
+      expect(saved.tasks[1].human.kind).toBe("approval");
+      expect(wrapper.find('[data-testid="human-artifact-task"]').exists()).toBe(
+        true,
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it.each(["click", "drop"])(
     "adds unique tasks by %s when randomUUID is unavailable",
     async (action) => {

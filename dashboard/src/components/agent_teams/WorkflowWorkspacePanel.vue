@@ -128,6 +128,25 @@
             :selected-task="selectedTaskNode"
             @select="selectRunTask"
           />
+          <section
+            v-if="selectedRun.todos?.length"
+            :aria-label="tm('human.title')"
+            class="my-4"
+          >
+            <h3 class="text-h6">{{ tm("human.title") }}</h3>
+            <p class="text-body-2">{{ tm("human.localWait") }}</p>
+            <WorkflowHumanTodo
+              v-for="todo in selectedRun.todos"
+              :key="todo.todo_id"
+              :todo="todo"
+              :paused="selectedRun.control?.status === 'paused'"
+              :cancelled="selectedRun.control?.status === 'cancelled'"
+              :busy="
+                !!answering || !!controlling || !!resolving || !!recovering
+              "
+              @submit="answerTodo"
+            />
+          </section>
           <WorkflowRunControls
             :key="selectedRun.run_id"
             :run="selectedRun"
@@ -135,7 +154,8 @@
             :busy="
               controlling?.rootId === selectedRun.run_id ||
               recovering === detailRun.run_id ||
-              resolving?.taskId === detailRun.run_id
+              resolving?.taskId === detailRun.run_id ||
+              answering?.rootId === selectedRun.run_id
             "
             @submit="applyRunControl"
           />
@@ -557,12 +577,14 @@ import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
+import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
 import type {
   GraphDefinition,
   WorkflowDefinition,
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowRetryRequest,
+  HumanAnswerRequest,
 } from "@/api/generated/openapi-v1";
 
 const props = defineProps<{ mode: "assets" | "runs" }>();
@@ -577,6 +599,7 @@ const selectedRun = ref<any>(null);
 const recovering = ref<string | null>(null);
 const controlling = ref<{ rootId: string; requestId: string } | null>(null);
 const resolving = ref<{ taskId: string; recordId: string } | null>(null);
+const answering = ref<{ rootId: string; todoId: string } | null>(null);
 const selectedTaskNode = ref<string | null>(null);
 const detailRun = computed(
   () =>
@@ -956,12 +979,45 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   }
 }
 
+async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
+  const rootId = selectedRun.value?.run_id;
+  if (
+    !rootId ||
+    openingRun ||
+    answering.value ||
+    controlling.value ||
+    resolving.value ||
+    recovering.value
+  )
+    return;
+  const read = ++runRead;
+  const operation = { rootId, todoId };
+  answering.value = operation;
+  loading.value = true;
+  try {
+    error.value = "";
+    const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
+    if (!disposed && read === runRead) selectedRun.value = updated;
+  } catch (err) {
+    if (!disposed && read === runRead)
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    if (read === runRead) loading.value = false;
+    if (
+      answering.value?.rootId === operation.rootId &&
+      answering.value?.todoId === operation.todoId
+    )
+      answering.value = null;
+  }
+}
+
 async function applyRunControl(
   payload: WorkflowControlRequest | WorkflowRetryRequest,
 ) {
   const rootId = selectedRun.value?.run_id;
   if (
     !rootId ||
+    answering.value?.rootId === rootId ||
     openingRun ||
     controlling.value?.rootId === rootId ||
     recovering.value === detailRun.value?.run_id ||

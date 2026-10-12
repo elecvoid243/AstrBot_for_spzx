@@ -3,11 +3,20 @@
 from string import Formatter
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleOverrides
+
+HUMAN_APPROVAL_CONTRACT = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+        "text": {"type": "string"},
+    },
+    "required": ["approved", "text"],
+}
 
 
 class TaskInput(BaseModel):
@@ -19,20 +28,83 @@ class TaskInput(BaseModel):
     field: str = "text"
 
 
+class HumanTask(BaseModel):
+    """A frozen question or approval of one upstream artifact version."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    kind: Literal["question", "approval"]
+    question: str = Field(min_length=1, max_length=100_000)
+    choices: list[str] = Field(default_factory=list, max_length=100)
+    max_length: int = Field(default=10_000, ge=1, le=100_000)
+    artifact_task_id: str | None = None
+    artifact_version: int = Field(default=1, ge=1)
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member instance with a fixed role version."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z][\w-]*$")
     name: str = Field(min_length=1, max_length=128)
-    member: str = Field(min_length=1, max_length=128)
-    role_id: str = Field(min_length=1, max_length=128)
-    role_version: int = Field(ge=1)
-    task: str = Field(min_length=1, max_length=100_000)
+    member: str = Field(default="", max_length=128)
+    role_id: str | None = Field(default=None, min_length=1, max_length=128)
+    role_version: int | None = Field(default=None, ge=1)
+    task: str = Field(default="", max_length=100_000)
+    human: HumanTask | None = None
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
     output_contract: dict | None = None
     position: dict[Literal["x", "y"], float] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_execution(self):
+        """Require either agent execution fields or an unambiguous human node.
+
+        Returns:
+            Validated node.
+
+        Raises:
+            ValueError: The selected node kind has missing or conflicting fields.
+        """
+        if self.human is None:
+            if (
+                not self.member
+                or not self.role_id
+                or not self.role_version
+                or not self.task
+            ):
+                raise ValueError("Agent tasks require member, pinned role and task")
+        else:
+            if (
+                self.member
+                or self.role_id
+                or self.role_version
+                or self.task
+                or self.inputs
+                or self.output_contract
+                not in (
+                    None,
+                    HUMAN_APPROVAL_CONTRACT if self.human.kind == "approval" else None,
+                )
+                or self.overrides.model_dump(exclude_none=True)
+            ):
+                raise ValueError("Human tasks cannot also configure agent execution")
+            if self.human.kind == "approval":
+                if not self.human.artifact_task_id or self.human.choices:
+                    raise ValueError(
+                        "Approval requires an artifact task and no answer choices"
+                    )
+                self.output_contract = HUMAN_APPROVAL_CONTRACT
+            elif self.human.artifact_task_id is not None:
+                raise ValueError("Questions do not approve artifacts")
+            if any(
+                not value or len(value) > self.human.max_length
+                for value in self.human.choices
+            ) or len(set(self.human.choices)) != len(self.human.choices):
+                raise ValueError(
+                    "Answer choices must be unique, nonempty and fit the length limit"
+                )
+        return self
 
 
 class FieldCondition(BaseModel):
@@ -252,6 +324,19 @@ def validate_graph(definition: GraphDefinition) -> None:
     members = {}
     for index, task in enumerate(definition.tasks):
         path = f"definition.tasks.{index}"
+        if task.human is not None:
+            if task.human.kind == "approval" and (
+                task.human.artifact_task_id not in ancestors.get(task.id, set())
+                or tasks[task.human.artifact_task_id].human is not None
+            ):
+                fields.append(
+                    {
+                        "path": path + ".human.artifact_task_id",
+                        "code": "REFERENCE",
+                        "message": "Approve an upstream dependency's exact artifact version",
+                    }
+                )
+            continue
         config = (task.role_id, task.role_version, task.overrides.model_dump())
         if task.member in members and members[task.member] != config:
             fields.append(

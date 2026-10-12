@@ -74,6 +74,22 @@
       <details v-if="!readonly" class="graph-toolbox" :open="!narrow">
         <summary>{{ tm("graph.toolbox") }}</summary>
         <p class="text-caption my-3">{{ tm("graph.dragHint") }}</p>
+        <v-btn
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          data-testid="add-human-question"
+          @click="addTask('human:question')"
+          >{{ tm("human.questionNode") }}</v-btn
+        >
+        <v-btn
+          variant="tonal"
+          size="small"
+          class="mb-3"
+          data-testid="add-human-approval"
+          @click="addTask('human:approval')"
+          >{{ tm("human.approvalNode") }}</v-btn
+        >
         <button
           v-for="role in roles"
           :key="role.role_id"
@@ -132,6 +148,7 @@
             @update:model-value="checkpoint"
           />
           <v-select
+            v-if="!selectedTask.human"
             v-model="selectedTask.role_id"
             :items="roles"
             item-title="definition.name"
@@ -141,6 +158,7 @@
             @update:model-value="changeRole"
           />
           <v-select
+            v-if="!selectedTask.human"
             v-model="selectedTask.role_version"
             :items="selectedRole?.versions ?? [selectedTask.role_version]"
             :label="tm('v2.roleVersion')"
@@ -148,6 +166,7 @@
             @update:model-value="checkpoint"
           />
           <v-text-field
+            v-if="!selectedTask.human"
             v-model="selectedTask.member"
             :label="tm('graph.memberKey')"
             :hint="tm('graph.memberHint')"
@@ -156,6 +175,7 @@
             @update:model-value="checkpoint"
           />
           <v-textarea
+            v-if="!selectedTask.human"
             v-model="selectedTask.task"
             :label="tm('v2.task')"
             :hint="tm('v2.taskHint')"
@@ -165,72 +185,128 @@
             class="mt-4"
             @update:model-value="checkpoint"
           />
-          <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.inputs") }}</h3>
-          <div
-            v-for="(ref, alias) in selectedTask.inputs"
-            :key="inputRenderKeys[`${selectedTask.id}:${alias}`] ?? alias"
-            class="graph-input"
-          >
-            <v-text-field
-              :model-value="aliasTexts[`${selectedTask.id}:${alias}`] ?? alias"
-              :label="tm('graph.inputAlias')"
-              density="compact"
-              @update:model-value="
-                aliasTexts[`${selectedTask.id}:${alias}`] = $event
-              "
-              @update:focused="
-                !$event &&
-                  renameInput(
-                    String(alias),
-                    aliasTexts[`${selectedTask.id}:${alias}`] ?? String(alias),
-                  )
-              "
-            />
-            <v-select
-              :model-value="ref.input ? `input:${ref.input}` : ref.task_id"
-              :items="inputSources"
-              :label="tm('graph.source')"
-              density="compact"
-              @update:model-value="setInputSource(String(alias), $event)"
-            />
-            <v-text-field
-              v-if="ref.task_id"
-              v-model="ref.field"
-              :label="tm('graph.field')"
-              density="compact"
+          <template v-if="selectedTask.human">
+            <v-textarea
+              v-model="selectedTask.human.question"
+              :label="tm('human.question')"
+              data-testid="human-question"
               @update:model-value="checkpoint"
             />
-            <v-btn
-              variant="text"
-              size="small"
-              color="error"
-              @click="
-                delete selectedTask.inputs?.[alias];
-                checkpoint();
-              "
-              >{{ tm("graph.removeInput") }}</v-btn
+            <template v-if="selectedTask.human.kind === 'approval'">
+              <v-select
+                v-model="selectedTask.human.artifact_task_id"
+                :items="
+                  draft.tasks
+                    .filter(
+                      (task) => task.id !== selectedTask?.id && !task.human,
+                    )
+                    .map((task) => ({ title: task.name, value: task.id }))
+                "
+                :label="tm('human.artifactTask')"
+                data-testid="human-artifact-task"
+                @update:model-value="checkpoint"
+              />
+              <v-text-field
+                v-model.number="selectedTask.human.artifact_version"
+                type="number"
+                min="1"
+                :label="tm('v2.artifactVersion')"
+                @update:model-value="checkpoint"
+              />
+              <p class="text-caption">{{ tm("human.pinHint") }}</p>
+            </template>
+            <template v-else>
+              <v-textarea
+                :model-value="(selectedTask.human.choices ?? []).join('\n')"
+                :label="tm('human.choices')"
+                @update:model-value="
+                  selectedTask.human.choices = $event
+                    .split('\n')
+                    .map((value: string) => value.trim())
+                    .filter(Boolean);
+                  checkpoint();
+                "
+              />
+              <v-text-field
+                v-model.number="selectedTask.human.max_length"
+                type="number"
+                min="1"
+                :label="tm('human.maxLength')"
+                @update:model-value="checkpoint"
+              />
+            </template>
+          </template>
+          <template v-else>
+            <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.inputs") }}</h3>
+            <div
+              v-for="(ref, alias) in selectedTask.inputs"
+              :key="inputRenderKeys[`${selectedTask.id}:${alias}`] ?? alias"
+              class="graph-input"
             >
-          </div>
-          <v-btn variant="tonal" size="small" @click="addInput">{{
-            tm("graph.addInput")
-          }}</v-btn>
-          <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
-          <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.outputs") }}</h3>
-          <v-textarea
-            :key="selectedTask.id"
-            :model-value="
-              contractTexts[selectedTask.id] ??
-              (selectedTask.output_contract
-                ? JSON.stringify(selectedTask.output_contract, null, 2)
-                : '')
-            "
-            :label="tm('v2.contract')"
-            :hint="tm('v2.contractHint')"
-            persistent-hint
-            rows="5"
-            density="compact"
-            @update:model-value="setContract"
-          />
+              <v-text-field
+                :model-value="
+                  aliasTexts[`${selectedTask.id}:${alias}`] ?? alias
+                "
+                :label="tm('graph.inputAlias')"
+                density="compact"
+                @update:model-value="
+                  aliasTexts[`${selectedTask.id}:${alias}`] = $event
+                "
+                @update:focused="
+                  !$event &&
+                    renameInput(
+                      String(alias),
+                      aliasTexts[`${selectedTask.id}:${alias}`] ??
+                        String(alias),
+                    )
+                "
+              />
+              <v-select
+                :model-value="ref.input ? `input:${ref.input}` : ref.task_id"
+                :items="inputSources"
+                :label="tm('graph.source')"
+                density="compact"
+                @update:model-value="setInputSource(String(alias), $event)"
+              />
+              <v-text-field
+                v-if="ref.task_id"
+                v-model="ref.field"
+                :label="tm('graph.field')"
+                density="compact"
+                @update:model-value="checkpoint"
+              />
+              <v-btn
+                variant="text"
+                size="small"
+                color="error"
+                @click="
+                  delete selectedTask.inputs?.[alias];
+                  checkpoint();
+                "
+                >{{ tm("graph.removeInput") }}</v-btn
+              >
+            </div>
+            <v-btn variant="tonal" size="small" @click="addInput">{{
+              tm("graph.addInput")
+            }}</v-btn>
+            <p class="text-caption my-2">{{ tm("graph.referenceHint") }}</p>
+            <h3 class="text-subtitle-2 mt-4 mb-2">{{ tm("graph.outputs") }}</h3>
+            <v-textarea
+              :key="selectedTask.id"
+              :model-value="
+                contractTexts[selectedTask.id] ??
+                (selectedTask.output_contract
+                  ? JSON.stringify(selectedTask.output_contract, null, 2)
+                  : '')
+              "
+              :label="tm('v2.contract')"
+              :hint="tm('v2.contractHint')"
+              persistent-hint
+              rows="5"
+              density="compact"
+              @update:model-value="setContract"
+            />
+          </template>
           <v-btn
             variant="text"
             color="error"
@@ -373,13 +449,21 @@ const nodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        memberName: `${
-          role?.definition.name ?? running?.snapshot.member.name ?? task.role_id
-        } · ${task.member}`,
-        memberColor: collabMemberColor(task.member),
-        taskPreview: task.task,
+        memberName: task.human
+          ? tm(`human.${task.human.kind}Node`)
+          : `${
+              role?.definition.name ??
+              running?.snapshot.member?.name ??
+              task.role_id
+            } · ${task.member}`,
+        memberColor: collabMemberColor(task.member ?? task.id),
+        taskPreview: task.human?.question ?? task.task,
         nodeNumber: index + 1,
-        configLabel: `v${task.role_version}`,
+        configLabel: task.human
+          ? task.human.kind === "approval"
+            ? `v${task.human.artifact_version ?? 1}`
+            : ""
+          : `v${task.role_version}`,
         inputLabel: `${tm("graph.inputs")} · ${
           Object.keys(task.inputs ?? {}).length
         }`,
@@ -466,7 +550,13 @@ function restore(delta: number) {
 function addTask(roleId: string, position?: { x: number; y: number }) {
   if (props.readonly) return;
   const role = props.roles.find((item) => item.role_id === roleId);
-  if (!role) return;
+  const humanKind =
+    roleId === "human:question"
+      ? "question"
+      : roleId === "human:approval"
+      ? "approval"
+      : null;
+  if (!role && !humanKind) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -479,10 +569,18 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,
-    name: role.definition.name,
-    member: id,
-    role_id: roleId,
-    role_version: role.version,
+    name: humanKind ? tm(`human.${humanKind}Node`) : role.definition.name,
+    ...(humanKind
+      ? {
+          human: {
+            kind: humanKind,
+            question: "",
+            choices: [],
+            max_length: 10000,
+            artifact_version: 1,
+          },
+        }
+      : { member: id, role_id: roleId, role_version: role.version }),
     task: "",
     inputs: {},
     overrides: {},

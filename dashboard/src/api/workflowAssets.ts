@@ -6,6 +6,7 @@ import type {
   ToolResolutionRequest,
   WorkflowControlRequest,
   WorkflowRetryRequest,
+  HumanAnswerRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
@@ -74,6 +75,25 @@ export const workflowAssetsApi = {
       await httpClient.post(
         `/api/v1/workflow_runs/${encodeURIComponent(runId)}/retry`,
         payload,
+      )
+    ).data.data;
+  },
+  async answer(runId: string, todoId: string, payload: HumanAnswerRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(
+          runId,
+        )}/todos/${encodeURIComponent(todoId)}/answer`,
+        payload,
+      )
+    ).data.data;
+  },
+  async export(artifactId: string, version: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_artifacts/${encodeURIComponent(
+          artifactId,
+        )}/versions/${version}/export`,
       )
     ).data.data;
   },

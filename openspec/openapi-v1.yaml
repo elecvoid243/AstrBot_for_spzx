@@ -6873,6 +6873,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/todos/{todo_id}/answer:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Answer Todo
+      description: "Save a response to a frozen human request, including while paused.\n\
+        \nArgs:\n    run_id: Root run owned by the authenticated user.\n    todo_id:\
+        \ Persistent human request identity.\n    payload: Idempotent answer or approval/rejection\
+        \ with feedback.\n    username: Authenticated owner.\n    service: Shared application\
+        \ service.\n\nReturns:\n    Persisted run with the saved response and its consumption\
+        \ state."
+      operationId: answer_todo_api_v1_workflow_runs__run_id__todos__todo_id__answer_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanAnswerRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}/export:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Export Artifact
+      description: "Read an approved immutable version for delivery.\n\nArgs:\n    artifact_id:\
+        \ Stable artifact identity.\n    version: Exact approved version.\n    username:\
+        \ Authenticated owner.\n    service: Shared application service.\n\nReturns:\n\
+        \    Full approved content and exact file references, or an access error."
+      operationId: export_artifact_api_v1_workflow_artifacts__artifact_id__versions__version__export_get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -9014,45 +9092,51 @@ components:
       title: GraphEdge
       type: object
     GraphTask:
-      additionalProperties: false
-      description: A task bound to a named member instance with a fixed role version.
       properties:
         id:
+          type: string
           maxLength: 128
           minLength: 1
           pattern: ^[a-zA-Z][\w-]*$
           title: Id
-          type: string
         name:
+          type: string
           maxLength: 128
           minLength: 1
           title: Name
-          type: string
         member:
+          type: string
           maxLength: 128
-          minLength: 1
           title: Member
-          type: string
+          default: ''
         role_id:
-          maxLength: 128
-          minLength: 1
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
           title: Role Id
-          type: string
         role_version:
-          minimum: 1
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
           title: Role Version
-          type: integer
         task:
-          maxLength: 100000
-          minLength: 1
-          title: Task
           type: string
+          maxLength: 100000
+          title: Task
+          default: ''
+        human:
+          anyOf:
+          - $ref: '#/components/schemas/HumanTask'
+          - type: 'null'
         inputs:
           additionalProperties:
             $ref: '#/components/schemas/TaskInput'
+          type: object
           maxProperties: 30
           title: Inputs
-          type: object
         overrides:
           $ref: '#/components/schemas/RoleOverrides'
         output_contract:
@@ -9060,7 +9144,6 @@ components:
           - additionalProperties: true
             type: object
           - type: 'null'
-          default: null
           title: Output Contract
         position:
           additionalProperties:
@@ -9069,17 +9152,15 @@ components:
             enum:
             - x
             - y
-          title: Position
           type: object
+          title: Position
+      additionalProperties: false
+      type: object
       required:
       - id
       - name
-      - member
-      - role_id
-      - role_version
-      - task
       title: GraphTask
-      type: object
+      description: A task bound to a named member instance with a fixed role version.
     TaskInput:
       additionalProperties: false
       description: A declared workflow input or an upstream validated result field.
@@ -9278,3 +9359,80 @@ components:
       - content
       title: ArtifactRevisionRequest
       description: Explicit, idempotent revision without downstream scheduling effects.
+    HumanTask:
+      properties:
+        kind:
+          type: string
+          enum:
+          - question
+          - approval
+          title: Kind
+        question:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Question
+        choices:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Choices
+        max_length:
+          type: integer
+          maximum: 100000.0
+          minimum: 1.0
+          title: Max Length
+          default: 10000
+        artifact_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Task Id
+        artifact_version:
+          type: integer
+          minimum: 1.0
+          title: Artifact Version
+          default: 1
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - question
+      title: HumanTask
+      description: A frozen question or approval of one upstream artifact version.
+    HumanAnswerRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - answer
+          - approve
+          - reject
+          title: Action
+        answer:
+          anyOf:
+          - type: string
+            maxLength: 100000
+            minLength: 1
+          - type: 'null'
+          title: Answer
+        feedback:
+          anyOf:
+          - type: string
+            maxLength: 100000
+            minLength: 1
+          - type: 'null'
+          title: Feedback
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      title: HumanAnswerRequest
+      description: Idempotent answer or explicit version decision with rejection feedback.

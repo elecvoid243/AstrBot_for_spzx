@@ -280,6 +280,16 @@ class AgentWorkflowControl(SQLModel, table=True):
     requests: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentWorkflowTodo(TimestampMixin, SQLModel, table=True):
+    """Frozen human request, durable response and single task consumption."""
+
+    __tablename__: str = "agent_workflow_todos"  # pyright: ignore[reportIncompatibleVariableOverride]
+    todo_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    task_run_id: str = Field(index=True, unique=True)
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentWorkflowAttempt(SQLModel, table=True):
     """Immutable failed attempt evidence retained when explicitly retrying."""
 

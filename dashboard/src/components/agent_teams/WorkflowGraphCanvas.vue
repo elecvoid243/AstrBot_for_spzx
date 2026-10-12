@@ -472,8 +472,10 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
       : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
   let id = `task_${seed}`;
+  let suffix = 1;
   // Keep task IDs unique within this canvas even when generated values repeat.
-  while (draft.value.tasks.some((task) => task.id === id)) id += "_1";
+  while (draft.value.tasks.some((task) => task.id === id))
+    id = `task_${seed}_${suffix++}`;
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,

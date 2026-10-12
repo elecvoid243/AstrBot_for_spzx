@@ -83,6 +83,8 @@
 
 整个运行暂停期间，仍可保存核实结果、核实失败、显式工具重试或对账决定。页面会确认决定已保存，等待“继续运行”，保存决定本身不会放行外部工作。继续运行或在已接受继续后重启，会使用原 Attempt 与调用证据，并遵守局部等待及容量限制。正常关闭核心服务与意外停止进程都会保留暂停后的接续决定。已保存的待执行决定在被消费前不能由另一决定替换。
 
+![实际 WebUI 中已接受的工具决定等待整个运行继续](/images/agent-workflow-paused-decision-zh.jpg)
+
 ![实际 WebUI 中持久化的暂停决定与原 Attempt](/images/agent-workflow-controls-zh.jpg)
 
 ![重试后仍可查看原失败、精确输入与已保存消耗](/images/agent-workflow-retry-history.jpg)

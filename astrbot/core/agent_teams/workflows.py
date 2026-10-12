@@ -1992,6 +1992,35 @@ class WorkflowService:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
             checkpoint.data = copy.deepcopy(checkpoint.data)
             calls = checkpoint.data.get("tool_calls", [])
+            if "tool_result_files" not in checkpoint.data:
+                # Older request boundaries keep prior raw results in durable calls.
+                messages = [
+                    message
+                    for message in checkpoint.data["messages"]
+                    if message["role"] != "_checkpoint"
+                ]
+                current_call_ids = {call["record_id"] for call in calls}
+                sources = []
+                for call in run["tool_calls"]:
+                    position = call["context_position"]
+                    if (
+                        call["record_id"] in current_call_ids
+                        or call["attempt_id"] != row.state["attempt_id"]
+                        or call["status"] != "applied"
+                        or position is None
+                    ):
+                        continue
+                    protocols = []
+                    for message in messages[position:]:
+                        if (
+                            message["role"] != "tool"
+                            or message.get("tool_call_id") != call["call_id"]
+                        ):
+                            break
+                        protocols.append(message)
+                    if protocols:
+                        sources.append({**call, "protocol_results": protocols})
+                checkpoint.data["tool_result_sources"] = sources
             for call in calls:
                 if call["name"] == "submit_task_result" and call["status"] in {
                     "started",

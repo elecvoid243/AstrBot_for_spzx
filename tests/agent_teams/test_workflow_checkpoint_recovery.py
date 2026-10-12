@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator", "overflow_legacy_unaligned", "overflow_legacy_request", "overflow_restore_failure"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -187,16 +187,34 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                 assert path.read_text(encoding="utf-8") == large_result
                 path.unlink()
                 assert not path.exists()
+                if scenario == "overflow_restore_failure":
+                    path.mkdir()
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario == "overflow_restore_failure":
+            assert evidence["after"]["status"] == "blocked"
+            assert "Failed to restore saved tool output" in evidence["after"]["state"]["reason"]
+            assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
+            assert evidence["after"]["tool_calls"] == evidence["before"]["tool_calls"]
+            assert len(requests) == 1
+            assert file_reads == []
+            for path in spilled:
+                assert path.resolve().parent == overflow_dir
+                path.rmdir()
+            repaired = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
+            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         if scenario.startswith("overflow"):
             assert len(file_reads) == 1
             assert file_reads[0]["content"] is not None
             assert file_reads[0]["content"] == large_result
             assert file_reads[0]["content"].endswith("COMPLETE_END")
             assert len([message for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]) == (2 if scenario == "overflow_generator" else 1)
-            assert evidence["before"]["tool_calls"][0]["raw_results"][0]["content"][0]["text"] == large_result
+            raw_results = evidence["before"]["tool_calls"][0]["raw_results"]
+            if scenario == "overflow_legacy_unaligned":
+                assert [raw["content"][0]["type"] for raw in raw_results] == ["resource_link", "text"]
+            assert raw_results[-1 if scenario == "overflow_legacy_unaligned" else 0]["content"][0]["text"] == large_result
             assert evidence["after"]["tool_calls"][0]["raw_results"] == evidence["before"]["tool_calls"][0]["raw_results"]
         if scenario.startswith("submit_conflict"):
             before = next(call for call in evidence["before"]["tool_calls"] if call["call_id"] == "submit-conflict")

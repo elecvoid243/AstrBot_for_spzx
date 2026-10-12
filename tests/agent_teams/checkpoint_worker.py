@@ -113,9 +113,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         Raises:
             RuntimeError: The external completion outcome is unavailable.
         """
+        if scenario == "overflow_legacy_unaligned":
+            yield CallToolResult.model_validate({"content": [{"type": "resource_link", "name": "Progress reference", "uri": "https://example.org/evidence"}]})
         async with httpx.AsyncClient() as client:
-            initial = await client.post(endpoint + "/tool", json={"value": value, "part": "initial"})
+            initial = await client.post(endpoint + "/tool", json={"value": value, **({} if scenario == "overflow_legacy_unaligned" else {"part": "initial"})})
             yield initial.json()["text"]
+            if scenario == "overflow_legacy_unaligned":
+                return
             if scenario == "generator_error":
                 raise RuntimeError("External completion outcome is unavailable")
             final = await client.post(endpoint + "/tool", json={"value": value, "part": "final"})
@@ -124,7 +128,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator", "overflow_generator"} else external_tool,
+        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
     if scenario.startswith("overflow"):
         async def read_saved_text(event, path):
@@ -291,9 +295,9 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
-                if scenario.startswith("overflow") and scenario != "overflow_request" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
+                if scenario.startswith("overflow") and not scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
-                if scenario == "overflow_request" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request" and row.data["model_calls"] == 2:
+                if scenario.startswith("overflow") and scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request" and row.data["model_calls"] == 2:
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "submit_conflict_result" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "submission-conflict":
                     session.info["kill_boundary"] = row.run_id

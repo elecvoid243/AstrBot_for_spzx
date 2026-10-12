@@ -496,73 +496,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "Saved tool capabilities have changed; recovery is blocked"
                 )
                 raise execution.recovery_error
-            # Rebuild required temporary output before any dependent model call.
-            # Older checkpoints retain the complete source in per-call raw results.
-            files = dict(saved.get("tool_result_files", {}))
-            for call in (
-                saved.get("tool_calls", []) if "tool_result_files" not in saved else []
-            ):
-                if call["status"] not in {"result_saved", "applied"}:
-                    continue
-                for raw, protocol in zip(call["raw_results"], call["protocol_results"]):
-                    _, separator, notice = protocol["content"].rpartition(
-                        self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.partition(
-                            "{overflow_path}"
-                        )[0]
-                    )
-                    if not separator:
-                        continue
-                    path = notice.partition("`. Use ")[0]
-                    if path in files:
-                        continue
-                    parts = []
-                    for index, item in enumerate(
-                        CallToolResult.model_validate(raw).content
-                    ):
-                        if isinstance(item, TextContent):
-                            parts.append(item.text)
-                        elif isinstance(item, EmbeddedResource) and isinstance(
-                            item.resource, TextResourceContents
-                        ):
-                            parts.append(item.resource.text)
-                        else:
-                            cached_image = self._cache_tool_image(
-                                item, call["call_id"], call["name"], index
-                            )
-                            parts.append(
-                                self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
-                                    file_path=cached_image.file_path
-                                )
-                                if cached_image
-                                else "The tool has returned a data type that is not supported."
-                            )
-                    content = "\n\n".join(parts)
-                    if (
-                        self._tool_result_token_counter.count_tokens(
-                            [
-                                Message(
-                                    role="tool",
-                                    content=content,
-                                    tool_call_id=call["call_id"],
-                                )
-                            ]
-                        )
-                        > self.TOOL_RESULT_MAX_ESTIMATED_TOKENS
-                    ):
-                        files[path] = content
             try:
-                for path, content in files.items():
-                    await self._write_tool_result_overflow_file(
-                        tool_call_id=Path(path).stem,
-                        content=content,
-                        overflow_path=Path(path),
-                    )
+                await self._restore_tool_result_files(saved)
             except (OSError, ValueError) as exc:
                 execution.recovery_error = CheckpointRecoveryError(
                     f"Failed to restore saved tool output: {exc}"
                 )
                 raise execution.recovery_error from exc
-            saved["tool_result_files"] = files
             self.run_context.messages = bind_checkpoint_messages(saved["messages"])
             self.req.model = saved["model"]
             self.req.llm_params = saved["llm_params"]
@@ -756,6 +696,138 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 content_blocks.append({"type": "text", "text": "[Audio]"})
 
         return {"role": "user", "content": content_blocks}
+
+    async def _restore_tool_result_files(self, saved: dict[str, T.Any]) -> None:
+        """Restore complete files while associating raw outputs with their messages.
+
+        Args:
+            saved: Durable model context and original per-call results.
+
+        Returns:
+            None after rebuilding required files and retaining their full contents.
+
+        Raises:
+            ValueError: A required protocol reference has no matching source.
+            OSError: A complete saved file cannot be restored.
+        """
+        files = dict(saved.get("tool_result_files", {}))
+        legacy = "tool_result_files" not in saved
+        literal_protocols = set()
+        notice_prefix = self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.partition(
+            "{overflow_path}"
+        )[0]
+        if legacy:
+            for call in [
+                *saved.get("tool_calls", []),
+                *saved.get("tool_result_sources", []),
+            ]:
+                if call["status"] not in {"result_saved", "applied"}:
+                    continue
+                protocols = call["protocol_results"]
+                if not protocols:
+                    continue
+                cursor = 0
+                matched = set()
+                for raw in call["raw_results"]:
+                    result = CallToolResult.model_validate(raw)
+                    parts = [] if result.content else ["The tool returned no content."]
+                    for index, item in enumerate(result.content):
+                        if isinstance(item, TextContent):
+                            parts.append(item.text)
+                        elif isinstance(item, EmbeddedResource) and isinstance(
+                            item.resource, TextResourceContents
+                        ):
+                            parts.append(item.resource.text)
+                        else:
+                            cached = self._cache_tool_image(
+                                item, call["call_id"], call["name"], index
+                            )
+                            if cached:
+                                parts.append(
+                                    self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                        file_path=cached.file_path
+                                    )
+                                )
+                            elif isinstance(item, EmbeddedResource):
+                                parts.append(
+                                    "The tool has returned a data type that is not supported."
+                                )
+                    # Resource links emit no text protocol in the live executor.
+                    if not parts:
+                        continue
+                    content = "\n\n".join(parts)
+                    oversized = (
+                        self._tool_result_token_counter.count_tokens(
+                            [
+                                Message(
+                                    role="tool",
+                                    content=content,
+                                    tool_call_id=call["call_id"],
+                                )
+                            ]
+                        )
+                        > self.TOOL_RESULT_MAX_ESTIMATED_TOKENS
+                    )
+                    expected = content
+                    if oversized:
+                        preview = self._truncate_tool_result_preview(
+                            content, tool_call_id=call["call_id"]
+                        )
+                        expected = (preview + "\n\n" if preview else "") + notice_prefix
+                    index = next(
+                        (
+                            index
+                            for index in range(cursor, len(protocols))
+                            if protocols[index]["content"].startswith(expected)
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        if oversized:
+                            raise ValueError(
+                                "Saved overflow result has no matching protocol"
+                            )
+                        continue
+                    matched.add(index)
+                    cursor = index + 1
+                    if oversized:
+                        path = protocols[index]["content"][len(expected) :].partition(
+                            "`"
+                        )[0]
+                        files[path] = content
+                    else:
+                        literal_protocols.add(protocols[index]["content"])
+                for index, protocol in enumerate(protocols):
+                    if index in matched or notice_prefix not in protocol["content"]:
+                        continue
+                    if any(
+                        record["data"].get("result")
+                        and protocol["content"].startswith(record["data"]["result"])
+                        for record in call.get("process_records", [])
+                    ):
+                        literal_protocols.add(protocol["content"])
+                        continue
+                    raise ValueError("Saved overflow reference has no complete source")
+        for path, content in files.items():
+            await self._write_tool_result_overflow_file(
+                tool_call_id=Path(path).stem, content=content, overflow_path=Path(path)
+            )
+        if legacy:
+            for message in [
+                *saved.get("messages", []),
+                *saved.get("input_contexts", []),
+            ]:
+                content = message.get("content")
+                if (
+                    message["role"] != "tool"
+                    or not isinstance(content, str)
+                    or content in literal_protocols
+                ):
+                    continue
+                _, separator, notice = content.rpartition(notice_prefix)
+                if separator and not Path(notice.partition("`")[0]).is_file():
+                    raise ValueError("Required saved overflow reference is unavailable")
+        saved["tool_result_files"] = files
 
     async def _write_tool_result_overflow_file(
         self,

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
@@ -17,9 +18,52 @@ from astrbot.dashboard.api.workflow_assets import router
 from tests.agent_teams.test_workflow_assets import completed_run, workflow_env
 
 
+@pytest_asyncio.fixture
+async def scripted_workflow(workflow_env):
+    """Reuse the public workflow seam with a scenario's external collection port.
+
+    Args:
+        workflow_env: Real database, public services and model observations.
+
+    Yields:
+        A service factory sharing persistence and delivery across five scenarios.
+    """
+    env = workflow_env
+    created = []
+
+    def create(collect):
+        """Connect one scenario's external collection behavior.
+
+        Args:
+            collect: Scripted response collection at the existing execution port.
+
+        Returns:
+            A public workflow service using the real database.
+        """
+        service = WorkflowService(
+            env.db,
+            env.roles,
+            ports_factory=lambda user: TeamPorts(
+                deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
+                    *args, **kwargs
+                ),
+                collect=collect,
+                is_busy=lambda sid: False,
+                emit=lambda event: None,
+            ),
+        )
+        created.append(service)
+        return service
+
+    yield create
+    for service in created:
+        await service.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
     workflow_env,
+    scripted_workflow,
 ):
     env = workflow_env
     contract = {
@@ -57,18 +101,7 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
         )
         return "Done", []
 
-    service = WorkflowService(
-        env.db,
-        env.roles,
-        ports_factory=lambda user: TeamPorts(
-            deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
-                *args, **kwargs
-            ),
-            collect=collect,
-            is_busy=lambda sid: False,
-            emit=lambda event: None,
-        ),
-    )
+    service = scripted_workflow(collect)
     try:
         run = await service.start_run("alice", asset["asset_id"], {"version": 1})
         await asyncio.wait_for(reached.wait(), 2)
@@ -92,7 +125,7 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
 
 @pytest.mark.asyncio
 async def test_ready_file_reference_remains_readable_after_reopening(
-    workflow_env, tmp_path
+    workflow_env, tmp_path, scripted_workflow
 ):
     env = workflow_env
     contract = {
@@ -140,18 +173,7 @@ async def test_ready_file_reference_remains_readable_after_reopening(
         await tools[0].call(None, text="Report", files=[{"file_id": stored["file_id"]}])
         return "Done", []
 
-    service = WorkflowService(
-        env.db,
-        env.roles,
-        ports_factory=lambda user: TeamPorts(
-            deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
-                *args, **kwargs
-            ),
-            collect=collect,
-            is_busy=lambda sid: False,
-            emit=lambda event: None,
-        ),
-    )
+    service = scripted_workflow(collect)
     try:
         run = await service.start_run("alice", asset["asset_id"], {"version": 1})
         done = await completed_run(service, run["run_id"])
@@ -213,18 +235,7 @@ async def test_ready_file_reference_remains_readable_after_reopening(
             await tools[0].call(None, text="Consumed full file evidence.")
             return "Done", []
 
-        consumer = WorkflowService(
-            env.db,
-            env.roles,
-            ports_factory=lambda user: TeamPorts(
-                deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
-                    *args, **kwargs
-                ),
-                collect=read_file,
-                is_busy=lambda sid: False,
-                emit=lambda event: None,
-            ),
-        )
+        consumer = scripted_workflow(read_file)
         try:
             task = await consumer.start_run(
                 "alice", env.asset["asset_id"], {"version": 1, "input_artifacts": [ref]}
@@ -239,7 +250,9 @@ async def test_ready_file_reference_remains_readable_after_reopening(
 
 
 @pytest.mark.asyncio
-async def test_revision_preserves_pinned_consumers_and_full_content(workflow_env):
+async def test_revision_preserves_pinned_consumers_and_full_content(
+    workflow_env, scripted_workflow
+):
     env = workflow_env
     source = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     done = await completed_run(env.service, source["run_id"])
@@ -265,18 +278,7 @@ async def test_revision_preserves_pinned_consumers_and_full_content(workflow_env
         await tools[0].call(None, text="Read the final complete evidence.")
         return "Done", []
 
-    service = WorkflowService(
-        env.db,
-        env.roles,
-        ports_factory=lambda user: TeamPorts(
-            deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
-                *args, **kwargs
-            ),
-            collect=collect,
-            is_busy=lambda sid: False,
-            emit=lambda event: None,
-        ),
-    )
+    service = scripted_workflow(collect)
     try:
         consumer = await service.start_run(
             "alice",
@@ -354,6 +356,7 @@ async def test_invalid_contracts_are_rejected_before_an_asset_can_start(
 @pytest.mark.asyncio
 async def test_duplicate_submissions_and_revisions_commit_one_version_and_completion(
     workflow_env,
+    scripted_workflow,
 ):
     env = workflow_env
     reached = asyncio.Event()
@@ -364,18 +367,7 @@ async def test_duplicate_submissions_and_revisions_commit_one_version_and_comple
         await release.wait()
         return "Done", []
 
-    service = WorkflowService(
-        env.db,
-        env.roles,
-        ports_factory=lambda user: TeamPorts(
-            deliver=lambda *args, **kwargs: env.service.ports_factory(user).deliver(
-                *args, **kwargs
-            ),
-            collect=collect,
-            is_busy=lambda sid: False,
-            emit=lambda event: None,
-        ),
-    )
+    service = scripted_workflow(collect)
     try:
         run = await service.start_run("alice", env.asset["asset_id"], {"version": 1})
         await asyncio.wait_for(reached.wait(), 2)

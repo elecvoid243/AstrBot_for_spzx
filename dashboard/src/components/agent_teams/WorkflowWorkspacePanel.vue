@@ -337,6 +337,7 @@
                 ?.files
             "
             v-model="revisionFiles"
+            multiple
             :label="tm('v2.attachFile')"
           />
           <v-alert v-if="formError" type="error" variant="tonal">{{

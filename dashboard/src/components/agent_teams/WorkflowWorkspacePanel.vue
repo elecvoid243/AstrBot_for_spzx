@@ -109,14 +109,95 @@
           </p>
           <p>{{ tm("v2.attempt") }}: {{ selectedRun.state.attempt_id }}</p>
           <h3 class="text-h6 mt-4">{{ tm("v2.result") }}</h3>
+          <v-alert
+            v-if="selectedRun.validation_errors?.length"
+            type="error"
+            variant="tonal"
+            class="my-3"
+          >
+            <p v-for="field in selectedRun.validation_errors" :key="field.path">
+              {{ field.path }}: {{ field.message }}
+            </p>
+          </v-alert>
+          <v-select
+            v-if="selectedRun.artifacts?.length"
+            v-model="artifactVersion"
+            :items="artifactVersions"
+            :label="tm('v2.artifactVersion')"
+            data-testid="artifact-version"
+            @update:model-value="loadArtifact"
+          />
           <pre
-            v-if="selectedRun.result"
-            class="workflow-text mt-2"
+            v-if="
+              selectedArtifact ||
+              (!selectedRun.result_ref && selectedRun.result)
+            "
+            class="workflow-text workflow-result mt-2"
             data-testid="result-text"
-            >{{ selectedRun.result.text }}</pre
+            >{{ resultText }}</pre
           >
           <p v-else>{{ tm("v2.noResult") }}</p>
+          <div
+            v-for="file in selectedArtifact?.files ??
+            selectedArtifact?.content.files ??
+            []"
+            :key="file.file_id"
+            class="d-flex flex-wrap ga-2 my-2"
+          >
+            <span class="workflow-name">{{
+              file.filename ?? file.file_id
+            }}</span>
+            <v-btn variant="text" @click="readFile(file.file_id, false)">{{
+              tm("v2.previewFile")
+            }}</v-btn>
+            <v-btn variant="tonal" @click="readFile(file.file_id, true)">{{
+              tm("v2.downloadFile")
+            }}</v-btn>
+          </div>
+          <v-btn
+            v-if="selectedArtifact"
+            variant="tonal"
+            class="mt-2"
+            @click="prepareRevision"
+            >{{ tm("v2.revise") }}</v-btn
+          >
+          <p
+            v-if="selectedRun.snapshot.input_artifacts?.length"
+            class="workflow-text mt-3"
+          >
+            {{ tm("v2.pinnedInputs") }}:
+            {{ JSON.stringify(selectedRun.snapshot.input_artifacts) }}
+          </p>
           <v-expansion-panels class="mt-4" variant="accordion">
+            <v-expansion-panel :title="tm('v2.contract')">
+              <v-expansion-panel-text>
+                <pre class="workflow-text">{{
+                  JSON.stringify(
+                    selectedRun.snapshot.definition.output_contract ?? {
+                      type: "object",
+                      properties: { text: { type: "string", minLength: 1 } },
+                      required: ["text"],
+                      additionalProperties: false,
+                    },
+                    null,
+                    2,
+                  )
+                }}</pre>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+            <v-expansion-panel :title="tm('v2.submissions')">
+              <v-expansion-panel-text>
+                <pre class="workflow-text">{{
+                  JSON.stringify(
+                    selectedRun.events?.filter((event: any) =>
+                      event.kind.startsWith("result."),
+                    ),
+                    null,
+                    2,
+                  )
+                }}</pre>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
             <v-expansion-panel :title="tm('v2.effective')">
               <v-expansion-panel-text>
                 <pre class="workflow-text">{{
@@ -168,6 +249,12 @@
             :hint="tm('v2.taskHint')"
             persistent-hint
           />
+          <v-textarea
+            v-model="contractText"
+            :label="tm('v2.contract')"
+            :hint="tm('v2.contractHint')"
+            persistent-hint
+          />
           <v-alert v-if="formError" type="error" variant="tonal" class="mt-3">{{
             formError
           }}</v-alert>
@@ -204,6 +291,15 @@
             :label="name"
             :rules="[(value) => !!value?.trim() || tm('v2.required')]"
           />
+          <v-select
+            v-model="inputArtifacts"
+            :items="availableInputs"
+            item-title="label"
+            item-value="value"
+            multiple
+            chips
+            :label="tm('v2.pinnedInputs')"
+          />
           <v-alert v-if="formError" type="error" variant="tonal">{{
             formError
           }}</v-alert>
@@ -221,6 +317,63 @@
             >{{ tm("v2.start") }}</v-btn
           >
         </v-card-actions>
+      </v-card>
+    </v-dialog>
+    <v-dialog v-model="revising" max-width="720" :persistent="saving">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("v2.revise")
+        }}</v-card-title>
+        <v-card-text>
+          <p class="mb-3">{{ tm("v2.revisionHint") }}</p>
+          <v-textarea
+            v-model="revisionText"
+            :label="tm('v2.resultJson')"
+            rows="10"
+          />
+          <v-file-input
+            v-if="
+              selectedRun?.snapshot.definition.output_contract?.properties
+                ?.files
+            "
+            v-model="revisionFiles"
+            :label="tm('v2.attachFile')"
+          />
+          <v-alert v-if="formError" type="error" variant="tonal">{{
+            formError
+          }}</v-alert>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" :disabled="saving" @click="revising = false">{{
+            tm("v2.close")
+          }}</v-btn>
+          <v-btn variant="tonal" :loading="saving" @click="saveRevision">{{
+            tm("v2.saveRevision")
+          }}</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+    <v-dialog v-model="previewing" max-width="900">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("v2.previewFile")
+        }}</v-card-title>
+        <v-card-text>
+          <pre v-if="previewText" class="workflow-text">{{ previewText }}</pre>
+          <iframe
+            v-else-if="previewUrl"
+            :src="previewUrl"
+            sandbox=""
+            :title="tm('v2.previewFile')"
+            style="width: 100%; height: 60vh; border: 0"
+          />
+        </v-card-text>
+        <v-card-actions
+          ><v-spacer /><v-btn variant="text" @click="previewing = false">{{
+            tm("v2.close")
+          }}</v-btn></v-card-actions
+        >
       </v-card>
     </v-dialog>
   </section>
@@ -244,6 +397,41 @@ const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
+const selectedArtifact = ref<any>(null);
+const artifactVersions = computed(() =>
+  (selectedRun.value?.artifacts ?? []).map(
+    (item: { version: number }) => item.version,
+  ),
+);
+const resultText = computed(() => {
+  const content = selectedArtifact.value?.content ?? selectedRun.value?.result;
+  return content &&
+    Object.keys(content).length === 1 &&
+    typeof content.text === "string"
+    ? content.text
+    : JSON.stringify(content, null, 2);
+});
+const artifactVersion = ref<number>(1);
+const contractText = ref("");
+const inputArtifacts = ref<string[]>([]);
+const revising = ref(false);
+const revisionText = ref("");
+const revisionFiles = ref<File[]>([]);
+const revisionRequestId = ref("");
+const previewing = ref(false);
+const previewText = ref("");
+const previewUrl = ref("");
+const availableInputs = computed(() =>
+  runs.value.flatMap((run) =>
+    (run.artifacts ?? []).map((artifact: any) => ({
+      label: `${run.snapshot.definition.name} · v${artifact.version} · ${artifact.summary}`,
+      value: JSON.stringify({
+        artifact_id: artifact.artifact_id,
+        version: artifact.version,
+      }),
+    })),
+  ),
+);
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
@@ -274,20 +462,31 @@ async function refresh() {
   if (loading.value) return;
   loading.value = true;
   try {
+    error.value = "";
     if (props.mode === "assets") {
-      const [assetData, roleData] = await Promise.all([
+      const [assetData, roleData, runData] = await Promise.all([
         workflowAssetsApi.list(),
         roleAssetsApi.list(),
+        workflowAssetsApi.runs(),
       ]);
       assets.value = assetData.assets;
       roles.value = roleData.roles;
+      runs.value = runData.runs;
     } else {
       runs.value = (await workflowAssetsApi.runs()).runs;
       const id = selectedRun.value?.run_id ?? route.query.workflow_run;
-      if (typeof id === "string" && id)
+      if (typeof id === "string" && id) {
         selectedRun.value = await workflowAssetsApi.run(id);
+        if (
+          !selectedArtifact.value ||
+          selectedArtifact.value.artifact_id !==
+            selectedRun.value.result_ref?.artifact_id
+        ) {
+          artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
+          await loadArtifact();
+        }
+      }
     }
-    error.value = "";
   } catch (err) {
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
@@ -308,6 +507,9 @@ function edit(asset: any) {
         overrides: {},
       };
   inputNames.value = form.value.required_inputs?.join(", ") ?? "";
+  contractText.value = form.value.output_contract
+    ? JSON.stringify(form.value.output_contract, null, 2)
+    : "";
   formError.value = "";
   editing.value = true;
 }
@@ -326,6 +528,9 @@ async function save() {
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean);
+    if (contractText.value.trim())
+      form.value.output_contract = JSON.parse(contractText.value);
+    else delete form.value.output_contract;
     await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
       definition: form.value,
       expected_version: editingAsset.value?.version,
@@ -349,6 +554,7 @@ function prepareRun(asset: any) {
   );
   formError.value = "";
   starting.value = true;
+  inputArtifacts.value = [];
 }
 
 async function start() {
@@ -360,6 +566,13 @@ async function start() {
       version: runAsset.value.version,
       inputs: inputs.value,
       source: "dashboard",
+      ...(inputArtifacts.value.length
+        ? {
+            input_artifacts: inputArtifacts.value.map((value) =>
+              JSON.parse(value),
+            ),
+          }
+        : {}),
     });
     starting.value = false;
     await router.replace({
@@ -378,9 +591,104 @@ async function start() {
 
 async function openRun(runId: string) {
   try {
-    selectedRun.value = await workflowAssetsApi.run(runId);
-    await router.replace({ query: { ...route.query, workflow_run: runId } });
     error.value = "";
+    selectedRun.value = await workflowAssetsApi.run(runId);
+    artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
+    selectedArtifact.value = null;
+    await loadArtifact();
+    await router.replace({ query: { ...route.query, workflow_run: runId } });
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+async function loadArtifact() {
+  const ref = selectedRun.value?.result_ref;
+  if (!ref) return;
+  selectedArtifact.value = null;
+  try {
+    selectedArtifact.value = await workflowAssetsApi.artifact(
+      ref.artifact_id,
+      Number(artifactVersion.value),
+    );
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  }
+}
+
+function prepareRevision() {
+  revisionText.value = JSON.stringify(selectedArtifact.value.content, null, 2);
+  revisionFiles.value = [];
+  revisionRequestId.value = crypto.randomUUID();
+  formError.value = "";
+  revising.value = true;
+}
+
+async function saveRevision() {
+  if (saving.value || !selectedArtifact.value) return;
+  saving.value = true;
+  try {
+    const content = JSON.parse(revisionText.value);
+    for (const file of revisionFiles.value) {
+      const stored = await workflowAssetsApi.storeFile(
+        selectedRun.value.run_id,
+        file,
+      );
+      content.files = [...(content.files ?? []), { file_id: stored.file_id }];
+    }
+    revisionText.value = JSON.stringify(content, null, 2);
+    revisionFiles.value = [];
+    const ref = await workflowAssetsApi.revise(
+      selectedArtifact.value.artifact_id,
+      {
+        expected_version: Number(artifactVersion.value),
+        request_id: revisionRequestId.value,
+        content,
+      },
+    );
+    artifactVersion.value = ref.version;
+    revising.value = false;
+    await loadArtifact();
+    await refresh();
+  } catch (err) {
+    const failure = extractApiError(err, tm("errors.operationFailed"));
+    formError.value = `${failure.message} ${failure.fields
+      .map((field) => `${field.path}: ${field.message}`)
+      .join("; ")}`;
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function readFile(fileId: string, download: boolean) {
+  try {
+    const ref = selectedArtifact.value;
+    const response = await workflowAssetsApi.file(
+      ref.artifact_id,
+      ref.version,
+      fileId,
+      download,
+    );
+    if (download) {
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      const disposition = response.headers["content-disposition"] ?? "";
+      link.download = decodeURIComponent(
+        disposition.split("filename*=UTF-8''")[1] ?? fileId,
+      );
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } else {
+      if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+      previewText.value = response.data.type.startsWith("text/")
+        ? await response.data.text()
+        : "";
+      previewUrl.value = previewText.value
+        ? ""
+        : URL.createObjectURL(response.data);
+      previewing.value = true;
+    }
   } catch (err) {
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
   }
@@ -394,6 +702,7 @@ onMounted(async () => {
 onUnmounted(() => {
   disposed = true;
   if (timer) clearInterval(timer);
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
 });
 </script>
 
@@ -408,5 +717,9 @@ onUnmounted(() => {
 .workflow-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.workflow-result {
+  max-height: 28rem;
+  overflow: auto;
 }
 </style>

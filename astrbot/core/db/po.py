@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from deprecated import deprecated
-from sqlalchemy import Column, DateTime, Index, desc
+from sqlalchemy import Column, DateTime, Index, LargeBinary, desc
 from sqlmodel import JSON, Field, SQLModel, Text, UniqueConstraint
 
 
@@ -260,6 +260,40 @@ class AgentWorkflowRun(TimestampMixin, SQLModel, table=True):
         default=None, sa_column=Column(JSON(none_as_null=True))
     )
     result: dict | None = Field(default=None, sa_column=Column(JSON(none_as_null=True)))
+
+
+class AgentWorkflowArtifact(TimestampMixin, SQLModel, table=True):
+    """Immutable versions of validated task output, with idempotent revisions."""
+
+    __tablename__: str = "agent_workflow_artifacts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (UniqueConstraint("artifact_id", "submission_id"),)
+    artifact_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    submission_id: str
+    contract: dict | None = Field(default=None, sa_type=JSON)
+    content: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowFile(SQLModel, table=True):
+    """Ready file bytes in system-managed durable storage, without local paths."""
+
+    __tablename__: str = "agent_workflow_files"  # pyright: ignore[reportIncompatibleVariableOverride]
+    file_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    filename: str
+    media_type: str
+    content: bytes = Field(sa_type=LargeBinary)
+
+
+class AgentWorkflowEvent(SQLModel, table=True):
+    """Durable task events committed with the facts they describe."""
+
+    __tablename__: str = "agent_workflow_events"  # pyright: ignore[reportIncompatibleVariableOverride]
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(index=True)
+    kind: str
+    data: dict = Field(default_factory=dict, sa_type=JSON)
 
 
 class AgentTeam(TimestampMixin, SQLModel, table=True):

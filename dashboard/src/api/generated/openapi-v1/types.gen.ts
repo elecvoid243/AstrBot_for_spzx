@@ -38,6 +38,25 @@ export type AgentTeamWorkflowPayload = {
     };
 };
 
+/**
+ * An exact immutable artifact version; latest is never inferred.
+ */
+export type ArtifactReference = {
+    artifact_id: string;
+    version: number;
+};
+
+/**
+ * Explicit, idempotent revision without downstream scheduling effects.
+ */
+export type ArtifactRevisionRequest = {
+    expected_version: number;
+    request_id: string;
+    content: {
+        [key: string]: unknown;
+    };
+};
+
 export type BackupChunkUploadRequest = {
     upload_id: string;
     chunk_index: number;
@@ -980,7 +999,7 @@ export type ValidationError = {
 };
 
 /**
- * The minimal executable workflow: one role, task and text input contract.
+ * A single task with a pinned role and declared input/output contracts.
  */
 export type WorkflowDefinition = {
     name: string;
@@ -989,6 +1008,9 @@ export type WorkflowDefinition = {
     task: string;
     required_inputs?: Array<(string)>;
     overrides?: RoleOverrides;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
 };
 
 export type WorkflowEdge = {
@@ -1025,6 +1047,7 @@ export type WorkflowStartRequest = {
         [key: string]: (string);
     };
     source?: string;
+    input_artifacts?: Array<ArtifactReference>;
 };
 
 export type LoginData = {
@@ -4809,3 +4832,53 @@ export type GetResultApiV1WorkflowRunsRunIdResultGetData = {
 export type GetResultApiV1WorkflowRunsRunIdResultGetResponse = (unknown);
 
 export type GetResultApiV1WorkflowRunsRunIdResultGetError = (HTTPValidationError);
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetData = {
+    path: {
+        artifact_id: string;
+        version: number;
+    };
+};
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetResponse = (unknown);
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetError = (HTTPValidationError);
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostData = {
+    body: ArtifactRevisionRequest;
+    path: {
+        artifact_id: string;
+    };
+};
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostResponse = (unknown);
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostError = (HTTPValidationError);
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        filename: string;
+    };
+};
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostResponse = (unknown);
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostError = (HTTPValidationError);
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetData = {
+    path: {
+        artifact_id: string;
+        file_id: string;
+        version: number;
+    };
+    query?: {
+        download?: boolean;
+    };
+};
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetResponse = (unknown);
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetError = (HTTPValidationError);

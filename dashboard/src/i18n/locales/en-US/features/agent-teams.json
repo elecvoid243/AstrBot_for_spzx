@@ -278,7 +278,7 @@
   "v2": {
     "assets": "Workflow Assets",
     "runs": "Independent Runs",
-    "scope": "Single-task workflows use pinned role versions and explicit text submission. Invocation recovery is not available on this path yet.",
+    "scope": "Single-task workflows pin roles, output contracts and input artifact versions. Invocation recovery is not available on this path yet.",
     "create": "New Workflow",
     "emptyAssets": "No workflow assets yet. Create a role template, then save a single-task workflow.",
     "emptyRuns": "No independent runs yet.",
@@ -291,7 +291,7 @@
     "member": "Run member",
     "attempt": "Attempt",
     "result": "Submitted Result",
-    "noResult": "No completed text result has been submitted.",
+    "noResult": "No completed result has been submitted.",
     "effective": "Frozen effective configuration",
     "process": "Saved member process",
     "name": "Workflow name",
@@ -310,6 +310,18 @@
       "blocked": "Blocked by resource",
       "failed": "Failed",
       "interrupted": "Interrupted; not replayed"
-    }
+    },
+    "contract": "Output contract (JSON Schema)",
+    "contractHint": "Leave empty for non-empty text. Use an object schema for structured results; files contains stable file_id references.",
+    "artifactVersion": "Artifact version",
+    "pinnedInputs": "Pinned input artifacts",
+    "previewFile": "Preview file",
+    "downloadFile": "Download file",
+    "revise": "Create artifact revision",
+    "revisionHint": "A revision preserves earlier versions and does not rerun consumers. Edit the selected version; if a newer version exists, select it first.",
+    "resultJson": "Complete result (JSON)",
+    "attachFile": "Attach ready file",
+    "saveRevision": "Save artifact version",
+    "submissions": "Result submission history"
   }
 }

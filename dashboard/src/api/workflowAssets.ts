@@ -2,6 +2,7 @@ import { httpClient } from "./http";
 import type {
   WorkflowSaveRequest,
   WorkflowStartRequest,
+  ArtifactRevisionRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
@@ -41,5 +42,47 @@ export const workflowAssetsApi = {
     return (
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
     ).data.data;
+  },
+  async artifact(artifactId: string, version: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_artifacts/${encodeURIComponent(
+          artifactId,
+        )}/versions/${version}`,
+      )
+    ).data.data;
+  },
+  async revise(artifactId: string, payload: ArtifactRevisionRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_artifacts/${encodeURIComponent(artifactId)}/versions`,
+        payload,
+      )
+    ).data.data;
+  },
+  async storeFile(runId: string, file: File) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/files`,
+        file,
+        {
+          params: { filename: file.name },
+          headers: { "Content-Type": "application/octet-stream" },
+        },
+      )
+    ).data.data;
+  },
+  async file(
+    artifactId: string,
+    version: number,
+    fileId: string,
+    download: boolean,
+  ) {
+    return await httpClient.get(
+      `/api/v1/workflow_artifacts/${encodeURIComponent(
+        artifactId,
+      )}/versions/${version}/files/${encodeURIComponent(fileId)}`,
+      { params: { download }, responseType: "blob" },
+    );
   },
 };

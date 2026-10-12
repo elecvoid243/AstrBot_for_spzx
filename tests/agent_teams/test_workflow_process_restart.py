@@ -1,6 +1,7 @@
 """Accepted results survive abrupt process loss without replaying Agent work."""
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -9,15 +10,18 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("safe", [True, False])
+@pytest.mark.parametrize(
+    "safe,file_result", [(True, False), (False, False), (True, True), (False, True)]
+)
 def test_saved_submission_rebuilds_without_dispatch_after_process_termination(
-    tmp_path, safe
+    tmp_path, safe, file_result
 ):
     """Exercise the real pipeline, on-disk SQLite, termination and fresh services.
 
     Args:
         tmp_path: Data directory shared only by the two isolated processes.
         safe: Whether the real pipeline reached its saved completion boundary.
+        file_result: Whether the actual task stages and submits a file artifact.
     """
     first_script = """
 import asyncio
@@ -39,11 +43,14 @@ asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
                 "-c",
                 first_script,
                 str(tmp_path),
-                "v2_crash_role" if safe else "v2_unsafe_role",
+                ("v2_file_crash_role" if safe else "v2_file_unsafe_role")
+                if file_result
+                else ("v2_crash_role" if safe else "v2_unsafe_role"),
             ],
             cwd=root,
             stdout=log,
             stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUTF8": "1"},
         )
         try:
             marker = tmp_path / "crash-ready.json"
@@ -93,6 +100,12 @@ async def main():
     if before["state"]["safe_to_finish"]:
         repeated = await service.finish_submission("alice", run_id)
         result = await service.get_result("alice", run_id)
+        ref = finished["result_ref"]
+        artifact = await service.read_artifact("alice", **ref)
+        files = []
+        for file_ref in result.get("files", []):
+            file = await service.get_file("alice", **ref, **file_ref)
+            files.append({"filename": file["filename"], "content": file["content"].decode()})
     else:
         try:
             await service.finish_submission("alice", run_id)
@@ -102,11 +115,15 @@ async def main():
             raise AssertionError("Unsafe pending result must not complete")
         repeated = None
         result = None
+        artifact = None
+        files = []
     (folder / "restarted.json").write_text(json.dumps({
         "before": before,
         "finished": finished,
         "repeated": repeated,
         "result": result,
+        "artifact": artifact,
+        "files": files,
     }), encoding="utf-8")
     await db.engine.dispose()
 asyncio.run(main())
@@ -117,6 +134,8 @@ asyncio.run(main())
         capture_output=True,
         text=True,
         timeout=30,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
     )
     assert second.returncode == 0, second.stdout + second.stderr
     evidence = json.loads((tmp_path / "restarted.json").read_text(encoding="utf-8"))
@@ -132,7 +151,28 @@ asyncio.run(main())
     if safe:
         assert evidence["repeated"] == evidence["finished"]
         assert evidence["result"] == before["pending_result"]
-        assert json.loads(evidence["result"]["text"])["correction_context"] is True
+        assert evidence["artifact"]["content"] == evidence["result"]
+        assert len(evidence["finished"]["artifacts"]) == 1
+        assert (
+            len(
+                [
+                    event
+                    for event in evidence["finished"]["events"]
+                    if event["kind"] == "task.completed"
+                ]
+            )
+            == 1
+        )
+        if file_result:
+            assert evidence["files"] == [
+                {
+                    "filename": "evidence.txt",
+                    "content": "Complete restart evidence. " * 1000,
+                }
+            ]
+            assert not (tmp_path / "evidence.txt").exists()
+        else:
+            assert json.loads(evidence["result"]["text"])["correction_context"] is True
     else:
         assert evidence["finished"]["result"] is None
         assert evidence["finished"]["pending_result"] == before["pending_result"]

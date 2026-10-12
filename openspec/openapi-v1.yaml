@@ -6531,6 +6531,149 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Read Artifact
+      description: "Read complete immutable content for the authenticated owner.\n\nArgs:\n    artifact_id: Stable output identity.\n    version: Exact version to read.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Complete result content or a structured access error."
+      operationId: read_artifact_api_v1_workflow_artifacts__artifact_id__versions__version__get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Revise Artifact
+      description: "Create an explicit version without scheduling downstream work.\n\nArgs:\n    artifact_id: Output identity to revise.\n    payload: Validated revision request envelope.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Exact version reference or structured field errors."
+      operationId: revise_artifact_api_v1_workflow_artifacts__artifact_id__versions_post
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactRevisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/files:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Store File
+      description: "Store a ready file body for submission or an explicit revision.\n\nArgs:\n    run_id: Owning output run.\n    request: Raw complete file body.\n    filename: Display filename, without a local directory.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Stable file metadata or a readiness error."
+      operationId: store_file_api_v1_workflow_runs__run_id__files_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: filename
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Filename
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get File
+      description: "Preview or download a file belonging to a specific committed version.\n\nArgs:\n    artifact_id: Stable output identity.\n    version: Exact committed version.\n    file_id: Managed file reference declared in that version.\n    download: Whether the browser should save the file.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Complete bytes and safe display headers, or an access error."
+      operationId: get_file_api_v1_workflow_artifacts__artifact_id__versions__version__files__file_id__get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -8564,6 +8707,12 @@ components:
           title: Required Inputs
         overrides:
           $ref: '#/components/schemas/RoleOverrides'
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Output Contract
       additionalProperties: false
       type: object
       required:
@@ -8572,7 +8721,7 @@ components:
       - role_version
       - task
       title: WorkflowDefinition
-      description: 'The minimal executable workflow: one role, task and text input contract.'
+      description: A single task with a pinned role and declared input/output contracts.
     WorkflowSaveRequest:
       properties:
         definition:
@@ -8606,9 +8755,56 @@ components:
           minLength: 1
           title: Source
           default: dashboard
+        input_artifacts:
+          items:
+            $ref: '#/components/schemas/ArtifactReference'
+          type: array
+          maxItems: 30
+          title: Input Artifacts
       additionalProperties: false
       type: object
       required:
       - version
       title: WorkflowStartRequest
       description: Start a pinned version with explicit inputs and source identity.
+    ArtifactReference:
+      properties:
+        artifact_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Artifact Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - artifact_id
+      - version
+      title: ArtifactReference
+      description: An exact immutable artifact version; latest is never inferred.
+    ArtifactRevisionRequest:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        content:
+          additionalProperties: true
+          type: object
+          title: Content
+      additionalProperties: false
+      type: object
+      required:
+      - expected_version
+      - request_id
+      - content
+      title: ArtifactRevisionRequest
+      description: Explicit, idempotent revision without downstream scheduling effects.

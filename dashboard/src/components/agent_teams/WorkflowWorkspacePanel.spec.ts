@@ -9,6 +9,10 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   runs: vi.fn(),
   run: vi.fn(),
+  artifact: vi.fn(),
+  revise: vi.fn(),
+  file: vi.fn(),
+  storeFile: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -58,6 +62,7 @@ const stubs: Record<string, any> = Object.fromEntries(
   ].map((name) => [name, slotStub]),
 );
 Object.assign(stubs, {
+  "v-file-input": slotStub,
   "v-dialog": {
     props: ["modelValue"],
     template: '<div v-if="modelValue" class="dialog"><slot /></div>',
@@ -222,5 +227,47 @@ describe("single-task workflow workspace", () => {
       reopened.findAll("button").some((button) => button.text() === "v2.edit"),
     ).toBe(false);
     reopened.unmount();
+  });
+
+  it("shows contract errors and reads a selected immutable version in full", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      status: "completed",
+      result: { text: "First" },
+      result_ref: { artifact_id: "artifact-1", version: 1 },
+      artifacts: [
+        { artifact_id: "artifact-1", version: 1, summary: "First" },
+        { artifact_id: "artifact-1", version: 2, summary: "Second" },
+      ],
+      validation_errors: [
+        { path: "result.approved", message: "Must be boolean" },
+      ],
+    });
+    api.artifact.mockImplementation(async (_id: string, version: number) => ({
+      artifact_id: "artifact-1",
+      version,
+      content: {
+        text: version === 1 ? "First" : "Complete evidence. ".repeat(1000),
+      },
+    }));
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("result.approved: Must be boolean");
+    await wrapper.find('[data-testid="artifact-version"]').setValue("2");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="result-text"]').text()).toContain(
+      "Complete evidence. ".repeat(1000).trim(),
+    );
+    expect(api.artifact).toHaveBeenLastCalledWith("artifact-1", 2);
+    expect(api.start).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 });

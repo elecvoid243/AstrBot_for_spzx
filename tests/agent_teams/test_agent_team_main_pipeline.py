@@ -188,6 +188,60 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if message.get("role") == "system"
             )
             session = kwargs.get("session_id", "")
+            if mode.startswith("v2_file") and "submit_task_result" in names:
+                self.turns[session] = self.turns.get(session, 0) + 1
+                number = self.turns[session]
+                if number == 1:
+                    return LLMResponse(
+                        role="tool",
+                        tools_call_name=["submit_task_result"],
+                        tools_call_args=[
+                            {"text": "Report", "files": [{"file_id": "missing"}]}
+                        ],
+                        tools_call_ids=["invalid-file"],
+                    )
+                if number == 2:
+                    path = tmp_path / "evidence.txt"
+                    path.write_text(
+                        "Complete restart evidence. " * 1000, encoding="utf-8"
+                    )
+                    return LLMResponse(
+                        role="tool",
+                        tools_call_name=["store_task_file"],
+                        tools_call_args=[
+                            {
+                                "filename": path.name,
+                                "content": path.read_text(encoding="utf-8"),
+                            }
+                        ],
+                        tools_call_ids=["store-file"],
+                    )
+                if number == 3:
+                    stored = next(
+                        json.loads(message["content"])
+                        for message in kwargs["contexts"]
+                        if message.get("role") == "tool"
+                        and '"file_id"' in message.get("content", "")
+                        and '"filename"' in message["content"]
+                    )
+                    (tmp_path / "evidence.txt").unlink()
+                    return LLMResponse(
+                        role="tool",
+                        tools_call_name=["submit_task_result"],
+                        tools_call_args=[
+                            {
+                                "text": "Full file report",
+                                "files": [{"file_id": stored["file_id"]}],
+                            }
+                        ],
+                        tools_call_ids=["submit-file"],
+                    )
+                if number == 4 and mode == "v2_file_unsafe_role":
+                    (tmp_path / "crash-ready.json").write_text(
+                        json.dumps({"run_id": run["run_id"], "db_path": db.db_path}),
+                        encoding="utf-8",
+                    )
+                    await asyncio.Future()
             if (
                 mode in ("v2_role", "v2_crash_role", "v2_unsafe_role")
                 and "submit_task_result" in names
@@ -282,7 +336,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "id": name,
                 "type": "openai_chat_completion",
                 "modalities": ["text", "tool_use"],
-                "max_context_tokens": 8192,
+                "max_context_tokens": 128000 if mode.startswith("v2_file") else 8192,
             },
             {},
         )
@@ -432,7 +486,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         assert resolved_role["ready"] is True, resolved_role["issues"]
         assert await db.get_platform_sessions_by_creator("alice") == []
     if mode.startswith("v2"):
-        if mode == "v2_crash_role":
+        if mode in ("v2_crash_role", "v2_file_crash_role"):
             # Hold cleanup after a completion-write fault, leaving the real
             # pipeline's saved safe point and submission intent on disk.
             async with db.get_db() as session:
@@ -455,7 +509,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 Existing delivery and collection ports.
             """
             ports = build_ports_for_test(queue_manager, username, lambda event: None)
-            if mode == "v2_crash_role":
+            if mode in ("v2_crash_role", "v2_file_crash_role"):
                 close = ports.close
 
                 async def hold_cleanup():
@@ -487,6 +541,31 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "role_id": role["role_id"],
                     "role_version": 1,
                     "task": "Write evidence.",
+                    **(
+                        {
+                            "output_contract": {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "files": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "file_id": {"type": "string"}
+                                            },
+                                            "required": ["file_id"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "required": ["text", "files"],
+                                "additionalProperties": False,
+                            }
+                        }
+                        if mode.startswith("v2_file")
+                        else {}
+                    ),
                 }
             },
         )

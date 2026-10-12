@@ -278,7 +278,7 @@
   "v2": {
     "assets": "工作流资产",
     "runs": "独立运行",
-    "scope": "单任务工作流固定角色版本，通过显式工具提交文本结果。本路径暂不支持调用级恢复。",
+    "scope": "单任务工作流固定角色、输出契约和输入产物版本。本路径暂不提供调用检查点恢复。",
     "create": "新建工作流",
     "emptyAssets": "暂无工作流资产。先创建角色模板，再保存单任务工作流。",
     "emptyRuns": "暂无独立运行。",
@@ -291,7 +291,7 @@
     "member": "运行成员",
     "attempt": "执行尝试",
     "result": "已提交结果",
-    "noResult": "尚无已完成的文本结果。",
+    "noResult": "尚未提交已完成的结果。",
     "effective": "固定的有效配置",
     "process": "已保存的成员过程",
     "name": "工作流名称",
@@ -310,6 +310,18 @@
       "blocked": "资源阻塞",
       "failed": "执行失败",
       "interrupted": "已中断，未重跑"
-    }
+    },
+    "contract": "输出契约（JSON Schema）",
+    "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
+    "artifactVersion": "产物版本",
+    "pinnedInputs": "固定输入产物",
+    "previewFile": "预览文件",
+    "downloadFile": "下载文件",
+    "revise": "创建产物修订",
+    "revisionHint": "修订保留旧版本且不会重跑消费者。编辑当前所选版本；已有更新版本时请先选择最新版本。",
+    "resultJson": "完整结果（JSON）",
+    "attachFile": "附加就绪文件",
+    "saveRevision": "保存产物版本",
+    "submissions": "结果提交历史"
   }
 }

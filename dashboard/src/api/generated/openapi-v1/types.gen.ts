@@ -997,6 +997,18 @@ export type ToolPermissionPatch = {
 
 export type permission = 'admin' | 'member';
 
+/**
+ * An explicit, evidenced decision about an uncertain external effect.
+ */
+export type ToolResolutionRequest = {
+    request_id: string;
+    action: 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
+    evidence: string;
+    result?: (string | null);
+};
+
+export type action2 = 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
+
 export type TotpSetupRequest = {
     code?: string;
     secret?: string;
@@ -4884,6 +4896,18 @@ export type GetRunApiV1WorkflowRunsRunIdGetData = {
 export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
 
 export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
+    body: ToolResolutionRequest;
+    path: {
+        record_id: string;
+        run_id: string;
+    };
+};
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostResponse = (unknown);
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostError = (HTTPValidationError);
 
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
     path: {

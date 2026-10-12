@@ -8,7 +8,7 @@ import mimetypes
 import uuid
 from collections.abc import Callable
 from string import Formatter
-from typing import cast
+from typing import Literal, cast
 
 from jsonschema import Draft202012Validator, SchemaError
 from mcp.types import CallToolResult, TextContent
@@ -53,6 +53,7 @@ from astrbot.core.db.po import (
     AgentWorkflowRun,
     AgentWorkflowSchedule,
     AgentWorkflowToolCall,
+    AgentWorkflowToolRecovery,
     AgentWorkflowVersion,
     ConversationV2,
     PlatformSession,
@@ -109,6 +110,16 @@ class WorkflowStartRequest(BaseModel):
     input_artifacts: list[ArtifactReference] = Field(
         default_factory=list, max_length=30
     )
+
+
+class ToolResolutionRequest(BaseModel):
+    """An explicit, evidenced decision about an uncertain external effect."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    request_id: str = Field(min_length=1, max_length=128)
+    action: Literal["retry", "confirm_result", "confirm_failure", "reconcile"]
+    evidence: str = Field(min_length=1, max_length=100_000)
+    result: str | None = Field(default=None, min_length=1, max_length=1_000_000)
 
 
 class WorkflowService:
@@ -704,6 +715,22 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            recovery_data = {
+                item.record_id: item.data
+                for item in (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowToolRecovery).where(
+                                col(AgentWorkflowToolRecovery.run_id).in_(identities)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                    if include_details
+                    else []
+                )
+            }
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
                 current_calls = [
@@ -712,7 +739,11 @@ class WorkflowService:
                 pending_calls = [
                     call
                     for call in current_calls
-                    if boundary and call.invocation_id == boundary.invocation_id
+                    if boundary
+                    and call.invocation_id == boundary.invocation_id
+                    and not recovery_data.get(call.record_id, {}).get(
+                        "replacement_record_id"
+                    )
                 ]
                 unknown_calls = [
                     call
@@ -764,6 +795,22 @@ class WorkflowService:
                                     and (
                                         not unknown_calls
                                         or any(
+                                            recovery_data.get(call.record_id, {}).get(
+                                                "declaration"
+                                            )
+                                            and any(
+                                                recovery_data[call.record_id][
+                                                    "declaration"
+                                                ].get(key)
+                                                for key in (
+                                                    "query",
+                                                    "safe_retry",
+                                                    "idempotency_key_arg",
+                                                )
+                                            )
+                                            for call in unknown_calls
+                                        )
+                                        or any(
                                             call.status == "intent"
                                             for call in pending_calls
                                         )
@@ -801,7 +848,37 @@ class WorkflowService:
                                 if record.run_id == current.run_id
                             ],
                             "tool_calls": [
-                                call.model_dump(mode="json") for call in current_calls
+                                {
+                                    **call.model_dump(mode="json"),
+                                    "recovery": recovery_data.get(call.record_id, {}),
+                                    "available_actions": [
+                                        "retry",
+                                        "confirm_result",
+                                        "confirm_failure",
+                                    ]
+                                    + (
+                                        ["reconcile"]
+                                        if recovery_data.get(call.record_id, {}).get(
+                                            "declaration"
+                                        )
+                                        and any(
+                                            recovery_data[call.record_id][
+                                                "declaration"
+                                            ].get(key)
+                                            for key in (
+                                                "query",
+                                                "safe_retry",
+                                                "idempotency_key_arg",
+                                            )
+                                        )
+                                        else []
+                                    )
+                                    if call in unknown_calls
+                                    and current.status
+                                    in {"interrupted", "failed", "blocked"}
+                                    else [],
+                                }
+                                for call in current_calls
                             ],
                             "validation_errors": errors,
                             "events": [
@@ -2049,7 +2126,15 @@ class WorkflowService:
                 and (
                     not calls
                     or unknown
-                    and not any(call["status"] == "intent" for call in calls)
+                    and not any(
+                        call["status"] == "intent"
+                        or call.get("recovery", {}).get("declaration")
+                        and any(
+                            call["recovery"]["declaration"].get(key)
+                            for key in ("query", "safe_retry", "idempotency_key_arg")
+                        )
+                        for call in calls
+                    )
                 )
             ):
                 raise RoleAssetError(
@@ -2135,6 +2220,24 @@ class WorkflowService:
                         sibling.state = {**sibling.state, "reason": None}
                         session.add(sibling)
             execution_id = uuid.uuid4().hex
+            for call in calls:
+                pending = call.get("recovery", {}).get("pending_decision")
+                if pending is None:
+                    continue
+                recovery = await session.get(
+                    AgentWorkflowToolRecovery, pending["record_id"]
+                )
+                assert recovery is not None
+                metadata = copy.deepcopy(recovery.data)
+                for decision in metadata["decisions"]:
+                    decision.setdefault("execution_id", execution_id)
+                recovery.data = metadata
+                session.add(recovery)
+                if pending["record_id"] == call["record_id"]:
+                    call["recovery"] = metadata
+            if calls:
+                checkpoint.data["tool_calls"] = calls
+                session.add(checkpoint)
             state = {
                 **row.state,
                 "execution_id": execution_id,
@@ -2288,6 +2391,207 @@ class WorkflowService:
         task.add_done_callback(self._tasks.discard)
         return await self.get_run(username, run_id)
 
+    async def resolve_tool_call(
+        self, username: str, run_id: str, record_id: str, payload: dict
+    ) -> dict:
+        """Persist a human decision before continuing the original saved plan.
+
+        Args:
+            username: Authenticated original run owner.
+            run_id: Affected task run, rather than the whole graph.
+            record_id: Original durable tool call requiring confirmation.
+            payload: Idempotency identity, explicit action and observed evidence.
+
+        Returns:
+            Current task detail; duplicate decisions never schedule a second call.
+
+        Raises:
+            RoleAssetError: Missing evidence, inaccessible call or conflicting action.
+        """
+        try:
+            request = ToolResolutionRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError("Invalid tool resolution", status=422) from exc
+        if (
+            request.action in {"confirm_result", "confirm_failure"}
+            and request.result is None
+        ):
+            raise RoleAssetError("An observed tool result is required", status=422)
+        run = await self.get_run(username, run_id)
+        duplicate = False
+        async with self.db.get_db() as session:
+            # Acquire the same durable execution fence before reading the decision.
+            changed = await session.execute(
+                update(AgentWorkflowRun)
+                .where(
+                    col(AgentWorkflowRun.run_id) == run_id,
+                    col(AgentWorkflowRun.owner_username) == username,
+                    AgentWorkflowRun.state["execution_id"].as_string()
+                    == run["state"].get("execution_id"),
+                )
+                .values(state=AgentWorkflowRun.state)
+            )
+            if cast(CursorResult, changed).rowcount != 1:
+                raise RoleAssetError("Execution ownership has changed", status=409)
+            row = await session.get(AgentWorkflowRun, run_id)
+            stored = await session.get(AgentWorkflowToolCall, record_id)
+            recovery = await session.get(AgentWorkflowToolRecovery, record_id)
+            if stored is None or stored.run_id != run_id:
+                raise RoleAssetError("Tool call not found", status=404)
+            metadata = copy.deepcopy(recovery.data if recovery else {})
+            decisions = metadata.setdefault("decisions", [])
+            previous = next(
+                (
+                    item
+                    for item in decisions
+                    if item["request_id"] == request.request_id
+                ),
+                None,
+            )
+            if previous is not None:
+                if previous["request"] != request.model_dump():
+                    raise RoleAssetError("Decision identity was reused", status=409)
+                duplicate = (
+                    previous.get("execution_id") is not None
+                    or row is None
+                    or row.status == "running"
+                )
+            else:
+                checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+                if (
+                    row is None
+                    or row.status not in {"interrupted", "failed", "blocked"}
+                    or checkpoint is None
+                ):
+                    raise RoleAssetError(
+                        "Only stopped uncertain calls can be resolved", status=409
+                    )
+                data = copy.deepcopy(checkpoint.data)
+                calls = data.get("tool_calls", [])
+                index = next(
+                    (
+                        i
+                        for i, call in enumerate(calls)
+                        if call["record_id"] == record_id
+                    ),
+                    None,
+                )
+                if (
+                    index is None
+                    or calls[index]["status"] not in {"started", "unknown"}
+                    or metadata.get("replacement_record_id")
+                ):
+                    raise RoleAssetError(
+                        "This call no longer requires a decision", status=409
+                    )
+                declaration = metadata.get("declaration") or {}
+                if request.action == "reconcile" and not any(
+                    declaration.get(key)
+                    for key in ("query", "safe_retry", "idempotency_key_arg")
+                ):
+                    raise RoleAssetError(
+                        "This tool has no declared reconciliation capability",
+                        status=409,
+                    )
+                decision = {
+                    "request_id": request.request_id,
+                    "request": request.model_dump(),
+                    "attempt_id": stored.attempt_id,
+                    "previous_execution_id": row.state["execution_id"],
+                }
+                if request.action == "retry":
+                    replacement_id = uuid.uuid4().hex
+                    metadata["replacement_record_id"] = replacement_id
+                    decision["replacement_record_id"] = replacement_id
+                    calls[index] = {
+                        **calls[index],
+                        "record_id": replacement_id,
+                        "status": "intent",
+                        "raw_results": [],
+                        "protocol_results": [],
+                        "process_records": [],
+                        "context_position": None,
+                        "recovery": {"replaces_record_id": record_id},
+                    }
+                    session.add(
+                        AgentWorkflowToolCall(
+                            record_id=replacement_id,
+                            run_id=run_id,
+                            attempt_id=stored.attempt_id,
+                            invocation_id=stored.invocation_id,
+                            call_id=stored.call_id,
+                            call_index=stored.call_index,
+                            name=stored.name,
+                            args=stored.args,
+                            execution_id=row.state["execution_id"],
+                        )
+                    )
+                    session.add(
+                        AgentWorkflowToolRecovery(
+                            record_id=replacement_id,
+                            run_id=run_id,
+                            data={"replaces_record_id": record_id},
+                        )
+                    )
+                elif request.action in {"confirm_result", "confirm_failure"}:
+                    raw = CallToolResult(
+                        content=[TextContent(type="text", text=request.result or "")],
+                        isError=request.action == "confirm_failure",
+                    ).model_dump(mode="json")
+                    call = calls[index]
+                    call["raw_results"].append(raw)
+                    call["protocol_results"] = []
+                    call["process_records"].append(
+                        {
+                            "id": record_id + ":decision:" + request.request_id,
+                            "data": {
+                                "id": stored.call_id,
+                                "name": stored.name,
+                                "raw_result": raw,
+                            },
+                        }
+                    )
+                    call["status"] = "result_saved"
+                    stored.status = "result_saved"
+                    stored.raw_results = call["raw_results"]
+                    session.add(stored)
+                decisions.append(decision)
+                if request.action != "retry":
+                    calls[index]["recovery"] = metadata
+                calls[index]["recovery"]["pending_decision"] = {
+                    "record_id": record_id,
+                    "request_id": request.request_id,
+                }
+                if recovery is None:
+                    recovery = AgentWorkflowToolRecovery(
+                        record_id=record_id, run_id=run_id
+                    )
+                recovery.data = metadata
+                session.add(recovery)
+                checkpoint.started_tools = [
+                    identity
+                    for identity in checkpoint.started_tools
+                    if identity != stored.call_id or request.action == "reconcile"
+                ]
+                data["started_tools"] = checkpoint.started_tools
+                checkpoint.data = data
+                session.add(checkpoint)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="tool.resolved",
+                        data={
+                            "record_id": record_id,
+                            "request_id": request.request_id,
+                            "action": request.action,
+                        },
+                    )
+                )
+                await session.commit()
+        if duplicate:
+            return await self.get_run(username, run_id)
+        return await self.recover_run(username, run_id)
+
     async def save_checkpoint(
         self, username: str, run_id: str, attempt_id: str, execution_id: str, data: dict
     ) -> None:
@@ -2393,6 +2697,16 @@ class WorkflowService:
                 previous.raw_results = call["raw_results"]
                 previous.context_position = call["context_position"]
                 session.add(previous)
+                if "recovery" in call:
+                    recovery = await session.get(
+                        AgentWorkflowToolRecovery, call["record_id"]
+                    )
+                    if recovery is None:
+                        recovery = AgentWorkflowToolRecovery(
+                            record_id=call["record_id"], run_id=run_id
+                        )
+                    recovery.data = call["recovery"]
+                    session.add(recovery)
             session.add(checkpoint)
             session.add(
                 AgentWorkflowEvent(

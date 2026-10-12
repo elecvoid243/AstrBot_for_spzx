@@ -349,6 +349,15 @@ class AgentWorkflowToolCall(TimestampMixin, SQLModel, table=True):
     context_position: int | None = None
 
 
+class AgentWorkflowToolRecovery(SQLModel, table=True):
+    """Declared recovery capability and durable decisions for one original call."""
+
+    __tablename__: str = "agent_workflow_tool_recovery"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    data: dict = Field(default_factory=dict, sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

@@ -82,19 +82,26 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers = ProviderManager(acm, db, personas)
     providers.llm_tools = FunctionToolManager()
 
-    async def external_tool(event, value):
+    async def external_tool(event, value, idempotency_key=None):
         """Record a real external effect outside the worker process.
 
         Args:
             event: Actual pipeline event supplied by the tool executor.
             value: Original model-planned argument.
+            idempotency_key: Whole-call deduplication key from a declared adapter.
 
         Returns:
             Complete external tool evidence.
         """
         async with httpx.AsyncClient() as client:
-            response = await client.post(endpoint + "/tool", json={"value": value})
-            if action == "start" and (scenario == "started" or scenario == "batch_unknown" and value == "unknown-effect"):
+            payload = {"value": value}
+            if scenario.startswith(("reconcile_", "idempotent_", "safe_")) or scenario == "manual_retry_key":
+                from astrbot.core.agent.tool import current_tool_invocation
+                payload["identity"] = current_tool_invocation.get()
+            if idempotency_key:
+                payload["idempotency_key"] = idempotency_key
+            response = await client.post(endpoint + "/tool", json=payload)
+            if action == "start" and (scenario == "started" or scenario.startswith(("manual_", "reconcile_", "idempotent_", "safe_")) and scenario != "manual_batch" or scenario in {"batch_unknown", "manual_batch"} and value == "unknown-effect"):
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
             data = response.json()
@@ -128,8 +135,31 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
+        handler=external_stream if scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
+    if scenario.startswith("reconcile_"):
+        from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
+
+        async def query_tool(context, identity, arguments):
+            """Query the external service by the original durable call identity.
+
+            Args:
+                context: Restored and authorized main-pipeline tool context.
+                identity: Original durable invocation identity.
+                arguments: Original tool arguments.
+
+            Returns:
+                External evidence and a complete result, or an unknown outcome.
+            """
+            async with httpx.AsyncClient() as client:
+                response = await client.post(endpoint + "/query", json={"identity": identity, "arguments": arguments})
+                response.raise_for_status()
+                return ToolRecoveryResult.model_validate(response.json())
+
+        providers.llm_tools.func_list[0].recovery = ToolRecovery(query=query_tool)
+    if scenario.startswith(("idempotent_", "safe_")) or scenario == "manual_retry_key":
+        from astrbot.core.agent.tool import ToolRecovery
+        providers.llm_tools.func_list[0].recovery = ToolRecovery(idempotency_key_arg="idempotency_key" if scenario.startswith("idempotent_") or scenario == "manual_retry_key" else None, safe_retry=scenario.startswith("safe_"))
     if scenario.startswith("overflow"):
         async def read_saved_text(event, path):
             """Read the complete text through the enabled file tool boundary.
@@ -319,7 +349,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
-                if scenario == "partial_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
+                if scenario in {"partial_generator", "manual_retry_partial"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "completed_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
@@ -342,7 +372,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
         role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4},
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"max_instances": 3} if scenario == "manual_graph" else {})},
             "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
         })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
@@ -353,6 +383,12 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 contract["required"].append("files")
             definition["output_contract"] = contract
         asset = await service.save_asset("alice", {"definition": definition})
+        if scenario == "manual_graph":
+            asset = await service.save_asset("alice", {"definition": {"name": "Unknown effect graph", "max_parallel": 1, "tasks": [
+                {"id": "write", "name": "Unknown effect", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."},
+                {"id": "independent", "name": "Independent task", "member": "independent", "role_id": role["role_id"], "role_version": 1, "task": "Independent task: submit the independent report."},
+                {"id": "dependent", "name": "Dependent task", "member": "dependent", "role_id": role["role_id"], "role_version": 1, "task": "Dependent task: submit the dependent report."},
+            ], "edges": [{"source": "write", "target": "dependent"}]}})
         if scenario == "graph":
             asset = await service.save_asset("alice", {"definition": {"name": "Original graph", "tasks": [{"id": "write", "name": "Write", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}})
         if scenario in {"save_failure", "observation_failure"}:
@@ -422,22 +458,126 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if scenario == "changed_tool":
                 providers.llm_tools.func_list[0].description = "Changed external evidence capability."
             await service.boot_sweep()
+            independent_before_resolution = None
+            if scenario == "manual_graph":
+                parent_id = before["snapshot"]["parent_run_id"]
+                for _ in range(500):
+                    parent = await service.get_run("alice", parent_id)
+                    independent = next(task for task in parent["tasks"] if task["node_id"] == "independent")
+                    if independent["status"] == "completed":
+                        independent_before_resolution = parent
+                        break
+                    await asyncio.sleep(0.02)
+                assert independent_before_resolution is not None
+            if scenario in {"manual_save_failure", "reconcile_save_failure"} and action == "recover":
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("CREATE TRIGGER reject_decision BEFORE INSERT ON agent_workflow_events WHEN NEW.kind = 'tool.resolved' BEGIN SELECT RAISE(ABORT, 'decision storage unavailable'); END" if scenario == "manual_save_failure" else "CREATE TRIGGER reject_decision BEFORE UPDATE ON agent_workflow_tool_recovery BEGIN SELECT RAISE(ABORT, 'reconciliation storage unavailable'); END"))
+            elif scenario in {"manual_save_failure", "reconcile_save_failure"}:
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("DROP TRIGGER IF EXISTS reject_decision"))
+            if action == "recover_decision":
+                def decision_flush(session, flush_context):
+                    """Select the real decision transaction for a second crash.
+
+                    Args:
+                        session: Real transaction containing the explicit decision.
+                        flush_context: SQLAlchemy flush context.
+                    """
+                    for item in session.new:
+                        if isinstance(item, AgentWorkflowEvent) and item.kind == "tool.resolved":
+                            session.info["decision_boundary"] = True
+                def decision_commit(session):
+                    """Hold an accepted human decision before scheduling begins.
+
+                    Args:
+                        session: Session whose selected decision is now durable.
+                    """
+                    if session.info.pop("decision_boundary", False):
+                        (folder / "decision-ready.json").write_text("{}", encoding="utf-8")
+                        while True:
+                            time.sleep(1)
+                sql_event.listen(Session, "after_flush", decision_flush)
+                sql_event.listen(Session, "after_commit", decision_commit)
             recoveries = []
             try:
-                if scenario == "concurrent":
+                if scenario.startswith("manual_"):
+                    available_calls = (await service.get_run("alice", run_id))["tool_calls"]
+                    call = next((item for item in available_calls if item["status"] == "unknown"), available_calls[0])
+                    decision = {"request_id": "human-decision", "action": "retry" if scenario.startswith("manual_retry") or scenario == "manual_save_failure" else "confirm_failure" if scenario == "manual_failure" else "confirm_result", "evidence": "External service receipt independently verified by the owner."}
+                    if decision["action"] != "retry":
+                        decision["result"] = "External operation rejected: verified receipt." if scenario == "manual_failure" else "Verified external evidence."
+                    if scenario == "manual_http":
+                        from fastapi import FastAPI
+                        from astrbot.dashboard.api.auth import require_dashboard_user
+                        from astrbot.dashboard.api.workflow_assets import router
+                        app = FastAPI()
+                        app.state.services = SimpleNamespace(workflow_assets=service)
+                        app.include_router(router, prefix="/api/v1")
+                        app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+                        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                            url = f"/api/v1/workflow_runs/{run_id}/tool_calls/{call['record_id']}/resolve"
+                            assert (await client.post(url, json=decision)).status_code == 404
+                            assert (await client.get(f"/api/v1/workflow_runs/{run_id}")).status_code == 404
+                            app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+                            assert (await client.post(url, json={**decision, "evidence": " "})).status_code == 422
+                            assert (await client.post(url, json={**decision, "result": None})).status_code == 422
+                            assert (await client.post(url, json=decision)).status_code == 200
+                            assert (await client.post(url, json=decision)).status_code == 200
+                            assert (await client.post(url, json={**decision, "result": "Altered result"})).status_code == 409
+                    else:
+                        await service.resolve_tool_call("alice", run_id, call["record_id"], decision)
+                    await service.resolve_tool_call("alice", run_id, call["record_id"], decision)
+                elif scenario == "concurrent":
                     recoveries = await asyncio.gather(service.recover_run("alice", run_id), service.recover_run("alice", run_id), return_exceptions=True)
                 else:
                     await service.recover_run("alice", run_id)
             except RoleAssetError as exc:
                 (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id), "error": {"status": exc.status, "message": str(exc)}}), encoding="utf-8")
                 return
+            except Exception as exc:
+                if scenario != "manual_save_failure":
+                    raise
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id), "error": {"message": str(exc)}}), encoding="utf-8")
+                return
             run = before
+        during_resolution_errors = []
+        if action != "start" and scenario == "manual_retry_late":
+            for _ in range(300):
+                active = await service.get_run("alice", run["run_id"])
+                if any(call["status"] == "started" and call["record_id"] != before["tool_calls"][0]["record_id"] for call in active["tool_calls"]):
+                    break
+                await asyncio.sleep(0.02)
+            assert active["status"] == "running"
+            old_id = before["state"]["execution_id"]
+            attempt_id = before["state"]["attempt_id"]
+            for operation in [
+                service.submit_result("alice", run["run_id"], attempt_id, {"text": "Late old completion"}, execution_id=old_id),
+                service.record_process("alice", run["run_id"], attempt_id, "late-active", "tool_result", {"result": "Late old result"}, execution_id=old_id),
+                service.store_file("alice", run["run_id"], attempt_id, "late.txt", b"Late old file", execution_id=old_id),
+                service.save_checkpoint("alice", run["run_id"], attempt_id, old_id, {"phase": "tool_result", "invocation_id": "late-old"}),
+            ]:
+                try:
+                    await operation
+                except RoleAssetError as exc:
+                    during_resolution_errors.append(exc.status)
+            async with httpx.AsyncClient() as client:
+                await client.post(endpoint + "/release", json={})
         for _ in range(2000):
             current = await service.get_run("alice", run["run_id"])
             if current["status"] != "running":
                 break
             await asyncio.sleep(0.01)
         if action != "start":
+            if scenario == "reconcile_again" and current["status"] == "blocked":
+                decision = {"request_id": "explicit-recheck", "action": "reconcile", "evidence": "Remote ledger is ready for another authoritative query."}
+                record_id = current["tool_calls"][0]["record_id"]
+                await service.resolve_tool_call("alice", run["run_id"], record_id, decision)
+                await service.resolve_tool_call("alice", run["run_id"], record_id, decision)
+                for _ in range(500):
+                    current = await service.get_run("alice", run["run_id"])
+                    if current["status"] != "running":
+                        break
+                    await asyncio.sleep(0.02)
             result = await service.get_result("alice", run["run_id"]) if current["status"] == "completed" else None
             file_result = None
             if result and result.get("files"):
@@ -475,7 +615,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 if payload.get("chain_type") == "agent_stats":
                     stats = json.loads(payload["data"])
             queue_manager.unsubscribe_system(before["snapshot"]["member"]["session_id"], stats_queue)
-            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "file": file_result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
+            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "file": file_result, "parent": parent, "during_resolution_errors": during_resolution_errors, "independent_before_resolution": independent_before_resolution, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
         elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure", "generator_error"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()

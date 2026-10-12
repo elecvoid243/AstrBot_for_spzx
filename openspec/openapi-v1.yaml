@@ -6518,6 +6518,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Resolve Tool Call
+      description: "Record an explicit decision with evidence before resuming an uncertain\
+        \ call.\n\nArgs:\n    run_id: Original affected task run.\n    record_id: Durable\
+        \ tool invocation requiring confirmation.\n    payload: Unique decision identity,\
+        \ chosen action, evidence and observed result.\n    username: Authenticated\
+        \ owner of the original task.\n    service: Shared durable run service.\n\n\
+        Returns:\n    Current task detail, preserving the original call and replacement\
+        \ association."
+      operationId: resolve_tool_call_api_v1_workflow_runs__run_id__tool_calls__record_id__resolve_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: record_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Record Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolResolutionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/events:
     get:
       tags:
@@ -9004,6 +9048,41 @@ components:
       - definition
       title: WorkflowSaveRequest
       type: object
+    ToolResolutionRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - retry
+          - confirm_result
+          - confirm_failure
+          - reconcile
+          title: Action
+        evidence:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Evidence
+        result:
+          anyOf:
+          - type: string
+            maxLength: 1000000
+            minLength: 1
+          - type: 'null'
+          title: Result
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      - evidence
+      title: ToolResolutionRequest
+      description: An explicit, evidenced decision about an uncertain external effect.
     WorkflowStartRequest:
       properties:
         version:

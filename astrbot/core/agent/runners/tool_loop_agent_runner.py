@@ -31,7 +31,12 @@ from astrbot.core.agent.call_checkpoint import (
     load_call_response,
 )
 from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, ThinkPart
-from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolRecoveryResult,
+    ToolSet,
+    current_tool_invocation,
+)
 from astrbot.core.agent.tool_image_cache import CachedImage, tool_image_cache
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
@@ -489,6 +494,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "name": tool.name,
                     "description": tool.description,
                     "parameters": tool.parameters,
+                    **(
+                        {"recovery": tool.recovery.declaration} if tool.recovery else {}
+                    ),
                 }
                 for tool in (available.tools if available else [])
             ]:
@@ -591,6 +599,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         "name": tool.name,
                         "description": tool.description,
                         "parameters": tool.parameters,
+                        **(
+                            {"recovery": tool.recovery.declaration}
+                            if tool.recovery
+                            else {}
+                        ),
                     }
                     for tool in (available.tools if available else [])
                 ],
@@ -1921,6 +1934,90 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             mime_type=mime_type or "image/png",
         )
 
+    async def _reconcile_tool_call(self, call: dict, tool: FunctionTool | None) -> bool:
+        """Resolve uncertainty only through the adapter's original guarantees.
+
+        Args:
+            call: Original per-tool checkpoint, including partial output evidence.
+            tool: Currently authorized adapter rebuilt by the normal pipeline.
+
+        Returns:
+            Whether the call has a proven result or can safely execute again.
+
+        Raises:
+            ProcessPersistenceError: A reconciliation fact cannot be saved.
+        """
+        metadata = call.setdefault("recovery", {})
+        declaration = metadata.get("declaration")
+        if (
+            tool is None
+            or tool.recovery is None
+            or declaration != tool.recovery.declaration
+        ):
+            return False
+        contract = tool.recovery
+        if contract.query is not None:
+            try:
+                queried = await self._await_or_stop(
+                    asyncio.wait_for(
+                        contract.query(
+                            self.run_context,
+                            call["record_id"],
+                            copy.deepcopy(call["args"]),
+                        ),
+                        timeout=self.run_context.tool_call_timeout,
+                    )
+                )
+                result = ToolRecoveryResult.model_validate(queried)
+            except _ToolExecutionInterrupted:
+                raise
+            except Exception as exc:
+                result = ToolRecoveryResult(
+                    status="unknown",
+                    evidence=f"Status query failed: {type(exc).__name__}: {exc}",
+                )
+            metadata.setdefault("queries", []).append(
+                result.model_dump(mode="json", exclude={"results"})
+            )
+            if result.status in {"succeeded", "failed"}:
+                for raw in result.results:
+                    index = len(call["raw_results"])
+                    data = raw.model_dump(mode="json")
+                    call["raw_results"].append(data)
+                    call["process_records"].append(
+                        {
+                            "id": call["record_id"] + f":raw:{index}",
+                            "data": {
+                                "id": call["call_id"],
+                                "name": call["name"],
+                                "raw_result": data,
+                            },
+                        }
+                    )
+                call["protocol_results"] = []
+                call["status"] = "result_saved"
+                await self._save_call_checkpoint("tool_result")
+                return True
+            # An ambiguous query cannot justify replay, even if another declared
+            # capability exists. The operator can request a subsequent query.
+            await self._save_call_checkpoint("tool_progress")
+            if result.status != "not_executed":
+                return False
+        elif not (contract.idempotency_key_arg or contract.safe_retry):
+            return False
+        metadata.setdefault("retries", []).append(
+            {
+                "identity": call["record_id"],
+                "reason": "not_executed"
+                if contract.query
+                else "idempotency_key"
+                if contract.idempotency_key_arg
+                else "safe_retry",
+            }
+        )
+        await self._save_call_checkpoint("tool_progress")
+        return True
+
     async def _handle_function_tools(
         self,
         req: ProviderRequest,
@@ -2029,8 +2126,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "started",
                 "unknown",
             }:
-                unresolved.append(func_tool_id)
-                continue
+                available = self.effective_raw_tool_set
+                tool = available.get_tool(func_tool_name) if available else None
+                if (
+                    func_tool_name in denied_tools
+                    or not await self._reconcile_tool_call(call_state, tool)
+                ):
+                    unresolved.append(func_tool_id)
+                    continue
+                reused = call_state["status"] == "result_saved"
             if reused and call_state and call_state["protocol_results"]:
                 execution = current_team_execution.get()
                 if execution and execution.record_process:
@@ -2097,6 +2201,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 )
                 continue
             tool_failed = False
+            invocation_token = None
             try:
                 if not req.func_tool:
                     return
@@ -2167,9 +2272,27 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 execution = current_team_execution.get()
                 if call_state is not None and not reused:
                     assert self._call_checkpoint is not None
-                    self._call_checkpoint["started_tools"].append(func_tool_id)
+                    if func_tool_id not in self._call_checkpoint["started_tools"]:
+                        self._call_checkpoint["started_tools"].append(func_tool_id)
+                    metadata = call_state.setdefault("recovery", {})
+                    metadata["declaration"] = (
+                        func_tool.recovery.declaration if func_tool.recovery else None
+                    )
+                    metadata["identity"] = call_state["record_id"]
+                    if func_tool.recovery and func_tool.recovery.idempotency_key_arg:
+                        valid_params = {
+                            **valid_params,
+                            func_tool.recovery.idempotency_key_arg: call_state[
+                                "record_id"
+                            ],
+                        }
+                        metadata["idempotency_key"] = call_state["record_id"]
                     call_state["status"] = "started"
                     await self._save_call_checkpoint("tools_started")
+
+                invocation_token = current_tool_invocation.set(
+                    call_state["record_id"] if call_state else uuid.uuid4().hex
+                )
 
                 try:
                     if not reused:
@@ -2375,6 +2498,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         func_tool_name, tool_call_streak
                     ),
                 )
+            finally:
+                if invocation_token is not None:
+                    current_tool_invocation.reset(invocation_token)
 
             if call_state is not None and not reused:
                 call_state["status"] = "unknown" if tool_failed else "result_saved"

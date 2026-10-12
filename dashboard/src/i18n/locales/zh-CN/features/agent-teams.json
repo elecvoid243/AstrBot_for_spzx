@@ -394,6 +394,21 @@
     "saveHint": "保存后固定本版本。后续编辑只影响新运行。",
     "dependency": "选择依赖"
   },
+  "resolution": {
+    "replacedBy": "原结果仍未知；已明确改为新的调用",
+    "replaces": "本次执行对应的原调用",
+    "unknown": "尚无完整结果证明该调用已结束。请核对原参数、部分输出和外部证据，再决定如何处理。",
+    "action": "处理此结果不明的调用",
+    "evidence": "已知证据或本次决定的依据",
+    "result": "已核实的完整工具结果",
+    "retryWarning": "新的执行可能重复产生外部效果。原结果不明的调用和本次决定将保留在历史中。",
+    "actions": {
+      "retry": "明确请求新的执行",
+      "reconcile": "按工具声明的能力对账",
+      "confirm_result": "记录核实结果并继续",
+      "confirm_failure": "记录核实失败并继续"
+    }
+  },
   "recovery": {
     "continue": "继续同一次尝试",
     "sameAttempt": "恢复保留原尝试和固定配置，不会创建重试或新迭代。",

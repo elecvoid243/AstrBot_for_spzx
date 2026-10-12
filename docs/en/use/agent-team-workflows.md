@@ -46,7 +46,21 @@ Open **Independent Runs → View Run**, select the interrupted task and choose *
 
 A complete saved model response is reused with its original tool plan. If no complete response was saved, the model request may be sent again; partial streaming generation and remote billing deduplication are not guaranteed. The built-in executor supports both full schemas and two-stage parameter generation. Other executors cannot use this workflow's internal recovery.
 
-Each tool call retains its intent, execution owner, original result and context application position. Expand a tool entry under **Saved member process** to inspect this evidence. Saved results are reused and applied once; a crash after context application continues the next model step. Partial tool output is retained separately from completion: an interrupted or failed generator with unfinished execution remains unknown, even when some output is already saved. A partially completed batch recovers each call separately: saved results are reused, unstarted calls may execute, and unknown external effects remain pending confirmation. Dependent model calls are blocked until every result is known. Confirmation and reconciliation interactions follow in a later task.
+Each tool call retains its intent, execution owner, original result and context application position. Expand a tool entry under **Saved member process** to inspect this evidence. Saved results are reused and applied once; a crash after context application continues the next model step. Partial tool output is retained separately from completion: an interrupted or failed generator with unfinished execution remains unknown, even when some output is already saved. A partially completed batch recovers each call separately: saved results are reused, unstarted calls may execute, and unknown external effects remain pending confirmation. Dependent model calls are blocked until every result is known.
+
+## Handle an unknown tool result
+
+In **Independent Runs → View Run**, select the affected task and expand its unknown tool entry under **Saved member process**. Inspect the original arguments, partial output, invocation identity and any saved query evidence. Independent workflow paths continue while this task waits.
+
+- If the adapter declared an authoritative query, an idempotency key or safe retry before execution, **Continue same attempt** can reconcile the original call. **Reconcile using declared tool capability** requests another check. An unresolved query remains unknown; tool names and timeouts never authorize replay.
+- To supply a result independently verified outside AstrBot, choose **Record verified result and continue** or **Record verified failure and continue**, enter the observed evidence and complete tool result, and submit. A generic completion flag without evidence and output cannot resolve the call.
+- To deliberately execute again, choose **Explicitly request a new execution** and record the basis for the decision. This may repeat an external effect. The new invocation links back to the original unknown invocation, which remains readable; the saved model plan, Attempt and frozen configuration continue.
+
+Decisions and query outcomes survive refresh and restart. Repeating the same submitted decision cannot schedule another execution. A late result from the original execution cannot replace the selected new execution. Recovery follows the adapter's declared guarantees; AstrBot cannot promise exactly one effect for arbitrary external tools.
+
+![Original unknown invocation, its arguments and explicit retry controls in the actual WebUI](/images/agent-workflow-tool-resolution-en.jpg)
+
+![The new execution retains the original invocation link and its saved evidence after refresh](/images/agent-workflow-tool-resolution-completed.jpg)
 
 Result submission is an internal idempotent operation for both the default text contract and custom contracts, including stable file references. Recovery finishes the existing intent or repeats only this submission, preserving one artifact version and one completion event. Saved acceptance or rejection results retain their original state and context position. Other calls in the same batch must reach a safe result boundary before completion; unknown external effects prevent finalization. Complete temporary files for large tool output are rebuilt before continuing, so cleared temporary storage does not leave unreadable result references.
 
@@ -86,5 +100,6 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
+| Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 
-Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, confirmation/reconciliation and team orchestration connect to this protocol in subsequent tasks. Existing navigation remains unchanged; tool state and recovery evidence are added inside the selected task's process details.
+Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops and team orchestration connect to this protocol in subsequent tasks. Unknown tool decisions are available inside the selected task's process details.

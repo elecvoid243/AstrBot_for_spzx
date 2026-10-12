@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, Response
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
+    ToolResolutionRequest,
     WorkflowSaveRequest,
     WorkflowService,
     WorkflowStartRequest,
@@ -155,6 +156,38 @@ async def recover_run(
     """
     try:
         return ok(await service.recover_run(username, run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/tool_calls/{record_id}/resolve")
+async def resolve_tool_call(
+    run_id: str,
+    record_id: str,
+    payload: ToolResolutionRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Record an explicit decision with evidence before resuming an uncertain call.
+
+    Args:
+        run_id: Original affected task run.
+        record_id: Durable tool invocation requiring confirmation.
+        payload: Unique decision identity, chosen action, evidence and observed result.
+        username: Authenticated owner of the original task.
+        service: Shared durable run service.
+
+    Returns:
+        Current task detail, preserving the original call and replacement association.
+    """
+    try:
+        return ok(
+            await service.resolve_tool_call(
+                username, run_id, record_id, payload.model_dump()
+            )
+        )
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

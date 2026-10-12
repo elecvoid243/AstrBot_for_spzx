@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   storeFile: vi.fn(),
   events: vi.fn(),
   recover: vi.fn(),
+  resolveTool: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -106,11 +107,169 @@ Object.assign(stubs, {
     props: ["modelValue", "items"],
     emits: ["update:modelValue"],
     template:
-      '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :value="item.role_id ?? item">{{ item.definition?.name ?? item }}</option></select>',
+      '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :value="item.value ?? item.role_id ?? item">{{ item.title ?? item.definition?.name ?? item }}</option></select>',
   },
 });
 
 describe("single-task workflow workspace", () => {
+  it.each(["success", "failure"])(
+    "keeps resolution loading and a late %s response with its original run",
+    async (outcome) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const stopped = {
+        ...run,
+        status: "blocked",
+        tool_calls: [
+          {
+            record_id: "call-one",
+            call_id: "external-one",
+            name: "publish",
+            status: "unknown",
+            recovery: {},
+            available_actions: ["retry"],
+          },
+        ],
+      };
+      const second = {
+        ...stopped,
+        run_id: "run-2",
+        snapshot: {
+          ...run.snapshot,
+          definition: { ...asset.definition, name: "Second report" },
+        },
+        tool_calls: [{ ...stopped.tool_calls[0], record_id: "call-two" }],
+      };
+      api.runs.mockResolvedValue({
+        runs: [runOverview, { ...runOverview, run_id: "run-2" }],
+      });
+      api.run.mockImplementation((id) =>
+        Promise.resolve(id === "run-1" ? stopped : second),
+      );
+      let finish!: (value: any) => void;
+      let fail!: (error: Error) => void;
+      api.resolveTool.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      await flushPromises();
+      let form = wrapper.get('[data-testid="tool-resolution"]');
+      await form.get("select").setValue("retry");
+      await form
+        .get('[data-testid="resolution-evidence"]')
+        .setValue("Owner explicitly requested retry.");
+      await form.get("button").trigger("click");
+      await form.get("button").trigger("click");
+      expect(api.resolveTool).toHaveBeenCalledTimes(1);
+      await wrapper
+        .findAll("button")
+        .filter((button) => button.text() === "v2.details")[1]
+        .trigger("click");
+      await flushPromises();
+      form = wrapper.get('[data-testid="tool-resolution"]');
+      await form.get("select").setValue("retry");
+      await form
+        .get('[data-testid="resolution-evidence"]')
+        .setValue("Retry the second operation.");
+      expect(form.get("button").attributes("disabled")).toBeUndefined();
+      api.resolveTool.mockResolvedValueOnce({
+        ...second,
+        status: "running",
+        tool_calls: [],
+      });
+      await form.get("button").trigger("click");
+      await flushPromises();
+      if (outcome === "success") finish({ ...stopped, status: "completed" });
+      else fail(new Error("Old resolution failed"));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Second report",
+      );
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "v2.states.running",
+      );
+      expect(wrapper.text()).not.toContain("Old resolution failed");
+      wrapper.unmount();
+    },
+  );
+  it("requires evidence and an explicit retry, then preserves the original call association", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const stopped = {
+      ...run,
+      status: "blocked",
+      cursor: 1,
+      tool_calls: [
+        {
+          record_id: "original-call",
+          call_id: "external-call",
+          name: "publish",
+          status: "unknown",
+          attempt_id: "attempt-1",
+          args: { title: "Original report" },
+          recovery: { queries: [{ evidence: "Remote receipt unavailable" }] },
+          available_actions: ["retry", "confirm_result", "confirm_failure"],
+        },
+      ],
+    };
+    api.run.mockResolvedValue(stopped);
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Remote receipt unavailable");
+    expect(wrapper.text()).toContain("Original report");
+    const form = wrapper.get('[data-testid="tool-resolution"]');
+    expect(form.get("button").attributes("disabled")).toBeDefined();
+    await form.get("select").setValue("retry");
+    await form
+      .get('[data-testid="resolution-evidence"]')
+      .setValue(
+        "Owner checked remote logs and explicitly chose a new execution.",
+      );
+    api.resolveTool.mockResolvedValue({
+      ...stopped,
+      status: "running",
+      cursor: 2,
+      tool_calls: [
+        {
+          ...stopped.tool_calls[0],
+          recovery: { replacement_record_id: "replacement-call" },
+          available_actions: [],
+        },
+      ],
+    });
+    await form.get("button").trigger("click");
+    await flushPromises();
+    expect(api.resolveTool).toHaveBeenCalledWith(
+      "run-1",
+      "original-call",
+      expect.objectContaining({
+        action: "retry",
+        evidence:
+          "Owner checked remote logs and explicitly chose a new execution.",
+        request_id: expect.any(String),
+      }),
+    );
+    expect(wrapper.text()).toContain("replacement-call");
+    expect(wrapper.find('[data-testid="tool-resolution"]').exists()).toBe(
+      false,
+    );
+    wrapper.unmount();
+  });
   it.each([
     ["runs", "success"],
     ["events", "success"],

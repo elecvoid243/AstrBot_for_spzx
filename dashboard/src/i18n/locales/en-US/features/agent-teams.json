@@ -394,6 +394,21 @@
     "saveHint": "Saving freezes this definition. Subsequent edits affect new runs.",
     "dependency": "Select dependency"
   },
+  "resolution": {
+    "replacedBy": "Original outcome remains unknown; explicitly replaced by invocation",
+    "replaces": "Explicit new execution for original invocation",
+    "unknown": "No complete result proves this call finished. Inspect the original arguments, partial output and remote evidence before deciding.",
+    "action": "Handle this unknown call",
+    "evidence": "Observed evidence or reason for your decision",
+    "result": "Complete observed tool result",
+    "retryWarning": "A new execution may repeat an external effect. The original unknown call and your decision remain in history.",
+    "actions": {
+      "retry": "Explicitly request a new execution",
+      "reconcile": "Reconcile using declared tool capability",
+      "confirm_result": "Record verified result and continue",
+      "confirm_failure": "Record verified failure and continue"
+    }
+  },
   "recovery": {
     "continue": "Continue same attempt",
     "sameAttempt": "Recovery keeps the original attempt and frozen configuration. It does not create a retry or a new iteration.",

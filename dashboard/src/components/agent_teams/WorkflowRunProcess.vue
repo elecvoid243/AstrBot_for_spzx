@@ -31,12 +31,35 @@
           {{ tm("recovery.contextPosition") }}:
           {{ call.context_position ?? tm("recovery.notApplied") }}
         </p>
+        <p
+          v-if="call.recovery?.replacement_record_id"
+          class="process-text mt-2"
+        >
+          {{ tm("resolution.replacedBy") }}:
+          {{ call.recovery.replacement_record_id }}
+        </p>
+        <p v-if="call.recovery?.replaces_record_id" class="process-text mt-2">
+          {{ tm("resolution.replaces") }}:
+          {{ call.recovery.replaces_record_id }}
+        </p>
         <pre class="process-text mt-3">{{
           JSON.stringify(call.args, null, 2)
         }}</pre>
         <pre v-if="call.raw_results?.length" class="process-text mt-3">{{
           JSON.stringify(call.raw_results, null, 2)
         }}</pre>
+        <pre
+          v-if="Object.keys(call.recovery ?? {}).length"
+          class="process-text mt-3"
+          >{{ JSON.stringify(call.recovery, null, 2) }}</pre
+        >
+        <WorkflowToolResolution
+          v-if="call.available_actions?.length"
+          :key="call.record_id"
+          :actions="call.available_actions"
+          :busy="busy ?? false"
+          @submit="emit('resolve', call.record_id, $event)"
+        />
       </div>
     </details>
     <p
@@ -118,7 +141,12 @@
 </template>
 <script setup lang="ts">
 import { useModuleI18n } from "@/i18n/composables";
-defineProps<{ run: any }>();
+import WorkflowToolResolution from "./WorkflowToolResolution.vue";
+import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
+defineProps<{ run: any; busy?: boolean }>();
+const emit = defineEmits<{
+  (event: "resolve", recordId: string, payload: ToolResolutionRequest): void;
+}>();
 const { tm } = useModuleI18n("features/agent-teams");
 </script>
 <style scoped>

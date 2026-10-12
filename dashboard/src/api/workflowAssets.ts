@@ -3,6 +3,7 @@ import type {
   WorkflowSaveRequest,
   WorkflowStartRequest,
   ArtifactRevisionRequest,
+  ToolResolutionRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
@@ -64,6 +65,20 @@ export const workflowAssetsApi = {
         `/api/v1/workflow_artifacts/${encodeURIComponent(
           artifactId,
         )}/versions/${version}`,
+      )
+    ).data.data;
+  },
+  async resolveTool(
+    runId: string,
+    recordId: string,
+    payload: ToolResolutionRequest,
+  ) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(
+          runId,
+        )}/tool_calls/${encodeURIComponent(recordId)}/resolve`,
+        payload,
       )
     ).data.data;
   },

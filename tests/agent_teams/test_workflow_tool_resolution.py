@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("scenario", ["manual_retry", "manual_retry_late", "manual_retry_key", "manual_retry_partial", "manual_batch", "manual_retry_commit", "manual_graph", "manual_save_failure", "manual_result", "manual_failure", "manual_http", "reconcile_succeeded", "reconcile_again", "reconcile_failed", "reconcile_unknown", "reconcile_error", "reconcile_save_failure", "idempotent_retry", "safe_retry"])
+@pytest.mark.parametrize("scenario", ["manual_retry", "manual_retry_late", "manual_retry_key", "manual_retry_partial", "manual_batch", "manual_retry_commit", "manual_graph", "manual_save_failure", "manual_result", "manual_failure", "manual_http", "reconcile_succeeded", "reconcile_again", "reconcile_failed", "reconcile_partial", "reconcile_partial_failed", "reconcile_partial_conflict", "reconcile_unknown", "reconcile_error", "reconcile_save_failure", "idempotent_retry", "safe_retry"])
 def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, scenario, preview=False):
     """Observe effects outside a killed real-pipeline worker and resume publicly.
 
@@ -59,6 +59,12 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                     response = {"status": "unknown", "evidence": "Remote operation is still unresolved.", "results": []}
                 elif scenario == "reconcile_failed":
                     response = {"status": "failed", "evidence": "Remote ledger proves rejection.", "results": [{"isError": True, "content": [{"type": "text", "text": "External operation rejected: verified receipt."}]}]}
+                elif scenario.startswith("reconcile_partial"):
+                    failed = scenario == "reconcile_partial_failed"
+                    response = {"status": "failed" if failed else "succeeded", "evidence": "Remote ledger contains the complete original output sequence.", "results": [
+                        {"content": [{"type": "text", "text": "Conflicting partial evidence." if scenario.endswith("conflict") else "Partial verified evidence."}]},
+                        {"isError": failed, "content": [{"type": "text", "text": "Verified terminal failure." if failed else "Complete verified evidence."}]},
+                    ]}
             else:
                 requests.append(payload)
                 context = json.dumps(payload["contexts"])
@@ -130,13 +136,16 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             repaired = subprocess.run([*command, "recover_storage", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=45, env=environment)
             assert repaired.returncode == 0, repaired.stdout + repaired.stderr
             evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
-        if scenario in {"reconcile_unknown", "reconcile_error"}:
+        if scenario in {"reconcile_unknown", "reconcile_error", "reconcile_partial_conflict"}:
             assert evidence["after"]["status"] == "blocked"
             call = evidence["after"]["tool_calls"][0]
             assert call["status"] == "unknown"
             assert len(effects) == len(deliveries) == len(queries) == len(requests) == 1
-            assert call["recovery"]["queries"][0]["status"] == "unknown"
+            assert call["recovery"]["queries"][0]["status"] == ("succeeded" if scenario == "reconcile_partial_conflict" else "unknown")
             assert "reconcile" in call["available_actions"]
+            if scenario == "reconcile_partial_conflict":
+                assert call["raw_results"] == evidence["before"]["tool_calls"][0]["raw_results"]
+                assert call["recovery"]["queries"][0]["accepted"] is False
             return
         assert evidence["after"]["status"] == "completed"
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
@@ -159,6 +168,16 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                 assert deliveries[0]["idempotency_key"] != deliveries[1]["idempotency_key"]
             else:
                 assert effects == [{"value": "original-plan"}, {"value": "original-plan"}]
+        elif scenario.startswith("reconcile_partial"):
+            assert len(calls) == 1
+            assert calls[0]["status"] == "applied"
+            raw_text = [raw["content"][0]["text"] for raw in calls[0]["raw_results"]]
+            expected = ["Partial verified evidence.", "Verified terminal failure." if scenario.endswith("failed") else "Complete verified evidence."]
+            assert raw_text == expected
+            applied = [message["content"] for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]
+            assert applied == expected
+            assert calls[0]["raw_results"][0] == evidence["before"]["tool_calls"][0]["raw_results"][0]
+            assert len(effects) == len(deliveries) == len(queries) == 1
         elif scenario.startswith("reconcile_"):
             assert len(calls) == 1
             assert calls[0]["status"] == "applied"

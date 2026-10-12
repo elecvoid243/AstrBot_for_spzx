@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
-from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent.tool import FunctionTool, has_tool_recovery
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
     ProcessPersistenceError,
@@ -795,18 +795,10 @@ class WorkflowService:
                                     and (
                                         not unknown_calls
                                         or any(
-                                            recovery_data.get(call.record_id, {}).get(
-                                                "declaration"
-                                            )
-                                            and any(
-                                                recovery_data[call.record_id][
-                                                    "declaration"
-                                                ].get(key)
-                                                for key in (
-                                                    "query",
-                                                    "safe_retry",
-                                                    "idempotency_key_arg",
-                                                )
+                                            has_tool_recovery(
+                                                recovery_data.get(
+                                                    call.record_id, {}
+                                                ).get("declaration")
                                             )
                                             for call in unknown_calls
                                         )
@@ -858,17 +850,9 @@ class WorkflowService:
                                     ]
                                     + (
                                         ["reconcile"]
-                                        if recovery_data.get(call.record_id, {}).get(
-                                            "declaration"
-                                        )
-                                        and any(
-                                            recovery_data[call.record_id][
+                                        if has_tool_recovery(
+                                            recovery_data.get(call.record_id, {}).get(
                                                 "declaration"
-                                            ].get(key)
-                                            for key in (
-                                                "query",
-                                                "safe_retry",
-                                                "idempotency_key_arg",
                                             )
                                         )
                                         else []
@@ -2128,10 +2112,8 @@ class WorkflowService:
                     or unknown
                     and not any(
                         call["status"] == "intent"
-                        or call.get("recovery", {}).get("declaration")
-                        and any(
-                            call["recovery"]["declaration"].get(key)
-                            for key in ("query", "safe_retry", "idempotency_key_arg")
+                        or has_tool_recovery(
+                            call.get("recovery", {}).get("declaration")
                         )
                         for call in calls
                     )
@@ -2485,10 +2467,7 @@ class WorkflowService:
                         "This call no longer requires a decision", status=409
                     )
                 declaration = metadata.get("declaration") or {}
-                if request.action == "reconcile" and not any(
-                    declaration.get(key)
-                    for key in ("query", "safe_retry", "idempotency_key_arg")
-                ):
+                if request.action == "reconcile" and not has_tool_recovery(declaration):
                     raise RoleAssetError(
                         "This tool has no declared reconciliation capability",
                         status=409,

@@ -1977,12 +1977,33 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     evidence=f"Status query failed: {type(exc).__name__}: {exc}",
                 )
             metadata.setdefault("queries", []).append(
-                result.model_dump(mode="json", exclude={"results"})
+                result.model_dump(
+                    mode="json",
+                    exclude={"results"}
+                    if result.status in {"succeeded", "failed"}
+                    else None,
+                )
             )
             if result.status in {"succeeded", "failed"}:
-                for raw in result.results:
+                complete = [raw.model_dump(mode="json") for raw in result.results]
+                known = [
+                    CallToolResult.model_validate(raw).model_dump(mode="json")
+                    for raw in call["raw_results"]
+                ]
+                if complete[: len(known)] != known:
+                    metadata["queries"][-1].update(
+                        {
+                            "accepted": False,
+                            "reason": "The complete query result conflicts with saved partial output.",
+                            "results": complete,
+                        }
+                    )
+                    await self._save_call_checkpoint("tool_progress")
+                    return False
+                # The query returns the complete original sequence. Saved partial
+                # output stays intact and contributes to context exactly once.
+                for data in complete[len(known) :]:
                     index = len(call["raw_results"])
-                    data = raw.model_dump(mode="json")
                     call["raw_results"].append(data)
                     call["process_records"].append(
                         {

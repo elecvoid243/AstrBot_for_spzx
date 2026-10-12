@@ -123,7 +123,12 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         if scenario == "overflow_legacy_unaligned":
             yield CallToolResult.model_validate({"content": [{"type": "resource_link", "name": "Progress reference", "uri": "https://example.org/evidence"}]})
         async with httpx.AsyncClient() as client:
-            initial = await client.post(endpoint + "/tool", json={"value": value, **({} if scenario == "overflow_legacy_unaligned" else {"part": "initial"})})
+            if scenario.startswith("reconcile_partial"):
+                from astrbot.core.agent.tool import current_tool_invocation
+                identity = {"identity": current_tool_invocation.get()}
+            else:
+                identity = {}
+            initial = await client.post(endpoint + "/tool", json={"value": value, **identity, **({} if scenario == "overflow_legacy_unaligned" else {"part": "initial"})})
             yield initial.json()["text"]
             if scenario == "overflow_legacy_unaligned":
                 return
@@ -135,7 +140,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
+        handler=external_stream if scenario.startswith("reconcile_partial") or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
     if scenario.startswith("reconcile_"):
         from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
@@ -349,7 +354,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
-                if scenario in {"partial_generator", "manual_retry_partial"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
+                if (scenario.startswith("reconcile_partial") or scenario in {"partial_generator", "manual_retry_partial"}) and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "completed_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id

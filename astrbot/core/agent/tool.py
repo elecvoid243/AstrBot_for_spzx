@@ -23,8 +23,27 @@ current_tool_invocation: ContextVar[str | None] = ContextVar(
 )
 
 
+def has_tool_recovery(declaration: dict | None) -> bool:
+    """Recognize explicit adapter guarantees without inferring a retry outcome.
+
+    Args:
+        declaration: Original serializable guarantees saved before execution.
+
+    Returns:
+        Whether an adapter supplied a query, idempotency key or safe retry contract.
+        A query still has to prove its outcome before the call can continue.
+    """
+    return bool(
+        declaration
+        and any(
+            declaration.get(key)
+            for key in ("query", "safe_retry", "idempotency_key_arg")
+        )
+    )
+
+
 class ToolRecoveryResult(BaseModel):
-    """Evidence from a tool's authoritative status query, including full output."""
+    """Authoritative evidence and the complete original ordered result sequence."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     status: Literal["succeeded", "failed", "not_executed", "unknown"]
@@ -43,14 +62,10 @@ class ToolRecoveryResult(BaseModel):
         """
         if self.status in {"succeeded", "failed"} and not self.results:
             raise ValueError("A completed tool query must provide its complete result")
-        if self.status == "failed" and any(
-            not result.isError for result in self.results
-        ):
-            raise ValueError("A failed tool query must provide error results")
-        if self.status == "succeeded" and any(
-            result.isError for result in self.results
-        ):
-            raise ValueError("A successful tool query cannot provide error results")
+        if self.status == "failed" and not self.results[-1].isError:
+            raise ValueError("A failed tool query must end with an error result")
+        if self.status == "succeeded" and self.results[-1].isError:
+            raise ValueError("A successful tool query cannot end with an error result")
         return self
 
 
@@ -68,8 +83,9 @@ class ToolRecovery:
         idempotency_key_arg: Hidden handler argument receiving the original durable
             identity. The adapter guarantees the key deduplicates the whole call.
         safe_retry: Explicit guarantee that replay after partial effects is safe.
-        query: Authoritative status query. Completed outcomes supply complete tool
-            output; unknown outcomes never authorize automatic replay.
+        query: Authoritative status query. Completed outcomes supply the complete
+            original ordered result sequence, including any saved partial prefix.
+            Unknown outcomes never authorize automatic replay.
     """
 
     version: str = "1"

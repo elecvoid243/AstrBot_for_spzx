@@ -4014,7 +4014,7 @@ export const getEventsApiV1WorkflowRunsRunIdEventsGet = <ThrowOnError extends bo
 
 /**
  * Recover Run
- * Continue the same attempt from its saved built-in model boundary.
+ * Continue the same attempt from saved model and per-tool boundaries.
  *
  * Args:
  * run_id: Interrupted task; no new attempt or iteration is created.
@@ -4022,8 +4022,10 @@ export const getEventsApiV1WorkflowRunsRunIdEventsGet = <ThrowOnError extends bo
  * service: Shared public run service.
  *
  * Returns:
- * Persisted progress, or a reason recovery requires confirmation. Started
- * tools are not replayed; the default text submission can finish idempotently.
+ * Persisted progress with per-call intents, results, context positions and
+ * execution ownership. Saved results are reused, unstarted calls may run,
+ * and unknown effects require confirmation. Contracted submissions finish
+ * through the existing idempotent result protocol.
  */
 export const recoverRunApiV1WorkflowRunsRunIdRecoverPost = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<RecoverRunApiV1WorkflowRunsRunIdRecoverPostData, ThrowOnError>) => {
     return (options?.client ?? client).post<RecoverRunApiV1WorkflowRunsRunIdRecoverPostResponse, RecoverRunApiV1WorkflowRunsRunIdRecoverPostError, ThrowOnError>({

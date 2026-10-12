@@ -330,6 +330,25 @@ class AgentWorkflowCheckpoint(SQLModel, table=True):
     data: dict = Field(sa_type=JSON)
 
 
+class AgentWorkflowToolCall(TimestampMixin, SQLModel, table=True):
+    """Per-call durable intent, result and context position within an attempt."""
+
+    __tablename__: str = "agent_workflow_tool_calls"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    attempt_id: str
+    invocation_id: str
+    call_id: str
+    call_index: int
+    name: str
+    args: dict = Field(sa_type=JSON)
+    status: str = "intent"
+    execution_id: str
+    started_execution_id: str | None = None
+    raw_results: list[dict] = Field(default_factory=list, sa_type=JSON)
+    context_position: int | None = None
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

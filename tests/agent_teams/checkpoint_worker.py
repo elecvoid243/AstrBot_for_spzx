@@ -13,6 +13,7 @@ import httpx
 from pytest import MonkeyPatch
 from sqlalchemy import event as sql_event, text
 from sqlalchemy.orm import Session
+from mcp.types import CallToolResult
 
 from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.agent.tool import FunctionTool
@@ -91,10 +92,11 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         """
         async with httpx.AsyncClient() as client:
             response = await client.post(endpoint + "/tool", json={"value": value})
-            if action == "start" and scenario == "started":
+            if action == "start" and (scenario == "started" or scenario == "batch_unknown" and value == "unknown-effect"):
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
-            return response.json()["text"]
+            data = response.json()
+            return CallToolResult.model_validate(data["raw_result"]) if "raw_result" in data else data["text"]
 
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
@@ -230,9 +232,15 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "response" and row.data["response"]["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
-                if scenario == "submit_pre" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_started" and row.data["response"]["id"] == "submission-original":
+                if scenario in {"submit_pre", "submit_mixed_pre", "submit_custom_pre", "submit_file_pre"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_started" and row.data["response"]["id"] == "submission-original":
                     session.info["kill_boundary"] = row.run_id
-                if scenario == "submit_post" and isinstance(row, AgentWorkflowEvent) and row.kind == "result.accepted":
+                if scenario in {"submit_post", "submit_mixed_post", "submit_custom_post", "submit_file_post"} and isinstance(row, AgentWorkflowEvent) and row.kind == "result.accepted":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario in {"tool_result", "parameters_tool_result"} and isinstance(row, AgentWorkflowProcess) and row.kind == "tool_result":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario in {"tool_checkpoint", "tool_applied"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tool_result" if scenario == "tool_checkpoint" else "tools_applied") and row.data["response"]["id"] == "plan-original":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
 
         def after_commit(session):
@@ -256,12 +264,22 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence"], "max_steps": 4},
             "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence"}},
         })
-        asset = await service.save_asset("alice", {"definition": {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}})
+        definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
+        if scenario.startswith(("submit_custom", "submit_file")):
+            contract = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False}
+            if scenario.startswith("submit_file"):
+                contract["properties"]["files"] = {"type": "array", "items": {"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"], "additionalProperties": False}}
+                contract["required"].append("files")
+            definition["output_contract"] = contract
+        asset = await service.save_asset("alice", {"definition": definition})
         if scenario == "graph":
             asset = await service.save_asset("alice", {"definition": {"name": "Original graph", "tasks": [{"id": "write", "name": "Write", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}})
         if scenario in {"save_failure", "observation_failure"}:
             async with db.engine.begin() as connection:
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'checkpoint storage unavailable'); END" if scenario == "save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END"))
+        if scenario in {"tool_save_failure", "tool_observation_failure"}:
+            async with db.engine.begin() as connection:
+                await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
         if action == "serve":
@@ -297,7 +315,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 return HTMLResponse(content.replace("<head>", "<head><script>localStorage.setItem('token','local-qa');localStorage.setItem('user','alice');</script>"))
 
             config = Config()
-            config.bind = ["127.0.0.1:6197"]
+            config.bind = ["127.0.0.1:6198"]
             (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__('os').getpid()}), encoding="utf-8")
             await serve(app, config)
             return
@@ -311,7 +329,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if scenario == "parameters_checkpoint_failure":
                 async with db.engine.begin() as connection:
                     await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
-            if scenario in {"save_failure", "observation_failure"}:
+            if scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER reject_response_checkpoint"))
             if scenario == "missing_model":
@@ -337,6 +355,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             await asyncio.sleep(0.01)
         if action != "start":
             result = await service.get_result("alice", run["run_id"]) if current["status"] == "completed" else None
+            file_result = None
+            if result and result.get("files"):
+                file_result = await service.get_file("alice", run["run_id"], 1, result["files"][0]["file_id"])
+                file_result["content"] = file_result["content"].decode("utf-8")
             late_errors = []
             repeated = None
             if result is not None:
@@ -369,8 +391,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 if payload.get("chain_type") == "agent_stats":
                     stats = json.loads(payload["data"])
             queue_manager.unsubscribe_system(before["snapshot"]["member"]["session_id"], stats_queue)
-            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
-        elif scenario in {"save_failure", "observation_failure"}:
+            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "file": file_result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
+        elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()
     finally:

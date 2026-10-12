@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -91,6 +91,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             if self.path == "/tool":
                 effects.append(payload)
                 response = {"text": "Verified external evidence."}
+                if scenario == "tool_image_protocol":
+                    response = {"raw_result": {"content": [{"type": "text", "text": "Verified external evidence."}, {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=="}]}}
             else:
                 requests.append(payload)
                 context = json.dumps(payload["contexts"])
@@ -98,8 +100,26 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     response = {"role": "assistant", "completion_text": "Submitted."}
                 elif "evidence-original" in context:
                     response = {"role": "tool", "id": "submission-original", "tools_call_name": ["submit_task_result"], "tools_call_args": [{"text": "Original verified report."}], "tools_call_ids": ["submit-original"]}
+                    if scenario.startswith(("submit_custom", "submit_file")):
+                        result = {"text": "Original verified report."}
+                        if scenario.startswith("submit_file"):
+                            if "file-original" not in context:
+                                response = {"role": "tool", "id": "file-plan", "tools_call_name": ["store_task_file"], "tools_call_args": [{"filename": "report.txt", "content": "Complete original file report."}], "tools_call_ids": ["file-original"]}
+                            else:
+                                stored = next(message for message in payload["contexts"] if message.get("tool_call_id") == "file-original")
+                                result["files"] = [{"file_id": json.loads(stored["content"])["file_id"]}]
+                        if response["id"] == "submission-original":
+                            response["tools_call_args"] = [{"result_json": json.dumps(result)}]
+                    if scenario.startswith("submit_mixed"):
+                        response["tools_call_name"].append("external_evidence")
+                        response["tools_call_args"].append({"value": "after-submission"})
+                        response["tools_call_ids"].append("after-submit-original")
                 else:
                     response = {"role": "tool", "id": "plan-original", "tools_call_name": ["external_evidence"], "tools_call_args": [{"value": "original-plan"}], "tools_call_ids": ["evidence-original"], "reasoning_content": "Original provider thinking.", "reasoning_signature": "original-signature", "tools_call_extra_content": {"evidence-original": {"google": {"thought_signature": "original-tool-signature"}}}}
+                    if scenario == "batch_unknown":
+                        response.update({"tools_call_name": ["external_evidence"] * 3,
+                            "tools_call_args": [{"value": value} for value in ("original-plan", "unknown-effect", "unstarted")],
+                            "tools_call_ids": ["evidence-original", "evidence-unknown", "evidence-unstarted"]})
                     if payload.get("parameter_query"):
                         response["id"] = "parameters-original"
                         if repair_mode and not payload.get("repair_query"):
@@ -132,8 +152,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     assert worker.poll() is None, (tmp_path / "first.log").read_text(encoding="utf-8")
                     assert time.monotonic() < deadline, (tmp_path / "first.log").read_text(encoding="utf-8")
                     time.sleep(0.05)
-                assert len(requests) == (3 if repair_mode else 2 if scenario.startswith("submit_") or parameter_mode else 1)
-                assert effects == ([{"value": "original-plan"}] if scenario in {"started", "submit_pre", "submit_post"} else [])
+                assert len(requests) == (3 if repair_mode or scenario.startswith("submit_file") else 2 if scenario.startswith("submit_") or parameter_mode else 1)
+                assert effects == ([{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_")) or scenario == "parameters_tool_result" else [])
                 worker.kill()
                 worker.wait(timeout=10)
             finally:
@@ -146,6 +166,24 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario == "tool_save_failure":
+            assert evidence["error"]["status"] == 409
+            assert evidence["after"]["status"] == "failed"
+            assert "Failed to save execution checkpoint" in evidence["after"]["state"]["reason"]
+            assert evidence["after"]["recovery"]["available"] is False
+            assert effects == [{"value": "original-plan"}]
+            assert len(requests) == 1
+            return
+        if scenario == "batch_unknown":
+            assert evidence["after"]["status"] == "blocked"
+            assert "confirmation" in evidence["after"]["state"]["reason"]
+            assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
+            assert effects == [{"value": "original-plan"}, {"value": "unknown-effect"}, {"value": "unstarted"}]
+            assert len(requests) == 1
+            assert [call["status"] for call in evidence["before"]["tool_calls"]] == ["result_saved", "started", "intent"]
+            assert [call["status"] for call in evidence["after"]["tool_calls"]] == ["result_saved", "unknown", "result_saved"]
+            assert evidence["after"]["recovery"]["available"] is False
+            return
         if scenario == "parameters_checkpoint_failure":
             assert evidence["after"]["status"] == "failed"
             assert "Failed to save complete process record" in evidence["after"]["state"]["reason"]
@@ -185,14 +223,26 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         assert evidence["after"]["status"] == "completed"
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
-        assert evidence["result"] == {"text": "Original verified report."}
+        if scenario.startswith("submit_file"):
+            assert evidence["result"]["text"] == "Original verified report."
+            assert len(evidence["result"]["files"]) == 1
+            assert evidence["file"]["filename"] == "report.txt"
+            assert evidence["file"]["content"] == "Complete original file report."
+        else:
+            assert evidence["result"] == {"text": "Original verified report."}
         assert evidence["late_errors"] == [409, 409, 409, 409]
         assert evidence["repeated"] == evidence["after"]
         assert len(evidence["after"]["artifacts"]) == 1
         assert sum(event["kind"] == "task.completed" for event in evidence["after"]["events"]) == 1
-        assert evidence["after"]["recovery"]["steps_used"] == (2 if scenario == "submit_post" else 3)
-        assert evidence["after"]["recovery"]["model_calls"] == (6 if repair_mode else 5 if parameter_mode else 2 if scenario == "submit_post" else 3)
-        assert len(requests) == (6 if repair_mode else 5 if parameter_mode else 4 if scenario in {"request", "save_failure"} else 2 if scenario == "submit_post" else 3)
+        early_finish = scenario in {"submit_post", "submit_custom_post", "submit_file_post"}
+        if early_finish:
+            submitted = next(call for call in evidence["after"]["tool_calls"] if call["name"] == "submit_task_result")
+            assert submitted["status"] == "result_saved"
+            assert submitted["raw_results"][0]["content"][0]["text"] == "Result accepted."
+        steps = (2 if early_finish else 3) + int(scenario.startswith("submit_file"))
+        assert evidence["after"]["recovery"]["steps_used"] == steps
+        assert evidence["after"]["recovery"]["model_calls"] == (6 if repair_mode else 5 if parameter_mode else steps)
+        assert len(requests) == (6 if repair_mode else 5 if parameter_mode else 4 if scenario in {"request", "save_failure"} else steps)
         if parameter_mode:
             assert evidence["stats"]["token_usage"] == {"input_other": 48 if repair_mode else 40, "input_cached": 12 if repair_mode else 10, "output": 12 if repair_mode else 10}
             records = [record for record in evidence["after"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == "parameters-original"]
@@ -202,7 +252,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert records[0]["data"]["tool_calls"] == [{"id": "evidence-original", "name": "external_evidence", "args": {"value": "original-plan"}}]
             assert records[0]["data"]["tools_call_extra_content"] == {"evidence-original": {"google": {"thought_signature": "original-tool-signature"}}}
             previous = [record for record in evidence["before"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == "parameters-original"]
-            if scenario in {"parameters", "repair"}:
+            if scenario in {"parameters", "repair", "parameters_tool_result"}:
                 assert len(previous) == 1
                 assert records == previous
             else:
@@ -211,11 +261,26 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert evidence["parent"]["status"] == "completed"
         if scenario == "concurrent":
             assert evidence["recovery_errors"] == [409]
-        assert effects == [{"value": "original-plan"}]
+        assert effects == ([{"value": "original-plan"}, {"value": "after-submission"}] if scenario.startswith("submit_mixed") else [{"value": "original-plan"}])
+        if scenario in {"tool_result", "tool_checkpoint", "tool_applied"}:
+            calls = evidence["before"]["tool_calls"]
+            assert len(calls) == 1
+            assert calls[0]["status"] == ("applied" if scenario == "tool_applied" else "result_saved")
+            assert calls[0]["raw_results"][0]["content"][0]["text"] == "Verified external evidence."
+            if scenario != "tool_applied":
+                assert calls[0]["context_position"] is None
+            restored = evidence["after"]["tool_calls"][0]
+            assert restored["status"] == "applied"
+            assert restored["context_position"] is not None
+            if scenario != "tool_applied":
+                assert restored["execution_id"] != evidence["before"]["state"]["execution_id"]
+            assert len([message for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]) == 1
         restored_context = json.dumps(requests[-2]["contexts"] if parameter_mode else requests[2 if scenario in {"request", "save_failure"} else 1]["contexts"])
         for value in ("Temporary original framing.", "data:image/png;base64,", "original-tool-signature", "Original verified persona.", "profile=original", *(() if scenario == "no_thinking" else ("original-signature", "Original provider thinking."))):
             assert value in restored_context
         assert "Edited persona." not in restored_context
+        if scenario == "tool_image_protocol":
+            assert "Image from tool 'external_evidence'" in restored_context
     finally:
         server.shutdown()
         server.server_close()

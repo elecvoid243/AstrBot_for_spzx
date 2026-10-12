@@ -140,7 +140,7 @@ async def recover_run(
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
-    """Continue the same attempt from its saved built-in model boundary.
+    """Continue the same attempt from saved model and per-tool boundaries.
 
     Args:
         run_id: Interrupted task; no new attempt or iteration is created.
@@ -148,8 +148,10 @@ async def recover_run(
         service: Shared public run service.
 
     Returns:
-        Persisted progress, or a reason recovery requires confirmation. Started
-        tools are not replayed; the default text submission can finish idempotently.
+        Persisted progress with per-call intents, results, context positions and
+        execution ownership. Saved results are reused, unstarted calls may run,
+        and unknown effects require confirmation. Contracted submissions finish
+        through the existing idempotent result protocol.
     """
     try:
         return ok(await service.recover_run(username, run_id))

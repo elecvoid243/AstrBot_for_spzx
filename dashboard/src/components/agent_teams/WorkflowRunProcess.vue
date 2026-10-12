@@ -4,6 +4,41 @@
     <p class="text-caption text-medium-emphasis mb-3">
       {{ tm("progress.observation") }}
     </p>
+    <details
+      v-for="call in run.tool_calls ?? []"
+      :key="call.record_id"
+      class="process-record"
+      data-testid="durable-tool-call"
+    >
+      <summary>
+        <span class="font-weight-medium"
+          >{{ call.name }} ·
+          {{ tm(`recovery.toolStates.${call.status}`) }}</span
+        >
+        <span class="text-caption text-medium-emphasis process-id"
+          >{{ call.call_id }} · {{ tm("v2.attempt") }}
+          {{ call.attempt_id }}</span
+        >
+      </summary>
+      <div class="pa-4">
+        <p class="process-text">
+          {{ tm("recovery.owner") }}: {{ call.execution_id }}
+        </p>
+        <p v-if="call.started_execution_id" class="process-text">
+          {{ tm("recovery.startedOwner") }}: {{ call.started_execution_id }}
+        </p>
+        <p class="process-text">
+          {{ tm("recovery.contextPosition") }}:
+          {{ call.context_position ?? tm("recovery.notApplied") }}
+        </p>
+        <pre class="process-text mt-3">{{
+          JSON.stringify(call.args, null, 2)
+        }}</pre>
+        <pre v-if="call.raw_results?.length" class="process-text mt-3">{{
+          JSON.stringify(call.raw_results, null, 2)
+        }}</pre>
+      </div>
+    </details>
     <p
       v-if="!run.process?.length && !run.state.response"
       class="text-body-2 text-medium-emphasis"

@@ -278,7 +278,7 @@
   "v2": {
     "assets": "Workflow Assets",
     "runs": "Independent Runs",
-    "scope": "Workflows pin roles, contracts and input versions. Ready dependencies advance independently. Interrupted built-in attempts can continue from saved model boundaries; started tools require confirmation.",
+    "scope": "Workflows pin roles, contracts and input versions. Ready dependencies advance independently. Interrupted built-in attempts reuse saved model responses and tool results; unknown external effects require confirmation.",
     "create": "New Workflow",
     "emptyAssets": "No workflow assets yet. Create a role template, then save a workflow.",
     "emptyRuns": "No independent runs yet.",
@@ -397,11 +397,24 @@
   "recovery": {
     "continue": "Continue same attempt",
     "sameAttempt": "Recovery keeps the original attempt and frozen configuration. It does not create a retry or a new iteration.",
-    "limits": "A missing response may require another model request. Partial generation and billing deduplication are not guaranteed. Started tools need confirmation; tool-result recovery will be added separately.",
+    "limits": "Saved tool results are reused. Unstarted calls may execute; calls with unknown external effects need confirmation. A missing model response may require another request; partial generation and billing deduplication are not guaranteed.",
+    "owner": "Current execution owner",
+    "startedOwner": "Execution that started this call",
+    "contextPosition": "Context application position",
+    "notApplied": "Not applied yet",
+    "toolStates": {
+      "intent": "Not started",
+      "started": "Executing",
+      "unknown": "Result unknown; confirmation required",
+      "result_saved": "Result saved",
+      "applied": "Applied to context"
+    },
     "boundaries": {
       "request": "Saved model request; no complete response saved.",
       "response": "Complete model response saved; reuse its original tool plan.",
       "tools_started": "Tool execution has started.",
+      "tool_result": "Tool result saved; recover without repeating its external effect.",
+      "tools_applied": "Tool results applied to context; continue the next model step.",
       "none": "No resumable execution checkpoint."
     }
   }

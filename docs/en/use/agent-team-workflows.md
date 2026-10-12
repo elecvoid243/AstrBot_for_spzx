@@ -46,7 +46,11 @@ Open **Independent Runs → View Run**, select the interrupted task and choose *
 
 A complete saved model response is reused with its original tool plan. If no complete response was saved, the model request may be sent again; partial streaming generation and remote billing deduplication are not guaranteed. The built-in executor supports both full schemas and two-stage parameter generation. Other executors cannot use this workflow's internal recovery.
 
-Started tools retain their records and require confirmation. This release does not replay them or restore tool results; reconciliation and tool-result recovery are delivered separately. A default text result submission is an internal idempotent operation: recovery can complete its saved intent or repeat only that submission, preserving one result version and one completion event. An unrelated started tool prevents that exception.
+Each tool call retains its intent, execution owner, original result and context application position. Expand a tool entry under **Saved member process** to inspect this evidence. Saved results are reused and applied once; a crash after context application continues the next model step. A partially completed batch recovers each call separately: saved results are reused, unstarted calls may execute, and unknown external effects remain pending confirmation. Dependent model calls are blocked until every result is known. Confirmation and reconciliation interactions follow in a later task.
+
+Result submission is an internal idempotent operation for both the default text contract and custom contracts, including stable file references. Recovery finishes the existing intent or repeats only this submission, preserving one artifact version and one completion event. Other calls in the same batch must reach a safe result boundary before completion; unknown external effects prevent finalization.
+
+![Saved tool result, original owner and context application position](/images/agent-workflow-tool-recovery-en.jpg)
 
 ![Actual interrupted attempt with its saved response and recovery action](/images/agent-workflow-recovery-en.jpg)
 
@@ -81,6 +85,6 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | Starting and inspecting a new workflow run | Workflow Assets → Start Run, then Independent Runs → View Run → Execution progress to select a task; the Inspect task selector remains available. |
 | Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
-| An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; started tools explicitly require confirmation. |
+| An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
 
-Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, tool-result recovery and team orchestration connect to this protocol in subsequent tasks.
+Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, confirmation/reconciliation and team orchestration connect to this protocol in subsequent tasks. Existing navigation remains unchanged; tool state and recovery evidence are added inside the selected task's process details.

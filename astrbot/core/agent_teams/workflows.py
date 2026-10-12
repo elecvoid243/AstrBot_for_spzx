@@ -11,6 +11,7 @@ from string import Formatter
 from typing import cast
 
 from jsonschema import Draft202012Validator, SchemaError
+from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
@@ -51,6 +52,7 @@ from astrbot.core.db.po import (
     AgentWorkflowProcess,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
+    AgentWorkflowToolCall,
     AgentWorkflowVersion,
     ConversationV2,
     PlatformSession,
@@ -686,8 +688,37 @@ class WorkflowService:
                 else {}
             )
             results = {}
+            calls = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowToolCall)
+                        .where(col(AgentWorkflowToolCall.run_id).in_(identities))
+                        .order_by(
+                            col(AgentWorkflowToolCall.created_at),
+                            col(AgentWorkflowToolCall.call_index),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if include_details
+                else []
+            )
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
+                current_calls = [
+                    call for call in calls if call.run_id == current.run_id
+                ]
+                pending_calls = [
+                    call
+                    for call in current_calls
+                    if boundary and call.invocation_id == boundary.invocation_id
+                ]
+                unknown_calls = [
+                    call
+                    for call in pending_calls
+                    if call.status in {"started", "unknown"}
+                ]
                 current_events = [
                     event for event in events if event.run_id == current.run_id
                 ]
@@ -729,6 +760,14 @@ class WorkflowService:
                                 and boundary is not None
                                 and (
                                     not boundary.started_tools
+                                    or pending_calls
+                                    and (
+                                        not unknown_calls
+                                        or any(
+                                            call.status == "intent"
+                                            for call in pending_calls
+                                        )
+                                    )
                                     or boundary.result_submission
                                 ),
                                 "boundary": boundary.phase if boundary else None,
@@ -739,9 +778,13 @@ class WorkflowService:
                                 "model_calls": boundary.model_calls
                                 if boundary
                                 else None,
-                                "reason": "Started tools require confirmation; tool-result recovery is not supported yet."
+                                "reason": "Started tools require confirmation before recovery."
                                 if boundary
-                                and boundary.started_tools
+                                and (
+                                    unknown_calls
+                                    or boundary.started_tools
+                                    and not pending_calls
+                                )
                                 and not boundary.result_submission
                                 else "No saved execution checkpoint."
                                 if boundary is None
@@ -756,6 +799,9 @@ class WorkflowService:
                                 record.model_dump(mode="json")
                                 for record in process
                                 if record.run_id == current.run_id
+                            ],
+                            "tool_calls": [
+                                call.model_dump(mode="json") for call in current_calls
                             ],
                             "validation_errors": errors,
                             "events": [
@@ -1944,9 +1990,41 @@ class WorkflowService:
                 )
             if checkpoint is None or checkpoint.attempt_id != row.state["attempt_id"]:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
-            if checkpoint.started_tools and not checkpoint.result_submission:
+            checkpoint.data = copy.deepcopy(checkpoint.data)
+            calls = checkpoint.data.get("tool_calls", [])
+            for call in calls:
+                if call["name"] == "submit_task_result" and call["status"] in {
+                    "started",
+                    "unknown",
+                }:
+                    # This system-owned tool repeats the existing idempotent
+                    # submission transaction; external tools retain uncertainty.
+                    call["status"] = "intent"
+                    checkpoint.started_tools = [
+                        identity
+                        for identity in checkpoint.started_tools
+                        if identity != call["call_id"]
+                    ]
+                    checkpoint.data["started_tools"] = checkpoint.started_tools
+                    stored = await session.get(AgentWorkflowToolCall, call["record_id"])
+                    if stored:
+                        stored.status = "intent"
+                        session.add(stored)
+            session.add(checkpoint)
+            unknown = [
+                call for call in calls if call["status"] in {"started", "unknown"}
+            ]
+            if (
+                checkpoint.started_tools
+                and not checkpoint.result_submission
+                and (
+                    not calls
+                    or unknown
+                    and not any(call["status"] == "intent" for call in calls)
+                )
+            ):
                 raise RoleAssetError(
-                    "Tool execution has started; its result requires confirmation. Tool-result recovery is not supported yet.",
+                    "Tool execution has started; its result requires confirmation.",
                     status=409,
                 )
             parent_id = row.snapshot.get("parent_run_id")
@@ -2039,6 +2117,56 @@ class WorkflowService:
             )
             if finish_result:
                 state["safe_to_finish"] = True
+                # The accepted intent proves this internal transaction's outcome,
+                # even if the tool return was interrupted before being recorded.
+                for call in calls:
+                    if call["name"] != "submit_task_result":
+                        continue
+                    raw = CallToolResult(
+                        content=[TextContent(type="text", text="Result accepted.")]
+                    ).model_dump(mode="json")
+                    call["status"] = "result_saved"
+                    call["raw_results"] = [raw]
+                    stored = await session.get(AgentWorkflowToolCall, call["record_id"])
+                    assert stored is not None
+                    stored.status = "result_saved"
+                    stored.raw_results = [raw]
+                    stored.execution_id = execution_id
+                    session.add(stored)
+                    identity = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{run_id}:{state['attempt_id']}:{call['record_id']}:raw:0",
+                    ).hex
+                    if await session.get(AgentWorkflowProcess, identity) is None:
+                        session.add(
+                            AgentWorkflowProcess(
+                                record_id=identity,
+                                run_id=run_id,
+                                task_id=state["task_id"],
+                                attempt_id=state["attempt_id"],
+                                member_id=row.snapshot["member"]["member_id"],
+                                kind="tool_result",
+                                data={
+                                    "id": call["call_id"],
+                                    "name": call["name"],
+                                    "raw_result": raw,
+                                },
+                            )
+                        )
+                        session.add(
+                            AgentWorkflowEvent(
+                                run_id=run_id,
+                                kind="process.tool_result",
+                                data={
+                                    "record_id": identity,
+                                    "attempt_id": state["attempt_id"],
+                                },
+                            )
+                        )
+                if calls:
+                    checkpoint.phase = "tool_result"
+                    checkpoint.data["phase"] = "tool_result"
+                    session.add(checkpoint)
             elif checkpoint.result_submission:
                 # Result submission is an internal idempotent transaction. This
                 # exception does not permit replaying any other started tool.
@@ -2049,6 +2177,15 @@ class WorkflowService:
                     "started_tools": [],
                 }
                 checkpoint.phase = "response"
+                for call in checkpoint.data.get("tool_calls", []):
+                    if call["status"] in {"started", "unknown"}:
+                        call["status"] = "intent"
+                        stored = await session.get(
+                            AgentWorkflowToolCall, call["record_id"]
+                        )
+                        if stored:
+                            stored.status = "intent"
+                            session.add(stored)
                 session.add(checkpoint)
             changed = await session.execute(
                 update(AgentWorkflowRun)
@@ -2120,6 +2257,17 @@ class WorkflowService:
             if cast(CursorResult, changed).rowcount != 1:
                 raise RoleAssetError("Execution ownership has changed", status=409)
             checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+            if checkpoint and (
+                data.get("model_calls", 0) < checkpoint.data.get("model_calls", 0)
+                or data["invocation_id"] != checkpoint.invocation_id
+                and data["phase"] != "request"
+                or data["invocation_id"] == checkpoint.invocation_id
+                and checkpoint.phase == "tools_applied"
+                and data != checkpoint.data
+            ):
+                raise RoleAssetError(
+                    "A newer execution checkpoint is already saved", status=409
+                )
             if checkpoint is None:
                 checkpoint = AgentWorkflowCheckpoint(
                     run_id=run_id,
@@ -2134,11 +2282,54 @@ class WorkflowService:
             checkpoint.data = data
             row = await session.get(AgentWorkflowRun, run_id)
             assert row is not None
-            checkpoint.result_submission = row.snapshot["definition"].get(
-                "output_contract"
-            ) is None and (data.get("response") or {}).get("tools_call_name") == [
-                "submit_task_result"
-            ]
+            checkpoint.result_submission = (data.get("response") or {}).get(
+                "tools_call_name"
+            ) == ["submit_task_result"]
+            for call_index, call in enumerate(data.get("tool_calls", [])):
+                previous = await session.get(AgentWorkflowToolCall, call["record_id"])
+                if previous:
+                    ranks = {
+                        "intent": 0,
+                        "started": 1,
+                        "unknown": 1,
+                        "result_saved": 2,
+                        "applied": 3,
+                    }
+                    if (
+                        previous.run_id != run_id
+                        or previous.attempt_id != attempt_id
+                        or previous.invocation_id != data["invocation_id"]
+                        or previous.call_id != call["call_id"]
+                        or previous.name != call["name"]
+                        or previous.args != call["args"]
+                        or ranks[call["status"]] < ranks[previous.status]
+                        or call["raw_results"][: len(previous.raw_results)]
+                        != previous.raw_results
+                        or previous.context_position is not None
+                        and previous.context_position != call["context_position"]
+                    ):
+                        raise RoleAssetError(
+                            "Tool call identity or saved result was reused", status=409
+                        )
+                else:
+                    previous = AgentWorkflowToolCall(
+                        record_id=call["record_id"],
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        invocation_id=data["invocation_id"],
+                        call_id=call["call_id"],
+                        call_index=call_index,
+                        name=call["name"],
+                        args=call["args"],
+                        execution_id=execution_id,
+                    )
+                previous.status = call["status"]
+                previous.execution_id = execution_id
+                if call["status"] != "intent" and previous.started_execution_id is None:
+                    previous.started_execution_id = execution_id
+                previous.raw_results = call["raw_results"]
+                previous.context_position = call["context_position"]
+                session.add(previous)
             session.add(checkpoint)
             session.add(
                 AgentWorkflowEvent(
@@ -2193,6 +2384,20 @@ class WorkflowService:
             )
             for run in abandoned:
                 run.status = "interrupted"
+                checkpoint = await session.get(AgentWorkflowCheckpoint, run.run_id)
+                if checkpoint:
+                    data = copy.deepcopy(checkpoint.data)
+                    for call in data.get("tool_calls", []):
+                        if call["status"] == "started":
+                            call["status"] = "unknown"
+                            stored = await session.get(
+                                AgentWorkflowToolCall, call["record_id"]
+                            )
+                            if stored:
+                                stored.status = "unknown"
+                                session.add(stored)
+                    checkpoint.data = data
+                    session.add(checkpoint)
                 session.add(run)
                 session.add(
                     AgentWorkflowEvent(

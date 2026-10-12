@@ -758,3 +758,55 @@ async def test_union_conditions_distinguish_booleans_from_numbers(
     assert [binding.node_id for binding in script.starts] == (
         ["first", "next"] if selected else ["first"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "intermediate_type", [["object", "null"], ["object", "string"], None]
+)
+@pytest.mark.parametrize("reference_kind", ["condition", "input"])
+async def test_nested_field_references_require_object_intermediates(
+    workflow_env, intermediate_type, reference_kind
+):
+    env = workflow_env
+    decision = {
+        "properties": {"approved": {"type": "boolean"}},
+        "required": ["approved"],
+    }
+    if intermediate_type is not None:
+        decision["type"] = intermediate_type
+    task = {
+        "id": "first",
+        "name": "First",
+        "member": "writer",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "First",
+        "output_contract": {
+            "type": "object",
+            "properties": {"decision": decision},
+            "required": ["decision"],
+        },
+    }
+    next_task = {**task, "id": "next", "output_contract": None}
+    edge = {"source": "first", "target": "next"}
+    if reference_kind == "condition":
+        edge["condition"] = {"field": "decision.approved", "value": True}
+    else:
+        next_task["inputs"] = {
+            "approved": {"task_id": "first", "field": "decision.approved"}
+        }
+    with pytest.raises(RoleAssetError) as invalid:
+        await env.service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Guaranteed nested fields",
+                    "tasks": [task, next_task],
+                    "edges": [edge],
+                }
+            },
+        )
+    assert invalid.value.fields[0]["code"] == (
+        "CONDITION" if reference_kind == "condition" else "REFERENCE"
+    )

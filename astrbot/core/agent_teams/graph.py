@@ -99,17 +99,24 @@ def field_schema(contract: dict | None, path: str) -> dict:
         visited: set[int] = set()
         properties = []
         required: set[str] = set()
+        object_types: set[str] | None = None
         while candidates:
             item = candidates.pop()
             if not isinstance(item, dict) or id(item) in visited:
                 continue
             visited.add(id(item))
+            kinds = item.get("type")
+            if kinds is not None:
+                kinds = set(kinds if isinstance(kinds, list) else [kinds])
+                object_types = kinds if object_types is None else object_types & kinds
             if name in item.get("properties", {}):
                 properties.append(item["properties"][name])
             required.update(item.get("required", []))
             candidates.extend(item.get("allOf", []))
             if "$ref" in item:
                 candidates.append(resolver.lookup(item["$ref"]).contents)
+        if object_types != {"object"}:
+            raise ValueError(f"Field {path} must traverse guaranteed object properties")
         if name not in required or not properties:
             raise ValueError(
                 f"Field {path} must be declared and required in the output contract"

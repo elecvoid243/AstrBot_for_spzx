@@ -1480,15 +1480,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         tool_call_result_blocks: list[ToolCallMessageSegment] = []
         logger.info(f"Agent 使用工具: {llm_response.tools_call_name}")
 
-        async def _append_tool_call_result(tool_call_id: str, content: str) -> None:
-            """Save protocol errors or empty returns that have no raw tool payload.
+        async def _append_tool_call_result(
+            tool_call_id: str, content: str, *, raw_result_saved: bool = False
+        ) -> None:
+            """Save distinct protocol results before appending model context.
 
             Args:
                 tool_call_id: Actual requested tool call identity.
                 content: Complete protocol result before follow-up notices.
+                raw_result_saved: This content represents an already saved raw result.
             """
             execution = current_team_execution.get()
-            if execution and execution.record_process and not result_observed:
+            if execution and execution.record_process and not raw_result_saved:
                 await execution.record_process(
                     uuid.uuid4().hex,
                     "tool_result",
@@ -1529,7 +1532,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             llm_response.tools_call_ids,
         ):
             tool_result_blocks_start = len(tool_call_result_blocks)
-            result_observed = False
             tool_call_streak = self._track_tool_call_streak(
                 func_tool_name,
                 func_tool_args,
@@ -1650,7 +1652,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 _final_resp: CallToolResult | None = None
                 async for resp in self._iter_tool_executor_results(executor):  # type: ignore
                     if isinstance(resp, CallToolResult):
-                        result_observed = True
                         execution = current_team_execution.get()
                         if execution and execution.record_process:
                             # Keep the original result before overflow materialization
@@ -1670,6 +1671,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             await _append_tool_call_result(
                                 func_tool_id,
                                 "The tool returned no content.",
+                                raw_result_saved=True,
                             )
                             continue
 
@@ -1737,6 +1739,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 + self._build_repeated_tool_call_guidance(
                                     func_tool_name, tool_call_streak
                                 ),
+                                raw_result_saved=True,
                             )
 
                     elif resp is None:

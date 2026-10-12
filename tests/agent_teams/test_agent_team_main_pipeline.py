@@ -70,6 +70,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_no_thinking_role",
         "v2_process_failure_role",
         "v2_tool_error_role",
+        "v2_partial_error_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -120,9 +121,36 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             parameters={"type": "object", "properties": {}},
         )
     ]
+    if mode == "v2_partial_error_role":
+
+        async def partial_then_error(event):
+            """Return partial evidence before a legal generator failure.
+
+            Args:
+                event: Actual pipeline event supplied by the tool executor.
+
+            Yields:
+                Two distinct pieces of incomplete evidence.
+
+            Raises:
+                RuntimeError: The final tool operation failed.
+            """
+            yield "Partial evidence only"
+            yield "Second partial evidence"
+            raise RuntimeError("FINAL_TOOL_FAILURE")
+
+        providers.llm_tools.func_list.append(
+            FunctionTool(
+                name="partial_then_error",
+                description="Return incomplete evidence before failing.",
+                parameters={"type": "object", "properties": {}},
+                handler=partial_then_error,
+            )
+        )
     model_started = asyncio.Event()
     model_cancelled = asyncio.Event()
     model_requests = []
+    observed_tool_messages = []
 
     class ScriptedProvider(Provider):
         """External model double observing actual prompts and requesting team tools."""
@@ -198,6 +226,20 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if message.get("role") == "system"
             )
             session = kwargs.get("session_id", "")
+            if mode == "v2_partial_error_role":
+                if not self.turns.get(session):
+                    self.turns[session] = 1
+                    return LLMResponse(
+                        role="tool",
+                        tools_call_name=["partial_then_error"],
+                        tools_call_args=[{}],
+                        tools_call_ids=["partial-1"],
+                    )
+                observed_tool_messages.extend(
+                    message["content"]
+                    for message in kwargs.get("contexts", [])
+                    if message.get("role") == "tool"
+                )
             if mode == "v2_tool_error_role" and not self.turns.get(session):
                 self.turns[session] = 1
                 return LLMResponse(
@@ -477,6 +519,8 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         )
         if request.func_tool is not None:
             request.func_tool.add_tool(providers.llm_tools.func_list[0])
+            if mode == "v2_partial_error_role":
+                request.func_tool.add_tool(providers.llm_tools.func_list[-1])
 
     star_handlers_registry.append(
         StarHandlerMetadata(
@@ -523,7 +567,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     if "_inherited" in mode
                     else "research-persona",
                     "skills": ["research-skill"],
-                    "tools": [],
+                    "tools": ["partial"] if mode == "v2_partial_error_role" else [],
                     "knowledge_bases": ["evidence"],
                 },
                 "installation": {
@@ -536,6 +580,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                             else {}
                         ),
                         "research-skill": "alpha",
+                        **(
+                            {"partial": "partial_then_error"}
+                            if mode == "v2_partial_error_role"
+                            else {}
+                        ),
                         "evidence": (
                             await knowledge.get_kb_by_name("research-evidence")
                         ).kb.kb_id,
@@ -749,6 +798,28 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 assert len(tool_results) == 1
                 assert tool_results[0]["data"]["id"] == "missing-1"
                 assert "not found" in tool_results[0]["data"]["result"]
+            if mode == "v2_partial_error_role":
+                assert len(observed_tool_messages) == 3
+                assert "Partial evidence only" in observed_tool_messages[0]
+                assert "Second partial evidence" in observed_tool_messages[1]
+                assert "FINAL_TOOL_FAILURE" in observed_tool_messages[2]
+                observer = WorkflowService(db, RoleAssetService(db))
+                reopened = await observer.get_run("alice", run["run_id"])
+                tool_results = [
+                    record["data"]
+                    for record in reopened["process"]
+                    if record["kind"] == "tool_result"
+                ]
+                assert len(tool_results) == 3
+                assert [result["id"] for result in tool_results] == ["partial-1"] * 3
+                assert tool_results[0]["raw_result"]["content"][0]["text"] == (
+                    "Partial evidence only"
+                )
+                assert tool_results[1]["raw_result"]["content"][0]["text"] == (
+                    "Second partial evidence"
+                )
+                assert tool_results[2]["raw_result"] is None
+                assert "FINAL_TOOL_FAILURE" in tool_results[2]["result"]
             assert current["snapshot"]["engine"] == "single_task_v2"
             assert current["snapshot"]["profile"]["test_profile"] == "research"
         finally:

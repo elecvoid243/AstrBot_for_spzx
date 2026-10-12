@@ -189,6 +189,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         "`{overflow_path}`. Use {read_tool_hint} to inspect it. "
         "Use a narrower window when reading large files."
     )
+    TOOL_IMAGE_NOTICE_TEMPLATE = (
+        "Image returned and cached at path='{file_path}'. "
+        "Review the image below. Use send_message_to_user to send it to the user if satisfied, "
+        "with type='image' and path='{file_path}'."
+    )
 
     def _get_persona_custom_error_message(self) -> str | None:
         """Read persona-level custom error message from event extras when available."""
@@ -491,6 +496,73 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "Saved tool capabilities have changed; recovery is blocked"
                 )
                 raise execution.recovery_error
+            # Rebuild required temporary output before any dependent model call.
+            # Older checkpoints retain the complete source in per-call raw results.
+            files = dict(saved.get("tool_result_files", {}))
+            for call in (
+                saved.get("tool_calls", []) if "tool_result_files" not in saved else []
+            ):
+                if call["status"] not in {"result_saved", "applied"}:
+                    continue
+                for raw, protocol in zip(call["raw_results"], call["protocol_results"]):
+                    _, separator, notice = protocol["content"].rpartition(
+                        self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.partition(
+                            "{overflow_path}"
+                        )[0]
+                    )
+                    if not separator:
+                        continue
+                    path = notice.partition("`. Use ")[0]
+                    if path in files:
+                        continue
+                    parts = []
+                    for index, item in enumerate(
+                        CallToolResult.model_validate(raw).content
+                    ):
+                        if isinstance(item, TextContent):
+                            parts.append(item.text)
+                        elif isinstance(item, EmbeddedResource) and isinstance(
+                            item.resource, TextResourceContents
+                        ):
+                            parts.append(item.resource.text)
+                        else:
+                            cached_image = self._cache_tool_image(
+                                item, call["call_id"], call["name"], index
+                            )
+                            parts.append(
+                                self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                    file_path=cached_image.file_path
+                                )
+                                if cached_image
+                                else "The tool has returned a data type that is not supported."
+                            )
+                    content = "\n\n".join(parts)
+                    if (
+                        self._tool_result_token_counter.count_tokens(
+                            [
+                                Message(
+                                    role="tool",
+                                    content=content,
+                                    tool_call_id=call["call_id"],
+                                )
+                            ]
+                        )
+                        > self.TOOL_RESULT_MAX_ESTIMATED_TOKENS
+                    ):
+                        files[path] = content
+            try:
+                for path, content in files.items():
+                    await self._write_tool_result_overflow_file(
+                        tool_call_id=Path(path).stem,
+                        content=content,
+                        overflow_path=Path(path),
+                    )
+            except (OSError, ValueError) as exc:
+                execution.recovery_error = CheckpointRecoveryError(
+                    f"Failed to restore saved tool output: {exc}"
+                )
+                raise execution.recovery_error from exc
+            saved["tool_result_files"] = files
             self.run_context.messages = bind_checkpoint_messages(saved["messages"])
             self.req.model = saved["model"]
             self.req.llm_params = saved["llm_params"]
@@ -596,6 +668,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "stats": self.stats.to_dict(),
                 "started_tools": [],
                 "tool_calls": [],
+                "tool_result_files": dict(
+                    (self._call_checkpoint or {}).get("tool_result_files", {})
+                ),
                 "response": None,
             }
         if self._call_checkpoint is None:
@@ -687,25 +762,44 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         *,
         tool_call_id: str,
         content: str,
+        overflow_path: Path | None = None,
     ) -> str:
+        """Write complete output at a new or previously saved temporary path.
+
+        Args:
+            tool_call_id: Tool identity used when naming a new file.
+            content: Complete output before preview truncation.
+            overflow_path: Original saved path when rebuilding required content.
+
+        Returns:
+            Absolute path to the complete readable output.
+
+        Raises:
+            ValueError: No output directory exists or the path escapes it.
+            OSError: The complete file cannot be written.
+        """
         if self.tool_result_overflow_dir is None:
             raise ValueError("tool_result_overflow_dir is not configured")
 
         overflow_dir = Path(self.tool_result_overflow_dir).resolve(strict=False)
-        safe_tool_call_id = (
-            "".join(
-                ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
-                for ch in tool_call_id
-            ).strip("._")
-            or "tool_call"
-        )
-        file_name = f"{safe_tool_call_id}_{uuid.uuid4().hex[:8]}.txt"
-        overflow_path = overflow_dir / file_name
+        if overflow_path is None:
+            safe_tool_call_id = (
+                "".join(
+                    ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+                    for ch in tool_call_id
+                ).strip("._")
+                or "tool_call"
+            )
+            file_name = f"{safe_tool_call_id}_{uuid.uuid4().hex[:8]}.txt"
+            overflow_path = overflow_dir / file_name
+        elif overflow_path.resolve(strict=False).parent != overflow_dir:
+            raise ValueError("Saved tool output is outside its temporary directory")
+        output_path = overflow_path
 
         def _run() -> str:
             overflow_dir.mkdir(parents=True, exist_ok=True)
-            overflow_path.write_text(content, encoding="utf-8")
-            return str(overflow_path)
+            output_path.write_text(content, encoding="utf-8")
+            return str(output_path)
 
         return await asyncio.to_thread(_run)
 
@@ -730,6 +824,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_call_id=tool_call_id,
                 content=content,
             )
+            if self._checkpoint_enabled and self._call_checkpoint is not None:
+                self._call_checkpoint.setdefault("tool_result_files", {})[
+                    overflow_path
+                ] = content
         except Exception as exc:
             logger.warning(
                 "Failed to spill oversized tool result for %s: %s",
@@ -2093,9 +2191,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 )
                                 assert cached_img is not None
                                 result_parts.append(
-                                    f"Image returned and cached at path='{cached_img.file_path}'. "
-                                    f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
-                                    f"with type='image' and path='{cached_img.file_path}'."
+                                    self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                        file_path=cached_img.file_path
+                                    )
                                 )
                                 # Yield image info for LLM visibility (will be handled in step())
                                 yield _HandleFunctionToolsResult.from_cached_image(
@@ -2119,9 +2217,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     )
                                     assert cached_img is not None
                                     result_parts.append(
-                                        f"Image returned and cached at path='{cached_img.file_path}'. "
-                                        f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
-                                        f"with type='image' and path='{cached_img.file_path}'."
+                                        self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                            file_path=cached_img.file_path
+                                        )
                                     )
                                     # Yield image info for LLM visibility
                                     yield _HandleFunctionToolsResult.from_cached_image(

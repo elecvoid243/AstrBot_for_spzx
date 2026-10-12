@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator", "submit_conflict_result", "submit_conflict_applied", "submit_conflict_pre", "overflow_result", "overflow_applied", "overflow_legacy_result", "overflow_legacy_applied", "overflow_request", "overflow_generator"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -72,6 +72,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
     """
     requests = []
     effects = []
+    file_reads = []
+    large_result = "Verified external evidence. " * 15000 + "COMPLETE_END"
     parameter_mode = scenario.startswith(("parameters", "repair"))
     repair_mode = scenario.startswith("repair")
 
@@ -91,13 +93,22 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             if self.path == "/tool":
                 effects.append(payload)
                 response = {"text": "Verified external evidence."}
+                if scenario.startswith("overflow"):
+                    response["text"] = large_result
                 if payload.get("part"):
                     response = {"text": "Partial verified evidence." if payload["part"] == "initial" else "Complete verified evidence."}
+                    if scenario == "overflow_generator" and payload["part"] == "initial":
+                        response["text"] = large_result
                 if scenario == "tool_image_protocol":
                     response = {"raw_result": {"content": [{"type": "text", "text": "Verified external evidence."}, {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=="}]}}
             else:
                 requests.append(payload)
                 context = json.dumps(payload["contexts"])
+                if scenario.startswith("overflow") and len(requests) == 2:
+                    message = next(message for message in payload["contexts"] if message.get("tool_call_id") == "evidence-original")
+                    path = Path(message["content"].split("written to `", 1)[1].split("`", 1)[0])
+                    assert path.resolve().parent == (tmp_path / "overflow").resolve()
+                    file_reads.append({"path": str(path), "content": path.read_text(encoding="utf-8") if path.is_file() else None})
                 if "submit-original" in context:
                     response = {"role": "assistant", "completion_text": "Submitted."}
                     if scenario.startswith("submit_conflict") and "submit-conflict" not in context:
@@ -133,7 +144,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                         response.pop("reasoning_signature")
                 if parameter_mode:
                     response["usage"] = {"input_other": 8, "input_cached": 2, "output": 2}
-            (tmp_path / "external-ledger.json").write_text(json.dumps({"requests": requests, "effects": effects}), encoding="utf-8")
+            (tmp_path / "external-ledger.json").write_text(json.dumps({"requests": requests, "effects": effects, "file_reads": file_reads}), encoding="utf-8")
             data = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -157,7 +168,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     assert time.monotonic() < deadline, (tmp_path / "first.log").read_text(encoding="utf-8")
                     time.sleep(0.05)
                 assert len(requests) == (3 if repair_mode or scenario.startswith(("submit_file", "submit_conflict")) else 2 if scenario.startswith("submit_") or parameter_mode else 1)
-                assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario == "completed_generator" else [{"value": "original-plan", "part": "initial"}] if scenario in {"partial_generator", "generator_error"} else [{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_")) or scenario == "parameters_tool_result" else [])
+                assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario in {"completed_generator", "overflow_generator"} else [{"value": "original-plan", "part": "initial"}] if scenario in {"partial_generator", "generator_error"} else [{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_", "overflow")) or scenario == "parameters_tool_result" else [])
                 worker.kill()
                 worker.wait(timeout=10)
             finally:
@@ -167,9 +178,26 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         if preview:
             subprocess.run([*command, "serve", scenario], cwd=root, check=True, env={**os.environ, "PYTHONUTF8": "1"})
             return
+        if scenario.startswith("overflow"):
+            overflow_dir = (tmp_path / "overflow").resolve()
+            spilled = list(overflow_dir.glob("*.txt"))
+            assert len(spilled) == 1
+            for path in spilled:
+                assert path.resolve().parent == overflow_dir
+                assert path.read_text(encoding="utf-8") == large_result
+                path.unlink()
+                assert not path.exists()
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario.startswith("overflow"):
+            assert len(file_reads) == 1
+            assert file_reads[0]["content"] is not None
+            assert file_reads[0]["content"] == large_result
+            assert file_reads[0]["content"].endswith("COMPLETE_END")
+            assert len([message for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]) == (2 if scenario == "overflow_generator" else 1)
+            assert evidence["before"]["tool_calls"][0]["raw_results"][0]["content"][0]["text"] == large_result
+            assert evidence["after"]["tool_calls"][0]["raw_results"] == evidence["before"]["tool_calls"][0]["raw_results"]
         if scenario.startswith("submit_conflict"):
             before = next(call for call in evidence["before"]["tool_calls"] if call["call_id"] == "submit-conflict")
             after = next(call for call in evidence["after"]["tool_calls"] if call["call_id"] == "submit-conflict")
@@ -313,7 +341,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert evidence["parent"]["status"] == "completed"
         if scenario == "concurrent":
             assert evidence["recovery_errors"] == [409]
-        assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario == "completed_generator" else [{"value": "original-plan"}, {"value": "after-submission"}] if scenario.startswith("submit_mixed") else [{"value": "original-plan"}])
+        assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario in {"completed_generator", "overflow_generator"} else [{"value": "original-plan"}, {"value": "after-submission"}] if scenario.startswith("submit_mixed") else [{"value": "original-plan"}])
         if scenario == "completed_generator":
             call = evidence["before"]["tool_calls"][0]
             assert call["status"] == "result_saved"

@@ -64,6 +64,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         "computer_use_runtime": "none", "display_reasoning_text": False,
     })
     config["provider_settings"]["file_extract"]["enable"] = False
+    if scenario.startswith("overflow"):
+        config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
     if scenario.startswith(("parameters", "repair")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
@@ -122,8 +124,28 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator"} else external_tool,
+        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator", "overflow_generator"} else external_tool,
     )]
+    if scenario.startswith("overflow"):
+        async def read_saved_text(event, path):
+            """Read the complete text through the enabled file tool boundary.
+
+            Args:
+                event: Actual member event.
+                path: Saved tool output path supplied by the model.
+
+            Returns:
+                The complete original tool text.
+            """
+            return Path(path).read_text(encoding="utf-8")
+
+        providers.llm_tools.func_list.append(FunctionTool(
+            name="astrbot_file_read_tool", description="Read a saved text file.",
+            parameters={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            handler=read_saved_text,
+        ))
+        from astrbot.core import astr_main_agent
+        monkeypatch.setattr(astr_main_agent, "get_astrbot_system_tmp_path", lambda: str(folder / "overflow"))
 
     class RecordedProvider(Provider):
         """External HTTP model boundary with ledger in the parent process."""
@@ -208,6 +230,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         """
         request.system_prompt += "\nprofile=" + context.get_config().get("test_profile", "")
         request.func_tool.add_tool(providers.llm_tools.func_list[0])
+        if scenario.startswith("overflow"):
+            request.func_tool.add_tool(providers.llm_tools.func_list[1])
         if action == "start":
             request.extra_user_content_parts.extend([
                 TextPart(text="Temporary original framing.").mark_as_temp(),
@@ -234,7 +258,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     roles = RoleAssetService(db, lifecycle)
     service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
     if action == "start":
-        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
+        if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
                 """Construct a pre-T08 saved response through the real storage seam.
 
@@ -244,7 +268,9 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     instances: Explicitly flushed instances, if supplied.
                 """
                 for checkpoint in [*session.new, *session.dirty]:
-                    if isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
+                    if isinstance(checkpoint, AgentWorkflowCheckpoint) and scenario.startswith("overflow_legacy"):
+                        checkpoint.data = {key: value for key, value in checkpoint.data.items() if key != "tool_result_files"}
+                    elif isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
                         checkpoint.data = {**{key: value for key, value in checkpoint.data.items() if key != "tool_calls"}, "format_version": 1}
                         session.info["legacy_response_run_id"] = checkpoint.run_id
                 # Autoflush can persist the checkpoint before its call rows are added.
@@ -265,6 +291,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
+                if scenario.startswith("overflow") and scenario != "overflow_request" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario == "overflow_request" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request" and row.data["model_calls"] == 2:
+                    session.info["kill_boundary"] = row.run_id
                 if scenario == "submit_conflict_result" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "submission-conflict":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"submit_conflict_applied", "submit_conflict_pre"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "response") and row.data["response"]["id"] == "submission-conflict":
@@ -308,8 +338,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
         role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence"], "max_steps": 4},
-            "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence"}},
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4},
+            "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
         })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
         if scenario.startswith(("submit_custom", "submit_file")):

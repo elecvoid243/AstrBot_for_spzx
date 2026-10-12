@@ -2034,8 +2034,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 else "idempotency_key"
                 if contract.idempotency_key_arg
                 else "safe_retry",
+                "protocol_before": copy.deepcopy(call["protocol_results"]),
             }
         )
+        # Retain the old protocol as evidence while rebuilding it from the
+        # verified live sequence. Raw output and process identities stay intact.
+        call["protocol_results"] = []
         await self._save_call_checkpoint("tool_progress")
         return True
 
@@ -2143,6 +2147,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 else None
             )
             reused = call_state is not None and call_state["status"] == "result_saved"
+            retry_prefix: list[dict] | None = None
             if call_state is not None and call_state["status"] in {
                 "started",
                 "unknown",
@@ -2156,6 +2161,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     unresolved.append(func_tool_id)
                     continue
                 reused = call_state["status"] == "result_saved"
+                if not reused:
+                    retry_prefix = [
+                        CallToolResult.model_validate(raw).model_dump(mode="json")
+                        for raw in call_state["raw_results"]
+                    ]
             if reused and call_state and call_state["protocol_results"]:
                 execution = current_team_execution.get()
                 if execution and execution.record_process:
@@ -2343,14 +2353,36 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     if reused and call_state
                     else None,
                 ):  # type: ignore
+                    known_result = retry_prefix is not None and replay_index < len(
+                        retry_prefix
+                    )
+                    if (
+                        retry_prefix is not None
+                        and known_result
+                        and (
+                            not isinstance(resp, CallToolResult)
+                            or resp.model_dump(mode="json")
+                            != retry_prefix[replay_index]
+                        )
+                    ):
+                        assert call_state is not None
+                        call_state["recovery"]["retries"][-1]["conflict"] = {
+                            "index": replay_index,
+                            "reason": "Live retry output conflicts with saved partial output.",
+                            "result": resp.model_dump(mode="json")
+                            if isinstance(resp, CallToolResult)
+                            else repr(resp),
+                        }
+                        tool_failed = True
+                        break
                     if isinstance(resp, CallToolResult):
                         raw_index = (
                             len(call_state["raw_results"])
-                            if call_state and not reused
+                            if call_state and not reused and not known_result
                             else replay_index
                         )
                         replay_index += 1
-                        if call_state is not None and not reused:
+                        if call_state is not None and not reused and not known_result:
                             call_state["raw_results"].append(
                                 resp.model_dump(mode="json")
                             )
@@ -2489,7 +2521,22 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             ),
                         )
 
-                if call_state is not None and not call_state["protocol_results"]:
+                if (
+                    retry_prefix is not None
+                    and replay_index < len(retry_prefix)
+                    and not tool_failed
+                ):
+                    assert call_state is not None
+                    call_state["recovery"]["retries"][-1]["conflict"] = {
+                        "index": replay_index,
+                        "reason": "Live retry ended before reproducing saved partial output.",
+                    }
+                    tool_failed = True
+                if (
+                    call_state is not None
+                    and not call_state["protocol_results"]
+                    and not tool_failed
+                ):
                     await _append_tool_call_result(
                         func_tool_id,
                         "The tool returned no content.",
@@ -2512,18 +2559,25 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_failed = (
                     call_state is not None and call_state["status"] == "started"
                 )
-                await _append_tool_call_result(
-                    func_tool_id,
-                    f"error: {e!s}"
-                    + self._build_repeated_tool_call_guidance(
-                        func_tool_name, tool_call_streak
-                    ),
-                )
+                if retry_prefix is not None and call_state is not None:
+                    call_state["recovery"]["retries"][-1]["error"] = str(e)
+                else:
+                    await _append_tool_call_result(
+                        func_tool_id,
+                        f"error: {e!s}"
+                        + self._build_repeated_tool_call_guidance(
+                            func_tool_name, tool_call_streak
+                        ),
+                    )
             finally:
                 if invocation_token is not None:
                     current_tool_invocation.reset(invocation_token)
 
             if call_state is not None and not reused:
+                if tool_failed and retry_prefix is not None:
+                    call_state["protocol_results"] = copy.deepcopy(
+                        call_state["recovery"]["retries"][-1]["protocol_before"]
+                    )
                 call_state["status"] = "unknown" if tool_failed else "result_saved"
                 await self._save_call_checkpoint(
                     "tool_progress" if tool_failed else "tool_result"

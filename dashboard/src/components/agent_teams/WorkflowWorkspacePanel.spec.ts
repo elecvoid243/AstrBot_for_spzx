@@ -113,6 +113,213 @@ Object.assign(stubs, {
 
 describe("single-task workflow workspace", () => {
   it.each(["success", "failure"])(
+    "keeps recovery and resolution owned by their selected task after an older %s",
+    async (outcome) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const stopped = {
+        ...run,
+        status: "blocked",
+        cursor: 10,
+        recovery: { available: true, boundary: "tools_started" },
+        tool_calls: [
+          {
+            record_id: "call-one",
+            call_id: "external-one",
+            name: "publish",
+            status: "unknown",
+            recovery: {},
+            available_actions: ["retry"],
+          },
+        ],
+      };
+      const second = {
+        ...stopped,
+        run_id: "run-2",
+        snapshot: {
+          ...run.snapshot,
+          definition: { ...asset.definition, name: "Second report" },
+        },
+        tool_calls: [{ ...stopped.tool_calls[0], record_id: "call-two" }],
+      };
+      api.runs.mockResolvedValue({
+        runs: [runOverview, { ...runOverview, run_id: "run-2" }],
+      });
+      api.run.mockImplementation(async (id) =>
+        id === "run-1" ? stopped : second,
+      );
+      let finishFirst!: (value: any) => void;
+      let failFirst!: (error: Error) => void;
+      let finishSecond!: (value: any) => void;
+      const firstRecovery = new Promise((resolve, reject) => {
+        finishFirst = resolve;
+        failFirst = reject;
+      });
+      const secondRecovery = new Promise((resolve) => {
+        finishSecond = resolve;
+      });
+      api.recover.mockImplementation((id) =>
+        id === "run-1" ? firstRecovery : secondRecovery,
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+        let form = wrapper.get('[data-testid="tool-resolution"]');
+        await form.get("select").setValue("retry");
+        await form
+          .get('[data-testid="resolution-evidence"]')
+          .setValue("Owner chose a retry.");
+        expect(form.get("button").attributes("disabled")).toBeDefined();
+        await form.get("button").trigger("click");
+        expect(api.resolveTool).not.toHaveBeenCalled();
+        await wrapper
+          .findAll("button")
+          .filter((button) => button.text() === "v2.details")[1]
+          .trigger("click");
+        await flushPromises();
+        await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+        expect(api.recover).toHaveBeenCalledTimes(2);
+        if (outcome === "success")
+          finishFirst({ ...stopped, status: "completed" });
+        else failFirst(new Error("Old recovery failed"));
+        await flushPromises();
+        form = wrapper.get('[data-testid="tool-resolution"]');
+        await form.get("select").setValue("retry");
+        await form
+          .get('[data-testid="resolution-evidence"]')
+          .setValue("Owner chose the second retry.");
+        expect(form.get("button").attributes("disabled")).toBeDefined();
+        await form.get("button").trigger("click");
+        expect(api.resolveTool).not.toHaveBeenCalled();
+        expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+          "Second report",
+        );
+        expect(wrapper.text()).not.toContain("Old recovery failed");
+        finishSecond(second);
+        await flushPromises();
+        form = wrapper.get('[data-testid="tool-resolution"]');
+        await form.get("select").setValue("retry");
+        await form
+          .get('[data-testid="resolution-evidence"]')
+          .setValue("Owner chose the second retry.");
+        expect(form.get("button").attributes("disabled")).toBeUndefined();
+        api.resolveTool.mockResolvedValueOnce({
+          ...second,
+          status: "running",
+          tool_calls: [],
+        });
+        await form.get("button").trigger("click");
+        await flushPromises();
+        expect(api.resolveTool).toHaveBeenCalledTimes(1);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+  it.each([
+    ["runs", "success"],
+    ["events", "success"],
+    ["runs", "failure"],
+    ["events", "failure"],
+  ])(
+    "resumes polling after resolution supersedes a pending %s read (%s)",
+    async (phase, outcome) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const stopped = {
+        ...run,
+        cursor: 10,
+        status: "blocked",
+        tool_calls: [
+          {
+            record_id: "unknown-one",
+            call_id: "call-one",
+            name: "publish",
+            status: "unknown",
+            recovery: {},
+            available_actions: ["retry"],
+          },
+        ],
+      };
+      api.run.mockResolvedValue(stopped);
+      api.events.mockResolvedValue({
+        cursor: 10,
+        reset: false,
+        events: [],
+        snapshot: null,
+      });
+      let finishRead!: (value: any) => void;
+      const pendingRead = new Promise((resolve) => {
+        finishRead = resolve;
+      });
+      let finishResolution!: (value: any) => void;
+      let failResolution!: (error: Error) => void;
+      api.resolveTool.mockReturnValue(
+        new Promise((resolve, reject) => {
+          finishResolution = resolve;
+          failResolution = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        api[phase as "runs" | "events"].mockReturnValueOnce(pendingRead);
+        await vi.advanceTimersByTimeAsync(2000);
+        const form = wrapper.get('[data-testid="tool-resolution"]');
+        await form.get("select").setValue("retry");
+        await form
+          .get('[data-testid="resolution-evidence"]')
+          .setValue("Owner confirmed a new execution is required.");
+        await form.get("button").trigger("click");
+        await flushPromises();
+        expect(api.resolveTool).toHaveBeenCalledTimes(1);
+        finishRead(
+          phase === "runs"
+            ? { runs: [runOverview] }
+            : { cursor: 10, reset: false, events: [], snapshot: null },
+        );
+        await flushPromises();
+        if (outcome === "success") finishResolution({ ...run, cursor: 11 });
+        else failResolution(new Error("Resolution temporarily unavailable"));
+        await flushPromises();
+        const readsBefore = api.events.mock.calls.length;
+        api.events.mockResolvedValue({
+          cursor: 12,
+          reset: false,
+          events: [{ cursor: 12 }],
+          snapshot: {
+            ...run,
+            cursor: 12,
+            status: "completed",
+            result: { text: "Resolved final evidence" },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(4000);
+        await flushPromises();
+        expect(api.events.mock.calls.length).toBeGreaterThan(readsBefore);
+        expect(wrapper.get('[data-testid="result-text"]').text()).toBe(
+          "Resolved final evidence",
+        );
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+  it.each(["success", "failure"])(
     "keeps resolution loading and a late %s response with its original run",
     async (outcome) => {
       const router = createRouter({

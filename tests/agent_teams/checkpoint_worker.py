@@ -57,6 +57,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     monkeypatch = MonkeyPatch()
     db = SQLiteDatabase(str(folder / "pipeline.db"))
     await db.initialize()
+    live_partial = "partial" in scenario and scenario.startswith(("idempotent_", "safe_", "reconcile_partial_not_executed"))
     preferences = SharedPreferences(db)
     config = AstrBotConfig(str(folder / "config.json"), copy.deepcopy(DEFAULT_CONFIG))
     config["provider_settings"].update({
@@ -107,12 +108,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             data = response.json()
             return CallToolResult.model_validate(data["raw_result"]) if "raw_result" in data else data["text"]
 
-    async def external_stream(event, value):
+    async def external_stream(event, value, idempotency_key=None):
         """Yield external output before a later effect or uncertain completion.
 
         Args:
             event: Actual normal pipeline event.
             value: Frozen tool argument.
+            idempotency_key: Adapter-declared identity for a recoverable live stream.
 
         Yields:
             Separate partial and final external results.
@@ -123,6 +125,15 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         if scenario == "overflow_legacy_unaligned":
             yield CallToolResult.model_validate({"content": [{"type": "resource_link", "name": "Progress reference", "uri": "https://example.org/evidence"}]})
         async with httpx.AsyncClient() as client:
+            if live_partial:
+                from astrbot.core.agent.tool import current_tool_invocation
+                payload = {"value": value, "identity": current_tool_invocation.get()}
+                if idempotency_key:
+                    payload["idempotency_key"] = idempotency_key
+                response = await client.post(endpoint + "/tool", json=payload)
+                for part in response.json()["sequence"]:
+                    yield part
+                return
             if scenario.startswith("reconcile_partial"):
                 from astrbot.core.agent.tool import current_tool_invocation
                 identity = {"identity": current_tool_invocation.get()}
@@ -140,7 +151,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_stream if scenario.startswith("reconcile_partial") or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
+        handler=external_stream if scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
     if scenario.startswith("reconcile_"):
         from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
@@ -296,6 +307,31 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     lifecycle = SimpleNamespace(conversation_manager=conversations, provider_manager=providers, persona_mgr=personas, astrbot_config_mgr=acm, kb_manager=knowledge)
     roles = RoleAssetService(db, lifecycle)
     service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
+    if action == "recover_first":
+        def retry_flush(session, flush_context):
+            """Select a complete retried result transaction for a second crash.
+
+            Args:
+                session: Actual persistent workflow transaction.
+                flush_context: SQLAlchemy flush context.
+            """
+            for row in [*session.new, *session.dirty]:
+                if isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "plan-original":
+                    session.info["retry_boundary"] = True
+
+        def retry_commit(session):
+            """Wait at a committed result boundary until externally terminated.
+
+            Args:
+                session: Transaction that has finished committing.
+            """
+            if session.info.pop("retry_boundary", None):
+                (folder / "second-ready.json").write_text("ready", encoding="utf-8")
+                while True:
+                    time.sleep(1)
+
+        sql_event.listen(Session, "after_flush", retry_flush)
+        sql_event.listen(Session, "after_commit", retry_commit)
     if action == "start":
         if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
@@ -354,7 +390,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
-                if (scenario.startswith("reconcile_partial") or scenario in {"partial_generator", "manual_retry_partial"}) and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
+                if (scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial"}) and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and len(row.data["tool_calls"][0]["protocol_results" if live_partial and not scenario.endswith("raw") else "raw_results"]) >= (2 if scenario.endswith("short") else 1):
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "completed_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id

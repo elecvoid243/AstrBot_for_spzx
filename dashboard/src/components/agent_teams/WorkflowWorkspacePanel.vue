@@ -169,7 +169,7 @@
               v-if="detailRun.recovery.available"
               variant="tonal"
               class="mt-3"
-              :loading="recovering"
+              :loading="recovering === detailRun.run_id"
               :disabled="resolving?.taskId === detailRun.run_id"
               data-testid="recover-attempt"
               @click="recoverAttempt"
@@ -284,7 +284,10 @@
           </v-expansion-panels>
           <WorkflowRunProcess
             :run="detailRun"
-            :busy="resolving?.taskId === detailRun.run_id"
+            :busy="
+              resolving?.taskId === detailRun.run_id ||
+              recovering === detailRun.run_id
+            "
             @resolve="resolveTool"
           />
         </v-card-text>
@@ -541,7 +544,7 @@ const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
-const recovering = ref(false);
+const recovering = ref<string | null>(null);
 const resolving = ref<{ taskId: string; recordId: string } | null>(null);
 const selectedTaskNode = ref<string | null>(null);
 const detailRun = computed(
@@ -857,7 +860,7 @@ async function openRun(runId: string) {
 
 async function recoverAttempt() {
   if (
-    recovering.value ||
+    recovering.value === detailRun.value?.run_id ||
     openingRun ||
     !detailRun.value?.recovery?.available ||
     resolving.value?.taskId === detailRun.value.run_id
@@ -866,7 +869,7 @@ async function recoverAttempt() {
   const taskId = detailRun.value.run_id;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
-  recovering.value = true;
+  recovering.value = taskId;
   loading.value = true;
   try {
     error.value = "";
@@ -879,17 +882,24 @@ async function recoverAttempt() {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
-    recovering.value = false;
+    if (recovering.value === taskId) recovering.value = null;
   }
 }
 
 async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   const taskId = detailRun.value?.run_id;
-  if (!taskId || openingRun || resolving.value?.taskId === taskId) return;
+  if (
+    !taskId ||
+    openingRun ||
+    recovering.value === taskId ||
+    resolving.value?.taskId === taskId
+  )
+    return;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
   const operation = { taskId, recordId };
   resolving.value = operation;
+  loading.value = true;
   try {
     error.value = "";
     const resolved = await workflowAssetsApi.resolveTool(
@@ -904,6 +914,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
+    if (read === runRead) loading.value = false;
     if (
       resolving.value?.taskId === operation.taskId &&
       resolving.value?.recordId === operation.recordId

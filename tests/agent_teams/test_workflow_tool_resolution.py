@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("scenario", ["manual_retry", "manual_retry_late", "manual_retry_key", "manual_retry_partial", "manual_batch", "manual_retry_commit", "manual_graph", "manual_save_failure", "manual_result", "manual_failure", "manual_http", "reconcile_succeeded", "reconcile_again", "reconcile_failed", "reconcile_partial", "reconcile_partial_failed", "reconcile_partial_conflict", "reconcile_unknown", "reconcile_error", "reconcile_save_failure", "idempotent_retry", "safe_retry"])
+@pytest.mark.parametrize("scenario", ["manual_retry", "manual_retry_late", "manual_retry_key", "manual_retry_partial", "manual_batch", "manual_retry_commit", "manual_graph", "manual_save_failure", "manual_result", "manual_failure", "manual_http", "reconcile_succeeded", "reconcile_again", "reconcile_failed", "reconcile_partial", "reconcile_partial_failed", "reconcile_partial_conflict", "reconcile_unknown", "reconcile_error", "reconcile_save_failure", "idempotent_retry", "safe_retry", "idempotent_partial_twokill", "safe_partial_twokill", "idempotent_partial_raw", "idempotent_partial_conflict", "safe_partial_conflict", "idempotent_partial_incomplete", "safe_partial_incomplete", "reconcile_partial_not_executed_twokill", "reconcile_partial_not_executed_conflict", "safe_partial_short"])
 def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, scenario, preview=False):
     """Observe effects outside a killed real-pipeline worker and resume publicly.
 
@@ -21,6 +21,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
         scenario: Declared capability or explicit human decision to exercise.
         preview: Keep the actual dashboard and external service available for UI QA.
     """
+    live_partial = "partial" in scenario and scenario.startswith(("idempotent_", "safe_", "reconcile_partial_not_executed"))
     effects = []
     requests = []
     queries = []
@@ -45,6 +46,16 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                 if not payload.get("idempotency_key") or not any(item.get("idempotency_key") == payload["idempotency_key"] for item in effects):
                     effects.append(payload)
                 response = {"text": "Verified external evidence."}
+                if live_partial:
+                    response["sequence"] = ["Partial verified evidence.", "Complete verified evidence."]
+                    if scenario.endswith("short"):
+                        response["sequence"].insert(1, "Second partial evidence.")
+                    if len(deliveries) == 2 and scenario.endswith("conflict"):
+                        response["sequence"][0] = "Conflicting partial evidence."
+                    elif len(deliveries) == 2 and scenario.endswith("incomplete"):
+                        response["sequence"] = []
+                    elif len(deliveries) == 2 and scenario.endswith("short"):
+                        response["sequence"] = response["sequence"][:1]
                 if payload.get("part"):
                     response["text"] = "Partial verified evidence." if payload["part"] == "initial" else "Complete verified evidence."
                 if scenario == "manual_retry_late" and len(deliveries) == 2:
@@ -59,6 +70,8 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                     response = {"status": "unknown", "evidence": "Remote operation is still unresolved.", "results": []}
                 elif scenario == "reconcile_failed":
                     response = {"status": "failed", "evidence": "Remote ledger proves rejection.", "results": [{"isError": True, "content": [{"type": "text", "text": "External operation rejected: verified receipt."}]}]}
+                elif scenario.startswith("reconcile_partial_not_executed"):
+                    response = {"status": "not_executed", "evidence": "External ledger authorizes a new live execution.", "results": []}
                 elif scenario.startswith("reconcile_partial"):
                     failed = scenario == "reconcile_partial_failed"
                     response = {"status": "failed" if failed else "succeeded", "evidence": "Remote ledger contains the complete original output sequence.", "results": [
@@ -123,9 +136,39 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                 decision_process.kill()
                 decision_process.wait(timeout=10)
             assert len(effects) == 1
+        if scenario.endswith("twokill"):
+            interim = subprocess.Popen([*command, "recover_first", scenario], cwd=root, stdout=log, stderr=subprocess.STDOUT, env=environment)
+            try:
+                deadline = time.monotonic() + 45
+                while not (tmp_path / "second-ready.json").exists() and time.monotonic() < deadline:
+                    assert interim.poll() is None, (tmp_path / "worker.log").read_text(encoding="utf-8")
+                    time.sleep(0.02)
+                assert (tmp_path / "second-ready.json").exists()
+            finally:
+                interim.kill()
+                interim.wait(timeout=10)
         recovered = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=45, env=environment)
         assert recovered.returncode == 0, recovered.stdout + recovered.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if live_partial and scenario.endswith(("conflict", "incomplete", "short")):
+            assert evidence["after"]["status"] == "blocked"
+            blocked = evidence["after"]["tool_calls"][0]
+            assert blocked["status"] == "unknown"
+            assert blocked["raw_results"] == evidence["before"]["tool_calls"][0]["raw_results"]
+            conflict = blocked["recovery"]["retries"][0]["conflict"]
+            assert conflict["index"] == (1 if scenario.endswith("short") else 0)
+            if scenario.endswith("conflict"):
+                assert conflict["result"]["content"][0]["text"] == "Conflicting partial evidence."
+            elif scenario.endswith("incomplete"):
+                assert "saved partial output" in conflict["reason"]
+                assert conflict["result"] == "None"
+            else:
+                assert "ended before" in conflict["reason"]
+            assert len(requests) == 1 and len(deliveries) == 2
+            retried = subprocess.run([*command, "recover_verified", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=45, env=environment)
+            assert retried.returncode == 0, retried.stdout + retried.stderr
+            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+            assert evidence["before"]["tool_calls"][0]["recovery"]["retries"][0]["conflict"] == conflict
         if scenario in {"manual_save_failure", "reconcile_save_failure"}:
             assert len(effects) == len(deliveries) == len(requests) == 1
             assert evidence["after"]["status"] in {"interrupted", "failed"}
@@ -151,7 +194,29 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
         calls = [call for call in evidence["after"]["tool_calls"] if call["name"] == "external_evidence"]
-        if scenario.startswith("manual_retry") or scenario == "manual_save_failure":
+        if live_partial:
+            call = calls[0]
+            expected = ["Partial verified evidence.", "Complete verified evidence."]
+            if scenario.endswith("short"):
+                expected.insert(1, "Second partial evidence.")
+            assert [raw["content"][0]["text"] for raw in call["raw_results"]] == expected
+            assert [block["content"] for block in call["recovery"]["retries"][0]["protocol_before"]] == ([] if scenario.endswith("raw") else expected[:-1])
+            # A third authorized retry retains normal repeated-call guidance.
+            assert [message["content"].split("\n\n[SYSTEM NOTICE]", 1)[0] for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"] == expected
+            records = [record["data"]["raw_result"]["content"][0]["text"] for record in evidence["after"]["process"] if record["kind"] == "tool_result" and record["data"]["name"] == "external_evidence" and record["data"].get("raw_result")]
+            assert records == expected
+            assert len(calls) == 1 and call["status"] == "applied"
+            assert call["raw_results"][0] == evidence["before"]["tool_calls"][0]["raw_results"][0]
+            delivery_count = 3 if scenario.endswith(("conflict", "incomplete", "short")) else 2
+            assert len(deliveries) == delivery_count
+            assert len(effects) == (1 if scenario.startswith("idempotent_") else delivery_count)
+            assert all(item["identity"] == call["record_id"] for item in deliveries)
+            if scenario.startswith("idempotent_"):
+                assert all(item["idempotency_key"] == call["record_id"] for item in deliveries)
+            if scenario.startswith("reconcile_"):
+                assert len(queries) == delivery_count - 1
+                assert all(item["identity"] == call["record_id"] for item in queries)
+        elif scenario.startswith("manual_retry") or scenario == "manual_save_failure":
             assert len(calls) == 2
             assert calls[0]["status"] == "unknown"
             assert calls[0]["raw_results"] == ([] if scenario != "manual_retry_partial" else evidence["before"]["tool_calls"][0]["raw_results"])

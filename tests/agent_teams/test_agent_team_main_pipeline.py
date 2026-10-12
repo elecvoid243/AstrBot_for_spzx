@@ -771,13 +771,25 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "correction_context": True,
                 }
             else:
-                assert current["status"] == ("failed" if mode == "v2_process_failure_role" else "awaiting_result"), current
+                expected_status = {
+                    "v2_process_failure_role": "failed",
+                    "v2_partial_error_role": "blocked",
+                }.get(mode, "awaiting_result")
+                assert current["status"] == expected_status, current
                 with pytest.raises(ValueError, match="no completed result"):
                     await service.get_result("alice", run["run_id"])
-            assert (
-                current["state"]["response"]["attempt_id"] == run["state"]["attempt_id"]
-            )
-            if mode in {"v2_failing_role", "v2_process_failure_role"}:
+            if mode == "v2_partial_error_role":
+                assert current["state"]["response"] is None
+            else:
+                assert (
+                    current["state"]["response"]["attempt_id"]
+                    == run["state"]["attempt_id"]
+                )
+            if mode in {
+                "v2_failing_role",
+                "v2_process_failure_role",
+                "v2_partial_error_role",
+            }:
                 assert model_requests == ["research-model"]
                 assert not any(
                     event["kind"] == "result.accepted" for event in current["events"]
@@ -799,12 +811,19 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 assert tool_results[0]["data"]["id"] == "missing-1"
                 assert "not found" in tool_results[0]["data"]["result"]
             if mode == "v2_partial_error_role":
-                assert len(observed_tool_messages) == 3
-                assert "Partial evidence only" in observed_tool_messages[0]
-                assert "Second partial evidence" in observed_tool_messages[1]
-                assert "FINAL_TOOL_FAILURE" in observed_tool_messages[2]
+                assert observed_tool_messages == []
                 observer = WorkflowService(db, RoleAssetService(db))
                 reopened = await observer.get_run("alice", run["run_id"])
+                assert reopened["recovery"]["available"] is False
+                assert len(reopened["tool_calls"]) == 1
+                call = reopened["tool_calls"][0]
+                assert call["attempt_id"] == run["state"]["attempt_id"]
+                assert call["status"] == "unknown"
+                assert call["context_position"] is None
+                assert [part["content"][0]["text"] for part in call["raw_results"]] == [
+                    "Partial evidence only",
+                    "Second partial evidence",
+                ]
                 tool_results = [
                     record["data"]
                     for record in reopened["process"]

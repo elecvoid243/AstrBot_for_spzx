@@ -414,6 +414,7 @@
       "response": "Complete model response saved; reuse its original tool plan.",
       "tools_started": "Tool execution has started.",
       "tool_result": "Tool result saved; recover without repeating its external effect.",
+      "tool_progress": "Tool output saved; execution completion is not confirmed.",
       "tools_applied": "Tool results applied to context; continue the next model step.",
       "none": "No resumable execution checkpoint."
     }

@@ -32,7 +32,7 @@ from astrbot.core.agent.call_checkpoint import (
 )
 from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, ThinkPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.agent.tool_image_cache import tool_image_cache
+from astrbot.core.agent.tool_image_cache import CachedImage, tool_image_cache
 from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
     ProcessPersistenceError,
@@ -602,6 +602,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             raise ProcessPersistenceError(
                 "Model request has no saved invocation identity"
             )
+        self._call_checkpoint["format_version"] = 2
         self._call_checkpoint["phase"] = phase
         if response is not None:
             self._call_checkpoint["response"] = dump_call_response(response)
@@ -1240,6 +1241,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self._reused_response = False
             if getattr(self, "_reused_parent_response", False):
                 return
+            if self._call_checkpoint and "tool_calls" not in self._call_checkpoint:
+                # Upgrade an original T07 response without replanning its calls.
+                self._call_checkpoint["format_version"] = 2
+                await self._save_call_checkpoint("response", response=response)
         else:
             await self._save_call_checkpoint("response", response=response)
         execution = current_team_execution.get()
@@ -1712,6 +1717,40 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 async for resp in self.step():
                     yield resp
 
+    @staticmethod
+    def _cache_tool_image(
+        content_item: T.Any, tool_call_id: str, tool_name: str, index: int
+    ) -> CachedImage | None:
+        """Materialize image bytes identically for live and saved tool results.
+
+        Args:
+            content_item: Original MCP image or embedded image resource.
+            tool_call_id: Call identity used by the existing image cache.
+            tool_name: Actual tool that produced this image.
+            index: Content position within the original result.
+
+        Returns:
+            A cached image, or None for non-image content.
+        """
+        if isinstance(content_item, ImageContent):
+            data, mime_type = content_item.data, content_item.mimeType
+        elif (
+            isinstance(content_item, EmbeddedResource)
+            and isinstance(content_item.resource, BlobResourceContents)
+            and content_item.resource.mimeType
+            and content_item.resource.mimeType.startswith("image/")
+        ):
+            data, mime_type = content_item.resource.blob, content_item.resource.mimeType
+        else:
+            return None
+        return tool_image_cache.save_image(
+            base64_data=data,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            index=index,
+            mime_type=mime_type or "image/png",
+        )
+
     async def _handle_function_tools(
         self,
         req: ProviderRequest,
@@ -1766,9 +1805,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     call_state["process_records"].append(
                         {"id": record_id, "data": record_data}
                     )
-                call_state["status"] = "result_saved"
-                await self._save_call_checkpoint("tool_result")
-            if execution and execution.record_process and not raw_result_saved:
+                if call_state["status"] != "started":
+                    call_state["status"] = "result_saved"
+                await self._save_call_checkpoint(
+                    "tool_progress"
+                    if call_state["status"] == "started"
+                    else "tool_result"
+                )
+            if (
+                execution
+                and execution.record_process
+                and not raw_result_saved
+                and (call_state is None or call_state["status"] == "result_saved")
+            ):
                 await execution.record_process(
                     record_id,
                     "tool_result",
@@ -1825,33 +1874,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     for index, item in enumerate(
                         CallToolResult.model_validate(raw).content
                     ):
-                        image_data = (
-                            item.data
-                            if isinstance(item, ImageContent)
-                            else item.resource.blob
-                            if isinstance(item, EmbeddedResource)
-                            and isinstance(item.resource, BlobResourceContents)
-                            and item.resource.mimeType
-                            and item.resource.mimeType.startswith("image/")
-                            else None
+                        cached_image = self._cache_tool_image(
+                            item, func_tool_id, func_tool_name, index
                         )
-                        mime_type = (
-                            item.mimeType
-                            if isinstance(item, ImageContent)
-                            else item.resource.mimeType
-                            if isinstance(item, EmbeddedResource)
-                            and isinstance(item.resource, BlobResourceContents)
-                            else None
-                        )
-                        if image_data:
+                        if cached_image:
                             yield _HandleFunctionToolsResult.from_cached_image(
-                                tool_image_cache.save_image(
-                                    base64_data=image_data,
-                                    tool_call_id=func_tool_id,
-                                    tool_name=func_tool_name,
-                                    index=index,
-                                    mime_type=mime_type or "image/png",
-                                )
+                                cached_image
                             )
                 tool_call_result_blocks.extend(
                     ToolCallMessageSegment.model_validate(block)
@@ -1898,6 +1926,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "have.",
                 )
                 continue
+            tool_failed = False
             try:
                 if not req.func_tool:
                     return
@@ -2021,10 +2050,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     },
                                 }
                             )
-                            call_state["status"] = "result_saved"
-                            await self._save_call_checkpoint("tool_result")
+                            # A generator may yield more effects and results.
+                            # Only exhaustion below proves that this call finished.
+                            await self._save_call_checkpoint("tool_progress")
                         execution = current_team_execution.get()
-                        if execution and execution.record_process:
+                        if (
+                            execution
+                            and execution.record_process
+                            and call_state is None
+                        ):
                             # Keep the original result before overflow materialization
                             # or display filtering can shorten its content.
                             await execution.record_process(
@@ -2054,13 +2088,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 result_parts.append(content_item.text)
                             elif isinstance(content_item, ImageContent):
                                 # Cache the image instead of sending directly
-                                cached_img = tool_image_cache.save_image(
-                                    base64_data=content_item.data,
-                                    tool_call_id=func_tool_id,
-                                    tool_name=func_tool_name,
-                                    index=index,
-                                    mime_type=content_item.mimeType or "image/png",
+                                cached_img = self._cache_tool_image(
+                                    content_item, func_tool_id, func_tool_name, index
                                 )
+                                assert cached_img is not None
                                 result_parts.append(
                                     f"Image returned and cached at path='{cached_img.file_path}'. "
                                     f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
@@ -2080,13 +2111,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     and resource.mimeType.startswith("image/")
                                 ):
                                     # Cache the image instead of sending directly
-                                    cached_img = tool_image_cache.save_image(
-                                        base64_data=resource.blob,
-                                        tool_call_id=func_tool_id,
-                                        tool_name=func_tool_name,
-                                        index=index,
-                                        mime_type=resource.mimeType,
+                                    cached_img = self._cache_tool_image(
+                                        content_item,
+                                        func_tool_id,
+                                        func_tool_name,
+                                        index,
                                     )
+                                    assert cached_img is not None
                                     result_parts.append(
                                         f"Image returned and cached at path='{cached_img.file_path}'. "
                                         f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
@@ -2144,6 +2175,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             ),
                         )
 
+                if call_state is not None and not call_state["protocol_results"]:
+                    await _append_tool_call_result(
+                        func_tool_id,
+                        "The tool returned no content.",
+                        raw_result_saved=True,
+                    )
                 try:
                     if not reused:
                         await self.agent_hooks.on_tool_end(
@@ -2158,6 +2195,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 if isinstance(e, (_ToolExecutionInterrupted, ProcessPersistenceError)):
                     raise
                 logger.warning(traceback.format_exc())
+                tool_failed = (
+                    call_state is not None and call_state["status"] == "started"
+                )
                 await _append_tool_call_result(
                     func_tool_id,
                     f"error: {e!s}"
@@ -2165,6 +2205,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         func_tool_name, tool_call_streak
                     ),
                 )
+
+            if call_state is not None and not reused:
+                call_state["status"] = "unknown" if tool_failed else "result_saved"
+                await self._save_call_checkpoint(
+                    "tool_progress" if tool_failed else "tool_result"
+                )
+                execution = current_team_execution.get()
+                if execution and execution.record_process:
+                    for record in call_state["process_records"]:
+                        await execution.record_process(
+                            record["id"], "tool_result", record["data"]
+                        )
+                if tool_failed:
+                    unresolved.append(func_tool_id)
 
             if len(tool_call_result_blocks) > tool_result_blocks_start:
                 tool_result_content = str(tool_call_result_blocks[-1].content)

@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent", "tool_result", "tool_checkpoint", "tool_applied", "batch_unknown", "submit_mixed_pre", "submit_mixed_post", "submit_custom_pre", "submit_custom_post", "submit_file_pre", "submit_file_post", "parameters_tool_result", "tool_image_protocol", "tool_save_failure", "tool_observation_failure", "legacy_response", "legacy_upgrade_failure", "partial_generator", "generator_error", "completed_generator"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -91,6 +91,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             if self.path == "/tool":
                 effects.append(payload)
                 response = {"text": "Verified external evidence."}
+                if payload.get("part"):
+                    response = {"text": "Partial verified evidence." if payload["part"] == "initial" else "Complete verified evidence."}
                 if scenario == "tool_image_protocol":
                     response = {"raw_result": {"content": [{"type": "text", "text": "Verified external evidence."}, {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=="}]}}
             else:
@@ -153,7 +155,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     assert time.monotonic() < deadline, (tmp_path / "first.log").read_text(encoding="utf-8")
                     time.sleep(0.05)
                 assert len(requests) == (3 if repair_mode or scenario.startswith("submit_file") else 2 if scenario.startswith("submit_") or parameter_mode else 1)
-                assert effects == ([{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_")) or scenario == "parameters_tool_result" else [])
+                assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario == "completed_generator" else [{"value": "original-plan", "part": "initial"}] if scenario in {"partial_generator", "generator_error"} else [{"value": "original-plan"}, {"value": "unknown-effect"}] if scenario == "batch_unknown" else [{"value": "original-plan"}] if scenario == "started" or scenario.startswith(("submit_", "tool_")) or scenario == "parameters_tool_result" else [])
                 worker.kill()
                 worker.wait(timeout=10)
             finally:
@@ -166,6 +168,17 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario in {"partial_generator", "generator_error"}:
+            assert evidence["error"]["status"] == 409
+            assert evidence["after"]["status"] in {"interrupted", "blocked"}
+            assert evidence["after"]["recovery"]["available"] is False
+            call = evidence["after"]["tool_calls"][0]
+            assert call["status"] == "unknown"
+            assert call["raw_results"][0]["content"][0]["text"] == "Partial verified evidence."
+            assert call["context_position"] is None
+            assert effects == [{"value": "original-plan", "part": "initial"}]
+            assert len(requests) == 1
+            return
         if scenario == "tool_save_failure":
             assert evidence["error"]["status"] == 409
             assert evidence["after"]["status"] == "failed"
@@ -174,6 +187,17 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert effects == [{"value": "original-plan"}]
             assert len(requests) == 1
             return
+        if scenario == "legacy_upgrade_failure":
+            failed = evidence["after"]
+            assert failed["status"] == "failed"
+            assert "Failed to save execution checkpoint" in failed["state"]["reason"]
+            assert len(requests) == 1
+            assert effects == []
+            repaired = subprocess.run([*command, "recover_storage", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
+            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+            assert evidence["after"]["state"]["attempt_id"] == failed["state"]["attempt_id"]
+            assert evidence["after"]["snapshot"] == failed["snapshot"]
         if scenario == "batch_unknown":
             assert evidence["after"]["status"] == "blocked"
             assert "confirmation" in evidence["after"]["state"]["reason"]
@@ -261,7 +285,14 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert evidence["parent"]["status"] == "completed"
         if scenario == "concurrent":
             assert evidence["recovery_errors"] == [409]
-        assert effects == ([{"value": "original-plan"}, {"value": "after-submission"}] if scenario.startswith("submit_mixed") else [{"value": "original-plan"}])
+        assert effects == ([{"value": "original-plan", "part": "initial"}, {"value": "original-plan", "part": "final"}] if scenario == "completed_generator" else [{"value": "original-plan"}, {"value": "after-submission"}] if scenario.startswith("submit_mixed") else [{"value": "original-plan"}])
+        if scenario == "completed_generator":
+            call = evidence["before"]["tool_calls"][0]
+            assert call["status"] == "result_saved"
+            assert [raw["content"][0]["text"] for raw in call["raw_results"]] == ["Partial verified evidence.", "Complete verified evidence."]
+            saved_context = json.dumps(requests[1]["contexts"])
+            assert saved_context.count("Partial verified evidence.") == 1
+            assert saved_context.count("Complete verified evidence.") == 1
         if scenario in {"tool_result", "tool_checkpoint", "tool_applied"}:
             calls = evidence["before"]["tool_calls"]
             assert len(calls) == 1

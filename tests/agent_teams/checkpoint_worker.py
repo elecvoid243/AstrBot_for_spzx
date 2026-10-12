@@ -23,7 +23,7 @@ from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.conversation_mgr import ConversationManager
-from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowProcess
+from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowProcess, AgentWorkflowToolCall
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
 from astrbot.core.knowledge_base import kb_mgr
@@ -98,10 +98,31 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             data = response.json()
             return CallToolResult.model_validate(data["raw_result"]) if "raw_result" in data else data["text"]
 
+    async def external_stream(event, value):
+        """Yield external output before a later effect or uncertain completion.
+
+        Args:
+            event: Actual normal pipeline event.
+            value: Frozen tool argument.
+
+        Yields:
+            Separate partial and final external results.
+
+        Raises:
+            RuntimeError: The external completion outcome is unavailable.
+        """
+        async with httpx.AsyncClient() as client:
+            initial = await client.post(endpoint + "/tool", json={"value": value, "part": "initial"})
+            yield initial.json()["text"]
+            if scenario == "generator_error":
+                raise RuntimeError("External completion outcome is unavailable")
+            final = await client.post(endpoint + "/tool", json={"value": value, "part": "final"})
+            yield final.json()["text"]
+
     providers.llm_tools.func_list = [FunctionTool(
         name="external_evidence", description="Read external evidence.",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
-        handler=external_tool,
+        handler=external_stream if scenario in {"partial_generator", "generator_error", "completed_generator"} else external_tool,
     )]
 
     class RecordedProvider(Provider):
@@ -213,6 +234,22 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     roles = RoleAssetService(db, lifecycle)
     service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
     if action == "start":
+        if scenario in {"legacy_response", "legacy_upgrade_failure"}:
+            def before_flush(session, flush_context, instances):
+                """Construct a pre-T08 saved response through the real storage seam.
+
+                Args:
+                    session: Transaction preparing the first complete response.
+                    flush_context: SQLAlchemy's flush context.
+                    instances: Explicitly flushed instances, if supplied.
+                """
+                for checkpoint in [*session.new, *session.dirty]:
+                    if isinstance(checkpoint, AgentWorkflowCheckpoint) and checkpoint.phase == "response":
+                        checkpoint.data = {**{key: value for key, value in checkpoint.data.items() if key != "tool_calls"}, "format_version": 1}
+                        for call in list(session.new):
+                            if isinstance(call, AgentWorkflowToolCall) and call.run_id == checkpoint.run_id:
+                                session.expunge(call)
+            sql_event.listen(Session, "before_flush", before_flush)
         # Fault injection runs only AFTER the real response transaction commits.
         # Correctness assertions use public services and the external HTTP ledger.
         def after_flush(session, flush_context):
@@ -226,7 +263,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
-                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
+                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "legacy_response", "legacy_upgrade_failure"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
@@ -241,6 +278,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 if scenario in {"tool_checkpoint", "tool_applied"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tool_result" if scenario == "tool_checkpoint" else "tools_applied") and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
+                    session.info["kill_boundary"] = row.run_id
+                if scenario == "partial_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_progress" and row.data["tool_calls"][0]["raw_results"]:
+                    session.info["kill_boundary"] = row.run_id
+                if scenario == "completed_generator" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
 
         def after_commit(session):
@@ -315,7 +356,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 return HTMLResponse(content.replace("<head>", "<head><script>localStorage.setItem('token','local-qa');localStorage.setItem('user','alice');</script>"))
 
             config = Config()
-            config.bind = ["127.0.0.1:6198"]
+            config.bind = ["127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
             (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__('os').getpid()}), encoding="utf-8")
             await serve(app, config)
             return
@@ -329,6 +370,9 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if scenario == "parameters_checkpoint_failure":
                 async with db.engine.begin() as connection:
                     await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
+            if scenario == "legacy_upgrade_failure":
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'legacy upgrade storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
             if scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER reject_response_checkpoint"))
@@ -392,7 +436,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     stats = json.loads(payload["data"])
             queue_manager.unsubscribe_system(before["snapshot"]["member"]["session_id"], stats_queue)
             (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "file": file_result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
-        elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure"}:
+        elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure", "generator_error"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()
     finally:

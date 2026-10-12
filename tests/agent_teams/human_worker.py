@@ -30,6 +30,7 @@ async def run_human_scenario(
         roles: Actual role assets bound to the externally recorded model/tool.
     """
     shutdown_task = None
+    ownership_commits = 0
 
     def stop(session, flush_context, instances):
         """Hold before a selected real transaction is committed.
@@ -62,17 +63,24 @@ async def run_human_scenario(
         Args:
             session: Real persistent session.
         """
-        nonlocal shutdown_task
+        nonlocal shutdown_task, ownership_commits
         acquired = scenario in {
             "human_consume_owned_post",
             "human_consume_owned_shutdown",
+            "human_consume_parked_shutdown",
         } and any(
             isinstance(row, AgentWorkflowRun)
             and row.snapshot.get("node_id") == "write"
             and row.state.get("execution_id")
             for row in session.identity_map.values()
         )
-        if acquired and scenario == "human_consume_owned_shutdown":
+        if acquired and scenario in {
+            "human_consume_owned_shutdown",
+            "human_consume_parked_shutdown",
+        }:
+            ownership_commits += 1
+            if scenario == "human_consume_parked_shutdown" and ownership_commits < 2:
+                return
             if shutdown_task is None:
                 shutdown_task = asyncio.create_task(service.shutdown())
             return
@@ -207,7 +215,10 @@ async def run_human_scenario(
                 )
                 if scenario == "human_consume_owned_post":
                     await asyncio.Future()
-                if scenario == "human_consume_owned_shutdown":
+                if scenario in {
+                    "human_consume_owned_shutdown",
+                    "human_consume_parked_shutdown",
+                }:
                     for _ in range(1500):
                         if shutdown_task is not None:
                             break
@@ -270,7 +281,11 @@ async def run_human_scenario(
                 assert exc.status == 409
             else:
                 raise AssertionError("The revised version must not inherit approval")
-        if scenario in {"human_consume_owned_post", "human_consume_owned_shutdown"}:
+        if scenario in {
+            "human_consume_owned_post",
+            "human_consume_owned_shutdown",
+            "human_consume_parked_shutdown",
+        }:
             from astrbot.core.agent_teams.assets import RoleAssetError
 
             old_task = before["tasks"][1]

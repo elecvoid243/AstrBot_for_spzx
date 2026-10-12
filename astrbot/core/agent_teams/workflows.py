@@ -3530,7 +3530,9 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
-                            col(AgentWorkflowRun.status) == "running",
+                            col(AgentWorkflowRun.status).in_(
+                                ["running", "interrupted"]
+                            ),
                             AgentWorkflowRun.snapshot["engine"].as_string()
                             != "graph_v2",
                         )
@@ -3555,8 +3557,11 @@ class WorkflowService:
                         **run.state,
                         "execution_id": None,
                         "retry_pending": True,
+                        "reason": None,
                     }
                     session.add(run)
+                    continue
+                if run.status != "running":
                     continue
                 run.status = "interrupted"
                 if checkpoint:

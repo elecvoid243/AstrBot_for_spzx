@@ -106,6 +106,8 @@ If the requested revision does not exist yet, the request retains that exact ver
 
 ![Rejection feedback remains visible with its task and exact version](/images/agent-workflow-human-rejected-en.jpg)
 
+![Structured approval previews every contracted field before exporting the same object](/images/agent-workflow-human-structured-en.jpg)
+
 ## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.

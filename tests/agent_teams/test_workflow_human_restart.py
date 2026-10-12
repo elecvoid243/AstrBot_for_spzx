@@ -27,6 +27,7 @@ import pytest
         "human_approval_post",
         "human_consume_owned_post",
         "human_consume_owned_shutdown",
+        "human_consume_parked_shutdown",
     ],
 )
 def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
@@ -114,7 +115,7 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
                     ).read_text(encoding="utf-8")
                     time.sleep(0.03)
                 if scenario.startswith("human_shutdown") or scenario.endswith(
-                    "owned_shutdown"
+                    "_shutdown"
                 ):
                     assert worker.wait(timeout=10) == 0
                 else:
@@ -139,6 +140,8 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
         assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         before, after = evidence["before"], evidence["after"]
+        if scenario == "human_consume_parked_shutdown":
+            assert before["tasks"][1]["status"] == "interrupted"
         assert after["status"] == "completed", after
         if scenario.startswith("human_approval"):
             assert after["todos"][0]["status"] == "approved"
@@ -183,6 +186,7 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
                     "human_consume_post",
                     "human_consume_owned_post",
                     "human_consume_owned_shutdown",
+                    "human_consume_parked_shutdown",
                 }
                 else "pending"
             )

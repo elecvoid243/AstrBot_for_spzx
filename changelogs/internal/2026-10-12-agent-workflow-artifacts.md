@@ -5,9 +5,10 @@ submissions return persistent field diagnostics for correction within the existi
 Agent budget. Result completion atomically saves the immutable artifact version
 and completion event, with idempotent submission and explicit revision requests.
 
-Custom results use a JSON text argument with the full frozen contract in the tool
-description. This preserves composed schemas and local references across provider
-tool serializers; the service remains responsible for authoritative validation.
+Custom results use a JSON text argument with the full frozen contract in the
+parameter description. This preserves composed schemas and local references across
+provider serializers and two-stage skills-like parameter requests; the service
+remains responsible for authoritative validation.
 
 Runs pin input artifact versions and record actual reads. Agents and users can
 read complete reports, evidence and ready files without relying on summaries or

@@ -234,16 +234,15 @@ class SubmitTaskResultTool(FunctionTool):
                 "properties": {
                     "result_json": {
                         "type": "string",
-                        "description": "Complete result object encoded as JSON text.",
+                        # Parameter descriptions survive skills_like re-querying.
+                        "description": "Complete result object encoded as JSON text. Output contract: "
+                        + json.dumps(contract, ensure_ascii=False),
                     }
                 },
                 "required": ["result_json"],
                 "additionalProperties": False,
             }
-            description += (
-                " Encode the complete result in result_json. Output contract: "
-                + json.dumps(contract, ensure_ascii=False)
-            )
+            description += " Encode the complete result in result_json according to the frozen output contract in its parameter description."
         super().__init__(
             name="submit_task_result", description=description, parameters=parameters
         )

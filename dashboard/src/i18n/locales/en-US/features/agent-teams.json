@@ -396,6 +396,7 @@
     "dependency": "Select dependency"
   },
   "resolution": {
+    "savedWaiting": "Your tool decision is saved for this Attempt. While the run is paused, it waits for Continue run. Local waits and execution capacity still apply.",
     "replacedBy": "Original outcome remains unknown; explicitly replaced by invocation",
     "replaces": "Explicit new execution for original invocation",
     "unknown": "No complete result proves this call finished. Inspect the original arguments, partial output and remote evidence before deciding.",

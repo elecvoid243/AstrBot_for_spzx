@@ -154,6 +154,17 @@
           />
           <v-alert
             v-if="
+              detailRun.state.resolution_pending &&
+              selectedRun.control?.status !== 'cancelled'
+            "
+            type="info"
+            variant="tonal"
+            class="my-3"
+            data-testid="resolution-saved"
+            >{{ tm("resolution.savedWaiting") }}</v-alert
+          >
+          <v-alert
+            v-if="
               detailRun.recovery &&
               ['interrupted', 'failed', 'blocked'].includes(detailRun.status)
             "

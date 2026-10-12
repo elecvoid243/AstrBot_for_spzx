@@ -23,6 +23,7 @@ import pytest
         "control_request",
         "control_capacity",
         "control_mixed",
+        "control_shutdown",
     ],
 )
 def test_control_decision_survives_process_termination(
@@ -144,8 +145,13 @@ def test_control_decision_survives_process_termination(
                     ).read_text(encoding="utf-8")
                     time.sleep(0.03)
             finally:
-                worker.kill()
-                worker.wait(timeout=10)
+                if scenario == "control_shutdown":
+                    assert worker.wait(timeout=10) == 0, (
+                        tmp_path / "worker.log"
+                    ).read_text(encoding="utf-8")
+                else:
+                    worker.kill()
+                    worker.wait(timeout=10)
         effects_before = len(effects)
         retry_allowed = True
         assert effects_before == (0 if scenario in {"control_request", "control_capacity"} else 2 if scenario == "control_mixed" else 1)
@@ -234,12 +240,23 @@ def test_control_decision_survives_process_termination(
         else:
             assert after["status"] == "completed", evidence
             assert after["state"]["attempt_id"] == before["state"]["attempt_id"]
-            if scenario in {"control_pause", "control_continue"}:
+            if scenario in {"control_pause", "control_continue", "control_shutdown"}:
                 assert len(effects) == 1
                 assert len(requests) == 3
                 assert before["control"]["status"] == (
-                    "paused" if scenario == "control_pause" else "active"
+                    "active" if scenario == "control_continue" else "paused"
                 )
+                if scenario == "control_shutdown":
+                    shutdown = json.loads(
+                        (tmp_path / "shutdown.json").read_text(encoding="utf-8")
+                    )
+                    assert shutdown["before"]["status"] == "running"
+                    assert shutdown["after"]["status"] == "interrupted"
+                    assert shutdown["after"]["control"]["status"] == "paused"
+                    assert (
+                        shutdown["after"]["state"]["attempt_id"]
+                        == shutdown["before"]["state"]["attempt_id"]
+                    )
                 assert (
                     len(
                         [

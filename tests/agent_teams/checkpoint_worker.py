@@ -45,7 +45,9 @@ from astrbot.core.utils.shared_preferences import SharedPreferences
 from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
 
 
-async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "response") -> None:
+async def run_worker(
+    folder: Path, endpoint: str, action: str, scenario: str = "response"
+) -> None:
     """Build actual AstrBot services and stop at a committed response boundary.
 
     Args:
@@ -115,7 +117,12 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
             data = response.json()
-            if action == "start" and scenario in {"control_pause", "control_continue", "control_cancel"}:
+            if action == "start" and scenario in {
+                "control_pause",
+                "control_continue",
+                "control_cancel",
+                "control_shutdown",
+            }:
                 run_id = event.get_extra("agent_team_execution").run_id
                 decision = {"request_id": "original-control", "action": "cancel" if scenario == "control_cancel" else "pause"}
                 await service.control_run("alice", run_id, decision)
@@ -277,6 +284,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     scheduler = PipelineScheduler(PipelineContext(config, SimpleNamespace(context=context), "default", db))
     await scheduler.initialize()
     from astrbot import core
+
     original_preferences = core.sp
     for name, module in list(sys.modules.items()):
         if name.startswith("astrbot") and getattr(module, "sp", None) is original_preferences:
@@ -509,6 +517,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
+            if action == "pause_decision":
+                await service.control_run(
+                    "alice",
+                    run_id,
+                    {"request_id": "pause-resolution", "action": "pause"},
+                )
+                return
             if scenario == "control_mixed":
                 await service.boot_sweep()
                 await service.control_run("alice", run_id, {"request_id": "continue-mixed", "action": "continue"})
@@ -557,7 +572,11 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if scenario.startswith("control_"):
                 await service.boot_sweep()
                 stopped = await service.get_run("alice", run_id)
-                if scenario in {"control_pause", "control_continue"}:
+                if scenario in {
+                    "control_pause",
+                    "control_continue",
+                    "control_shutdown",
+                }:
                     if stopped["control"]["status"] == "paused":
                         assert stopped["status"] == "interrupted"
                         try:
@@ -591,8 +610,16 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                         sql_event.listen(Session, "after_flush", continue_flush)
                         sql_event.listen(Session, "after_commit", continue_commit)
                     await service.control_run("alice", run_id, {"request_id": "original-control", "action": "pause"})
-                    await service.control_run("alice", run_id, {"request_id": "continue-control", "action": "continue"})
-                    await service.control_run("alice", run_id, {"request_id": "continue-control", "action": "continue"})
+                    await service.control_run(
+                        "alice",
+                        run_id,
+                        {"request_id": "continue-control", "action": "continue"},
+                    )
+                    await service.control_run(
+                        "alice",
+                        run_id,
+                        {"request_id": "continue-control", "action": "continue"},
+                    )
                 elif scenario == "control_cancel":
                     assert stopped["control"]["status"] == "cancelled"
                     assert stopped["status"] == "cancelled"
@@ -653,6 +680,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 providers.llm_tools.func_list[0].description = "Changed external evidence capability."
             await service.boot_sweep()
             independent_before_resolution = None
+            resolution_wait = None
             if scenario == "manual_graph":
                 parent_id = before["snapshot"]["parent_run_id"]
                 for _ in range(500):
@@ -669,7 +697,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             elif scenario in {"manual_save_failure", "reconcile_save_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER IF EXISTS reject_decision"))
-            if action == "recover_decision":
+            if action == "recover_decision" or scenario == "manual_paused_race":
+
                 def decision_flush(session, flush_context):
                     """Select the real decision transaction for a second crash.
 
@@ -680,6 +709,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     for item in session.new:
                         if isinstance(item, AgentWorkflowEvent) and item.kind == "tool.resolved":
                             session.info["decision_boundary"] = True
+
                 def decision_commit(session):
                     """Hold an accepted human decision before scheduling begins.
 
@@ -688,18 +718,44 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     """
                     if session.info.pop("decision_boundary", False):
                         (folder / "decision-ready.json").write_text("{}", encoding="utf-8")
+                        if scenario == "manual_paused_race":
+                            while not (folder / "release-decision").exists():
+                                time.sleep(0.02)
+                            return
                         while True:
                             time.sleep(1)
+
                 sql_event.listen(Session, "after_flush", decision_flush)
                 sql_event.listen(Session, "after_commit", decision_commit)
             recoveries = []
             try:
-                if scenario.startswith("manual_"):
+                if scenario.startswith("manual_") or scenario == "reconcile_paused":
+                    if "paused" in scenario and scenario != "manual_paused_race":
+                        await service.control_run(
+                            "alice",
+                            run_id,
+                            {"request_id": "pause-resolution", "action": "pause"},
+                        )
                     available_calls = (await service.get_run("alice", run_id))["tool_calls"]
                     call = next((item for item in available_calls if item["status"] == "unknown"), available_calls[0])
-                    decision = {"request_id": "human-decision", "action": "retry" if scenario.startswith("manual_retry") or scenario == "manual_save_failure" else "confirm_failure" if scenario == "manual_failure" else "confirm_result", "evidence": "External service receipt independently verified by the owner."}
-                    if decision["action"] != "retry":
-                        decision["result"] = "External operation rejected: verified receipt." if scenario == "manual_failure" else "Verified external evidence."
+                    decision = {
+                        "request_id": "human-decision",
+                        "action": "reconcile"
+                        if scenario == "reconcile_paused"
+                        else "retry"
+                        if scenario.startswith("manual_retry")
+                        or scenario == "manual_save_failure"
+                        else "confirm_failure"
+                        if scenario.endswith("_failure")
+                        else "confirm_result",
+                        "evidence": "External service receipt independently verified by the owner.",
+                    }
+                    if decision["action"] in {"confirm_result", "confirm_failure"}:
+                        decision["result"] = (
+                            "External operation rejected: verified receipt."
+                            if scenario.endswith("_failure")
+                            else "Verified external evidence."
+                        )
                     if scenario == "manual_http":
                         from fastapi import FastAPI
                         from astrbot.dashboard.api.auth import require_dashboard_user
@@ -721,6 +777,31 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     else:
                         await service.resolve_tool_call("alice", run_id, call["record_id"], decision)
                     await service.resolve_tool_call("alice", run_id, call["record_id"], decision)
+                    if "paused" in scenario:
+                        resolution_wait = await service.get_run("alice", run_id)
+                        if scenario == "reconcile_paused":
+                            try:
+                                await service.resolve_tool_call(
+                                    "alice",
+                                    run_id,
+                                    call["record_id"],
+                                    {
+                                        "request_id": "conflicting-resolution",
+                                        "action": "retry",
+                                        "evidence": "Another execution must not replace the queued reconciliation.",
+                                    },
+                                )
+                            except RoleAssetError as exc:
+                                assert exc.status == 409
+                            else:
+                                raise AssertionError(
+                                    "An accepted pending decision cannot be replaced"
+                                )
+                        await service.control_run(
+                            "alice",
+                            run_id,
+                            {"request_id": "continue-resolution", "action": "continue"},
+                        )
                 elif scenario == "concurrent":
                     recoveries = await asyncio.gather(service.recover_run("alice", run_id), service.recover_run("alice", run_id), return_exceptions=True)
                 else:
@@ -737,11 +818,37 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         if action == "start" and scenario.startswith("control_"):
             for _ in range(1500):
                 current = await service.get_run("alice", run["run_id"])
-                ready = current["control"]["status"] == "paused" and current["tasks"][1]["recovery"]["boundary"] == "tool_result" if scenario == "control_mixed" else current["control"]["status"] == "cancelled" if scenario == "control_cancel" else current["control"]["status"] == "paused" and current["recovery"]["boundary"] == "tool_result" if scenario in {"control_pause", "control_continue"} else current["status"] == "awaiting_result"
+                ready = (
+                    current["control"]["status"] == "paused"
+                    and current["tasks"][1]["recovery"]["boundary"] == "tool_result"
+                    if scenario == "control_mixed"
+                    else current["control"]["status"] == "cancelled"
+                    if scenario == "control_cancel"
+                    else current["control"]["status"] == "paused"
+                    and current["recovery"]["boundary"] == "tool_result"
+                    if scenario
+                    in {"control_pause", "control_continue", "control_shutdown"}
+                    else current["status"] == "awaiting_result"
+                )
                 if ready:
                     break
                 await asyncio.sleep(0.02)
             assert ready, current
+            if scenario == "control_shutdown":
+                await service.shutdown()
+                (folder / "shutdown.json").write_text(
+                    json.dumps(
+                        {
+                            "before": current,
+                            "after": await service.get_run("alice", run["run_id"]),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (folder / "kill-ready.json").write_text(
+                    json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
+                )
+                return
             if scenario == "control_retry":
                 def retry_decision_flush(session, flush_context):
                     """Select the committed new-attempt decision for termination.
@@ -767,7 +874,9 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 sql_event.listen(Session, "after_flush", retry_decision_flush)
                 sql_event.listen(Session, "after_commit", retry_decision_commit)
                 await service.retry_task("alice", run["run_id"], {"request_id": "retry-control", "attempt_id": current["state"]["attempt_id"], "input_policy": "original"})
-            (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
+            (folder / "kill-ready.json").write_text(
+                json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
+            )
             await asyncio.Future()
         during_resolution_errors = []
         if action != "start" and scenario == "manual_retry_late":
@@ -844,7 +953,29 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 if payload.get("chain_type") == "agent_stats":
                     stats = json.loads(payload["data"])
             queue_manager.unsubscribe_system(before["snapshot"]["member"]["session_id"], stats_queue)
-            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "file": file_result, "parent": parent, "during_resolution_errors": during_resolution_errors, "independent_before_resolution": independent_before_resolution, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
+            (folder / "recovered.json").write_text(
+                json.dumps(
+                    {
+                        "before": before,
+                        "after": current,
+                        "result": result,
+                        "file": file_result,
+                        "parent": parent,
+                        "during_resolution_errors": during_resolution_errors,
+                        "independent_before_resolution": independent_before_resolution,
+                        "resolution_wait": resolution_wait,
+                        "late_errors": late_errors,
+                        "repeated": repeated,
+                        "stats": stats,
+                        "recovery_errors": [
+                            item.status
+                            for item in recoveries
+                            if isinstance(item, RoleAssetError)
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
         elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure", "generator_error"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()

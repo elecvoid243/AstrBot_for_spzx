@@ -640,6 +640,98 @@ describe("single-task workflow workspace", () => {
       wrapper.unmount();
     },
   );
+  it.each(["confirm_result", "reconcile"])(
+    "shows a saved paused %s decision and continues the original attempt",
+    async (action) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const stopped = {
+        ...run,
+        status: "interrupted",
+        control: { status: "paused", revision: 1, root_run_id: "run-1" },
+        cursor: 1,
+        tool_calls: [
+          {
+            record_id: "original-call",
+            call_id: "external-call",
+            name: "publish",
+            status: "unknown",
+            attempt_id: "attempt-1",
+            args: { title: "Original report" },
+            recovery: {},
+            available_actions: ["confirm_result", "reconcile"],
+          },
+        ],
+      };
+      const waiting = {
+        ...stopped,
+        cursor: 2,
+        state: { ...stopped.state, resolution_pending: true },
+        tool_calls: [
+          {
+            ...stopped.tool_calls[0],
+            status: action === "reconcile" ? "unknown" : "result_saved",
+            recovery: {
+              decisions: [
+                { request_id: "saved-decision", request: { action } },
+              ],
+            },
+            available_actions: [],
+          },
+        ],
+      };
+      api.run.mockResolvedValue(stopped);
+      api.resolveTool.mockResolvedValueOnce(waiting);
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      await flushPromises();
+      const form = wrapper.get('[data-testid="tool-resolution"]');
+      await form.get("select").setValue(action);
+      await form
+        .get('[data-testid="resolution-evidence"]')
+        .setValue("Verified remote receipt");
+      if (action === "confirm_result") {
+        await form
+          .get('[data-testid="resolution-result"]')
+          .setValue("Saved original result");
+      }
+      await form.get("button").trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="resolution-saved"]').text()).toContain(
+        "resolution.savedWaiting",
+      );
+      expect(wrapper.text()).toContain("saved-decision");
+      expect(wrapper.find('[data-testid="tool-resolution"]').exists()).toBe(
+        false,
+      );
+      api.control.mockResolvedValueOnce({
+        ...waiting,
+        status: "completed",
+        control: { status: "active", revision: 2, root_run_id: "run-1" },
+        state: { ...waiting.state, resolution_pending: false },
+        cursor: 3,
+        tool_calls: [{ ...waiting.tool_calls[0], status: "applied" }],
+      });
+      await wrapper.get('[data-testid="continue-run"]').trigger("click");
+      await flushPromises();
+      expect(api.control).toHaveBeenCalledWith(
+        "run-1",
+        expect.objectContaining({ action: "continue" }),
+      );
+      expect(api.resolveTool).toHaveBeenCalledTimes(1);
+      expect(api.recover).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="resolution-saved"]').exists()).toBe(
+        false,
+      );
+      expect(wrapper.text()).toContain("attempt-1");
+      wrapper.unmount();
+    },
+  );
   it("requires evidence and an explicit retry, then preserves the original call association", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

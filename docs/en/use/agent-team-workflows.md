@@ -81,6 +81,8 @@ Open **Agent Teams → Independent Runs → View Run**. **Whole run controls** a
 
 Resolve an unknown tool outcome under **Saved member process** first. Ordinary task retry cannot bypass the tool reconciliation or evidenced human-decision protocol. Repeated identical control or retry requests do not create additional decisions or Attempts. If another control changed the revision, refresh before making a new decision.
 
+You can save a verified result, verified failure, explicit tool retry or reconciliation decision while the whole run is paused. The page confirms that the decision is saved and waits for **Continue run**; saving the decision does not admit external work. Continuing or restarting after an accepted continuation uses the original Attempt and call evidence, subject to local waits and capacity. A normal core shutdown preserves the same paused continuation as an unexpected process stop. A saved pending decision cannot be replaced by another decision before it is consumed.
+
 ![Paused whole-run controls and the original Attempt in the actual WebUI](/images/agent-workflow-controls-en.jpg)
 
 ![A retried task retains the previous failure, exact inputs and saved usage](/images/agent-workflow-retry-history.jpg)

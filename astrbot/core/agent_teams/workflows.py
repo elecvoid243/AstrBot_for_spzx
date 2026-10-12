@@ -906,6 +906,12 @@ class WorkflowService:
                                     if call in unknown_calls
                                     and current.status
                                     in {"interrupted", "failed", "blocked"}
+                                    and not any(
+                                        decision.get("execution_id") is None
+                                        for decision in recovery_data.get(
+                                            call.record_id, {}
+                                        ).get("decisions", [])
+                                    )
                                     else [],
                                 }
                                 for call in current_calls
@@ -1183,10 +1189,14 @@ class WorkflowService:
                     child = await session.get(AgentWorkflowRun, identity)
                     if (
                         child is not None
-                        and child.status == "interrupted"
+                        and child.status in {"interrupted", "failed", "blocked"}
                         and (
-                            child.state.get("paused_resume")
-                            or child.state.get("retry_pending")
+                            child.state.get("resolution_pending")
+                            or child.status == "interrupted"
+                            and (
+                                child.state.get("paused_resume")
+                                or child.state.get("retry_pending")
+                            )
                         )
                     ):
                         resume_ids.append(identity)
@@ -1940,9 +1950,13 @@ class WorkflowService:
         current = await self.get_run(username, run_id)
         if current["control"]["status"] == "active":
             for child in current.get("tasks", []):
-                if child["status"] == "interrupted" and (
-                    child["state"].get("paused_resume")
-                    or child["state"].get("retry_pending")
+                if child["status"] in {"interrupted", "failed", "blocked"} and (
+                    child["state"].get("resolution_pending")
+                    or child["status"] == "interrupted"
+                    and (
+                        child["state"].get("paused_resume")
+                        or child["state"].get("retry_pending")
+                    )
                 ):
                     try:
                         await self.recover_run(username, child["run_id"])
@@ -2675,6 +2689,7 @@ class WorkflowService:
                 "execution_id": execution_id,
                 "message_id": uuid.uuid4().hex,
                 "reason": None,
+                "resolution_pending": False,
             }
             finish_result = (
                 checkpoint.result_submission and row.pending_result is not None
@@ -2835,7 +2850,8 @@ class WorkflowService:
             payload: Idempotency identity, explicit action and observed evidence.
 
         Returns:
-            Current task detail; duplicate decisions never schedule a second call.
+            Current task detail. Saved decisions wait for whole-run admission or
+            local capacity; duplicate decisions never schedule a second call.
 
         Raises:
             RoleAssetError: Missing evidence, inaccessible call or conflicting action.
@@ -2852,6 +2868,9 @@ class WorkflowService:
         run = await self.get_run(username, run_id)
         duplicate = False
         async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            control = await self._lock_control(session, row)
             # Acquire the same durable execution fence before reading the decision.
             changed = await session.execute(
                 update(AgentWorkflowRun)
@@ -2889,6 +2908,13 @@ class WorkflowService:
                     or row.status == "running"
                 )
             else:
+                if control.status == "cancelled":
+                    raise RoleAssetError("Run was cancelled", status=409)
+                if any(item.get("execution_id") is None for item in decisions):
+                    raise RoleAssetError(
+                        "A decision is already saved; continue the whole run first",
+                        status=409,
+                    )
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
                 if (
                     row is None
@@ -2997,6 +3023,10 @@ class WorkflowService:
                     )
                 recovery.data = metadata
                 session.add(recovery)
+                # Acceptance and the intent to continue must survive a pause or
+                # process loss between this commit and acquiring execution ownership.
+                row.state = {**row.state, "resolution_pending": True}
+                session.add(row)
                 checkpoint.started_tools = [
                     identity
                     for identity in checkpoint.started_tools
@@ -3019,7 +3049,12 @@ class WorkflowService:
                 await session.commit()
         if duplicate:
             return await self.get_run(username, run_id)
-        return await self.recover_run(username, run_id)
+        try:
+            return await self.recover_run(username, run_id)
+        except RoleAssetError:
+            # The decision is already accepted. Admission, capacity or another
+            # local wait may defer execution without turning acceptance into failure.
+            return await self.get_run(username, run_id)
 
     async def save_checkpoint(
         self, username: str, run_id: str, attempt_id: str, execution_id: str, data: dict
@@ -3150,10 +3185,11 @@ class WorkflowService:
             await session.commit()
 
     async def boot_sweep(self) -> None:
-        """Finish saved safe intents and interrupt other abandoned executions.
+        """Interrupt abandoned executions and resume already accepted decisions.
 
         Returns:
-            None. No model or tool is dispatched; unsafe intents remain readable.
+            None. Paused or uncertain calls remain stopped; accepted continuations
+            use the original attempt when whole-run admission permits execution.
         """
         async with self.db.get_db() as session:
             rows = (
@@ -3229,13 +3265,30 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowRun).where(
-                            col(AgentWorkflowRun.status) == "interrupted",
+                            col(AgentWorkflowRun.status).in_(
+                                ["interrupted", "failed", "blocked"]
+                            ),
                             (
-                                AgentWorkflowRun.state["paused_resume"].as_boolean()
-                                == true()
+                                (col(AgentWorkflowRun.status) == "interrupted")
+                                & (
+                                    (
+                                        AgentWorkflowRun.state[
+                                            "paused_resume"
+                                        ].as_boolean()
+                                        == true()
+                                    )
+                                    | (
+                                        AgentWorkflowRun.state[
+                                            "retry_pending"
+                                        ].as_boolean()
+                                        == true()
+                                    )
+                                )
                             )
                             | (
-                                AgentWorkflowRun.state["retry_pending"].as_boolean()
+                                AgentWorkflowRun.state[
+                                    "resolution_pending"
+                                ].as_boolean()
                                 == true()
                             ),
                         )
@@ -3331,6 +3384,7 @@ class WorkflowService:
         ports = None
         tools: list[FunctionTool] = []
         status = "failed"
+        outcome: dict[str, object] = {}
         checkpoint_error = None
         current_task = asyncio.current_task()
         assert current_task is not None
@@ -3531,7 +3585,7 @@ class WorkflowService:
                 if not turn.done():
                     turn.cancel()
                 await asyncio.gather(turn, return_exceptions=True)
-            state["response"] = {
+            outcome["response"] = {
                 "text": reply,
                 "parts": parts,
                 "member_id": member["member_id"],
@@ -3541,8 +3595,13 @@ class WorkflowService:
             }
             if checkpoint_error is not None:
                 raise ProcessPersistenceError(checkpoint_error)
-            state["safe_to_finish"] = True
+            outcome["safe_to_finish"] = True
             async with self.db.get_db() as session:
+                row = await session.get(AgentWorkflowRun, run_id)
+                if row is None:
+                    return
+                await self._lock_control(session, row)
+                await session.refresh(row)
                 changed = await session.execute(
                     update(AgentWorkflowRun)
                     .where(
@@ -3553,7 +3612,7 @@ class WorkflowService:
                         AgentWorkflowRun.state["execution_id"].as_string()
                         == execution_id,
                     )
-                    .values(state=state)
+                    .values(state={**row.state, **outcome})
                 )
                 if cast(CursorResult, changed).rowcount == 1:
                     session.add(
@@ -3571,19 +3630,21 @@ class WorkflowService:
                 await self.finish_submission(username, run_id)
                 return
             status = "awaiting_result"
-            state["reason"] = "The Agent ended without submitting a valid task result."
+            outcome["reason"] = (
+                "The Agent ended without submitting a valid task result."
+            )
         except asyncio.CancelledError:
             status = "interrupted"
-            state["reason"] = "Core execution stopped; this task was not replayed."
+            outcome["reason"] = "Core execution stopped; this task was not replayed."
         except RoleAssetError as exc:
             status = "blocked"
-            state["reason"] = str(exc)
-            state["issues"] = exc.fields
+            outcome["reason"] = str(exc)
+            outcome["issues"] = exc.fields
         except CheckpointRecoveryError as exc:
             status = "blocked"
-            state["reason"] = str(exc)
+            outcome["reason"] = str(exc)
         except Exception as exc:
-            state["reason"] = str(exc)
+            outcome["reason"] = str(exc)
             logger.error("Single-task workflow execution failed: %s", exc)
         finally:
             if self._executions.get(run_id) is current_task:
@@ -3593,6 +3654,13 @@ class WorkflowService:
             if ports and ports.close:
                 await ports.close()
         async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None:
+                return
+            await self._lock_control(session, row)
+            await session.refresh(row)
+            # Execution owns only its outcome fields. Preserve control and resume
+            # decisions saved after dispatch, while still fencing displaced owners.
             changed = await session.execute(
                 update(AgentWorkflowRun)
                 .where(
@@ -3602,7 +3670,7 @@ class WorkflowService:
                     == state["attempt_id"],
                     AgentWorkflowRun.state["execution_id"].as_string() == execution_id,
                 )
-                .values(status=status, state=state)
+                .values(status=status, state={**row.state, **outcome})
             )
             if cast(CursorResult, changed).rowcount == 1:
                 session.add(
@@ -3611,7 +3679,7 @@ class WorkflowService:
                         kind="task." + status,
                         data={
                             "attempt_id": state["attempt_id"],
-                            "reason": state["reason"],
+                            "reason": outcome["reason"],
                         },
                     )
                 )

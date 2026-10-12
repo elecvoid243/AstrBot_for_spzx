@@ -12,8 +12,52 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("scenario", ["manual_retry", "manual_retry_late", "manual_retry_key", "manual_retry_partial", "manual_batch", "manual_retry_commit", "manual_graph", "manual_save_failure", "manual_result", "manual_failure", "manual_http", "reconcile_succeeded", "reconcile_again", "reconcile_failed", "reconcile_partial", "reconcile_partial_failed", "reconcile_partial_conflict", "reconcile_unknown", "reconcile_error", "reconcile_save_failure", "idempotent_retry", "safe_retry", "idempotent_partial_twokill", "safe_partial_twokill", "idempotent_partial_raw", "idempotent_partial_conflict", "safe_partial_conflict", "idempotent_partial_incomplete", "safe_partial_incomplete", "reconcile_partial_not_executed_twokill", "reconcile_partial_not_executed_conflict", "safe_partial_short"])
-def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, scenario, preview=False):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "manual_retry",
+        "manual_retry_late",
+        "manual_retry_key",
+        "manual_retry_partial",
+        "manual_batch",
+        "manual_retry_commit",
+        "manual_graph",
+        "manual_save_failure",
+        "manual_result",
+        "manual_paused_result",
+        "manual_paused_failure",
+        "manual_retry_paused",
+        "manual_paused_race",
+        "manual_paused_commit",
+        "reconcile_paused",
+        "manual_failure",
+        "manual_http",
+        "reconcile_succeeded",
+        "reconcile_again",
+        "reconcile_failed",
+        "reconcile_partial",
+        "reconcile_partial_failed",
+        "reconcile_partial_conflict",
+        "reconcile_unknown",
+        "reconcile_error",
+        "reconcile_save_failure",
+        "idempotent_retry",
+        "safe_retry",
+        "idempotent_partial_twokill",
+        "safe_partial_twokill",
+        "idempotent_partial_raw",
+        "idempotent_partial_conflict",
+        "safe_partial_conflict",
+        "idempotent_partial_incomplete",
+        "safe_partial_incomplete",
+        "reconcile_partial_not_executed_twokill",
+        "reconcile_partial_not_executed_conflict",
+        "safe_partial_short",
+    ],
+)
+def test_unknown_tool_effect_resolution_survives_process_termination(
+    tmp_path, scenario, preview=False
+):
     """Observe effects outside a killed real-pipeline worker and resume publicly.
 
     Args:
@@ -129,7 +173,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             while True:
                 assert process.poll() is None, (tmp_path / "worker.log").read_text(encoding="utf-8")
                 time.sleep(1)
-        if scenario == "manual_retry_commit":
+        if scenario in {"manual_retry_commit", "manual_paused_commit"}:
             decision_process = subprocess.Popen([*command, "recover_decision", scenario], cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment)
             try:
                 deadline = time.monotonic() + 40
@@ -152,8 +196,52 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             finally:
                 interim.kill()
                 interim.wait(timeout=10)
-        recovered = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=45, env=environment)
-        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        if scenario == "manual_paused_race":
+            resolver = subprocess.Popen(
+                [*command, "recover", scenario],
+                cwd=root,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=environment,
+            )
+            try:
+                deadline = time.monotonic() + 45
+                while not (tmp_path / "decision-ready.json").exists():
+                    assert resolver.poll() is None, (tmp_path / "worker.log").read_text(
+                        encoding="utf-8"
+                    )
+                    assert time.monotonic() < deadline
+                    time.sleep(0.02)
+                paused = subprocess.run(
+                    [*command, "pause_decision", scenario],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=30,
+                    env=environment,
+                )
+                assert paused.returncode == 0, paused.stdout + paused.stderr
+                assert len(effects) == len(requests) == 1
+                (tmp_path / "release-decision").write_text("", encoding="utf-8")
+                assert resolver.wait(timeout=45) == 0, (
+                    tmp_path / "worker.log"
+                ).read_text(encoding="utf-8")
+            finally:
+                if resolver.poll() is None:
+                    resolver.kill()
+                    resolver.wait(timeout=10)
+        else:
+            recovered = subprocess.run(
+                [*command, "recover", scenario],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=45,
+                env=environment,
+            )
+            assert recovered.returncode == 0, recovered.stdout + recovered.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         if live_partial and scenario.endswith(("conflict", "incomplete", "short")):
             assert evidence["after"]["status"] == "blocked"
@@ -198,6 +286,26 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
         assert evidence["after"]["status"] == "completed"
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]
+        if "paused" in scenario:
+            waiting = evidence["resolution_wait"]
+            assert waiting["control"]["status"] == "paused"
+            assert waiting["status"] == "interrupted"
+            assert waiting["tool_calls"][0]["status"] == (
+                "unknown"
+                if scenario in {"manual_retry_paused", "reconcile_paused"}
+                else "result_saved"
+            )
+            assert len(waiting["tool_calls"][0]["recovery"]["decisions"]) == 1
+            assert (
+                len(
+                    [
+                        event
+                        for event in waiting["events"]
+                        if event["kind"] == "tool.resolved"
+                    ]
+                )
+                == 1
+            )
         calls = [call for call in evidence["after"]["tool_calls"] if call["name"] == "external_evidence"]
         if live_partial:
             call = calls[0]
@@ -268,7 +376,9 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             if scenario.startswith("manual_"):
                 assert len(effects) == len(deliveries) == 1
                 assert len(calls[0]["recovery"]["decisions"]) == 1
-                assert calls[0]["raw_results"][0]["isError"] == (scenario == "manual_failure")
+                assert calls[0]["raw_results"][0]["isError"] == scenario.endswith(
+                    "_failure"
+                )
             else:
                 assert len(deliveries) == 2
                 assert len(effects) == (1 if scenario == "idempotent_retry" else 2)

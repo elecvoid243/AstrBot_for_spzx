@@ -586,6 +586,7 @@ let openingRun = false;
 
 async function refresh() {
   if (loading.value || openingRun) return;
+  const read = ++runRead;
   loading.value = true;
   try {
     error.value = "";
@@ -595,14 +596,16 @@ async function refresh() {
         roleAssetsApi.list(),
         workflowAssetsApi.runs(),
       ]);
+      if (disposed || read !== runRead) return;
       assets.value = assetData.assets;
       roles.value = roleData.roles;
       runs.value = runData.runs;
     } else {
-      runs.value = (await workflowAssetsApi.runs()).runs;
+      const runData = await workflowAssetsApi.runs();
+      if (disposed || read !== runRead) return;
+      runs.value = runData.runs;
       const id = route.query.workflow_run ?? selectedRun.value?.run_id;
       if (typeof id === "string" && id) {
-        const read = ++runRead;
         const artifactId = detailRun.value?.result_ref?.artifact_id;
         if (
           selectedRun.value?.run_id === id &&
@@ -637,9 +640,10 @@ async function refresh() {
       }
     }
   } catch (err) {
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (!disposed && read === runRead)
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
-    loading.value = false;
+    if (read === runRead) loading.value = false;
   }
 }
 

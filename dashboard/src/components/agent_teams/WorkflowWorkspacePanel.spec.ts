@@ -393,6 +393,62 @@ describe("single-task workflow workspace", () => {
     },
   );
 
+  it("keeps polling the newly selected run when an older list read finishes late", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const next = {
+      ...run,
+      run_id: "run-2",
+      cursor: 20,
+      snapshot: {
+        ...run.snapshot,
+        definition: { ...asset.definition, name: "Second run" },
+      },
+    };
+    const list = { runs: [{ ...run, cursor: 10 }, next] };
+    api.runs.mockResolvedValue(list);
+    let finishRun!: (value: any) => void;
+    let finishList!: (value: any) => void;
+    const pendingRun = new Promise((resolve) => {
+      finishRun = resolve;
+    });
+    const pendingList = new Promise((resolve) => {
+      finishList = resolve;
+    });
+    api.run.mockImplementation(async (id: string) =>
+      id === "run-1" ? { ...run, cursor: 10 } : pendingRun,
+    );
+    api.events.mockResolvedValue({
+      cursor: 20,
+      reset: false,
+      events: [],
+      snapshot: null,
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    api.runs.mockReturnValueOnce(pendingList);
+    await vi.advanceTimersByTimeAsync(2000);
+    await wrapper.findAll(".workflow-run-list button")[1].trigger("click");
+    finishList(list);
+    await flushPromises();
+    finishRun(next);
+    await flushPromises();
+    expect(router.currentRoute.value.query.workflow_run).toBe("run-2");
+    expect(wrapper.find('[data-testid="run-detail"]').text()).toContain(
+      "Second run",
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(api.events).toHaveBeenLastCalledWith("run-2", 20);
+    wrapper.unmount();
+  });
+
   it("reopens the saved run, observes completion and displays the complete result after remount", async () => {
     vi.useFakeTimers();
     const router = createRouter({

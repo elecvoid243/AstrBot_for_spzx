@@ -26,7 +26,7 @@ async def scripted_workflow(workflow_env):
         workflow_env: Real database, public services and model observations.
 
     Yields:
-        A service factory sharing persistence and delivery across five scenarios.
+        A service factory sharing persistence and delivery across public scenarios.
     """
     env = workflow_env
     created = []
@@ -338,6 +338,47 @@ async def test_revision_preserves_pinned_consumers_and_full_content(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("schema_location", ["properties", "const", "enum", "default"])
+async def test_schema_keywords_in_result_data_are_preserved(
+    workflow_env, scripted_workflow, schema_location
+):
+    env = workflow_env
+    result = {
+        "$ref": "https://source.test/evidence",
+        "$dynamicRef": "https://source.test/other",
+        "$id": "evidence-1",
+    }
+    if schema_location == "properties":
+        contract = {
+            "type": "object",
+            "properties": {name: {"type": "string"} for name in result},
+            "required": list(result),
+            "additionalProperties": False,
+        }
+    else:
+        contract = {
+            "type": "object",
+            schema_location: [result] if schema_location == "enum" else result,
+        }
+    asset = await env.service.save_asset(
+        "alice",
+        {"definition": {**env.asset["definition"], "output_contract": contract}},
+    )
+
+    async def collect(session_id, message_id, member_id):
+        tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
+        assert await tool.call(None, **result) == "Result accepted."
+        return "Done", []
+
+    service = scripted_workflow(collect)
+    run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+    done = await completed_run(service, run["run_id"])
+    assert done["status"] == "completed", done
+    artifact = await service.read_artifact("alice", **done["result_ref"])
+    assert artifact["content"] == result
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "schema",
     [
@@ -348,6 +389,15 @@ async def test_revision_preserves_pinned_consumers_and_full_content(
             "properties": {"value": {"$ref": "https://example.test/schema"}},
         },
         {"type": "object", "properties": {"value": {"$ref": "#/$defs/missing"}}},
+        {"type": "object", "allOf": [{"$ref": "https://example.test/schema"}]},
+        {
+            "type": "object",
+            "$defs": {"value": {"$dynamicRef": "https://example.test/schema"}},
+        },
+        {
+            "type": "object",
+            "properties": {"value": {"$id": "https://example.test/schema"}},
+        },
     ],
 )
 async def test_invalid_contracts_are_rejected_before_an_asset_can_start(

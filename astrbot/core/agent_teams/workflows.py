@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator, SchemaError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
-from referencing.jsonschema import DRAFT202012
+from referencing.jsonschema import DRAFT202012, Schema
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select, update
@@ -161,7 +161,7 @@ class WorkflowService:
                 Draft202012Validator.check_schema(definition.output_contract)
                 if definition.output_contract.get("type") != "object":
                     raise ValueError("Result contracts must declare an object")
-                remaining = [definition.output_contract]
+                remaining: list[Schema] = [definition.output_contract]
                 resolver = (
                     Registry()
                     .with_resource(
@@ -187,9 +187,9 @@ class WorkflowService:
                                 )
                             if key in value:
                                 resolver.lookup(value[key])
-                        remaining.extend(value.values())
-                    elif isinstance(value, list):
-                        remaining.extend(value)
+                        # Only schema locations contain schema keywords; values in
+                        # const, enum and default are ordinary result data.
+                        remaining.extend(DRAFT202012.subresources_of(value))
             except (SchemaError, ValueError, Unresolvable) as exc:
                 raise RoleAssetError(
                     "Invalid output contract",

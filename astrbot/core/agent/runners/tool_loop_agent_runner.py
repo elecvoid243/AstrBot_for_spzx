@@ -1038,6 +1038,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             payload["model"] = self.req.model
         if not restored_request:
             await self._save_call_checkpoint("request", contexts=contexts)
+        execution = current_team_execution.get()
+        if execution and execution.admit_work:
+            await execution.admit_work()
         if self.streaming:
             stream = self.provider.text_chat_stream(**payload)
             try:
@@ -1957,6 +1960,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             return False
         contract = tool.recovery
         if contract.query is not None:
+            execution = current_team_execution.get()
+            if execution and execution.admit_work:
+                await execution.admit_work()
             try:
                 queried = await self._await_or_stop(
                     asyncio.wait_for(
@@ -2301,6 +2307,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     valid_params = func_tool_args
 
                 execution = current_team_execution.get()
+                if execution and execution.admit_work:
+                    await execution.admit_work()
                 if call_state is not None and not reused:
                     assert self._call_checkpoint is not None
                     if func_tool_id not in self._call_checkpoint["started_tools"]:

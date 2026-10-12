@@ -1204,7 +1204,12 @@ class WorkflowService:
                 task.cancel()
         if request.action == "continue":
             for identity in resume_ids:
-                await self.recover_run(username, identity)
+                try:
+                    await self.recover_run(username, identity)
+                except RoleAssetError:
+                    # A local tool or capacity wait must not reject the saved
+                    # whole-run decision or prevent independent tasks resuming.
+                    pass
             if row.snapshot.get("engine") == "graph_v2":
                 await self.advance_run(username, run_id)
         return await self.get_run(username, run_id)
@@ -1932,7 +1937,21 @@ class WorkflowService:
             )
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-        return await self.get_run(username, run_id)
+        current = await self.get_run(username, run_id)
+        if current["control"]["status"] == "active":
+            for child in current.get("tasks", []):
+                if child["status"] == "interrupted" and (
+                    child["state"].get("paused_resume")
+                    or child["state"].get("retry_pending")
+                ):
+                    try:
+                        await self.recover_run(username, child["run_id"])
+                    except RoleAssetError:
+                        # Reconsider accepted resumes when capacity is released,
+                        # retaining unresolved local tool waits as local waits.
+                        pass
+            current = await self.get_run(username, run_id)
+        return current
 
     async def _execute_graph_task(
         self,
@@ -2455,6 +2474,84 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
+            parent_id = row.snapshot.get("parent_run_id")
+            if parent_id:
+                parent = await session.get(AgentWorkflowRun, parent_id)
+                schedule = await session.get(AgentWorkflowSchedule, parent_id)
+                if (
+                    parent is None
+                    or schedule is None
+                    or parent.status not in {"running", "blocked"}
+                ):
+                    raise RoleAssetError(
+                        "The parent workflow cannot continue", status=409
+                    )
+                changed = await session.execute(
+                    update(AgentWorkflowSchedule)
+                    .where(
+                        col(AgentWorkflowSchedule.run_id) == parent_id,
+                        col(AgentWorkflowSchedule.revision) == schedule.revision,
+                    )
+                    .values(revision=schedule.revision + 1)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    raise RoleAssetError("Scheduling ownership has changed", status=409)
+                siblings = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowRun).where(
+                                AgentWorkflowRun.snapshot["parent_run_id"].as_string()
+                                == parent_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                active = [task for task in siblings if task.status == "running"]
+                role_id = row.snapshot["definition"]["role_id"]
+                role_limit = row.snapshot["effective"].get("max_parallel")
+                if (
+                    len(active) >= parent.snapshot["definition"]["max_parallel"]
+                    or any(
+                        task.snapshot["member"]["member_id"]
+                        == row.snapshot["member"]["member_id"]
+                        for task in active
+                    )
+                    or role_limit is not None
+                    and sum(
+                        task.snapshot["definition"]["role_id"] == role_id
+                        for task in active
+                    )
+                    >= role_limit
+                ):
+                    raise RoleAssetError(
+                        "Recovery is waiting for workflow or member capacity",
+                        status=409,
+                    )
+                parent.status = "running"
+                parent.state = {**parent.state, "reason": None}
+                session.add(parent)
+                # Only unstarted descendants blocked by this interrupted task
+                # become pending again; unrelated failures keep their own state.
+                descendants = {row.snapshot["node_id"]}
+                while True:
+                    expanded = descendants | {
+                        edge["target"]
+                        for edge in parent.snapshot["definition"]["edges"]
+                        if edge["source"] in descendants
+                    }
+                    if expanded == descendants:
+                        break
+                    descendants = expanded
+                for sibling in siblings:
+                    if (
+                        sibling.status == "dependency_failed"
+                        and sibling.snapshot["node_id"] in descendants
+                    ):
+                        sibling.status = "pending"
+                        sibling.state = {**sibling.state, "reason": None}
+                        session.add(sibling)
             if checkpoint is None and (
                 row.state.get("paused_resume") or row.state.get("retry_pending")
             ):
@@ -2554,84 +2651,6 @@ class WorkflowService:
                     "Tool execution has started; its result requires confirmation.",
                     status=409,
                 )
-            parent_id = row.snapshot.get("parent_run_id")
-            if parent_id:
-                parent = await session.get(AgentWorkflowRun, parent_id)
-                schedule = await session.get(AgentWorkflowSchedule, parent_id)
-                if (
-                    parent is None
-                    or schedule is None
-                    or parent.status not in {"running", "blocked"}
-                ):
-                    raise RoleAssetError(
-                        "The parent workflow cannot continue", status=409
-                    )
-                changed = await session.execute(
-                    update(AgentWorkflowSchedule)
-                    .where(
-                        col(AgentWorkflowSchedule.run_id) == parent_id,
-                        col(AgentWorkflowSchedule.revision) == schedule.revision,
-                    )
-                    .values(revision=schedule.revision + 1)
-                )
-                if cast(CursorResult, changed).rowcount != 1:
-                    raise RoleAssetError("Scheduling ownership has changed", status=409)
-                siblings = (
-                    (
-                        await session.execute(
-                            select(AgentWorkflowRun).where(
-                                AgentWorkflowRun.snapshot["parent_run_id"].as_string()
-                                == parent_id,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                active = [task for task in siblings if task.status == "running"]
-                role_id = row.snapshot["definition"]["role_id"]
-                role_limit = row.snapshot["effective"].get("max_parallel")
-                if (
-                    len(active) >= parent.snapshot["definition"]["max_parallel"]
-                    or any(
-                        task.snapshot["member"]["member_id"]
-                        == row.snapshot["member"]["member_id"]
-                        for task in active
-                    )
-                    or role_limit is not None
-                    and sum(
-                        task.snapshot["definition"]["role_id"] == role_id
-                        for task in active
-                    )
-                    >= role_limit
-                ):
-                    raise RoleAssetError(
-                        "Recovery is waiting for workflow or member capacity",
-                        status=409,
-                    )
-                parent.status = "running"
-                parent.state = {**parent.state, "reason": None}
-                session.add(parent)
-                # Only unstarted descendants blocked by this interrupted task
-                # become pending again; unrelated failures keep their own state.
-                descendants = {row.snapshot["node_id"]}
-                while True:
-                    expanded = descendants | {
-                        edge["target"]
-                        for edge in parent.snapshot["definition"]["edges"]
-                        if edge["source"] in descendants
-                    }
-                    if expanded == descendants:
-                        break
-                    descendants = expanded
-                for sibling in siblings:
-                    if (
-                        sibling.status == "dependency_failed"
-                        and sibling.snapshot["node_id"] in descendants
-                    ):
-                        sibling.status = "pending"
-                        sibling.state = {**sibling.state, "reason": None}
-                        session.add(sibling)
             execution_id = uuid.uuid4().hex
             for call in calls:
                 pending = call.get("recovery", {}).get("pending_decision")
@@ -3206,22 +3225,6 @@ class WorkflowService:
                     "Failed to finish saved workflow submission: %s", run_id
                 )
         async with self.db.get_db() as session:
-            roots = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowRun).where(
-                            col(AgentWorkflowRun.status) == "running",
-                            AgentWorkflowRun.snapshot["engine"].as_string()
-                            == "graph_v2",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        for root in roots:
-            await self.advance_run(root.owner_username, root.run_id)
-        async with self.db.get_db() as session:
             resume = (
                 (
                     await session.execute(
@@ -3249,6 +3252,23 @@ class WorkflowService:
                 except RoleAssetError:
                     # Preserve local tool uncertainty or missing frozen resources.
                     pass
+
+        async with self.db.get_db() as session:
+            roots = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.status) == "running",
+                            AgentWorkflowRun.snapshot["engine"].as_string()
+                            == "graph_v2",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for root in roots:
+            await self.advance_run(root.owner_username, root.run_id)
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -3464,6 +3484,9 @@ class WorkflowService:
                     record_process=record,
                     save_checkpoint=save,
                     checkpoint=checkpoint,
+                    admit_work=lambda: self._await_execution_permission(
+                        username, run_id, execution_id
+                    ),
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", [])),

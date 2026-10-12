@@ -83,6 +83,8 @@ Resolve an unknown tool outcome under **Saved member process** first. Ordinary t
 
 ![Paused whole-run controls and the original Attempt in the actual WebUI](/images/agent-workflow-controls-en.jpg)
 
+![A retried task retains the previous failure, exact inputs and saved usage](/images/agent-workflow-retry-history.jpg)
+
 ## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.

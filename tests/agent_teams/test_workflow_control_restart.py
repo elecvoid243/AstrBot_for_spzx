@@ -13,9 +13,21 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "scenario", ["control_pause", "control_continue", "control_cancel", "control_retry", "control_unknown"]
+    "scenario",
+    [
+        "control_pause",
+        "control_continue",
+        "control_cancel",
+        "control_retry",
+        "control_unknown",
+        "control_request",
+        "control_capacity",
+        "control_mixed",
+    ],
 )
-def test_control_decision_survives_process_termination(tmp_path, scenario, preview=False):
+def test_control_decision_survives_process_termination(
+    tmp_path, scenario, preview=False
+):
     """Kill and rebuild a pipeline after a public whole-run or retry decision.
 
     Args:
@@ -26,6 +38,7 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
     effects = []
     requests = []
     retry_allowed = False
+    release_model = threading.Event()
 
     class ExternalService(BaseHTTPRequestHandler):
         """External model and tool boundary whose records survive worker loss."""
@@ -34,15 +47,24 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
             pass
 
         def do_POST(self):
+            """Record requests and effects outside the execution process.
+
+            Returns:
+                None after returning a controlled model or tool response.
+            """
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/tool":
                 effects.append(payload)
                 response = {"text": "External effect receipt"}
             else:
                 requests.append(payload)
+                if scenario == "control_capacity":
+                    release_model.wait(timeout=25)
                 context = json.dumps(payload["contexts"])
                 if preview and (tmp_path / "fail-model").exists():
-                    response = {"error": "Verified provider failure for UI retry acceptance"}
+                    response = {
+                        "error": "Verified provider failure for UI retry acceptance"
+                    }
                 elif (
                     scenario == "control_retry"
                     and not retry_allowed
@@ -72,8 +94,13 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
                         "tools_call_ids": ["evidence-original"],
                         "usage": {"input_other": 17, "output": 9},
                     }
+                    if scenario == "control_mixed":
+                        response["tools_call_args"] = [{"value": "b" if '"text": "b"' in context or '"content": "b"' in context else "a"}]
             if preview:
-                (tmp_path / "external-ledger.json").write_text(json.dumps({"effects": effects, "requests": requests}), encoding="utf-8")
+                (tmp_path / "external-ledger.json").write_text(
+                    json.dumps({"effects": effects, "requests": requests}),
+                    encoding="utf-8",
+                )
             body = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -121,32 +148,49 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
                 worker.wait(timeout=10)
         effects_before = len(effects)
         retry_allowed = True
-        assert effects_before == 1
+        assert effects_before == (0 if scenario in {"control_request", "control_capacity"} else 2 if scenario == "control_mixed" else 1)
         if preview:
             with (tmp_path / "preview.log").open("w", encoding="utf-8") as log:
-                worker = subprocess.Popen([*command, "serve", scenario], cwd=root, stdout=log, stderr=subprocess.STDOUT, env=environment)
+                worker = subprocess.Popen(
+                    [*command, "serve", scenario],
+                    cwd=root,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=environment,
+                )
                 try:
                     while worker.poll() is None:
                         time.sleep(1)
-                    assert worker.returncode == 0, (tmp_path / "preview.log").read_text(encoding="utf-8")
+                    assert worker.returncode == 0, (tmp_path / "preview.log").read_text(
+                        encoding="utf-8"
+                    )
                 finally:
                     if worker.poll() is None:
                         worker.kill()
                         worker.wait(timeout=10)
             return
-        if scenario == "control_continue":
+        if scenario in {"control_continue", "control_capacity"}:
             with (tmp_path / "second-worker.log").open("w", encoding="utf-8") as log:
-                worker = subprocess.Popen([*command, "recover_decision", scenario], cwd=root, stdout=log, stderr=subprocess.STDOUT, env=environment)
+                worker = subprocess.Popen(
+                    [*command, "recover_decision", scenario],
+                    cwd=root,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=environment,
+                )
                 try:
                     deadline = time.monotonic() + 45
                     while not (tmp_path / "second-ready.json").exists():
-                        assert worker.poll() is None, (tmp_path / "second-worker.log").read_text(encoding="utf-8")
+                        assert worker.poll() is None, (
+                            tmp_path / "second-worker.log"
+                        ).read_text(encoding="utf-8")
                         assert time.monotonic() < deadline
                         time.sleep(0.03)
                 finally:
                     worker.kill()
                     worker.wait(timeout=10)
-            assert len(effects) == 1 and len(requests) == 1
+            assert len(effects) == (0 if scenario == "control_capacity" else 1)
+            assert len(requests) == (0 if scenario == "control_capacity" else 1)
         rebuilt = subprocess.run(
             [*command, "recover", scenario],
             cwd=root,
@@ -160,7 +204,25 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         before, after = evidence["before"], evidence["after"]
         assert after["snapshot"] == before["snapshot"]
-        if scenario == "control_cancel":
+        if scenario == "control_mixed":
+            assert after["control"]["status"] == "active"
+            assert after["tasks"][0]["status"] == "interrupted"
+            assert after["tasks"][0]["tool_calls"][0]["status"] == "unknown"
+            assert after["tasks"][1]["status"] == "completed"
+            assert len(effects) == 2
+            assert len(requests) == 4
+        elif scenario == "control_capacity":
+            assert after["progress"]["running"] == 1
+            assert after["tasks"][0]["status"] == "running"
+            assert after["tasks"][1]["status"] == "pending"
+            assert len(requests) == 1 and not effects
+            assert after["tasks"][0]["state"]["attempt_id"] == before["tasks"][0]["state"]["attempt_id"]
+        elif scenario == "control_request":
+            assert after["control"]["status"] == "paused"
+            assert after["state"]["attempt_id"] == before["state"]["attempt_id"]
+            assert len(effects) == 0
+            assert len(requests) == 1
+        elif scenario == "control_cancel":
             assert after["status"] == "cancelled"
             assert len(effects) == effects_before
         elif scenario == "control_unknown":
@@ -175,7 +237,9 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
             if scenario in {"control_pause", "control_continue"}:
                 assert len(effects) == 1
                 assert len(requests) == 3
-                assert before["control"]["status"] == ("paused" if scenario == "control_pause" else "active")
+                assert before["control"]["status"] == (
+                    "paused" if scenario == "control_pause" else "active"
+                )
                 assert (
                     len(
                         [
@@ -212,5 +276,6 @@ def test_control_decision_survives_process_termination(tmp_path, scenario, previ
                     == 1
                 )
     finally:
+        release_model.set()
         server.shutdown()
         server.server_close()

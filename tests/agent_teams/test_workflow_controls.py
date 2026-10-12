@@ -20,6 +20,11 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 async def test_pause_stops_dispatch_and_continue_keeps_the_original_attempt(
     workflow_env,
 ):
+    """Pause admission and deduplicate controls without replacing the Attempt.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
     delivered = asyncio.Event()
 
@@ -79,6 +84,11 @@ async def test_pause_stops_dispatch_and_continue_keeps_the_original_attempt(
 
 @pytest.mark.asyncio
 async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env):
+    """Retain failure evidence and exact artifact versions in a new Attempt.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
     source = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     source = await completed_run(env.service, source["run_id"])
@@ -157,6 +167,11 @@ async def test_retry_retains_failed_attempt_usage_and_fixed_inputs(workflow_env)
 async def test_pause_preserves_local_failure_and_retry_uses_graph_capacity(
     workflow_env,
 ):
+    """Keep local waits and queue graph retries behind occupied capacity.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
     started = []
     texts = {}
@@ -243,6 +258,11 @@ async def test_pause_preserves_local_failure_and_retry_uses_graph_capacity(
 async def test_cancel_is_terminal_propagates_and_rejects_late_public_writes(
     workflow_env,
 ):
+    """Propagate cancellation and reject late observations and submissions.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
     entered = asyncio.Event()
     cancelled = asyncio.Event()
@@ -310,15 +330,24 @@ async def test_cancel_is_terminal_propagates_and_rejects_late_public_writes(
 
 @pytest.mark.asyncio
 async def test_http_controls_validate_owner_revision_and_reused_request(workflow_env):
+    """Validate ownership, observed revisions and input policy over HTTP.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
 
     async def collect(session_id, message_id, member_id):
         await asyncio.Event().wait()
 
-    async def deliver(session_id, text, context=None, execution_token=None, message_id=None):
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
         return message_id
 
-    env.service.ports_factory = lambda _: TeamPorts(deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None)
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     app = FastAPI()
     app.state.services = SimpleNamespace(workflow_assets=env.service)
@@ -326,25 +355,52 @@ async def test_http_controls_validate_owner_revision_and_reused_request(workflow
     app.dependency_overrides[require_dashboard_user] = lambda: "bob"
     url = f"/api/v1/workflow_runs/{run['run_id']}/control"
     payload = {"request_id": "http-pause", "action": "pause", "expected_revision": 0}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         assert (await client.post(url, json=payload)).status_code == 404
         app.dependency_overrides[require_dashboard_user] = lambda: "alice"
-        assert (await client.post(url, json={**payload, "action": "invalid"})).status_code == 422
+        assert (
+            await client.post(url, json={**payload, "action": "invalid"})
+        ).status_code == 422
         assert (await client.post(url, json=payload)).status_code == 200
         assert (await client.post(url, json=payload)).status_code == 200
-        assert (await client.post(url, json={**payload, "action": "continue"})).status_code == 409
-        assert (await client.post(url, json={**payload, "request_id": "stale-continue", "action": "continue"})).status_code == 409
+        assert (
+            await client.post(url, json={**payload, "action": "continue"})
+        ).status_code == 409
+        assert (
+            await client.post(
+                url,
+                json={**payload, "request_id": "stale-continue", "action": "continue"},
+            )
+        ).status_code == 409
         retry = f"/api/v1/workflow_runs/{run['run_id']}/retry"
-        assert (await client.post(retry, json={"request_id": "unsafe", "attempt_id": run["state"]["attempt_id"], "input_policy": "latest"})).status_code == 422
+        assert (
+            await client.post(
+                retry,
+                json={
+                    "request_id": "unsafe",
+                    "attempt_id": run["state"]["attempt_id"],
+                    "input_policy": "latest",
+                },
+            )
+        ).status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_paused_time_does_not_exhaust_the_reply_timeout(workflow_env):
+    """Suspend the reply deadline during a persisted whole-run pause.
+
+    Args:
+        workflow_env: Public services and real SQLite with scripted execution ports.
+    """
     env = workflow_env
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def deliver(session_id, text, context=None, execution_token=None, message_id=None):
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
         return message_id
 
     async def collect(session_id, message_id, member_id):
@@ -352,15 +408,27 @@ async def test_paused_time_does_not_exhaust_the_reply_timeout(workflow_env):
 
         entered.set()
         await release.wait()
-        await AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0].call(None, text="Completed after pause")
+        await AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[
+            0
+        ].call(None, text="Completed after pause")
         return "Done", []
 
-    env.service.ports_factory = lambda _: TeamPorts(deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None, reply_timeout=0.1)
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver,
+        collect=collect,
+        is_busy=lambda _: False,
+        emit=lambda _: None,
+        reply_timeout=0.1,
+    )
     run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
     await asyncio.wait_for(entered.wait(), 3)
-    await env.service.control_run("alice", run["run_id"], {"request_id": "pause-timeout", "action": "pause"})
+    await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "pause-timeout", "action": "pause"}
+    )
     await asyncio.sleep(0.3)
     assert (await env.service.get_run("alice", run["run_id"]))["status"] == "running"
-    await env.service.control_run("alice", run["run_id"], {"request_id": "continue-timeout", "action": "continue"})
+    await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "continue-timeout", "action": "continue"}
+    )
     release.set()
     assert (await completed_run(env.service, run["run_id"]))["status"] == "completed"

@@ -83,6 +83,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     providers = ProviderManager(acm, db, personas)
     providers.llm_tools = FunctionToolManager()
 
+    mixed_started = asyncio.Event()
+
     async def external_tool(event, value, idempotency_key=None):
         """Record a real external effect outside the worker process.
 
@@ -102,6 +104,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if idempotency_key:
                 payload["idempotency_key"] = idempotency_key
             response = await client.post(endpoint + "/tool", json=payload)
+            if action == "start" and scenario == "control_mixed":
+                child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
+                if child["snapshot"]["node_id"] == "a":
+                    mixed_started.set()
+                    await asyncio.Future()
+                await mixed_started.wait()
+                await service.control_run("alice", child["snapshot"]["parent_run_id"], {"request_id": "pause-mixed", "action": "pause"})
             if action == "start" and (scenario in {"started", "control_unknown"} or scenario.startswith(("manual_", "reconcile_", "idempotent_", "safe_")) and scenario != "manual_batch" or scenario in {"batch_unknown", "manual_batch"} and value == "unknown-effect"):
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
@@ -244,7 +253,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     "parameter_query": all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
                 })
-                if action == "start" and scenario == "request":
+                if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution
                     (folder / "kill-ready.json").write_text(json.dumps({"run_id": current_team_execution.get().run_id}), encoding="utf-8")
                     await asyncio.Future()
@@ -286,6 +295,15 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             request: Effective request built by the main pipeline.
         """
         request.system_prompt += "\nprofile=" + context.get_config().get("test_profile", "")
+        if action == "start" and scenario == "control_capacity":
+            child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
+            root_id = child["snapshot"]["parent_run_id"]
+            await service.control_run("alice", root_id, {"request_id": "pause-before-first-request", "action": "pause"})
+            (folder / "kill-ready.json").write_text(json.dumps({"run_id": root_id}), encoding="utf-8")
+            await asyncio.Future()
+        if action != "start" and scenario == "control_request":
+            run_id = event.get_extra("agent_team_execution").run_id
+            await service.control_run("alice", run_id, {"request_id": "pause-restored-request", "action": "pause"})
         request.func_tool.add_tool(providers.llm_tools.func_list[0])
         if scenario.startswith("overflow"):
             request.func_tool.add_tool(providers.llm_tools.func_list[1])
@@ -420,7 +438,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
         role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"max_instances": 3} if scenario == "manual_graph" else {})},
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
             "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
         })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
@@ -439,6 +457,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             ], "edges": [{"source": "write", "target": "dependent"}]}})
         if scenario == "graph":
             asset = await service.save_asset("alice", {"definition": {"name": "Original graph", "tasks": [{"id": "write", "name": "Write", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}], "edges": []}})
+        if scenario in {"control_capacity", "control_mixed"}:
+            asset = await service.save_asset("alice", {"definition": {"name": "Paused graph", "max_parallel": 2 if scenario == "control_mixed" else 1, "tasks": [{"id": name, "name": name, "member": name, "role_id": role["role_id"], "role_version": 1, "task": name} for name in ["a", "b"]], "edges": []}})
         if scenario in {"save_failure", "observation_failure"}:
             async with db.engine.begin() as connection:
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'response' BEGIN SELECT RAISE(ABORT, 'checkpoint storage unavailable'); END" if scenario == "save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END"))
@@ -489,6 +509,51 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
+            if scenario == "control_mixed":
+                await service.boot_sweep()
+                await service.control_run("alice", run_id, {"request_id": "continue-mixed", "action": "continue"})
+                for _ in range(500):
+                    current = await service.get_run("alice", run_id)
+                    if current["tasks"][1]["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.02)
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current}), encoding="utf-8")
+                return
+            if scenario == "control_capacity":
+                await service.boot_sweep()
+                if action == "recover_decision":
+                    def capacity_flush(session, flush_context):
+                        """Select the durable continue decision for process loss.
+
+                        Args:
+                            session: Actual persistence transaction.
+                            flush_context: SQLAlchemy flush context.
+                        """
+                        if any(isinstance(row, AgentWorkflowEvent) and row.kind == "run.continue" for row in session.new):
+                            session.info["capacity_continue"] = True
+
+                    def capacity_commit(session):
+                        """Hold before no-checkpoint recovery can dispatch.
+
+                        Args:
+                            session: Actual committed transaction.
+                        """
+                        if session.info.pop("capacity_continue", False):
+                            (folder / "second-ready.json").write_text("{}", encoding="utf-8")
+                            while True:
+                                time.sleep(1)
+
+                    sql_event.listen(Session, "after_flush", capacity_flush)
+                    sql_event.listen(Session, "after_commit", capacity_commit)
+                    await service.control_run("alice", run_id, {"request_id": "continue-before-dispatch", "action": "continue"})
+                for _ in range(200):
+                    current = await service.get_run("alice", run_id)
+                    if current["progress"]["running"] == 1 and current["tasks"][0]["recovery"]["boundary"] == "request":
+                        break
+                    await asyncio.sleep(0.03)
+                await asyncio.sleep(0.4)
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
+                return
             if scenario.startswith("control_"):
                 await service.boot_sweep()
                 stopped = await service.get_run("alice", run_id)
@@ -553,6 +618,16 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                         assert exc.status == 409 and "uncertain" in str(exc)
                     else:
                         raise AssertionError("Task retry must not bypass tool resolution")
+                if scenario == "control_request":
+                    await service.recover_run("alice", run_id)
+                    for _ in range(500):
+                        current = await service.get_run("alice", run_id)
+                        if current["control"]["status"] == "paused":
+                            break
+                        await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.5)
+                    (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
+                    return
                 for _ in range(1500):
                     current = await service.get_run("alice", run_id)
                     if current["status"] != "running":
@@ -662,7 +737,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         if action == "start" and scenario.startswith("control_"):
             for _ in range(1500):
                 current = await service.get_run("alice", run["run_id"])
-                ready = current["control"]["status"] == "cancelled" if scenario == "control_cancel" else current["control"]["status"] == "paused" and current["recovery"]["boundary"] == "tool_result" if scenario in {"control_pause", "control_continue"} else current["status"] == "awaiting_result"
+                ready = current["control"]["status"] == "paused" and current["tasks"][1]["recovery"]["boundary"] == "tool_result" if scenario == "control_mixed" else current["control"]["status"] == "cancelled" if scenario == "control_cancel" else current["control"]["status"] == "paused" and current["recovery"]["boundary"] == "tool_result" if scenario in {"control_pause", "control_continue"} else current["status"] == "awaiting_result"
                 if ready:
                     break
                 await asyncio.sleep(0.02)

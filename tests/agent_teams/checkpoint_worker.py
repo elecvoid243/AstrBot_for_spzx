@@ -211,8 +211,17 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         # Fault injection runs only AFTER the real response transaction commits.
         # Correctness assertions use public services and the external HTTP ledger.
         def after_flush(session, flush_context):
+            """Mark the selected durable boundary before the transaction commits.
+
+            Args:
+                session: Real SQLAlchemy session containing pending workflow rows.
+                flush_context: SQLAlchemy's flush context supplied to the listener.
+
+            Returns:
+                None after recording any matching kill boundary on the session.
+            """
             for row in [*session.new, *session.dirty]:
-                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
+                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
@@ -222,6 +231,14 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     session.info["kill_boundary"] = row.run_id
 
         def after_commit(session):
+            """Hold a committed boundary until the parent terminates this process.
+
+            Args:
+                session: Session whose marked transaction has just committed.
+
+            Returns:
+                None for other transactions; a marked transaction waits for termination.
+            """
             run_id = session.info.pop("kill_boundary", None)
             if run_id:
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
@@ -290,6 +307,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if scenario == "missing_model":
                 providers.inst_map.pop("model-original")
                 providers.provider_insts.clear()
+            if scenario == "changed_tool":
+                providers.llm_tools.func_list[0].description = "Changed external evidence capability."
             await service.boot_sweep()
             recoveries = []
             try:

@@ -30,6 +30,10 @@ class ProcessPersistenceError(RuntimeError):
     """Stop dependent execution when a complete observation cannot be saved."""
 
 
+class CheckpointRecoveryError(ProcessPersistenceError):
+    """Block the original attempt until its saved capabilities can be restored."""
+
+
 @dataclass
 class NodeExecutionBinding:
     """Execution profile a dispatched team node turn must run with."""
@@ -82,6 +86,8 @@ class NodeExecutionBinding:
     """Persist execution state before dependent model or tool work proceeds."""
     checkpoint: dict | None = None
     """Original attempt state to restore after rebuilding the normal main pipeline."""
+    recovery_error: CheckpointRecoveryError | None = None
+    """Restore failure retained when the main pipeline renders an error reply."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -133,6 +139,7 @@ async def execute_team_turn(
 
     Raises:
         ValueError: When the selected configuration profile was deleted.
+        CheckpointRecoveryError: Saved capabilities cannot currently be restored.
         Exception: When dispatch or collection fails. The invocation is stopped.
     """
     from astrbot.core.utils.active_event_registry import active_event_registry
@@ -180,15 +187,19 @@ async def execute_team_turn(
         if on_delivered is not None:
             await on_delivered(binding.message_id)
         if on_event is not None:
-            return await ports.collect(
+            result = await ports.collect(
                 member["session_id"],
                 binding.message_id,
                 member["member_id"],
                 on_event=on_event,
             )
-        return await ports.collect(
-            member["session_id"], binding.message_id, member["member_id"]
-        )
+        else:
+            result = await ports.collect(
+                member["session_id"], binding.message_id, member["member_id"]
+            )
+        if binding.recovery_error is not None:
+            raise binding.recovery_error
+        return result
     except BaseException:
         if binding.message_id is not None:
             active_event_registry.request_agent_stop_all(

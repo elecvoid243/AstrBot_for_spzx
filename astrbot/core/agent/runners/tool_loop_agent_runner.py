@@ -34,6 +34,7 @@ from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, Thin
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_image_cache import tool_image_cache
 from astrbot.core.agent_team_execution import (
+    CheckpointRecoveryError,
     ProcessPersistenceError,
     current_team_execution,
 )
@@ -472,9 +473,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if self._checkpoint_enabled and execution and execution.checkpoint:
             saved = copy.deepcopy(execution.checkpoint)
             if saved["started_tools"]:
-                raise ProcessPersistenceError(
+                execution.recovery_error = CheckpointRecoveryError(
                     "Started tools require confirmation before recovery"
                 )
+                raise execution.recovery_error
             available = self.effective_raw_tool_set
             if saved["tools"] != [
                 {
@@ -484,9 +486,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 }
                 for tool in (available.tools if available else [])
             ]:
-                raise ProcessPersistenceError(
+                execution.recovery_error = CheckpointRecoveryError(
                     "Saved tool capabilities have changed; recovery is blocked"
                 )
+                raise execution.recovery_error
             self.run_context.messages = bind_checkpoint_messages(saved["messages"])
             self.req.model = saved["model"]
             self.req.llm_params = saved["llm_params"]

@@ -19,11 +19,16 @@ from sqlalchemy import func, true
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
 from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.agent_team_execution import ProcessPersistenceError, execute_team_turn
+from astrbot.core.agent_team_execution import (
+    CheckpointRecoveryError,
+    ProcessPersistenceError,
+    execute_team_turn,
+)
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import (
     RoleAssetError,
@@ -845,6 +850,31 @@ class WorkflowService:
         }
         return result
 
+    async def _require_execution_owner(
+        self, session: AsyncSession, run_id: str, execution_id: str
+    ) -> None:
+        """Fence durable writes inside their existing transaction.
+
+        Args:
+            session: Transaction that will persist the dependent workflow write.
+            run_id: Run whose execution ownership must still be active.
+            execution_id: Durable owner assigned before this invocation began.
+
+        Raises:
+            RoleAssetError: Recovery or completion has displaced this executor.
+        """
+        changed = await session.execute(
+            update(AgentWorkflowRun)
+            .where(
+                col(AgentWorkflowRun.run_id) == run_id,
+                col(AgentWorkflowRun.status) == "running",
+                AgentWorkflowRun.state["execution_id"].as_string() == execution_id,
+            )
+            .values(state=AgentWorkflowRun.state)
+        )
+        if cast(CursorResult, changed).rowcount != 1:
+            raise RoleAssetError("Execution ownership has changed", status=409)
+
     async def record_process(
         self,
         username: str,
@@ -894,18 +924,7 @@ class WorkflowService:
                     "Process record belongs to a stale attempt", status=409
                 )
             if execution_id is not None:
-                changed = await session.execute(
-                    update(AgentWorkflowRun)
-                    .where(
-                        col(AgentWorkflowRun.run_id) == run_id,
-                        col(AgentWorkflowRun.status) == "running",
-                        AgentWorkflowRun.state["execution_id"].as_string()
-                        == execution_id,
-                    )
-                    .values(state=AgentWorkflowRun.state)
-                )
-                if cast(CursorResult, changed).rowcount != 1:
-                    raise RoleAssetError("Execution ownership has changed", status=409)
+                await self._require_execution_owner(session, run_id, execution_id)
             previous = await session.get(AgentWorkflowProcess, identity)
             if previous:
                 if previous.kind != kind or previous.data != data:
@@ -1463,18 +1482,7 @@ class WorkflowService:
             ):
                 raise RoleAssetError("Execution ownership has changed", status=409)
             if execution_id is not None and row.pending_result is None:
-                changed = await session.execute(
-                    update(AgentWorkflowRun)
-                    .where(
-                        col(AgentWorkflowRun.run_id) == run_id,
-                        col(AgentWorkflowRun.status) == "running",
-                        AgentWorkflowRun.state["execution_id"].as_string()
-                        == execution_id,
-                    )
-                    .values(state=AgentWorkflowRun.state)
-                )
-                if cast(CursorResult, changed).rowcount != 1:
-                    raise RoleAssetError("Execution ownership has changed", status=409)
+                await self._require_execution_owner(session, run_id, execution_id)
             if row.pending_result is not None:
                 if row.pending_result == payload:
                     return
@@ -1853,18 +1861,7 @@ class WorkflowService:
             if run is None or run.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
             if execution_id is not None:
-                changed = await session.execute(
-                    update(AgentWorkflowRun)
-                    .where(
-                        col(AgentWorkflowRun.run_id) == run_id,
-                        col(AgentWorkflowRun.status) == "running",
-                        AgentWorkflowRun.state["execution_id"].as_string()
-                        == execution_id,
-                    )
-                    .values(state=AgentWorkflowRun.state)
-                )
-                if cast(CursorResult, changed).rowcount != 1:
-                    raise RoleAssetError("Execution ownership has changed", status=409)
+                await self._require_execution_owner(session, run_id, execution_id)
             if not run.state.get("attempt_id") or not (
                 (attempt_id is None and run.status == "completed")
                 or (
@@ -2487,6 +2484,9 @@ class WorkflowService:
             status = "blocked"
             state["reason"] = str(exc)
             state["issues"] = exc.fields
+        except CheckpointRecoveryError as exc:
+            status = "blocked"
+            state["reason"] = str(exc)
         except Exception as exc:
             state["reason"] = str(exc)
             logger.error("Single-task workflow execution failed: %s", exc)

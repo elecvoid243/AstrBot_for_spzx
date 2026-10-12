@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "parameters", "repair", "graph", "concurrent"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "graph", "concurrent"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -80,6 +80,11 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             pass
 
         def do_POST(self):
+            """Record model calls and tool effects independently of the worker.
+
+            Returns:
+                None after persisting the ledger and sending the scripted response.
+            """
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/tool":
                 effects.append(payload)
@@ -150,6 +155,18 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert len(requests) == 1
             assert effects == []
             return
+        if scenario == "changed_tool":
+            assert evidence["after"]["status"] == "blocked"
+            assert "Saved tool capabilities have changed" in evidence["after"]["state"]["reason"]
+            assert evidence["after"]["recovery"]["available"] is True
+            assert len(requests) == 1
+            assert effects == []
+            blocked = evidence["after"]
+            repaired = subprocess.run([*command, "recover", "response"], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
+            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+            assert evidence["after"]["snapshot"] == blocked["snapshot"]
+            assert evidence["after"]["state"]["attempt_id"] == blocked["state"]["attempt_id"]
         assert evidence["after"]["status"] == "completed"
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert evidence["after"]["state"]["attempt_id"] == evidence["before"]["state"]["attempt_id"]

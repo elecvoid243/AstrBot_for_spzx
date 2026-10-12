@@ -312,7 +312,8 @@
       "interrupted": "Interrupted",
       "pending": "Waiting for dependencies or capacity",
       "skipped": "Conditional path skipped",
-      "dependency_failed": "Upstream task failed"
+      "dependency_failed": "Upstream task failed",
+      "cancelled": "Cancelled"
     },
     "contract": "Output contract (JSON Schema)",
     "contractHint": "Leave empty for non-empty text. Use an object schema for structured results; files contains stable file_id references.",
@@ -433,5 +434,26 @@
       "tools_applied": "Tool results applied to context; continue the next model step.",
       "none": "No resumable execution checkpoint."
     }
+  },
+  "controls": {
+    "title": "Whole run controls",
+    "pause": "Pause run",
+    "continue": "Continue run",
+    "cancel": "Cancel run",
+    "retry": "Retry failed task",
+    "confirm": "Confirm decision",
+    "states": {
+      "active": "New work is allowed",
+      "paused": "Paused — new work is stopped",
+      "cancelled": "Cancelled — no new work will start"
+    },
+    "inFlight": "In-flight external calls may still finish. Pausing or cancelling does not undo external effects.",
+    "semantics": "Continue and checkpoint recovery keep the same Attempt. Retry creates a new Attempt. A new iteration creates a new task and is a separate workflow action.",
+    "resolveFirst": "Resolve uncertain tool effects in Saved member process before retrying this task.",
+    "previous": "Previous attempt",
+    "originalInputs": "Original frozen inputs and exact artifact versions",
+    "usageRetained": "Previous consumption and full process records remain in Saved member process, associated with their Attempt.",
+    "retryHint": "Create a new Attempt with these original inputs. New artifact versions are not selected automatically; existing failures, consumption and history are retained.",
+    "cancelHint": "Stop new dispatch and request cancellation from current executors. Saved results, history and external effects are retained."
   }
 }

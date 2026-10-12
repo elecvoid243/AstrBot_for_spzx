@@ -9,6 +9,8 @@ from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     ToolResolutionRequest,
+    WorkflowControlRequest,
+    WorkflowRetryRequest,
     WorkflowSaveRequest,
     WorkflowService,
     WorkflowStartRequest,
@@ -156,6 +158,58 @@ async def recover_run(
     """
     try:
         return ok(await service.recover_run(username, run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/control")
+async def control_run(
+    run_id: str,
+    payload: WorkflowControlRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Persist pause, continue or cancellation for the entire existing run.
+
+    Args:
+        run_id: Root run whose child tasks share admission and cancellation.
+        payload: Idempotent decision and optional observed control revision.
+        username: Authenticated owner.
+        service: Core-owned public run service.
+
+    Returns:
+        Persisted control and progress; in-flight external effects are not undone.
+    """
+    try:
+        return ok(await service.control_run(username, run_id, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_runs/{run_id}/retry")
+async def retry_task(
+    run_id: str,
+    payload: WorkflowRetryRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Explicitly retry a failed task with its original frozen input references.
+
+    Args:
+        run_id: Failed task within the root run or an existing workflow.
+        payload: Idempotent request with the failed attempt and input policy.
+        username: Authenticated owner.
+        service: Core-owned public run service.
+
+    Returns:
+        New attempt and preserved failure history; uncertain tools require resolution.
+    """
+    try:
+        return ok(await service.retry_task(username, run_id, payload.model_dump()))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

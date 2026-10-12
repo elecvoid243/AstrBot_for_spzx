@@ -128,6 +128,17 @@
             :selected-task="selectedTaskNode"
             @select="selectRunTask"
           />
+          <WorkflowRunControls
+            :key="selectedRun.run_id"
+            :run="selectedRun"
+            :task="detailRun"
+            :busy="
+              controlling?.rootId === selectedRun.run_id ||
+              recovering === detailRun.run_id ||
+              resolving?.taskId === detailRun.run_id
+            "
+            @submit="applyRunControl"
+          />
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
           <v-select
             v-if="selectedRun.tasks?.length"
@@ -170,7 +181,12 @@
               variant="tonal"
               class="mt-3"
               :loading="recovering === detailRun.run_id"
-              :disabled="resolving?.taskId === detailRun.run_id"
+              :disabled="
+                resolving?.taskId === detailRun.run_id ||
+                controlling?.rootId === selectedRun.run_id ||
+                selectedRun.control?.status === 'paused' ||
+                selectedRun.control?.status === 'cancelled'
+              "
               data-testid="recover-attempt"
               @click="recoverAttempt"
               >{{ tm("recovery.continue") }}</v-btn
@@ -529,10 +545,13 @@ import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
+import WorkflowRunControls from "./WorkflowRunControls.vue";
 import type {
   GraphDefinition,
   WorkflowDefinition,
   ToolResolutionRequest,
+  WorkflowControlRequest,
+  WorkflowRetryRequest,
 } from "@/api/generated/openapi-v1";
 
 const props = defineProps<{ mode: "assets" | "runs" }>();
@@ -545,6 +564,7 @@ const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
 const recovering = ref<string | null>(null);
+const controlling = ref<{ rootId: string; requestId: string } | null>(null);
 const resolving = ref<{ taskId: string; recordId: string } | null>(null);
 const selectedTaskNode = ref<string | null>(null);
 const detailRun = computed(
@@ -862,6 +882,7 @@ async function recoverAttempt() {
   if (
     recovering.value === detailRun.value?.run_id ||
     openingRun ||
+    controlling.value?.rootId === selectedRun.value?.run_id ||
     !detailRun.value?.recovery?.available ||
     resolving.value?.taskId === detailRun.value.run_id
   )
@@ -891,6 +912,7 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   if (
     !taskId ||
     openingRun ||
+    controlling.value?.rootId === selectedRun.value?.run_id ||
     recovering.value === taskId ||
     resolving.value?.taskId === taskId
   )
@@ -920,6 +942,48 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
       resolving.value?.recordId === operation.recordId
     )
       resolving.value = null;
+  }
+}
+
+async function applyRunControl(
+  payload: WorkflowControlRequest | WorkflowRetryRequest,
+) {
+  const rootId = selectedRun.value?.run_id;
+  if (
+    !rootId ||
+    openingRun ||
+    controlling.value?.rootId === rootId ||
+    recovering.value === detailRun.value?.run_id ||
+    resolving.value?.taskId === detailRun.value?.run_id
+  )
+    return;
+  const taskId = detailRun.value.run_id;
+  const read = ++runRead;
+  const operation = { rootId, requestId: payload.request_id };
+  controlling.value = operation;
+  loading.value = true;
+  try {
+    error.value = "";
+    const retry = "attempt_id" in payload;
+    const updated = retry
+      ? await workflowAssetsApi.retry(taskId, payload)
+      : await workflowAssetsApi.control(rootId, payload);
+    if (disposed || read !== runRead) return;
+    const snapshot =
+      retry && rootId !== taskId
+        ? await workflowAssetsApi.run(rootId)
+        : updated;
+    if (!disposed && read === runRead) selectedRun.value = snapshot;
+  } catch (err) {
+    if (!disposed && read === runRead)
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    if (read === runRead) loading.value = false;
+    if (
+      controlling.value?.rootId === operation.rootId &&
+      controlling.value?.requestId === operation.requestId
+    )
+      controlling.value = null;
   }
 }
 

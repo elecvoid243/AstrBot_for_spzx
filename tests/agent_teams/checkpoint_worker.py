@@ -102,10 +102,15 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
             if idempotency_key:
                 payload["idempotency_key"] = idempotency_key
             response = await client.post(endpoint + "/tool", json=payload)
-            if action == "start" and (scenario == "started" or scenario.startswith(("manual_", "reconcile_", "idempotent_", "safe_")) and scenario != "manual_batch" or scenario in {"batch_unknown", "manual_batch"} and value == "unknown-effect"):
+            if action == "start" and (scenario in {"started", "control_unknown"} or scenario.startswith(("manual_", "reconcile_", "idempotent_", "safe_")) and scenario != "manual_batch" or scenario in {"batch_unknown", "manual_batch"} and value == "unknown-effect"):
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
             data = response.json()
+            if action == "start" and scenario in {"control_pause", "control_continue", "control_cancel"}:
+                run_id = event.get_extra("agent_team_execution").run_id
+                decision = {"request_id": "original-control", "action": "cancel" if scenario == "control_cancel" else "pause"}
+                await service.control_run("alice", run_id, decision)
+                await service.control_run("alice", run_id, decision)
             return CallToolResult.model_validate(data["raw_result"]) if "raw_result" in data else data["text"]
 
     async def external_stream(event, value, idempotency_key=None):
@@ -244,6 +249,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     (folder / "kill-ready.json").write_text(json.dumps({"run_id": current_team_execution.get().run_id}), encoding="utf-8")
                     await asyncio.Future()
                 data = response.json()
+                if data.get("error"):
+                    raise RuntimeError(data["error"])
                 if data.get("usage"):
                     data["usage"] = TokenUsage(**data["usage"])
                 return LLMResponse(**data)
@@ -482,6 +489,77 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
+            if scenario.startswith("control_"):
+                await service.boot_sweep()
+                stopped = await service.get_run("alice", run_id)
+                if scenario in {"control_pause", "control_continue"}:
+                    if stopped["control"]["status"] == "paused":
+                        assert stopped["status"] == "interrupted"
+                        try:
+                            await service.recover_run("alice", run_id)
+                        except RoleAssetError as exc:
+                            assert exc.status == 409
+                        else:
+                            raise AssertionError("Paused recovery must not admit external calls")
+                    if action == "recover_decision":
+                        def continue_flush(session, flush_context):
+                            """Select a persisted continue decision for termination.
+
+                            Args:
+                                session: Actual transaction.
+                                flush_context: SQLAlchemy flush context.
+                            """
+                            if any(isinstance(row, AgentWorkflowEvent) and row.kind == "run.continue" for row in session.new):
+                                session.info["continue_control"] = True
+
+                        def continue_commit(session):
+                            """Hold after the continue decision and before resuming.
+
+                            Args:
+                                session: Actual committed transaction.
+                            """
+                            if session.info.pop("continue_control", False):
+                                (folder / "second-ready.json").write_text("{}", encoding="utf-8")
+                                while True:
+                                    time.sleep(1)
+
+                        sql_event.listen(Session, "after_flush", continue_flush)
+                        sql_event.listen(Session, "after_commit", continue_commit)
+                    await service.control_run("alice", run_id, {"request_id": "original-control", "action": "pause"})
+                    await service.control_run("alice", run_id, {"request_id": "continue-control", "action": "continue"})
+                    await service.control_run("alice", run_id, {"request_id": "continue-control", "action": "continue"})
+                elif scenario == "control_cancel":
+                    assert stopped["control"]["status"] == "cancelled"
+                    assert stopped["status"] == "cancelled"
+                    await service.control_run("alice", run_id, {"request_id": "original-control", "action": "cancel"})
+                    for operation in [service.control_run("alice", run_id, {"request_id": "late-continue", "action": "continue"}), service.recover_run("alice", run_id), service.retry_task("alice", run_id, {"request_id": "unsafe-retry", "attempt_id": before["state"]["attempt_id"], "input_policy": "original"})]:
+                        try:
+                            await operation
+                        except RoleAssetError as exc:
+                            assert exc.status == 409
+                        else:
+                            raise AssertionError("Cancelled execution must remain terminal")
+                    (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
+                    return
+                elif scenario == "control_retry":
+                    old = before["attempts"][0]
+                    await service.retry_task("alice", run_id, {"request_id": "retry-control", "attempt_id": old["attempt_id"], "input_policy": "original"})
+                elif scenario == "control_unknown":
+                    with contextlib.suppress(RoleAssetError):
+                        await service.recover_run("alice", run_id)
+                    try:
+                        await service.retry_task("alice", run_id, {"request_id": "unsafe-retry", "attempt_id": before["state"]["attempt_id"], "input_policy": "original"})
+                    except RoleAssetError as exc:
+                        assert exc.status == 409 and "uncertain" in str(exc)
+                    else:
+                        raise AssertionError("Task retry must not bypass tool resolution")
+                for _ in range(1500):
+                    current = await service.get_run("alice", run_id)
+                    if current["status"] != "running":
+                        break
+                    await asyncio.sleep(0.02)
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "stopped": stopped, "after": current}), encoding="utf-8")
+                return
             # Observe cumulative usage through the public WebChat transport.
             stats_queue = queue_manager.subscribe_system(before["snapshot"]["member"]["session_id"])
             if scenario == "parameters_checkpoint_failure":
@@ -581,6 +659,41 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id), "error": {"message": str(exc)}}), encoding="utf-8")
                 return
             run = before
+        if action == "start" and scenario.startswith("control_"):
+            for _ in range(1500):
+                current = await service.get_run("alice", run["run_id"])
+                ready = current["control"]["status"] == "cancelled" if scenario == "control_cancel" else current["control"]["status"] == "paused" and current["recovery"]["boundary"] == "tool_result" if scenario in {"control_pause", "control_continue"} else current["status"] == "awaiting_result"
+                if ready:
+                    break
+                await asyncio.sleep(0.02)
+            assert ready, current
+            if scenario == "control_retry":
+                def retry_decision_flush(session, flush_context):
+                    """Select the committed new-attempt decision for termination.
+
+                    Args:
+                        session: Actual persistence transaction.
+                        flush_context: SQLAlchemy flush context.
+                    """
+                    if any(isinstance(row, AgentWorkflowEvent) and row.kind == "attempt.retried" for row in session.new):
+                        session.info["retry_control"] = True
+
+                def retry_decision_commit(session):
+                    """Hold after the retry commits, before dispatching its executor.
+
+                    Args:
+                        session: Actual committed transaction.
+                    """
+                    if session.info.pop("retry_control", False):
+                        (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
+                        while True:
+                            time.sleep(1)
+
+                sql_event.listen(Session, "after_flush", retry_decision_flush)
+                sql_event.listen(Session, "after_commit", retry_decision_commit)
+                await service.retry_task("alice", run["run_id"], {"request_id": "retry-control", "attempt_id": current["state"]["attempt_id"], "input_policy": "original"})
+            (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
+            await asyncio.Future()
         during_resolution_errors = []
         if action != "start" and scenario == "manual_retry_late":
             for _ in range(300):

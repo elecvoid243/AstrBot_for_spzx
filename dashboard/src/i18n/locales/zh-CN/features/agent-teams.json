@@ -312,7 +312,8 @@
       "interrupted": "已中断",
       "pending": "等待依赖或容量",
       "skipped": "条件路径已跳过",
-      "dependency_failed": "上游任务失败"
+      "dependency_failed": "上游任务失败",
+      "cancelled": "已取消"
     },
     "contract": "输出契约（JSON Schema）",
     "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
@@ -433,5 +434,26 @@
       "tools_applied": "工具结果已应用到上下文，可继续下一模型步骤。",
       "none": "没有可恢复的执行检查点。"
     }
+  },
+  "controls": {
+    "title": "整个运行控制",
+    "pause": "暂停运行",
+    "continue": "继续运行",
+    "cancel": "取消运行",
+    "retry": "重试失败任务",
+    "confirm": "确认决定",
+    "states": {
+      "active": "允许放行新工作",
+      "paused": "已暂停：停止放行新工作",
+      "cancelled": "已取消：不再启动新工作"
+    },
+    "inFlight": "在途外部调用可能仍会完成。暂停或取消不会撤销已发生的外部效果。",
+    "semantics": "继续运行和从检查点恢复沿用原 Attempt；重试创建新 Attempt；新迭代创建新的任务实例，属于单独的编排操作。",
+    "resolveFirst": "请先在“已保存的成员过程”中处理结果不明的工具调用，再重试此任务。",
+    "previous": "历史尝试",
+    "originalInputs": "原始冻结输入与精确产物版本",
+    "usageRetained": "旧消耗和完整过程记录保留在“已保存的成员过程”中，按 Attempt 关联。",
+    "retryHint": "使用以下原始输入创建新 Attempt。不会自动选取新版产物；失败详情、旧消耗和历史都会保留。",
+    "cancelHint": "停止新派工，并向当前执行者请求取消。已保存结果、历史与外部效果都会保留。"
   }
 }

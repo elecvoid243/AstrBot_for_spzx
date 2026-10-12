@@ -4,6 +4,8 @@ import type {
   WorkflowStartRequest,
   ArtifactRevisionRequest,
   ToolResolutionRequest,
+  WorkflowControlRequest,
+  WorkflowRetryRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
@@ -56,6 +58,22 @@ export const workflowAssetsApi = {
     return (
       await httpClient.post(
         `/api/v1/workflow_runs/${encodeURIComponent(runId)}/recover`,
+      )
+    ).data.data;
+  },
+  async control(runId: string, payload: WorkflowControlRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/control`,
+        payload,
+      )
+    ).data.data;
+  },
+  async retry(runId: string, payload: WorkflowRetryRequest) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/retry`,
+        payload,
       )
     ).data.data;
   },

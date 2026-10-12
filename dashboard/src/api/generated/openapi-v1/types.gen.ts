@@ -1073,6 +1073,17 @@ export type ValidationError = {
 };
 
 /**
+ * Idempotent whole-run decision, optionally conditional on its revision.
+ */
+export type WorkflowControlRequest = {
+    request_id: string;
+    action: 'pause' | 'continue' | 'cancel';
+    expected_revision?: (number | null);
+};
+
+export type action3 = 'pause' | 'continue' | 'cancel';
+
+/**
  * A single task with a pinned role and declared input/output contracts.
  */
 export type WorkflowDefinition = {
@@ -1102,6 +1113,15 @@ export type WorkflowNode = {
     member_id: string;
     task: string;
     title?: (string) | null;
+};
+
+/**
+ * Explicit new attempt using the failed attempt's exact frozen inputs.
+ */
+export type WorkflowRetryRequest = {
+    request_id: string;
+    attempt_id: string;
+    input_policy: "original";
 };
 
 /**
@@ -4921,6 +4941,28 @@ export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetResponse = (unknown);
 
 export type GetEventsApiV1WorkflowRunsRunIdEventsGetError = (HTTPValidationError);
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
+    body: WorkflowControlRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostResponse = (unknown);
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostError = (HTTPValidationError);
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostData = {
+    body: WorkflowRetryRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostResponse = (unknown);
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostError = (HTTPValidationError);
 
 export type RecoverRunApiV1WorkflowRunsRunIdRecoverPostData = {
     path: {

@@ -5,6 +5,7 @@ import base64
 import copy
 import json
 import mimetypes
+import time
 import uuid
 from collections.abc import Callable
 from string import Formatter
@@ -46,7 +47,9 @@ from astrbot.core.agent_teams.result_tool import (
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentWorkflowArtifact,
+    AgentWorkflowAttempt,
     AgentWorkflowCheckpoint,
+    AgentWorkflowControl,
     AgentWorkflowEvent,
     AgentWorkflowFile,
     AgentWorkflowProcess,
@@ -122,6 +125,24 @@ class ToolResolutionRequest(BaseModel):
     result: str | None = Field(default=None, min_length=1, max_length=1_000_000)
 
 
+class WorkflowControlRequest(BaseModel):
+    """Idempotent whole-run decision, optionally conditional on its revision."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    request_id: str = Field(min_length=1, max_length=128)
+    action: Literal["pause", "continue", "cancel"]
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class WorkflowRetryRequest(BaseModel):
+    """Explicit new attempt using the failed attempt's exact frozen inputs."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    request_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    input_policy: Literal["original"]
+
+
 class WorkflowService:
     """Public asset/run boundary backed by the existing database and execution port."""
 
@@ -148,6 +169,7 @@ class WorkflowService:
             )
         )
         self._tasks: set[asyncio.Task] = set()
+        self._executions: dict[str, asyncio.Task] = {}
         self._closing = False
 
     async def save_asset(
@@ -614,6 +636,8 @@ class WorkflowService:
             if row is None or row.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
             identities = [run_id, *row.snapshot.get("task_runs", {}).values()]
+            root_id = row.snapshot.get("parent_run_id", run_id)
+            control = await session.get(AgentWorkflowControl, root_id)
             rows = (
                 (
                     await session.execute(
@@ -731,6 +755,19 @@ class WorkflowService:
                     else []
                 )
             }
+            attempts = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowAttempt).where(
+                            col(AgentWorkflowAttempt.run_id).in_(identities)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if include_details
+                else []
+            )
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
                 current_calls = [
@@ -740,6 +777,7 @@ class WorkflowService:
                     call
                     for call in current_calls
                     if boundary
+                    and call.attempt_id == current.state.get("attempt_id")
                     and call.invocation_id == boundary.invocation_id
                     and not recovery_data.get(call.record_id, {}).get(
                         "replacement_record_id"
@@ -767,6 +805,11 @@ class WorkflowService:
                 results[current.run_id] = {
                     "run_id": current.run_id,
                     "status": current.status,
+                    "control": {
+                        "status": control.status if control else "active",
+                        "revision": control.revision if control else 0,
+                        "root_run_id": root_id,
+                    },
                     "result_ref": {"artifact_id": current.run_id, "version": 1}
                     if current_artifacts
                     else None,
@@ -830,6 +873,9 @@ class WorkflowService:
                                 else None,
                             },
                             "snapshot": current.snapshot,
+                            "attempts": [
+                                a.data for a in attempts if a.run_id == current.run_id
+                            ],
                             "state": current.state,
                             "result": current.result,
                             "pending_result": current.pending_result,
@@ -982,6 +1028,342 @@ class WorkflowService:
         if cast(CursorResult, changed).rowcount != 1:
             raise RoleAssetError("Execution ownership has changed", status=409)
 
+    async def _lock_control(
+        self, session: AsyncSession, run: AgentWorkflowRun
+    ) -> AgentWorkflowControl:
+        """Serialize admission and controls on the existing root ownership row.
+
+        Args:
+            session: Transaction performing admission, recovery or a user decision.
+            run: Root or existing child task whose control protocol is shared.
+
+        Returns:
+            Locked durable root decision, creating the default for older runs.
+        """
+        root_id = run.snapshot.get("parent_run_id", run.run_id)
+        await session.execute(
+            update(AgentWorkflowRun)
+            .where(col(AgentWorkflowRun.run_id) == root_id)
+            .values(state=AgentWorkflowRun.state)
+        )
+        control = await session.get(AgentWorkflowControl, root_id)
+        if control is None:
+            control = AgentWorkflowControl(run_id=root_id)
+            session.add(control)
+            await session.flush()
+        else:
+            await session.refresh(control)
+        return control
+
+    async def _await_execution_permission(
+        self, username: str, run_id: str, execution_id: str
+    ) -> None:
+        """Park at a durable safe boundary until the root permits more work.
+
+        Args:
+            username: Frozen initiating owner.
+            run_id: Existing task execution.
+            execution_id: Fence preventing a displaced executor from continuing.
+
+        Raises:
+            RoleAssetError: Cancellation or another executor displaced this one.
+        """
+        while True:
+            async with self.db.get_db() as session:
+                row = await session.get(AgentWorkflowRun, run_id)
+                if row is None or row.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                control = await self._lock_control(session, row)
+                await self._require_execution_owner(session, run_id, execution_id)
+                if control.status == "cancelled":
+                    raise RoleAssetError("Run was cancelled", status=409)
+                permitted = control.status == "active"
+                if not permitted and not row.state.get("paused_resume"):
+                    row.state = {**row.state, "paused_resume": True}
+                    session.add(row)
+                await session.commit()
+            if permitted:
+                return
+            await asyncio.sleep(0.1)
+
+    async def control_run(self, username: str, run_id: str, payload: dict) -> dict:
+        """Persist a whole-run decision before changing execution admission.
+
+        Args:
+            username: Authenticated owner.
+            run_id: Root run identity; child scopes share this same protocol.
+            payload: Request identity, action and optional observed revision.
+
+        Returns:
+            Current persisted progress with the whole-run decision.
+
+        Raises:
+            RoleAssetError: Invalid, stale, inaccessible or conflicting decision.
+        """
+        try:
+            request = WorkflowControlRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError("Invalid run control") from exc
+        identities = []
+        resume_ids = []
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            if row.snapshot.get("parent_run_id"):
+                raise RoleAssetError("Control the whole run using its root", status=409)
+            control = await self._lock_control(session, row)
+            await session.refresh(row)
+            decision = request.model_dump()
+            previous = control.requests.get(request.request_id)
+            if previous is not None:
+                if previous != decision:
+                    raise RoleAssetError(
+                        "Control request identity was reused", status=409
+                    )
+            else:
+                if control.status == "cancelled" or row.status == "completed":
+                    raise RoleAssetError("The run is already terminal", status=409)
+                if (
+                    request.expected_revision is not None
+                    and request.expected_revision != control.revision
+                ):
+                    raise RoleAssetError(
+                        "Run control changed; reload first", status=409
+                    )
+                control.status = {
+                    "pause": "paused",
+                    "continue": "active",
+                    "cancel": "cancelled",
+                }[request.action]
+                control.revision += 1
+                control.requests = {**control.requests, request.request_id: decision}
+                session.add(control)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="run." + request.action,
+                        data={
+                            "request_id": request.request_id,
+                            "revision": control.revision,
+                        },
+                    )
+                )
+                if request.action == "pause":
+                    for identity in [
+                        run_id,
+                        *row.snapshot.get("task_runs", {}).values(),
+                    ]:
+                        child = await session.get(AgentWorkflowRun, identity)
+                        assert child is not None
+                        if child.status == "running" and "member" in child.snapshot:
+                            child.state = {**child.state, "paused_resume": True}
+                            session.add(child)
+                if request.action == "cancel":
+                    identities = [run_id, *row.snapshot.get("task_runs", {}).values()]
+                    for identity in identities:
+                        child = await session.get(AgentWorkflowRun, identity)
+                        assert child is not None
+                        if child.status not in {"completed", "skipped", "cancelled"}:
+                            child.status = "cancelled"
+                            session.add(child)
+                            session.add(
+                                AgentWorkflowEvent(
+                                    run_id=identity,
+                                    kind="task.cancelled",
+                                    data={
+                                        "attempt_id": child.state.get("attempt_id"),
+                                        "request_id": request.request_id,
+                                    },
+                                )
+                            )
+                await session.commit()
+            if request.action == "continue":
+                for identity in [run_id, *row.snapshot.get("task_runs", {}).values()]:
+                    child = await session.get(AgentWorkflowRun, identity)
+                    if (
+                        child is not None
+                        and child.status == "interrupted"
+                        and (
+                            child.state.get("paused_resume")
+                            or child.state.get("retry_pending")
+                        )
+                    ):
+                        resume_ids.append(identity)
+        for identity in identities:
+            from astrbot.core.utils.active_event_registry import active_event_registry
+
+            child = await self.get_run(username, identity)
+            member = child["snapshot"].get("member")
+            if member:
+                active_event_registry.request_agent_stop_all(
+                    member["umo"], message_id=child["state"]["message_id"]
+                )
+            task = self._executions.get(identity)
+            if task is not None:
+                task.cancel()
+        if request.action == "continue":
+            for identity in resume_ids:
+                await self.recover_run(username, identity)
+            if row.snapshot.get("engine") == "graph_v2":
+                await self.advance_run(username, run_id)
+        return await self.get_run(username, run_id)
+
+    async def retry_task(self, username: str, run_id: str, payload: dict) -> dict:
+        """Create one new attempt while retaining the original failed evidence.
+
+        Args:
+            username: Authenticated owner.
+            run_id: Failed task identity within a root run or workflow.
+            payload: Idempotent request, observed attempt and original input policy.
+
+        Returns:
+            Current task with archived failure, fixed inputs and unchanged usage.
+
+        Raises:
+            RoleAssetError: Stale request, unsafe tool effects or non-failed task.
+        """
+        try:
+            request = WorkflowRetryRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError(
+                "Invalid task retry; select original inputs explicitly"
+            ) from exc
+        dispatch = False
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None or row.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, row)
+            await session.refresh(row)
+            decision = {
+                "task_run_id": run_id,
+                "action": "retry",
+                **request.model_dump(),
+            }
+            previous = control.requests.get(request.request_id)
+            if previous is not None:
+                if previous != decision:
+                    raise RoleAssetError(
+                        "Control request identity was reused", status=409
+                    )
+            else:
+                if control.status == "cancelled":
+                    raise RoleAssetError("The run was cancelled", status=409)
+                if row.state.get("attempt_id") != request.attempt_id:
+                    raise RoleAssetError("Attempt is no longer active", status=409)
+                if row.pending_result is not None:
+                    raise RoleAssetError(
+                        "Recover the accepted result in the original attempt",
+                        status=409,
+                    )
+                calls = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowToolCall).where(
+                                col(AgentWorkflowToolCall.run_id) == run_id,
+                                col(AgentWorkflowToolCall.attempt_id)
+                                == request.attempt_id,
+                                col(AgentWorkflowToolCall.status).in_(
+                                    ["started", "unknown"]
+                                ),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for call in calls:
+                    metadata = await session.get(
+                        AgentWorkflowToolRecovery, call.record_id
+                    )
+                    if metadata is None or not metadata.data.get(
+                        "replacement_record_id"
+                    ):
+                        raise RoleAssetError(
+                            "Resolve uncertain tool effects before retrying the task",
+                            status=409,
+                        )
+                if row.status not in {"failed", "awaiting_result", "blocked"}:
+                    raise RoleAssetError(
+                        "Only the current failed task can be retried", status=409
+                    )
+                checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+                session.add(
+                    AgentWorkflowAttempt(
+                        attempt_id=request.attempt_id,
+                        run_id=run_id,
+                        data={
+                            "attempt_id": request.attempt_id,
+                            "status": row.status,
+                            "state": row.state,
+                            "snapshot": row.snapshot,
+                            "pending_result": row.pending_result,
+                            "checkpoint": checkpoint.data if checkpoint else None,
+                        },
+                    )
+                )
+                if checkpoint is not None:
+                    await session.delete(checkpoint)
+                old_state = row.state
+                row.state = {
+                    "scope_id": old_state["scope_id"],
+                    "task_id": old_state["task_id"],
+                    "attempt_id": uuid.uuid4().hex,
+                    "message_id": uuid.uuid4().hex,
+                    "safe_to_finish": False,
+                    "reason": None,
+                    "response": None,
+                    "previous_attempt_id": request.attempt_id,
+                    "input_policy": "original",
+                    "retry_pending": True,
+                }
+                row.status = (
+                    "pending" if row.snapshot.get("parent_run_id") else "running"
+                )
+                session.add(row)
+                parent_id = row.snapshot.get("parent_run_id")
+                if parent_id:
+                    parent = await session.get(AgentWorkflowRun, parent_id)
+                    assert parent is not None
+                    if parent.status == "blocked":
+                        parent.status = "running"
+                        parent.state = {**parent.state, "reason": None}
+                        session.add(parent)
+                    for identity in parent.snapshot.get("task_runs", {}).values():
+                        child = await session.get(AgentWorkflowRun, identity)
+                        if child is not None and child.status == "dependency_failed":
+                            child.status = "pending"
+                            child.state = {**child.state, "reason": None}
+                            session.add(child)
+                control.requests = {**control.requests, request.request_id: decision}
+                session.add(control)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="attempt.retried",
+                        data={
+                            "request_id": request.request_id,
+                            "attempt_id": row.state["attempt_id"],
+                            "previous_attempt_id": request.attempt_id,
+                            "input_policy": "original",
+                            "inputs": row.snapshot["inputs"],
+                            "input_artifacts": row.snapshot.get("input_artifacts", []),
+                        },
+                    )
+                )
+                await session.commit()
+                dispatch = True
+        if dispatch:
+            parent_id = row.snapshot.get("parent_run_id")
+            if parent_id:
+                await self.advance_run(username, parent_id)
+            else:
+                task = asyncio.create_task(self._execute(username, run_id))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+        return await self.get_run(username, run_id)
+
     async def record_process(
         self,
         username: str,
@@ -1026,6 +1408,7 @@ class WorkflowService:
             if (
                 run.state.get("attempt_id") != attempt_id
                 or "member" not in run.snapshot
+                or run.status == "cancelled"
             ):
                 raise RoleAssetError(
                     "Process record belongs to a stale attempt", status=409
@@ -1325,6 +1708,11 @@ class WorkflowService:
                     raise RoleAssetError("Run not found", status=404)
                 if root.snapshot.get("engine") != "graph_v2":
                     raise RoleAssetError("Run is not a dependency workflow")
+                control = await self._lock_control(session, root)
+                await session.refresh(root)
+                if control.status != "active":
+                    await session.commit()
+                    break
                 if root.status != "running":
                     break
                 schedule = await session.get(AgentWorkflowSchedule, run_id)
@@ -1436,10 +1824,19 @@ class WorkflowService:
                                 )
                             ):
                                 continue
-                            inputs = dict(root.snapshot["inputs"])
-                            refs = list(root.snapshot.get("input_artifacts", []))
+                            retrying = row.state.get("retry_pending")
+                            inputs = dict(
+                                row.snapshot["inputs"]
+                                if retrying
+                                else root.snapshot["inputs"]
+                            )
+                            refs = list(
+                                row.snapshot.get("input_artifacts", [])
+                                if retrying
+                                else root.snapshot.get("input_artifacts", [])
+                            )
                             missing = False
-                            for key, ref in task["inputs"].items():
+                            for key, ref in [] if retrying else task["inputs"].items():
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
                                     inputs[key] = root.snapshot["inputs"][ref["input"]]
@@ -1473,7 +1870,9 @@ class WorkflowService:
                             else:
                                 row.snapshot = {
                                     **row.snapshot,
-                                    "task": task["task"].format_map(inputs),
+                                    "task": row.snapshot["task"]
+                                    if retrying
+                                    else task["task"].format_map(inputs),
                                     "inputs": inputs,
                                     "input_artifacts": refs,
                                 }
@@ -2044,11 +2443,43 @@ class WorkflowService:
             )
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
+            if row is not None:
+                control = await self._lock_control(session, row)
+                await session.refresh(row)
+                if control.status != "active":
+                    raise RoleAssetError(
+                        "Continue the whole run before recovering a task", status=409
+                    )
             checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
             if row is None or row.status not in {"interrupted", "failed", "blocked"}:
                 raise RoleAssetError(
                     "Only interrupted execution can be recovered", status=409
                 )
+            if checkpoint is None and (
+                row.state.get("paused_resume") or row.state.get("retry_pending")
+            ):
+                # Pausing can precede the first invocation. There is no external
+                # effect to replay; continuing still uses the existing attempt.
+                row.status = "running"
+                row.state = {**row.state, "execution_id": None}
+                session.add(row)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="attempt.recovered",
+                        data={"attempt_id": row.state["attempt_id"], "boundary": None},
+                    )
+                )
+                await session.commit()
+                parent_id = row.snapshot.get("parent_run_id")
+                task = asyncio.create_task(
+                    self._execute_graph_task(username, parent_id, run_id)
+                    if parent_id
+                    else self._execute(username, run_id)
+                )
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                return await self.get_run(username, run_id)
             if checkpoint is None or checkpoint.attempt_id != row.state["attempt_id"]:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
             checkpoint.data = copy.deepcopy(checkpoint.data)
@@ -2790,6 +3221,34 @@ class WorkflowService:
             )
         for root in roots:
             await self.advance_run(root.owner_username, root.run_id)
+        async with self.db.get_db() as session:
+            resume = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.status) == "interrupted",
+                            (
+                                AgentWorkflowRun.state["paused_resume"].as_boolean()
+                                == true()
+                            )
+                            | (
+                                AgentWorkflowRun.state["retry_pending"].as_boolean()
+                                == true()
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for row in resume:
+            current = await self.get_run(row.owner_username, row.run_id)
+            if current["control"]["status"] == "active":
+                try:
+                    await self.recover_run(row.owner_username, row.run_id)
+                except RoleAssetError:
+                    # Preserve local tool uncertainty or missing frozen resources.
+                    pass
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -2818,6 +3277,15 @@ class WorkflowService:
             return
         snapshot, state = run["snapshot"], run["state"]
         async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            control = await self._lock_control(session, row)
+            if control.status == "cancelled":
+                return
+            await session.refresh(row)
+            if row.state.get("attempt_id") != state.get("attempt_id"):
+                return
+            state = copy.deepcopy(row.state)
             if execution_id is None:
                 execution_id = uuid.uuid4().hex
                 state = {**state, "execution_id": execution_id}
@@ -2827,6 +3295,8 @@ class WorkflowService:
                         col(AgentWorkflowRun.run_id) == run_id,
                         col(AgentWorkflowRun.status) == "running",
                         AgentWorkflowRun.state["execution_id"].as_string().is_(None),
+                        AgentWorkflowRun.state["attempt_id"].as_string()
+                        == state["attempt_id"],
                     )
                     .values(state=state)
                 )
@@ -2842,7 +3312,11 @@ class WorkflowService:
         tools: list[FunctionTool] = []
         status = "failed"
         checkpoint_error = None
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        self._executions[run_id] = current_task
         try:
+            await self._await_execution_permission(username, run_id, execution_id)
             await self.roles.validate_frozen_role(snapshot["role"])
             ports = self.ports_factory(username)
 
@@ -2961,16 +3435,24 @@ class WorkflowService:
                 """
                 nonlocal checkpoint_error
                 try:
+                    if data["phase"] in {"request", "tools_started"}:
+                        await self._await_execution_permission(
+                            username, run_id, execution_id
+                        )
                     await self.save_checkpoint(
                         username, run_id, state["attempt_id"], execution_id, data
                     )
+                    if data["phase"] in {"response", "tool_result", "tools_applied"}:
+                        await self._await_execution_permission(
+                            username, run_id, execution_id
+                        )
                 except Exception as exc:
                     checkpoint_error = "Failed to save execution checkpoint"
                     raise ProcessPersistenceError(
                         "Failed to save execution checkpoint"
                     ) from exc
 
-            reply, parts = await asyncio.wait_for(
+            turn = asyncio.create_task(
                 execute_team_turn(
                     ports=ports,
                     member=member,
@@ -2995,8 +3477,37 @@ class WorkflowService:
                         "persona_snapshot": snapshot["persona"],
                     },
                 ),
-                timeout=ports.reply_timeout,
             )
+            # Paused time is not execution time. Keep collection alive while
+            # the built-in runner parks at its saved boundary.
+            remaining = ports.reply_timeout
+            previous = time.monotonic()
+            try:
+                while not turn.done():
+                    await asyncio.wait({turn}, timeout=min(0.5, max(remaining, 0.01)))
+                    if turn.done():
+                        break
+                    now = time.monotonic()
+                    async with self.db.get_db() as session:
+                        decision = await session.get(
+                            AgentWorkflowControl, snapshot.get("parent_run_id", run_id)
+                        )
+                        paused = decision is not None and decision.status == "paused"
+                        cancelled = (
+                            decision is not None and decision.status == "cancelled"
+                        )
+                    if cancelled:
+                        raise asyncio.CancelledError
+                    if not paused:
+                        remaining -= now - previous
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError("Workflow execution timed out")
+                    previous = now
+                reply, parts = await turn
+            finally:
+                if not turn.done():
+                    turn.cancel()
+                await asyncio.gather(turn, return_exceptions=True)
             state["response"] = {
                 "text": reply,
                 "parts": parts,
@@ -3052,6 +3563,8 @@ class WorkflowService:
             state["reason"] = str(exc)
             logger.error("Single-task workflow execution failed: %s", exc)
         finally:
+            if self._executions.get(run_id) is current_task:
+                self._executions.pop(run_id, None)
             if tools and AgentTeamToolRegistry.get_tools(member["umo"]) == tools:
                 AgentTeamToolRegistry.unregister(member["umo"])
             if ports and ports.close:

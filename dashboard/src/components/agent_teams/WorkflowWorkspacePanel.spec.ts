@@ -16,6 +16,8 @@ const api = vi.hoisted(() => ({
   events: vi.fn(),
   recover: vi.fn(),
   resolveTool: vi.fn(),
+  control: vi.fn(),
+  retry: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -112,6 +114,236 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it.each([
+    ["runs", "success"],
+    ["events", "success"],
+    ["runs", "failure"],
+    ["events", "failure"],
+  ])(
+    "keeps polling after control supersedes %s (%s)",
+    async (phase, outcome) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({
+        ...run,
+        cursor: 10,
+        control: { status: "active", revision: 0 },
+      });
+      api.events.mockResolvedValue({
+        cursor: 10,
+        reset: false,
+        events: [],
+        snapshot: null,
+      });
+      let finishRead!: (value: any) => void;
+      let finish!: (value: any) => void;
+      let fail!: (error: Error) => void;
+      const read = new Promise((resolve) => {
+        finishRead = resolve;
+      });
+      api.control.mockReturnValue(
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        api[phase as "runs" | "events"].mockReturnValueOnce(read);
+        await vi.advanceTimersByTimeAsync(2000);
+        await wrapper.get('[data-testid="pause-run"]').trigger("click");
+        await wrapper.get('[data-testid="pause-run"]').trigger("click");
+        expect(api.control).toHaveBeenCalledTimes(1);
+        finishRead(
+          phase === "runs"
+            ? { runs: [runOverview] }
+            : { cursor: 10, reset: false, events: [], snapshot: null },
+        );
+        await flushPromises();
+        if (outcome === "success")
+          finish({
+            ...run,
+            cursor: 11,
+            control: { status: "paused", revision: 1 },
+          });
+        else fail(new Error("Control storage unavailable"));
+        await flushPromises();
+        const previous = api.events.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(4000);
+        await flushPromises();
+        expect(api.events.mock.calls.length).toBeGreaterThan(previous);
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it.each(["success", "failure"])(
+    "ignores an old control %s after selecting another run",
+    async (outcome) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const second = {
+        ...run,
+        run_id: "run-2",
+        snapshot: {
+          ...run.snapshot,
+          definition: { ...asset.definition, name: "Second report" },
+        },
+      };
+      api.runs.mockResolvedValue({
+        runs: [runOverview, { ...runOverview, run_id: "run-2" }],
+      });
+      api.run.mockImplementation((id) =>
+        Promise.resolve(id === "run-1" ? run : second),
+      );
+      let finish!: (value: any) => void;
+      let fail!: (error: Error) => void;
+      api.control.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      await flushPromises();
+      await wrapper.get('[data-testid="pause-run"]').trigger("click");
+      await wrapper
+        .findAll("button")
+        .filter((button) => button.text() === "v2.details")[1]
+        .trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.get('[data-testid="pause-run"]').attributes("disabled"),
+      ).toBeUndefined();
+      if (outcome === "success")
+        finish({ ...run, control: { status: "paused", revision: 1 } });
+      else fail(new Error("Old control failed"));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Second report",
+      );
+      expect(wrapper.text()).not.toContain("Old control failed");
+      wrapper.unmount();
+    },
+  );
+
+  it("explicitly retries original inputs on HTTP deployments and blocks unknown tools", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const stopped = {
+      ...run,
+      status: "failed",
+      control: { status: "active", revision: 0 },
+      snapshot: {
+        ...run.snapshot,
+        input_artifacts: [{ artifact_id: "source", version: 1 }],
+      },
+    };
+    api.run.mockResolvedValue(stopped);
+    api.retry.mockRejectedValue(new Error("Temporary retry failure"));
+    vi.stubGlobal("crypto", {});
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      for (let count = 0; count < 2; count++) {
+        await wrapper.get('[data-testid="retry-task"]').trigger("click");
+        expect(wrapper.get(".dialog").text()).toContain('"version": 1');
+        await wrapper
+          .get('[data-testid="confirm-run-control"]')
+          .trigger("click");
+        await flushPromises();
+      }
+      expect(api.retry.mock.calls[0]).toEqual(api.retry.mock.calls[1]);
+      expect(api.retry).toHaveBeenCalledWith("run-1", {
+        attempt_id: "attempt-1",
+        input_policy: "original",
+        request_id: expect.any(String),
+      });
+      api.run.mockResolvedValue({
+        ...stopped,
+        tool_calls: [{ attempt_id: "attempt-1", status: "unknown" }],
+      });
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "v2.details")!
+        .trigger("click");
+      await flushPromises();
+      expect(
+        wrapper.get('[data-testid="retry-task"]').attributes("disabled"),
+      ).toBeDefined();
+      expect(wrapper.get('[data-testid="run-controls"]').text()).toContain(
+        "controls.resolveFirst",
+      );
+    } finally {
+      wrapper.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+  it("persists a whole-run pause and continues the original attempt", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      control: { status: "active", revision: 0 },
+    });
+    api.control.mockResolvedValueOnce({
+      ...run,
+      control: { status: "paused", revision: 1 },
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="pause-run"]').trigger("click");
+    await flushPromises();
+    expect(api.control).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({
+        action: "pause",
+        request_id: expect.any(String),
+        expected_revision: 0,
+      }),
+    );
+    expect(wrapper.get('[data-testid="run-controls"]').text()).toContain(
+      "controls.inFlight",
+    );
+    api.control.mockResolvedValueOnce({
+      ...run,
+      control: { status: "active", revision: 2 },
+    });
+    await wrapper.get('[data-testid="continue-run"]').trigger("click");
+    await flushPromises();
+    expect(api.control).toHaveBeenLastCalledWith(
+      "run-1",
+      expect.objectContaining({ action: "continue", expected_revision: 1 }),
+    );
+    wrapper.unmount();
+  });
   it.each(["success", "failure"])(
     "keeps recovery and resolution owned by their selected task after an older %s",
     async (outcome) => {

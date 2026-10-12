@@ -6599,6 +6599,80 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/control:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Control Run
+      description: "Persist pause, continue or cancellation for the entire existing\
+        \ run.\n\nArgs:\n    run_id: Root run whose child tasks share admission and\
+        \ cancellation.\n    payload: Idempotent decision and optional observed control\
+        \ revision.\n    username: Authenticated owner.\n    service: Core-owned public\
+        \ run service.\n\nReturns:\n    Persisted control and progress; in-flight external\
+        \ effects are not undone."
+      operationId: control_run_api_v1_workflow_runs__run_id__control_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowControlRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/retry:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Retry Task
+      description: "Explicitly retry a failed task with its original frozen input references.\n\
+        \nArgs:\n    run_id: Failed task within the root run or an existing workflow.\n\
+        \    payload: Idempotent request with the failed attempt and input policy.\n\
+        \    username: Authenticated owner.\n    service: Core-owned public run service.\n\
+        \nReturns:\n    New attempt and preserved failure history; uncertain tools require\
+        \ resolution."
+      operationId: retry_task_api_v1_workflow_runs__run_id__retry_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowRetryRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/recover:
     post:
       tags:
@@ -9083,6 +9157,57 @@ components:
       - evidence
       title: ToolResolutionRequest
       description: An explicit, evidenced decision about an uncertain external effect.
+    WorkflowControlRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - pause
+          - continue
+          - cancel
+          title: Action
+        expected_revision:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Revision
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      title: WorkflowControlRequest
+      description: Idempotent whole-run decision, optionally conditional on its revision.
+    WorkflowRetryRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        attempt_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Attempt Id
+        input_policy:
+          type: string
+          const: original
+          title: Input Policy
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - attempt_id
+      - input_policy
+      title: WorkflowRetryRequest
+      description: Explicit new attempt using the failed attempt's exact frozen inputs.
     WorkflowStartRequest:
       properties:
         version:

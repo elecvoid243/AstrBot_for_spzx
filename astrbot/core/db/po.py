@@ -270,6 +270,25 @@ class AgentWorkflowSchedule(SQLModel, table=True):
     revision: int = 0
 
 
+class AgentWorkflowControl(SQLModel, table=True):
+    """Durable whole-run admission decision and idempotent control requests."""
+
+    __tablename__: str = "agent_workflow_controls"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    status: str = "active"
+    revision: int = 0
+    requests: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentWorkflowAttempt(SQLModel, table=True):
+    """Immutable failed attempt evidence retained when explicitly retrying."""
+
+    __tablename__: str = "agent_workflow_attempts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    attempt_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentWorkflowArtifact(TimestampMixin, SQLModel, table=True):
     """Immutable versions of validated task output, with idempotent revisions."""
 

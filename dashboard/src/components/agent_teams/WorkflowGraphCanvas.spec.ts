@@ -9,6 +9,72 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it.each(["click", "drop"])(
+    "adds unique tasks by %s when randomUUID is unavailable",
+    async (action) => {
+      vi.stubGlobal("crypto", {
+        getRandomValues: crypto.getRandomValues.bind(crypto),
+        randomUUID: undefined,
+      });
+      vi.spyOn(Date, "now").mockReturnValue(1720000000000);
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const wrapper = mount(WorkflowGraphCanvas, {
+        props: {
+          definition: { name: "HTTP workflow", tasks: [], edges: [] },
+          roles: [
+            { role_id: "writer", version: 2, definition: { name: "Writer" } },
+          ],
+        },
+        global: {
+          stubs: {
+            VueFlow: true,
+            Background: true,
+            Controls: true,
+            MiniMap: true,
+            "v-icon": true,
+            "v-chip": true,
+            "v-btn": { template: "<button><slot /></button>" },
+            "v-text-field": true,
+            "v-select": true,
+            "v-textarea": true,
+            "v-spacer": true,
+            "v-alert": true,
+            "v-switch": true,
+          },
+        },
+      });
+      try {
+        for (let count = 1; count <= 2; count++) {
+          if (action === "click") {
+            await wrapper.get(".graph-role").trigger("click");
+          } else {
+            await wrapper.get(".teams-flow-canvas").trigger("drop", {
+              clientX: 50,
+              clientY: 70,
+              dataTransfer: { getData: () => "writer" },
+            });
+          }
+          const saved: any = wrapper.emitted("update:definition")?.at(-1)?.[0];
+          expect(saved?.tasks).toHaveLength(count);
+        }
+        const saved: any = wrapper.emitted("update:definition")?.at(-1)?.[0];
+        expect(saved.tasks[0].id).not.toBe(saved.tasks[1].id);
+        expect(
+          saved.tasks.map((task: any) => [task.role_id, task.role_version]),
+        ).toEqual([
+          ["writer", 2],
+          ["writer", 2],
+        ]);
+        expect(saved.tasks[1].position).toEqual(
+          action === "drop" ? { x: 50, y: 70 } : { x: 300, y: 0 },
+        );
+      } finally {
+        wrapper.unmount();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
   it("undoes and redoes a complete drag gesture", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: {

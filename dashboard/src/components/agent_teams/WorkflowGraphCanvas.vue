@@ -467,7 +467,13 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   if (props.readonly) return;
   const role = props.roles.find((item) => item.role_id === roleId);
   if (!role) return;
-  const id = `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+  const seed =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+      : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  let id = `task_${seed}`;
+  // Keep task IDs unique within this canvas even when generated values repeat.
+  while (draft.value.tasks.some((task) => task.id === id)) id += "_1";
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,

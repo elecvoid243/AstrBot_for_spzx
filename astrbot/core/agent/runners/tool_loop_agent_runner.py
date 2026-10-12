@@ -2079,6 +2079,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self._resume_requery = None
             if resumed["phase"] == "response":
                 response = load_call_response(resumed["response"])
+                self._reused_response = True
             else:
                 response = await self._await_or_stop(
                     self.provider.text_chat(
@@ -2091,8 +2092,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         request_max_retries=self.request_max_retries,
                     )
                 )
-                if response:
-                    await self._record_model_response(response)
+            if response:
+                # Fill an observation commit gap with the original invocation identity.
+                await self._record_model_response(response)
         else:
             effective_contexts = self._sanitize_contexts_for_provider(contexts)
             await self._save_call_checkpoint(

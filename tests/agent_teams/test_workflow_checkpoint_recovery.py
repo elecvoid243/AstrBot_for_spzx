@@ -61,7 +61,7 @@ async def test_http_recovery_uses_the_authenticated_owner_and_original_run(workf
     assert len(env.observations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "graph", "concurrent"])
+@pytest.mark.parametrize("scenario", ["response", "request", "no_thinking", "started", "submit_pre", "submit_post", "save_failure", "observation_failure", "missing_model", "changed_tool", "parameters", "repair", "parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure", "graph", "concurrent"])
 def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario, preview=False):
     """Resume the real execution chain without repeating the saved model plan.
 
@@ -72,6 +72,8 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
     """
     requests = []
     effects = []
+    parameter_mode = scenario.startswith(("parameters", "repair"))
+    repair_mode = scenario.startswith("repair")
 
     class ExternalRecorder(BaseHTTPRequestHandler):
         """Model and tool boundary independent of the terminated Agent process."""
@@ -100,11 +102,13 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     response = {"role": "tool", "id": "plan-original", "tools_call_name": ["external_evidence"], "tools_call_args": [{"value": "original-plan"}], "tools_call_ids": ["evidence-original"], "reasoning_content": "Original provider thinking.", "reasoning_signature": "original-signature", "tools_call_extra_content": {"evidence-original": {"google": {"thought_signature": "original-tool-signature"}}}}
                     if payload.get("parameter_query"):
                         response["id"] = "parameters-original"
-                        if scenario == "repair" and not payload.get("repair_query"):
+                        if repair_mode and not payload.get("repair_query"):
                             response = {"role": "assistant", "id": "empty-parameters", "completion_text": ""}
                     if scenario == "no_thinking":
                         response.pop("reasoning_content")
                         response.pop("reasoning_signature")
+                if parameter_mode:
+                    response["usage"] = {"input_other": 8, "input_cached": 2, "output": 2}
             (tmp_path / "external-ledger.json").write_text(json.dumps({"requests": requests, "effects": effects}), encoding="utf-8")
             data = json.dumps(response).encode()
             self.send_response(200)
@@ -128,7 +132,7 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
                     assert worker.poll() is None, (tmp_path / "first.log").read_text(encoding="utf-8")
                     assert time.monotonic() < deadline, (tmp_path / "first.log").read_text(encoding="utf-8")
                     time.sleep(0.05)
-                assert len(requests) == (2 if scenario.startswith("submit_") or scenario == "parameters" else 3 if scenario == "repair" else 1)
+                assert len(requests) == (3 if repair_mode else 2 if scenario.startswith("submit_") or parameter_mode else 1)
                 assert effects == ([{"value": "original-plan"}] if scenario in {"started", "submit_pre", "submit_post"} else [])
                 worker.kill()
                 worker.wait(timeout=10)
@@ -142,6 +146,17 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         resumed = subprocess.run([*command, "recover", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if scenario == "parameters_checkpoint_failure":
+            assert evidence["after"]["status"] == "failed"
+            assert "Failed to save complete process record" in evidence["after"]["state"]["reason"]
+            assert len(requests) == 2
+            assert effects == []
+            failed = evidence["after"]
+            repaired = subprocess.run([*command, "recover_storage", scenario], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=40, env={**os.environ, "PYTHONUTF8": "1"})
+            assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+            evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+            assert evidence["after"]["snapshot"] == failed["snapshot"]
+            assert evidence["after"]["state"]["attempt_id"] == failed["state"]["attempt_id"]
         if scenario == "started":
             assert evidence["error"]["status"] == 409
             assert "confirmation" in evidence["error"]["message"]
@@ -176,14 +191,28 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
         assert len(evidence["after"]["artifacts"]) == 1
         assert sum(event["kind"] == "task.completed" for event in evidence["after"]["events"]) == 1
         assert evidence["after"]["recovery"]["steps_used"] == (2 if scenario == "submit_post" else 3)
-        assert evidence["after"]["recovery"]["model_calls"] == (2 if scenario == "submit_post" else 5 if scenario == "parameters" else 6 if scenario == "repair" else 3)
-        assert len(requests) == (4 if scenario in {"request", "save_failure"} else 2 if scenario == "submit_post" else 5 if scenario == "parameters" else 6 if scenario == "repair" else 3)
+        assert evidence["after"]["recovery"]["model_calls"] == (6 if repair_mode else 5 if parameter_mode else 2 if scenario == "submit_post" else 3)
+        assert len(requests) == (6 if repair_mode else 5 if parameter_mode else 4 if scenario in {"request", "save_failure"} else 2 if scenario == "submit_post" else 3)
+        if parameter_mode:
+            assert evidence["stats"]["token_usage"] == {"input_other": 48 if repair_mode else 40, "input_cached": 12 if repair_mode else 10, "output": 12 if repair_mode else 10}
+            records = [record for record in evidence["after"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == "parameters-original"]
+            assert len(records) == 1
+            assert records[0]["data"]["reasoning_content"] == "Original provider thinking."
+            assert records[0]["data"]["reasoning_signature"] == "original-signature"
+            assert records[0]["data"]["tool_calls"] == [{"id": "evidence-original", "name": "external_evidence", "args": {"value": "original-plan"}}]
+            assert records[0]["data"]["tools_call_extra_content"] == {"evidence-original": {"google": {"thought_signature": "original-tool-signature"}}}
+            previous = [record for record in evidence["before"]["process"] if record["kind"] == "model_response" and record["data"]["id"] == "parameters-original"]
+            if scenario in {"parameters", "repair"}:
+                assert len(previous) == 1
+                assert records == previous
+            else:
+                assert previous == []
         if scenario == "graph":
             assert evidence["parent"]["status"] == "completed"
         if scenario == "concurrent":
             assert evidence["recovery_errors"] == [409]
         assert effects == [{"value": "original-plan"}]
-        restored_context = json.dumps(requests[-2]["contexts"] if scenario in {"parameters", "repair"} else requests[2 if scenario in {"request", "save_failure"} else 1]["contexts"])
+        restored_context = json.dumps(requests[-2]["contexts"] if parameter_mode else requests[2 if scenario in {"request", "save_failure"} else 1]["contexts"])
         for value in ("Temporary original framing.", "data:image/png;base64,", "original-tool-signature", "Original verified persona.", "profile=original", *(() if scenario == "no_thinking" else ("original-signature", "Original provider thinking."))):
             assert value in restored_context
         assert "Edited persona." not in restored_context

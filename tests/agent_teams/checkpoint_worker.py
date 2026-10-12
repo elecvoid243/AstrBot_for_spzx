@@ -33,7 +33,7 @@ from astrbot.core.pipeline.scheduler import PipelineScheduler
 from astrbot.core.platform.sources.webchat import webchat_adapter, webchat_event
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
 from astrbot.core.provider import Provider
-from astrbot.core.provider.entities import LLMResponse, ProviderMeta, ProviderType
+from astrbot.core.provider.entities import LLMResponse, ProviderMeta, ProviderType, TokenUsage
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot.core.provider.manager import ProviderManager
 from astrbot.core.star.context import Context
@@ -64,7 +64,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
     })
     config["provider_settings"]["file_extract"]["enable"] = False
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
-    if scenario in {"parameters", "repair"}:
+    if scenario.startswith(("parameters", "repair")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
     config["agent_runner"]["config"]["model"]["provider_id"] = "model-original"
     config["test_profile"] = "original" if action == "start" else "edited"
@@ -148,7 +148,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     from astrbot.core.agent_team_execution import current_team_execution
                     (folder / "kill-ready.json").write_text(json.dumps({"run_id": current_team_execution.get().run_id}), encoding="utf-8")
                     await asyncio.Future()
-                return LLMResponse(**response.json())
+                data = response.json()
+                if data.get("usage"):
+                    data["usage"] = TokenUsage(**data["usage"])
+                return LLMResponse(**data)
 
     provider = RecordedProvider({"id": "model-original", "type": "openai_chat_completion", "modalities": ["text", "image", "tool_use"]}, {})
     provider.set_model("model-original")
@@ -224,6 +227,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                 if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario in {"parameters_checkpoint", "repair_checkpoint", "parameters_checkpoint_failure"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "response" and row.data["response"]["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "submit_pre" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_started" and row.data["response"]["id"] == "submission-original":
                     session.info["kill_boundary"] = row.run_id
@@ -301,6 +306,11 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
+            # Observe cumulative usage through the public WebChat transport.
+            stats_queue = queue_manager.subscribe_system(before["snapshot"]["member"]["session_id"])
+            if scenario == "parameters_checkpoint_failure":
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'observation storage unavailable'); END" if action == "recover" else "DROP TRIGGER reject_response_checkpoint"))
             if scenario in {"save_failure", "observation_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER reject_response_checkpoint"))
@@ -353,7 +363,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str = "
                     if parent["status"] != "running":
                         break
                     await asyncio.sleep(0.01)
-            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
+            stats = None
+            while not stats_queue.empty():
+                payload = stats_queue.get_nowait()
+                if payload.get("chain_type") == "agent_stats":
+                    stats = json.loads(payload["data"])
+            queue_manager.unsubscribe_system(before["snapshot"]["member"]["session_id"], stats_queue)
+            (folder / "recovered.json").write_text(json.dumps({"before": before, "after": current, "result": result, "parent": parent, "late_errors": late_errors, "repeated": repeated, "stats": stats, "recovery_errors": [item.status for item in recoveries if isinstance(item, RoleAssetError)]}), encoding="utf-8")
         elif scenario in {"save_failure", "observation_failure"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()

@@ -849,11 +849,13 @@ async function openRun(runId: string) {
 }
 
 async function recoverAttempt() {
-  if (recovering.value || !detailRun.value?.recovery?.available) return;
+  if (recovering.value || openingRun || !detailRun.value?.recovery?.available)
+    return;
   const taskId = detailRun.value.run_id;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
   recovering.value = true;
+  loading.value = true;
   try {
     error.value = "";
     const recovered = await workflowAssetsApi.recover(taskId);
@@ -864,6 +866,7 @@ async function recoverAttempt() {
     if (!disposed && read === runRead)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
+    if (read === runRead) loading.value = false;
     recovering.value = false;
   }
 }

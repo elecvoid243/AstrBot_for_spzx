@@ -111,6 +111,175 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it.each([
+    ["runs", "success"],
+    ["events", "success"],
+    ["runs", "failure"],
+    ["events", "failure"],
+  ])(
+    "continues polling after recovery %s read is superseded with %s",
+    async (phase, outcome) => {
+      vi.useFakeTimers();
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      api.run.mockResolvedValue({
+        ...run,
+        cursor: 10,
+        status: "interrupted",
+        recovery: { available: true, boundary: "response" },
+      });
+      let finishRead!: (value: any) => void;
+      const pendingRead = new Promise((resolve) => {
+        finishRead = resolve;
+      });
+      let finishRecovery!: (value: any) => void;
+      let failRecovery!: (error: Error) => void;
+      api.recover.mockReturnValue(
+        new Promise((resolve, reject) => {
+          finishRecovery = resolve;
+          failRecovery = reject;
+        }),
+      );
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        api[phase as "runs" | "events"].mockReturnValueOnce(pendingRead);
+        await vi.advanceTimersByTimeAsync(2000);
+        await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+        await flushPromises();
+        expect(api.recover).toHaveBeenCalledWith("run-1");
+        finishRead(
+          phase === "runs"
+            ? { runs: [runOverview] }
+            : {
+                cursor: 10,
+                reset: false,
+                events: [],
+                snapshot: { ...run, status: "failed", cursor: 10 },
+              },
+        );
+        await flushPromises();
+        const readsBeforeRecovery = api.events.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(api.events).toHaveBeenCalledTimes(readsBeforeRecovery);
+        if (outcome === "success") finishRecovery({ ...run, cursor: 11 });
+        else failRecovery(new Error("Recovery unavailable"));
+        await flushPromises();
+        if (outcome === "failure")
+          expect(wrapper.text()).toContain("Recovery unavailable");
+        api.events.mockResolvedValue({
+          cursor: 12,
+          reset: false,
+          events: [{ cursor: 12 }],
+          snapshot: {
+            ...run,
+            cursor: 12,
+            status: "completed",
+            result: { text: "Recovered result" },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushPromises();
+        expect(api.events).toHaveBeenCalledWith(
+          "run-1",
+          outcome === "success" ? 11 : 10,
+        );
+        expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+          "v2.states.completed",
+        );
+        expect(wrapper.get('[data-testid="result-text"]').text()).toBe(
+          "Recovered result",
+        );
+      } finally {
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("keeps a new run read owned while an older recovery finishes", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const next = {
+      ...run,
+      run_id: "run-2",
+      cursor: 20,
+      snapshot: {
+        ...run.snapshot,
+        definition: { ...asset.definition, name: "Second run" },
+      },
+    };
+    api.runs.mockResolvedValue({ runs: [runOverview, next] });
+    let finishRun!: (value: any) => void;
+    api.run.mockImplementation(async (id: string) =>
+      id === "run-1"
+        ? {
+            ...run,
+            cursor: 10,
+            status: "interrupted",
+            recovery: { available: true, boundary: "response" },
+          }
+        : new Promise((resolve) => {
+            finishRun = resolve;
+          }),
+    );
+    let finishRecovery!: (value: any) => void;
+    api.recover.mockReturnValue(
+      new Promise((resolve) => {
+        finishRecovery = resolve;
+      }),
+    );
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+      await wrapper.findAll(".workflow-run-list button")[1].trigger("click");
+      await flushPromises();
+      finishRecovery({ ...run, cursor: 11 });
+      await flushPromises();
+      await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+      expect(api.recover).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(api.events).not.toHaveBeenCalled();
+      finishRun(next);
+      await flushPromises();
+      api.events.mockResolvedValue({
+        cursor: 21,
+        reset: false,
+        events: [{ cursor: 21 }],
+        snapshot: {
+          ...next,
+          cursor: 21,
+          status: "completed",
+          result: { text: "Second completed result" },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(api.events).toHaveBeenCalledWith("run-2", 20);
+      expect(router.currentRoute.value.query.workflow_run).toBe("run-2");
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Second run",
+      );
+      expect(wrapper.get('[data-testid="result-text"]').text()).toBe(
+        "Second completed result",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("continues the selected original attempt and explains a started-tool block", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

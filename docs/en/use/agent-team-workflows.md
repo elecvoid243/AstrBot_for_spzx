@@ -20,6 +20,24 @@ In **Independent Runs**, the graph is a read-only frozen snapshot. Select a task
 
 At startup, accepted task submissions at saved safe points finish idempotently. Other abandoned task attempts become interrupted and cannot accept a late conflicting result. Pending independent branches can still advance from persisted state. Invocation checkpoint restoration and retry controls are not delivered by this canvas yet.
 
+## Run progress and member process
+
+Open **Independent Runs → View Run**. The run list and history query saved runs. Expand **Run list and history** within the detail to switch runs. The detail starts with the goal, pinned asset version, completed task count and waiting reasons. Select a progress task or a task under **Needs attention** to inspect its artifacts and member process. **Expand execution graph (read-only)** retains selection of actual graph tasks and pinned inputs.
+
+The **Artifacts** section still reads complete results at an exact version and previews or downloads files. Expand **Saved member process** to inspect complete model responses, thinking actually returned by the provider, tool arguments and original tool results. Records show their task, attempt and member. Models returning no thinking have no thinking section. Long content remains scrollable without relying on a truncated summary.
+
+![Goal, task progress, waiting reason and members in the actual WebUI](/images/agent-workflow-progress-en.png)
+
+![Expanded complete model response, returned thinking and tool arguments](/images/agent-workflow-process-en.png)
+
+Closing, refreshing or leaving the page does not cancel execution. Reopening reads a consistent persistent snapshot. Subsequent changes continue through a monotonic observation cursor; duplicate events cannot replace newer state, and an expired cursor reloads the snapshot. Completed responses and tool results remain readable after rebuilding the process. This cursor reconnects observation; it does not restore unfinished model or tool invocations.
+
+![Run progress with the dark theme](/images/agent-workflow-progress-dark.png)
+
+On narrow screens, progress, waiting reasons and members stack vertically. Long names and identities wrap, and artifact and process controls remain accessible.
+
+![Progress, artifacts and process on a narrow screen](/images/agent-workflow-progress-mobile.png)
+
 ## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.
@@ -46,7 +64,8 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | Agent Teams → Members, Workflow Editor, Run Monitor, History | Retains legacy teams, long-lived conversations and run entries. |
 | Saving a reusable single-task workflow | Agent Teams → Workflow Assets → New Workflow; independent of a legacy team. |
 | Editing a reusable dependency workflow | Agent Teams → Workflow Assets → New Canvas Workflow / Edit Asset; the legacy Workflow Editor remains separate. |
-| Starting and inspecting a new workflow run | Workflow Assets → Start Run, then Independent Runs → Inspect task for graph task results. |
+| Starting and inspecting a new workflow run | Workflow Assets → Start Run, then Independent Runs → View Run → Execution progress to select a task; the Inspect task selector remains available. |
+| Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
 
-Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, a live event workbench, invocation checkpoints and team orchestration connect to this protocol in subsequent tasks.
+Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, invocation checkpoints and team orchestration connect to this protocol in subsequent tasks.

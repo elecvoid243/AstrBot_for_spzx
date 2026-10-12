@@ -43,6 +43,14 @@ export const workflowAssetsApi = {
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)
     ).data.data;
   },
+  async events(runId: string, after: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/events`,
+        { params: { after } },
+      )
+    ).data.data;
+  },
   async artifact(artifactId: string, version: number) {
     return (
       await httpClient.get(

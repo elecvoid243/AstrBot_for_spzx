@@ -304,6 +304,19 @@ class AgentWorkflowEvent(SQLModel, table=True):
     data: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentWorkflowProcess(TimestampMixin, SQLModel, table=True):
+    """Complete observed responses/results, independent of execution checkpoints."""
+
+    __tablename__: str = "agent_workflow_process"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    task_id: str
+    attempt_id: str
+    member_id: str
+    kind: str
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

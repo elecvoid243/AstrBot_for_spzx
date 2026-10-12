@@ -17,11 +17,11 @@ from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import col, select, update
+from sqlmodel import col, select, text, update
 
 from astrbot.core import logger
 from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.agent_team_execution import execute_team_turn
+from astrbot.core.agent_team_execution import ProcessPersistenceError, execute_team_turn
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import (
     RoleAssetError,
@@ -40,6 +40,7 @@ from astrbot.core.db.po import (
     AgentWorkflowArtifact,
     AgentWorkflowEvent,
     AgentWorkflowFile,
+    AgentWorkflowProcess,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
     AgentWorkflowVersion,
@@ -479,6 +480,13 @@ class WorkflowService:
                     state=state,
                 )
             )
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="run.started",
+                    data={"attempt_id": state["attempt_id"]},
+                )
+            )
             await session.commit()
         task = asyncio.create_task(self._execute(username, run_id))
         self._tasks.add(task)
@@ -574,15 +582,32 @@ class WorkflowService:
             RoleAssetError: Run is inaccessible.
         """
         async with self.db.get_db() as session:
+            # SQLite's legacy transaction mode does not begin on SELECT. Pin all
+            # graph facts and their cursor to one read snapshot before querying.
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
             row = await session.get(AgentWorkflowRun, run_id)
             if row is None or row.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
+            identities = [run_id, *row.snapshot.get("task_runs", {}).values()]
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.run_id).in_(identities),
+                            AgentWorkflowRun.owner_username == username,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
             events = (
                 (
                     await session.execute(
                         select(AgentWorkflowEvent)
                         .where(
-                            AgentWorkflowEvent.run_id == run_id,
+                            col(AgentWorkflowEvent.run_id).in_(identities),
                         )
                         .order_by(col(AgentWorkflowEvent.id))
                     )
@@ -590,18 +615,12 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
-            errors = []
-            for event in events:
-                if event.kind == "result.rejected":
-                    errors = event.data["fields"]
-                elif event.kind == "result.accepted":
-                    errors = []
             artifacts = (
                 (
                     await session.execute(
                         select(AgentWorkflowArtifact)
                         .where(
-                            AgentWorkflowArtifact.run_id == run_id,
+                            col(AgentWorkflowArtifact.run_id).in_(identities),
                         )
                         .order_by(col(AgentWorkflowArtifact.version))
                     )
@@ -609,38 +628,87 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
-            result = {
-                "run_id": run_id,
-                "status": row.status,
-                "snapshot": row.snapshot,
-                "state": row.state,
-                "result": row.result,
-                "pending_result": row.pending_result,
-                "validation_errors": errors,
-                "events": [
-                    {"cursor": event.id, "kind": event.kind, "data": event.data}
-                    for event in events
-                ],
-                "result_ref": {"artifact_id": run_id, "version": 1}
-                if artifacts
-                else None,
-                "artifacts": [
-                    {
-                        "artifact_id": a.artifact_id,
-                        "version": a.version,
-                        "summary": json.dumps(a.content, ensure_ascii=False)[:200],
-                    }
-                    for a in artifacts
-                ],
-                "read_artifacts": [
-                    event.data["reference"]
-                    for event in events
-                    if event.kind == "artifact.read"
-                ],
-            }
+            process = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowProcess)
+                        .where(col(AgentWorkflowProcess.run_id).in_(identities))
+                        .order_by(
+                            col(AgentWorkflowProcess.created_at),
+                            col(AgentWorkflowProcess.record_id),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            results = {}
+            for current in rows:
+                current_events = [
+                    event for event in events if event.run_id == current.run_id
+                ]
+                current_artifacts = [
+                    artifact
+                    for artifact in artifacts
+                    if artifact.run_id == current.run_id
+                ]
+                errors = []
+                for event in current_events:
+                    if event.kind == "result.rejected":
+                        errors = event.data["fields"]
+                    elif event.kind == "result.accepted":
+                        errors = []
+                results[current.run_id] = {
+                    "run_id": current.run_id,
+                    "status": current.status,
+                    "snapshot": current.snapshot,
+                    "state": current.state,
+                    "result": current.result,
+                    "pending_result": current.pending_result,
+                    "process": [
+                        record.model_dump(mode="json")
+                        for record in process
+                        if record.run_id == current.run_id
+                    ],
+                    "validation_errors": errors,
+                    "events": [
+                        {
+                            "cursor": event.id,
+                            "kind": event.kind,
+                            "data": event.data,
+                            "run_id": current.run_id,
+                            "task_id": current.state.get("task_id"),
+                            "attempt_id": event.data.get(
+                                "attempt_id", current.state.get("attempt_id")
+                            ),
+                            "member_id": current.snapshot.get("member", {}).get(
+                                "member_id"
+                            ),
+                        }
+                        for event in current_events
+                    ],
+                    "cursor": current_events[-1].id if current_events else 0,
+                    "result_ref": {"artifact_id": current.run_id, "version": 1}
+                    if current_artifacts
+                    else None,
+                    "artifacts": [
+                        {
+                            "artifact_id": a.artifact_id,
+                            "version": a.version,
+                            "summary": json.dumps(a.content, ensure_ascii=False)[:200],
+                        }
+                        for a in current_artifacts
+                    ],
+                    "read_artifacts": [
+                        event.data["reference"]
+                        for event in current_events
+                        if event.kind == "artifact.read"
+                    ],
+                }
+            result = results[run_id]
         if row.snapshot.get("engine") == "graph_v2":
             result["tasks"] = [
-                {**await self.get_run(username, identity), "node_id": node_id}
+                {**results[identity], "node_id": node_id}
                 for node_id, identity in row.snapshot["task_runs"].items()
             ]
             result["events"] = sorted(
@@ -654,7 +722,138 @@ class WorkflowService:
                 artifact for task in result["tasks"] for artifact in task["artifacts"]
             ]
             result["result_ref"] = None
+        result["cursor"] = max(
+            (event["cursor"] for event in result["events"]), default=0
+        )
+        tasks = result.get("tasks", [result])
+        result["progress"] = {
+            "total": len(tasks),
+            "completed": sum(
+                task["status"] in {"completed", "skipped"} for task in tasks
+            ),
+            "running": sum(task["status"] == "running" for task in tasks),
+            "waiting": sum(
+                task["status"] not in {"pending", "running", "completed", "skipped"}
+                for task in tasks
+            ),
+        }
         return result
+
+    async def record_process(
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        record_id: str,
+        kind: str,
+        data: dict,
+    ) -> dict:
+        """Save complete structured observations and one deduplicated event.
+
+        Args:
+            username: Original owner, checked against the persisted run.
+            run_id: Task run producing the record.
+            attempt_id: Actual execution attempt; stale writers are rejected.
+            record_id: Stable delivery identity within this attempt.
+            kind: Model response or tool result from the real execution chain.
+            data: Complete returned payload, never parsed from display text.
+
+        Returns:
+            Durable record with its task, attempt and member associations.
+
+        Raises:
+            RoleAssetError: Invalid identity, inaccessible run or conflicting replay.
+        """
+        if (
+            kind not in {"model_response", "tool_result"}
+            or not record_id
+            or len(record_id) > 256
+        ):
+            raise RoleAssetError("Invalid process record")
+        identity = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"{run_id}:{attempt_id}:{record_id}"
+        ).hex
+        async with self.db.get_db() as session:
+            run = await session.get(AgentWorkflowRun, run_id)
+            if run is None or run.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            if (
+                run.state.get("attempt_id") != attempt_id
+                or "member" not in run.snapshot
+            ):
+                raise RoleAssetError(
+                    "Process record belongs to a stale attempt", status=409
+                )
+            previous = await session.get(AgentWorkflowProcess, identity)
+            if previous:
+                if previous.kind != kind or previous.data != data:
+                    raise RoleAssetError(
+                        "Process record identity was reused", status=409
+                    )
+                return previous.model_dump(mode="json")
+            record = AgentWorkflowProcess(
+                record_id=identity,
+                run_id=run_id,
+                task_id=run.state["task_id"],
+                attempt_id=attempt_id,
+                member_id=run.snapshot["member"]["member_id"],
+                kind=kind,
+                data=data,
+            )
+            session.add(record)
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="process." + kind,
+                    data={"record_id": identity, "attempt_id": attempt_id},
+                )
+            )
+            try:
+                await session.commit()
+                await session.refresh(record)
+            except IntegrityError:
+                await session.rollback()
+                previous = await session.get(AgentWorkflowProcess, identity)
+                if previous is None:
+                    raise
+                if previous.kind != kind or previous.data != data:
+                    raise RoleAssetError(
+                        "Process record identity was reused", status=409
+                    ) from None
+                return previous.model_dump(mode="json")
+        return record.model_dump(mode="json")
+
+    async def get_events(self, username: str, run_id: str, after: int = 0) -> dict:
+        """Continue observation from a committed cursor or return a fresh snapshot.
+
+        Args:
+            username: Authenticated owner.
+            run_id: Run or graph identity to observe.
+            after: Last cursor applied by the client; zero starts observation.
+
+        Returns:
+            Ordered events and their consistent snapshot when facts changed.
+            Cursors outside the last 1000 events restart from the snapshot.
+
+        Raises:
+            RoleAssetError: Run is inaccessible or the cursor is negative.
+        """
+        if after < 0:
+            raise RoleAssetError("Cursor must not be negative")
+        snapshot = await self.get_run(username, run_id)
+        events = snapshot["events"]
+        reset = after > snapshot["cursor"] or (
+            len(events) > 1000 and after < events[-1001]["cursor"]
+        )
+        changes = (
+            [] if reset else [event for event in events if event["cursor"] > after]
+        )
+        return {
+            "cursor": snapshot["cursor"],
+            "reset": reset,
+            "events": changes,
+            "snapshot": snapshot if reset or changes else None,
+        }
 
     async def list_runs(self, username: str, limit: int = 50) -> dict:
         """List persisted runs, including inactive and interrupted executions.
@@ -1543,14 +1742,32 @@ class WorkflowService:
                 for row in rows
                 if row.state.get("safe_to_finish")
             ]
-            await session.execute(
-                update(AgentWorkflowRun)
-                .where(
-                    col(AgentWorkflowRun.status) == "running",
-                    AgentWorkflowRun.snapshot["engine"].as_string() != "graph_v2",
+            abandoned = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.status) == "running",
+                            AgentWorkflowRun.snapshot["engine"].as_string()
+                            != "graph_v2",
+                        )
+                    )
                 )
-                .values(status="interrupted")
+                .scalars()
+                .all()
             )
+            for run in abandoned:
+                run.status = "interrupted"
+                session.add(run)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run.run_id,
+                        kind="task.interrupted",
+                        data={
+                            "attempt_id": run.state["attempt_id"],
+                            "reason": "Core execution stopped; this task was not replayed.",
+                        },
+                    )
+                )
             await session.commit()
 
         for username, run_id in safe_intents:
@@ -1678,6 +1895,24 @@ class WorkflowService:
 
                 tools.append(ReadArtifactTool(read))
             AgentTeamToolRegistry.register(member["umo"], tools)
+
+            async def record(record_id: str, kind: str, data: dict) -> None:
+                """Persist a structured observation before execution advances.
+
+                Args:
+                    record_id: Stable response or tool delivery identity.
+                    kind: Model response or tool result.
+                    data: Complete original payload from the runner.
+                """
+                try:
+                    await self.record_process(
+                        username, run_id, state["attempt_id"], record_id, kind, data
+                    )
+                except Exception as exc:
+                    raise ProcessPersistenceError(
+                        "Failed to save complete process record"
+                    ) from exc
+
             reply, parts = await asyncio.wait_for(
                 execute_team_turn(
                     ports=ports,
@@ -1687,6 +1922,7 @@ class WorkflowService:
                     username=username,
                     turn_id=state["attempt_id"],
                     node_id=snapshot.get("node_id", state["task_id"]),
+                    record_process=record,
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", [])),
@@ -1712,7 +1948,7 @@ class WorkflowService:
             }
             state["safe_to_finish"] = True
             async with self.db.get_db() as session:
-                await session.execute(
+                changed = await session.execute(
                     update(AgentWorkflowRun)
                     .where(
                         col(AgentWorkflowRun.run_id) == run_id,
@@ -1722,6 +1958,14 @@ class WorkflowService:
                     )
                     .values(state=state)
                 )
+                if cast(CursorResult, changed).rowcount == 1:
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=run_id,
+                            kind="response.completed",
+                            data={"attempt_id": state["attempt_id"]},
+                        )
+                    )
                 await session.commit()
             current = await self.get_run(username, run_id)
             if current["pending_result"] is not None:
@@ -1745,7 +1989,7 @@ class WorkflowService:
             if ports and ports.close:
                 await ports.close()
         async with self.db.get_db() as session:
-            await session.execute(
+            changed = await session.execute(
                 update(AgentWorkflowRun)
                 .where(
                     col(AgentWorkflowRun.run_id) == run_id,
@@ -1755,4 +1999,15 @@ class WorkflowService:
                 )
                 .values(status=status, state=state)
             )
+            if cast(CursorResult, changed).rowcount == 1:
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="task." + status,
+                        data={
+                            "attempt_id": state["attempt_id"],
+                            "reason": state["reason"],
+                        },
+                    )
+                )
             await session.commit()

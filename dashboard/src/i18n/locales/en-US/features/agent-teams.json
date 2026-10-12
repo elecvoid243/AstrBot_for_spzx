@@ -327,6 +327,26 @@
     "saveRevision": "Save artifact version",
     "submissions": "Result submission history"
   },
+  "progress": {
+    "runList": "Run list and history",
+    "title": "Execution progress",
+    "attention": "Needs attention",
+    "noAttention": "No task needs attention at this time.",
+    "members": "Members in this run",
+    "context": "Each member continues its context within this run. New runs use isolated conversations.",
+    "graph": "Expand execution graph (read-only)",
+    "artifacts": "Artifacts",
+    "task": "Task",
+    "response": "Complete model response",
+    "collectedResponse": "Complete collected reply",
+    "thinking": "Thinking returned by the provider",
+    "toolCalls": "Tool calls and arguments",
+    "toolResult": "Tool result",
+    "fullRecord": "Expand complete original record",
+    "events": "Persistent events and observation cursor",
+    "emptyProcess": "No completed member response or tool result yet.",
+    "observation": "Process records belong to a task, attempt and member. The observation cursor reconnects this page; it does not restore invocation checkpoints."
+  },
   "graph": {
     "canvas": "Workflow canvas",
     "create": "New Canvas Workflow",

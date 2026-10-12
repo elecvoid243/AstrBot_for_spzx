@@ -4885,6 +4885,19 @@ export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
 
 export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
 
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
+    path: {
+        run_id: string;
+    };
+    query?: {
+        after?: number;
+    };
+};
+
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetResponse = (unknown);
+
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetError = (HTTPValidationError);
+
 export type GetResultApiV1WorkflowRunsRunIdResultGetData = {
     path: {
         run_id: string;

@@ -6506,6 +6506,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/events:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Events
+      description: "Read committed changes for reconnecting run observers.\n\nArgs:\n\
+        \    run_id: Persisted run or graph identity.\n    after: Last successfully\
+        \ applied event cursor.\n    username: Authenticated owner.\n    service: Shared\
+        \ public run service.\n\nReturns:\n    Changes with their snapshot, or a reset\
+        \ for an expired cursor."
+      operationId: get_events_api_v1_workflow_runs__run_id__events_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: After
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/result:
     get:
       tags:

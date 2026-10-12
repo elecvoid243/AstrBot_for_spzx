@@ -28,6 +28,10 @@ from astrbot import logger
 from astrbot.core.agent.message import ImageURLPart, TextPart, ThinkPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_image_cache import tool_image_cache
+from astrbot.core.agent_team_execution import (
+    ProcessPersistenceError,
+    current_team_execution,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.components import Json
 from astrbot.core.message.message_event_result import (
@@ -1014,6 +1018,44 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             for tool_name in llm_resp.tools_call_name
         ]
 
+    async def _record_model_response(self, response: LLMResponse) -> None:
+        """Save complete provider output on all three model response paths.
+
+        Args:
+            response: Complete provider response before display or tool execution.
+        """
+
+        execution = current_team_execution.get()
+        if execution and execution.record_process:
+            await execution.record_process(
+                uuid.uuid4().hex,
+                "model_response",
+                {
+                    "id": response.id,
+                    "role": response.role,
+                    "text": response.completion_text,
+                    "parts": [
+                        component.toDict() for component in response.result_chain.chain
+                    ]
+                    if response.result_chain
+                    else [],
+                    "reasoning_content": response.reasoning_content,
+                    "reasoning_signature": response.reasoning_signature,
+                    "tool_calls": [
+                        {"id": call_id, "name": name, "args": args}
+                        for call_id, name, args in zip(
+                            response.tools_call_ids,
+                            response.tools_call_name,
+                            response.tools_call_args,
+                        )
+                    ],
+                    "tools_call_extra_content": response.tools_call_extra_content,
+                    "raw_completion": response.raw_completion.model_dump(mode="json")
+                    if response.raw_completion
+                    else None,
+                },
+            )
+
     @override
     async def step(self):
         """Process a single step of the agent.
@@ -1102,6 +1144,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     break
                 continue
             llm_resp_result = llm_response
+            await self._record_model_response(llm_response)
 
             # Chunk responses have already continued above. A missing usage report
             # means the latest context occupancy is unknown.
@@ -1588,6 +1631,19 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 _final_resp: CallToolResult | None = None
                 async for resp in self._iter_tool_executor_results(executor):  # type: ignore
                     if isinstance(resp, CallToolResult):
+                        execution = current_team_execution.get()
+                        if execution and execution.record_process:
+                            # Keep the original result before overflow materialization
+                            # or display filtering can shorten its content.
+                            await execution.record_process(
+                                uuid.uuid4().hex,
+                                "tool_result",
+                                {
+                                    "id": func_tool_id,
+                                    "name": func_tool_name,
+                                    "raw_result": resp.model_dump(mode="json"),
+                                },
+                            )
                         res = resp
                         _final_resp = resp
                         if not res.content:
@@ -1702,7 +1758,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 except Exception as e:
                     logger.error(f"Error in on_tool_end hook: {e}", exc_info=True)
             except Exception as e:
-                if isinstance(e, _ToolExecutionInterrupted):
+                if isinstance(e, (_ToolExecutionInterrupted, ProcessPersistenceError)):
                     raise
                 logger.warning(traceback.format_exc())
                 _append_tool_call_result(
@@ -1815,6 +1871,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     )
                 )
                 if requery_resp:
+                    await self._record_model_response(requery_resp)
                     llm_resp = requery_resp
                     self._sanitize_malformed_tool_calls(llm_resp)
 
@@ -1847,6 +1904,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                     )
                     if repair_resp:
+                        await self._record_model_response(repair_resp)
                         llm_resp = repair_resp
                         self._sanitize_malformed_tool_calls(llm_resp)
 

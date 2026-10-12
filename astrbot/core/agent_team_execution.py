@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from astrbot.dashboard.services.agent_team_ports import TeamPorts
 
 
+class ProcessPersistenceError(RuntimeError):
+    """Stop dependent execution when a complete observation cannot be saved."""
+
+
 @dataclass
 class NodeExecutionBinding:
     """Execution profile a dispatched team node turn must run with."""
@@ -72,6 +76,8 @@ class NodeExecutionBinding:
     """Frozen persona content; current authorization is checked before dispatch."""
     conversation_id: str | None = None
     """V2 member context identity saved before the first model invocation."""
+    record_process: Callable[[str, str, dict], Awaitable[None]] | None = None
+    """Durable structured observation sink; it does not resume execution."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -94,6 +100,7 @@ async def execute_team_turn(
     config_checker: Callable[[str], bool] | None = None,
     on_delivered: Callable[[str], Awaitable[None]] | None = None,
     on_event: Callable[[dict], None] | None = None,
+    record_process: Callable[[str, str, dict], Awaitable[None]] | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -111,6 +118,7 @@ async def execute_team_turn(
         config_checker: Optional check that the selected profile still exists.
         on_delivered: Persists or publishes the dispatched message association.
         on_event: Receives interactive waiting events from collection.
+        record_process: Saves complete model responses and original tool results.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -145,6 +153,7 @@ async def execute_team_turn(
         profile_snapshot=execution.get("profile_snapshot"),
         persona_snapshot=execution.get("persona_snapshot"),
         conversation_id=member.get("conversation_id"),
+        record_process=record_process,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (

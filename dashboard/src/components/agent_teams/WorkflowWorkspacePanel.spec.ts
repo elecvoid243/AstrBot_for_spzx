@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   revise: vi.fn(),
   file: vi.fn(),
   storeFile: vi.fn(),
+  events: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -56,6 +57,9 @@ const stubs: Record<string, any> = Object.fromEntries(
     "v-card-actions",
     "v-alert",
     "v-spacer",
+    "v-chip",
+    "v-icon",
+    "v-progress-linear",
     "v-expansion-panels",
     "v-expansion-panel",
     "v-expansion-panel-text",
@@ -110,6 +114,51 @@ describe("single-task workflow workspace", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("continues a cursor, ignores duplicate observations and resets to a persisted snapshot", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({ ...run, cursor: 10 });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    api.events.mockResolvedValue({
+      cursor: 10,
+      reset: false,
+      events: [{ cursor: 10 }],
+      snapshot: { ...run, cursor: 10, status: "failed" },
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 10);
+    expect(wrapper.find('[data-testid="run-detail"]').text()).toContain(
+      "v2.states.running",
+    );
+    api.events.mockResolvedValue({
+      cursor: 20,
+      reset: true,
+      events: [],
+      snapshot: {
+        ...run,
+        cursor: 20,
+        status: "completed",
+        result: { text: "Saved while this page was closed" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="result-text"]').text()).toBe(
+      "Saved while this page was closed",
+    );
+    wrapper.unmount();
+    expect(api.start).not.toHaveBeenCalled();
   });
 
   it("saves a pinned asset and presents required input errors before starting a run", async () => {
@@ -176,6 +225,88 @@ describe("single-task workflow workspace", () => {
     });
     expect(wrapper.emitted("started")).toEqual([["run-1"]]);
     expect(router.currentRoute.value.query.workflow_run).toBe("run-1");
+    wrapper.unmount();
+  });
+
+  it("selects a waiting task and exposes its full correlated tool result without inventing thinking", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=graph-1");
+    const toolResult = "Full source result. ".repeat(2000);
+    const first = {
+      ...run,
+      node_id: "first",
+      status: "completed",
+      snapshot: {
+        ...run.snapshot,
+        definition: { ...asset.definition, name: "Research" },
+      },
+    };
+    const waiting = {
+      ...run,
+      run_id: "task-2",
+      node_id: "review",
+      status: "awaiting_result",
+      snapshot: {
+        ...run.snapshot,
+        definition: {
+          ...asset.definition,
+          name: "Review a very long report title",
+        },
+      },
+      state: {
+        attempt_id: "attempt-2",
+        reason: "A validated review is still required",
+      },
+      process: [
+        {
+          record_id: "record-2",
+          kind: "tool_result",
+          task_id: "task-2",
+          attempt_id: "attempt-2",
+          member_id: "member-2",
+          data: {
+            name: "read_evidence",
+            raw_result: { content: [{ type: "text", text: toolResult }] },
+          },
+        },
+      ],
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      run_id: "graph-1",
+      status: "blocked",
+      snapshot: {
+        ...run.snapshot,
+        definition: { ...asset.definition, tasks: [] },
+      },
+      tasks: [first, waiting],
+      progress: { total: 2, completed: 1, running: 0, waiting: 1 },
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: {
+        plugins: [router],
+        stubs: { ...stubs, WorkflowGraphCanvas: true },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="run-goal"]').text()).toBe(
+      "Research energy",
+    );
+    await wrapper.findAll(".run-task")[1].trigger("click");
+    await flushPromises();
+    const record = wrapper.find('[data-testid="process-record"]');
+    await record.find("summary").trigger("click");
+    expect(record.text()).toContain(toolResult.trim());
+    expect(record.text()).toContain("attempt-2");
+    expect(record.text()).toContain("member-2");
+    expect(wrapper.find('[data-testid="provider-thinking"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.text()).toContain("A validated review is still required");
     wrapper.unmount();
   });
 

@@ -67,7 +67,11 @@ asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
                 )
                 time.sleep(0.05)
             identities = json.loads(marker.read_text(encoding="utf-8"))
-            model_calls = (tmp_path / "model-calls.log").read_text(encoding="utf-8") if graph else None
+            model_calls = (
+                (tmp_path / "model-calls.log").read_text(encoding="utf-8")
+                if graph
+                else None
+            )
             # TerminateProcess on Windows and SIGTERM on POSIX: no async cleanup.
             process.terminate()
             process.wait(timeout=10)
@@ -163,12 +167,21 @@ asyncio.run(main())
     assert before["pending_result"] is not None
     assert before["result"] is None
     assert evidence["finished"]["status"] == ("completed" if safe else "interrupted")
-    assert evidence["finished"]["run_id"] == (evidence["root"]["tasks"][0]["run_id"] if graph else identities["run_id"])
+    assert evidence["finished"]["run_id"] == (
+        evidence["root"]["tasks"][0]["run_id"] if graph else identities["run_id"]
+    )
     if graph:
         assert evidence["root"]["status"] == ("completed" if safe else "blocked")
         assert (tmp_path / "model-calls.log").read_text(encoding="utf-8") == model_calls
     assert evidence["finished"]["snapshot"] == before["snapshot"]
     assert evidence["finished"]["state"] == before["state"]
+    assert evidence["finished"]["process"] == before["process"]
+    assert any(record["kind"] == "model_response" for record in before["process"])
+    assert any(record["kind"] == "tool_result" for record in before["process"])
+    assert all(
+        record["attempt_id"] == before["state"]["attempt_id"]
+        for record in before["process"]
+    )
     if safe:
         assert evidence["repeated"] == evidence["finished"]
         assert evidence["result"] == before["pending_result"]
@@ -200,5 +213,9 @@ asyncio.run(main())
 
 
 @pytest.mark.parametrize("safe", [True, False])
-def test_graph_ownership_and_submission_survive_terminated_pipeline_process(tmp_path, safe):
-    test_saved_submission_rebuilds_without_dispatch_after_process_termination(tmp_path, safe, False, graph=True)
+def test_graph_ownership_and_submission_survive_terminated_pipeline_process(
+    tmp_path, safe
+):
+    test_saved_submission_rebuilds_without_dispatch_after_process_termination(
+        tmp_path, safe, False, graph=True
+    )

@@ -327,6 +327,26 @@
     "saveRevision": "保存产物版本",
     "submissions": "结果提交历史"
   },
+  "progress": {
+    "runList": "运行列表与历史",
+    "title": "执行进度",
+    "attention": "需要处理",
+    "noAttention": "当前没有需要处理的任务。",
+    "members": "本次运行成员",
+    "context": "同一成员在本次运行内延续上下文，新的运行使用独立会话。",
+    "graph": "展开执行图（只读）",
+    "artifacts": "产物",
+    "task": "任务",
+    "response": "完整模型响应",
+    "collectedResponse": "完整已收集回复",
+    "thinking": "提供商返回的思考内容",
+    "toolCalls": "工具调用与参数",
+    "toolResult": "工具结果",
+    "fullRecord": "展开完整原始记录",
+    "events": "持久事件与观测游标",
+    "emptyProcess": "尚无已完成的成员响应或工具结果。",
+    "observation": "过程关联到任务、尝试和成员。观测游标用于页面重连，不代表调用检查点恢复。"
+  },
   "graph": {
     "canvas": "工作流画布",
     "create": "新建画布工作流",

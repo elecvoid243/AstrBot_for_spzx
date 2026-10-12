@@ -66,6 +66,9 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_graph_role",
         "v2_plain_role",
         "v2_failing_role",
+        "v2_hidden_role",
+        "v2_no_thinking_role",
+        "v2_process_failure_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -83,8 +86,8 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     preferences = SharedPreferences(db)
     config = AstrBotConfig(str(tmp_path / "config.json"), copy.deepcopy(DEFAULT_CONFIG))
     config["provider_settings"]["streaming_response"] = False
-    config["provider_settings"]["display_reasoning_text"] = True
-    config["provider_settings"]["show_tool_call_result"] = True
+    config["provider_settings"]["display_reasoning_text"] = mode != "v2_hidden_role"
+    config["provider_settings"]["show_tool_call_result"] = mode != "v2_hidden_role"
     config["provider_settings"]["llm_safety_mode"] = False
     config["provider_settings"]["computer_use_runtime"] = "none"
     config["provider_settings"]["file_extract"]["enable"] = False
@@ -178,7 +181,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             tools = kwargs.get("func_tool")
             model_requests.append(self.provider_config["id"])
             if mode.startswith("v2_graph"):
-                with (tmp_path / "model-calls.log").open("a", encoding="utf-8") as calls:
+                with (tmp_path / "model-calls.log").open(
+                    "a", encoding="utf-8"
+                ) as calls:
                     calls.write(self.provider_config["id"] + "\n")
             if (
                 mode == "v2_failing_role"
@@ -258,17 +263,35 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     )
                     await asyncio.Future()
             if (
-                mode in ("v2_role", "v2_crash_role", "v2_unsafe_role", "v2_graph_role", "v2_graph_crash_role", "v2_graph_unsafe_role")
+                mode
+                in (
+                    "v2_role",
+                    "v2_hidden_role",
+                    "v2_no_thinking_role",
+                    "v2_process_failure_role",
+                    "v2_crash_role",
+                    "v2_unsafe_role",
+                    "v2_graph_role",
+                    "v2_graph_crash_role",
+                    "v2_graph_unsafe_role",
+                )
                 and "submit_task_result" in names
             ):
                 self.turns[session] = self.turns.get(session, 0) + 1
-                if mode in ("v2_unsafe_role", "v2_graph_unsafe_role") and self.turns[session] == 3:
+                if (
+                    mode in ("v2_unsafe_role", "v2_graph_unsafe_role")
+                    and self.turns[session] == 3
+                ):
                     (tmp_path / "crash-ready.json").write_text(
                         json.dumps({"run_id": run["run_id"], "db_path": db.db_path}),
                         encoding="utf-8",
                     )
                     await asyncio.Future()
-                graph_round = (self.turns[session] - 1) % 3 + 1 if mode == "v2_graph_role" else self.turns[session]
+                graph_round = (
+                    (self.turns[session] - 1) % 3 + 1
+                    if mode == "v2_graph_role"
+                    else self.turns[session]
+                )
                 if graph_round <= 2:
                     if graph_round == 1:
                         # Mutate live templates while this run is executing.
@@ -292,7 +315,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                                     "tools": names,
                                     "correction_context": "Provide non-empty text"
                                     in str(kwargs),
-                                    **({"previous_task": self.turns[session] > 3 and "submit-2" in str(kwargs)} if mode == "v2_graph_role" else {}),
+                                    **(
+                                        {
+                                            "previous_task": self.turns[session] > 3
+                                            and "submit-2" in str(kwargs)
+                                        }
+                                        if mode == "v2_graph_role"
+                                        else {}
+                                    ),
                                 }
                             )
                         }
@@ -331,7 +361,12 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     raise
             return LLMResponse(
                 role="assistant",
-                reasoning_content="Verified the evidence.",
+                reasoning_content=None
+                if mode == "v2_no_thinking_role"
+                else "Verified the evidence.",
+                reasoning_signature=None
+                if mode == "v2_no_thinking_role"
+                else "provider-signature",
                 completion_text=json.dumps(
                     {
                         "model": self.provider_config["id"],
@@ -586,13 +621,34 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 }
             },
         )
+        if mode == "v2_process_failure_role":
+            async with db.engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "CREATE TRIGGER reject_process BEFORE INSERT ON agent_workflow_process BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END"
+                    )
+                )
         dispatch_task = asyncio.create_task(event_bus.dispatch())
         try:
             if mode.startswith("v2_graph"):
-                task = {"id": "first", "name": "First", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Write evidence."}
+                task = {
+                    "id": "first",
+                    "name": "First",
+                    "member": "writer",
+                    "role_id": role["role_id"],
+                    "role_version": 1,
+                    "task": "Write evidence.",
+                }
                 definition = {"name": "Pipeline workflow", "tasks": [task], "edges": []}
                 if mode == "v2_graph_role":
-                    definition["tasks"].append({**task, "id": "second", "name": "Second", "task": "Continue the evidence."})
+                    definition["tasks"].append(
+                        {
+                            **task,
+                            "id": "second",
+                            "name": "Second",
+                            "task": "Continue the evidence.",
+                        }
+                    )
                     definition["edges"].append({"source": "first", "target": "second"})
                 asset = await service.save_asset("alice", {"definition": definition})
             run = await service.start_run("alice", asset["asset_id"], {"version": 1})
@@ -603,14 +659,49 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 await asyncio.sleep(0.01)
             if mode == "v2_graph_role":
                 assert current["status"] == "completed", current
-                assert current["tasks"][0]["snapshot"]["member"] == current["tasks"][1]["snapshot"]["member"]
+                assert (
+                    current["tasks"][0]["snapshot"]["member"]
+                    == current["tasks"][1]["snapshot"]["member"]
+                )
                 result = await service.get_result("alice", run["run_id"])
-                assert json.loads(result["tasks"]["first"]["text"])["previous_task"] is False
-                assert json.loads(result["tasks"]["second"]["text"])["previous_task"] is True
+                assert (
+                    json.loads(result["tasks"]["first"]["text"])["previous_task"]
+                    is False
+                )
+                assert (
+                    json.loads(result["tasks"]["second"]["text"])["previous_task"]
+                    is True
+                )
                 assert json.loads(result["tasks"]["second"]["text"])["persona"] is True
                 return
-            if mode == "v2_role":
+            if mode in {"v2_role", "v2_hidden_role", "v2_no_thinking_role"}:
                 assert current["status"] == "completed", current
+                responses = [
+                    record
+                    for record in current["process"]
+                    if record["kind"] == "model_response"
+                ]
+                tool_results = [
+                    record
+                    for record in current["process"]
+                    if record["kind"] == "tool_result"
+                ]
+                assert len(responses) == 3
+                assert responses[-1]["data"]["reasoning_content"] == (
+                    None if mode == "v2_no_thinking_role" else "Verified the evidence."
+                )
+                assert responses[-1]["data"]["reasoning_signature"] == (
+                    None if mode == "v2_no_thinking_role" else "provider-signature"
+                )
+                assert (
+                    responses[0]["data"]["tool_calls"][0]["name"]
+                    == "submit_task_result"
+                )
+                assert [record["data"]["id"] for record in tool_results] == [
+                    "submit-1",
+                    "submit-2",
+                ]
+                assert "Result accepted" in str(tool_results[-1]["data"]["raw_result"])
                 assert json.loads(
                     (await service.get_result("alice", run["run_id"]))["text"]
                 ) == {
@@ -628,9 +719,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             assert (
                 current["state"]["response"]["attempt_id"] == run["state"]["attempt_id"]
             )
-            if mode == "v2_failing_role":
+            if mode in {"v2_failing_role", "v2_process_failure_role"}:
                 assert model_requests == ["research-model"]
-            else:
+                assert not any(
+                    event["kind"] == "result.accepted" for event in current["events"]
+                )
+                if mode == "v2_process_failure_role":
+                    assert current["process"] == []
+            elif mode not in {"v2_hidden_role", "v2_no_thinking_role"}:
                 assert any(
                     part["type"] == "think"
                     for part in current["state"]["response"]["parts"]

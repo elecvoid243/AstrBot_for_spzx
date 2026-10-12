@@ -122,6 +122,32 @@ async def get_result(
         )
 
 
+@router.get("/workflow_runs/{run_id}/events")
+async def get_events(
+    run_id: str,
+    after: int = Query(default=0, ge=0),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read committed changes for reconnecting run observers.
+
+    Args:
+        run_id: Persisted run or graph identity.
+        after: Last successfully applied event cursor.
+        username: Authenticated owner.
+        service: Shared public run service.
+
+    Returns:
+        Changes with their snapshot, or a reset for an expired cursor.
+    """
+    try:
+        return ok(await service.get_events(username, run_id, after))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_artifacts/{artifact_id}/versions/{version}")
 async def read_artifact(
     artifact_id: str,

@@ -91,6 +91,17 @@ async def list_runs(
     username: str = Depends(require_dashboard_user),
     service: WorkflowService = Depends(get_workflow_service),
 ):
+    """List run overviews without complete configuration, results or process history.
+
+    Args:
+        limit: Maximum number of recent root runs.
+        username: Authenticated owner.
+        service: Shared public run service.
+
+    Returns:
+        Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+        Read a selected run's detail for complete frozen inputs and saved records.
+    """
     return ok(await service.list_runs(username, limit))
 
 
@@ -138,7 +149,9 @@ async def get_events(
         service: Shared public run service.
 
     Returns:
-        Changes with their snapshot, or a reset for an expired cursor.
+        Changed events with a complete consistent snapshot, or a complete reset
+        snapshot for an expired cursor. An unchanged cursor returns no snapshot
+        without reading saved process history.
     """
     try:
         return ok(await service.get_events(username, run_id, after))

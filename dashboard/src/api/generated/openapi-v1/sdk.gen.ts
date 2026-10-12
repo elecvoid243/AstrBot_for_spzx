@@ -3961,6 +3961,16 @@ export const startRunApiV1WorkflowAssetsAssetIdRunsPost = <ThrowOnError extends 
 
 /**
  * List Runs
+ * List run overviews without complete configuration, results or process history.
+ *
+ * Args:
+ * limit: Maximum number of recent root runs.
+ * username: Authenticated owner.
+ * service: Shared public run service.
+ *
+ * Returns:
+ * Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+ * Read a selected run's detail for complete frozen inputs and saved records.
  */
 export const listRunsApiV1WorkflowRunsGet = <ThrowOnError extends boolean = false>(options?: OptionsLegacyParser<ListRunsApiV1WorkflowRunsGetData, ThrowOnError>) => {
     return (options?.client ?? client).get<ListRunsApiV1WorkflowRunsGetResponse, ListRunsApiV1WorkflowRunsGetError, ThrowOnError>({
@@ -3990,7 +4000,9 @@ export const getRunApiV1WorkflowRunsRunIdGet = <ThrowOnError extends boolean = f
  * service: Shared public run service.
  *
  * Returns:
- * Changes with their snapshot, or a reset for an expired cursor.
+ * Changed events with a complete consistent snapshot, or a complete reset
+ * snapshot for an expired cursor. An unchanged cursor returns no snapshot
+ * without reading saved process history.
  */
 export const getEventsApiV1WorkflowRunsRunIdEventsGet = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetEventsApiV1WorkflowRunsRunIdEventsGetData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetEventsApiV1WorkflowRunsRunIdEventsGetResponse, GetEventsApiV1WorkflowRunsRunIdEventsGetError, ThrowOnError>({

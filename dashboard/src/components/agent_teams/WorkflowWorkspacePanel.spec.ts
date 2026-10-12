@@ -48,6 +48,20 @@ const run = {
   state: { attempt_id: "attempt-1", reason: null },
   result: null,
 };
+const runOverview = {
+  run_id: "run-1",
+  status: "running",
+  snapshot: {
+    definition: { name: "Report" },
+    asset_id: "asset-1",
+    asset_version: 1,
+    task: "Research energy",
+  },
+  state: { attempt_id: "attempt-1", reason: null },
+  progress: { total: 1, completed: 0, running: 1, waiting: 0 },
+  artifacts: [],
+  result_ref: null,
+};
 const slotStub = { template: "<div><slot /></div>" };
 const stubs: Record<string, any> = Object.fromEntries(
   [
@@ -109,11 +123,57 @@ describe("single-task workflow workspace", () => {
         },
       ],
     });
-    api.runs.mockResolvedValue({ runs: [run] });
+    api.runs.mockResolvedValue({ runs: [runOverview] });
     api.run.mockResolvedValue(run);
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("keeps selected complete process records while polling overview-only history", async () => {
+    vi.useFakeTimers();
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const completeText = "Complete evidence. ".repeat(2000);
+    api.run.mockResolvedValue({
+      ...run,
+      cursor: 10,
+      process: [
+        {
+          record_id: "record-1",
+          kind: "tool_result",
+          task_id: "task-1",
+          attempt_id: "attempt-1",
+          member_id: "member-1",
+          data: { name: "search", raw_result: { content: completeText } },
+        },
+      ],
+    });
+    api.events.mockResolvedValue({
+      cursor: 10,
+      reset: false,
+      events: [],
+      snapshot: null,
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="process-record"]').text()).toContain(
+      completeText,
+    );
+    await vi.advanceTimersByTimeAsync(4000);
+    await flushPromises();
+    expect(api.events).toHaveBeenLastCalledWith("run-1", 10);
+    expect(api.run).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="process-record"]').text()).toContain(
+      completeText,
+    );
+    wrapper.unmount();
   });
 
   it("continues a cursor, ignores duplicate observations and resets to a persisted snapshot", async () => {

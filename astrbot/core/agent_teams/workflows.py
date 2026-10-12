@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
+from sqlalchemy import func
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select, text, update
@@ -568,15 +569,18 @@ class WorkflowService:
             "member": member,
         }
 
-    async def get_run(self, username: str, run_id: str) -> dict:
+    async def get_run(
+        self, username: str, run_id: str, *, include_details: bool = True
+    ) -> dict:
         """Query persisted progress independently of any active runner or browser.
 
         Args:
             username: Authenticated owner.
             run_id: Independent execution identity.
+            include_details: Include complete frozen inputs, results and history.
 
         Returns:
-            Frozen configuration, progress, attempt, process and submitted result.
+            Progress, attempts and artifact entries, with complete detail on request.
 
         Raises:
             RoleAssetError: Run is inaccessible.
@@ -604,16 +608,20 @@ class WorkflowService:
             )
             events = (
                 (
-                    await session.execute(
-                        select(AgentWorkflowEvent)
-                        .where(
-                            col(AgentWorkflowEvent.run_id).in_(identities),
+                    (
+                        await session.execute(
+                            select(AgentWorkflowEvent)
+                            .where(
+                                col(AgentWorkflowEvent.run_id).in_(identities),
+                            )
+                            .order_by(col(AgentWorkflowEvent.id))
                         )
-                        .order_by(col(AgentWorkflowEvent.id))
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
+                if include_details
+                else []
             )
             artifacts = (
                 (
@@ -630,17 +638,21 @@ class WorkflowService:
             )
             process = (
                 (
-                    await session.execute(
-                        select(AgentWorkflowProcess)
-                        .where(col(AgentWorkflowProcess.run_id).in_(identities))
-                        .order_by(
-                            col(AgentWorkflowProcess.created_at),
-                            col(AgentWorkflowProcess.record_id),
+                    (
+                        await session.execute(
+                            select(AgentWorkflowProcess)
+                            .where(col(AgentWorkflowProcess.run_id).in_(identities))
+                            .order_by(
+                                col(AgentWorkflowProcess.created_at),
+                                col(AgentWorkflowProcess.record_id),
+                            )
                         )
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
+                if include_details
+                else []
             )
             results = {}
             for current in rows:
@@ -661,33 +673,6 @@ class WorkflowService:
                 results[current.run_id] = {
                     "run_id": current.run_id,
                     "status": current.status,
-                    "snapshot": current.snapshot,
-                    "state": current.state,
-                    "result": current.result,
-                    "pending_result": current.pending_result,
-                    "process": [
-                        record.model_dump(mode="json")
-                        for record in process
-                        if record.run_id == current.run_id
-                    ],
-                    "validation_errors": errors,
-                    "events": [
-                        {
-                            "cursor": event.id,
-                            "kind": event.kind,
-                            "data": event.data,
-                            "run_id": current.run_id,
-                            "task_id": current.state.get("task_id"),
-                            "attempt_id": event.data.get(
-                                "attempt_id", current.state.get("attempt_id")
-                            ),
-                            "member_id": current.snapshot.get("member", {}).get(
-                                "member_id"
-                            ),
-                        }
-                        for event in current_events
-                    ],
-                    "cursor": current_events[-1].id if current_events else 0,
                     "result_ref": {"artifact_id": current.run_id, "version": 1}
                     if current_artifacts
                     else None,
@@ -699,32 +684,97 @@ class WorkflowService:
                         }
                         for a in current_artifacts
                     ],
-                    "read_artifacts": [
-                        event.data["reference"]
-                        for event in current_events
-                        if event.kind == "artifact.read"
-                    ],
                 }
+                if include_details:
+                    results[current.run_id].update(
+                        {
+                            "snapshot": current.snapshot,
+                            "state": current.state,
+                            "result": current.result,
+                            "pending_result": current.pending_result,
+                            "process": [
+                                record.model_dump(mode="json")
+                                for record in process
+                                if record.run_id == current.run_id
+                            ],
+                            "validation_errors": errors,
+                            "events": [
+                                {
+                                    "cursor": event.id,
+                                    "kind": event.kind,
+                                    "data": event.data,
+                                    "run_id": current.run_id,
+                                    "task_id": current.state.get("task_id"),
+                                    "attempt_id": event.data.get(
+                                        "attempt_id", current.state.get("attempt_id")
+                                    ),
+                                    "member_id": current.snapshot.get("member", {}).get(
+                                        "member_id"
+                                    ),
+                                }
+                                for event in current_events
+                            ],
+                            "read_artifacts": [
+                                event.data["reference"]
+                                for event in current_events
+                                if event.kind == "artifact.read"
+                            ],
+                        }
+                    )
+                else:
+                    results[current.run_id].update(
+                        {
+                            "snapshot": {
+                                **{
+                                    key: current.snapshot[key]
+                                    for key in (
+                                        "engine",
+                                        "asset_id",
+                                        "asset_version",
+                                        "source",
+                                        "task",
+                                        "inputs",
+                                        "node_id",
+                                    )
+                                    if key in current.snapshot
+                                },
+                                "definition": {
+                                    "name": current.snapshot["definition"]["name"]
+                                },
+                            },
+                            "state": {
+                                key: current.state[key]
+                                for key in ("task_id", "attempt_id", "reason", "issues")
+                                if key in current.state
+                            },
+                        }
+                    )
             result = results[run_id]
         if row.snapshot.get("engine") == "graph_v2":
             result["tasks"] = [
                 {**results[identity], "node_id": node_id}
                 for node_id, identity in row.snapshot["task_runs"].items()
             ]
-            result["events"] = sorted(
-                [
-                    *result["events"],
-                    *[event for task in result["tasks"] for event in task["events"]],
-                ],
-                key=lambda event: event["cursor"],
-            )
+            if include_details:
+                result["events"] = sorted(
+                    [
+                        *result["events"],
+                        *[
+                            event
+                            for task in result["tasks"]
+                            for event in task["events"]
+                        ],
+                    ],
+                    key=lambda event: event["cursor"],
+                )
             result["artifacts"] = [
                 artifact for task in result["tasks"] for artifact in task["artifacts"]
             ]
             result["result_ref"] = None
-        result["cursor"] = max(
-            (event["cursor"] for event in result["events"]), default=0
-        )
+        if include_details:
+            result["cursor"] = max(
+                (event["cursor"] for event in result["events"]), default=0
+            )
         tasks = result.get("tasks", [result])
         result["progress"] = {
             "total": len(tasks),
@@ -840,6 +890,34 @@ class WorkflowService:
         """
         if after < 0:
             raise RoleAssetError("Cursor must not be negative")
+        async with self.db.get_db() as session:
+            if self.db.engine.dialect.name == "sqlite":
+                await session.execute(text("BEGIN"))
+            run = (
+                await session.execute(
+                    select(
+                        AgentWorkflowRun.owner_username,
+                        AgentWorkflowRun.snapshot["task_runs"],
+                    ).where(AgentWorkflowRun.run_id == run_id)
+                )
+            ).first()
+            if run is None or run[0] != username:
+                raise RoleAssetError("Run not found", status=404)
+            identities = [run_id, *(run[1] or {}).values()]
+            cursor = (
+                await session.execute(
+                    select(func.max(AgentWorkflowEvent.id)).where(
+                        col(AgentWorkflowEvent.run_id).in_(identities)
+                    )
+                )
+            ).scalar_one() or 0
+            if after == cursor:
+                return {
+                    "cursor": cursor,
+                    "reset": False,
+                    "events": [],
+                    "snapshot": None,
+                }
         snapshot = await self.get_run(username, run_id)
         events = snapshot["events"]
         reset = after > snapshot["cursor"] or (
@@ -863,7 +941,7 @@ class WorkflowService:
             limit: Maximum number of recent records, capped at 100.
 
         Returns:
-            Recent run snapshots.
+            Recent run overviews, without full configuration, results or history.
         """
         async with self.db.get_db() as session:
             identities = (
@@ -884,7 +962,10 @@ class WorkflowService:
                 .all()
             )
         return {
-            "runs": [await self.get_run(username, identity) for identity in identities]
+            "runs": [
+                await self.get_run(username, identity, include_details=False)
+                for identity in identities
+            ]
         }
 
     async def _start_graph(

@@ -499,6 +499,34 @@ async def test_failure_only_blocks_related_dependencies(graph_script):
         "independent",
         "successor",
     }
+    overview = (await env.service.list_runs("alice"))["runs"][0]
+    assert overview["run_id"] == run["run_id"]
+    assert overview["progress"] == {
+        "total": 4,
+        "completed": 2,
+        "running": 0,
+        "waiting": 2,
+    }
+    assert [task["status"] for task in overview["tasks"]] == [
+        "failed",
+        "dependency_failed",
+        "completed",
+        "completed",
+    ]
+    assert overview["tasks"][1]["state"]["reason"] == (
+        "An upstream task has no validated result."
+    )
+    assert (
+        overview["tasks"][1]["state"]["attempt_id"]
+        == (finished["tasks"][1]["state"]["attempt_id"])
+    )
+    assert len(overview["artifacts"]) == 2
+    assert all(
+        "process" not in task and "events" not in task for task in overview["tasks"]
+    )
+    unchanged = await env.service.get_events("alice", run["run_id"], finished["cursor"])
+    assert unchanged["snapshot"] is None
+    assert unchanged["cursor"] == finished["cursor"]
 
 
 @pytest.mark.asyncio

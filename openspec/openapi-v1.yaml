@@ -6458,6 +6458,17 @@ paths:
       tags:
       - Agent Teams workflows
       summary: List Runs
+      description: |-
+        List run overviews without complete configuration, results or process history.
+
+        Args:
+            limit: Maximum number of recent root runs.
+            username: Authenticated owner.
+            service: Shared public run service.
+
+        Returns:
+            Goals, statuses, task progress, waiting reasons, attempts and artifact entries.
+            Read a selected run's detail for complete frozen inputs and saved records.
       operationId: list_runs_api_v1_workflow_runs_get
       parameters:
       - name: limit
@@ -6514,8 +6525,7 @@ paths:
       description: "Read committed changes for reconnecting run observers.\n\nArgs:\n\
         \    run_id: Persisted run or graph identity.\n    after: Last successfully\
         \ applied event cursor.\n    username: Authenticated owner.\n    service: Shared\
-        \ public run service.\n\nReturns:\n    Changes with their snapshot, or a reset\
-        \ for an expired cursor."
+        \ public run service.\n\nReturns:\n    Changed events with a complete consistent snapshot, or a complete reset\n    snapshot for an expired cursor. An unchanged cursor returns no snapshot\n    without reading saved process history."
       operationId: get_events_api_v1_workflow_runs__run_id__events_get
       parameters:
       - name: run_id

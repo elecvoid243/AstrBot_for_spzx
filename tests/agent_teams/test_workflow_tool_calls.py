@@ -118,9 +118,22 @@ async def test_saved_tool_result_rejects_conflicting_duplicates_and_displaced_wr
         await service.save_checkpoint(
             "alice", run_id, attempt_id, execution_id, copy.deepcopy(boundary)
         )
+        duplicated_result = copy.deepcopy(boundary)
+        duplicated_result["tool_calls"][0]["raw_results"] *= 2
+        with pytest.raises(RoleAssetError) as duplicate_rejected:
+            await service.save_checkpoint(
+                "alice", run_id, attempt_id, execution_id, duplicated_result
+            )
+        assert duplicate_rejected.value.status == 409
         call["status"] = "applied"
         call["context_position"] = 3
         boundary.update(phase="tools_applied", model_calls=1)
+        current_boundary = {
+            "phase": "request",
+            "invocation_id": "next-model-step",
+            "model_calls": 2,
+            "tool_calls": [],
+        }
         await service.save_checkpoint(
             "alice", run_id, attempt_id, execution_id, copy.deepcopy(boundary)
         )
@@ -129,12 +142,7 @@ async def test_saved_tool_result_rejects_conflicting_duplicates_and_displaced_wr
             run_id,
             attempt_id,
             execution_id,
-            {
-                "phase": "request",
-                "invocation_id": "next-model-step",
-                "model_calls": 2,
-                "tool_calls": [],
-            },
+            current_boundary,
         )
         original = await service.get_run("alice", run_id)
         assert len(original["tool_calls"]) == 1
@@ -157,10 +165,10 @@ async def test_saved_tool_result_rejects_conflicting_duplicates_and_displaced_wr
             ),
             service.save_checkpoint("alice", run_id, attempt_id, execution_id, stale),
             service.save_checkpoint(
-                "alice", run_id, "retired-attempt", execution_id, boundary
+                "alice", run_id, "retired-attempt", execution_id, current_boundary
             ),
             service.save_checkpoint(
-                "alice", run_id, attempt_id, "old-executor", boundary
+                "alice", run_id, attempt_id, "old-executor", current_boundary
             ),
             service.record_process(
                 "alice",

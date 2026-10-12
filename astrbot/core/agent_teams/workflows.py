@@ -2305,6 +2305,8 @@ class WorkflowService:
                         or ranks[call["status"]] < ranks[previous.status]
                         or call["raw_results"][: len(previous.raw_results)]
                         != previous.raw_results
+                        or previous.status in {"result_saved", "applied"}
+                        and call["raw_results"] != previous.raw_results
                         or previous.context_position is not None
                         and previous.context_position != call["context_position"]
                     ):

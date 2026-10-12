@@ -18,7 +18,7 @@ In **Independent Runs**, the graph is a read-only frozen snapshot. Select a task
 
 ![Actual run graph with completed tasks, a skipped path and pinned input versions](/images/agent-workflow-graph-run-en.jpg)
 
-At startup, accepted task submissions at saved safe points finish idempotently. Other abandoned task attempts become interrupted and cannot accept a late conflicting result. Pending independent branches can still advance from persisted state. Invocation checkpoint restoration and retry controls are not delivered by this canvas yet.
+At startup, accepted task submissions at saved safe points finish idempotently. Other abandoned task attempts become interrupted. Pending independent branches can still advance from persisted state. Select an interrupted task to continue its original attempt from a saved built-in model boundary. A new execution owner prevents the abandoned executor from publishing late results.
 
 ## Run progress and member process
 
@@ -40,6 +40,18 @@ On narrow screens, progress, waiting reasons and members stack vertically. Long 
 
 ![Progress, artifacts and process on a narrow screen](/images/agent-workflow-progress-mobile.png)
 
+## Continue the original attempt
+
+Open **Independent Runs → View Run**, select the interrupted task and choose **Continue same attempt**. The page shows whether the last saved boundary is a model request, a complete model response, or a started tool. Recovery keeps the original Attempt, asset version, member conversation, effective configuration, temporary framing, multimodal content, provider thinking/signatures and execution counters. Missing resources or changed permissions block execution instead of selecting defaults.
+
+A complete saved model response is reused with its original tool plan. If no complete response was saved, the model request may be sent again; partial streaming generation and remote billing deduplication are not guaranteed. The built-in executor supports both full schemas and two-stage parameter generation. Other executors cannot use this workflow's internal recovery.
+
+Started tools retain their records and require confirmation. This release does not replay them or restore tool results; reconciliation and tool-result recovery are delivered separately. A default text result submission is an internal idempotent operation: recovery can complete its saved intent or repeat only that submission, preserving one result version and one completion event. An unrelated started tool prevents that exception.
+
+![Actual interrupted attempt with its saved response and recovery action](/images/agent-workflow-recovery-en.jpg)
+
+![Same original attempt completed after recovery](/images/agent-workflow-recovery-completed.jpg)
+
 ## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.
@@ -55,7 +67,7 @@ The Agent must call `submit_task_result` according to the contract. The default 
 
 Tasks call `read_task_artifact(artifact_id, version)` to read complete pinned inputs. Supplying a `file_id` from that version reads the complete file. Actual reads are recorded durably; the task cannot read an undeclared newer version. For file output, obtain the complete content through existing authorized tools and call `store_task_file(filename, content, encoding)` first and place its stable reference in `files: [{"file_id":"..."}]` only after success. Content uses UTF-8 text or base64 bytes. Complete bytes are stored in the system-managed database before submission, without temporary absolute paths. Preview and download continue after refresh or process restart. Each file is limited to 50 MiB.
 
-Switching or closing the page does not stop core execution. Refreshing a URL with `workflow_run` reads that run again; the run list also reopens past executions. A core restart automatically finishes accepted result intents at persisted safe points, idempotently. Other unfinished executions become **Interrupted; not replayed**. This path does not restore model-response checkpoints or replay unfinished tasks; intents without a saved safe point remain pending.
+Switching or closing the page does not stop core execution. Refreshing a URL with `workflow_run` reads that run again; the run list also reopens past executions. A core restart automatically finishes accepted result intents at persisted safe points, idempotently. Other unfinished executions become **Interrupted**. Choose **Continue same attempt** for supported model boundaries; tools with uncertain results remain pending.
 
 ![Artifact versions, complete output and submission field errors in the actual WebUI](/images/agent-workflow-artifacts-en.jpg)
 
@@ -69,5 +81,6 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | Starting and inspecting a new workflow run | Workflow Assets → Start Run, then Independent Runs → View Run → Execution progress to select a task; the Inspect task selector remains available. |
 | Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
+| An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; started tools explicitly require confirmation. |
 
-Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, invocation checkpoints and team orchestration connect to this protocol in subsequent tasks.
+Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, tool-result recovery and team orchestration connect to this protocol in subsequent tasks.

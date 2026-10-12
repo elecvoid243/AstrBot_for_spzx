@@ -25,7 +25,12 @@ from tenacity import (
 )
 
 from astrbot import logger
-from astrbot.core.agent.message import ImageURLPart, TextPart, ThinkPart
+from astrbot.core.agent.call_checkpoint import (
+    dump_call_messages,
+    dump_call_response,
+    load_call_response,
+)
+from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, ThinkPart
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.tool_image_cache import tool_image_cache
 from astrbot.core.agent_team_execution import (
@@ -44,6 +49,7 @@ from astrbot.core.pipeline.llm_request_trace import read_injections
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
+    TokenUsage,
     ToolCallsResult,
 )
 from astrbot.core.provider.modalities import (
@@ -452,6 +458,145 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         self.stats = AgentStats()
         self.stats.start_time = time.time()
+        execution = current_team_execution.get()
+        self._checkpoint_enabled = bool(
+            execution
+            and execution.save_checkpoint
+            and not (getattr(self.run_context.context, "extra", None) or {}).get(
+                "is_subagent"
+            )
+        )
+        self._call_checkpoint: dict | None = None
+        self._resume_requery: dict | None = None
+        self._restored_call = False
+        if self._checkpoint_enabled and execution and execution.checkpoint:
+            saved = copy.deepcopy(execution.checkpoint)
+            if saved["started_tools"]:
+                raise ProcessPersistenceError(
+                    "Started tools require confirmation before recovery"
+                )
+            available = self.effective_raw_tool_set
+            if saved["tools"] != [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+                for tool in (available.tools if available else [])
+            ]:
+                raise ProcessPersistenceError(
+                    "Saved tool capabilities have changed; recovery is blocked"
+                )
+            self.run_context.messages = bind_checkpoint_messages(saved["messages"])
+            self.req.model = saved["model"]
+            self.req.llm_params = saved["llm_params"]
+            self.req.denied_tools = set(saved["denied_tools"])
+            self.req.extra_user_content_parts = [
+                ContentPart.model_validate(part)
+                for part in saved["extra_user_content_parts"]
+            ]
+            self._step_budget_max = saved["step_budget_max"]
+            self._step_budget_used = saved["step_budget_used"]
+            self._step_budget_notified = set(saved["step_budget_notified"])
+            self._last_tool_name = saved["last_tool_name"]
+            self._last_tool_args = saved["last_tool_args"]
+            self._same_tool_streak = saved["same_tool_streak"]
+            stats = dict(saved["stats"])
+            stats["token_usage"] = TokenUsage(**stats["token_usage"])
+            self.stats = AgentStats(**stats)
+            self._call_checkpoint = saved
+            if saved.get("stage", "main") != "main":
+                self._resume_requery = saved
+            self._restored_call = True
+            self._transition_state(AgentState.RUNNING)
+
+    async def _save_call_checkpoint(
+        self,
+        phase: str,
+        *,
+        response: LLMResponse | None = None,
+        contexts: list[Message] | list[dict] | None = None,
+        stage: str = "main",
+        parent_response: LLMResponse | None = None,
+        previous_response: LLMResponse | None = None,
+    ) -> None:
+        """Persist the effective runner state on all model and tool boundaries.
+
+        Args:
+            phase: Request, complete response, or started tools.
+            response: Complete provider response when that boundary has been reached.
+            contexts: Actual provider-facing messages for a new model request.
+            stage: Main generation, parameter resolution, or parameter repair.
+            parent_response: Original light-schema plan for parameter resolution.
+            previous_response: Saved unsuccessful parameter response before repair.
+
+        Raises:
+            ProcessPersistenceError: Dependent execution must stop if saving fails.
+        """
+        execution = current_team_execution.get()
+        if (
+            not execution
+            or not execution.save_checkpoint
+            or not self._checkpoint_enabled
+        ):
+            return
+        if phase == "request":
+            available = self.effective_raw_tool_set
+            model_calls = (self._call_checkpoint or {}).get("model_calls", 0) + 1
+            self._call_checkpoint = {
+                "format_version": 1,
+                "invocation_id": uuid.uuid4().hex,
+                "messages": dump_call_messages(self.run_context.messages),
+                "input_contexts": dump_call_messages(
+                    contexts or self.run_context.messages
+                ),
+                "model": self.req.model or self.provider.get_model(),
+                "model_calls": model_calls,
+                "stage": stage,
+                "parent_response": dump_call_response(parent_response)
+                if parent_response
+                else None,
+                "previous_response": dump_call_response(previous_response)
+                if previous_response
+                else None,
+                "provider_id": self.provider.provider_config.get("id"),
+                "config_id": execution.config_id,
+                "run_id": execution.run_id,
+                "attempt_id": execution.turn_id,
+                "conversation_id": execution.conversation_id,
+                "context_position": len(self.run_context.messages),
+                "llm_params": self.req.llm_params,
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    }
+                    for tool in (available.tools if available else [])
+                ],
+                "denied_tools": sorted(self.req.denied_tools),
+                "extra_user_content_parts": [
+                    part if isinstance(part, dict) else part.model_dump_for_context()
+                    for part in self.req.extra_user_content_parts
+                ],
+                "step_budget_max": self._step_budget_max,
+                "step_budget_used": self._step_budget_used,
+                "step_budget_notified": sorted(self._step_budget_notified),
+                "last_tool_name": self._last_tool_name,
+                "last_tool_args": self._last_tool_args,
+                "same_tool_streak": self._same_tool_streak,
+                "stats": self.stats.to_dict(),
+                "started_tools": [],
+                "response": None,
+            }
+        if self._call_checkpoint is None:
+            raise ProcessPersistenceError(
+                "Model request has no saved invocation identity"
+            )
+        self._call_checkpoint["phase"] = phase
+        if response is not None:
+            self._call_checkpoint["response"] = dump_call_response(response)
+        await execution.save_checkpoint(copy.deepcopy(self._call_checkpoint))
 
     def _read_tool_hint(self) -> str:
         if self.read_tool is not None:
@@ -630,6 +775,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Yields chunks *and* a final LLMResponse."""
         contexts = self._sanitize_contexts_for_provider(self.run_context.messages)
+        restored_request = self._restored_call
+        if restored_request:
+            assert self._call_checkpoint is not None
+            contexts = bind_checkpoint_messages(self._call_checkpoint["input_contexts"])
+            self._restored_call = False
         func_tool = self._func_tool_for_provider()
         # Fingerprint the payload-stage request so same-prefix flows (e.g. the
         # compact plugin's summary request) can diff against what the chat
@@ -660,6 +810,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if include_model:
             # For primary provider we keep explicit model selection if provided.
             payload["model"] = self.req.model
+        if not restored_request:
+            await self._save_call_checkpoint("request", contexts=contexts)
         if self.streaming:
             stream = self.provider.text_chat_stream(**payload)
             try:
@@ -682,6 +834,21 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self,
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Wrap _iter_llm_responses with provider fallback handling."""
+        if self._restored_call and self._resume_requery is not None:
+            self._restored_call = False
+            self._reused_response = True
+            self._reused_parent_response = True
+            yield load_call_response(self._resume_requery["parent_response"])
+            return
+        if (
+            self._restored_call
+            and self._call_checkpoint is not None
+            and self._call_checkpoint["response"] is not None
+        ):
+            self._restored_call = False
+            self._reused_response = True
+            yield load_call_response(self._call_checkpoint["response"])
+            return
         if not self.run_context.messages:
             logger.warning(
                 "Skipping LLM request because no messages remain after agent/request "
@@ -771,6 +938,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     if self._is_stop_requested():
                         return
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, ProcessPersistenceError):
+                    raise
                 last_exception = exc
                 logger.warning(
                     "Chat Model %s request error: %s",
@@ -1025,10 +1194,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             response: Complete provider response before display or tool execution.
         """
 
+        if getattr(self, "_reused_response", False):
+            self._reused_response = False
+            if getattr(self, "_reused_parent_response", False):
+                return
+        else:
+            await self._save_call_checkpoint("response", response=response)
         execution = current_team_execution.get()
         if execution and execution.record_process:
             await execution.record_process(
-                uuid.uuid4().hex,
+                self._call_checkpoint["invocation_id"]
+                if self._call_checkpoint
+                else uuid.uuid4().hex,
                 "model_response",
                 {
                     "id": response.id,
@@ -1064,7 +1241,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if not self.req:
             raise ValueError("Request is not set. Please call reset() first.")
 
-        if self._step_budget_max is not None:
+        if self._step_budget_max is not None and not self._restored_call:
             self._step_budget_used += 1
 
         if self._state == AgentState.IDLE:
@@ -1077,42 +1254,45 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._transition_state(AgentState.RUNNING)
         llm_resp_result = None
 
-        # Process request-time context before sending it to the provider.
-        token_usage = self.req.conversation.token_usage if self.req.conversation else 0
-        self._simple_print_message_role("[BefCompact]", self.run_context.messages)
-        processed_messages = await self._await_or_stop(
-            self.request_context_manager.process(
-                self.run_context.messages,
-                trusted_token_usage=token_usage,
-                # Same tool set the chat requests send, so the summary
-                # request's payload prefix (tools + system + history) stays
-                # byte-identical and hits the provider prefix cache. The
-                # summary is a one-shot call: the schema is visible but
-                # nothing executes the tools.
-                func_tool=self._func_tool_for_provider(),
+        if not self._restored_call:
+            # Process request-time context before sending it to the provider.
+            token_usage = (
+                self.req.conversation.token_usage if self.req.conversation else 0
             )
-        )
-        if processed_messages is None:
-            yield await self._finalize_aborted_step()
-            return
-        self.run_context.messages = processed_messages
-        self._simple_print_message_role("[AftCompact]", self.run_context.messages)
+            self._simple_print_message_role("[BefCompact]", self.run_context.messages)
+            processed_messages = await self._await_or_stop(
+                self.request_context_manager.process(
+                    self.run_context.messages,
+                    trusted_token_usage=token_usage,
+                    # Same tool set the chat requests send, so the summary
+                    # request's payload prefix (tools + system + history) stays
+                    # byte-identical and hits the provider prefix cache. The
+                    # summary is a one-shot call: the schema is visible but
+                    # nothing executes the tools.
+                    func_tool=self._func_tool_for_provider(),
+                )
+            )
+            if processed_messages is None:
+                yield await self._finalize_aborted_step()
+                return
+            self.run_context.messages = processed_messages
+            self._simple_print_message_role("[AftCompact]", self.run_context.messages)
 
-        # Announce a compression that just happened: webchat turns it into a
-        # transient notice. Emitted before the LLM request so the user learns
-        # why this turn's context (and possibly its answer) changed shape while
-        # still waiting for the reply.
-        compression_report = self.request_context_manager.last_compression
-        if compression_report is not None:
-            yield AgentResponse(
-                type="context_compression",
-                data=AgentResponseData(
-                    chain=MessageChain(
-                        type="context_compression",
-                        chain=[Json(data=compression_report)],
-                    )
-                ),
-            )
+            # Announce a compression that just happened: webchat turns it into a
+            # transient notice. Emitted before the LLM request so the user learns
+            # why this turn's context (and possibly its answer) changed shape while
+            # still waiting for the reply.
+            compression_report = self.request_context_manager.last_compression
+            if compression_report is not None:
+                yield AgentResponse(
+                    type="context_compression",
+                    data=AgentResponseData(
+                        chain=MessageChain(
+                            type="context_compression",
+                            chain=[Json(data=compression_report)],
+                        )
+                    ),
+                )
 
         async for llm_response in self._iter_llm_responses_with_fallback():
             if llm_response.is_chunk:
@@ -1149,13 +1329,16 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # Chunk responses have already continued above. A missing usage report
             # means the latest context occupancy is unknown.
             self.stats.current_context_tokens = 0
-            if llm_response.usage:
+            if llm_response.usage and not getattr(
+                self, "_reused_parent_response", False
+            ):
                 # Keep cumulative usage for billing and expose the latest request
                 # input separately for context-window occupancy displays.
                 self.stats.token_usage += llm_response.usage
                 self.stats.current_context_tokens = llm_response.usage.input
                 if self.req.conversation:
                     self.req.conversation.token_usage = llm_response.usage.total
+            self._reused_parent_response = False
             # end_time must be set before the yield serializes to_dict().
             self.stats.end_time = time.time()
             yield AgentResponse(
@@ -1291,9 +1474,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         yield file_changes_resp
                     return
                 else:
-                    llm_resp.tools_call_name = requery_resp.tools_call_name
-                    llm_resp.tools_call_args = requery_resp.tools_call_args
-                    llm_resp.tools_call_ids = requery_resp.tools_call_ids
+                    llm_resp = requery_resp
 
             tool_call_result_blocks = []
             cached_images = []  # Collect cached images for LLM visibility
@@ -1634,6 +1815,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     # 如果没有 handler（如 MCP 工具），使用所有参数
                     valid_params = func_tool_args
 
+                execution = current_team_execution.get()
+                if execution and execution.save_checkpoint and self._checkpoint_enabled:
+                    assert self._call_checkpoint is not None
+                    self._call_checkpoint["started_tools"].append(func_tool_id)
+                    await self._save_call_checkpoint("tools_started")
+
                 try:
                     await self.agent_hooks.on_tool_start(
                         self.run_context,
@@ -1859,6 +2046,77 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 subset.add_tool(tool)
         return subset
 
+    async def _query_tool_parameters(
+        self,
+        parent: LLMResponse,
+        contexts: list[Message] | list[dict],
+        tools: ToolSet,
+        stage: str,
+        previous: LLMResponse | None = None,
+    ) -> LLMResponse | None:
+        """Resume parameter generation without repeating the original light plan.
+
+        Args:
+            parent: Complete original plan that selected the tools.
+            contexts: Effective parameter or repair request messages.
+            tools: Parameter schemas selected by the original plan.
+            stage: Parameter generation or its existing single repair request.
+            previous: Complete unsuccessful parameter response before repair.
+
+        Returns:
+            Original saved response or a newly persisted complete parameter response.
+
+        Raises:
+            ProcessPersistenceError: Saving the request or response failed.
+        """
+        resumed = self._resume_requery
+        if resumed is not None and resumed["stage"] != stage:
+            return load_call_response(resumed["previous_response"])
+        if resumed is not None:
+            self._resume_requery = None
+            if resumed["phase"] == "response":
+                response = load_call_response(resumed["response"])
+            else:
+                response = await self._await_or_stop(
+                    self.provider.text_chat(
+                        contexts=bind_checkpoint_messages(resumed["input_contexts"]),
+                        func_tool=tools,
+                        model=self.req.model,
+                        session_id=self.req.session_id,
+                        extra_user_content_parts=self.req.extra_user_content_parts,
+                        abort_signal=self._abort_signal,
+                        request_max_retries=self.request_max_retries,
+                    )
+                )
+                if response:
+                    await self._record_model_response(response)
+        else:
+            effective_contexts = self._sanitize_contexts_for_provider(contexts)
+            await self._save_call_checkpoint(
+                "request",
+                contexts=effective_contexts,
+                stage=stage,
+                parent_response=parent,
+                previous_response=previous,
+            )
+            response = await self._await_or_stop(
+                self.provider.text_chat(
+                    contexts=effective_contexts,
+                    func_tool=tools,
+                    model=self.req.model,
+                    session_id=self.req.session_id,
+                    extra_user_content_parts=self.req.extra_user_content_parts,
+                    abort_signal=self._abort_signal,
+                    request_max_retries=self.request_max_retries,
+                )
+            )
+            if response:
+                await self._record_model_response(response)
+        if response and response.usage:
+            self.stats.token_usage += response.usage
+            self.stats.current_context_tokens = response.usage.input
+        return response
+
     async def _resolve_tool_exec(
         self,
         llm_resp: LLMResponse,
@@ -1881,20 +2139,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             if param_subset.tools and tool_names:
                 contexts = self._build_tool_requery_context(tool_names)
-                requery_resp = await self._await_or_stop(
-                    self.provider.text_chat(
-                        contexts=self._sanitize_contexts_for_provider(contexts),
-                        func_tool=param_subset,
-                        model=self.req.model,
-                        session_id=self.req.session_id,
-                        extra_user_content_parts=self.req.extra_user_content_parts,
-                        # tool_choice="required",
-                        abort_signal=self._abort_signal,
-                        request_max_retries=self.request_max_retries,
-                    )
+                parent_response = llm_resp
+                requery_resp = await self._query_tool_parameters(
+                    parent_response, contexts, param_subset, "parameters"
                 )
                 if requery_resp:
-                    await self._record_model_response(requery_resp)
                     llm_resp = requery_resp
                     self._sanitize_malformed_tool_calls(llm_resp)
 
@@ -1912,22 +2161,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         tool_names,
                         extra_instruction=self.SKILLS_LIKE_REQUERY_REPAIR_INSTRUCTION,
                     )
-                    repair_resp = await self._await_or_stop(
-                        self.provider.text_chat(
-                            contexts=self._sanitize_contexts_for_provider(
-                                repair_contexts
-                            ),
-                            func_tool=param_subset,
-                            model=self.req.model,
-                            session_id=self.req.session_id,
-                            extra_user_content_parts=self.req.extra_user_content_parts,
-                            # tool_choice="required",
-                            abort_signal=self._abort_signal,
-                            request_max_retries=self.request_max_retries,
-                        )
+                    repair_resp = await self._query_tool_parameters(
+                        parent_response,
+                        repair_contexts,
+                        param_subset,
+                        "repair",
+                        llm_resp,
                     )
                     if repair_resp:
-                        await self._record_model_response(repair_resp)
                         llm_resp = repair_resp
                         self._sanitize_malformed_tool_calls(llm_resp)
 

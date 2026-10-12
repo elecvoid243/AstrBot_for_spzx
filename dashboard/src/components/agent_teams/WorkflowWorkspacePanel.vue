@@ -142,6 +142,40 @@
             class="mt-3"
           />
           <v-alert
+            v-if="
+              detailRun.recovery &&
+              ['interrupted', 'failed', 'blocked'].includes(detailRun.status)
+            "
+            type="info"
+            variant="tonal"
+            class="my-3"
+            data-testid="recovery-info"
+          >
+            <p>{{ tm("recovery.sameAttempt") }}</p>
+            <p class="mt-2">
+              {{
+                tm(
+                  `recovery.boundaries.${
+                    detailRun.recovery.boundary ?? "none"
+                  }`,
+                )
+              }}
+            </p>
+            <p v-if="detailRun.recovery.reason" class="mt-2">
+              {{ detailRun.recovery.reason }}
+            </p>
+            <p class="text-body-2 mt-2">{{ tm("recovery.limits") }}</p>
+            <v-btn
+              v-if="detailRun.recovery.available"
+              variant="tonal"
+              class="mt-3"
+              :loading="recovering"
+              data-testid="recover-attempt"
+              @click="recoverAttempt"
+              >{{ tm("recovery.continue") }}</v-btn
+            >
+          </v-alert>
+          <v-alert
             v-if="detailRun.state.reason"
             type="warning"
             variant="tonal"
@@ -501,6 +535,7 @@ const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
+const recovering = ref(false);
 const selectedTaskNode = ref<string | null>(null);
 const detailRun = computed(
   () =>
@@ -810,6 +845,26 @@ async function openRun(runId: string) {
       openingRun = false;
       loading.value = false;
     }
+  }
+}
+
+async function recoverAttempt() {
+  if (recovering.value || !detailRun.value?.recovery?.available) return;
+  const taskId = detailRun.value.run_id;
+  const rootId = selectedRun.value.run_id;
+  const read = ++runRead;
+  recovering.value = true;
+  try {
+    error.value = "";
+    const recovered = await workflowAssetsApi.recover(taskId);
+    const snapshot =
+      rootId === taskId ? recovered : await workflowAssetsApi.run(rootId);
+    if (!disposed && read === runRead) selectedRun.value = snapshot;
+  } catch (err) {
+    if (!disposed && read === runRead)
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    recovering.value = false;
   }
 }
 

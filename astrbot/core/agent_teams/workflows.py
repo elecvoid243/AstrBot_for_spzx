@@ -15,7 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import func
+from sqlalchemy import func, true
+from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select, text, update
@@ -39,6 +40,7 @@ from astrbot.core.agent_teams.result_tool import (
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentWorkflowArtifact,
+    AgentWorkflowCheckpoint,
     AgentWorkflowEvent,
     AgentWorkflowFile,
     AgentWorkflowProcess,
@@ -654,8 +656,33 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            checkpoints = (
+                {
+                    item.run_id: item
+                    for item in (
+                        await session.execute(
+                            sa_select(
+                                col(AgentWorkflowCheckpoint.run_id),
+                                col(AgentWorkflowCheckpoint.phase),
+                                col(AgentWorkflowCheckpoint.invocation_id),
+                                col(AgentWorkflowCheckpoint.started_tools),
+                                col(AgentWorkflowCheckpoint.result_submission),
+                                AgentWorkflowCheckpoint.data["step_budget_used"]
+                                .as_integer()
+                                .label("steps_used"),
+                                AgentWorkflowCheckpoint.data["model_calls"]
+                                .as_integer()
+                                .label("model_calls"),
+                            ).where(col(AgentWorkflowCheckpoint.run_id).in_(identities))
+                        )
+                    ).all()
+                }
+                if include_details
+                else {}
+            )
             results = {}
             for current in rows:
+                boundary = checkpoints.get(current.run_id)
                 current_events = [
                     event for event in events if event.run_id == current.run_id
                 ]
@@ -688,6 +715,33 @@ class WorkflowService:
                 if include_details:
                     results[current.run_id].update(
                         {
+                            "recovery": {
+                                "capability": "saved_model_response"
+                                if "member" in current.snapshot
+                                else "task_boundaries",
+                                "available": current.status
+                                in {"interrupted", "failed", "blocked"}
+                                and boundary is not None
+                                and (
+                                    not boundary.started_tools
+                                    or boundary.result_submission
+                                ),
+                                "boundary": boundary.phase if boundary else None,
+                                "invocation_id": boundary.invocation_id
+                                if boundary
+                                else None,
+                                "steps_used": boundary.steps_used if boundary else None,
+                                "model_calls": boundary.model_calls
+                                if boundary
+                                else None,
+                                "reason": "Started tools require confirmation; tool-result recovery is not supported yet."
+                                if boundary
+                                and boundary.started_tools
+                                and not boundary.result_submission
+                                else "No saved execution checkpoint."
+                                if boundary is None
+                                else None,
+                            },
                             "snapshot": current.snapshot,
                             "state": current.state,
                             "result": current.result,
@@ -799,6 +853,8 @@ class WorkflowService:
         record_id: str,
         kind: str,
         data: dict,
+        *,
+        execution_id: str | None = None,
     ) -> dict:
         """Save complete structured observations and one deduplicated event.
 
@@ -809,6 +865,7 @@ class WorkflowService:
             record_id: Stable delivery identity within this attempt.
             kind: Model response or tool result from the real execution chain.
             data: Complete returned payload, never parsed from display text.
+            execution_id: Durable execution owner; late executors cannot append records.
 
         Returns:
             Durable record with its task, attempt and member associations.
@@ -836,6 +893,19 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Process record belongs to a stale attempt", status=409
                 )
+            if execution_id is not None:
+                changed = await session.execute(
+                    update(AgentWorkflowRun)
+                    .where(
+                        col(AgentWorkflowRun.run_id) == run_id,
+                        col(AgentWorkflowRun.status) == "running",
+                        AgentWorkflowRun.state["execution_id"].as_string()
+                        == execution_id,
+                    )
+                    .values(state=AgentWorkflowRun.state)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    raise RoleAssetError("Execution ownership has changed", status=409)
             previous = await session.get(AgentWorkflowProcess, identity)
             if previous:
                 if previous.kind != kind or previous.data != data:
@@ -1340,7 +1410,11 @@ class WorkflowService:
         return await self.get_run(username, run_id)
 
     async def _execute_graph_task(
-        self, username: str, run_id: str, task_run_id: str
+        self,
+        username: str,
+        run_id: str,
+        task_run_id: str,
+        execution_id: str | None = None,
     ) -> None:
         """Run a claimed task through the shared pipeline and wake successors.
 
@@ -1348,15 +1422,22 @@ class WorkflowService:
             username: Frozen initiating owner.
             run_id: Root graph owning scheduling capacity.
             task_run_id: Durably claimed task and attempt.
+            execution_id: Recovered task's new durable execution owner, if any.
         """
         try:
-            await self._execute(username, task_run_id)
+            await self._execute(username, task_run_id, execution_id)
         finally:
             if not self._closing:
                 await self.advance_run(username, run_id)
 
     async def submit_result(
-        self, username: str, run_id: str, attempt_id: str, payload: dict
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        payload: dict,
+        *,
+        execution_id: str | None = None,
     ) -> None:
         """Validate and durably accept contracted output without completing early.
 
@@ -1365,6 +1446,7 @@ class WorkflowService:
             run_id: Owning run.
             attempt_id: Attempt that is authorized to submit.
             payload: Complete output matching the run's frozen task contract.
+            execution_id: Current durable executor, required for bound Agent tools.
 
         Raises:
             RoleAssetError: Invalid result, stale attempt or conflicting submission.
@@ -1375,6 +1457,24 @@ class WorkflowService:
                 raise RoleAssetError("Run not found", status=404)
             if row.state.get("attempt_id") != attempt_id:
                 raise RoleAssetError("Attempt is no longer active", status=409)
+            if (
+                execution_id is not None
+                and row.state.get("execution_id") != execution_id
+            ):
+                raise RoleAssetError("Execution ownership has changed", status=409)
+            if execution_id is not None and row.pending_result is None:
+                changed = await session.execute(
+                    update(AgentWorkflowRun)
+                    .where(
+                        col(AgentWorkflowRun.run_id) == run_id,
+                        col(AgentWorkflowRun.status) == "running",
+                        AgentWorkflowRun.state["execution_id"].as_string()
+                        == execution_id,
+                    )
+                    .values(state=AgentWorkflowRun.state)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    raise RoleAssetError("Execution ownership has changed", status=409)
             if row.pending_result is not None:
                 if row.pending_result == payload:
                     return
@@ -1413,6 +1513,9 @@ class WorkflowService:
                     col(AgentWorkflowRun.status) == "running",
                     col(AgentWorkflowRun.pending_result).is_(None),
                     col(AgentWorkflowRun.state)["attempt_id"].as_string() == attempt_id,
+                    AgentWorkflowRun.state["execution_id"].as_string() == execution_id
+                    if execution_id is not None
+                    else true(),
                 )
                 .values(pending_result=payload)
             )
@@ -1717,6 +1820,8 @@ class WorkflowService:
         attempt_id: str | None,
         filename: str,
         content: bytes,
+        *,
+        execution_id: str | None = None,
     ) -> dict:
         """Store complete file bytes before a stable reference can be submitted.
 
@@ -1726,6 +1831,7 @@ class WorkflowService:
             attempt_id: Active attempt, or None for an owner's completed-output revision.
             filename: Display name without directory components.
             content: Complete ready bytes, limited to 50 MiB.
+            execution_id: Durable owner when a bound Agent tool writes this file.
 
         Returns:
             Stable file identity and display metadata.
@@ -1746,6 +1852,19 @@ class WorkflowService:
             run = await session.get(AgentWorkflowRun, run_id)
             if run is None or run.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
+            if execution_id is not None:
+                changed = await session.execute(
+                    update(AgentWorkflowRun)
+                    .where(
+                        col(AgentWorkflowRun.run_id) == run_id,
+                        col(AgentWorkflowRun.status) == "running",
+                        AgentWorkflowRun.state["execution_id"].as_string()
+                        == execution_id,
+                    )
+                    .values(state=AgentWorkflowRun.state)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    raise RoleAssetError("Execution ownership has changed", status=409)
             if not run.state.get("attempt_id") or not (
                 (attempt_id is None and run.status == "completed")
                 or (
@@ -1798,6 +1917,243 @@ class WorkflowService:
                 "filename": file.filename,
                 "media_type": file.media_type,
             }
+
+    async def recover_run(self, username: str, run_id: str) -> dict:
+        """Continue the original attempt from a durable execution boundary.
+
+        Args:
+            username: Authenticated owner of the original run.
+            run_id: Interrupted task identity, never a new attempt or iteration.
+
+        Returns:
+            Persisted progress; completed runs return their original result.
+
+        Raises:
+            RoleAssetError: The run is inaccessible or has no resumable boundary.
+        """
+        run = await self.get_run(username, run_id)
+        if run["status"] == "completed":
+            return run
+        if run["snapshot"]["engine"] == "graph_v2":
+            raise RoleAssetError(
+                "Recover an interrupted task in the workflow", status=409
+            )
+        async with self.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+            if row is None or row.status not in {"interrupted", "failed", "blocked"}:
+                raise RoleAssetError(
+                    "Only interrupted execution can be recovered", status=409
+                )
+            if checkpoint is None or checkpoint.attempt_id != row.state["attempt_id"]:
+                raise RoleAssetError("No resumable execution checkpoint", status=409)
+            if checkpoint.started_tools and not checkpoint.result_submission:
+                raise RoleAssetError(
+                    "Tool execution has started; its result requires confirmation. Tool-result recovery is not supported yet.",
+                    status=409,
+                )
+            parent_id = row.snapshot.get("parent_run_id")
+            if parent_id:
+                parent = await session.get(AgentWorkflowRun, parent_id)
+                schedule = await session.get(AgentWorkflowSchedule, parent_id)
+                if (
+                    parent is None
+                    or schedule is None
+                    or parent.status not in {"running", "blocked"}
+                ):
+                    raise RoleAssetError(
+                        "The parent workflow cannot continue", status=409
+                    )
+                changed = await session.execute(
+                    update(AgentWorkflowSchedule)
+                    .where(
+                        col(AgentWorkflowSchedule.run_id) == parent_id,
+                        col(AgentWorkflowSchedule.revision) == schedule.revision,
+                    )
+                    .values(revision=schedule.revision + 1)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    raise RoleAssetError("Scheduling ownership has changed", status=409)
+                siblings = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowRun).where(
+                                AgentWorkflowRun.snapshot["parent_run_id"].as_string()
+                                == parent_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                active = [task for task in siblings if task.status == "running"]
+                role_id = row.snapshot["definition"]["role_id"]
+                role_limit = row.snapshot["effective"].get("max_parallel")
+                if (
+                    len(active) >= parent.snapshot["definition"]["max_parallel"]
+                    or any(
+                        task.snapshot["member"]["member_id"]
+                        == row.snapshot["member"]["member_id"]
+                        for task in active
+                    )
+                    or role_limit is not None
+                    and sum(
+                        task.snapshot["definition"]["role_id"] == role_id
+                        for task in active
+                    )
+                    >= role_limit
+                ):
+                    raise RoleAssetError(
+                        "Recovery is waiting for workflow or member capacity",
+                        status=409,
+                    )
+                parent.status = "running"
+                parent.state = {**parent.state, "reason": None}
+                session.add(parent)
+                # Only unstarted descendants blocked by this interrupted task
+                # become pending again; unrelated failures keep their own state.
+                descendants = {row.snapshot["node_id"]}
+                while True:
+                    expanded = descendants | {
+                        edge["target"]
+                        for edge in parent.snapshot["definition"]["edges"]
+                        if edge["source"] in descendants
+                    }
+                    if expanded == descendants:
+                        break
+                    descendants = expanded
+                for sibling in siblings:
+                    if (
+                        sibling.status == "dependency_failed"
+                        and sibling.snapshot["node_id"] in descendants
+                    ):
+                        sibling.status = "pending"
+                        sibling.state = {**sibling.state, "reason": None}
+                        session.add(sibling)
+            execution_id = uuid.uuid4().hex
+            state = {
+                **row.state,
+                "execution_id": execution_id,
+                "message_id": uuid.uuid4().hex,
+                "reason": None,
+            }
+            finish_result = (
+                checkpoint.result_submission and row.pending_result is not None
+            )
+            if finish_result:
+                state["safe_to_finish"] = True
+            elif checkpoint.result_submission:
+                # Result submission is an internal idempotent transaction. This
+                # exception does not permit replaying any other started tool.
+                checkpoint.started_tools = []
+                checkpoint.data = {
+                    **checkpoint.data,
+                    "phase": "response",
+                    "started_tools": [],
+                }
+                checkpoint.phase = "response"
+                session.add(checkpoint)
+            changed = await session.execute(
+                update(AgentWorkflowRun)
+                .where(
+                    col(AgentWorkflowRun.run_id) == run_id,
+                    col(AgentWorkflowRun.status) == row.status,
+                    AgentWorkflowRun.state["execution_id"].as_string()
+                    == row.state.get("execution_id")
+                    if row.state.get("execution_id")
+                    else AgentWorkflowRun.state["execution_id"].as_string().is_(None),
+                )
+                .values(status="running", state=state)
+            )
+            if cast(CursorResult, changed).rowcount != 1:
+                raise RoleAssetError("Execution ownership has changed", status=409)
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="attempt.recovered",
+                    data={
+                        "attempt_id": state["attempt_id"],
+                        "boundary": checkpoint.phase,
+                    },
+                )
+            )
+            await session.commit()
+        if finish_result:
+            finished = await self.finish_submission(username, run_id)
+            if parent_id:
+                await self.advance_run(username, parent_id)
+            return finished
+        parent_id = run["snapshot"].get("parent_run_id")
+        task = asyncio.create_task(
+            self._execute_graph_task(username, parent_id, run_id, execution_id)
+            if parent_id
+            else self._execute(username, run_id, execution_id)
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return await self.get_run(username, run_id)
+
+    async def save_checkpoint(
+        self, username: str, run_id: str, attempt_id: str, execution_id: str, data: dict
+    ) -> None:
+        """Commit a consistent effective context before dependent external work.
+
+        Args:
+            username: Original authenticated owner.
+            run_id: Original task run.
+            attempt_id: Attempt being continued.
+            execution_id: Current executor; replaced ownership rejects late writes.
+            data: Complete runner state with a model invocation identity and boundary.
+
+        Raises:
+            RoleAssetError: Ownership changed or the attempt is no longer running.
+        """
+        async with self.db.get_db() as session:
+            changed = await session.execute(
+                update(AgentWorkflowRun)
+                .where(
+                    col(AgentWorkflowRun.run_id) == run_id,
+                    col(AgentWorkflowRun.owner_username) == username,
+                    col(AgentWorkflowRun.status) == "running",
+                    AgentWorkflowRun.state["attempt_id"].as_string() == attempt_id,
+                    AgentWorkflowRun.state["execution_id"].as_string() == execution_id,
+                )
+                .values(state=AgentWorkflowRun.state)
+            )
+            if cast(CursorResult, changed).rowcount != 1:
+                raise RoleAssetError("Execution ownership has changed", status=409)
+            checkpoint = await session.get(AgentWorkflowCheckpoint, run_id)
+            if checkpoint is None:
+                checkpoint = AgentWorkflowCheckpoint(
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    phase=data["phase"],
+                    invocation_id=data["invocation_id"],
+                    data=data,
+                )
+            checkpoint.phase = data["phase"]
+            checkpoint.invocation_id = data["invocation_id"]
+            checkpoint.started_tools = data.get("started_tools", [])
+            checkpoint.data = data
+            row = await session.get(AgentWorkflowRun, run_id)
+            assert row is not None
+            checkpoint.result_submission = row.snapshot["definition"].get(
+                "output_contract"
+            ) is None and (data.get("response") or {}).get("tools_call_name") == [
+                "submit_task_result"
+            ]
+            session.add(checkpoint)
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="checkpoint." + data["phase"],
+                    data={
+                        "attempt_id": attempt_id,
+                        "invocation_id": data["invocation_id"],
+                    },
+                )
+            )
+            await session.commit()
 
     async def boot_sweep(self) -> None:
         """Finish saved safe intents and interrupt other abandoned executions.
@@ -1889,21 +2245,45 @@ class WorkflowService:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _execute(self, username: str, run_id: str) -> None:
+    async def _execute(
+        self, username: str, run_id: str, execution_id: str | None = None
+    ) -> None:
         """Advance the single saved attempt through the existing Agent pipeline.
 
         Args:
             username: Original owner.
             run_id: Already persisted run to dispatch.
+            execution_id: Ownership acquired by recovery, or acquired here on initial dispatch.
         """
         run = await self.get_run(username, run_id)
         if run["status"] != "running":
             return
         snapshot, state = run["snapshot"], run["state"]
+        async with self.db.get_db() as session:
+            if execution_id is None:
+                execution_id = uuid.uuid4().hex
+                state = {**state, "execution_id": execution_id}
+                changed = await session.execute(
+                    update(AgentWorkflowRun)
+                    .where(
+                        col(AgentWorkflowRun.run_id) == run_id,
+                        col(AgentWorkflowRun.status) == "running",
+                        AgentWorkflowRun.state["execution_id"].as_string().is_(None),
+                    )
+                    .values(state=state)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    return
+                await session.commit()
+            elif state.get("execution_id") != execution_id:
+                return
+            saved = await session.get(AgentWorkflowCheckpoint, run_id)
+            checkpoint = copy.deepcopy(saved.data) if saved else None
         member, effective = snapshot["member"], snapshot["effective"]
         ports = None
         tools: list[FunctionTool] = []
         status = "failed"
+        checkpoint_error = None
         try:
             await self.roles.validate_frozen_role(snapshot["role"])
             ports = self.ports_factory(username)
@@ -1914,7 +2294,13 @@ class WorkflowService:
                 Args:
                     payload: Complete output to validate against the frozen contract.
                 """
-                await self.submit_result(username, run_id, state["attempt_id"], payload)
+                await self.submit_result(
+                    username,
+                    run_id,
+                    state["attempt_id"],
+                    payload,
+                    execution_id=execution_id,
+                )
 
             tools = [
                 SubmitTaskResultTool(
@@ -1936,7 +2322,12 @@ class WorkflowService:
                         Stable file metadata after durable storage succeeds.
                     """
                     return await self.store_file(
-                        username, run_id, state["attempt_id"], filename, content
+                        username,
+                        run_id,
+                        state["attempt_id"],
+                        filename,
+                        content,
+                        execution_id=execution_id,
                     )
 
                 tools.append(StoreTaskFileTool(store))
@@ -1987,13 +2378,38 @@ class WorkflowService:
                     kind: Model response or tool result.
                     data: Complete original payload from the runner.
                 """
+                nonlocal checkpoint_error
                 try:
                     await self.record_process(
-                        username, run_id, state["attempt_id"], record_id, kind, data
+                        username,
+                        run_id,
+                        state["attempt_id"],
+                        record_id,
+                        kind,
+                        data,
+                        execution_id=execution_id,
                     )
                 except Exception as exc:
+                    checkpoint_error = "Failed to save complete process record"
                     raise ProcessPersistenceError(
                         "Failed to save complete process record"
+                    ) from exc
+
+            async def save(data: dict) -> None:
+                """Fail closed if an execution boundary cannot be durably saved.
+
+                Args:
+                    data: Effective runner checkpoint preceding dependent work.
+                """
+                nonlocal checkpoint_error
+                try:
+                    await self.save_checkpoint(
+                        username, run_id, state["attempt_id"], execution_id, data
+                    )
+                except Exception as exc:
+                    checkpoint_error = "Failed to save execution checkpoint"
+                    raise ProcessPersistenceError(
+                        "Failed to save execution checkpoint"
                     ) from exc
 
             reply, parts = await asyncio.wait_for(
@@ -2006,6 +2422,8 @@ class WorkflowService:
                     turn_id=state["attempt_id"],
                     node_id=snapshot.get("node_id", state["task_id"]),
                     record_process=record,
+                    save_checkpoint=save,
+                    checkpoint=checkpoint,
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", [])),
@@ -2029,6 +2447,8 @@ class WorkflowService:
                 "attempt_id": state["attempt_id"],
                 "message_id": state["message_id"],
             }
+            if checkpoint_error is not None:
+                raise ProcessPersistenceError(checkpoint_error)
             state["safe_to_finish"] = True
             async with self.db.get_db() as session:
                 changed = await session.execute(
@@ -2038,6 +2458,8 @@ class WorkflowService:
                         col(AgentWorkflowRun.status) == "running",
                         col(AgentWorkflowRun.state)["attempt_id"].as_string()
                         == state["attempt_id"],
+                        AgentWorkflowRun.state["execution_id"].as_string()
+                        == execution_id,
                     )
                     .values(state=state)
                 )
@@ -2050,6 +2472,8 @@ class WorkflowService:
                         )
                     )
                 await session.commit()
+                if cast(CursorResult, changed).rowcount != 1:
+                    return
             current = await self.get_run(username, run_id)
             if current["pending_result"] is not None:
                 await self.finish_submission(username, run_id)
@@ -2079,6 +2503,7 @@ class WorkflowService:
                     col(AgentWorkflowRun.status) == "running",
                     col(AgentWorkflowRun.state)["attempt_id"].as_string()
                     == state["attempt_id"],
+                    AgentWorkflowRun.state["execution_id"].as_string() == execution_id,
                 )
                 .values(status=status, state=state)
             )

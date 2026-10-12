@@ -6555,6 +6555,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/recover:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Recover Run
+      description: "Continue the same attempt from its saved built-in model boundary.\n\
+        \nArgs:\n    run_id: Interrupted task; no new attempt or iteration is created.\n\
+        \    username: Authenticated owner of the original run.\n    service: Shared\
+        \ public run service.\n\nReturns:\n    Persisted progress, or a reason recovery\
+        \ requires confirmation. Started\n    tools are not replayed; the default text\
+        \ submission can finish idempotently."
+      operationId: recover_run_api_v1_workflow_runs__run_id__recover_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_runs/{run_id}/result:
     get:
       tags:

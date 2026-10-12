@@ -78,6 +78,10 @@ class NodeExecutionBinding:
     """V2 member context identity saved before the first model invocation."""
     record_process: Callable[[str, str, dict], Awaitable[None]] | None = None
     """Durable structured observation sink; it does not resume execution."""
+    save_checkpoint: Callable[[dict], Awaitable[None]] | None = None
+    """Persist execution state before dependent model or tool work proceeds."""
+    checkpoint: dict | None = None
+    """Original attempt state to restore after rebuilding the normal main pipeline."""
 
 
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
@@ -101,6 +105,8 @@ async def execute_team_turn(
     on_delivered: Callable[[str], Awaitable[None]] | None = None,
     on_event: Callable[[dict], None] | None = None,
     record_process: Callable[[str, str, dict], Awaitable[None]] | None = None,
+    save_checkpoint: Callable[[dict], Awaitable[None]] | None = None,
+    checkpoint: dict | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -119,6 +125,8 @@ async def execute_team_turn(
         on_delivered: Persists or publishes the dispatched message association.
         on_event: Receives interactive waiting events from collection.
         record_process: Saves complete model responses and original tool results.
+        save_checkpoint: Saves the built-in runner's durable execution boundaries.
+        checkpoint: Saved effective context and response for this original attempt.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -154,6 +162,8 @@ async def execute_team_turn(
         persona_snapshot=execution.get("persona_snapshot"),
         conversation_id=member.get("conversation_id"),
         record_process=record_process,
+        save_checkpoint=save_checkpoint,
+        checkpoint=checkpoint,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (

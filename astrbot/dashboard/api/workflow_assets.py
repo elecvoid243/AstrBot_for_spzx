@@ -134,6 +134,31 @@ async def get_result(
         )
 
 
+@router.post("/workflow_runs/{run_id}/recover")
+async def recover_run(
+    run_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Continue the same attempt from its saved built-in model boundary.
+
+    Args:
+        run_id: Interrupted task; no new attempt or iteration is created.
+        username: Authenticated owner of the original run.
+        service: Shared public run service.
+
+    Returns:
+        Persisted progress, or a reason recovery requires confirmation. Started
+        tools are not replayed; the default text submission can finish idempotently.
+    """
+    try:
+        return ok(await service.recover_run(username, run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.get("/workflow_runs/{run_id}/events")
 async def get_events(
     run_id: str,

@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   file: vi.fn(),
   storeFile: vi.fn(),
   events: vi.fn(),
+  recover: vi.fn(),
 }));
 const roles = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: api }));
@@ -110,6 +111,61 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("continues the selected original attempt and explains a started-tool block", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      status: "interrupted",
+      recovery: { available: true, boundary: "response" },
+    });
+    api.recover.mockResolvedValue({ ...run });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="recovery-info"]').text()).toContain(
+      "recovery.sameAttempt",
+    );
+    await wrapper.find('[data-testid="recover-attempt"]').trigger("click");
+    await flushPromises();
+    expect(api.recover).toHaveBeenCalledWith("run-1");
+    expect(api.start).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="run-detail"]').text()).toContain(
+      "attempt-1",
+    );
+    wrapper.unmount();
+    api.run.mockResolvedValue({
+      ...run,
+      status: "interrupted",
+      recovery: {
+        available: false,
+        boundary: "tools_started",
+        reason: "Result requires confirmation",
+      },
+    });
+    const blockedRouter = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await blockedRouter.push("/?workflow_run=run-1");
+    const blocked = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [blockedRouter], stubs },
+    });
+    await flushPromises();
+    expect(blocked.find('[data-testid="recover-attempt"]').exists()).toBe(
+      false,
+    );
+    expect(blocked.find('[data-testid="recovery-info"]').text()).toContain(
+      "Result requires confirmation",
+    );
+    blocked.unmount();
+  });
   beforeEach(() => {
     vi.resetAllMocks();
     api.list.mockResolvedValue({ assets: [asset] });

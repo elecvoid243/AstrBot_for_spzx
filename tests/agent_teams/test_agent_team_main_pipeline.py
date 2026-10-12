@@ -771,7 +771,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "correction_context": True,
                 }
             else:
-                assert current["status"] == "awaiting_result", current
+                assert current["status"] == ("failed" if mode == "v2_process_failure_role" else "awaiting_result"), current
                 with pytest.raises(ValueError, match="no completed result"):
                     await service.get_result("alice", run["run_id"])
             assert (

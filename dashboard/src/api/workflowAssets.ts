@@ -51,6 +51,13 @@ export const workflowAssetsApi = {
       )
     ).data.data;
   },
+  async recover(runId: string) {
+    return (
+      await httpClient.post(
+        `/api/v1/workflow_runs/${encodeURIComponent(runId)}/recover`,
+      )
+    ).data.data;
+  },
   async artifact(artifactId: string, version: number) {
     return (
       await httpClient.get(

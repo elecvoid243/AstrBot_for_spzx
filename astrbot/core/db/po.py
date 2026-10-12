@@ -317,6 +317,19 @@ class AgentWorkflowProcess(TimestampMixin, SQLModel, table=True):
     data: dict = Field(sa_type=JSON)
 
 
+class AgentWorkflowCheckpoint(SQLModel, table=True):
+    """Latest consistent built-in execution boundary, separate from display history."""
+
+    __tablename__: str = "agent_workflow_checkpoints"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    attempt_id: str
+    phase: str
+    invocation_id: str
+    started_tools: list[str] = Field(default_factory=list, sa_type=JSON)
+    result_submission: bool = False
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

@@ -53,7 +53,7 @@
           }}</pre>
         </div>
         <pre v-if="record.kind === 'tool_result'" class="process-text">{{
-          JSON.stringify(record.data.raw_result, null, 2)
+          JSON.stringify(record.data.raw_result ?? record.data.result, null, 2)
         }}</pre>
         <details class="mt-3">
           <summary>{{ tm("progress.fullRecord") }}</summary>

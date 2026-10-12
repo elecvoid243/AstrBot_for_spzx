@@ -69,6 +69,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_hidden_role",
         "v2_no_thinking_role",
         "v2_process_failure_role",
+        "v2_tool_error_role",
     ],
 )
 async def test_main_pipeline_applies_role_capabilities_and_hooks(
@@ -197,6 +198,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 if message.get("role") == "system"
             )
             session = kwargs.get("session_id", "")
+            if mode == "v2_tool_error_role" and not self.turns.get(session):
+                self.turns[session] = 1
+                return LLMResponse(
+                    role="tool",
+                    tools_call_name=["unavailable_tool"],
+                    tools_call_args=[{}],
+                    tools_call_ids=["missing-1"],
+                )
             if mode.startswith("v2_file") and "submit_task_result" in names:
                 self.turns[session] = self.turns.get(session, 0) + 1
                 number = self.turns[session]
@@ -731,6 +740,15 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     part["type"] == "think"
                     for part in current["state"]["response"]["parts"]
                 )
+            if mode == "v2_tool_error_role":
+                tool_results = [
+                    record
+                    for record in current["process"]
+                    if record["kind"] == "tool_result"
+                ]
+                assert len(tool_results) == 1
+                assert tool_results[0]["data"]["id"] == "missing-1"
+                assert "not found" in tool_results[0]["data"]["result"]
             assert current["snapshot"]["engine"] == "single_task_v2"
             assert current["snapshot"]["profile"]["test_profile"] == "research"
         finally:

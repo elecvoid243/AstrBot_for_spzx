@@ -1480,7 +1480,25 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         tool_call_result_blocks: list[ToolCallMessageSegment] = []
         logger.info(f"Agent 使用工具: {llm_response.tools_call_name}")
 
-        def _append_tool_call_result(tool_call_id: str, content: str) -> None:
+        async def _append_tool_call_result(tool_call_id: str, content: str) -> None:
+            """Save protocol errors or empty returns that have no raw tool payload.
+
+            Args:
+                tool_call_id: Actual requested tool call identity.
+                content: Complete protocol result before follow-up notices.
+            """
+            execution = current_team_execution.get()
+            if execution and execution.record_process and not result_observed:
+                await execution.record_process(
+                    uuid.uuid4().hex,
+                    "tool_result",
+                    {
+                        "id": tool_call_id,
+                        "name": func_tool_name,
+                        "raw_result": None,
+                        "result": content,
+                    },
+                )
             tool_call_result_blocks.append(
                 ToolCallMessageSegment(
                     role="tool",
@@ -1511,6 +1529,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             llm_response.tools_call_ids,
         ):
             tool_result_blocks_start = len(tool_call_result_blocks)
+            result_observed = False
             tool_call_streak = self._track_tool_call_streak(
                 func_tool_name,
                 func_tool_args,
@@ -1538,7 +1557,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 段不存在，幻觉出的调用也能拿到协议完整的错误结果。
             if func_tool_name in denied_tools:
                 logger.info(f"[Permission] 工具 {func_tool_name} 已被禁用，拒绝调用。")
-                _append_tool_call_result(
+                await _append_tool_call_result(
                     func_tool_id,
                     f"error: Permission denied. Tool `{func_tool_name}` is no "
                     "longer available to you in the current state. Do not retry "
@@ -1579,7 +1598,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
                 if not func_tool:
                     logger.warning(f"未找到指定的工具: {func_tool_name}，将跳过。")
-                    _append_tool_call_result(
+                    await _append_tool_call_result(
                         func_tool_id,
                         f"error: Tool {func_tool_name} not found. Available tools are: {', '.join(available_tools)}",
                     )
@@ -1631,6 +1650,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 _final_resp: CallToolResult | None = None
                 async for resp in self._iter_tool_executor_results(executor):  # type: ignore
                     if isinstance(resp, CallToolResult):
+                        result_observed = True
                         execution = current_team_execution.get()
                         if execution and execution.record_process:
                             # Keep the original result before overflow materialization
@@ -1647,7 +1667,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         res = resp
                         _final_resp = resp
                         if not res.content:
-                            _append_tool_call_result(
+                            await _append_tool_call_result(
                                 func_tool_id,
                                 "The tool returned no content.",
                             )
@@ -1711,7 +1731,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 tool_call_id=func_tool_id,
                                 content=inline_result,
                             )
-                            _append_tool_call_result(
+                            await _append_tool_call_result(
                                 func_tool_id,
                                 inline_result
                                 + self._build_repeated_tool_call_guidance(
@@ -1728,7 +1748,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                         self._transition_state(AgentState.DONE)
                         self.stats.end_time = time.time()
-                        _append_tool_call_result(
+                        await _append_tool_call_result(
                             func_tool_id,
                             "The tool has no return value, or has sent the result directly to the user."
                             + self._build_repeated_tool_call_guidance(
@@ -1740,7 +1760,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         logger.warning(
                             f"Tool 返回了不支持的类型: {type(resp)}。",
                         )
-                        _append_tool_call_result(
+                        await _append_tool_call_result(
                             func_tool_id,
                             "*The tool has returned an unsupported type. Please tell the user to check the definition and implementation of this tool.*"
                             + self._build_repeated_tool_call_guidance(
@@ -1761,7 +1781,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 if isinstance(e, (_ToolExecutionInterrupted, ProcessPersistenceError)):
                     raise
                 logger.warning(traceback.format_exc())
-                _append_tool_call_result(
+                await _append_tool_call_result(
                     func_tool_id,
                     f"error: {e!s}"
                     + self._build_repeated_tool_call_guidance(

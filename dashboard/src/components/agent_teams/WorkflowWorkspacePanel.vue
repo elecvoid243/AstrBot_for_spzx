@@ -582,9 +582,10 @@ let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
 let artifactRead = 0;
 let runRead = 0;
+let openingRun = false;
 
 async function refresh() {
-  if (loading.value) return;
+  if (loading.value || openingRun) return;
   loading.value = true;
   try {
     error.value = "";
@@ -621,6 +622,7 @@ async function refresh() {
           const snapshot = await workflowAssetsApi.run(id);
           if (disposed || read !== runRead) return;
           selectedRun.value = snapshot;
+          selectedTaskNode.value = snapshot.tasks?.[0]?.node_id ?? null;
         }
         if (artifactId !== detailRun.value.result_ref?.artifact_id) {
           artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
@@ -783,18 +785,27 @@ async function start() {
 
 async function openRun(runId: string) {
   const read = ++runRead;
+  openingRun = true;
+  loading.value = true;
   try {
     error.value = "";
-    selectedTaskNode.value = null;
     const snapshot = await workflowAssetsApi.run(runId);
     if (disposed || read !== runRead) return;
     selectedRun.value = snapshot;
+    selectedTaskNode.value = snapshot.tasks?.[0]?.node_id ?? null;
+    await router.replace({ query: { ...route.query, workflow_run: runId } });
+    if (disposed || read !== runRead) return;
     artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
     selectedArtifact.value = null;
     await loadArtifact();
-    await router.replace({ query: { ...route.query, workflow_run: runId } });
   } catch (err) {
-    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+    if (!disposed && read === runRead)
+      error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    if (read === runRead) {
+      openingRun = false;
+      loading.value = false;
+    }
   }
 }
 

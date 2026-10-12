@@ -43,13 +43,17 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/tool":
                 deliveries.append(payload)
-                if not payload.get("idempotency_key") or not any(item.get("idempotency_key") == payload["idempotency_key"] for item in effects):
+                # A not-executed query observes real absence of final effects.
+                progress_only = scenario.startswith("reconcile_partial_not_executed") and (len(deliveries) == 1 or scenario.endswith("conflict") and len(deliveries) == 2)
+                if not progress_only and (not payload.get("idempotency_key") or not any(item.get("idempotency_key") == payload["idempotency_key"] for item in effects)):
                     effects.append(payload)
                 response = {"text": "Verified external evidence."}
                 if live_partial:
                     response["sequence"] = ["Partial verified evidence.", "Complete verified evidence."]
                     if scenario.endswith("short"):
                         response["sequence"].insert(1, "Second partial evidence.")
+                    if progress_only and len(deliveries) == 1:
+                        response["sequence"] = response["sequence"][:1]
                     if len(deliveries) == 2 and scenario.endswith("conflict"):
                         response["sequence"][0] = "Conflicting partial evidence."
                     elif len(deliveries) == 2 and scenario.endswith("incomplete"):
@@ -71,7 +75,8 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
                 elif scenario == "reconcile_failed":
                     response = {"status": "failed", "evidence": "Remote ledger proves rejection.", "results": [{"isError": True, "content": [{"type": "text", "text": "External operation rejected: verified receipt."}]}]}
                 elif scenario.startswith("reconcile_partial_not_executed"):
-                    response = {"status": "not_executed", "evidence": "External ledger authorizes a new live execution.", "results": []}
+                    assert not any(item.get("identity") == payload["identity"] for item in effects)
+                    response = {"status": "not_executed", "evidence": "External ledger confirms no final effect for this identity.", "results": []}
                 elif scenario.startswith("reconcile_partial"):
                     failed = scenario == "reconcile_partial_failed"
                     response = {"status": "failed" if failed else "succeeded", "evidence": "Remote ledger contains the complete original output sequence.", "results": [
@@ -117,7 +122,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
         assert (tmp_path / "kill-ready.json").exists()
         process.kill()
         process.wait(timeout=10)
-        assert len(effects) == (2 if scenario == "manual_batch" else 1)
+        assert len(effects) == (0 if scenario.startswith("reconcile_partial_not_executed") else 2 if scenario == "manual_batch" else 1)
         if preview:
             process = subprocess.Popen([*command, "serve", scenario], cwd=root, stdout=log, stderr=subprocess.STDOUT, env=environment)
             print(f"PREVIEW_FOLDER={tmp_path}", flush=True)
@@ -209,7 +214,7 @@ def test_unknown_tool_effect_resolution_survives_process_termination(tmp_path, s
             assert call["raw_results"][0] == evidence["before"]["tool_calls"][0]["raw_results"][0]
             delivery_count = 3 if scenario.endswith(("conflict", "incomplete", "short")) else 2
             assert len(deliveries) == delivery_count
-            assert len(effects) == (1 if scenario.startswith("idempotent_") else delivery_count)
+            assert len(effects) == (1 if scenario.startswith(("idempotent_", "reconcile_partial_not_executed")) else delivery_count)
             assert all(item["identity"] == call["record_id"] for item in deliveries)
             if scenario.startswith("idempotent_"):
                 assert all(item["idempotency_key"] == call["record_id"] for item in deliveries)

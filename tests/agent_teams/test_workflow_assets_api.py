@@ -65,3 +65,26 @@ def test_workflow_http_validation_and_ownership(tmp_path):
             == 404
         )
         assert client.get("/api/v1/workflow_assets").json()["data"] == {"assets": []}
+
+
+def test_canvas_graph_http_save_and_field_diagnostics(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "graph-api.db"))
+    roles = RoleAssetService(db)
+    app = FastAPI()
+    app.state.services = SimpleNamespace(role_assets=roles, workflow_assets=WorkflowService(db, roles))
+    app.include_router(roles_router, prefix="/api/v1")
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    with TestClient(app) as client:
+        role = client.post("/api/v1/agent_roles", json={"definition": {"name": "Writer", "prompt": "Write."}}).json()["data"]
+        task = {"id": "first", "name": "First", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Write"}
+        definition = {"name": "Canvas", "tasks": [task, {**task, "id": "next"}], "edges": [{"source": "first", "target": "next"}]}
+        response = client.post("/api/v1/workflow_assets", json={"definition": definition})
+        assert response.status_code == 200
+        asset = response.json()["data"]
+        assert client.get(f"/api/v1/workflow_assets/{asset['asset_id']}").json()["data"]["definition"]["tasks"][0]["id"] == "first"
+        definition["edges"].append({"source": "next", "target": "first"})
+        response = client.put(f"/api/v1/workflow_assets/{asset['asset_id']}", json={"definition": definition, "expected_version": 1})
+        assert response.status_code == 400
+        assert any(field["code"] == "CYCLE" for field in response.json()["data"]["fields"])
+        assert client.get(f"/api/v1/workflow_assets/{asset['asset_id']}").json()["data"]["version"] == 1

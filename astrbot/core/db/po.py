@@ -262,6 +262,14 @@ class AgentWorkflowRun(TimestampMixin, SQLModel, table=True):
     result: dict | None = Field(default=None, sa_column=Column(JSON(none_as_null=True)))
 
 
+class AgentWorkflowSchedule(SQLModel, table=True):
+    """Persisted scheduling revision serializes task claims within one run."""
+
+    __tablename__: str = "agent_workflow_schedules"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    revision: int = 0
+
+
 class AgentWorkflowArtifact(TimestampMixin, SQLModel, table=True):
     """Immutable versions of validated task output, with idempotent revisions."""
 

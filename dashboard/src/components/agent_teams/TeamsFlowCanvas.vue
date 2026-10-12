@@ -140,7 +140,7 @@ const emit = defineEmits<{
 // This component owns the <VueFlow> instance: calling useVueFlow() here
 // creates the store that the inner VueFlow component adopts, so the drop
 // handler can translate screen coordinates through the live viewport.
-const { screenToFlowCoordinate, setCenter } = useVueFlow();
+const { screenToFlowCoordinate, setCenter, fitView } = useVueFlow();
 const { tm } = useModuleI18n('features/agent-teams');
 
 /**
@@ -154,7 +154,7 @@ function panToFlow(x: number, y: number) {
   void setCenter(x, y, { duration: 300 });
 }
 
-defineExpose({ panTo: panToFlow });
+defineExpose({ panTo: panToFlow, fit: () => fitView({ padding: 0.2 }) });
 
 /** DataTransfer MIME type carrying the dragged member id (set by the editor). */
 const MEMBER_MIME = 'application/x-member-id';

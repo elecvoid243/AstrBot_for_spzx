@@ -8722,22 +8722,207 @@ components:
       - task
       title: WorkflowDefinition
       description: A single task with a pinned role and declared input/output contracts.
+    FieldCondition:
+      additionalProperties: false
+      description: A typed comparison against the source task's validated output.
+      properties:
+        field:
+          maxLength: 256
+          minLength: 1
+          title: Field
+          type: string
+        operator:
+          default: eq
+          enum:
+          - eq
+          - ne
+          - gt
+          - ge
+          - lt
+          - le
+          title: Operator
+          type: string
+        value:
+          anyOf:
+          - type: string
+          - type: boolean
+          - type: integer
+          - type: number
+          - type: 'null'
+          title: Value
+      required:
+      - field
+      - value
+      title: FieldCondition
+      type: object
+    GraphDefinition:
+      additionalProperties: false
+      description: A bounded, versioned workflow graph with persisted editor layout.
+      properties:
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        required_inputs:
+          items:
+            type: string
+          maxItems: 30
+          title: Required Inputs
+          type: array
+        max_parallel:
+          default: 4
+          maximum: 100
+          minimum: 1
+          title: Max Parallel
+          type: integer
+        tasks:
+          items:
+            $ref: '#/components/schemas/GraphTask'
+          maxItems: 100
+          minItems: 1
+          title: Tasks
+          type: array
+        edges:
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+          maxItems: 500
+          title: Edges
+          type: array
+      required:
+      - name
+      - tasks
+      title: GraphDefinition
+      type: object
+    GraphEdge:
+      additionalProperties: false
+      description: A required dependency, optionally activated by a field condition.
+      properties:
+        source:
+          title: Source
+          type: string
+        target:
+          title: Target
+          type: string
+        condition:
+          anyOf:
+          - $ref: '#/components/schemas/FieldCondition'
+          - type: 'null'
+          default: null
+      required:
+      - source
+      - target
+      title: GraphEdge
+      type: object
+    GraphTask:
+      additionalProperties: false
+      description: A task bound to a named member instance with a fixed role version.
+      properties:
+        id:
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-zA-Z][\w-]*$
+          title: Id
+          type: string
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        member:
+          maxLength: 128
+          minLength: 1
+          title: Member
+          type: string
+        role_id:
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+          type: string
+        role_version:
+          minimum: 1
+          title: Role Version
+          type: integer
+        task:
+          maxLength: 100000
+          minLength: 1
+          title: Task
+          type: string
+        inputs:
+          additionalProperties:
+            $ref: '#/components/schemas/TaskInput'
+          maxProperties: 30
+          title: Inputs
+          type: object
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Output Contract
+        position:
+          additionalProperties:
+            type: number
+          propertyNames:
+            enum:
+            - x
+            - y
+          title: Position
+          type: object
+      required:
+      - id
+      - name
+      - member
+      - role_id
+      - role_version
+      - task
+      title: GraphTask
+      type: object
+    TaskInput:
+      additionalProperties: false
+      description: A declared workflow input or an upstream validated result field.
+      properties:
+        input:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Input
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Task Id
+        field:
+          default: text
+          title: Field
+          type: string
+      title: TaskInput
+      type: object
     WorkflowSaveRequest:
+      additionalProperties: false
+      description: Create an asset or append an immutable version using optimistic locking.
       properties:
         definition:
-          $ref: '#/components/schemas/WorkflowDefinition'
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          title: Definition
         expected_version:
           anyOf:
-          - type: integer
-            minimum: 1.0
+          - minimum: 1
+            type: integer
           - type: 'null'
+          default: null
           title: Expected Version
-      additionalProperties: false
-      type: object
       required:
       - definition
       title: WorkflowSaveRequest
-      description: Create an asset or append an immutable version using optimistic locking.
+      type: object
     WorkflowStartRequest:
       properties:
         version:

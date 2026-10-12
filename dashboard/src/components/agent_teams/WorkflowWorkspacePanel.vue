@@ -3,6 +3,13 @@
     <div class="d-flex flex-wrap align-center ga-2 mb-4">
       <h2 class="text-h5">{{ tm(`v2.${mode}`) }}</h2>
       <v-spacer />
+      <v-btn
+        v-if="mode === 'assets'"
+        variant="tonal"
+        color="primary"
+        @click="editGraph(null)"
+        >{{ tm("graph.create") }}</v-btn
+      >
       <v-btn variant="text" :loading="loading" @click="refresh">{{
         tm("page.refresh")
       }}</v-btn>
@@ -38,7 +45,11 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
-          <p>
+          <p v-if="asset.definition.tasks">
+            {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
+            {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
+          </p>
+          <p v-else>
             {{ tm("v2.role") }}:
             {{
               roles.find((role) => role.role_id === asset.definition.role_id)
@@ -49,7 +60,11 @@
           <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
         <v-card-actions class="flex-wrap">
-          <v-btn variant="text" @click="edit(asset)">{{ tm("v2.edit") }}</v-btn>
+          <v-btn
+            variant="text"
+            @click="asset.definition.tasks ? editGraph(asset) : edit(asset)"
+            >{{ tm("v2.edit") }}</v-btn
+          >
           <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
             tm("v2.start")
           }}</v-btn>
@@ -91,36 +106,57 @@
         >
         <v-card-text>
           <p>{{ tm(`v2.states.${selectedRun.status}`) }}</p>
+          <WorkflowGraphCanvas
+            v-if="selectedRun.snapshot.definition.tasks"
+            :definition="selectedRun.snapshot.definition"
+            :tasks="selectedRun.tasks"
+            readonly
+            class="my-4"
+            @select-task="selectRunTask"
+          />
+          <v-select
+            v-if="selectedRun.tasks?.length"
+            v-model="selectedTaskNode"
+            :items="
+              selectedRun.tasks.map((task: any) => ({
+                title: task.snapshot.definition.name,
+                value: task.node_id,
+              }))
+            "
+            :label="tm('graph.selectTask')"
+            class="mt-3"
+          />
           <v-alert
-            v-if="selectedRun.state.reason"
+            v-if="detailRun.state.reason"
             type="warning"
             variant="tonal"
             class="my-3"
-            >{{ selectedRun.state.reason }}</v-alert
+            >{{ detailRun.state.reason }}</v-alert
           >
-          <p class="workflow-text my-3">{{ selectedRun.snapshot.task }}</p>
+          <p class="workflow-text my-3">{{ detailRun.snapshot.task }}</p>
           <p>
-            {{ tm("v2.assetVersion") }}: {{ selectedRun.snapshot.asset_id }} ·
-            v{{ selectedRun.snapshot.asset_version }}
+            {{ tm("v2.assetVersion") }}: {{ detailRun.snapshot.asset_id }} · v{{
+              detailRun.snapshot.asset_version
+            }}
           </p>
           <p>
-            {{ tm("v2.member") }}: {{ selectedRun.snapshot.member.name }} ·
-            {{ selectedRun.snapshot.member.member_id }}
+            {{ tm("v2.member") }}: {{ detailRun.snapshot.member.name }} ·
+            {{ detailRun.snapshot.member.member_id }}
           </p>
-          <p>{{ tm("v2.attempt") }}: {{ selectedRun.state.attempt_id }}</p>
+          <p>{{ tm("v2.attempt") }}: {{ detailRun.state.attempt_id }}</p>
           <h3 class="text-h6 mt-4">{{ tm("v2.result") }}</h3>
           <v-alert
-            v-if="selectedRun.validation_errors?.length"
+            v-if="detailRun.validation_errors?.length"
             type="error"
             variant="tonal"
             class="my-3"
           >
-            <p v-for="field in selectedRun.validation_errors" :key="field.path">
+            <p v-for="field in detailRun.validation_errors" :key="field.path">
               {{ field.path }}: {{ field.message }}
             </p>
           </v-alert>
           <v-select
-            v-if="selectedRun.artifacts?.length"
+            v-if="detailRun.artifacts?.length"
             v-model="artifactVersion"
             :items="artifactVersions"
             :label="tm('v2.artifactVersion')"
@@ -129,8 +165,7 @@
           />
           <pre
             v-if="
-              selectedArtifact ||
-              (!selectedRun.result_ref && selectedRun.result)
+              selectedArtifact || (!detailRun.result_ref && detailRun.result)
             "
             class="workflow-text workflow-result mt-2"
             data-testid="result-text"
@@ -162,18 +197,18 @@
             >{{ tm("v2.revise") }}</v-btn
           >
           <p
-            v-if="selectedRun.snapshot.input_artifacts?.length"
+            v-if="detailRun.snapshot.input_artifacts?.length"
             class="workflow-text mt-3"
           >
             {{ tm("v2.pinnedInputs") }}:
-            {{ JSON.stringify(selectedRun.snapshot.input_artifacts) }}
+            {{ JSON.stringify(detailRun.snapshot.input_artifacts) }}
           </p>
           <v-expansion-panels class="mt-4" variant="accordion">
             <v-expansion-panel :title="tm('v2.contract')">
               <v-expansion-panel-text>
                 <pre class="workflow-text">{{
                   JSON.stringify(
-                    selectedRun.snapshot.definition.output_contract ?? {
+                    detailRun.snapshot.definition.output_contract ?? {
                       type: "object",
                       properties: { text: { type: "string", minLength: 1 } },
                       required: ["text"],
@@ -189,7 +224,7 @@
               <v-expansion-panel-text>
                 <pre class="workflow-text">{{
                   JSON.stringify(
-                    selectedRun.events?.filter((event: any) =>
+                    detailRun.events?.filter((event: any) =>
                       event.kind.startsWith("result."),
                     ),
                     null,
@@ -201,14 +236,14 @@
             <v-expansion-panel :title="tm('v2.effective')">
               <v-expansion-panel-text>
                 <pre class="workflow-text">{{
-                  JSON.stringify(selectedRun.snapshot.effective, null, 2)
+                  JSON.stringify(detailRun.snapshot.effective, null, 2)
                 }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
             <v-expansion-panel :title="tm('v2.process')">
               <v-expansion-panel-text>
                 <pre class="workflow-text">{{
-                  JSON.stringify(selectedRun.state.response, null, 2)
+                  JSON.stringify(detailRun.state.response, null, 2)
                 }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
@@ -216,6 +251,71 @@
         </v-card-text>
       </v-card>
     </template>
+
+    <v-dialog v-model="graphEditing" max-width="1600" :persistent="saving">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("graph.canvas")
+        }}</v-card-title>
+        <v-card-text>
+          <div class="d-flex flex-wrap ga-3 mb-3">
+            <v-text-field
+              v-model="graphForm.name"
+              :label="tm('v2.name')"
+              style="min-width: 180px"
+            />
+            <v-text-field
+              v-model="graphInputNames"
+              :label="tm('v2.inputNames')"
+              style="min-width: 220px"
+              @update:model-value="
+                graphForm.required_inputs = graphInputNames
+                  .split(',')
+                  .map((name) => name.trim())
+                  .filter(Boolean)
+              "
+            />
+            <v-text-field
+              v-model.number="graphForm.max_parallel"
+              type="number"
+              min="1"
+              max="100"
+              :label="tm('graph.parallel')"
+              style="max-width: 220px"
+            />
+          </div>
+          <WorkflowGraphCanvas
+            v-model:definition="graphForm"
+            :roles="roles"
+            @validation="graphInvalid = $event"
+          />
+          <v-alert
+            v-if="formError"
+            type="error"
+            variant="tonal"
+            class="mt-3"
+            role="alert"
+            >{{ formError }}</v-alert
+          >
+          <p class="text-caption mt-3">{{ tm("graph.saveHint") }}</p>
+        </v-card-text>
+        <v-card-actions
+          ><v-spacer /><v-btn
+            variant="text"
+            :disabled="saving"
+            @click="graphEditing = false"
+            >{{ tm("v2.close") }}</v-btn
+          ><v-btn
+            variant="tonal"
+            color="primary"
+            :loading="saving"
+            :disabled="graphInvalid"
+            @click="saveGraph"
+            >{{ tm("v2.save") }}</v-btn
+          ></v-card-actions
+        >
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="editing" max-width="720" :persistent="saving">
       <v-card>
@@ -378,13 +478,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
-import type { WorkflowDefinition } from "@/api/generated/openapi-v1";
+import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import type {
+  GraphDefinition,
+  WorkflowDefinition,
+} from "@/api/generated/openapi-v1";
 
 const props = defineProps<{ mode: "assets" | "runs" }>();
 const emit = defineEmits<{ (event: "started", runId: string): void }>();
@@ -395,14 +499,33 @@ const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
+const selectedTaskNode = ref<string | null>(null);
+const detailRun = computed(
+  () =>
+    selectedRun.value?.tasks?.find(
+      (task: any) => task.node_id === selectedTaskNode.value,
+    ) ??
+    selectedRun.value?.tasks?.[0] ??
+    selectedRun.value,
+);
+const graphEditing = ref(false);
+const graphInvalid = ref(false);
+const graphForm = ref<GraphDefinition>({
+  name: "",
+  required_inputs: [],
+  max_parallel: 4,
+  tasks: [],
+  edges: [],
+});
+const graphInputNames = ref("");
 const selectedArtifact = ref<any>(null);
 const artifactVersions = computed(() =>
-  (selectedRun.value?.artifacts ?? []).map(
+  (detailRun.value?.artifacts ?? []).map(
     (item: { version: number }) => item.version,
   ),
 );
 const resultText = computed(() => {
-  const content = selectedArtifact.value?.content ?? selectedRun.value?.result;
+  const content = selectedArtifact.value?.content ?? detailRun.value?.result;
   return content &&
     Object.keys(content).length === 1 &&
     typeof content.text === "string"
@@ -475,15 +598,15 @@ async function refresh() {
       runs.value = (await workflowAssetsApi.runs()).runs;
       const id = selectedRun.value?.run_id ?? route.query.workflow_run;
       if (typeof id === "string" && id) {
-        const artifactId = selectedRun.value?.result_ref?.artifact_id;
+        const artifactId = detailRun.value?.result_ref?.artifact_id;
         selectedRun.value = await workflowAssetsApi.run(id);
-        if (artifactId !== selectedRun.value.result_ref?.artifact_id) {
-          artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
+        if (artifactId !== detailRun.value.result_ref?.artifact_id) {
+          artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
         }
         if (
           !selectedArtifact.value ||
           selectedArtifact.value.artifact_id !==
-            selectedRun.value.result_ref?.artifact_id
+            detailRun.value.result_ref?.artifact_id
         ) {
           await loadArtifact();
         }
@@ -515,6 +638,49 @@ function edit(asset: any) {
   formError.value = "";
   editing.value = true;
 }
+
+function editGraph(asset: any) {
+  editingAsset.value = asset;
+  graphForm.value = asset
+    ? JSON.parse(JSON.stringify(asset.definition))
+    : { name: "", required_inputs: [], max_parallel: 4, tasks: [], edges: [] };
+  graphInputNames.value = graphForm.value.required_inputs?.join(", ") ?? "";
+  formError.value = "";
+  graphInvalid.value = false;
+  graphEditing.value = true;
+}
+
+async function saveGraph() {
+  if (saving.value || graphInvalid.value) return;
+  saving.value = true;
+  formError.value = "";
+  try {
+    await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
+      definition: graphForm.value,
+      expected_version: editingAsset.value?.version,
+    });
+    graphEditing.value = false;
+    await refresh();
+  } catch (err) {
+    const failure = extractApiError(err, tm("errors.operationFailed"));
+    formError.value = `${failure.message} ${failure.fields.map((field) => `${field.path}: ${field.message}`).join("; ")}`;
+  } finally {
+    saving.value = false;
+  }
+}
+
+function selectRunTask(nodeId: string | null) {
+  if (nodeId) selectedTaskNode.value = nodeId;
+}
+watch(
+  () => detailRun.value?.run_id,
+  async () => {
+    artifactRead++;
+    selectedArtifact.value = null;
+    artifactVersion.value = detailRun.value?.result_ref?.version ?? 1;
+    await loadArtifact();
+  },
+);
 
 function selectRole(id: string) {
   form.value.role_version =
@@ -594,8 +760,9 @@ async function start() {
 async function openRun(runId: string) {
   try {
     error.value = "";
+    selectedTaskNode.value = null;
     selectedRun.value = await workflowAssetsApi.run(runId);
-    artifactVersion.value = selectedRun.value.result_ref?.version ?? 1;
+    artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
     selectedArtifact.value = null;
     await loadArtifact();
     await router.replace({ query: { ...route.query, workflow_run: runId } });
@@ -606,7 +773,7 @@ async function openRun(runId: string) {
 
 async function loadArtifact() {
   const read = ++artifactRead;
-  const ref = selectedRun.value?.result_ref;
+  const ref = detailRun.value?.result_ref;
   if (!ref) return;
   selectedArtifact.value = null;
   try {
@@ -638,7 +805,7 @@ async function saveRevision() {
     const content = JSON.parse(revisionText.value);
     for (const file of revisionFiles.value) {
       const stored = await workflowAssetsApi.storeFile(
-        selectedRun.value.run_id,
+        detailRun.value.run_id,
         file,
       );
       content.files = [...(content.files ?? []), { file_id: stored.file_id }];

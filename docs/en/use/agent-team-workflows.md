@@ -1,6 +1,26 @@
-# Single-task workflow assets and independent runs
+# Workflow assets, dependency canvas and independent runs
 
 Open **More Features → Agent Teams → Workflow Assets**. First save a ready role under **Role Templates**, bind a local model that supports tool calls and select the built-in Agent executor.
+
+## Dependency canvas
+
+Choose **New Canvas Workflow**. Enter the workflow name, required text inputs and maximum concurrent tasks, then drag a role from the toolbox onto the canvas (or click it). Select a task to edit its name, instructions, pinned role version, member instance key, input references and output contract. Tasks sharing a member key use the same frozen role and configuration and advance one conversation serially; distinct member keys create isolated contexts and may run in parallel within the workflow and role limits.
+
+Connect a task's right handle to another task's left handle. Choose a dependency by clicking its edge or using **Select dependency** and enable **Field condition** to compare a validated output field. Conditions use `eq`, `ne`, `gt`, `ge`, `lt` or `le` with a correctly typed value, without evaluating code. Fields must be required scalars in the source output contract; nested objects, local schema references and `allOf` may declare these fields. Ordered comparisons require numeric fields.
+
+Use **Add input reference** to assign an alias to a workflow input or an upstream result field; insert `{alias}` into task instructions. Result references require a dependency path. The producer's original artifact version is pinned when the consumer starts, and its complete content remains available through `read_task_artifact`. Revising the producer does not change or rerun its consumers. Save validation reports specific field paths for invalid references, conditions and unbounded back edges. This canvas currently accepts acyclic graphs; human tasks, bounded loops and nested calls are added by subsequent tasks.
+
+Use the canvas controls to zoom and fit; the toolbar provides minimap visibility, undo/redo and dependency-based automatic layout. Node positions and properties are saved with the asset version. On narrow screens the toolbox and properties collapse into sections. Choose **Save New Version**, then **Start Run** from the saved asset. Saving does not execute the graph, and later edits do not change an existing run.
+
+![Actual dependency canvas with role, input and output properties](/images/agent-workflow-graph-en.jpg)
+
+In **Independent Runs**, the graph is a read-only frozen snapshot. Select a task or use **Inspect task** to view its real status, waiting/failure reason, attempt, effective configuration and exact artifact versions. An unmatched condition skips its path; a merge waits for active paths and is not blocked by skipped ones. Failures block their dependents while unrelated ready tasks continue. The root reports completion only after all required active paths produce validated results. Duplicate scheduling notifications do not dispatch a task twice.
+
+![Actual run graph with completed tasks, a skipped path and pinned input versions](/images/agent-workflow-graph-run-en.jpg)
+
+At startup, accepted task submissions at saved safe points finish idempotently. Other abandoned task attempts become interrupted and cannot accept a late conflicting result. Pending independent branches can still advance from persisted state. Invocation checkpoint restoration and retry controls are not delivered by this canvas yet.
+
+## Single-task assets
 
 1. Choose **New Workflow**, enter a name and select a role template and its version.
 2. Enter comma-separated **Required text inputs (comma separated)**, such as `topic`. Reference an input with `{topic}` in the task; escape literal braces by doubling each brace. Only declared simple placeholders are supported.
@@ -24,8 +44,9 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | Previous entry | Current purpose |
 | --- | --- |
 | Agent Teams → Members, Workflow Editor, Run Monitor, History | Retains legacy teams, long-lived conversations and run entries. |
-| Saving a reusable single-task workflow | Agent Teams → Workflow Assets; independent of a legacy team. |
-| Starting and inspecting a new single-task run | Workflow Assets → Start Run, then Independent Runs. |
+| Saving a reusable single-task workflow | Agent Teams → Workflow Assets → New Workflow; independent of a legacy team. |
+| Editing a reusable dependency workflow | Agent Teams → Workflow Assets → New Canvas Workflow / Edit Asset; the legacy Workflow Editor remains separate. |
+| Starting and inspecting a new workflow run | Workflow Assets → Start Run, then Independent Runs → Inspect task for graph task results. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
 
-This path supports one role executing one task with contracted results and pinned artifact versions. Approval binding, bounded revision loops, a live event workbench, invocation checkpoints and team orchestration connect to this version protocol in subsequent tasks.
+Single-task assets remain compatible. Dependency assets add acyclic scheduling and field conditions to the same task result protocol. Approval binding, bounded revision loops, a live event workbench, invocation checkpoints and team orchestration connect to this protocol in subsequent tasks.

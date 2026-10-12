@@ -21,8 +21,8 @@ Tool and skill availability follows the selected profile's enabled plugins, and 
 | --- | --- |
 | Agent Teams → Members | Retains legacy member configuration and long-lived sessions; no automatic role migration. |
 | Creating a reusable role | Agent Teams → Role templates → New role; templates are independent of legacy teams and members. |
-| Workflow Editor, Run Monitor, History | Legacy entries remain; new single-task workflow assets reference pinned roles and are inspected under Independent Runs. |
+| Workflow Editor, Run Monitor, History | Legacy entries remain; new single-task and dependency workflow assets reference pinned roles and are inspected under Independent Runs. |
 
-See [Single-task workflow assets and independent runs](./agent-team-workflows.md) to use a role in the new path. Runs freeze roles and effective configuration; invocation checkpoint recovery and more complex orchestration remain subsequent work.
+See [Workflow assets, dependency canvas and independent runs](./agent-team-workflows.md) to use a role in the new path. Runs freeze roles and effective configuration; acyclic dependency scheduling and field conditions are available in the canvas; invocation checkpoint recovery, human tasks and bounded loops remain subsequent work.
 
 Previews use current local resources. Historical definitions never silently fall back to a default model. Deleting or disabling a resource produces a diagnostic on the next preview. This ticket does not complete the parent specification's run recovery, migration or entire workbench acceptance criteria.

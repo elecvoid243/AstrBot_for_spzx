@@ -28,6 +28,7 @@ from astrbot.core.agent_teams.assets import (
     RoleAssetService,
     RoleOverrides,
 )
+from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
 from astrbot.core.agent_teams.result_tool import (
     ReadArtifactTool,
     StoreTaskFileTool,
@@ -40,6 +41,7 @@ from astrbot.core.db.po import (
     AgentWorkflowEvent,
     AgentWorkflowFile,
     AgentWorkflowRun,
+    AgentWorkflowSchedule,
     AgentWorkflowVersion,
     ConversationV2,
     PlatformSession,
@@ -65,7 +67,7 @@ class WorkflowSaveRequest(BaseModel):
     """Create an asset or append an immutable version using optimistic locking."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    definition: WorkflowDefinition
+    definition: WorkflowDefinition | GraphDefinition
     expected_version: int | None = Field(default=None, ge=1)
 
 
@@ -124,6 +126,7 @@ class WorkflowService:
             )
         )
         self._tasks: set[asyncio.Task] = set()
+        self._closing = False
 
     async def save_asset(
         self, username: str, payload: dict, asset_id: str | None = None
@@ -156,6 +159,64 @@ class WorkflowService:
                 ],
             ) from exc
         definition = request.definition
+        if isinstance(definition, GraphDefinition):
+            for task in definition.tasks:
+                await self._validate_task_definition(
+                    username,
+                    WorkflowDefinition(
+                        name=task.name,
+                        role_id=task.role_id,
+                        role_version=task.role_version,
+                        task=task.task,
+                        required_inputs=list(
+                            dict.fromkeys([*definition.required_inputs, *task.inputs])
+                        ),
+                        overrides=task.overrides,
+                        output_contract=task.output_contract,
+                    ),
+                )
+            validate_graph(definition)
+        else:
+            await self._validate_task_definition(username, definition)
+        version = 1
+        if asset_id is not None:
+            current = await self.get_asset(username, asset_id)
+            if current["version"] != request.expected_version:
+                raise RoleAssetError(
+                    "Workflow was edited elsewhere; reload first", status=409
+                )
+            version = current["version"] + 1
+        else:
+            asset_id = uuid.uuid4().hex
+        async with self.db.get_db() as session:
+            session.add(
+                AgentWorkflowVersion(
+                    asset_id=asset_id,
+                    version=version,
+                    owner_username=username,
+                    definition=definition.model_dump(exclude_none=True),
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                raise RoleAssetError(
+                    "Workflow was edited elsewhere; reload first", status=409
+                ) from exc
+        return await self.get_asset(username, asset_id, version)
+
+    async def _validate_task_definition(
+        self, username: str, definition: WorkflowDefinition
+    ) -> None:
+        """Validate the shared role, template and contracted output semantics.
+
+        Args:
+            username: Authenticated asset author.
+            definition: One task, from either a single-task asset or a graph.
+
+        Raises:
+            RoleAssetError: Invalid contract, template or inaccessible pinned role.
+        """
         if definition.output_contract is not None:
             try:
                 Draft202012Validator.check_schema(definition.output_contract)
@@ -232,32 +293,6 @@ class WorkflowService:
                 [{"path": "definition.task", "code": "INVALID", "message": str(exc)}],
             ) from exc
         await self.roles.get_role(username, definition.role_id, definition.role_version)
-        version = 1
-        if asset_id is not None:
-            current = await self.get_asset(username, asset_id)
-            if current["version"] != request.expected_version:
-                raise RoleAssetError(
-                    "Workflow was edited elsewhere; reload first", status=409
-                )
-            version = current["version"] + 1
-        else:
-            asset_id = uuid.uuid4().hex
-        async with self.db.get_db() as session:
-            session.add(
-                AgentWorkflowVersion(
-                    asset_id=asset_id,
-                    version=version,
-                    owner_username=username,
-                    definition=definition.model_dump(exclude_none=True),
-                )
-            )
-            try:
-                await session.commit()
-            except IntegrityError as exc:
-                raise RoleAssetError(
-                    "Workflow was edited elsewhere; reload first", status=409
-                ) from exc
-        return await self.get_asset(username, asset_id, version)
 
     async def get_asset(
         self, username: str, asset_id: str, version: int | None = None
@@ -385,6 +420,81 @@ class WorkflowService:
         ]
         if fields:
             raise RoleAssetError("Invalid run inputs", fields)
+        if "tasks" in definition:
+            return await self._start_graph(username, asset, request)
+        frozen = await self._freeze_member(username, definition)
+        effective = frozen["effective"]
+        member = frozen["member"]
+        session_id = member["session_id"]
+        snapshot = {
+            "engine": "single_task_v2",
+            "asset_id": asset_id,
+            "asset_version": request.version,
+            "definition": definition,
+            **frozen,
+            "inputs": request.inputs,
+            "input_artifacts": input_refs,
+            "source": request.source,
+            "initiator": username,
+            "task": definition["task"].format_map(request.inputs),
+            "member": member,
+        }
+        run_id = uuid.uuid4().hex
+        state = {
+            "scope_id": uuid.uuid4().hex,
+            "task_id": uuid.uuid4().hex,
+            "attempt_id": uuid.uuid4().hex,
+            "message_id": uuid.uuid4().hex,
+            "safe_to_finish": False,
+            "reason": None,
+            "response": None,
+        }
+        async with self.db.get_db() as session:
+            session.add(
+                ConversationV2(
+                    conversation_id=member["conversation_id"],
+                    platform_id="webchat",
+                    user_id=member["umo"],
+                    content=[],
+                    title=definition["name"],
+                    persona_id=effective.get("persona_id"),
+                )
+            )
+            session.add(
+                PlatformSession(
+                    session_id=session_id,
+                    creator=username,
+                    display_name=definition["name"],
+                    archived=1,
+                )
+            )
+            session.add(
+                AgentWorkflowRun(
+                    run_id=run_id,
+                    owner_username=username,
+                    snapshot=snapshot,
+                    state=state,
+                )
+            )
+            await session.commit()
+        task = asyncio.create_task(self._execute(username, run_id))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return await self.get_run(username, run_id)
+
+    async def _freeze_member(self, username: str, definition: dict) -> dict:
+        """Freeze role capabilities and create an isolated member identity.
+
+        Args:
+            username: Actual initiating owner.
+            definition: Task with a pinned role and explicit overrides.
+
+        Returns:
+            Frozen role, effective settings, safe profile, persona and member.
+
+        Raises:
+            RoleAssetError: Bound resources are missing or incompatible.
+        """
         role = await self.roles.resolve_role(
             username,
             definition["role_id"],
@@ -438,65 +548,14 @@ class WorkflowService:
             "name": role["definition"]["name"],
             "system_prompt": effective["prompt"],
         }
-        snapshot = {
-            "engine": "single_task_v2",
-            "asset_id": asset_id,
-            "asset_version": request.version,
-            "definition": definition,
+        return {
             "role": role,
             "effective": effective,
             "profile_id": profile_id,
             "profile": profile_snapshot,
             "persona": persona,
-            "inputs": request.inputs,
-            "input_artifacts": input_refs,
-            "source": request.source,
-            "initiator": username,
-            "task": definition["task"].format_map(request.inputs),
             "member": member,
         }
-        run_id = uuid.uuid4().hex
-        state = {
-            "scope_id": uuid.uuid4().hex,
-            "task_id": uuid.uuid4().hex,
-            "attempt_id": uuid.uuid4().hex,
-            "message_id": uuid.uuid4().hex,
-            "safe_to_finish": False,
-            "reason": None,
-            "response": None,
-        }
-        async with self.db.get_db() as session:
-            session.add(
-                ConversationV2(
-                    conversation_id=member["conversation_id"],
-                    platform_id="webchat",
-                    user_id=member["umo"],
-                    content=[],
-                    title=definition["name"],
-                    persona_id=effective.get("persona_id"),
-                )
-            )
-            session.add(
-                PlatformSession(
-                    session_id=session_id,
-                    creator=username,
-                    display_name=definition["name"],
-                    archived=1,
-                )
-            )
-            session.add(
-                AgentWorkflowRun(
-                    run_id=run_id,
-                    owner_username=username,
-                    snapshot=snapshot,
-                    state=state,
-                )
-            )
-            await session.commit()
-        task = asyncio.create_task(self._execute(username, run_id))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-        return await self.get_run(username, run_id)
 
     async def get_run(self, username: str, run_id: str) -> dict:
         """Query persisted progress independently of any active runner or browser.
@@ -547,7 +606,7 @@ class WorkflowService:
                 .scalars()
                 .all()
             )
-            return {
+            result = {
                 "run_id": run_id,
                 "status": row.status,
                 "snapshot": row.snapshot,
@@ -576,6 +635,23 @@ class WorkflowService:
                     if event.kind == "artifact.read"
                 ],
             }
+        if row.snapshot.get("engine") == "graph_v2":
+            result["tasks"] = [
+                {**await self.get_run(username, identity), "node_id": node_id}
+                for node_id, identity in row.snapshot["task_runs"].items()
+            ]
+            result["events"] = sorted(
+                [
+                    *result["events"],
+                    *[event for task in result["tasks"] for event in task["events"]],
+                ],
+                key=lambda event: event["cursor"],
+            )
+            result["artifacts"] = [
+                artifact for task in result["tasks"] for artifact in task["artifacts"]
+            ]
+            result["result_ref"] = None
+        return result
 
     async def list_runs(self, username: str, limit: int = 50) -> dict:
         """List persisted runs, including inactive and interrupted executions.
@@ -594,6 +670,9 @@ class WorkflowService:
                         select(AgentWorkflowRun.run_id)
                         .where(
                             AgentWorkflowRun.owner_username == username,
+                            AgentWorkflowRun.snapshot["parent_run_id"]
+                            .as_string()
+                            .is_(None),
                         )
                         .order_by(col(AgentWorkflowRun.created_at).desc())
                         .limit(max(1, min(limit, 100)))
@@ -605,6 +684,386 @@ class WorkflowService:
         return {
             "runs": [await self.get_run(username, identity) for identity in identities]
         }
+
+    async def _start_graph(
+        self, username: str, asset: dict, request: WorkflowStartRequest
+    ) -> dict:
+        """Persist a complete graph, member contexts and pending tasks atomically.
+
+        Args:
+            username: Authenticated owner.
+            asset: Saved immutable graph version.
+            request: Validated launch inputs and source identity.
+
+        Returns:
+            Persisted root run with all task snapshots.
+
+        Raises:
+            RoleAssetError: Invalid graph, missing resources or instance limit.
+        """
+        definition = GraphDefinition.model_validate(asset["definition"])
+        validate_graph(definition)
+        members = {}
+        role_counts: dict[str, int] = {}
+        for task in definition.tasks:
+            if task.member not in members:
+                frozen = await self._freeze_member(
+                    username, task.model_dump(exclude_none=True)
+                )
+                role_counts[task.role_id] = role_counts.get(task.role_id, 0) + 1
+                members[task.member] = frozen
+        for frozen in members.values():
+            role_id = frozen["role"]["role_id"]
+            limit = frozen["effective"].get("max_instances")
+            if limit is not None and role_counts[role_id] > limit:
+                raise RoleAssetError(
+                    "Role member instance limit exceeded",
+                    [
+                        {
+                            "path": "definition.tasks",
+                            "code": "LIMIT",
+                            "message": f"Role {role_id} permits {limit} member instances",
+                        }
+                    ],
+                )
+        run_id = uuid.uuid4().hex
+        scope_id = uuid.uuid4().hex
+        task_runs = {task.id: uuid.uuid4().hex for task in definition.tasks}
+        snapshot = {
+            "engine": "graph_v2",
+            "asset_id": asset["asset_id"],
+            "asset_version": asset["version"],
+            "definition": asset["definition"],
+            "inputs": request.inputs,
+            "input_artifacts": [ref.model_dump() for ref in request.input_artifacts],
+            "source": request.source,
+            "initiator": username,
+            "members": members,
+            "task_runs": task_runs,
+        }
+        async with self.db.get_db() as session:
+            session.add(
+                AgentWorkflowRun(
+                    run_id=run_id,
+                    owner_username=username,
+                    snapshot=snapshot,
+                    state={"scope_id": scope_id, "reason": None},
+                )
+            )
+            session.add(AgentWorkflowSchedule(run_id=run_id))
+            for frozen in members.values():
+                member = frozen["member"]
+                session.add(
+                    ConversationV2(
+                        conversation_id=member["conversation_id"],
+                        platform_id="webchat",
+                        user_id=member["umo"],
+                        content=[],
+                        title=definition.name,
+                        persona_id=frozen["effective"].get("persona_id"),
+                    )
+                )
+                session.add(
+                    PlatformSession(
+                        session_id=member["session_id"],
+                        creator=username,
+                        display_name=definition.name,
+                        archived=1,
+                    )
+                )
+            for task in definition.tasks:
+                child_definition = {
+                    "name": task.name,
+                    "role_id": task.role_id,
+                    "role_version": task.role_version,
+                    "task": task.task,
+                    "overrides": task.overrides.model_dump(exclude_none=True),
+                    "required_inputs": definition.required_inputs,
+                }
+                if task.output_contract is not None:
+                    child_definition["output_contract"] = task.output_contract
+                session.add(
+                    AgentWorkflowRun(
+                        run_id=task_runs[task.id],
+                        owner_username=username,
+                        status="pending",
+                        snapshot={
+                            "engine": "single_task_v2",
+                            "parent_run_id": run_id,
+                            "node_id": task.id,
+                            "asset_id": asset["asset_id"],
+                            "asset_version": asset["version"],
+                            "definition": child_definition,
+                            **members[task.member],
+                            "inputs": request.inputs,
+                            "input_artifacts": snapshot["input_artifacts"],
+                            "source": request.source,
+                            "initiator": username,
+                            "task": task.task,
+                        },
+                        state={
+                            "scope_id": scope_id,
+                            "task_id": task_runs[task.id],
+                            "attempt_id": uuid.uuid4().hex,
+                            "message_id": uuid.uuid4().hex,
+                            "safe_to_finish": False,
+                            "reason": None,
+                            "response": None,
+                        },
+                    )
+                )
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id, kind="run.started", data={"task_runs": task_runs}
+                )
+            )
+            await session.commit()
+        await self.advance_run(username, run_id)
+        return await self.get_run(username, run_id)
+
+    async def advance_run(self, username: str, run_id: str) -> dict:
+        """Wake dependency scheduling; persistent claims make notifications idempotent.
+
+        Args:
+            username: Authenticated owner.
+            run_id: Root graph run; no new attempt is created by a notification.
+
+        Returns:
+            Current public run snapshot including skipped and blocked paths.
+
+        Raises:
+            RoleAssetError: Run is inaccessible or is not a graph.
+        """
+        claimed = []
+        # The revision guard serializes claims, including same-member exclusions,
+        # across service objects. Notifications carry no execution authority.
+        for _ in range(20):
+            async with self.db.get_db() as session:
+                root = await session.get(AgentWorkflowRun, run_id)
+                if root is None or root.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                if root.snapshot.get("engine") != "graph_v2":
+                    raise RoleAssetError("Run is not a dependency workflow")
+                if root.status != "running":
+                    break
+                schedule = await session.get(AgentWorkflowSchedule, run_id)
+                assert schedule is not None
+                changed = await session.execute(
+                    update(AgentWorkflowSchedule)
+                    .where(
+                        col(AgentWorkflowSchedule.run_id) == run_id,
+                        col(AgentWorkflowSchedule.revision) == schedule.revision,
+                    )
+                    .values(revision=schedule.revision + 1)
+                )
+                if cast(CursorResult, changed).rowcount != 1:
+                    await session.rollback()
+                    continue
+                definition = root.snapshot["definition"]
+                rows = {
+                    node_id: await session.get(AgentWorkflowRun, identity)
+                    for node_id, identity in root.snapshot["task_runs"].items()
+                }
+                active = [
+                    row
+                    for row in rows.values()
+                    if row is not None and row.status == "running"
+                ]
+                occupied = {row.snapshot["member"]["member_id"] for row in active}
+                role_active: dict[str, int] = {}
+                for row in active:
+                    role_id = row.snapshot["definition"]["role_id"]
+                    role_active[role_id] = role_active.get(role_id, 0) + 1
+                # Repeat terminal propagation so definition order does not turn
+                # a skipped branch into a barrier for its downstream merge.
+                progress = True
+                while progress:
+                    progress = False
+                    for task in definition["tasks"]:
+                        row = rows[task["id"]]
+                        assert row is not None
+                        if row.status != "pending":
+                            continue
+                        incoming = [
+                            edge
+                            for edge in definition["edges"]
+                            if edge["target"] == task["id"]
+                        ]
+                        matched = []
+                        unresolved = False
+                        failed = False
+                        for edge in incoming:
+                            source = rows[edge["source"]]
+                            assert source is not None
+                            if source.status in {"pending", "running"}:
+                                unresolved = True
+                            elif source.status == "completed":
+                                rule = edge.get("condition")
+                                match = True
+                                if rule:
+                                    value = source.result
+                                    assert value is not None
+                                    for name in rule["field"].split("."):
+                                        value = value[name]
+                                    other = rule["value"]
+                                    op = rule["operator"]
+                                    match = (
+                                        value == other
+                                        if op == "eq"
+                                        else value != other
+                                        if op == "ne"
+                                        else value > other
+                                        if op == "gt"
+                                        else value >= other
+                                        if op == "ge"
+                                        else value < other
+                                        if op == "lt"
+                                        else value <= other
+                                    )
+                                if match:
+                                    matched.append(source)
+                            elif source.status != "skipped":
+                                failed = True
+                        if failed:
+                            row.status = "dependency_failed"
+                            row.state = {
+                                **row.state,
+                                "reason": "An upstream task has no validated result.",
+                            }
+                        elif unresolved:
+                            continue
+                        elif incoming and not matched:
+                            row.status = "skipped"
+                            row.state = {
+                                **row.state,
+                                "reason": "No incoming path matched its field conditions.",
+                            }
+                        else:
+                            member_id = row.snapshot["member"]["member_id"]
+                            role_id = row.snapshot["definition"]["role_id"]
+                            role_limit = row.snapshot["effective"].get("max_parallel")
+                            if (
+                                len(active) >= definition["max_parallel"]
+                                or member_id in occupied
+                                or (
+                                    role_limit is not None
+                                    and role_active.get(role_id, 0) >= role_limit
+                                )
+                            ):
+                                continue
+                            inputs = dict(root.snapshot["inputs"])
+                            refs = list(root.snapshot.get("input_artifacts", []))
+                            missing = False
+                            for key, ref in task["inputs"].items():
+                                if ref.get("input") is not None:
+                                    inputs[key] = inputs[ref["input"]]
+                                else:
+                                    source = rows[ref["task_id"]]
+                                    assert source is not None
+                                    if source.status != "completed":
+                                        missing = True
+                                        break
+                                    value = source.result
+                                    assert value is not None
+                                    for name in ref["field"].split("."):
+                                        value = value[name]
+                                    inputs[key] = (
+                                        value
+                                        if isinstance(value, str)
+                                        else json.dumps(value, ensure_ascii=False)
+                                    )
+                                    pinned = {
+                                        "artifact_id": source.run_id,
+                                        "version": 1,
+                                    }
+                                    if pinned not in refs:
+                                        refs.append(pinned)
+                            if missing:
+                                row.status = "skipped"
+                                row.state = {
+                                    **row.state,
+                                    "reason": "A declared result input belongs to a skipped path.",
+                                }
+                            else:
+                                row.snapshot = {
+                                    **row.snapshot,
+                                    "task": task["task"].format_map(inputs),
+                                    "inputs": inputs,
+                                    "input_artifacts": refs,
+                                }
+                                row.status = "running"
+                                occupied.add(member_id)
+                                role_active[role_id] = role_active.get(role_id, 0) + 1
+                                active.append(row)
+                                claimed.append(row.run_id)
+                        session.add(row)
+                        session.add(
+                            AgentWorkflowEvent(
+                                run_id=row.run_id,
+                                kind="task." + row.status,
+                                data={
+                                    "node_id": task["id"],
+                                    "attempt_id": row.state["attempt_id"],
+                                },
+                            )
+                        )
+                        progress = True
+                if all(
+                    row is not None and row.status not in {"pending", "running"}
+                    for row in rows.values()
+                ):
+                    success = all(
+                        row is not None and row.status in {"completed", "skipped"}
+                        for row in rows.values()
+                    )
+                    root.status = "completed" if success else "blocked"
+                    root.state = {
+                        **root.state,
+                        "reason": None
+                        if success
+                        else "One or more branches require attention; independent branches were allowed to finish.",
+                    }
+                    if success:
+                        root.result = {
+                            "tasks": {
+                                name: row.result
+                                for name, row in rows.items()
+                                if row is not None and row.status == "completed"
+                            }
+                        }
+                    session.add(root)
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=run_id, kind="run." + root.status, data={}
+                        )
+                    )
+                await session.commit()
+                break
+        else:
+            raise RoleAssetError("Scheduling contention; notify again", status=409)
+        for identity in claimed:
+            task = asyncio.create_task(
+                self._execute_graph_task(username, run_id, identity)
+            )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        return await self.get_run(username, run_id)
+
+    async def _execute_graph_task(
+        self, username: str, run_id: str, task_run_id: str
+    ) -> None:
+        """Run a claimed task through the shared pipeline and wake successors.
+
+        Args:
+            username: Frozen initiating owner.
+            run_id: Root graph owning scheduling capacity.
+            task_run_id: Durably claimed task and attempt.
+        """
+        try:
+            await self._execute(username, task_run_id)
+        finally:
+            if not self._closing:
+                await self.advance_run(username, run_id)
 
     async def submit_result(
         self, username: str, run_id: str, attempt_id: str, payload: dict
@@ -1078,6 +1537,7 @@ class WorkflowService:
                 update(AgentWorkflowRun)
                 .where(
                     col(AgentWorkflowRun.status) == "running",
+                    AgentWorkflowRun.snapshot["engine"].as_string() != "graph_v2",
                 )
                 .values(status="interrupted")
             )
@@ -1090,6 +1550,22 @@ class WorkflowService:
                 logger.exception(
                     "Failed to finish saved workflow submission: %s", run_id
                 )
+        async with self.db.get_db() as session:
+            roots = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowRun).where(
+                            col(AgentWorkflowRun.status) == "running",
+                            AgentWorkflowRun.snapshot["engine"].as_string()
+                            == "graph_v2",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for root in roots:
+            await self.advance_run(root.owner_username, root.run_id)
 
     async def shutdown(self) -> None:
         """Stop core-owned tasks before providers and database are terminated.
@@ -1098,6 +1574,7 @@ class WorkflowService:
             None after every execution has released its tools and subscriptions.
         """
         tasks = list(self._tasks)
+        self._closing = True
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -1110,9 +1587,12 @@ class WorkflowService:
             run_id: Already persisted run to dispatch.
         """
         run = await self.get_run(username, run_id)
+        if run["status"] != "running":
+            return
         snapshot, state = run["snapshot"], run["state"]
         member, effective = snapshot["member"], snapshot["effective"]
         ports = None
+        tools: list[FunctionTool] = []
         status = "failed"
         try:
             await self.roles.validate_frozen_role(snapshot["role"])
@@ -1126,7 +1606,7 @@ class WorkflowService:
                 """
                 await self.submit_result(username, run_id, state["attempt_id"], payload)
 
-            tools: list[FunctionTool] = [
+            tools = [
                 SubmitTaskResultTool(
                     accept, snapshot["definition"].get("output_contract")
                 )
@@ -1196,7 +1676,7 @@ class WorkflowService:
                     team_id=snapshot["asset_id"],
                     username=username,
                     turn_id=state["attempt_id"],
-                    node_id=state["task_id"],
+                    node_id=snapshot.get("node_id", state["task_id"]),
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", [])),
@@ -1248,7 +1728,8 @@ class WorkflowService:
             state["reason"] = str(exc)
             logger.error("Single-task workflow execution failed: %s", exc)
         finally:
-            AgentTeamToolRegistry.unregister(member["umo"])
+            if tools and AgentTeamToolRegistry.get_tools(member["umo"]) == tools:
+                AgentTeamToolRegistry.unregister(member["umo"])
             if ports and ports.close:
                 await ports.close()
         async with self.db.get_db() as session:

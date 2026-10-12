@@ -466,12 +466,65 @@ export type ErrorEnvelope = {
     data?: unknown;
 };
 
+/**
+ * A typed comparison against the source task's validated output.
+ */
+export type FieldCondition = {
+    field: string;
+    operator?: 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+    value: (string | boolean | number | null);
+};
+
+export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
 export type FileUploadRequest = {
     file: (Blob | File);
 };
 
 export type GhproxyTestRequest = {
     proxy_url: string;
+};
+
+/**
+ * A bounded, versioned workflow graph with persisted editor layout.
+ */
+export type GraphDefinition = {
+    name: string;
+    required_inputs?: Array<(string)>;
+    max_parallel?: number;
+    tasks: Array<GraphTask>;
+    edges?: Array<GraphEdge>;
+};
+
+/**
+ * A required dependency, optionally activated by a field condition.
+ */
+export type GraphEdge = {
+    source: string;
+    target: string;
+    condition?: (FieldCondition | null);
+};
+
+/**
+ * A task bound to a named member instance with a fixed role version.
+ */
+export type GraphTask = {
+    id: string;
+    name: string;
+    member: string;
+    role_id: string;
+    role_version: number;
+    task: string;
+    inputs?: {
+        [key: string]: TaskInput;
+    };
+    overrides?: RoleOverrides;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
+    position?: {
+        [key: string]: (number);
+    };
 };
 
 export type HTTPValidationError = {
@@ -929,6 +982,15 @@ export type T2iTemplateRequest = {
     [key: string]: unknown | string;
 };
 
+/**
+ * A declared workflow input or an upstream validated result field.
+ */
+export type TaskInput = {
+    input?: (string | null);
+    task_id?: (string | null);
+    field?: string;
+};
+
 export type ToolPermissionPatch = {
     permission: 'admin' | 'member';
 };
@@ -1034,7 +1096,7 @@ export type WorkflowNode = {
  * Create an asset or append an immutable version using optimistic locking.
  */
 export type WorkflowSaveRequest = {
-    definition: WorkflowDefinition;
+    definition: (WorkflowDefinition | GraphDefinition);
     expected_version?: (number | null);
 };
 

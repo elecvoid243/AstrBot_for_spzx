@@ -63,6 +63,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "dag_inherited_role",
         "auto_inherited_role",
         "v2_role",
+        "v2_graph_role",
         "v2_plain_role",
         "v2_failing_role",
     ],
@@ -176,6 +177,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             """
             tools = kwargs.get("func_tool")
             model_requests.append(self.provider_config["id"])
+            if mode.startswith("v2_graph"):
+                with (tmp_path / "model-calls.log").open("a", encoding="utf-8") as calls:
+                    calls.write(self.provider_config["id"] + "\n")
             if (
                 mode == "v2_failing_role"
                 and self.provider_config["id"] == "research-model"
@@ -254,18 +258,19 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     )
                     await asyncio.Future()
             if (
-                mode in ("v2_role", "v2_crash_role", "v2_unsafe_role")
+                mode in ("v2_role", "v2_crash_role", "v2_unsafe_role", "v2_graph_role", "v2_graph_crash_role", "v2_graph_unsafe_role")
                 and "submit_task_result" in names
             ):
                 self.turns[session] = self.turns.get(session, 0) + 1
-                if mode == "v2_unsafe_role" and self.turns[session] == 3:
+                if mode in ("v2_unsafe_role", "v2_graph_unsafe_role") and self.turns[session] == 3:
                     (tmp_path / "crash-ready.json").write_text(
                         json.dumps({"run_id": run["run_id"], "db_path": db.db_path}),
                         encoding="utf-8",
                     )
                     await asyncio.Future()
-                if self.turns[session] <= 2:
-                    if self.turns[session] == 1:
+                graph_round = (self.turns[session] - 1) % 3 + 1 if mode == "v2_graph_role" else self.turns[session]
+                if graph_round <= 2:
+                    if graph_round == 1:
                         # Mutate live templates while this run is executing.
                         # Its next model call must still use the frozen persona.
                         personas.get_persona_v3_by_id("researcher")["prompt"] = (
@@ -287,6 +292,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                                     "tools": names,
                                     "correction_context": "Provide non-empty text"
                                     in str(kwargs),
+                                    **({"previous_task": self.turns[session] > 3 and "submit-2" in str(kwargs)} if mode == "v2_graph_role" else {}),
                                 }
                             )
                         }
@@ -497,7 +503,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         assert resolved_role["ready"] is True, resolved_role["issues"]
         assert await db.get_platform_sessions_by_creator("alice") == []
     if mode.startswith("v2"):
-        if mode in ("v2_crash_role", "v2_file_crash_role"):
+        if mode in ("v2_crash_role", "v2_file_crash_role", "v2_graph_crash_role"):
             # Hold cleanup after a completion-write fault, leaving the real
             # pipeline's saved safe point and submission intent on disk.
             async with db.get_db() as session:
@@ -520,7 +526,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 Existing delivery and collection ports.
             """
             ports = build_ports_for_test(queue_manager, username, lambda event: None)
-            if mode in ("v2_crash_role", "v2_file_crash_role"):
+            if mode in ("v2_crash_role", "v2_file_crash_role", "v2_graph_crash_role"):
                 close = ports.close
 
                 async def hold_cleanup():
@@ -582,12 +588,27 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         )
         dispatch_task = asyncio.create_task(event_bus.dispatch())
         try:
+            if mode.startswith("v2_graph"):
+                task = {"id": "first", "name": "First", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Write evidence."}
+                definition = {"name": "Pipeline workflow", "tasks": [task], "edges": []}
+                if mode == "v2_graph_role":
+                    definition["tasks"].append({**task, "id": "second", "name": "Second", "task": "Continue the evidence."})
+                    definition["edges"].append({"source": "first", "target": "second"})
+                asset = await service.save_asset("alice", {"definition": definition})
             run = await service.start_run("alice", asset["asset_id"], {"version": 1})
             for _ in range(1000):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.01)
+            if mode == "v2_graph_role":
+                assert current["status"] == "completed", current
+                assert current["tasks"][0]["snapshot"]["member"] == current["tasks"][1]["snapshot"]["member"]
+                result = await service.get_result("alice", run["run_id"])
+                assert json.loads(result["tasks"]["first"]["text"])["previous_task"] is False
+                assert json.loads(result["tasks"]["second"]["text"])["previous_task"] is True
+                assert json.loads(result["tasks"]["second"]["text"])["persona"] is True
+                return
             if mode == "v2_role":
                 assert current["status"] == "completed", current
                 assert json.loads(

@@ -19,14 +19,14 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Standalone MCP / Skills entries | Extensions → MCP Servers / Skills |
 | Custom Rules / Future Tasks / SubAgents | More Features → The corresponding feature |
 | Agent Teams → Members (retained legacy configuration) | Reusable definitions use More Features → Agent Teams → Role templates; legacy members are not migrated automatically |
-| Agent Teams → Workflow Editor, Run Monitor, History (retained legacy runs) | New single-task runs use Agent Teams → Workflow Assets → Start Run; Independent Runs displays read-only snapshots and results |
+| Agent Teams → Workflow Editor, Run Monitor, History (retained legacy runs) | New single-task and dependency runs use Agent Teams → Workflow Assets → Start Run; New Canvas Workflow opens the versioned graph editor, and Independent Runs displays read-only snapshots and task results |
 
 Old log, trace, conversation, and statistics URLs still redirect to the corresponding tabs. Agent runners are now saved in each profile; they are no longer created as model providers. See [Agent Runners](./agent-runner.md) for the setup steps.
 
 ## Accessing the Admin Panel
 
 See [Agent Teams role templates](./agent-team-roles.md) for resource bindings, inheritance previews and versioned saving.
-See [Single-task workflow assets and independent runs](./agent-team-workflows.md) for saving, starting and inspecting new single-task runs.
+See [Workflow assets, dependency canvas and independent runs](./agent-team-workflows.md) for saving, starting and inspecting workflows and task results.
 
 After starting AstrBot, you can access the admin panel by visiting `http://localhost:6185` in your browser.
 

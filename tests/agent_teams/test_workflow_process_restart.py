@@ -14,7 +14,7 @@ import pytest
     "safe,file_result", [(True, False), (False, False), (True, True), (False, True)]
 )
 def test_saved_submission_rebuilds_without_dispatch_after_process_termination(
-    tmp_path, safe, file_result
+    tmp_path, safe, file_result, graph=False
 ):
     """Exercise the real pipeline, on-disk SQLite, termination and fresh services.
 
@@ -22,6 +22,7 @@ def test_saved_submission_rebuilds_without_dispatch_after_process_termination(
         tmp_path: Data directory shared only by the two isolated processes.
         safe: Whether the real pipeline reached its saved completion boundary.
         file_result: Whether the actual task stages and submits a file artifact.
+        graph: Whether the task belongs to a persisted workflow graph.
     """
     first_script = """
 import asyncio
@@ -43,7 +44,9 @@ asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
                 "-c",
                 first_script,
                 str(tmp_path),
-                ("v2_file_crash_role" if safe else "v2_file_unsafe_role")
+                ("v2_graph_crash_role" if safe else "v2_graph_unsafe_role")
+                if graph
+                else ("v2_file_crash_role" if safe else "v2_file_unsafe_role")
                 if file_result
                 else ("v2_crash_role" if safe else "v2_unsafe_role"),
             ],
@@ -64,6 +67,7 @@ asyncio.run(test_main_pipeline_applies_role_capabilities_and_hooks(
                 )
                 time.sleep(0.05)
             identities = json.loads(marker.read_text(encoding="utf-8"))
+            model_calls = (tmp_path / "model-calls.log").read_text(encoding="utf-8") if graph else None
             # TerminateProcess on Windows and SIGTERM on POSIX: no async cleanup.
             process.terminate()
             process.wait(timeout=10)
@@ -90,6 +94,9 @@ async def main():
         raise AssertionError("Recovery must not dispatch a model or tool")
     service = WorkflowService(db, RoleAssetService(db), ports_factory=forbid_dispatch)
     run_id = identities["run_id"]
+    root = await service.get_run("alice", run_id)
+    if root["snapshot"]["engine"] == "graph_v2":
+        run_id = root["tasks"][0]["run_id"]
     before = await service.get_run("alice", run_id)
     if before["state"]["safe_to_finish"]:
         async with db.get_db() as session:
@@ -97,6 +104,16 @@ async def main():
             await session.commit()
     await service.boot_sweep()
     finished = await service.get_run("alice", run_id)
+    if root["snapshot"]["engine"] == "graph_v2":
+        await service.advance_run("alice", root["run_id"])
+        await service.advance_run("alice", root["run_id"])
+        try:
+            await service.submit_result("alice", run_id, before["state"]["attempt_id"], {"text": "Late conflicting output"})
+        except RoleAssetError as exc:
+            assert exc.status == 409
+        else:
+            raise AssertionError("An abandoned executor cannot replace the current output")
+        assert await service.get_run("alice", run_id) == finished
     if before["state"]["safe_to_finish"]:
         repeated = await service.finish_submission("alice", run_id)
         result = await service.get_result("alice", run_id)
@@ -124,6 +141,7 @@ async def main():
         "result": result,
         "artifact": artifact,
         "files": files,
+        "root": await service.get_run("alice", identities["run_id"]),
     }), encoding="utf-8")
     await db.engine.dispose()
 asyncio.run(main())
@@ -145,7 +163,10 @@ asyncio.run(main())
     assert before["pending_result"] is not None
     assert before["result"] is None
     assert evidence["finished"]["status"] == ("completed" if safe else "interrupted")
-    assert evidence["finished"]["run_id"] == identities["run_id"]
+    assert evidence["finished"]["run_id"] == (evidence["root"]["tasks"][0]["run_id"] if graph else identities["run_id"])
+    if graph:
+        assert evidence["root"]["status"] == ("completed" if safe else "blocked")
+        assert (tmp_path / "model-calls.log").read_text(encoding="utf-8") == model_calls
     assert evidence["finished"]["snapshot"] == before["snapshot"]
     assert evidence["finished"]["state"] == before["state"]
     if safe:
@@ -176,3 +197,8 @@ asyncio.run(main())
     else:
         assert evidence["finished"]["result"] is None
         assert evidence["finished"]["pending_result"] == before["pending_result"]
+
+
+@pytest.mark.parametrize("safe", [True, False])
+def test_graph_ownership_and_submission_survive_terminated_pipeline_process(tmp_path, safe):
+    test_saved_submission_rebuilds_without_dispatch_after_process_termination(tmp_path, safe, False, graph=True)

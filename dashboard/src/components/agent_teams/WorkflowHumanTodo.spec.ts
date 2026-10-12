@@ -37,6 +37,32 @@ const todo = {
 };
 
 describe("persistent human request handling", () => {
+  it("previews every contracted field before approving a structured result", async () => {
+    api.artifact.mockResolvedValue({
+      artifact_id: "report",
+      version: 1,
+      content: {
+        text: "Report summary",
+        evidence: ["Complete evidence"],
+        review_score: 42,
+      },
+      files: [],
+    });
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("Report summary");
+      expect(wrapper.text()).toContain("Complete evidence");
+      expect(wrapper.text()).toContain("review_score");
+      expect(wrapper.text()).toContain("42");
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("previews the pinned version before approval and exports that version", async () => {
     api.artifact.mockResolvedValue({
       artifact_id: "report",

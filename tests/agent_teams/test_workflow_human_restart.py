@@ -25,6 +25,8 @@ import pytest
         "human_shutdown_wait",
         "human_approval_pre",
         "human_approval_post",
+        "human_consume_owned_post",
+        "human_consume_owned_shutdown",
     ],
 )
 def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
@@ -111,7 +113,9 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
                         tmp_path / "worker.log"
                     ).read_text(encoding="utf-8")
                     time.sleep(0.03)
-                if scenario.startswith("human_shutdown"):
+                if scenario.startswith("human_shutdown") or scenario.endswith(
+                    "owned_shutdown"
+                ):
                     assert worker.wait(timeout=10) == 0
                 else:
                     worker.kill()
@@ -174,7 +178,12 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
                 if scenario
                 in {"human_answer_post", "human_consume_pre", "human_shutdown"}
                 else "completed"
-                if scenario == "human_consume_post"
+                if scenario
+                in {
+                    "human_consume_post",
+                    "human_consume_owned_post",
+                    "human_consume_owned_shutdown",
+                }
                 else "pending"
             )
         )

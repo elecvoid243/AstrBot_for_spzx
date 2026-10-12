@@ -28,7 +28,10 @@
           >{{ tm("human.preview") }}</v-btn
         >
         <pre v-if="preview" class="human-content">{{
-          preview.content.text ?? JSON.stringify(preview.content, null, 2)
+          Object.keys(preview.content).length === 1 &&
+          typeof preview.content.text === "string"
+            ? preview.content.text
+            : JSON.stringify(preview.content, null, 2)
         }}</pre>
         <div v-if="preview" class="d-flex flex-wrap ga-2">
           <v-btn

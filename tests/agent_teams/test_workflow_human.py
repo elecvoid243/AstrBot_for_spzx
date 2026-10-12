@@ -521,3 +521,83 @@ async def test_review_task_reads_full_pinned_file_before_human_delivery_approval
     assert run["tasks"][1]["status"] == "completed", run
     assert run["tasks"][1]["result"] == {"text": "Reviewed the complete pinned file"}
     assert run["todos"][0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_requested_revision_can_be_supplied_after_approval_wait_begins(
+    workflow_env,
+):
+    service, role = workflow_env.service, workflow_env.role
+    asset = await service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Approve v2",
+                "tasks": [
+                    {
+                        "id": "report",
+                        "name": "Report",
+                        "member": "writer",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Report",
+                    },
+                    {
+                        "id": "approve",
+                        "name": "Approval",
+                        "human": {
+                            "kind": "approval",
+                            "question": "Approve revised report?",
+                            "artifact_task_id": "report",
+                            "artifact_version": 2,
+                        },
+                    },
+                ],
+                "edges": [{"source": "report", "target": "approve"}],
+            }
+        },
+    )
+    run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+    for _ in range(200):
+        run = await service.get_run("alice", run["run_id"])
+        if run["todos"] or run["status"] == "blocked":
+            break
+        await asyncio.sleep(0.01)
+    assert run["status"] == "running"
+    todo = run["todos"][0]
+    assert todo["artifact_ref"]["version"] == 2
+    with pytest.raises(RoleAssetError):
+        await service.answer_todo(
+            "alice",
+            run["run_id"],
+            todo["todo_id"],
+            {"request_id": "approve", "action": "approve"},
+        )
+    with pytest.raises(RoleAssetError):
+        await service.recover_run("alice", todo["task_run_id"])
+    await service.revise_artifact(
+        "alice",
+        todo["artifact_ref"]["artifact_id"],
+        {
+            "request_id": "revision",
+            "expected_version": 1,
+            "content": {"text": "Reviewed v2"},
+        },
+    )
+    await service.control_run(
+        "alice", run["run_id"], {"request_id": "continue", "action": "continue"}
+    )
+    current = await service.get_run("alice", run["run_id"])
+    assert current["todos"] == run["todos"]
+    approved = await service.answer_todo(
+        "alice",
+        run["run_id"],
+        todo["todo_id"],
+        {"request_id": "approve", "action": "approve"},
+    )
+    assert approved["status"] == "completed"
+    assert (await service.export_artifact("alice", **todo["artifact_ref"]))[
+        "content"
+    ] == {"text": "Reviewed v2"}
+    with pytest.raises(RoleAssetError):
+        await service.export_artifact("alice", todo["artifact_ref"]["artifact_id"], 1)

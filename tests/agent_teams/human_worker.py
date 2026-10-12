@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from astrbot.core.agent_teams.assets import RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
-from astrbot.core.db.po import AgentWorkflowEvent
+from astrbot.core.db.po import AgentWorkflowEvent, AgentWorkflowRun
 
 
 async def run_human_scenario(
@@ -29,6 +29,7 @@ async def run_human_scenario(
         service: Actual public workflow service connected to the main pipeline.
         roles: Actual role assets bound to the externally recorded model/tool.
     """
+    shutdown_task = None
 
     def stop(session, flush_context, instances):
         """Hold before a selected real transaction is committed.
@@ -61,7 +62,21 @@ async def run_human_scenario(
         Args:
             session: Real persistent session.
         """
-        if session.info.pop("human_stop", None):
+        nonlocal shutdown_task
+        acquired = scenario in {
+            "human_consume_owned_post",
+            "human_consume_owned_shutdown",
+        } and any(
+            isinstance(row, AgentWorkflowRun)
+            and row.snapshot.get("node_id") == "write"
+            and row.state.get("execution_id")
+            for row in session.identity_map.values()
+        )
+        if acquired and scenario == "human_consume_owned_shutdown":
+            if shutdown_task is None:
+                shutdown_task = asyncio.create_task(service.shutdown())
+            return
+        if acquired or session.info.pop("human_stop", None):
             (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
             while True:
                 time.sleep(1)
@@ -190,6 +205,17 @@ async def run_human_scenario(
                     run["run_id"],
                     {"request_id": "continue", "action": "continue"},
                 )
+                if scenario == "human_consume_owned_post":
+                    await asyncio.Future()
+                if scenario == "human_consume_owned_shutdown":
+                    for _ in range(1500):
+                        if shutdown_task is not None:
+                            break
+                        await asyncio.sleep(0.01)
+                    assert shutdown_task is not None
+                    await shutdown_task
+                    (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
+                    return
             elif scenario == "human_shutdown":
                 (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
                 return
@@ -244,6 +270,22 @@ async def run_human_scenario(
                 assert exc.status == 409
             else:
                 raise AssertionError("The revised version must not inherit approval")
+        if scenario in {"human_consume_owned_post", "human_consume_owned_shutdown"}:
+            from astrbot.core.agent_teams.assets import RoleAssetError
+
+            old_task = before["tasks"][1]
+            try:
+                await service.submit_result(
+                    "alice",
+                    old_task["run_id"],
+                    old_task["state"]["attempt_id"],
+                    {"text": "Late original executor"},
+                    execution_id=old_task["state"]["execution_id"],
+                )
+            except RoleAssetError as exc:
+                assert exc.status == 409
+            else:
+                raise AssertionError("The original executor must remain fenced")
         (folder / "recovered.json").write_text(
             json.dumps({"before": before, "after": current, "exported": exported}),
             encoding="utf-8",

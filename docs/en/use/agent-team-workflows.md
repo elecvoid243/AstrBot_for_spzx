@@ -98,6 +98,8 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 5. **Export approved version** downloads JSON containing complete content and exact file references; after previewing, download files of that version. File downloads for an artifact governed by an approval node reject unapproved versions. Creating v2 never inherits v1 approval, changes its preview or automatically reruns downstream tasks.
 6. Refresh or reopen after restart to continue handling requests. Repeated identical answers are consumed once; another answer cannot replace one already saved. You may answer while globally paused: **Response saved. It will be consumed after the whole run continues.** Continuing preserves unanswered requests; cancellation retains requests and response history while preventing further consumption. Ordinary task retry cannot replace human answers.
 
+If the requested revision does not exist yet, the request retains that exact version; preview and approval explain that it is unavailable. Explicitly create the required revision on the artifact task, then preview and approve the original request. The service does not substitute v1 or the latest version, and no new Attempt is needed.
+
 ![Persistent human requests and their pinned approval preview in the actual WebUI](/images/agent-workflow-human-en.jpg)
 
 ![An approved v1 remains the preview and export object after a v2 revision](/images/agent-workflow-human-approval-en.jpg)

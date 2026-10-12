@@ -1947,19 +1947,9 @@ class WorkflowService:
                                         "artifact_id": source.run_id,
                                         "version": human["artifact_version"],
                                     }
-                                    artifact = await session.get(
-                                        AgentWorkflowArtifact,
-                                        (ref["artifact_id"], ref["version"]),
-                                    )
-                                    if artifact is None:
-                                        row.status = "blocked"
-                                        row.state = {
-                                            **row.state,
-                                            "reason": "The configured artifact version is not available.",
-                                        }
-                                        session.add(row)
-                                        progress = True
-                                        continue
+                                    # A requested revision may arrive later through
+                                    # an explicit edit. Keep its exact waiting
+                                    # reference; never substitute the latest one.
                                 todo = AgentWorkflowTodo(
                                     todo_id=row.run_id,
                                     root_run_id=run_id,
@@ -2181,6 +2171,15 @@ class WorkflowService:
                     if request.action != "approve" or request.answer is not None:
                         raise RoleAssetError(
                             "Choose approve or reject for this exact version"
+                        )
+                    ref = todo.data["artifact_ref"]
+                    artifact = await session.get(
+                        AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                    )
+                    if artifact is None:
+                        raise RoleAssetError(
+                            "The requested artifact version is not available; create the revision before approving",
+                            status=409,
                         )
                 elif request.action != "answer" or not request.answer:
                     raise RoleAssetError("Provide an answer to this question")
@@ -2784,6 +2783,11 @@ class WorkflowService:
         if run["snapshot"]["engine"] == "graph_v2":
             raise RoleAssetError(
                 "Recover an interrupted task in the workflow", status=409
+            )
+        if run["snapshot"]["engine"] == "human_task_v2":
+            raise RoleAssetError(
+                "Answer the persistent human request instead of recovering an agent checkpoint",
+                status=409,
             )
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
@@ -3539,13 +3543,19 @@ class WorkflowService:
                 checkpoint = await session.get(AgentWorkflowCheckpoint, run.run_id)
                 if (
                     run.snapshot.get("parent_run_id")
-                    and not run.state.get("execution_id")
                     and checkpoint is None
+                    and run.pending_result is None
                 ):
-                    # Admission committed before any executor acquired this
-                    # attempt. Reclaim its frozen inputs without replaying work.
+                    # The built-in executor saves its first request before any
+                    # external model/tool call. Ownership alone is not work;
+                    # fence it and reclaim the same frozen attempt if no request
+                    # or accepted submission reached durable storage.
                     run.status = "pending"
-                    run.state = {**run.state, "retry_pending": True}
+                    run.state = {
+                        **run.state,
+                        "execution_id": None,
+                        "retry_pending": True,
+                    }
                     session.add(run)
                     continue
                 run.status = "interrupted"

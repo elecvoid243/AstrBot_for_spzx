@@ -23,6 +23,8 @@ import pytest
         "human_consume_post",
         "human_shutdown",
         "human_shutdown_wait",
+        "human_approval_pre",
+        "human_approval_post",
     ],
 )
 def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
@@ -118,7 +120,9 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
                 if worker.poll() is None:
                     worker.kill()
                     worker.wait(timeout=10)
-        assert not requests and not effects
+        assert (len(requests), len(effects)) == (
+            (3, 1) if scenario.startswith("human_approval") else (0, 0)
+        )
         rebuilt = subprocess.run(
             [*command, "recover", scenario],
             cwd=root,
@@ -132,6 +136,21 @@ def test_human_boundary_survives_real_process_rebuild(tmp_path, scenario):
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         before, after = evidence["before"], evidence["after"]
         assert after["status"] == "completed", after
+        if scenario.startswith("human_approval"):
+            assert after["todos"][0]["status"] == "approved"
+            assert after["todos"][0]["artifact_ref"]["version"] == 1
+            assert evidence["exported"]["version"] == 1
+            assert evidence["exported"]["content"] == {
+                "text": "Verified report for Asia"
+            }
+            assert before["todos"][0]["status"] == (
+                "answered" if scenario.endswith("post") else "pending"
+            )
+            assert (
+                len([e for e in after["events"] if e["kind"] == "human.consumed"]) == 1
+            )
+            assert len(effects) == 1 and len(requests) == 3
+            return
         assert after["todos"][0]["response"]["answer"] == "Asia"
         assert after["todos"][0]["consumed_at"] is not None
         assert len([e for e in after["events"] if e["kind"] == "human.consumed"]) == 1

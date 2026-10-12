@@ -415,3 +415,109 @@ async def test_cancel_serializes_with_answer_without_erasing_requests(
     assert final["todos"][0]["question"] == "Answer?"
     assert final["todos"][0]["consumed_at"] is None
     assert final["todos"][0]["status"] == ("answered" if answer_first else "pending")
+
+
+@pytest.mark.asyncio
+async def test_review_task_reads_full_pinned_file_before_human_delivery_approval(
+    workflow_env,
+):
+    service, role = workflow_env.service, workflow_env.role
+    ports = service.ports_factory("alice")
+
+    async def collect(session_id, message_id, member_id):
+        binding = next(
+            observation[0]
+            for observation in reversed(workflow_env.observations)
+            if observation[0].member_id == member_id
+        )
+        task = await service.get_run("alice", binding.run_id)
+        tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        if task["snapshot"]["node_id"] == "report":
+            file = await service.store_file(
+                "alice",
+                binding.run_id,
+                task["state"]["attempt_id"],
+                "evidence.txt",
+                b"Complete evidence for independent review",
+            )
+            await tools[0].call(
+                None,
+                result_json='{"text":"Report","files":[{"file_id":"'
+                + file["file_id"]
+                + '"}]}',
+            )
+        else:
+            ref = task["snapshot"]["input_artifacts"][0]
+            artifact = await service.read_artifact("alice", **ref)
+            read = next(tool for tool in tools if tool.name == "read_task_artifact")
+            content = await read.call(
+                None, **ref, file_id=artifact["files"][0]["file_id"]
+            )
+            assert "Complete evidence for independent review" in content
+            await tools[0].call(None, text="Reviewed the complete pinned file")
+        return "Done", []
+
+    service.ports_factory = lambda _: replace(ports, collect=collect)
+    agent = {
+        "id": "report",
+        "name": "Report",
+        "member": "writer",
+        "role_id": role["role_id"],
+        "role_version": 1,
+        "task": "Report",
+    }
+    contract = {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"file_id": {"type": "string"}},
+                    "required": ["file_id"],
+                },
+            },
+        },
+        "required": ["text"],
+    }
+    asset = await service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Review before delivery",
+                "tasks": [
+                    {**agent, "output_contract": contract},
+                    {
+                        **agent,
+                        "id": "review",
+                        "name": "Review",
+                        "inputs": {"evidence": {"task_id": "report"}},
+                        "task": "Review {evidence}",
+                    },
+                    {
+                        "id": "approve",
+                        "name": "Approve",
+                        "human": {
+                            "kind": "approval",
+                            "question": "Approve reviewed report?",
+                            "artifact_task_id": "report",
+                        },
+                    },
+                ],
+                "edges": [
+                    {"source": "report", "target": "review"},
+                    {"source": "review", "target": "approve"},
+                ],
+            }
+        },
+    )
+    run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+    for _ in range(200):
+        run = await service.get_run("alice", run["run_id"])
+        if run["todos"] or run["status"] == "blocked":
+            break
+        await asyncio.sleep(0.01)
+    assert run["tasks"][1]["status"] == "completed", run
+    assert run["tasks"][1]["result"] == {"text": "Reviewed the complete pinned file"}
+    assert run["todos"][0]["status"] == "pending"

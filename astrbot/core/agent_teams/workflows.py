@@ -3779,7 +3779,9 @@ class WorkflowService:
                     )
                     if file_id is None:
                         return artifact
-                    file = await self.get_file(username, artifact_id, version, file_id)
+                    file = await self.get_file(
+                        username, artifact_id, version, file_id, download=False
+                    )
                     try:
                         content = file["content"].decode("utf-8")
                         encoding = "utf-8"

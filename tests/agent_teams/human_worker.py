@@ -46,6 +46,8 @@ async def run_human_scenario(
                 "human_answer_post": "human.answered",
                 "human_consume_pre": "human.consumed",
                 "human_consume_post": "human.consumed",
+                "human_approval_pre": "human.answered",
+                "human_approval_post": "human.answered",
             }.get(scenario):
                 if scenario.endswith("pre"):
                     (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
@@ -114,10 +116,56 @@ async def run_human_scenario(
                 }
             },
         )
+        if scenario.startswith("human_approval"):
+            asset = await service.save_asset(
+                "alice",
+                {
+                    "definition": {
+                        "name": "Exact version approval",
+                        "max_parallel": 1,
+                        "tasks": [
+                            {
+                                "id": "write",
+                                "name": "Report",
+                                "member": "writer",
+                                "role_id": role["role_id"],
+                                "role_version": 1,
+                                "task": "Read evidence for Asia and submit a report.",
+                            },
+                            {
+                                "id": "approval",
+                                "name": "Approval",
+                                "human": {
+                                    "kind": "approval",
+                                    "question": "Approve report v1?",
+                                    "artifact_task_id": "write",
+                                },
+                            },
+                        ],
+                        "edges": [{"source": "write", "target": "approval"}],
+                    }
+                },
+            )
         if "wait_" in scenario:
             event.listen(Session, "before_flush", stop)
             event.listen(Session, "after_commit", committed)
         run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+        if scenario.startswith("human_approval"):
+            for _ in range(1500):
+                run = await service.get_run("alice", run["run_id"])
+                if run["todos"]:
+                    break
+                await asyncio.sleep(0.01)
+            assert run["todos"][0]["artifact_ref"]["version"] == 1
+            await service.revise_artifact(
+                "alice",
+                run["todos"][0]["artifact_ref"]["artifact_id"],
+                {
+                    "request_id": "v2",
+                    "expected_version": 1,
+                    "content": {"text": "Unapproved version two"},
+                },
+            )
         if scenario == "human_shutdown_wait":
             (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
             return
@@ -132,7 +180,9 @@ async def run_human_scenario(
                 "alice",
                 run["run_id"],
                 run["todos"][0]["todo_id"],
-                {"request_id": "answer", "action": "answer", "answer": "Asia"},
+                {"request_id": "answer", "action": "approve"}
+                if scenario.startswith("human_approval")
+                else {"request_id": "answer", "action": "answer", "answer": "Asia"},
             )
             if "consume_" in scenario:
                 await service.control_run(
@@ -156,17 +206,22 @@ async def run_human_scenario(
             )
             current = await service.get_run("alice", run_id)
         todo = current["todos"][0]
-        await service.answer_todo(
-            "alice",
-            run_id,
-            todo["todo_id"],
-            {"request_id": "answer", "action": "answer", "answer": "Asia"},
+        answer = (
+            {"request_id": "answer", "action": "approve"}
+            if todo["kind"] == "approval"
+            else {"request_id": "answer", "action": "answer", "answer": "Asia"}
         )
         await service.answer_todo(
             "alice",
             run_id,
             todo["todo_id"],
-            {"request_id": "answer", "action": "answer", "answer": "Asia"},
+            answer,
+        )
+        await service.answer_todo(
+            "alice",
+            run_id,
+            todo["todo_id"],
+            answer,
         )
         await service.control_run(
             "alice", run_id, {"request_id": "continue", "action": "continue"}
@@ -176,6 +231,20 @@ async def run_human_scenario(
             if current["status"] != "running":
                 break
             await asyncio.sleep(0.01)
+        exported = None
+        if todo["kind"] == "approval":
+            from astrbot.core.agent_teams.assets import RoleAssetError
+
+            exported = await service.export_artifact("alice", **todo["artifact_ref"])
+            try:
+                await service.export_artifact(
+                    "alice", todo["artifact_ref"]["artifact_id"], 2
+                )
+            except RoleAssetError as exc:
+                assert exc.status == 409
+            else:
+                raise AssertionError("The revised version must not inherit approval")
         (folder / "recovered.json").write_text(
-            json.dumps({"before": before, "after": current}), encoding="utf-8"
+            json.dumps({"before": before, "after": current, "exported": exported}),
+            encoding="utf-8",
         )

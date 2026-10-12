@@ -910,10 +910,14 @@ class WorkflowService:
                                         value = value[name]
                                     other = rule["value"]
                                     op = rule["operator"]
+                                    # JSON booleans are distinct from numeric 0/1.
+                                    equal = value == other and isinstance(
+                                        value, bool
+                                    ) == isinstance(other, bool)
                                     match = (
-                                        value == other
+                                        equal
                                         if op == "eq"
-                                        else value != other
+                                        else not equal
                                         if op == "ne"
                                         else value > other
                                         if op == "gt"

@@ -93,27 +93,29 @@ def field_schema(contract: dict | None, path: str) -> dict:
         )
         .resolver()
     )
-    current = root
+    current: dict = root
     for name in path.split("."):
         candidates = [current]
         visited: set[int] = set()
-        properties = {}
+        properties = []
         required: set[str] = set()
         while candidates:
             item = candidates.pop()
             if not isinstance(item, dict) or id(item) in visited:
                 continue
             visited.add(id(item))
-            properties.update(item.get("properties", {}))
+            if name in item.get("properties", {}):
+                properties.append(item["properties"][name])
             required.update(item.get("required", []))
             candidates.extend(item.get("allOf", []))
             if "$ref" in item:
                 candidates.append(resolver.lookup(item["$ref"]).contents)
-        if name not in required or name not in properties:
+        if name not in required or not properties:
             raise ValueError(
                 f"Field {path} must be declared and required in the output contract"
             )
-        current = properties[name]
+        # Constraints on the same property combine across allOf branches.
+        current = {"allOf": properties}
     visited = set()
     candidates = [current]
     declared: set[str] | None = None

@@ -625,6 +625,7 @@ async def test_graph_root_cannot_submit_read_or_store_as_a_task(graph_script):
             "alice", run["run_id"], "root-attempt", {"text": "Wrong scope"}
         )
     assert invalid.value.status == 409
+
     with pytest.raises(RoleAssetError) as invalid:
         await env.service.read_artifact(
             "alice", reference["artifact_id"], 1, run["run_id"], None
@@ -642,3 +643,118 @@ async def test_graph_root_cannot_submit_read_or_store_as_a_task(graph_script):
             "alice", run["run_id"], None, "output.txt", b"Wrong scope"
         )
     assert invalid.value.status == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_allof_combines_same_property_constraints_across_branches(
+    graph_script, nested
+):
+    script, env = graph_script, graph_script.env
+    contract = {
+        "type": "object",
+        "allOf": [
+            {"properties": {"approved": {"description": "Approval flag"}}},
+            {"properties": {"approved": {"type": "boolean"}}},
+        ],
+        "required": ["approved"],
+    }
+    output = {"approved": True}
+    if nested:
+        contract = {
+            "type": "object",
+            "properties": {"decision": contract},
+            "required": ["decision"],
+        }
+        output = {"decision": output}
+    script.outputs["first"] = output
+    task = {
+        "id": "first",
+        "name": "First",
+        "member": "writer",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "First",
+        "output_contract": contract,
+    }
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Combined fields",
+                "tasks": [task, {**task, "id": "next", "output_contract": None}],
+                "edges": [
+                    {
+                        "source": "first",
+                        "target": "next",
+                        "condition": {
+                            "field": "decision.approved" if nested else "approved",
+                            "value": True,
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    assert (await wait_graph(env.service, run["run_id"]))["status"] == "completed"
+    assert [binding.node_id for binding in script.starts] == ["first", "next"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "actual,expected,operator,selected",
+    [
+        (True, 1, "eq", False),
+        (True, 1, "ne", True),
+        (1, True, "eq", False),
+        (1, True, "ne", True),
+        (1, 1.0, "eq", True),
+        (1, 1.0, "ne", False),
+    ],
+)
+async def test_union_conditions_distinguish_booleans_from_numbers(
+    graph_script, actual, expected, operator, selected
+):
+    script, env = graph_script, graph_script.env
+    script.outputs["first"] = {"answer": actual}
+    task = {
+        "id": "first",
+        "name": "First",
+        "member": "writer",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "First",
+        "output_contract": {
+            "type": "object",
+            "properties": {"answer": {"type": ["boolean", "number"]}},
+            "required": ["answer"],
+        },
+    }
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Typed equality",
+                "tasks": [task, {**task, "id": "next", "output_contract": None}],
+                "edges": [
+                    {
+                        "source": "first",
+                        "target": "next",
+                        "condition": {
+                            "field": "answer",
+                            "operator": operator,
+                            "value": expected,
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed"
+    assert finished["tasks"][1]["status"] == ("completed" if selected else "skipped")
+    assert [binding.node_id for binding in script.starts] == (
+        ["first", "next"] if selected else ["first"]
+    )

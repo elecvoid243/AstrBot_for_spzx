@@ -271,72 +271,90 @@ describe("single-task workflow workspace", () => {
     wrapper.unmount();
   });
 
-  it("attaches a selected ready file and creates a revision", async () => {
-    const router = createRouter({
-      history: createMemoryHistory(),
-      routes: [{ path: "/", component: slotStub }],
-    });
-    await router.push("/?workflow_run=run-1");
-    api.run.mockResolvedValue({
-      ...run,
-      status: "completed",
-      result_ref: { artifact_id: "artifact-1", version: 1 },
-      artifacts: [{ version: 1 }],
-      snapshot: {
-        ...run.snapshot,
-        definition: {
-          ...asset.definition,
-          output_contract: { properties: { files: {} } },
-        },
-      },
-    });
-    api.artifact.mockResolvedValue({
-      artifact_id: "artifact-1",
-      version: 1,
-      content: { text: "Report", files: [] },
-    });
-    api.storeFile.mockResolvedValue({ file_id: "ready-file" });
-    api.revise.mockResolvedValue({ artifact_id: "artifact-1", version: 2 });
-    const wrapper = mount(WorkflowWorkspacePanel, {
-      props: { mode: "runs" },
-      global: {
-        plugins: [router],
-        stubs: {
-          ...stubs,
-          "v-file-input": {
-              props: { modelValue: {}, multiple: Boolean },
-            emits: ["update:modelValue"],
-            template:
-              '<input type="file" :multiple="multiple" @change="$emit(\'update:modelValue\', multiple ? Array.from($event.target.files) : $event.target.files[0])" />',
+  it.each(["properties", "allOf", "$ref"])(
+    "attaches a selected ready file with a %s contract and creates a revision",
+    async (contractForm) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const fileContract = {
+        type: "object",
+        properties: { text: { type: "string" }, files: { type: "array" } },
+        required: ["text", "files"],
+      };
+      const contract =
+        contractForm === "allOf"
+          ? { type: "object", allOf: [fileContract] }
+          : contractForm === "$ref"
+          ? {
+              type: "object",
+              $defs: { report: fileContract },
+              $ref: "#/$defs/report",
+            }
+          : fileContract;
+      api.run.mockResolvedValue({
+        ...run,
+        status: "completed",
+        result_ref: { artifact_id: "artifact-1", version: 1 },
+        artifacts: [{ version: 1 }],
+        snapshot: {
+          ...run.snapshot,
+          definition: {
+            ...asset.definition,
+            output_contract: contract,
           },
         },
-      },
-    });
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "v2.revise")!
-      .trigger("click");
-    const file = new File(["Complete file evidence"], "evidence.txt", {
-      type: "text/plain",
-    });
-    const input = wrapper.find('input[type="file"]');
-    Object.defineProperty(input.element, "files", {
-      value: [file],
-      configurable: true,
-    });
-    await input.trigger("change");
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "v2.saveRevision")!
-      .trigger("click");
-    await flushPromises();
-    expect(api.storeFile).toHaveBeenCalledWith("run-1", file);
-    expect(api.revise).toHaveBeenCalledWith("artifact-1", {
-      expected_version: 1,
-      request_id: expect.any(String),
-      content: { text: "Report", files: [{ file_id: "ready-file" }] },
-    });
-    wrapper.unmount();
-  });
+      });
+      api.artifact.mockResolvedValue({
+        artifact_id: "artifact-1",
+        version: 1,
+        content: { text: "Report", files: [] },
+      });
+      api.storeFile.mockResolvedValue({ file_id: "ready-file" });
+      api.revise.mockResolvedValue({ artifact_id: "artifact-1", version: 2 });
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: {
+          plugins: [router],
+          stubs: {
+            ...stubs,
+            "v-file-input": {
+              props: { modelValue: {}, multiple: Boolean },
+              emits: ["update:modelValue"],
+              template:
+                '<input type="file" :multiple="multiple" @change="$emit(\'update:modelValue\', multiple ? Array.from($event.target.files) : $event.target.files[0])" />',
+            },
+          },
+        },
+      });
+      await flushPromises();
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "v2.revise")!
+        .trigger("click");
+      const file = new File(["Complete file evidence"], "evidence.txt", {
+        type: "text/plain",
+      });
+      const input = wrapper.find('input[type="file"]');
+      Object.defineProperty(input.element, "files", {
+        value: [file],
+        configurable: true,
+      });
+      await input.trigger("change");
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "v2.saveRevision")!
+        .trigger("click");
+      await flushPromises();
+      expect(api.storeFile).toHaveBeenCalledWith("run-1", file);
+      expect(api.revise).toHaveBeenCalledWith("artifact-1", {
+        expected_version: 1,
+        request_id: expect.any(String),
+        content: { text: "Report", files: [{ file_id: "ready-file" }] },
+      });
+      wrapper.unmount();
+    },
+  );
 });

@@ -332,10 +332,7 @@
             rows="10"
           />
           <v-file-input
-            v-if="
-              selectedRun?.snapshot.definition.output_contract?.properties
-                ?.files
-            "
+            v-if="selectedRun?.snapshot.definition.output_contract"
             v-model="revisionFiles"
             multiple
             :label="tm('v2.attachFile')"

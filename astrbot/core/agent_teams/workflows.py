@@ -1124,9 +1124,9 @@ class WorkflowService:
                     accept, snapshot["definition"].get("output_contract")
                 )
             ]
-            if "files" in (snapshot["definition"].get("output_contract") or {}).get(
-                "properties", {}
-            ):
+            # Composed schemas can declare files through local references or allOf.
+            # The frozen contract decides whether the final file result is valid.
+            if snapshot["definition"].get("output_contract") is not None:
 
                 async def store(filename: str, content: bytes) -> dict:
                     """Publish ready bytes for this authorized attempt.

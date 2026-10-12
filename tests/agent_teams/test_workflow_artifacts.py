@@ -124,8 +124,9 @@ async def test_contract_errors_can_be_corrected_before_a_result_is_consumable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("contract_form", ["properties", "allOf", "$ref"])
 async def test_ready_file_reference_remains_readable_after_reopening(
-    workflow_env, tmp_path, scripted_workflow
+    workflow_env, tmp_path, scripted_workflow, contract_form
 ):
     env = workflow_env
     contract = {
@@ -145,6 +146,14 @@ async def test_ready_file_reference_remains_readable_after_reopening(
         "required": ["text", "files"],
         "additionalProperties": False,
     }
+    if contract_form == "allOf":
+        contract = {"type": "object", "allOf": [contract]}
+    elif contract_form == "$ref":
+        contract = {
+            "type": "object",
+            "$defs": {"report": contract},
+            "$ref": "#/$defs/report",
+        }
     asset = await env.service.save_asset(
         "alice",
         {
@@ -162,6 +171,7 @@ async def test_ready_file_reference_remains_readable_after_reopening(
         import json
 
         tools = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")
+        assert "store_task_file" in [tool.name for tool in tools]
         assert "Error" in await tools[0].call(
             None, text="Report", files=[{"file_id": "missing"}]
         )

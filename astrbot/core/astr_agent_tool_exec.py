@@ -1498,8 +1498,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         )
         async with aclosing(wrapper):
             while True:
+                timeout: float | None = None
                 try:
-                    timeout: float | None = None
                     if (
                         tool.name in run_context.tool_call_timeout_exclude
                         or waiting_for_members
@@ -1543,8 +1543,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                                     )
                         yield None
                 except asyncio.TimeoutError:
+                    timeout_text = f"{timeout:g}" if timeout is not None else "None"
                     raise Exception(
-                        f"tool {tool.name} execution timeout after {timeout} seconds.",
+                        f"tool {tool.name} execution timeout after {timeout_text} seconds.",
                     )
                 except StopAsyncIteration:
                     break

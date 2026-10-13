@@ -848,6 +848,24 @@ async def test_execute_local_unexcluded_tool_times_out():
             pass
 
 
+@pytest.mark.asyncio
+async def test_execute_local_fractional_tool_timeout_preserves_duration():
+    """Keep the fractional duration visible when a local tool actually times out.
+
+    Returns:
+        None after checking the timeout diagnostic from the executor.
+    """
+    tool = _make_sleep_tool()
+    run_context = _tool_run_context(exclude=[])
+    run_context.tool_call_timeout = 0.05
+
+    with pytest.raises(Exception, match="timeout after 0[.]05 seconds"):
+        async for _ in FunctionToolExecutor._execute_local(
+            tool, run_context, seconds=3
+        ):
+            pass
+
+
 class _FinalAnswerProvider(Provider):
     """Provider that immediately returns a final answer with no tool calls."""
 

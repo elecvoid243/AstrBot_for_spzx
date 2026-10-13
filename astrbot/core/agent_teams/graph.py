@@ -49,6 +49,12 @@ class TeamCall(BaseModel):
     version: int = Field(ge=1)
 
 
+class WorkflowCall(TeamCall):
+    """An allowed workflow version and the task whose exact result is returned."""
+
+    result_task_id: str = Field(min_length=1, max_length=128)
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member instance with a fixed role version."""
 
@@ -61,6 +67,7 @@ class GraphTask(BaseModel):
     task: str = Field(default="", max_length=100_000)
     human: HumanTask | None = None
     team: TeamCall | None = None
+    workflow: WorkflowCall | None = None
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
     output_contract: dict | None = None
@@ -76,9 +83,11 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
-        if self.team is not None:
+        if self.team is not None or self.workflow is not None:
             if (
-                self.human is not None
+                self.team is not None
+                and self.workflow is not None
+                or self.human is not None
                 or self.member
                 or self.role_id
                 or self.role_version
@@ -86,7 +95,7 @@ class GraphTask(BaseModel):
                 or self.overrides.model_dump(exclude_none=True)
             ):
                 raise ValueError(
-                    "Team calls cannot also configure agent or human execution"
+                    "Child calls cannot also configure agent or human execution"
                 )
         elif self.human is None:
             if (

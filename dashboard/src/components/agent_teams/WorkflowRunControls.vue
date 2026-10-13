@@ -157,8 +157,9 @@ const failed = computed(
   () =>
     ["failed", "awaiting_result", "blocked"].includes(props.task.status) &&
     !(
-      props.task.snapshot?.engine === "team_call_v2" &&
-      props.task.state.child_scope_run_id
+      ["team_call_v2", "workflow_call_v2"].includes(
+        props.task.snapshot?.engine,
+      ) && props.task.state.child_scope_run_id
     ),
 );
 const uncertain = computed(() =>

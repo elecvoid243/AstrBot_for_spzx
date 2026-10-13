@@ -80,7 +80,20 @@
             max="100"
             :label="tm('autonomous.maxTasks')"
           />
+          <v-text-field
+            v-model.number="form.max_depth"
+            type="number"
+            min="1"
+            max="20"
+            :label="tm('child.maxDepth')"
+          />
         </div>
+        <AllowedWorkflowsPanel
+          :model-value="form.allowed_workflows ?? []"
+          @update:model-value="form.allowed_workflows = $event"
+          :active="modelValue"
+          @validation="workflowInvalid = $event"
+        />
         <v-textarea
           v-model="approval"
           :label="tm('autonomous.approval')"
@@ -103,7 +116,8 @@
           :disabled="
             !form.name.trim() ||
             !form.coordinator.role_id ||
-            !form.allowed_roles.length
+            !form.allowed_roles.length ||
+            workflowInvalid
           "
           data-testid="team-save"
           @click="save"
@@ -115,7 +129,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
@@ -129,6 +144,11 @@ const emit = defineEmits<{
 const { tm } = useModuleI18n("features/agent-teams");
 const saving = ref(false);
 const error = ref("");
+const workflowInvalid = ref(false);
+let editGeneration = 0;
+onBeforeUnmount(() => {
+  editGeneration++;
+});
 const approval = ref("");
 const contract = ref("");
 const allowedIds = ref<string[]>([]);
@@ -141,6 +161,8 @@ const form = ref<AutonomousDefinition>({
   max_members: 8,
   max_parallel: 4,
   max_tasks: 50,
+  max_depth: 3,
+  allowed_workflows: [],
 });
 const roleItems = computed(() =>
   props.roles.map((role) => ({
@@ -152,8 +174,10 @@ const roleById = (identity: string) =>
   props.roles.find((role) => role.role_id === identity);
 
 watch(
-  () => props.modelValue,
-  (open) => {
+  () => [props.modelValue, props.asset] as const,
+  ([open]) => {
+    editGeneration++;
+    saving.value = false;
     if (!open) return;
     form.value = props.asset
       ? JSON.parse(JSON.stringify(props.asset.definition))
@@ -166,7 +190,11 @@ watch(
           max_members: 8,
           max_parallel: 4,
           max_tasks: 50,
+          max_depth: 3,
+          allowed_workflows: [],
         };
+    form.value.allowed_workflows ??= [];
+    form.value.max_depth ??= 3;
     allowedIds.value = form.value.allowed_roles.map((role) => role.role_id);
     approval.value = form.value.approval_question ?? "";
     contract.value = form.value.output_contract
@@ -190,6 +218,10 @@ function selectAllowed(identities: string[]) {
 
 async function save() {
   if (saving.value) return;
+  const generation = editGeneration;
+  const asset = props.asset;
+  const current = () =>
+    generation === editGeneration && props.modelValue && props.asset === asset;
   saving.value = true;
   error.value = "";
   try {
@@ -200,19 +232,21 @@ async function save() {
         ? JSON.parse(contract.value)
         : null,
     };
-    await workflowAssetsApi.save(props.asset?.asset_id ?? null, {
+    await workflowAssetsApi.save(asset?.asset_id ?? null, {
       definition,
-      expected_version: props.asset?.version,
+      expected_version: asset?.version,
     });
+    if (!current()) return;
     emit("update:modelValue", false);
     emit("saved");
   } catch (err) {
+    if (!current()) return;
     const failure = extractApiError(err, tm("errors.operationFailed"));
     error.value = `${failure.message} ${failure.fields
       .map((field) => `${field.path}: ${field.message}`)
       .join("; ")}`;
   } finally {
-    saving.value = false;
+    if (current()) saving.value = false;
   }
 }
 </script>

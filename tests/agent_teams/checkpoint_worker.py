@@ -117,10 +117,10 @@ async def run_worker(
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
             data = response.json()
-            if action == "start" and scenario in {"child_pause", "child_cancel"}:
+            if action == "start" and scenario in {"child_pause", "child_cancel", "reverse_pause", "reverse_cancel"}:
                 child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
-                await service.control_run("alice", child["control"]["root_run_id"], {"request_id": "child-root-control", "action": "pause" if scenario == "child_pause" else "cancel"})
-            if action == "start" and scenario in {"team_unknown", "child_unknown"}:
+                await service.control_run("alice", child["control"]["root_run_id"], {"request_id": "child-root-control", "action": "pause" if scenario.endswith("pause") else "cancel"})
+            if action == "start" and scenario in {"team_unknown", "child_unknown", "reverse_unknown"}:
                 (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
                 await asyncio.Future()
             if action == "start" and scenario in {
@@ -267,8 +267,8 @@ async def run_worker(
                     "tools": kwargs["func_tool"].names(), "model": kwargs.get("model"),
                     "parameter_query": all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
-                    **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_")) else {}),
-                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_")) else {}),
+                    **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_")) else {}),
+                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_")) else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution
@@ -485,6 +485,11 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("reverse_") and action != "serve":
+            from tests.agent_teams.reverse_scope_worker import run_reverse_scenario
+
+            await run_reverse_scenario(folder, action, scenario, service, roles)
+            return
         if scenario.startswith("child_") and action != "serve":
             from tests.agent_teams.child_scope_worker import run_child_scenario
 
@@ -524,6 +529,26 @@ async def run_worker(
             app.include_router(workflow_router, prefix="/api/v1")
             app.include_router(role_router, prefix="/api/v1")
             app.include_router(team_router, prefix="/api/v1")
+            if scenario.startswith("reverse_"):
+                @app.middleware("http")
+                async def delayed_fixed_version(request, call_next):
+                    """Delay a selected real HTTP response for editing-race acceptance.
+
+                    Args:
+                        request: Actual browser HTTP request.
+                        call_next: Existing API application handler.
+
+                    Returns:
+                        Original public response after the selected test delay.
+                    """
+                    marker = folder / "delay-asset-version.json"
+                    if marker.exists():
+                        decision = json.loads(marker.read_text(encoding="utf-8"))
+                        if request.url.path.endswith('/' + decision['asset_id']) and request.query_params.get('version') == str(decision['version']):
+                            marker.unlink()
+                            (folder / "delayed-http-started.json").write_text(json.dumps(decision), encoding="utf-8")
+                            await asyncio.sleep(3)
+                    return await call_next(request)
             dist = Path(__file__).resolve().parents[2] / "dashboard" / "dist"
             app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 
@@ -538,7 +563,7 @@ async def run_worker(
                 return HTMLResponse(content.replace("<head>", "<head><script>localStorage.setItem('token','local-qa');localStorage.setItem('user','alice');</script>"))
 
             config = Config()
-            config.bind = ["127.0.0.1:6204" if scenario.startswith("child_") else "127.0.0.1:6202" if scenario.startswith("loop_") else "127.0.0.1:6201" if scenario.startswith("human_") else "127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
+            config.bind = ["127.0.0.1:6206" if scenario == "reverse_race" else "127.0.0.1:6205" if scenario.startswith("reverse_") else "127.0.0.1:6204" if scenario.startswith("child_") else "127.0.0.1:6202" if scenario.startswith("loop_") else "127.0.0.1:6201" if scenario.startswith("human_") else "127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
             (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__('os').getpid()}), encoding="utf-8")
             await serve(app, config)
             return

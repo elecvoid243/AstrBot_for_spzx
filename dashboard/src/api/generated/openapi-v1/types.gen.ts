@@ -69,6 +69,8 @@ export type AutonomousDefinition = {
     max_members?: number;
     max_parallel?: number;
     max_tasks?: number;
+    max_depth?: number;
+    allowed_workflows?: Array<WorkflowCall>;
     output_contract?: ({
     [key: string]: unknown;
 } | null);
@@ -550,6 +552,7 @@ export type GraphTask = {
     task?: string;
     human?: (HumanTask | null);
     team?: (TeamCall | null);
+    workflow?: (WorkflowCall | null);
     inputs?: {
         [key: string]: TaskInput;
     };
@@ -1158,6 +1161,15 @@ export type ValidationError = {
     ctx?: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * An allowed workflow version and the task whose exact result is returned.
+ */
+export type WorkflowCall = {
+    asset_id: string;
+    version: number;
+    result_task_id: string;
 };
 
 /**

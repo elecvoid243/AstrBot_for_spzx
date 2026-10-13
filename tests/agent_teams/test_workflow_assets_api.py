@@ -67,6 +67,79 @@ def test_workflow_http_validation_and_ownership(tmp_path):
         assert client.get("/api/v1/workflow_assets").json()["data"] == {"assets": []}
 
 
+def test_team_allowed_workflows_http_pin_and_owner_validation(tmp_path):
+    """Save explicit workflow permissions and expose field-specific owner errors.
+
+    Args:
+        tmp_path: Isolated SQLite used by the real HTTP application service.
+    """
+    db = SQLiteDatabase(str(tmp_path / "reverse-api.db"))
+    roles = RoleAssetService(db)
+    app = FastAPI()
+    app.state.services = SimpleNamespace(
+        role_assets=roles, workflow_assets=WorkflowService(db, roles)
+    )
+    app.include_router(roles_router, prefix="/api/v1")
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    with TestClient(app) as client:
+        role = client.post(
+            "/api/v1/agent_roles",
+            json={"definition": {"name": "Writer", "prompt": "Write"}},
+        ).json()["data"]
+        workflow = client.post(
+            "/api/v1/workflow_assets",
+            json={
+                "definition": {
+                    "name": "Saved workflow",
+                    "role_id": role["role_id"],
+                    "role_version": 1,
+                    "task": "Research {topic}",
+                    "required_inputs": ["topic"],
+                }
+            },
+        ).json()["data"]
+        team = {
+            "kind": "autonomous",
+            "name": "Coordinator",
+            "coordinator": {"role_id": role["role_id"], "role_version": 1},
+            "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+            "allowed_workflows": [
+                {
+                    "asset_id": workflow["asset_id"],
+                    "version": 1,
+                    "result_task_id": "result",
+                }
+            ],
+        }
+        saved = client.post("/api/v1/workflow_assets", json={"definition": team})
+        assert saved.status_code == 200
+        assert (
+            saved.json()["data"]["definition"]["allowed_workflows"]
+            == team["allowed_workflows"]
+        )
+        team["allowed_workflows"][0]["version"] = 2
+        missing = client.post("/api/v1/workflow_assets", json={"definition": team})
+        assert missing.status_code == 404
+        assert (
+            missing.json()["data"]["fields"][0]["path"]
+            == "definition.allowed_workflows.0"
+        )
+        app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+        bob_role = client.post(
+            "/api/v1/agent_roles",
+            json={"definition": {"name": "Bob", "prompt": "Write"}},
+        ).json()["data"]
+        team["coordinator"]["role_id"] = team["allowed_roles"][0]["role_id"] = bob_role[
+            "role_id"
+        ]
+        team["allowed_workflows"][0]["version"] = 1
+        denied = client.post("/api/v1/workflow_assets", json={"definition": team})
+        assert denied.status_code == 404
+        assert denied.json()["data"]["fields"][0]["code"] == "REFERENCE"
+        assert client.get("/api/v1/workflow_assets").json()["data"]["assets"] == []
+
+
 def test_canvas_graph_http_save_and_field_diagnostics(tmp_path):
     db = SQLiteDatabase(str(tmp_path / "graph-api.db"))
     roles = RoleAssetService(db)

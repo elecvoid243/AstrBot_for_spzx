@@ -316,7 +316,7 @@
       "cancelled": "已取消",
       "waiting_human": "等待人工",
       "rejected": "人工拒绝",
-      "waiting_child": "等待子团队"
+      "waiting_child": "等待子作用域"
     },
     "contract": "输出契约（JSON Schema）",
     "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
@@ -552,5 +552,14 @@
     "modelCalls": "已保存模型调用数",
     "steps": "已保存执行步骤",
     "unknownUsage": "未知"
+  },
+  "workflowCall": {
+    "allowed": "允许调用的工作流",
+    "hint": "选择已保存的工作流版本和返回给协调者的任务结果。独立作用域仅交接声明输入和精确产物版本。",
+    "add": "允许一个已保存工作流",
+    "version": "固定工作流版本",
+    "returnTask": "返回任务",
+    "open": "查看子工作流",
+    "remove": "移除允许工作流"
   }
 }

@@ -45,6 +45,7 @@ from astrbot.core.agent_teams.autonomous_tools import (
 )
 from astrbot.core.agent_teams.graph import (
     GraphDefinition,
+    WorkflowCall,
     matches_condition,
     validate_graph,
 )
@@ -111,6 +112,8 @@ class AutonomousDefinition(BaseModel):
     max_members: int = Field(default=8, ge=2, le=100)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_tasks: int = Field(default=50, ge=1, le=100)
+    max_depth: int = Field(default=3, ge=1, le=20)
+    allowed_workflows: list[WorkflowCall] = Field(default_factory=list, max_length=30)
     output_contract: dict | None = None
     approval_question: str | None = Field(
         default=None, min_length=1, max_length=100_000
@@ -387,9 +390,67 @@ class WorkflowService:
                         **role.model_dump(),
                     ),
                 )
+            references = set()
+            for index, ref in enumerate(definition.allowed_workflows):
+                path = f"definition.allowed_workflows.{index}"
+                key = (ref.asset_id, ref.version)
+                if key in references:
+                    raise RoleAssetError(
+                        "Allowed workflow versions must be unique",
+                        [
+                            {
+                                "path": path,
+                                "code": "DUPLICATE",
+                                "message": "Choose each version once",
+                            }
+                        ],
+                    )
+                references.add(key)
+                try:
+                    child = await self.get_asset(username, ref.asset_id, ref.version)
+                except RoleAssetError as exc:
+                    raise RoleAssetError(
+                        "Pinned workflow version is not accessible",
+                        [
+                            {
+                                "path": path,
+                                "code": "REFERENCE",
+                                "message": "Choose an accessible exact workflow version",
+                            }
+                        ],
+                        status=exc.status,
+                    ) from exc
+                child_definition = child["definition"]
+                if child_definition.get("kind") == "autonomous":
+                    raise RoleAssetError(
+                        "Choose a saved workflow",
+                        [
+                            {
+                                "path": path,
+                                "code": "INCOMPATIBLE",
+                                "message": "Choose a workflow, not an autonomous team",
+                            }
+                        ],
+                    )
+                nodes = child_definition.get("tasks", [{"id": "result"}])
+                if not any(node["id"] == ref.result_task_id for node in nodes):
+                    raise RoleAssetError(
+                        "Choose an existing return task",
+                        [
+                            {
+                                "path": path + ".result_task_id",
+                                "code": "REFERENCE",
+                                "message": "Choose a task in this exact workflow version",
+                            }
+                        ],
+                    )
         elif isinstance(definition, GraphDefinition):
             validate_graph(definition)
             for task in definition.tasks:
+                if task.workflow is not None:
+                    raise RoleAssetError(
+                        "Workflow calls are created by the coordinator"
+                    )
                 if task.human is not None:
                     continue
                 if task.team is not None:
@@ -1777,9 +1838,10 @@ class WorkflowService:
                         "Human requests retain their original answer and cannot be retried as agent tasks",
                         status=409,
                     )
-                if row.snapshot.get("engine") == "team_call_v2" and row.state.get(
-                    "child_scope_run_id"
-                ):
+                if row.snapshot.get("engine") in {
+                    "team_call_v2",
+                    "workflow_call_v2",
+                } and row.state.get("child_scope_run_id"):
                     raise RoleAssetError(
                         "Retry the failed task inside the child scope", status=409
                     )
@@ -2108,7 +2170,11 @@ class WorkflowService:
         return await self.get_run(username, run_id)
 
     async def _freeze_graph(
-        self, username: str, asset: dict, request: WorkflowStartRequest
+        self,
+        username: str,
+        asset: dict,
+        request: WorkflowStartRequest,
+        nesting_depth: int = 0,
     ) -> dict:
         """Resolve a complete graph and its pinned child resources before any write.
 
@@ -2116,6 +2182,7 @@ class WorkflowService:
             username: Actual initiating owner used by every role and asset lookup.
             asset: Exact saved asset version.
             request: Declared inputs and source for this scope.
+            nesting_depth: Reference traversal bounded by the supported nesting ceiling.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
@@ -2123,6 +2190,8 @@ class WorkflowService:
         Raises:
             RoleAssetError: A definition, contract, resource or instance limit fails.
         """
+        if nesting_depth > 20:
+            raise RoleAssetError("Nested references exceed the supported depth limit")
         team = (
             asset["definition"]
             if asset["definition"].get("kind") == "autonomous"
@@ -2139,6 +2208,7 @@ class WorkflowService:
                     "name": team["name"],
                     "required_inputs": team["required_inputs"],
                     "max_parallel": team["max_parallel"],
+                    "max_depth": team.get("max_depth", 3),
                     "tasks": [
                         {
                             "id": "coordinator",
@@ -2151,8 +2221,26 @@ class WorkflowService:
                     ],
                 }
             )
-        else:
+        elif "tasks" in asset["definition"]:
             definition = GraphDefinition.model_validate(asset["definition"])
+        else:
+            definition = GraphDefinition.model_validate(
+                {
+                    "name": asset["definition"]["name"],
+                    "required_inputs": asset["definition"]["required_inputs"],
+                    "tasks": [
+                        {
+                            "id": "result",
+                            "member": "result",
+                            **{
+                                key: value
+                                for key, value in asset["definition"].items()
+                                if key != "required_inputs"
+                            },
+                        }
+                    ],
+                }
+            )
         if team and team.get("approval_question"):
             definition = GraphDefinition.model_validate(
                 {
@@ -2239,14 +2327,39 @@ class WorkflowService:
                 username,
                 child,
                 WorkflowStartRequest(version=task.team.version, source=request.source),
+                nesting_depth + 1,
             )
+        allowed_workflows = {}
+        for ref in team.get("allowed_workflows", []) if team else []:
+            child = await self.get_asset(username, ref["asset_id"], ref["version"])
+            if child["definition"].get("kind") == "autonomous":
+                raise RoleAssetError("Choose a pinned saved workflow")
+            frozen = await self._freeze_graph(
+                username,
+                child,
+                WorkflowStartRequest(version=ref["version"], source=request.source),
+                nesting_depth + 1,
+            )
+            if not any(
+                task["id"] == ref["result_task_id"]
+                for task in frozen["definition"]["tasks"]
+            ):
+                raise RoleAssetError("Pinned workflow return task is not available")
+            allowed_workflows[f"{ref['asset_id']}:{ref['version']}"] = {
+                **frozen,
+                "result_task_id": ref["result_task_id"],
+            }
         return {
             "engine": "graph_v2",
             "asset_id": asset["asset_id"],
             "asset_version": asset["version"],
-            "definition": definition.model_dump() if team else asset["definition"],
+            "definition": definition.model_dump(),
             **(
-                {"team_definition": team, "allowed_roles": allowed_roles}
+                {
+                    "team_definition": team,
+                    "allowed_roles": allowed_roles,
+                    "allowed_workflows": allowed_workflows,
+                }
                 if team
                 else {}
             ),
@@ -2368,7 +2481,9 @@ class WorkflowService:
                     owner_username=username,
                     status="pending",
                     snapshot={
-                        "engine": "team_call_v2"
+                        "engine": "workflow_call_v2"
+                        if task.workflow
+                        else "team_call_v2"
                         if task.team
                         else "human_task_v2"
                         if task.human
@@ -2399,6 +2514,8 @@ class WorkflowService:
                             if task.human is not None
                             else {"team": task.team.model_dump()}
                             if task.team is not None
+                            else {"workflow": task.workflow.model_dump()}
+                            if task.workflow is not None
                             else members[task.member]
                         ),
                         "inputs": snapshot["inputs"],
@@ -2997,8 +3114,8 @@ class WorkflowService:
                     "name": request.name,
                     "role_id": request.role_id,
                 }
-            elif result is None and request.action == "dispatch":
-                if (
+            elif result is None and request.action in {"dispatch", "call_workflow"}:
+                if request.action == "dispatch" and (
                     request.member_id not in state.get("members", {})
                     or not request.name
                     or not request.task
@@ -3014,33 +3131,130 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Dependencies must reference existing member tasks"
                     )
-                frozen = members[request.member_id]
-                await self.roles.validate_frozen_role(frozen["role"])
-                # Dispatch text is literal. Graph placeholders are escaped so goals
-                # containing braces cannot accidentally acquire new input bindings.
-                literal_task = request.task.replace("{", "{{").replace("}", "}}")
-                await self._validate_task_definition(
-                    username,
-                    WorkflowDefinition(
-                        name=request.name,
-                        role_id=frozen["role"]["role_id"],
-                        role_version=frozen["role"]["version"],
-                        task=literal_task,
-                        output_contract=request.output_contract,
-                    ),
-                )
+                child, contract, refs = {}, None, []
+                if request.action == "call_workflow":
+                    key = f"{request.asset_id}:{request.version}"
+                    child = root.snapshot.get("allowed_workflows", {}).get(key)
+                    if child is None or not request.name:
+                        raise RoleAssetError(
+                            "Choose a named allowed workflow version",
+                            [
+                                {
+                                    "path": "asset_id",
+                                    "code": "FORBIDDEN",
+                                    "message": "Workflow version is not allowed by the frozen asset",
+                                }
+                            ],
+                            status=403,
+                        )
+                    assert request.asset_id is not None and request.version is not None
+                    await self.get_asset(username, request.asset_id, request.version)
+                    required = child["definition"]["required_inputs"]
+                    fields = [
+                        {
+                            "path": f"inputs.{name}",
+                            "code": "REQUIRED",
+                            "message": "Provide non-empty text",
+                        }
+                        for name in required
+                        if not request.inputs.get(name, "").strip()
+                    ] + [
+                        {
+                            "path": f"inputs.{name}",
+                            "code": "UNKNOWN",
+                            "message": "Input is not declared",
+                        }
+                        for name in request.inputs
+                        if name not in required
+                    ]
+                    if fields:
+                        raise RoleAssetError("Invalid workflow inputs", fields)
+                    try:
+                        refs = [
+                            ArtifactReference.model_validate(ref).model_dump()
+                            for ref in request.input_artifacts
+                        ]
+                    except ValidationError as exc:
+                        raise RoleAssetError(
+                            "Invalid workflow artifact inputs",
+                            [
+                                {
+                                    "path": "input_artifacts",
+                                    "code": "REFERENCE",
+                                    "message": "Provide visible artifact identities and exact integer versions",
+                                }
+                            ],
+                        ) from exc
+                    for ref in refs:
+                        await self.read_artifact(
+                            username, **ref, consumer_run_id=run_id
+                        )
+                    return_task = next(
+                        task
+                        for task in child["definition"]["tasks"]
+                        if task["id"] == child["result_task_id"]
+                    )
+                    contract = return_task.get("output_contract")
+                    if (
+                        request.output_contract is not None
+                        and request.output_contract != contract
+                    ):
+                        raise RoleAssetError(
+                            "Use the pinned workflow return contract",
+                            [
+                                {
+                                    "path": "output_contract",
+                                    "code": "CONTRACT",
+                                    "message": "Contract differs from the fixed return task",
+                                }
+                            ],
+                        )
+                    frozen, literal_task = {}, ""
+                else:
+                    assert request.name is not None and request.task is not None
+                    frozen = members[request.member_id]
+                    await self.roles.validate_frozen_role(frozen["role"])
+                    # Dispatch text is literal. Graph placeholders are escaped so goals
+                    # containing braces cannot accidentally acquire new input bindings.
+                    literal_task = request.task.replace("{", "{{").replace("}", "}}")
+                    await self._validate_task_definition(
+                        username,
+                        WorkflowDefinition(
+                            name=request.name,
+                            role_id=frozen["role"]["role_id"],
+                            role_version=frozen["role"]["version"],
+                            task=literal_task,
+                            output_contract=request.output_contract,
+                        ),
+                    )
                 identity, node_id = uuid.uuid4().hex, "task_" + uuid.uuid4().hex
-                node = {
-                    "id": node_id,
-                    "name": request.name,
-                    "member": request.member_id,
-                    "role_id": frozen["role"]["role_id"],
-                    "role_version": frozen["role"]["version"],
-                    "task": literal_task,
-                    "inputs": {},
-                    "overrides": {},
-                    "output_contract": request.output_contract,
-                }
+                node = (
+                    {
+                        "id": node_id,
+                        "name": request.name,
+                        "member": request.member_id,
+                        "role_id": frozen["role"]["role_id"],
+                        "role_version": frozen["role"]["version"],
+                        "task": literal_task,
+                        "inputs": {},
+                        "overrides": {},
+                        "output_contract": request.output_contract,
+                    }
+                    if request.action == "dispatch"
+                    else {}
+                )
+                if request.action == "call_workflow":
+                    node = {
+                        "id": node_id,
+                        "name": request.name,
+                        "workflow": {
+                            "asset_id": request.asset_id,
+                            "version": request.version,
+                            "result_task_id": child["result_task_id"],
+                        },
+                        "inputs": {},
+                        "output_contract": contract,
+                    }
                 state.setdefault("dynamic_tasks", []).append(node)
                 state.setdefault("dynamic_edges", []).extend(
                     {"source": dependency, "target": node_id}
@@ -3053,7 +3267,9 @@ class WorkflowService:
                         owner_username=username,
                         status="pending",
                         snapshot={
-                            "engine": "single_task_v2",
+                            "engine": "workflow_call_v2"
+                            if request.action == "call_workflow"
+                            else "single_task_v2",
                             "parent_run_id": root.run_id,
                             "root_run_id": _root_run_id(root),
                             "depth": root.snapshot.get("depth", 0),
@@ -3063,8 +3279,22 @@ class WorkflowService:
                             "asset_version": root.snapshot["asset_version"],
                             "definition": {**node, "required_inputs": []},
                             **frozen,
-                            "inputs": {},
-                            "input_artifacts": root.snapshot["input_artifacts"],
+                            "inputs": request.inputs
+                            if request.action == "call_workflow"
+                            else {},
+                            "input_artifacts": refs
+                            if request.action == "call_workflow"
+                            else root.snapshot["input_artifacts"],
+                            **(
+                                {
+                                    "workflow": node["workflow"],
+                                    "call_max_depth": caller.snapshot["effective"].get(
+                                        "max_depth"
+                                    ),
+                                }
+                                if request.action == "call_workflow"
+                                else {}
+                            ),
                             "source": root.snapshot["source"],
                             "initiator": username,
                             "task": literal_task,
@@ -3125,7 +3355,8 @@ class WorkflowService:
             if request.action == "wait":
                 progress = await self.get_run(username, root_id, include_details=False)
                 if any(
-                    task["status"] in {"pending", "running"}
+                    task["status"]
+                    in {"pending", "running", "waiting_child", "waiting_human"}
                     for task in progress["tasks"]
                     if not request.task_ids or task["node_id"] in request.task_ids
                 ):
@@ -3159,7 +3390,11 @@ class WorkflowService:
                     "tasks": selected,
                     "relationships": observed["relationships"],
                 }
-            if all(task["status"] not in {"pending", "running"} for task in selected):
+            if all(
+                task["status"]
+                not in {"pending", "running", "waiting_child", "waiting_human"}
+                for task in selected
+            ):
                 async with self.db.get_db() as session:
                     caller = await session.get(AgentWorkflowRun, run_id)
                     assert caller is not None
@@ -3279,6 +3514,10 @@ class WorkflowService:
                         AgentWorkflowRun, row.state["child_scope_run_id"]
                     )
                     assert child is not None
+                    if child.status == "completed" and row.state.get(
+                        "child_return_failed"
+                    ):
+                        continue
                     if row.status == "blocked" and child.status in {
                         "running",
                         "completed",
@@ -3305,15 +3544,28 @@ class WorkflowService:
                                 sibling.state = {**sibling.state, "reason": None}
                                 session.add(sibling)
                     if child.status == "completed":
-                        coordinator = await session.get(
-                            AgentWorkflowRun, _current_task_runs(child)["coordinator"]
+                        returned_task = await session.get(
+                            AgentWorkflowRun,
+                            _current_task_runs(child)[
+                                row.snapshot.get("workflow", {}).get(
+                                    "result_task_id", "coordinator"
+                                )
+                            ],
                         )
-                        assert (
-                            coordinator is not None and coordinator.result is not None
-                        )
-                        fields = validate_result(
-                            row.snapshot["definition"].get("output_contract"),
-                            coordinator.result,
+                        assert returned_task is not None
+                        fields = (
+                            [
+                                {
+                                    "path": "result_task_id",
+                                    "code": "NOT_READY",
+                                    "message": "The selected workflow return task has no validated result",
+                                }
+                            ]
+                            if returned_task.result is None
+                            else validate_result(
+                                row.snapshot["definition"].get("output_contract"),
+                                returned_task.result,
+                            )
                         )
                         if fields:
                             row.status = "blocked"
@@ -3321,15 +3573,17 @@ class WorkflowService:
                                 **row.state,
                                 "reason": "Child output does not satisfy the declared contract.",
                                 "issues": fields,
+                                "child_return_failed": True,
                             }
                         else:
-                            row.result = copy.deepcopy(coordinator.result)
+                            assert returned_task.result is not None
+                            row.result = copy.deepcopy(returned_task.result)
                             row.status = "completed"
                             row.state = {
                                 **row.state,
                                 "reason": None,
                                 "child_result_ref": {
-                                    "artifact_id": coordinator.run_id,
+                                    "artifact_id": returned_task.run_id,
                                     "version": 1,
                                 },
                             }
@@ -3446,6 +3700,7 @@ class WorkflowService:
                         assert row is not None
                         if row.status != "pending":
                             continue
+                        child_call = task.get("team") or task.get("workflow")
                         incoming = [
                             edge
                             for edge in definition["edges"]
@@ -3560,7 +3815,7 @@ class WorkflowService:
                             role_limit = row.snapshot.get("effective", {}).get(
                                 "max_parallel"
                             )
-                            if not task.get("team") and (
+                            if not child_call and (
                                 not _has_scope_capacity(whole_root, root, active)
                                 or member_id in occupied
                                 or (
@@ -3572,17 +3827,21 @@ class WorkflowService:
                             retrying = row.state.get("retry_pending")
                             inputs = dict(
                                 row.snapshot["inputs"]
-                                if retrying
+                                if retrying or task.get("workflow")
                                 else root.snapshot["inputs"]
                             )
                             refs = list(
                                 row.snapshot.get("input_artifacts", [])
-                                if retrying
+                                if retrying or task.get("workflow")
                                 else []
-                                if task.get("team")
+                                if child_call
                                 else root.snapshot.get("input_artifacts", [])
                             )
-                            if root.snapshot.get("team_definition") and not retrying:
+                            if (
+                                root.snapshot.get("team_definition")
+                                and not retrying
+                                and not task.get("workflow")
+                            ):
                                 refs.extend(
                                     {"artifact_id": source.run_id, "version": 1}
                                     for source in matched
@@ -3628,13 +3887,19 @@ class WorkflowService:
                                     **row.state,
                                     "reason": "A declared result input belongs to a skipped path.",
                                 }
-                            elif task.get("team"):
+                            elif child_call:
                                 frozen = copy.deepcopy(
-                                    root.snapshot["child_assets"][task["id"]]
+                                    root.snapshot["allowed_workflows"][
+                                        f"{child_call['asset_id']}:{child_call['version']}"
+                                    ]
+                                    if task.get("workflow")
+                                    else root.snapshot["child_assets"][task["id"]]
                                 )
-                                frozen["inputs"] = {
-                                    key: inputs[key] for key in task["inputs"]
-                                }
+                                frozen["inputs"] = (
+                                    inputs
+                                    if task.get("workflow")
+                                    else {key: inputs[key] for key in task["inputs"]}
+                                )
                                 # Hand off declared values and only their exact input
                                 # references; ancestry grants no ambient context access.
                                 frozen["input_artifacts"] = refs
@@ -3660,11 +3925,16 @@ class WorkflowService:
                                             "Invalid run inputs", fields
                                         )
                                     depth = root.snapshot.get("depth", 0) + 1
-                                    if depth > whole_root.snapshot["definition"].get(
-                                        "max_depth", 3
-                                    ):
+                                    depth_limit = min(
+                                        whole_root.snapshot["definition"].get(
+                                            "max_depth", 3
+                                        ),
+                                        root.snapshot.get("depth_limit", 20),
+                                        row.snapshot.get("call_max_depth") or 20,
+                                    )
+                                    if depth > depth_limit:
                                         raise RoleAssetError(
-                                            "Nested team exceeds the frozen depth limit"
+                                            "Child call exceeds the frozen depth limit"
                                         )
                                     for member in [
                                         *frozen["members"].values(),
@@ -3681,6 +3951,10 @@ class WorkflowService:
                                             raise RoleAssetError(
                                                 "Nested team exceeds the frozen role depth limit"
                                             )
+                                    frozen["depth_limit"] = min(
+                                        depth_limit,
+                                        frozen["definition"].get("max_depth", 3),
+                                    )
                                     child_id = await self._create_scope(
                                         session,
                                         username,
@@ -3707,7 +3981,9 @@ class WorkflowService:
                                         **row.state,
                                         "child_scope_run_id": child_id,
                                         "capacity_released": True,
-                                        "reason": "Waiting for child team results.",
+                                        "reason": "Waiting for child workflow results."
+                                        if task.get("workflow")
+                                        else "Waiting for child team results.",
                                     }
                                     child_scopes.append(child_id)
                             else:
@@ -4554,7 +4830,7 @@ class WorkflowService:
                 "Answer the persistent human request instead of recovering an agent checkpoint",
                 status=409,
             )
-        if run["snapshot"]["engine"] == "team_call_v2":
+        if run["snapshot"]["engine"] in {"team_call_v2", "workflow_call_v2"}:
             raise RoleAssetError(
                 "Recover the interrupted task inside the child scope", status=409
             )
@@ -5591,7 +5867,31 @@ class WorkflowService:
                         checkpoint_error = "Failed to save team decision"
                         raise ProcessPersistenceError(checkpoint_error) from exc
 
-                tools.append(TeamManageTool(manage, root["snapshot"]["allowed_roles"]))
+                tools.append(
+                    TeamManageTool(
+                        manage,
+                        root["snapshot"]["allowed_roles"],
+                        {
+                            key: {
+                                "asset_id": child["asset_id"],
+                                "version": child["asset_version"],
+                                "name": child["definition"]["name"],
+                                "required_inputs": child["definition"][
+                                    "required_inputs"
+                                ],
+                                "result_task_id": child["result_task_id"],
+                                "output_contract": next(
+                                    task.get("output_contract")
+                                    for task in child["definition"]["tasks"]
+                                    if task["id"] == child["result_task_id"]
+                                ),
+                            }
+                            for key, child in root["snapshot"]
+                            .get("allowed_workflows", {})
+                            .items()
+                        },
+                    )
+                )
             if snapshot.get("parent_run_id"):
 
                 async def communicate(payload: dict) -> dict:

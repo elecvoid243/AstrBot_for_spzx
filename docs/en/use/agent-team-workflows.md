@@ -22,6 +22,34 @@ For the versioned autonomous path, **team sidebar / Run Monitor → Workflow Ass
 
 ![Autonomous run on a narrow screen](/images/agent-autonomous-mobile.jpg)
 
+## Coordinator calls to saved workflows
+
+In **Workflow Assets → New Autonomous Team / Edit Asset → Allowed workflows**, choose **Allow a saved workflow**. Select its **Pinned workflow version** and **Return task**. The panel shows that version's required text inputs and the return task's output contract. Single-task workflows return their **result** task; canvas workflows return the task you select. Save the team as a new version. Workflows omitted from this list remain unavailable to its coordinator.
+
+![Allowed workflow versions and explicit return contract in the actual WebUI](/images/agent-team-workflow-config-en.jpg)
+
+Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional visible, exact artifact references. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
+
+In **Independent Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. The call shows the returned result, its own artifact and the exact child return reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
+
+![Coordinator, workflow tasks and exact returned artifacts in the actual WebUI](/images/agent-team-workflow-run-en.jpg)
+
+Waiting releases the shared root capacity, so calls can finish with concurrency one. Team and workflow nesting share one bounded depth; role limits still apply. Whole-run pause, continue and cancellation reach the child workflow. A local human or failed branch leaves independent branches free to proceed. Continue keeps local waits; use the selected task's normal same-Attempt recovery or unknown-tool decision when required. Saved tool results are reused after a restart, and unknown external effects remain stopped for confirmation.
+
+Running and recovered calls retain their original asset, role, input, resource configuration and exact result versions. Editing an allowed workflow affects new team versions and runs. Returned managed files remain fully readable, and an explicit revision can retain the exact files already handed off. Unsubmitted child files and unrelated files remain inaccessible; old artifacts, approvals and consumer input versions retain their meaning.
+
+Version reads belong to the current selection and editor. A delayed older response cannot replace the latest version, required inputs or return contract. The saved version remains the one displayed after the latest choice.
+
+![A delayed older version leaves the latest explicit workflow selection unchanged](/images/agent-team-workflow-selection-race-zh.jpg)
+
+![A child approval saved during pause waits for whole-run continuation](/images/agent-team-workflow-wait-zh.jpg)
+
+![A parent revision retains the returned file and the child v1 reference](/images/agent-team-workflow-file-revision-zh.jpg)
+
+![Fixed workflow configuration at a narrow-screen breakpoint](/images/agent-team-workflow-mobile.jpg)
+
+![Allowed workflow configuration in dark mode](/images/agent-team-workflow-dark.jpg)
+
 ## Dependency canvas
 
 Choose **New Canvas Workflow**. Enter the workflow name, required text inputs and maximum concurrent tasks, then drag a role from the toolbox onto the canvas (or click it). Select a task to edit its name, instructions, pinned role version, member instance key, input references and output contract. Tasks sharing a member key use the same frozen role and configuration and advance one conversation serially; distinct member keys create isolated contexts and may run in parallel within the workflow and role limits.
@@ -58,7 +86,7 @@ In **Independent Runs → View Run**, progress includes the actual child coordin
 
 Parent waits release root execution capacity, so a root limit of one still permits child tasks to complete. A child human request, provider failure or unknown external effect leaves independent parent branches ready. Handle child human requests in the root run's **Human requests** section; select the affected child task to recover, retry or resolve an unknown tool. Retrying a child task creates a new Attempt in the existing scope. Saved model-call and step counts include child tasks and prior attempts; unavailable counts display **Unknown**. Detailed budget reporting is added separately.
 
-Whole-run pause, continue and cancel apply to every scope and executor. A paused answer remains saved until continuation; other local waits remain. Recovery uses the original child scope, Attempt and frozen inputs. Different scopes have independent members and conversations. Ancestry grants no cross-scope message or artifact access; only declared exact input/output references cross the boundary. Coordinator calls to saved workflows are added separately.
+Whole-run pause, continue and cancel apply to every scope and executor. A paused answer remains saved until continuation; other local waits remain. Recovery uses the original child scope, Attempt and frozen inputs. Different scopes have independent members and conversations. Ancestry grants no cross-scope message or artifact access; only declared exact input/output references cross the boundary. Coordinator calls use the explicit permissions described under Coordinator calls to saved workflows.
 
 ![A child wait and its human request in the actual WebUI](/images/agent-workflow-child-wait.jpg)
 
@@ -227,6 +255,7 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
 | Member communication appeared only in tool results | Independent Runs → View Run → select task → Saved member process → Member messages; expand a reference to read its complete version. |
+| Coordinators could only dispatch member tasks | Workflow Assets → New Autonomous Team / Edit Asset → Allowed workflows; Independent Runs → View Run → select coordinator → View child workflow. |
 | Revision used only ordinary task dependencies | Workflow Assets → Edit Asset → Add bounded loop; Independent Runs → View Run → Loop iterations. |
 | New workflows had no persistent human entry | Workflow Assets → Edit Asset → Human question / Version approval; Independent Runs → View Run → Human requests. Legacy Workflow Editor human entries remain separate. |
 

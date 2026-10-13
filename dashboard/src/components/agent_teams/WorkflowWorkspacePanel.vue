@@ -174,6 +174,49 @@
             @submit="applyRunControl"
           />
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
+          <v-btn
+            v-if="
+              detailRun.snapshot.engine === 'workflow_call_v2' &&
+              detailRun.state.child_scope_run_id
+            "
+            variant="tonal"
+            data-testid="open-child-workflow"
+            @click="
+              selectRunTask(
+                selectedRun.scopes?.find(
+                  (scope: any) =>
+                    scope.run_id === detailRun.state.child_scope_run_id,
+                )?.tasks?.[0]?.run_id ?? null,
+              )
+            "
+            >{{ tm("workflowCall.open") }}</v-btn
+          >
+          <p
+            v-if="detailRun.state.child_result_ref"
+            class="text-caption my-2"
+            data-testid="child-return-reference"
+          >
+            {{ tm("workflowCall.returnTask") }}:
+            {{ detailRun.state.child_result_ref.artifact_id }} · v{{
+              detailRun.state.child_result_ref.version
+            }}
+          </p>
+          <template v-if="detailRun.snapshot.coordinator">
+            <v-btn
+              v-for="call in selectedRun.tasks.filter(
+                (task: any) =>
+                  task.snapshot.workflow &&
+                  task.snapshot.created_by_task_id === detailRun.state.task_id,
+              )"
+              :key="call.run_id"
+              variant="tonal"
+              class="mr-2 mb-2"
+              data-testid="coordinator-workflow-call"
+              @click="selectRunTask(call.run_id)"
+              >{{ tm("workflowCall.open") }}:
+              {{ call.snapshot.definition.name }}</v-btn
+            >
+          </template>
           <v-select
             v-if="selectedRun.tasks?.length"
             v-model="selectedTaskNode"

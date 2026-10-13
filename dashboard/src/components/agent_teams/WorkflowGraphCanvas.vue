@@ -578,7 +578,9 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        memberName: task.team
+        memberName: task.workflow
+          ? tm("workflowCall.open")
+          : task.team
           ? tm("child.independent")
           : task.human
           ? tm(`human.${task.human.kind}Node`)
@@ -588,12 +590,16 @@ const taskNodes = computed<FlowNode[]>(() =>
               task.role_id
             } · ${task.member}`,
         memberColor: collabMemberColor(task.member ?? task.id),
-        taskPreview: task.team
+        taskPreview: task.workflow
+          ? `${task.workflow.asset_id} → ${task.workflow.result_task_id}`
+          : task.team
           ? pinnedTeams.value[`${task.team.asset_id}:${task.team.version}`]
               ?.definition.name ?? task.team.asset_id
           : task.human?.question ?? task.task,
         nodeNumber: index + 1,
-        configLabel: task.team
+        configLabel: task.workflow
+          ? `v${task.workflow.version}`
+          : task.team
           ? `v${task.team.version}`
           : task.human
           ? task.human.kind === "approval"

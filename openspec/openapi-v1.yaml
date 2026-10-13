@@ -9154,6 +9154,11 @@ components:
           - $ref: '#/components/schemas/TeamCall'
           - type: 'null'
           default: null
+        workflow:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowCall'
+          - type: 'null'
+          default: null
         inputs:
           additionalProperties:
             $ref: '#/components/schemas/TaskInput'
@@ -9183,6 +9188,7 @@ components:
       - name
       title: GraphTask
       type: object
+
     TaskInput:
       additionalProperties: false
       description: A declared workflow input or an upstream validated result field.
@@ -9595,6 +9601,18 @@ components:
           minimum: 1
           title: Max Tasks
           type: integer
+        max_depth:
+          default: 3
+          maximum: 20
+          minimum: 1
+          title: Max Depth
+          type: integer
+        allowed_workflows:
+          items:
+            $ref: '#/components/schemas/WorkflowCall'
+          maxItems: 30
+          title: Allowed Workflows
+          type: array
         output_contract:
           anyOf:
           - additionalProperties: true
@@ -9635,4 +9653,29 @@ components:
       - asset_id
       - version
       title: TeamCall
+      type: object
+
+    WorkflowCall:
+      additionalProperties: false
+      description: An allowed workflow version and the task whose exact result is returned.
+      properties:
+        asset_id:
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+          type: string
+        version:
+          minimum: 1
+          title: Version
+          type: integer
+        result_task_id:
+          maxLength: 128
+          minLength: 1
+          title: Result Task Id
+          type: string
+      required:
+      - asset_id
+      - version
+      - result_task_id
+      title: WorkflowCall
       type: object

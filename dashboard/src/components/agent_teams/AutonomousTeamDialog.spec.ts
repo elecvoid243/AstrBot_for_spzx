@@ -3,7 +3,9 @@ import { expect, it, vi } from "vitest";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 
 const save = vi.hoisted(() => vi.fn());
-vi.mock("@/api/workflowAssets", () => ({ workflowAssetsApi: { save } }));
+vi.mock("@/api/workflowAssets", () => ({
+  workflowAssetsApi: { save, list: vi.fn().mockResolvedValue({ assets: [] }) },
+}));
 vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
@@ -80,3 +82,89 @@ it("saves pinned coordinator and allowed templates with explicit team limits", a
   });
   expect(wrapper.emitted("saved")).toHaveLength(1);
 });
+
+it.each(["success", "failure"])(
+  "ignores a late save %s from a previous asset editor",
+  async (outcome) => {
+    let finish!: (value: any) => void;
+    let fail!: (reason: Error) => void;
+    save.mockReset().mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+    );
+    const asset = {
+      asset_id: "team-a",
+      version: 1,
+      definition: {
+        kind: "autonomous",
+        name: "Team A",
+        coordinator: { role_id: "writer", role_version: 1 },
+        allowed_roles: [{ role_id: "writer", role_version: 1 }],
+        required_inputs: ["goal"],
+      },
+    };
+    const wrapper = mount(AutonomousTeamDialog, {
+      props: {
+        modelValue: true,
+        asset,
+        roles: [
+          {
+            role_id: "writer",
+            version: 1,
+            versions: [1],
+            definition: { name: "Writer" },
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          ...Object.fromEntries(
+            [
+              "v-dialog",
+              "v-card",
+              "v-card-text",
+              "v-card-actions",
+              "v-alert",
+            ].map((name) => [name, { template: "<div><slot /></div>" }]),
+          ),
+          AllowedWorkflowsPanel: true,
+          "v-spacer": true,
+          "v-select": true,
+          "v-textarea": true,
+          "v-text-field": {
+            props: ["modelValue"],
+            template: '<input :value="modelValue" />',
+          },
+          "v-btn": {
+            props: ["disabled", "loading"],
+            template:
+              '<button :disabled="disabled || loading"><slot /></button>',
+          },
+        },
+      },
+    });
+    await wrapper.get('[data-testid="team-save"]').trigger("click");
+    const replacement = {
+      ...asset,
+      asset_id: "team-b",
+      definition: { ...asset.definition, name: "Team B" },
+    };
+    await wrapper.setProps({ asset: replacement });
+    if (outcome === "success") finish({ asset_id: "team-a", version: 2 });
+    else fail(new Error("Old save failed"));
+    await flushPromises();
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="team-name"]').element.value,
+    ).toBe("Team B");
+    expect(wrapper.emitted("saved")).toBeUndefined();
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    expect(wrapper.text()).not.toContain("Old save failed");
+    expect(
+      wrapper.get('[data-testid="team-save"]').attributes("disabled"),
+    ).toBeUndefined();
+    wrapper.unmount();
+  },
+);

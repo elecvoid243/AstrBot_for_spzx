@@ -2,9 +2,9 @@
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolRecovery
@@ -15,7 +15,7 @@ class TeamOperationRequest(BaseModel):
     """An idempotent coordinator decision within one frozen team run."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-    action: Literal["create_member", "dispatch", "wait", "inspect"]
+    action: Literal["create_member", "dispatch", "call_workflow", "wait", "inspect"]
     request_id: str = Field(min_length=1, max_length=128)
     role_id: str | None = Field(default=None, min_length=1, max_length=128)
     member_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -24,17 +24,29 @@ class TeamOperationRequest(BaseModel):
     dependencies: list[str] = Field(default_factory=list, max_length=100)
     task_ids: list[str] = Field(default_factory=list, max_length=100)
     output_contract: dict | None = None
+    asset_id: str | None = Field(default=None, min_length=1, max_length=128)
+    version: int | None = Field(default=None, ge=1)
+    inputs: dict[str, Annotated[str, StringConstraints(strip_whitespace=False)]] = (
+        Field(default_factory=dict, max_length=30)
+    )
+    input_artifacts: list[dict] = Field(default_factory=list, max_length=30)
 
 
 class TeamManageTool(FunctionTool):
     """Expose dynamic task sourcing without a second execution lifecycle."""
 
-    def __init__(self, manage: Callable[[dict], Awaitable[dict]], allowed_roles: dict):
+    def __init__(
+        self,
+        manage: Callable[[dict], Awaitable[dict]],
+        allowed_roles: dict,
+        allowed_workflows: dict | None = None,
+    ):
         """Bind a coordinator tool to a fenced task attempt.
 
         Args:
             manage: Public runtime operation validating authority and constraints.
             allowed_roles: Frozen permitted templates, shown to the coordinator.
+            allowed_workflows: Explicit pinned workflow inputs and return contracts.
         """
         super().__init__(
             name="team_manage",
@@ -53,6 +65,11 @@ class TeamManageTool(FunctionTool):
                         for identity, frozen in allowed_roles.items()
                     }
                 )
+                + ". call_workflow requires an allowed asset_id, exact version, name, "
+                "and all declared text inputs; optional input_artifacts must be visible "
+                "exact versions. It returns task_id; wait for that task before reading "
+                "its result. Allowed workflows: "
+                + json.dumps(allowed_workflows or {}, ensure_ascii=False)
             ),
             parameters=TeamOperationRequest.model_json_schema(),
             recovery=ToolRecovery(safe_retry=True),

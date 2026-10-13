@@ -315,7 +315,8 @@
       "dependency_failed": "上游任务失败",
       "cancelled": "已取消",
       "waiting_human": "等待人工",
-      "rejected": "人工拒绝"
+      "rejected": "人工拒绝",
+      "waiting_child": "等待子团队"
     },
     "contract": "输出契约（JSON Schema）",
     "contractHint": "留空使用非空文本契约。结构化结果使用 object Schema；files 包含稳定的 file_id 引用。",
@@ -537,5 +538,19 @@
     "dispatched": "派发",
     "name": "团队名称",
     "coordinatorCount": "包含协调者实例。"
+  },
+  "child": {
+    "call": "调用自主团队",
+    "asset": "固定子团队资产",
+    "version": "固定团队版本",
+    "independent": "独立作用域与成员",
+    "contractHint": "子团队只接收声明输入，按固定输出契约返回。父等待释放根执行容量；不会共享父成员上下文。",
+    "unavailable": "固定团队版本不可用，请选择可访问的版本。",
+    "maxDepth": "根嵌套深度上限",
+    "scope": "子作用域",
+    "root": "根运行",
+    "modelCalls": "已保存模型调用数",
+    "steps": "已保存执行步骤",
+    "unknownUsage": "未知"
   }
 }

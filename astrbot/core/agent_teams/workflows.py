@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import func, true
+from sqlalchemy import func, or_, true
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -221,6 +221,63 @@ def _run_definition(run: AgentWorkflowRun) -> dict:
     }
 
 
+def _root_run_id(run: AgentWorkflowRun) -> str:
+    """Resolve shared control and capacity while retaining the scope's parent.
+
+    Args:
+        run: Root, scope or task from a frozen launch.
+
+    Returns:
+        Whole-run identity, including compatibility with earlier flat graphs.
+    """
+    return run.snapshot.get(
+        "root_run_id", run.snapshot.get("parent_run_id", run.run_id)
+    )
+
+
+async def _descendant_runs(
+    session: AsyncSession, run: AgentWorkflowRun
+) -> list[AgentWorkflowRun]:
+    """Read a persisted subtree for queries, controls and shared admission.
+
+    Args:
+        session: Existing transaction, including its admission lock when mutating.
+        run: Root or scope whose descendants are required.
+
+    Returns:
+        Owned descendants including the starting row and historical iterations.
+    """
+    root_id = _root_run_id(run)
+    family = (
+        (
+            await session.execute(
+                select(AgentWorkflowRun).where(
+                    AgentWorkflowRun.owner_username == run.owner_username,
+                    or_(
+                        col(AgentWorkflowRun.run_id) == root_id,
+                        AgentWorkflowRun.snapshot["root_run_id"].as_string() == root_id,
+                        AgentWorkflowRun.snapshot["parent_run_id"].as_string()
+                        == root_id,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    identities = {run.run_id}
+    while True:
+        expanded = identities | {
+            row.run_id
+            for row in family
+            if row.snapshot.get("parent_run_id") in identities
+        }
+        if identities == expanded:
+            break
+        identities = expanded
+    return [row for row in family if row.run_id in identities]
+
+
 class WorkflowService:
     """Public asset/run boundary backed by the existing database and execution port."""
 
@@ -312,6 +369,53 @@ class WorkflowService:
             validate_graph(definition)
             for task in definition.tasks:
                 if task.human is not None:
+                    continue
+                if task.team is not None:
+                    try:
+                        child = await self.get_asset(
+                            username, task.team.asset_id, task.team.version
+                        )
+                    except RoleAssetError as exc:
+                        raise RoleAssetError(
+                            "Pinned team version is not accessible",
+                            [
+                                {
+                                    "path": f"definition.tasks.{definition.tasks.index(task)}.team",
+                                    "code": "REFERENCE",
+                                    "message": "Choose an accessible exact team version",
+                                }
+                            ],
+                            status=exc.status,
+                        ) from exc
+                    child_definition = child["definition"]
+                    fields = []
+                    path = f"definition.tasks.{definition.tasks.index(task)}"
+                    if child_definition.get("kind") != "autonomous":
+                        fields.append(
+                            {
+                                "path": path + ".team",
+                                "code": "INCOMPATIBLE",
+                                "message": "Choose a pinned autonomous team",
+                            }
+                        )
+                    elif set(task.inputs) != set(child_definition["required_inputs"]):
+                        fields.append(
+                            {
+                                "path": path + ".inputs",
+                                "code": "CONTRACT",
+                                "message": "Declare exactly the team's required inputs",
+                            }
+                        )
+                    if task.output_contract != child_definition.get("output_contract"):
+                        fields.append(
+                            {
+                                "path": path + ".output_contract",
+                                "code": "CONTRACT",
+                                "message": "Use the pinned team's output contract",
+                            }
+                        )
+                    if fields:
+                        raise RoleAssetError("Invalid team call", fields)
                     continue
                 assert task.role_id is not None and task.role_version is not None
                 await self._validate_task_definition(
@@ -759,7 +863,11 @@ class WorkflowService:
                     ]
                 )
             )
-            root_id = row.snapshot.get("parent_run_id", run_id)
+            tree = await _descendant_runs(session, row)
+            identities = list(
+                dict.fromkeys([*identities, *[item.run_id for item in tree]])
+            )
+            root_id = _root_run_id(row)
             control = await session.get(AgentWorkflowControl, root_id)
             rows = (
                 (
@@ -837,31 +945,40 @@ class WorkflowService:
                 if include_details
                 else []
             )
-            checkpoints = (
-                {
-                    item.run_id: item
-                    for item in (
-                        await session.execute(
-                            sa_select(
-                                col(AgentWorkflowCheckpoint.run_id),
-                                col(AgentWorkflowCheckpoint.phase),
-                                col(AgentWorkflowCheckpoint.invocation_id),
-                                col(AgentWorkflowCheckpoint.started_tools),
-                                col(AgentWorkflowCheckpoint.result_submission),
-                                AgentWorkflowCheckpoint.data["step_budget_used"]
-                                .as_integer()
-                                .label("steps_used"),
-                                AgentWorkflowCheckpoint.data["model_calls"]
-                                .as_integer()
-                                .label("model_calls"),
-                            ).where(col(AgentWorkflowCheckpoint.run_id).in_(identities))
-                        )
-                    ).all()
-                }
-                if include_details
-                else {}
-            )
+            checkpoints = {
+                item.run_id: item
+                for item in (
+                    await session.execute(
+                        sa_select(
+                            col(AgentWorkflowCheckpoint.run_id),
+                            col(AgentWorkflowCheckpoint.phase),
+                            col(AgentWorkflowCheckpoint.invocation_id),
+                            col(AgentWorkflowCheckpoint.started_tools),
+                            col(AgentWorkflowCheckpoint.result_submission),
+                            AgentWorkflowCheckpoint.data["step_budget_used"]
+                            .as_integer()
+                            .label("steps_used"),
+                            AgentWorkflowCheckpoint.data["model_calls"]
+                            .as_integer()
+                            .label("model_calls"),
+                        ).where(col(AgentWorkflowCheckpoint.run_id).in_(identities))
+                    )
+                ).all()
+            }
             results = {}
+            prior_usage = (
+                await session.execute(
+                    sa_select(
+                        col(AgentWorkflowAttempt.run_id),
+                        AgentWorkflowAttempt.data["checkpoint"]["model_calls"]
+                        .as_integer()
+                        .label("model_calls"),
+                        AgentWorkflowAttempt.data["checkpoint"]["step_budget_used"]
+                        .as_integer()
+                        .label("steps_used"),
+                    ).where(col(AgentWorkflowAttempt.run_id).in_(identities))
+                )
+            ).all()
             calls = (
                 (
                     await session.execute(
@@ -983,6 +1100,23 @@ class WorkflowService:
                     ]
                     if include_details
                     else [],
+                    "usage": {
+                        key: getattr(boundary, key)
+                        + sum(
+                            getattr(previous, key)
+                            for previous in prior_usage
+                            if previous.run_id == current.run_id
+                        )
+                        if boundary is not None
+                        and getattr(boundary, key) is not None
+                        and all(
+                            getattr(previous, key) is not None
+                            for previous in prior_usage
+                            if previous.run_id == current.run_id
+                        )
+                        else None
+                        for key in ("model_calls", "steps_used")
+                    },
                 }
                 if include_details:
                     results[current.run_id].update(
@@ -1126,6 +1260,9 @@ class WorkflowService:
                                         "asset_version",
                                         "source",
                                         "node_id",
+                                        "root_run_id",
+                                        "parent_run_id",
+                                        "depth",
                                     )
                                     if key in current.snapshot
                                 },
@@ -1145,6 +1282,9 @@ class WorkflowService:
                                     "issues",
                                     "capacity_released",
                                     "waiting_tasks",
+                                    "scope_id",
+                                    "child_scope_run_id",
+                                    "child_result_ref",
                                 )
                                 if key in current.state
                             },
@@ -1233,6 +1373,81 @@ class WorkflowService:
                     "result_ref"
                 ]
             result["todos"] = [todo for task in all_tasks for todo in task["todos"]]
+            result["scopes"] = [
+                {
+                    **results[scope.run_id],
+                    "tasks": [
+                        {**results[identity], "node_id": node_id}
+                        for node_id, identity in _current_task_runs(scope).items()
+                    ],
+                }
+                for scope in tree
+                if scope.run_id != run_id and scope.snapshot.get("engine") == "graph_v2"
+            ]
+            for scope in result["scopes"]:
+                record = next(item for item in tree if item.run_id == scope["run_id"])
+                if include_details:
+                    scope["runtime_definition"] = {
+                        **_run_definition(record),
+                        "edges": [
+                            *_run_definition(record)["edges"],
+                            *(
+                                {"source": "coordinator", "target": task["id"]}
+                                for task in record.state.get("dynamic_tasks", [])
+                            ),
+                        ],
+                    }
+                scope["usage"] = {
+                    key: sum(
+                        task["usage"][key]
+                        for task in scope["tasks"]
+                        if task["usage"][key] is not None
+                    )
+                    if all(
+                        task["usage"][key] is not None
+                        for task in scope["tasks"]
+                        if task["snapshot"]["engine"] == "single_task_v2"
+                        and task["status"]
+                        not in {"pending", "skipped", "dependency_failed"}
+                    )
+                    else None
+                    for key in ("model_calls", "steps_used")
+                }
+            metered = [
+                item
+                for item in tree
+                if "member" in item.snapshot
+                and item.status not in {"pending", "skipped", "dependency_failed"}
+            ]
+            result["usage"] = {
+                key: sum(results[item.run_id]["usage"][key] or 0 for item in metered)
+                if all(
+                    results[item.run_id]["usage"][key] is not None for item in metered
+                )
+                else None
+                for key in ("model_calls", "steps_used")
+            }
+            result["artifacts"] = [
+                artifact
+                for identity in identities
+                for artifact in results[identity]["artifacts"]
+                if identity != run_id
+            ]
+            result["todos"] = [
+                todo
+                for identity in identities
+                for todo in results[identity]["todos"]
+                if identity != run_id
+            ]
+            if include_details:
+                result["events"] = sorted(
+                    {
+                        event["cursor"]: event
+                        for identity in identities
+                        for event in results[identity]["events"]
+                    }.values(),
+                    key=lambda event: event["cursor"],
+                )
         if include_details:
             result["messages"] = [
                 {
@@ -1240,7 +1455,8 @@ class WorkflowService:
                     **message.payload,
                 }
                 for message in messages
-                if run_id == root_id
+                if row.snapshot.get("engine") == "graph_v2"
+                and message.scope_id in {item.state["scope_id"] for item in tree}
                 or message.sender_task_run_id == run_id
                 or message.recipient_member_id
                 == row.snapshot.get("member", {}).get("member_id")
@@ -1248,7 +1464,10 @@ class WorkflowService:
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0
             )
-        tasks = result.get("tasks", [result])
+        tasks = [
+            *result.get("tasks", [result]),
+            *[task for scope in result.get("scopes", []) for task in scope["tasks"]],
+        ]
         result["progress"] = {
             "total": len(tasks),
             "completed": sum(
@@ -1261,7 +1480,8 @@ class WorkflowService:
             ),
             "waiting": sum(
                 task["status"] not in {"pending", "running", "completed", "skipped"}
-                or task["state"].get("capacity_released", False)
+                or task["status"] == "running"
+                and task["state"].get("capacity_released", False)
                 for task in tasks
             ),
         }
@@ -1304,7 +1524,7 @@ class WorkflowService:
         Returns:
             Locked durable root decision, creating the default for older runs.
         """
-        root_id = run.snapshot.get("parent_run_id", run.run_id)
+        root_id = _root_run_id(run)
         await session.execute(
             update(AgentWorkflowRun)
             .where(col(AgentWorkflowRun.run_id) == root_id)
@@ -1378,6 +1598,7 @@ class WorkflowService:
                 raise RoleAssetError("Control the whole run using its root", status=409)
             control = await self._lock_control(session, row)
             await session.refresh(row)
+            family = await _descendant_runs(session, row)
             decision = request.model_dump()
             previous = control.requests.get(request.request_id)
             if previous is not None:
@@ -1414,10 +1635,7 @@ class WorkflowService:
                     )
                 )
                 if request.action == "pause":
-                    for identity in [
-                        run_id,
-                        *_current_task_runs(row).values(),
-                    ]:
+                    for identity in [item.run_id for item in family]:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
                         if child.status == "running" and "member" in child.snapshot:
@@ -1433,10 +1651,7 @@ class WorkflowService:
                     if loops:
                         row.state = {**row.state, "loops": loops}
                         session.add(row)
-                    identities = [
-                        run_id,
-                        *_current_task_runs(row).values(),
-                    ]
+                    identities = [item.run_id for item in family]
                     for identity in identities:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -1455,10 +1670,7 @@ class WorkflowService:
                             )
                 await session.commit()
             if request.action == "continue":
-                for identity in [
-                    run_id,
-                    *_current_task_runs(row).values(),
-                ]:
+                for identity in [item.run_id for item in family]:
                     child = await session.get(AgentWorkflowRun, identity)
                     if (
                         child is not None
@@ -1542,6 +1754,12 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Human requests retain their original answer and cannot be retried as agent tasks",
                         status=409,
+                    )
+                if row.snapshot.get("engine") == "team_call_v2" and row.state.get(
+                    "child_scope_run_id"
+                ):
+                    raise RoleAssetError(
+                        "Retry the failed task inside the child scope", status=409
                     )
                 if row.state.get("attempt_id") != request.attempt_id:
                     raise RoleAssetError("Attempt is no longer active", status=409)
@@ -1767,28 +1985,10 @@ class WorkflowService:
         async with self.db.get_db() as session:
             if self.db.engine.dialect.name == "sqlite":
                 await session.execute(text("BEGIN"))
-            run = (
-                await session.execute(
-                    select(
-                        AgentWorkflowRun.owner_username,
-                        AgentWorkflowRun.snapshot["task_runs"],
-                        AgentWorkflowRun.state,
-                    ).where(AgentWorkflowRun.run_id == run_id)
-                )
-            ).first()
-            if run is None or run[0] != username:
+            run = await session.get(AgentWorkflowRun, run_id)
+            if run is None or run.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            identities = [
-                run_id,
-                *(run[1] or {}).values(),
-                *run[2].get("task_runs", {}).values(),
-                *(
-                    identity
-                    for loop in run[2].get("loops", {}).values()
-                    for iteration in loop["iterations"]
-                    for identity in iteration["task_runs"].values()
-                ),
-            ]
+            identities = [item.run_id for item in await _descendant_runs(session, run)]
             cursor = (
                 await session.execute(
                     select(func.max(AgentWorkflowEvent.id)).where(
@@ -1856,18 +2056,50 @@ class WorkflowService:
     async def _start_graph(
         self, username: str, asset: dict, request: WorkflowStartRequest
     ) -> dict:
-        """Persist a complete graph, member contexts and pending tasks atomically.
+        """Freeze all referenced resources before atomically starting a root scope.
 
         Args:
             username: Authenticated owner.
-            asset: Saved immutable graph version.
-            request: Validated launch inputs and source identity.
+            asset: Saved immutable asset version.
+            request: Validated launch inputs and source.
 
         Returns:
-            Persisted root run with all task snapshots.
+            Persisted run and its initial tasks.
 
         Raises:
-            RoleAssetError: Invalid graph, missing resources or instance limit.
+            RoleAssetError: A pinned definition, limit or resource is unavailable.
+        """
+        frozen = await self._freeze_graph(username, asset, request)
+        max_depth = frozen["definition"].get("max_depth", 3)
+        for child in frozen["child_assets"].values():
+            for member in [
+                *child["members"].values(),
+                *child.get("allowed_roles", {}).values(),
+            ]:
+                limit = member["effective"].get("max_depth")
+                if max_depth < 1 or limit is not None and limit < 1:
+                    raise RoleAssetError("Nested team exceeds the frozen depth limit")
+        async with self.db.get_db() as session:
+            run_id = await self._create_scope(session, username, frozen)
+            await session.commit()
+        await self.advance_run(username, run_id)
+        return await self.get_run(username, run_id)
+
+    async def _freeze_graph(
+        self, username: str, asset: dict, request: WorkflowStartRequest
+    ) -> dict:
+        """Resolve a complete graph and its pinned child resources before any write.
+
+        Args:
+            username: Actual initiating owner used by every role and asset lookup.
+            asset: Exact saved asset version.
+            request: Declared inputs and source for this scope.
+
+        Returns:
+            Frozen scope template; member identities are assigned at scope creation.
+
+        Raises:
+            RoleAssetError: A definition, contract, resource or instance limit fails.
         """
         team = (
             asset["definition"]
@@ -1923,7 +2155,7 @@ class WorkflowService:
         members = {}
         role_counts: dict[str, int] = {}
         for task in definition.tasks:
-            if task.human is not None:
+            if task.human is not None or task.team is not None:
                 continue
             assert task.role_id is not None
             if task.member not in members:
@@ -1948,7 +2180,11 @@ class WorkflowService:
                 )
         for index, loop in enumerate(definition.loops):
             for task in definition.tasks:
-                if task.id not in loop.body or task.human is not None:
+                if (
+                    task.id not in loop.body
+                    or task.human is not None
+                    or task.team is not None
+                ):
                     continue
                 limit = members[task.member]["effective"].get("max_iterations")
                 if limit is not None and loop.max_iterations > limit:
@@ -1962,10 +2198,27 @@ class WorkflowService:
                             }
                         ],
                     )
-        run_id = uuid.uuid4().hex
-        scope_id = uuid.uuid4().hex
-        task_runs = {task.id: uuid.uuid4().hex for task in definition.tasks}
-        snapshot = {
+        child_assets = {}
+        for task in definition.tasks:
+            if task.team is None:
+                continue
+            child = await self.get_asset(
+                username, task.team.asset_id, task.team.version
+            )
+            if child["definition"].get("kind") != "autonomous":
+                raise RoleAssetError("Choose a pinned autonomous team")
+            if set(task.inputs) != set(
+                child["definition"]["required_inputs"]
+            ) or task.output_contract != child["definition"].get("output_contract"):
+                raise RoleAssetError(
+                    "Team call contracts no longer match the pinned asset"
+                )
+            child_assets[task.id] = await self._freeze_graph(
+                username,
+                child,
+                WorkflowStartRequest(version=task.team.version, source=request.source),
+            )
+        return {
             "engine": "graph_v2",
             "asset_id": asset["asset_id"],
             "asset_version": asset["version"],
@@ -1980,125 +2233,183 @@ class WorkflowService:
             "source": request.source,
             "initiator": username,
             "members": members,
-            "task_runs": task_runs,
+            "child_assets": child_assets,
         }
-        async with self.db.get_db() as session:
+
+    async def _create_scope(
+        self,
+        session: AsyncSession,
+        username: str,
+        frozen: dict,
+        *,
+        root_run_id: str | None = None,
+        parent_task: AgentWorkflowRun | None = None,
+        depth: int = 0,
+    ) -> str:
+        """Create a scope and its task identities in the existing admission transaction.
+
+        Args:
+            session: Transaction holding root admission for a nested call.
+            username: Frozen initiating owner.
+            frozen: Resolved launch template, including exact role resources.
+            root_run_id: Whole-run control and capacity identity for a child scope.
+            parent_task: Calling task whose durable wait is committed with this scope.
+            depth: Bounded call depth; root scopes have depth zero.
+
+        Returns:
+            New scope run identity, never dispatched before the caller commits.
+        """
+        definition = GraphDefinition.model_validate(frozen["definition"])
+        run_id = uuid.uuid4().hex
+        scope_id = uuid.uuid4().hex
+        task_runs = {task.id: uuid.uuid4().hex for task in definition.tasks}
+        snapshot = copy.deepcopy(frozen)
+        snapshot["task_runs"] = task_runs
+        snapshot["root_run_id"] = root_run_id or run_id
+        snapshot["depth"] = depth
+        if parent_task is not None:
+            snapshot["parent_run_id"] = parent_task.run_id
+            snapshot["parent_scope_id"] = parent_task.state["scope_id"]
+        members = snapshot["members"]
+        for frozen_member in members.values():
+            member = frozen_member["member"]
+            session_id = uuid.uuid4().hex
+            frozen_member["member"] = {
+                **member,
+                "conversation_id": str(uuid.uuid4()),
+                "member_id": uuid.uuid4().hex,
+                "session_id": session_id,
+                "umo": f"webchat:FriendMessage:{session_id}",
+            }
+        session.add(
+            AgentWorkflowRun(
+                run_id=run_id,
+                owner_username=username,
+                snapshot=snapshot,
+                state={
+                    "scope_id": scope_id,
+                    "reason": None,
+                    "loops": {
+                        loop.id: {
+                            "status": "running",
+                            "iterations": [
+                                {
+                                    "iteration": 1,
+                                    "status": "running",
+                                    "task_runs": {
+                                        node_id: task_runs[node_id]
+                                        for node_id in loop.body
+                                    },
+                                }
+                            ],
+                        }
+                        for loop in definition.loops
+                    },
+                },
+            )
+        )
+        session.add(AgentWorkflowSchedule(run_id=run_id))
+        for frozen in members.values():
+            member = frozen["member"]
+            session.add(
+                ConversationV2(
+                    conversation_id=member["conversation_id"],
+                    platform_id="webchat",
+                    user_id=member["umo"],
+                    content=[],
+                    title=definition.name,
+                    persona_id=frozen["effective"].get("persona_id"),
+                )
+            )
+            session.add(
+                PlatformSession(
+                    session_id=member["session_id"],
+                    creator=username,
+                    display_name=definition.name,
+                    archived=1,
+                )
+            )
+        for task in definition.tasks:
+            child_definition = {
+                "name": task.name,
+                "role_id": task.role_id,
+                "role_version": task.role_version,
+                "task": task.task,
+                "overrides": task.overrides.model_dump(exclude_none=True),
+                "required_inputs": definition.required_inputs,
+            }
+            if task.output_contract is not None:
+                child_definition["output_contract"] = task.output_contract
             session.add(
                 AgentWorkflowRun(
-                    run_id=run_id,
+                    run_id=task_runs[task.id],
                     owner_username=username,
-                    snapshot=snapshot,
+                    status="pending",
+                    snapshot={
+                        "engine": "team_call_v2"
+                        if task.team
+                        else "human_task_v2"
+                        if task.human
+                        else "single_task_v2",
+                        "parent_run_id": run_id,
+                        "root_run_id": snapshot["root_run_id"],
+                        "depth": depth,
+                        "node_id": task.id,
+                        **(
+                            {"coordinator": True}
+                            if snapshot.get("team_definition")
+                            and task.id == "coordinator"
+                            else {}
+                        ),
+                        **next(
+                            (
+                                {"loop_id": loop.id, "iteration": 1}
+                                for loop in definition.loops
+                                if task.id in loop.body
+                            ),
+                            {},
+                        ),
+                        "asset_id": snapshot["asset_id"],
+                        "asset_version": snapshot["asset_version"],
+                        "definition": child_definition,
+                        **(
+                            {"human": task.human.model_dump()}
+                            if task.human is not None
+                            else {"team": task.team.model_dump()}
+                            if task.team is not None
+                            else members[task.member]
+                        ),
+                        "inputs": snapshot["inputs"],
+                        "input_artifacts": snapshot["input_artifacts"],
+                        "source": snapshot["source"],
+                        "initiator": username,
+                        "task": task.task,
+                    },
                     state={
                         "scope_id": scope_id,
+                        "task_id": task_runs[task.id],
+                        "attempt_id": uuid.uuid4().hex,
+                        "message_id": uuid.uuid4().hex,
+                        "safe_to_finish": False,
                         "reason": None,
-                        "loops": {
-                            loop.id: {
-                                "status": "running",
-                                "iterations": [
-                                    {
-                                        "iteration": 1,
-                                        "status": "running",
-                                        "task_runs": {
-                                            node_id: task_runs[node_id]
-                                            for node_id in loop.body
-                                        },
-                                    }
-                                ],
-                            }
-                            for loop in definition.loops
-                        },
+                        "response": None,
                     },
                 )
             )
-            session.add(AgentWorkflowSchedule(run_id=run_id))
-            for frozen in members.values():
-                member = frozen["member"]
-                session.add(
-                    ConversationV2(
-                        conversation_id=member["conversation_id"],
-                        platform_id="webchat",
-                        user_id=member["umo"],
-                        content=[],
-                        title=definition.name,
-                        persona_id=frozen["effective"].get("persona_id"),
-                    )
-                )
-                session.add(
-                    PlatformSession(
-                        session_id=member["session_id"],
-                        creator=username,
-                        display_name=definition.name,
-                        archived=1,
-                    )
-                )
-            for task in definition.tasks:
-                child_definition = {
-                    "name": task.name,
-                    "role_id": task.role_id,
-                    "role_version": task.role_version,
-                    "task": task.task,
-                    "overrides": task.overrides.model_dump(exclude_none=True),
-                    "required_inputs": definition.required_inputs,
-                }
-                if task.output_contract is not None:
-                    child_definition["output_contract"] = task.output_contract
-                session.add(
-                    AgentWorkflowRun(
-                        run_id=task_runs[task.id],
-                        owner_username=username,
-                        status="pending",
-                        snapshot={
-                            "engine": "human_task_v2"
-                            if task.human
-                            else "single_task_v2",
-                            "parent_run_id": run_id,
-                            "node_id": task.id,
-                            **(
-                                {"coordinator": True}
-                                if team and task.id == "coordinator"
-                                else {}
-                            ),
-                            **next(
-                                (
-                                    {"loop_id": loop.id, "iteration": 1}
-                                    for loop in definition.loops
-                                    if task.id in loop.body
-                                ),
-                                {},
-                            ),
-                            "asset_id": asset["asset_id"],
-                            "asset_version": asset["version"],
-                            "definition": child_definition,
-                            **(
-                                members[task.member]
-                                if task.human is None
-                                else {"human": task.human.model_dump()}
-                            ),
-                            "inputs": request.inputs,
-                            "input_artifacts": snapshot["input_artifacts"],
-                            "source": request.source,
-                            "initiator": username,
-                            "task": task.task,
-                        },
-                        state={
-                            "scope_id": scope_id,
-                            "task_id": task_runs[task.id],
-                            "attempt_id": uuid.uuid4().hex,
-                            "message_id": uuid.uuid4().hex,
-                            "safe_to_finish": False,
-                            "reason": None,
-                            "response": None,
-                        },
-                    )
-                )
-            session.add(
-                AgentWorkflowEvent(
-                    run_id=run_id, kind="run.started", data={"task_runs": task_runs}
-                )
+        session.add(
+            AgentWorkflowEvent(
+                run_id=run_id,
+                kind="scope.started" if parent_task is not None else "run.started",
+                data={
+                    "task_runs": task_runs,
+                    "scope_id": scope_id,
+                    "root_run_id": snapshot["root_run_id"],
+                    "parent_run_id": snapshot.get("parent_run_id"),
+                },
             )
-            await session.commit()
-        await self.advance_run(username, run_id)
-        return await self.get_run(username, run_id)
+        )
+        await session.flush()
+        return run_id
 
     async def _advance_loops(
         self, session: AsyncSession, root: AgentWorkflowRun, rows: dict
@@ -2135,7 +2446,8 @@ class WorkflowService:
                 )
                 continue
             if any(
-                row.status in {"pending", "running", "waiting_human"} for row in body
+                row.status in {"pending", "running", "waiting_human", "waiting_child"}
+                for row in body
             ):
                 loop["status"] = "running"
                 continue
@@ -2354,7 +2666,7 @@ class WorkflowService:
                 (
                     await session.execute(
                         select(AgentWorkflowMessage).where(
-                            AgentWorkflowMessage.root_run_id == root_id,
+                            AgentWorkflowMessage.root_run_id == _root_run_id(caller),
                             AgentWorkflowMessage.scope_id == caller.state["scope_id"],
                             AgentWorkflowMessage.recipient_member_id == sender_id,
                         )
@@ -2402,7 +2714,7 @@ class WorkflowService:
             previous = (
                 await session.execute(
                     select(AgentWorkflowMessage).where(
-                        AgentWorkflowMessage.root_run_id == root_id,
+                        AgentWorkflowMessage.root_run_id == _root_run_id(caller),
                         AgentWorkflowMessage.sender_member_id == sender_id,
                         AgentWorkflowMessage.request_id == request.request_id,
                     )
@@ -2420,7 +2732,7 @@ class WorkflowService:
                 return {"message_id": previous.message_id}
             message = AgentWorkflowMessage(
                 message_id=uuid.uuid4().hex,
-                root_run_id=root_id,
+                root_run_id=_root_run_id(caller),
                 scope_id=caller.state["scope_id"],
                 sender_member_id=sender_id,
                 recipient_member_id=request.recipient_member_id,
@@ -2489,7 +2801,7 @@ class WorkflowService:
                                 select(AgentWorkflowMessage)
                                 .where(
                                     AgentWorkflowMessage.root_run_id
-                                    == caller.snapshot.get("parent_run_id"),
+                                    == _root_run_id(caller),
                                     AgentWorkflowMessage.scope_id
                                     == caller.state["scope_id"],
                                     AgentWorkflowMessage.recipient_member_id
@@ -2721,6 +3033,8 @@ class WorkflowService:
                         snapshot={
                             "engine": "single_task_v2",
                             "parent_run_id": root.run_id,
+                            "root_run_id": _root_run_id(root),
+                            "depth": root.snapshot.get("depth", 0),
                             "node_id": node_id,
                             "created_by_task_id": caller.state["task_id"],
                             "asset_id": root.snapshot["asset_id"],
@@ -2832,31 +3146,27 @@ class WorkflowService:
                     await self._require_execution_owner(session, run_id, execution_id)
                     if control.status == "cancelled":
                         raise RoleAssetError("Run was cancelled", status=409)
-                    siblings = (
-                        (
-                            await session.execute(
-                                select(AgentWorkflowRun).where(
-                                    AgentWorkflowRun.snapshot[
-                                        "parent_run_id"
-                                    ].as_string()
-                                    == root_id,
-                                    col(AgentWorkflowRun.status) == "running",
-                                )
-                            )
-                        )
-                        .scalars()
-                        .all()
+                    whole_root = await session.get(
+                        AgentWorkflowRun, _root_run_id(caller)
                     )
+                    assert whole_root is not None
                     active = [
                         task
-                        for task in siblings
+                        for task in await _descendant_runs(session, whole_root)
                         if task.run_id != run_id
+                        and task.status == "running"
+                        and "member" in task.snapshot
                         and not task.state.get("capacity_released")
                     ]
                     role_limit = caller.snapshot["effective"].get("max_parallel")
                     if (
                         control.status == "active"
                         and len(active)
+                        < whole_root.snapshot["definition"]["max_parallel"]
+                        and sum(
+                            task.snapshot.get("parent_run_id") == root_id
+                            for task in active
+                        )
                         < observed["snapshot"]["definition"]["max_parallel"]
                         and (
                             role_limit is None
@@ -2885,12 +3195,15 @@ class WorkflowService:
             await self._await_execution_permission(username, run_id, execution_id)
             await asyncio.sleep(0.05)
 
-    async def advance_run(self, username: str, run_id: str) -> dict:
+    async def advance_run(
+        self, username: str, run_id: str, *, wake_parent: bool = True
+    ) -> dict:
         """Wake dependency scheduling; persistent claims make notifications idempotent.
 
         Args:
             username: Authenticated owner.
             run_id: Root graph run; no new attempt is created by a notification.
+            wake_parent: Notify the owning scope after a child changes or releases capacity.
 
         Returns:
             Current public run snapshot including skipped and blocked paths.
@@ -2899,6 +3212,7 @@ class WorkflowService:
             RoleAssetError: Run is inaccessible or is not a graph.
         """
         claimed = []
+        child_scopes = []
         # The revision guard serializes claims, including same-member exclusions,
         # across service objects. Notifications carry no execution authority.
         for _ in range(20):
@@ -2913,7 +3227,7 @@ class WorkflowService:
                 if control.status != "active":
                     await session.commit()
                     break
-                if root.status != "running":
+                if root.status not in {"running", "blocked"}:
                     break
                 schedule = await session.get(AgentWorkflowSchedule, run_id)
                 assert schedule is not None
@@ -2933,6 +3247,110 @@ class WorkflowService:
                     node_id: await session.get(AgentWorkflowRun, identity)
                     for node_id, identity in _current_task_runs(root).items()
                 }
+                whole_root = await session.get(AgentWorkflowRun, _root_run_id(root))
+                assert whole_root is not None
+                family = await _descendant_runs(session, whole_root)
+                # Child completion and the parent's exact output handoff share the
+                # admission transaction. A repeated wake cannot create or return twice.
+                for row in rows.values():
+                    if (
+                        row is None
+                        or row.status not in {"waiting_child", "blocked"}
+                        or not row.state.get("child_scope_run_id")
+                    ):
+                        continue
+                    child = await session.get(
+                        AgentWorkflowRun, row.state["child_scope_run_id"]
+                    )
+                    assert child is not None
+                    if row.status == "blocked" and child.status in {
+                        "running",
+                        "completed",
+                    }:
+                        root.status = "running"
+                        row.status = "waiting_child"
+                        descendants = {row.snapshot["node_id"]}
+                        while True:
+                            expanded = descendants | {
+                                edge["target"]
+                                for edge in definition["edges"]
+                                if edge["source"] in descendants
+                            }
+                            if expanded == descendants:
+                                break
+                            descendants = expanded
+                        for sibling in rows.values():
+                            if (
+                                sibling is not None
+                                and sibling.status == "dependency_failed"
+                                and sibling.snapshot["node_id"] in descendants
+                            ):
+                                sibling.status = "pending"
+                                sibling.state = {**sibling.state, "reason": None}
+                                session.add(sibling)
+                    if child.status == "completed":
+                        coordinator = await session.get(
+                            AgentWorkflowRun, _current_task_runs(child)["coordinator"]
+                        )
+                        assert (
+                            coordinator is not None and coordinator.result is not None
+                        )
+                        fields = validate_result(
+                            row.snapshot["definition"].get("output_contract"),
+                            coordinator.result,
+                        )
+                        if fields:
+                            row.status = "blocked"
+                            row.state = {
+                                **row.state,
+                                "reason": "Child output does not satisfy the declared contract.",
+                                "issues": fields,
+                            }
+                        else:
+                            row.result = copy.deepcopy(coordinator.result)
+                            row.status = "completed"
+                            row.state = {
+                                **row.state,
+                                "reason": None,
+                                "child_result_ref": {
+                                    "artifact_id": coordinator.run_id,
+                                    "version": 1,
+                                },
+                            }
+                            session.add(
+                                AgentWorkflowArtifact(
+                                    artifact_id=row.run_id,
+                                    version=1,
+                                    run_id=row.run_id,
+                                    submission_id=row.state["attempt_id"],
+                                    contract=row.snapshot["definition"].get(
+                                        "output_contract"
+                                    ),
+                                    content=row.result,
+                                )
+                            )
+                        session.add(row)
+                        session.add(
+                            AgentWorkflowEvent(
+                                run_id=row.run_id,
+                                kind="child.returned",
+                                data={
+                                    "child_scope_run_id": child.run_id,
+                                    "attempt_id": row.state["attempt_id"],
+                                    "status": row.status,
+                                },
+                            )
+                        )
+                    elif child.status in {"blocked", "cancelled"}:
+                        row.status = "blocked"
+                        row.state = {
+                            **row.state,
+                            "reason": "Child scope requires attention: "
+                            + (child.state.get("reason") or child.status),
+                        }
+                        session.add(row)
+                    else:
+                        child_scopes.append(child.run_id)
                 # A saved answer is consumed under the same root admission lock
                 # as successor claims. Pause retains it; cancel cannot release it.
                 for row in rows.values():
@@ -2991,9 +3409,10 @@ class WorkflowService:
                 await self._advance_loops(session, root, rows)
                 active = [
                     row
-                    for row in rows.values()
+                    for row in family
                     if row is not None
                     and row.status == "running"
+                    and "member" in row.snapshot
                     and not row.state.get("capacity_released")
                 ]
                 occupied = {row.snapshot["member"]["member_id"] for row in active}
@@ -3035,7 +3454,12 @@ class WorkflowService:
                                 if loop_status != "passed":
                                     failed = True
                                     continue
-                            if source.status in {"pending", "running", "waiting_human"}:
+                            if source.status in {
+                                "pending",
+                                "running",
+                                "waiting_human",
+                                "waiting_child",
+                            }:
                                 unresolved = True
                             elif source.status == "completed":
                                 rule = edge.get("condition")
@@ -3083,7 +3507,7 @@ class WorkflowService:
                                     # reference; never substitute the latest one.
                                 todo = AgentWorkflowTodo(
                                     todo_id=row.run_id,
-                                    root_run_id=run_id,
+                                    root_run_id=_root_run_id(root),
                                     task_run_id=row.run_id,
                                     data={
                                         "kind": human["kind"],
@@ -3115,11 +3539,19 @@ class WorkflowService:
                                 )
                                 progress = True
                                 continue
-                            member_id = row.snapshot["member"]["member_id"]
-                            role_id = row.snapshot["definition"]["role_id"]
-                            role_limit = row.snapshot["effective"].get("max_parallel")
-                            if (
-                                len(active) >= definition["max_parallel"]
+                            member_id = row.snapshot.get("member", {}).get("member_id")
+                            role_id = row.snapshot["definition"].get("role_id")
+                            role_limit = row.snapshot.get("effective", {}).get(
+                                "max_parallel"
+                            )
+                            if not task.get("team") and (
+                                len(active)
+                                >= whole_root.snapshot["definition"]["max_parallel"]
+                                or sum(
+                                    item.snapshot.get("parent_run_id") == run_id
+                                    for item in active
+                                )
+                                >= definition["max_parallel"]
                                 or member_id in occupied
                                 or (
                                     role_limit is not None
@@ -3136,6 +3568,8 @@ class WorkflowService:
                             refs = list(
                                 row.snapshot.get("input_artifacts", [])
                                 if retrying
+                                else []
+                                if task.get("team")
                                 else root.snapshot.get("input_artifacts", [])
                             )
                             if root.snapshot.get("team_definition") and not retrying:
@@ -3184,6 +3618,73 @@ class WorkflowService:
                                     **row.state,
                                     "reason": "A declared result input belongs to a skipped path.",
                                 }
+                            elif task.get("team"):
+                                frozen = copy.deepcopy(
+                                    root.snapshot["child_assets"][task["id"]]
+                                )
+                                frozen["inputs"] = {
+                                    key: inputs[key] for key in task["inputs"]
+                                }
+                                # Hand off declared values and only their exact input
+                                # references; ancestry grants no ambient context access.
+                                frozen["input_artifacts"] = refs
+                                row.snapshot = {
+                                    **row.snapshot,
+                                    "inputs": frozen["inputs"],
+                                    "input_artifacts": refs,
+                                }
+                                try:
+                                    depth = root.snapshot.get("depth", 0) + 1
+                                    if depth > whole_root.snapshot["definition"].get(
+                                        "max_depth", 3
+                                    ):
+                                        raise RoleAssetError(
+                                            "Nested team exceeds the frozen depth limit"
+                                        )
+                                    for member in [
+                                        *frozen["members"].values(),
+                                        *frozen.get("allowed_roles", {}).values(),
+                                    ]:
+                                        await self.roles.validate_frozen_role(
+                                            member["role"]
+                                        )
+                                        if (
+                                            member["effective"].get("max_depth")
+                                            is not None
+                                            and depth > member["effective"]["max_depth"]
+                                        ):
+                                            raise RoleAssetError(
+                                                "Nested team exceeds the frozen role depth limit"
+                                            )
+                                    child_id = await self._create_scope(
+                                        session,
+                                        username,
+                                        frozen,
+                                        root_run_id=whole_root.run_id,
+                                        parent_task=row,
+                                        depth=depth,
+                                    )
+                                except RoleAssetError as exc:
+                                    row.status = "blocked"
+                                    row.state = {
+                                        **row.state,
+                                        "reason": str(exc),
+                                        "issues": exc.fields,
+                                    }
+                                else:
+                                    row.snapshot = {
+                                        **row.snapshot,
+                                        "inputs": frozen["inputs"],
+                                        "input_artifacts": refs,
+                                    }
+                                    row.status = "waiting_child"
+                                    row.state = {
+                                        **row.state,
+                                        "child_scope_run_id": child_id,
+                                        "capacity_released": True,
+                                        "reason": "Waiting for child team results.",
+                                    }
+                                    child_scopes.append(child_id)
                             else:
                                 row.snapshot = {
                                     **row.snapshot,
@@ -3218,7 +3719,8 @@ class WorkflowService:
                 )
                 if all(
                     row is not None
-                    and row.status not in {"pending", "running", "waiting_human"}
+                    and row.status
+                    not in {"pending", "running", "waiting_human", "waiting_child"}
                     for row in rows.values()
                 ):
                     success = loop_success and all(
@@ -3261,6 +3763,17 @@ class WorkflowService:
             )
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+        for identity in dict.fromkeys(child_scopes):
+            child = await self.advance_run(username, identity, wake_parent=False)
+            if child["status"] in {"completed", "blocked"}:
+                return await self.advance_run(username, run_id, wake_parent=wake_parent)
+        if wake_parent and root.snapshot.get("parent_run_id"):
+            async with self.db.get_db() as session:
+                caller = await session.get(
+                    AgentWorkflowRun, root.snapshot["parent_run_id"]
+                )
+                assert caller is not None
+            await self.advance_run(username, caller.snapshot["parent_run_id"])
         current = await self.get_run(username, run_id)
         if current["control"]["status"] == "active":
             for child in current.get("tasks", []):
@@ -3651,7 +4164,7 @@ class WorkflowService:
                         await session.execute(
                             select(AgentWorkflowMessage).where(
                                 AgentWorkflowMessage.root_run_id
-                                == consumer.snapshot.get("parent_run_id"),
+                                == _root_run_id(consumer),
                                 AgentWorkflowMessage.scope_id
                                 == consumer.state["scope_id"],
                                 AgentWorkflowMessage.recipient_member_id
@@ -4008,6 +4521,10 @@ class WorkflowService:
                 "Answer the persistent human request instead of recovering an agent checkpoint",
                 status=409,
             )
+        if run["snapshot"]["engine"] == "team_call_v2":
+            raise RoleAssetError(
+                "Recover the interrupted task inside the child scope", status=409
+            )
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is not None:
@@ -4057,16 +4574,24 @@ class WorkflowService:
                     .scalars()
                     .all()
                 )
+                whole_root = await session.get(AgentWorkflowRun, _root_run_id(row))
+                assert whole_root is not None
                 active = [
                     task
-                    for task in siblings
+                    for task in await _descendant_runs(session, whole_root)
                     if task.status == "running"
+                    and "member" in task.snapshot
                     and not task.state.get("capacity_released")
                 ]
                 role_id = row.snapshot["definition"]["role_id"]
                 role_limit = row.snapshot["effective"].get("max_parallel")
                 if not row.state.get("capacity_released") and (
-                    len(active) >= parent.snapshot["definition"]["max_parallel"]
+                    len(active) >= whole_root.snapshot["definition"]["max_parallel"]
+                    or sum(
+                        task.snapshot.get("parent_run_id") == parent_id
+                        for task in active
+                    )
+                    >= parent.snapshot["definition"]["max_parallel"]
                     or any(
                         task.snapshot["member"]["member_id"]
                         == row.snapshot["member"]["member_id"]
@@ -4670,7 +5195,7 @@ class WorkflowService:
                 }
                 if (
                     message is None
-                    or message.root_run_id != row.snapshot.get("parent_run_id")
+                    or message.root_run_id != _root_run_id(row)
                     or message.scope_id != row.state["scope_id"]
                     or message.recipient_member_id
                     != row.snapshot["member"]["member_id"]
@@ -5237,7 +5762,10 @@ class WorkflowService:
                     now = time.monotonic()
                     async with self.db.get_db() as session:
                         decision = await session.get(
-                            AgentWorkflowControl, snapshot.get("parent_run_id", run_id)
+                            AgentWorkflowControl,
+                            snapshot.get(
+                                "root_run_id", snapshot.get("parent_run_id", run_id)
+                            ),
                         )
                         paused = decision is not None and decision.status == "paused"
                         cancelled = (

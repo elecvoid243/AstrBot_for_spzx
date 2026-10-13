@@ -395,10 +395,21 @@
               :label="tm('graph.parallel')"
               style="max-width: 220px"
             />
+            <v-text-field
+              v-model.number="graphForm.max_depth"
+              type="number"
+              min="1"
+              max="20"
+              :label="tm('child.maxDepth')"
+              style="max-width: 220px"
+            />
           </div>
           <WorkflowGraphCanvas
             v-model:definition="graphForm"
             :roles="roles"
+            :teams="
+              assets.filter((asset) => asset.definition.kind === 'autonomous')
+            "
             @validation="graphInvalid = $event"
           />
           <v-alert
@@ -636,6 +647,7 @@ const allRunTasks = computed<any[]>(() => [
   ...new Map(
     [
       ...(selectedRun.value?.tasks ?? []),
+      ...(selectedRun.value?.scopes ?? []).flatMap((scope: any) => scope.tasks),
       ...(selectedRun.value?.loops ?? []).flatMap((loop: any) =>
         loop.iterations.flatMap((iteration: any) => iteration.tasks),
       ),
@@ -659,6 +671,7 @@ const graphForm = ref<GraphDefinition>({
   name: "",
   required_inputs: [],
   max_parallel: 4,
+  max_depth: 3,
   tasks: [],
   edges: [],
 });
@@ -814,7 +827,14 @@ function editGraph(asset: any) {
   editingAsset.value = asset;
   graphForm.value = asset
     ? JSON.parse(JSON.stringify(asset.definition))
-    : { name: "", required_inputs: [], max_parallel: 4, tasks: [], edges: [] };
+    : {
+        name: "",
+        required_inputs: [],
+        max_parallel: 4,
+        max_depth: 3,
+        tasks: [],
+        edges: [],
+      };
   graphInputNames.value = graphForm.value.required_inputs?.join(", ") ?? "";
   formError.value = "";
   graphInvalid.value = false;

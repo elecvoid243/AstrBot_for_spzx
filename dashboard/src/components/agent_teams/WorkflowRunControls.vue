@@ -153,8 +153,13 @@ const terminal = computed(
     status.value === "cancelled" ||
     ["completed", "cancelled"].includes(props.run.status),
 );
-const failed = computed(() =>
-  ["failed", "awaiting_result", "blocked"].includes(props.task.status),
+const failed = computed(
+  () =>
+    ["failed", "awaiting_result", "blocked"].includes(props.task.status) &&
+    !(
+      props.task.snapshot?.engine === "team_call_v2" &&
+      props.task.state.child_scope_run_id
+    ),
 );
 const uncertain = computed(() =>
   (props.task.tool_calls ?? []).some(

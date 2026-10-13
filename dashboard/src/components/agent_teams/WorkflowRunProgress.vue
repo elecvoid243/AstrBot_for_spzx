@@ -15,6 +15,12 @@
             Object.values(run.snapshot.inputs ?? {}).join(" · ")
           }}
         </p>
+        <p v-if="run.usage" class="text-caption mt-2">
+          {{ tm("child.modelCalls") }}:
+          {{ run.usage.model_calls ?? tm("child.unknownUsage") }} ·
+          {{ tm("child.steps") }}:
+          {{ run.usage.steps_used ?? tm("child.unknownUsage") }}
+        </p>
       </div>
       <v-chip
         variant="tonal"
@@ -55,7 +61,14 @@
               'run-task-selected':
                 task.node_id === selectedTask || task.run_id === selectedTask,
             }"
-            @click="$emit('select', task.node_id ?? null)"
+            @click="
+              $emit(
+                'select',
+                task.snapshot.parent_run_id !== run.run_id
+                  ? task.run_id
+                  : task.node_id ?? null,
+              )
+            "
           >
             <v-icon
               :icon="
@@ -109,7 +122,14 @@
               v-for="task in waiting"
               :key="task.run_id"
               class="run-waiting run-text text-left"
-              @click="$emit('select', task.node_id ?? null)"
+              @click="
+                $emit(
+                  'select',
+                  task.snapshot.parent_run_id !== run.run_id
+                    ? task.run_id
+                    : task.node_id ?? null,
+                )
+              "
             >
               <strong>{{ task.snapshot.definition.name }}</strong>
               <p class="mt-1">
@@ -141,11 +161,55 @@
       </aside>
     </div>
     <WorkflowLoopHistory :run="run" @select="$emit('select', $event)" />
+    <details
+      v-for="scope in run.scopes ?? []"
+      :key="scope.run_id"
+      class="child-scope mt-4 pa-3"
+      data-testid="child-scope"
+    >
+      <summary class="run-text">
+        {{ tm("child.scope") }}:
+        {{
+          run.tasks.find(
+            (task: any) => task.run_id === scope.snapshot.parent_run_id,
+          )?.snapshot.definition.name
+        }}
+        → {{ scope.snapshot.definition.name }} · v{{
+          scope.snapshot.asset_version
+        }}
+        · {{ tm(`v2.states.${scope.status}`) }}
+      </summary>
+      <p class="run-text text-caption my-3">
+        {{ tm("child.root") }}: {{ scope.control.root_run_id }} ·
+        {{ tm("child.scope") }}: {{ scope.state.scope_id }}
+      </p>
+      <p v-if="scope.state.reason" class="run-text mb-3">
+        {{ scope.state.reason }}
+      </p>
+      <WorkflowGraphCanvas
+        :definition="scope.runtime_definition ?? scope.snapshot.definition"
+        :tasks="scope.tasks"
+        :dispatch-tasks="
+          scope.tasks
+            .filter((task: any) => task.snapshot.created_by_task_id)
+            .map((task: any) => task.node_id)
+        "
+        readonly
+        @select-task="
+          $emit(
+            'select',
+            scope.tasks.find((task: any) => task.node_id === $event)?.run_id ??
+              null,
+          )
+        "
+      />
+    </details>
     <details v-if="run.snapshot.definition.tasks" class="mt-4">
       <summary>{{ tm("progress.graph") }}</summary>
       <WorkflowGraphCanvas
         :definition="run.runtime_definition ?? run.snapshot.definition"
         :tasks="run.tasks"
+        :child-assets="run.snapshot.child_assets ?? {}"
         :dispatch-tasks="
           run.snapshot.team_definition
             ? run.tasks
@@ -169,11 +233,15 @@ import WorkflowLoopHistory from "./WorkflowLoopHistory.vue";
 const props = defineProps<{ run: any; selectedTask: string | null }>();
 defineEmits<{ select: [nodeId: string | null] }>();
 const { tm } = useModuleI18n("features/agent-teams");
-const tasks = computed<any[]>(() => props.run.tasks ?? [props.run]);
+const tasks = computed<any[]>(() => [
+  ...(props.run.tasks ?? [props.run]),
+  ...(props.run.scopes ?? []).flatMap((scope: any) => scope.tasks),
+]);
 const waiting = computed(() =>
   tasks.value.filter(
     (task) =>
-      !["pending", "running", "completed", "skipped"].includes(task.status),
+      !["pending", "running", "completed", "skipped"].includes(task.status) ||
+      (task.status === "running" && task.state.capacity_released),
   ),
 );
 const progress = computed(
@@ -202,6 +270,10 @@ const members = computed(() =>
 </script>
 
 <style scoped>
+.child-scope {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+}
 .run-name {
   min-width: 0;
   overflow-wrap: anywhere;

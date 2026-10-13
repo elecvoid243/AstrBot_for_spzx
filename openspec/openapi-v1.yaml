@@ -9054,6 +9054,12 @@ components:
           minimum: 1
           title: Max Parallel
           type: integer
+        max_depth:
+          default: 3
+          maximum: 20
+          minimum: 1
+          title: Max Depth
+          type: integer
         tasks:
           items:
             $ref: '#/components/schemas/GraphTask'
@@ -9099,51 +9105,61 @@ components:
       title: GraphEdge
       type: object
     GraphTask:
+      additionalProperties: false
+      description: A task bound to a named member instance with a fixed role version.
       properties:
         id:
-          type: string
           maxLength: 128
           minLength: 1
           pattern: ^[a-zA-Z][\w-]*$
           title: Id
-        name:
           type: string
+        name:
           maxLength: 128
           minLength: 1
           title: Name
-        member:
           type: string
+        member:
+          default: ''
           maxLength: 128
           title: Member
-          default: ''
+          type: string
         role_id:
           anyOf:
-          - type: string
-            maxLength: 128
+          - maxLength: 128
             minLength: 1
+            type: string
           - type: 'null'
+          default: null
           title: Role Id
         role_version:
           anyOf:
-          - type: integer
-            minimum: 1.0
+          - minimum: 1
+            type: integer
           - type: 'null'
+          default: null
           title: Role Version
         task:
-          type: string
+          default: ''
           maxLength: 100000
           title: Task
-          default: ''
+          type: string
         human:
           anyOf:
           - $ref: '#/components/schemas/HumanTask'
           - type: 'null'
+          default: null
+        team:
+          anyOf:
+          - $ref: '#/components/schemas/TeamCall'
+          - type: 'null'
+          default: null
         inputs:
           additionalProperties:
             $ref: '#/components/schemas/TaskInput'
-          type: object
           maxProperties: 30
           title: Inputs
+          type: object
         overrides:
           $ref: '#/components/schemas/RoleOverrides'
         output_contract:
@@ -9151,6 +9167,7 @@ components:
           - additionalProperties: true
             type: object
           - type: 'null'
+          default: null
           title: Output Contract
         position:
           additionalProperties:
@@ -9159,15 +9176,13 @@ components:
             enum:
             - x
             - y
-          type: object
           title: Position
-      additionalProperties: false
-      type: object
+          type: object
       required:
       - id
       - name
       title: GraphTask
-      description: A task bound to a named member instance with a fixed role version.
+      type: object
     TaskInput:
       additionalProperties: false
       description: A declared workflow input or an upstream validated result field.
@@ -9601,4 +9616,23 @@ components:
       - coordinator
       - allowed_roles
       title: AutonomousDefinition
+      type: object
+
+    TeamCall:
+      additionalProperties: false
+      description: An exact autonomous asset version invoked in an independent scope.
+      properties:
+        asset_id:
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+          type: string
+        version:
+          minimum: 1
+          title: Version
+          type: integer
+      required:
+      - asset_id
+      - version
+      title: TeamCall
       type: object

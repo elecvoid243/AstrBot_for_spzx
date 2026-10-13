@@ -41,6 +41,14 @@ class HumanTask(BaseModel):
     artifact_version: int = Field(default=1, ge=1)
 
 
+class TeamCall(BaseModel):
+    """An exact autonomous asset version invoked in an independent scope."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    asset_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+
+
 class GraphTask(BaseModel):
     """A task bound to a named member instance with a fixed role version."""
 
@@ -52,6 +60,7 @@ class GraphTask(BaseModel):
     role_version: int | None = Field(default=None, ge=1)
     task: str = Field(default="", max_length=100_000)
     human: HumanTask | None = None
+    team: TeamCall | None = None
     inputs: dict[str, TaskInput] = Field(default_factory=dict, max_length=30)
     overrides: RoleOverrides = Field(default_factory=RoleOverrides)
     output_contract: dict | None = None
@@ -67,7 +76,19 @@ class GraphTask(BaseModel):
         Raises:
             ValueError: The selected node kind has missing or conflicting fields.
         """
-        if self.human is None:
+        if self.team is not None:
+            if (
+                self.human is not None
+                or self.member
+                or self.role_id
+                or self.role_version
+                or self.task
+                or self.overrides.model_dump(exclude_none=True)
+            ):
+                raise ValueError(
+                    "Team calls cannot also configure agent or human execution"
+                )
+        elif self.human is None:
             if (
                 not self.member
                 or not self.role_id
@@ -156,6 +177,7 @@ class GraphDefinition(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
     max_parallel: int = Field(default=4, ge=1, le=100)
+    max_depth: int = Field(default=3, ge=1, le=20)
     tasks: list[GraphTask] = Field(min_length=1, max_length=100)
     edges: list[GraphEdge] = Field(default_factory=list, max_length=500)
     loops: list[GraphLoop] = Field(default_factory=list, max_length=30)
@@ -443,7 +465,7 @@ def validate_graph(definition: GraphDefinition) -> None:
                 )
             continue
         config = (task.role_id, task.role_version, task.overrides.model_dump())
-        if task.member in members and members[task.member] != config:
+        if not task.team and task.member in members and members[task.member] != config:
             fields.append(
                 {
                     "path": path + ".member",
@@ -451,7 +473,8 @@ def validate_graph(definition: GraphDefinition) -> None:
                     "message": "A member must use the same frozen role and configuration across tasks",
                 }
             )
-        members[task.member] = config
+        if not task.team:
+            members[task.member] = config
         for key, ref in task.inputs.items():
             try:
                 if not key.isidentifier():

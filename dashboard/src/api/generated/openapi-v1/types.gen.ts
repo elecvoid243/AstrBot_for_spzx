@@ -510,6 +510,7 @@ export type GraphDefinition = {
     name: string;
     required_inputs?: Array<(string)>;
     max_parallel?: number;
+    max_depth?: number;
     tasks: Array<GraphTask>;
     edges?: Array<GraphEdge>;
     loops?: Array<GraphLoop>;
@@ -548,6 +549,7 @@ export type GraphTask = {
     role_version?: (number | null);
     task?: string;
     human?: (HumanTask | null);
+    team?: (TeamCall | null);
     inputs?: {
         [key: string]: TaskInput;
     };
@@ -1058,6 +1060,14 @@ export type TaskInput = {
     input?: (string | null);
     task_id?: (string | null);
     field?: string;
+};
+
+/**
+ * An exact autonomous asset version invoked in an independent scope.
+ */
+export type TeamCall = {
+    asset_id: string;
+    version: number;
 };
 
 /**

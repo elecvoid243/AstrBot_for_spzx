@@ -18,7 +18,7 @@ In **Independent Runs → View Run**, inspect dynamically created tasks and **Me
 
 Waiting releases active execution capacity, including at a concurrency limit of one. **Waiting for members** is a local wait. Pause, continue, cancel, same-Attempt recovery, explicit retry and unknown-tool decisions retain the shared workflow semantics below. Failed member tasks and unknown calls prevent success. Edited templates affect new runs; dynamic members in an existing run use the original frozen templates and settings. Required final approval uses the existing persistent human-request controls.
 
-For the versioned autonomous path, **team sidebar / Run Monitor → Workflow Assets → New Autonomous Team / Independent Runs → View Run**. Older records and entry points remain separate until migration. Direct member communication and nested asset calls are handled in later work.
+For the versioned autonomous path, **team sidebar / Run Monitor → Workflow Assets → New Autonomous Team / Independent Runs → View Run**. Older records and entry points remain separate until migration. Member communication and workflow calls to autonomous teams use the versioned paths described below.
 
 ![Autonomous run on a narrow screen](/images/agent-autonomous-mobile.jpg)
 
@@ -28,7 +28,7 @@ Choose **New Canvas Workflow**. Enter the workflow name, required text inputs an
 
 Connect a task's right handle to another task's left handle. Choose a dependency by clicking its edge or using **Select dependency** and enable **Field condition** to compare a validated output field. Conditions use `eq`, `ne`, `gt`, `ge`, `lt` or `le` with a correctly typed value, without evaluating code. Fields must be required scalars in the source output contract; nested objects, local schema references and `allOf` may declare these fields. Ordered comparisons require numeric fields.
 
-Use **Add input reference** to assign an alias to a workflow input or an upstream result field; insert `{alias}` into task instructions. Result references require a dependency path. The producer's original artifact version is pinned when the consumer starts, and its complete content remains available through `read_task_artifact`. Revising the producer does not change or rerun its consumers. Save validation reports specific field paths for invalid references, conditions and unbounded back edges. The canvas supports acyclic dependencies, persistent human requests and explicit bounded loop bodies. Nested calls connect in subsequent tasks.
+Use **Add input reference** to assign an alias to a workflow input or an upstream result field; insert `{alias}` into task instructions. Result references require a dependency path. The producer's original artifact version is pinned when the consumer starts, and its complete content remains available through `read_task_artifact`. Revising the producer does not change or rerun its consumers. Save validation reports specific field paths for invalid references, conditions and unbounded back edges. The canvas supports acyclic dependencies, persistent human requests, explicit bounded loop bodies and pinned autonomous team calls.
 
 Use the canvas controls to zoom and fit; the toolbar provides minimap visibility, undo/redo and dependency-based automatic layout. Node positions and properties are saved with the asset version. On narrow screens the toolbox and properties collapse into sections. Choose **Save New Version**, then **Start Run** from the saved asset. Saving does not execute the graph, and later edits do not change an existing run.
 
@@ -39,6 +39,30 @@ In **Independent Runs**, the graph is a read-only frozen snapshot. Select a task
 ![Actual run graph with completed tasks, a skipped path and pinned input versions](/images/agent-workflow-graph-run-en.jpg)
 
 At startup, accepted task submissions at saved safe points finish idempotently. Other abandoned task attempts become interrupted. Pending independent branches can still advance from persisted state. Select an interrupted task to continue its original attempt from a saved built-in model boundary. A new execution owner prevents the abandoned executor from publishing late results.
+
+## Call an autonomous team from a workflow
+
+Save a ready autonomous team first. In **Workflow Assets → New Canvas Workflow**, choose **Call autonomous team** in the role toolbox. Select the node to choose its **Pinned child team asset** and **Pinned team version**. Declare exactly the inputs required by that version, using workflow inputs or upstream result fields with dependency paths. The output contract comes from the chosen team version. Expand the team definition above the canvas to inspect its pinned coordinator and allowed roles; collapse it to keep the parent graph compact.
+
+Set **Root nesting depth limit** and **Maximum concurrent tasks**, then **Save New Version**. Reopening retains the selected version, references and layout. A run freezes every child definition, role configuration and resource binding before dispatch. Editing the child later affects new runs. Declared multiline inputs and literal braces reach its coordinator unchanged.
+
+![A newly authored fixed-version child call in the actual canvas](/images/agent-workflow-child-editor-en.jpg)
+
+In **Independent Runs → View Run**, progress includes the actual child coordinator and dynamically dispatched member tasks. Expand **Child scope** to see the calling parent, exact asset version, root run identity and child task graph. Select a child task from progress, its graph or **Inspect task** to read full artifacts, attempts and process records. The parent call returns the child's original validated artifact through the declared output contract; downstream inputs pin that returned version.
+
+![The actual parent/child relationship and child execution graph](/images/agent-workflow-child-run-en.jpg)
+
+Parent waits release root execution capacity, so a root limit of one still permits child tasks to complete. A child human request, provider failure or unknown external effect leaves independent parent branches ready. Handle child human requests in the root run's **Human requests** section; select the affected child task to recover, retry or resolve an unknown tool. Retrying a child task creates a new Attempt in the existing scope. Saved model-call and step counts include child tasks and prior attempts; unavailable counts display **Unknown**. Detailed budget reporting is added separately.
+
+Whole-run pause, continue and cancel apply to every scope and executor. A paused answer remains saved until continuation; other local waits remain. Recovery uses the original child scope, Attempt and frozen inputs. Different scopes have independent members and conversations. Ancestry grants no cross-scope message or artifact access; only declared exact input/output references cross the boundary. Coordinator calls to saved workflows are added separately.
+
+![A child wait and its human request in the actual WebUI](/images/agent-workflow-child-wait.jpg)
+
+![Saved child approval during a whole-run pause in the dark theme](/images/agent-workflow-child-dark.jpg)
+
+![Long child task names and wait labels on a narrow screen](/images/agent-workflow-child-mobile.jpg)
+
+![An unknown child tool blocks dependent paths while independent parent work completes](/images/agent-workflow-child-error.jpg)
 
 ## Run progress and member process
 

@@ -315,7 +315,8 @@
       "dependency_failed": "Upstream task failed",
       "cancelled": "Cancelled",
       "waiting_human": "Waiting for human",
-      "rejected": "Human rejected"
+      "rejected": "Human rejected",
+      "waiting_child": "Waiting for child team"
     },
     "contract": "Output contract (JSON Schema)",
     "contractHint": "Leave empty for non-empty text. Use an object schema for structured results; files contains stable file_id references.",
@@ -537,5 +538,19 @@
     "dispatched": "Dispatched",
     "name": "Team name",
     "coordinatorCount": "Includes the coordinator."
+  },
+  "child": {
+    "call": "Call autonomous team",
+    "asset": "Pinned child team asset",
+    "version": "Pinned team version",
+    "independent": "Independent scope and members",
+    "contractHint": "The child receives declared inputs and returns its pinned output contract. Parent waits release root capacity; member contexts stay independent.",
+    "unavailable": "The pinned team version is unavailable. Choose an accessible version.",
+    "maxDepth": "Root nesting depth limit",
+    "scope": "Child scope",
+    "root": "Root run",
+    "modelCalls": "Saved model calls",
+    "steps": "Saved execution steps",
+    "unknownUsage": "Unknown"
   }
 }

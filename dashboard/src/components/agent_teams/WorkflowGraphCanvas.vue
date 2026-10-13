@@ -72,6 +72,49 @@
       "
       @toggle="toggleLoop"
     />
+    <details
+      v-for="task in draft.tasks.filter((item) => item.team)"
+      :key="task.id"
+      class="graph-child-preview ma-3 pa-3"
+      data-testid="team-call-preview"
+    >
+      <summary class="text-wrap">
+        {{ task.name }} →
+        {{
+          pinnedTeams[`${task.team!.asset_id}:${task.team!.version}`]
+            ?.definition.name ?? task.team!.asset_id
+        }}
+        · v{{ task.team!.version }} · {{ tm("child.independent") }}
+      </summary>
+      <template
+        v-if="pinnedTeams[`${task.team!.asset_id}:${task.team!.version}`]"
+      >
+        <p class="text-body-2 mt-3">{{ tm("child.contractHint") }}</p>
+        <p class="text-body-2 mt-2">
+          {{ tm("autonomous.coordinator") }}:
+          {{
+            pinnedTeams[`${task.team!.asset_id}:${task.team!.version}`]
+              .definition.coordinator.role_id
+          }}
+          · v{{
+            pinnedTeams[`${task.team!.asset_id}:${task.team!.version}`]
+              .definition.coordinator.role_version
+          }}
+        </p>
+        <p
+          v-for="role in pinnedTeams[
+            `${task.team!.asset_id}:${task.team!.version}`
+          ].definition.allowed_roles"
+          :key="role.role_id"
+          class="text-body-2 mt-2"
+        >
+          {{ tm("autonomous.allowedRoles") }}: {{ role.role_id }} · v{{
+            role.role_version
+          }}
+        </p>
+      </template>
+      <p v-else class="text-body-2 mt-3">{{ tm("child.unavailable") }}</p>
+    </details>
     <v-alert
       v-if="localError || Object.keys(contractErrors).length"
       type="error"
@@ -99,6 +142,18 @@
           data-testid="add-human-approval"
           @click="addTask('human:approval')"
           >{{ tm("human.approvalNode") }}</v-btn
+        >
+        <v-btn
+          v-for="team in teams"
+          :key="team.asset_id"
+          variant="tonal"
+          size="small"
+          class="graph-team-button mb-3"
+          data-testid="add-team-call"
+          @click="addTask(`team:${team.asset_id}`)"
+          >{{ tm("child.call") }}: {{ team.definition.name }} · v{{
+            team.version
+          }}</v-btn
         >
         <button
           v-for="role in roles"
@@ -158,7 +213,7 @@
             @update:model-value="checkpoint"
           />
           <v-select
-            v-if="!selectedTask.human"
+            v-if="!selectedTask.human && !selectedTask.team"
             v-model="selectedTask.role_id"
             :items="roles"
             item-title="definition.name"
@@ -168,7 +223,7 @@
             @update:model-value="changeRole"
           />
           <v-select
-            v-if="!selectedTask.human"
+            v-if="!selectedTask.human && !selectedTask.team"
             v-model="selectedTask.role_version"
             :items="selectedRole?.versions ?? [selectedTask.role_version]"
             :label="tm('v2.roleVersion')"
@@ -176,7 +231,7 @@
             @update:model-value="checkpoint"
           />
           <v-text-field
-            v-if="!selectedTask.human"
+            v-if="!selectedTask.human && !selectedTask.team"
             v-model="selectedTask.member"
             :label="tm('graph.memberKey')"
             :hint="tm('graph.memberHint')"
@@ -185,7 +240,7 @@
             @update:model-value="checkpoint"
           />
           <v-textarea
-            v-if="!selectedTask.human"
+            v-if="!selectedTask.human && !selectedTask.team"
             v-model="selectedTask.task"
             :label="tm('v2.task')"
             :hint="tm('v2.taskHint')"
@@ -195,6 +250,31 @@
             class="mt-4"
             @update:model-value="checkpoint"
           />
+          <template v-if="selectedTask.team">
+            <v-select
+              :model-value="selectedTask.team.asset_id"
+              :items="teams"
+              item-title="definition.name"
+              item-value="asset_id"
+              :label="tm('child.asset')"
+              data-testid="team-call-asset"
+              @update:model-value="changeTeam($event)"
+            />
+            <v-select
+              :model-value="selectedTask.team.version"
+              :items="
+                teams.find(
+                  (team) => team.asset_id === selectedTask?.team?.asset_id,
+                )?.versions ?? [selectedTask.team.version]
+              "
+              :label="tm('child.version')"
+              data-testid="team-call-version"
+              @update:model-value="
+                changeTeam(selectedTask!.team!.asset_id, $event)
+              "
+            />
+            <p class="text-caption my-3">{{ tm("child.contractHint") }}</p>
+          </template>
           <template v-if="selectedTask.human">
             <v-textarea
               v-model="selectedTask.human.question"
@@ -310,6 +390,7 @@
                   : '')
               "
               :label="tm('v2.contract')"
+              :readonly="!!selectedTask.team"
               :hint="tm('v2.contractHint')"
               persistent-hint
               rows="5"
@@ -394,17 +475,22 @@ import type { FlowNode } from "./TeamsFlowCanvas.vue";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { collabMemberColor } from "@/utils/memberColors";
+import { workflowAssetsApi } from "@/api/workflowAssets";
 
 const props = withDefaults(
   defineProps<{
     definition: GraphDefinition;
     roles?: any[];
+    teams?: any[];
+    childAssets?: Record<string, any>;
     readonly?: boolean;
     tasks?: any[];
     dispatchTasks?: string[];
   }>(),
   {
     roles: () => [],
+    teams: () => [],
+    childAssets: () => ({}),
     readonly: false,
     tasks: () => [],
     dispatchTasks: () => [],
@@ -429,6 +515,8 @@ const contractErrors = ref<Record<string, string>>({});
 const contractTexts = ref<Record<string, string>>({});
 const aliasTexts = ref<Record<string, string>>({});
 const inputRenderKeys = ref<Record<string, string>>({});
+const pinnedTeams = ref<Record<string, any>>({});
+const teamReadError = ref(false);
 const narrow = window.matchMedia?.("(max-width: 1000px)").matches ?? false;
 const history = ref<string[]>([JSON.stringify(draft.value)]);
 const historyIndex = ref(0);
@@ -467,7 +555,9 @@ const taskNodes = computed<FlowNode[]>(() =>
       },
       data: {
         label: task.name,
-        memberName: task.human
+        memberName: task.team
+          ? tm("child.independent")
+          : task.human
           ? tm(`human.${task.human.kind}Node`)
           : `${
               role?.definition.name ??
@@ -475,9 +565,14 @@ const taskNodes = computed<FlowNode[]>(() =>
               task.role_id
             } · ${task.member}`,
         memberColor: collabMemberColor(task.member ?? task.id),
-        taskPreview: task.human?.question ?? task.task,
+        taskPreview: task.team
+          ? pinnedTeams.value[`${task.team.asset_id}:${task.team.version}`]
+              ?.definition.name ?? task.team.asset_id
+          : task.human?.question ?? task.task,
         nodeNumber: index + 1,
-        configLabel: task.human
+        configLabel: task.team
+          ? `v${task.team.version}`
+          : task.human
           ? task.human.kind === "approval"
             ? `v${task.human.artifact_version ?? 1}`
             : ""
@@ -562,6 +657,40 @@ const edges = computed(() =>
     .filter((edge) => edge.source !== edge.target),
 );
 
+watch(
+  () => [
+    draft.value.tasks.map((task) => task.team),
+    props.teams,
+    props.childAssets,
+  ],
+  async () => {
+    teamReadError.value = false;
+    for (const task of draft.value.tasks) {
+      if (!task.team) continue;
+      const { asset_id, version } = task.team;
+      const key = `${asset_id}:${version}`;
+      if (pinnedTeams.value[key]) continue;
+      const frozen = props.childAssets[task.id];
+      const listed = props.teams.find(
+        (team) => team.asset_id === asset_id && team.version === version,
+      );
+      try {
+        pinnedTeams.value[key] = frozen
+          ? { asset_id, version, definition: frozen.team_definition }
+          : listed ?? (await workflowAssetsApi.get(asset_id, version));
+      } catch {
+        teamReadError.value = true;
+        localError.value = tm("child.unavailable");
+      }
+    }
+    emit(
+      "validation",
+      teamReadError.value || !!Object.keys(contractErrors.value).length,
+    );
+  },
+  { immediate: true, deep: true },
+);
+
 function toggleLoop(id: string) {
   collapsedLoops.value = collapsedLoops.value.includes(id)
     ? collapsedLoops.value.filter((value) => value !== id)
@@ -618,13 +747,16 @@ function restore(delta: number) {
 function addTask(roleId: string, position?: { x: number; y: number }) {
   if (props.readonly) return;
   const role = props.roles.find((item) => item.role_id === roleId);
+  const team = roleId.startsWith("team:")
+    ? props.teams.find((item) => item.asset_id === roleId.slice(5))
+    : null;
   const humanKind =
     roleId === "human:question"
       ? "question"
       : roleId === "human:approval"
       ? "approval"
       : null;
-  if (!role && !humanKind) return;
+  if (!role && !humanKind && !team) return;
   const seed =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
@@ -637,8 +769,17 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   const index = draft.value.tasks.length;
   draft.value.tasks.push({
     id,
-    name: humanKind ? tm(`human.${humanKind}Node`) : role.definition.name,
-    ...(humanKind
+    name: team
+      ? team.definition.name
+      : humanKind
+      ? tm(`human.${humanKind}Node`)
+      : role.definition.name,
+    ...(team
+      ? {
+          team: { asset_id: team.asset_id, version: team.version },
+          output_contract: team.definition.output_contract,
+        }
+      : humanKind
       ? {
           human: {
             kind: humanKind,
@@ -650,7 +791,14 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
         }
       : { member: id, role_id: roleId, role_version: role.version }),
     task: "",
-    inputs: {},
+    inputs: team
+      ? Object.fromEntries(
+          team.definition.required_inputs.map((key: string) => [
+            key,
+            draft.value.required_inputs?.includes(key) ? { input: key } : {},
+          ]),
+        )
+      : {},
     overrides: {},
     position: position ?? {
       x: (index % 3) * 300,
@@ -660,6 +808,50 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
   selectedNode.value = id;
   selectedEdgeKey.value = null;
   checkpoint();
+}
+
+/** Apply a fixed team version and its declared contracts.
+ * Args:
+ *   assetId: Accessible autonomous asset identity.
+ *   version: Exact chosen version, defaulting to the listed version.
+ */
+async function changeTeam(assetId: string, version?: number) {
+  const task = selectedTask.value;
+  if (!task?.team) return;
+  const listed = props.teams.find((item) => item.asset_id === assetId);
+  const pinnedVersion = version ?? listed?.version;
+  if (!pinnedVersion) return;
+  emit("validation", true);
+  try {
+    const team =
+      pinnedTeams.value[`${assetId}:${pinnedVersion}`] ??
+      (listed?.version === pinnedVersion
+        ? listed
+        : await workflowAssetsApi.get(assetId, pinnedVersion));
+    if (team.definition.kind !== "autonomous")
+      throw new Error("Invalid team asset");
+    pinnedTeams.value[`${assetId}:${pinnedVersion}`] = team;
+    task.team = { asset_id: assetId, version: pinnedVersion };
+    task.inputs = Object.fromEntries(
+      team.definition.required_inputs.map((key: string) => [
+        key,
+        task.inputs?.[key] ??
+          (draft.value.required_inputs?.includes(key) ? { input: key } : {}),
+      ]),
+    );
+    task.output_contract = team.definition.output_contract;
+    delete contractTexts.value[task.id];
+    teamReadError.value = false;
+    checkpoint();
+  } catch {
+    teamReadError.value = true;
+    localError.value = tm("child.unavailable");
+  } finally {
+    emit(
+      "validation",
+      teamReadError.value || !!Object.keys(contractErrors.value).length,
+    );
+  }
 }
 
 function dragRole(event: DragEvent, roleId: string) {
@@ -817,6 +1009,21 @@ function layout() {
 </script>
 
 <style scoped>
+.graph-child-preview {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.graph-team-button {
+  width: 100%;
+  height: auto;
+  min-height: 36px;
+  white-space: normal;
+}
+.graph-team-button :deep(.v-btn__content) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .graph-workbench {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 16px;

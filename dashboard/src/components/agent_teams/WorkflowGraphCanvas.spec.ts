@@ -9,6 +9,77 @@ vi.mock("@/i18n/composables", () => ({
 }));
 
 describe("canvas asset editing", () => {
+  it("adds a pinned team call with declared input and output contracts", async () => {
+    const wrapper = mount(WorkflowGraphCanvas, {
+      props: {
+        definition: {
+          name: "Parent",
+          required_inputs: ["goal"],
+          tasks: [],
+          edges: [],
+        },
+        teams: [
+          {
+            asset_id: "research",
+            version: 2,
+            versions: [2, 1],
+            definition: {
+              kind: "autonomous",
+              name: "Research team",
+              required_inputs: ["goal"],
+              coordinator: { role_id: "coordinator", role_version: 1 },
+              allowed_roles: [{ role_id: "writer", role_version: 1 }],
+              output_contract: {
+                type: "object",
+                properties: { approved: { type: "boolean" } },
+                required: ["approved"],
+              },
+            },
+          },
+        ],
+      },
+      global: {
+        stubs: {
+          VueFlow: true,
+          Background: true,
+          Controls: true,
+          MiniMap: true,
+          "v-icon": true,
+          "v-chip": true,
+          "v-btn": { template: "<button><slot /></button>" },
+          "v-text-field": true,
+          "v-select": true,
+          "v-textarea": true,
+          "v-spacer": true,
+          "v-alert": true,
+          "v-switch": true,
+        },
+      },
+    });
+    try {
+      await wrapper.get('[data-testid="add-team-call"]').trigger("click");
+      const saved: any = wrapper.emitted("update:definition")?.at(-1)?.[0];
+      expect(saved.tasks[0].team).toEqual({ asset_id: "research", version: 2 });
+      expect(saved.tasks[0].inputs).toEqual({ goal: { input: "goal" } });
+      expect(saved.tasks[0].output_contract.required).toEqual(["approved"]);
+      expect(saved.tasks[0].member).toBeUndefined();
+      expect(wrapper.find('[data-testid="team-call-version"]').exists()).toBe(
+        true,
+      );
+      expect(wrapper.get('[data-testid="team-call-preview"]').text()).toContain(
+        "Research team",
+      );
+      expect(
+        wrapper.get('[data-testid="team-call-preview"]').attributes("open"),
+      ).toBeUndefined();
+      await wrapper
+        .get('[data-testid="team-call-preview"] summary')
+        .trigger("click");
+      expect(wrapper.text()).toContain("writer");
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("authors human question and approval nodes without requiring a role", async () => {
     const wrapper = mount(WorkflowGraphCanvas, {
       props: { definition: { name: "Human graph", tasks: [], edges: [] } },

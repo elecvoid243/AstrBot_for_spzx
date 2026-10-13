@@ -143,7 +143,7 @@ Agent 必须调用 `submit_task_result` 按契约提交结果。默认契约接�
 
 不添加人工节点也能独立演示通过或达到上限。需要确认报告时，在审查依赖之后配置 **版本批准** 并选择撰写产物任务；待办固定通过轮次的具体产物，导出读取被批准的引用。手动新版产物不会自动重跑消费者，也不会继承旧批准。
 
-![实际 WebUI 的有界循环配置](/images/agent-workflow-loop-editor-zh.jpg)
+![实际 WebUI 的有界循环配置](/images/agent-workflow-loop-editor-zh.png)
 
 ![实际 WebUI 的逐轮审查与修订](/images/agent-workflow-loop-run-zh.jpg)
 

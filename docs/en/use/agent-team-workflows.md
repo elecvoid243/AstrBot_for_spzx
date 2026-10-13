@@ -143,7 +143,7 @@ Optional conditional body paths may be skipped when the exit still produces a pa
 
 A loop runs independently without a human node. To confirm a report, add a **Version approval** task after its review dependency and select the writer artifact task. The todo pins the passing iteration's concrete artifact. Export uses that approved reference. New manual revisions never automatically reschedule consumers or inherit old approvals.
 
-![Bounded loop configuration in the actual WebUI](/images/agent-workflow-loop-editor-en.jpg)
+![Bounded loop configuration in the actual WebUI](/images/agent-workflow-loop-editor-en.png)
 
 ![Review failure followed by a passing revision in the actual WebUI](/images/agent-workflow-loop-run-en.jpg)
 

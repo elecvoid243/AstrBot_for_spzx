@@ -151,6 +151,17 @@
     "loadFailed": "加载更早的消息失败",
     "jumpLoading": "正在加载更早的消息…"
   },
+  "markers": {
+    "navigation": "对话定位",
+    "turn": "第 {number} 轮提问",
+    "group": "第 {first}–{last} 轮",
+    "inherited": "继承会话",
+    "expand": "点击展开，选择具体提问",
+    "jump": "点击跳转到这条提问",
+    "choose": "选择要查看的提问",
+    "close": "关闭提问列表",
+    "loading": "正在加载更早的消息…"
+  },
   "actions": {
     "scrollToBottom": "回到底部",
     "copy": "复制",

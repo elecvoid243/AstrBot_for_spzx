@@ -91,7 +91,7 @@ type SessionMarker = {
   index: number;
   snippet: string;
   /** True when the message was inherited from a branched source session
-   * (older than the branch_info divider) — rendered red and hidden while
+   * (older than the branch_info divider) — hidden while
    * the inherited history is collapsed. */
   inherited: boolean;
 };

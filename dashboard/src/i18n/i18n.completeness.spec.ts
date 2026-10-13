@@ -30,6 +30,31 @@ const localizations: Array<[string, Record<string, unknown>]> = [
   ["ru-RU", chatRu as unknown as Record<string, unknown>],
 ];
 
+describe("conversation marker labels", () => {
+  for (const [locale, translations] of [
+    ["zh-CN", chatZh],
+    ["en-US", chatEn],
+    ["ja-JP", chatJa],
+    ["ru-RU", chatRu],
+  ] as const) {
+    it(`${locale} includes accessible marker and question-picker labels`, () => {
+      for (const key of [
+        "navigation",
+        "turn",
+        "group",
+        "inherited",
+        "expand",
+        "jump",
+        "choose",
+        "close",
+        "loading",
+      ] as const) {
+        expect(translations.markers[key]).toBeTruthy();
+      }
+    });
+  }
+});
+
 describe("spcodeProjectLoad git-workflow history filter i18n completeness", () => {
   // 2026-07-30: the Git history panel's "应用/重置" buttons were
   // renamed to "筛选/重设筛选条件" in zh-CN. Pin the two key paths

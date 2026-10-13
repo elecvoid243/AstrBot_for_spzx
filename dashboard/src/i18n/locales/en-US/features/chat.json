@@ -151,6 +151,17 @@
     "loadFailed": "Failed to load older messages",
     "jumpLoading": "Loading older messages…"
   },
+  "markers": {
+    "navigation": "Conversation navigation",
+    "turn": "Turn {number}",
+    "group": "Turns {first}–{last}",
+    "inherited": "Inherited",
+    "expand": "Click to choose a question",
+    "jump": "Jump to this question",
+    "choose": "Choose a question",
+    "close": "Close question list",
+    "loading": "Loading older messages…"
+  },
   "actions": {
     "scrollToBottom": "Scroll to bottom",
     "copy": "Copy",

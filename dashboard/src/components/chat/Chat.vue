@@ -924,32 +924,17 @@
           </div>
         </section>
 
-        <div
+        <ChatScrollMarkers
           v-if="scrollMarkers.length"
-          class="scroll-marker-strip"
-          :class="{ 'is-jumping': jumpInProgress }"
-          :style="{
-            height: stripHeight + 'px',
-            right: stripRightOffset + 'px',
-          }"
-          @click="onStripClick"
-        >
-          <div v-if="jumpInProgress" class="scroll-marker-loading">
-            <v-progress-circular indeterminate size="14" width="2" />
-            <span>{{ tm("history.jumpLoading") }}</span>
-          </div>
-          <div
-            v-for="marker in scrollMarkers"
-            :key="`sm-${marker.id}`"
-            class="scroll-marker-dot"
-            :class="{ 'scroll-marker-dot--inherited': marker.inherited }"
-            :style="{ top: marker.topPct + '%' }"
-            @click.stop="onDotClick(marker)"
-            @mouseenter="onDotEnter(marker.preview, $event)"
-            @mousemove="onDotMove($event)"
-            @mouseleave="onDotLeave"
-          />
-        </div>
+          :key="currSessionId ?? 'scroll-markers'"
+          :markers="scrollMarkers"
+          :container="messagesContainer"
+          :height="stripHeight"
+          :right="stripRightOffset"
+          :loading="jumpInProgress"
+          :is-dark="isDark"
+          @jump="onDotClick"
+        />
 
         <section ref="composerShell" class="composer-shell">
           <template v-if="!isReadonlySession">
@@ -1034,23 +1019,6 @@
         </section>
       </div>
     </main>
-
-    <Teleport to="body">
-      <div
-        v-if="dotTooltip.visible"
-        ref="dotTooltipRef"
-        class="scroll-dot-tooltip"
-        :class="{ 'is-dark': isDark }"
-        :style="{
-          position: 'fixed',
-          right: dotTooltip.right + 'px',
-          top: dotTooltip.y + 'px',
-          zIndex: 10000,
-        }"
-      >
-        <span class="scroll-dot-tooltip-text">{{ dotTooltip.text }}</span>
-      </div>
-    </Teleport>
 
     <div
       v-if="threadSelection.visible"
@@ -1235,6 +1203,9 @@ import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
+import ChatScrollMarkers, {
+  type ChatScrollMarker,
+} from "@/components/chat/ChatScrollMarkers.vue";
 import ChatUILogo from "@/components/chat/ChatUILogo.vue";
 import type { RegenerateModelSelection } from "@/components/chat/RegenerateMenu.vue";
 import ReasoningSidebar from "@/components/chat/ReasoningSidebar.vue";
@@ -1487,19 +1458,9 @@ const savingSessionTitle = ref(false);
 const messageEditDraft = ref("");
 const editingMessage = ref<ChatRecord | null>(null);
 const savingMessageEdit = ref(false);
-const scrollMarkers = ref<
-  Array<{
-    id: string | number;
-    // Absolute index within the session history; -1 when unknown (the
-    // loaded-window fallback markers still scroll by message id).
-    index: number;
-    topPct: number;
-    preview: string;
-    inherited: boolean;
-  }>
->([]);
+const scrollMarkers = ref<ChatScrollMarker[]>([]);
 const stripHeight = ref(0);
-const stripRightOffset = ref(0); // scrollbar width (px) so the yellow strip sits flush with the scrollbar's left edge
+const stripRightOffset = ref(0); // Native scrollbar width; the marker rail sits alongside it.
 // A marker jump that has to page older history is in flight — suppress
 // duplicate clicks and show the strip loading hint.
 const jumpInProgress = ref(false);
@@ -1521,13 +1482,6 @@ const revealWorkQuery = ref("");
 // from firing mid-animation (it would prepend + anchor and cancel the
 // smooth scroll, leaving the viewport off the target).
 const suppressHistoryAutoLoad = ref(false);
-const dotTooltip = reactive({
-  visible: false,
-  text: "",
-  right: 0,
-  y: 0,
-});
-const dotTooltipRef = ref<HTMLElement | null>(null);
 const projectSessions = ref<Session[]>([]);
 const projectSessionsById = ref<Record<string, Session[]>>({});
 const loadingProjectSessionIds = ref<string[]>([]);
@@ -4628,9 +4582,8 @@ function updateScrollMarkers() {
     return;
   }
   stripHeight.value = container.clientHeight;
-  // Detect native scrollbar width so the yellow strip sits flush against
-  // its LEFT edge (no gap, no overlap). offsetWidth includes the scrollbar;
-  // clientWidth does not.
+  // Keep the rail beside the native scrollbar. offsetWidth includes the
+  // scrollbar; clientWidth does not.
   const scrollbarWidth = container.offsetWidth - container.clientWidth;
   stripRightOffset.value = scrollbarWidth > 0 ? scrollbarWidth : 0;
   const scrollable = container.scrollHeight - container.clientHeight;
@@ -4640,35 +4593,30 @@ function updateScrollMarkers() {
   }
   // Session-wide marker index: one dot per user message, positioned by its
   // absolute index so the strip covers the whole session even while the
-  // history window only holds the newest pages. Inherited (branched-source)
-  // markers render red and are hidden while the branch history is
-  // collapsed — matching the visible rows.
+  // history window only holds the newest pages. Inherited markers stay
+  // hidden while the branch history is collapsed, matching the visible rows.
   const markerIndex = currSessionId.value
     ? sessionMarkersBySession[currSessionId.value]
     : null;
   if (markerIndex?.loaded && markerIndex.markers.length) {
     const total = Math.max(1, markerIndex.totalMessages);
     scrollMarkers.value = markerIndex.markers
-      .filter((m) => !m.inherited || !branchHistoryCollapsed.value)
-      .map((m) => ({
+      .map((m, i) => ({
         id: m.id,
         index: m.index,
+        messageIndex: m.index,
+        ordinal: i + 1,
         topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
         preview: m.snippet || "…",
         inherited: m.inherited,
-      }));
+      }))
+      .filter((m) => !m.inherited || !branchHistoryCollapsed.value);
     return;
   }
   // Fallback: measure the loaded rows (marker index failed to load).
   const rows = container.querySelectorAll(".message-row");
   const containerRect = container.getBoundingClientRect();
-  const markers: Array<{
-    id: string | number;
-    index: number;
-    topPct: number;
-    preview: string;
-    inherited: boolean;
-  }> = [];
+  const markers: ChatScrollMarker[] = [];
   for (let i = 0; i < activeMessages.value.length; i++) {
     const msg = activeMessages.value[i];
     if (!isUserMessage(msg) || msg.id == null) continue;
@@ -4682,8 +4630,10 @@ function updateScrollMarkers() {
     markers.push({
       id: msg.id,
       index: -1,
+      messageIndex: (historyOffsetBySession[currSessionId.value ?? ""] ?? 0) + i,
+      ordinal: markers.length + 1,
       topPct: (offsetTop / scrollable) * 100,
-      preview: truncate(plainTextFromMessage(msg), 40),
+      preview: truncate(plainTextFromMessage(msg), 160),
       inherited: row.classList.contains("inherited-row"),
     });
   }
@@ -4710,83 +4660,6 @@ function onBranchToggle(collapsed: boolean) {
     }
     updateScrollMarkers();
   });
-}
-
-function onStripClick(event: MouseEvent) {
-  const container = messagesContainer.value;
-  if (!container) return;
-  const strip = event.currentTarget as HTMLElement;
-  const rect = strip.getBoundingClientRect();
-  const pct = (event.clientY - rect.top) / rect.height;
-  // Full-session marker index: treat a background click as a jump to the
-  // proportional absolute index (paging older history on demand).
-  const markerIndex = currSessionId.value
-    ? sessionMarkersBySession[currSessionId.value]
-    : null;
-  if (markerIndex?.loaded && markerIndex.totalMessages > 1) {
-    const target = Math.round(pct * (markerIndex.totalMessages - 1));
-    void jumpToIndex(target);
-    return;
-  }
-  container.scrollTop = pct * (container.scrollHeight - container.clientHeight);
-}
-
-async function onDotEnter(text: string, event: MouseEvent) {
-  const strip = (event.currentTarget as HTMLElement).closest(
-    ".scroll-marker-strip",
-  );
-  if (!strip) return;
-  const stripRect = strip.getBoundingClientRect();
-  dotTooltip.text = text;
-  // Anchor tooltip's RIGHT edge 8px to the left of the strip.
-  // Tooltip grows LEFT from the strip, so it never overflows the right
-  // page boundary (strip is always at the panel's right edge).
-  dotTooltip.right = window.innerWidth - stripRect.left + 8;
-  dotTooltip.y = event.clientY - 20;
-  dotTooltip.visible = true;
-  await nextTick();
-  const el = dotTooltipRef.value;
-  if (!el) return;
-  // Determine available horizontal space: from the tooltip's right edge
-  // to the chat panel's left edge (NOT viewport's left edge), so the
-  // tooltip can use the full chat panel width when the strip sits at the
-  // viewport's right edge (no sidebar scenario).
-  const stack = strip.closest(".conversation-stack") as HTMLElement | null;
-  const stackRect = stack?.getBoundingClientRect();
-  const minLeft = (stackRect?.left ?? 16) + 16;
-  const tooltipRightEdgeX = stripRect.left - 8;
-  const maxAllowedWidth = Math.max(120, tooltipRightEdgeX - minLeft);
-  const actualWidth = el.offsetWidth;
-  if (actualWidth > maxAllowedWidth) {
-    el.style.maxWidth = `${maxAllowedWidth}px`;
-    const inner = el.querySelector(".scroll-dot-tooltip-text") as HTMLElement;
-    if (inner) inner.style.whiteSpace = "normal";
-  }
-  // Vertical clamp: keep tooltip fully on-screen vertically.
-  const tooltipHeight = el.offsetHeight;
-  let y = event.clientY - 20;
-  const maxY = window.innerHeight - tooltipHeight - 16;
-  if (y > maxY) y = Math.max(16, maxY);
-  if (y < 16) y = 16;
-  dotTooltip.y = y;
-}
-
-function onDotMove(event: MouseEvent) {
-  const el = dotTooltipRef.value;
-  if (el) {
-    const tooltipHeight = el.offsetHeight;
-    let y = event.clientY - 20;
-    const maxY = window.innerHeight - tooltipHeight - 16;
-    if (y > maxY) y = Math.max(16, maxY);
-    if (y < 16) y = 16;
-    dotTooltip.y = y;
-  } else {
-    dotTooltip.y = event.clientY - 20;
-  }
-}
-
-function onDotLeave() {
-  dotTooltip.visible = false;
 }
 
 function openMessageEdit(message: ChatRecord) {
@@ -7164,7 +7037,7 @@ kbd {
 
   .messages-list-shell {
     width: calc(100% - 20px);
-    max-width: 100%;
+    max-width: calc(100% - 72px);
   }
 
   .composer-shell {
@@ -7172,94 +7045,10 @@ kbd {
   }
 }
 
-/* Scroll marker strip — overlays the native scrollbar track */
-.scroll-marker-strip {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 14px;
-  cursor: pointer;
-  z-index: 5;
-  pointer-events: none;
-}
-.scroll-marker-strip .scroll-marker-loading {
-  position: absolute;
-  right: 8px;
-  top: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: rgba(var(--v-theme-surface), 0.95);
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.75);
-  white-space: nowrap;
-  pointer-events: auto;
-}
-.scroll-marker-strip.is-jumping .scroll-marker-dot {
-  opacity: 0.35;
-}
-.scroll-marker-strip .scroll-marker-dot {
-  position: absolute;
-  right: 1px;
-  width: 12px;
-  height: 4px;
-  border-radius: 2px;
-  background: #f5c518;
-  opacity: 0.75;
-  pointer-events: auto;
-  transition:
-    width 0.18s ease,
-    height 0.18s ease,
-    opacity 0.2s ease,
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
-  cursor: pointer;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-.scroll-marker-strip .scroll-marker-dot--inherited {
-  background: #e5484d;
-}
-.scroll-marker-strip .scroll-marker-dot:hover {
-  opacity: 1;
-  width: 24px; /* 2x width on hover, expands leftward (right edge pinned) */
-  height: 6px;
-  box-shadow: 0 0 0 3px rgba(124, 77, 255, 0.25);
-  border-color: rgb(var(--v-theme-primary));
-}
-.is-dark .scroll-marker-strip .scroll-marker-dot {
-  border-color: rgba(255, 255, 255, 0.15);
-}
-</style>
-
-<!-- Teleporter tooltip: 全局样式 (非 scoped, 因 Teleport 到 body) -->
-<style>
-.scroll-dot-tooltip {
-  max-width: 600px;
-  padding: 8px 12px;
-  background: #ffffff;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  pointer-events: none;
-  text-align: left;
-  box-sizing: border-box;
-}
-.scroll-dot-tooltip.is-dark {
-  background: #2d2d2d;
-  border-color: #404040;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-}
-.scroll-dot-tooltip-text {
-  display: inline-block;
-  font-size: 13px;
-  color: #333;
-  line-height: 1.5;
-  white-space: nowrap;
-  overflow: visible;
-}
-.scroll-dot-tooltip.is-dark .scroll-dot-tooltip-text {
-  color: #e0e0e0;
+@media (pointer: coarse) {
+  .messages-list-shell {
+    /* Keep the wider touch targets clear of message text and media. */
+    max-width: min(var(--chat-content-max-width), calc(100% - 104px));
+  }
 }
 </style>

@@ -164,6 +164,17 @@
     "loadEarlierFailed": "以前のメッセージを読み込めませんでした",
     "loading": "以前のメッセージを読み込み中"
   },
+  "markers": {
+    "navigation": "会話ナビゲーション",
+    "turn": "質問 {number}",
+    "group": "質問 {first}–{last}",
+    "inherited": "引き継いだ会話",
+    "expand": "クリックして質問を選択",
+    "jump": "この質問へ移動",
+    "choose": "質問を選択",
+    "close": "質問一覧を閉じる",
+    "loading": "以前のメッセージを読み込み中…"
+  },
   "reply": {
     "replyTo": "引用",
     "notFound": "メッセージが見つかりません"

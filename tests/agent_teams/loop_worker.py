@@ -31,6 +31,8 @@ async def run_loop_scenario(
         folder: Isolated persistent worker evidence directory.
         action: Start or rebuild the independent worker process.
         scenario: Before/after persistence, pause, cancellation or round recovery.
+        service: Public workflow service attached to the actual main pipeline.
+        roles: Public role service using the worker's real resource catalog.
 
     Returns:
         None after writing observable public snapshots for the parent.

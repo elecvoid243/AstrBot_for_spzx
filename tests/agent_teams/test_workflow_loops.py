@@ -122,6 +122,18 @@ async def loop_script(workflow_env):
     async def deliver(
         session_id, text, context=None, execution_token=None, message_id=None
     ):
+        """Observe the committed Task and Attempt at the external delivery boundary.
+
+        Args:
+            session_id: Frozen member session receiving this execution.
+            text: Rendered task instructions sent to the external Agent port.
+            context: Existing port's optional conversation override.
+            execution_token: Registered main-pipeline execution capability.
+            message_id: Persisted delivery identity for the current Attempt.
+
+        Returns:
+            The existing delivery identity without creating another execution.
+        """
         binding = AgentTeamExecutionRegistry.resolve(execution_token)
         saved = await env.service.get_run("alice", binding.run_id)
         bindings[message_id] = saved
@@ -129,6 +141,19 @@ async def loop_script(workflow_env):
         return message_id
 
     async def collect(session_id, message_id, member_id):
+        """Hold or fail external work and submit through the real result protocol.
+
+        Args:
+            session_id: Isolated member session with the public submission tool.
+            message_id: Delivery whose frozen Task snapshot was observed.
+            member_id: Existing port's execution member identity.
+
+        Returns:
+            A complete external response after the result was accepted.
+
+        Raises:
+            RuntimeError: The scripted external model fails in this round.
+        """
         saved = bindings[message_id]
         node = saved["snapshot"]["node_id"]
         iteration = saved["snapshot"].get("iteration", 1)
@@ -298,6 +323,58 @@ async def test_loop_bound_cannot_exceed_effective_member_iteration_limit(workflo
             asset["asset_id"],
             {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
         )
+
+
+@pytest.mark.asyncio
+async def test_skipped_optional_body_path_does_not_block_validated_passing_exit(
+    loop_script,
+):
+    env = loop_script.env
+    loop_script.approved_round = 1
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"].insert(
+        1, {**definition["tasks"][0], "id": "optional", "name": "Optional evidence"}
+    )
+    definition["loops"][0]["body"].append("optional")
+    definition["edges"] += [
+        {
+            "source": "write",
+            "target": "optional",
+            "condition": {"field": "text", "value": "not selected"},
+        },
+        {"source": "optional", "target": "review"},
+    ]
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed"
+    assert finished["loops"][0]["status"] == "passed"
+    assert finished["tasks"][1]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_skipped_feedback_source_cannot_release_an_unvalidated_next_round(loop_script):
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["tasks"].insert(1, {**definition["tasks"][0], "id": "optional", "name": "Optional evidence"})
+    definition["loops"][0]["body"].append("optional")
+    definition["loops"][0]["feedback"][0]["source"] = "optional"
+    definition["edges"] += [{"source": "write", "target": "optional", "condition": {"field": "text", "value": "not selected"}}, {"source": "optional", "target": "review"}]
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}})
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "blocked"
+    assert finished["loops"][0]["status"] == "blocked"
+    assert "optional" in finished["loops"][0]["reason"]
+    assert len(finished["loops"][0]["iterations"]) == 1
+    await env.service.advance_run("alice", run["run_id"])
+    reread = await env.service.get_run("alice", run["run_id"])
+    assert len([event for event in reread["events"] if event["kind"] == "loop.evaluated"]) == 1
+    assert len(loop_script.observations) == 2
 
 
 @pytest.mark.asyncio

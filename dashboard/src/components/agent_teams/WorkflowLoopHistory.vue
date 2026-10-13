@@ -19,6 +19,7 @@
         }}
         · {{ tm(`loops.states.${loop.status}`) }}
       </summary>
+      <p v-if="loop.reason" class="text-body-2 mt-2">{{ loop.reason }}</p>
       <details
         v-for="iteration in loop.iterations"
         :key="iteration.iteration"

@@ -37,7 +37,11 @@ from astrbot.core.agent_teams.assets import (
     RoleAssetService,
     RoleOverrides,
 )
-from astrbot.core.agent_teams.graph import GraphDefinition, validate_graph
+from astrbot.core.agent_teams.graph import (
+    GraphDefinition,
+    matches_condition,
+    validate_graph,
+)
 from astrbot.core.agent_teams.result_tool import (
     ReadArtifactTool,
     StoreTaskFileTool,
@@ -152,6 +156,18 @@ class HumanAnswerRequest(BaseModel):
     action: Literal["answer", "approve", "reject"]
     answer: str | None = Field(default=None, min_length=1, max_length=100_000)
     feedback: str | None = Field(default=None, min_length=1, max_length=100_000)
+
+
+def _current_task_runs(run: AgentWorkflowRun) -> dict[str, str]:
+    """Select current instances without changing the immutable launch snapshot.
+
+    Args:
+        run: Root workflow with optional progress from later loop iterations.
+
+    Returns:
+        Current node-to-Task mapping shared by observation and admission controls.
+    """
+    return run.state.get("task_runs", run.snapshot.get("task_runs", {}))
 
 
 class WorkflowService:
@@ -654,9 +670,7 @@ class WorkflowService:
                 dict.fromkeys(
                     [
                         run_id,
-                        *row.state.get(
-                            "task_runs", row.snapshot.get("task_runs", {})
-                        ).values(),
+                        *_current_task_runs(row).values(),
                         *row.state.get("task_runs", {}).values(),
                         *(
                             identity
@@ -1027,9 +1041,7 @@ class WorkflowService:
         if row.snapshot.get("engine") == "graph_v2":
             result["tasks"] = [
                 {**results[identity], "node_id": node_id}
-                for node_id, identity in row.state.get(
-                    "task_runs", row.snapshot["task_runs"]
-                ).items()
+                for node_id, identity in _current_task_runs(row).items()
             ]
             result["loops"] = [
                 {
@@ -1240,9 +1252,7 @@ class WorkflowService:
                 if request.action == "pause":
                     for identity in [
                         run_id,
-                        *row.state.get(
-                            "task_runs", row.snapshot.get("task_runs", {})
-                        ).values(),
+                        *_current_task_runs(row).values(),
                     ]:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -1261,9 +1271,7 @@ class WorkflowService:
                         session.add(row)
                     identities = [
                         run_id,
-                        *row.state.get(
-                            "task_runs", row.snapshot.get("task_runs", {})
-                        ).values(),
+                        *_current_task_runs(row).values(),
                     ]
                     for identity in identities:
                         child = await session.get(AgentWorkflowRun, identity)
@@ -1285,9 +1293,7 @@ class WorkflowService:
             if request.action == "continue":
                 for identity in [
                     run_id,
-                    *row.state.get(
-                        "task_runs", row.snapshot.get("task_runs", {})
-                    ).values(),
+                    *_current_task_runs(row).values(),
                 ]:
                     child = await session.get(AgentWorkflowRun, identity)
                     if (
@@ -1453,9 +1459,7 @@ class WorkflowService:
                         parent.status = "running"
                         parent.state = {**parent.state, "reason": None}
                         session.add(parent)
-                    for identity in parent.state.get(
-                        "task_runs", parent.snapshot.get("task_runs", {})
-                    ).values():
+                    for identity in _current_task_runs(parent).values():
                         child = await session.get(AgentWorkflowRun, identity)
                         if child is not None and child.status == "dependency_failed":
                             child.status = "pending"
@@ -1887,7 +1891,7 @@ class WorkflowService:
             Whether loop progress changed. External work waits for the commit.
         """
         loops = copy.deepcopy(root.state.get("loops", {}))
-        current_runs = dict(root.state.get("task_runs", root.snapshot["task_runs"]))
+        current_runs = dict(_current_task_runs(root))
         for definition in root.snapshot["definition"].get("loops", []):
             loop = loops[definition["id"]]
             if loop["status"] in {"passed", "exhausted"}:
@@ -1899,31 +1903,20 @@ class WorkflowService:
             ):
                 loop["status"] = "running"
                 continue
-            if any(row.status != "completed" for row in body):
+            if (
+                any(row.status not in {"completed", "skipped"} for row in body)
+                or rows[definition["exit_task_id"]].status != "completed"
+            ):
                 loop["status"] = "blocked"
+                continue
+            if iteration.get("exit_reference") and loop["status"] == "blocked":
                 continue
             rule = definition["exit_condition"]
             source = rows[definition["exit_task_id"]]
             value = source.result
             for name in rule["field"].split("."):
                 value = value[name]
-            other, operator = rule["value"], rule["operator"]
-            equal = value == other and isinstance(value, bool) == isinstance(
-                other, bool
-            )
-            passed = (
-                equal
-                if operator == "eq"
-                else not equal
-                if operator == "ne"
-                else value > other
-                if operator == "gt"
-                else value >= other
-                if operator == "ge"
-                else value < other
-                if operator == "lt"
-                else value <= other
-            )
+            passed = matches_condition(value, rule)
             iteration["exit_reference"] = {"artifact_id": source.run_id, "version": 1}
             iteration["exit_value"] = value
             iteration["status"] = "passed" if passed else "rejected"
@@ -1947,6 +1940,18 @@ class WorkflowService:
             if passed or exhausted:
                 continue
             feedback_inputs: dict[str, dict] = {}
+            missing_feedback = [
+                feedback["source"]
+                for feedback in definition["feedback"]
+                if rows[feedback["source"]].status != "completed"
+            ]
+            if missing_feedback:
+                loop["status"] = "blocked"
+                loop["reason"] = (
+                    "Next-round feedback has no validated result: "
+                    + ", ".join(missing_feedback)
+                )
+                continue
             for feedback in definition["feedback"]:
                 previous = rows[feedback["source"]]
                 value = previous.result
@@ -2066,9 +2071,7 @@ class WorkflowService:
                 definition = root.snapshot["definition"]
                 rows = {
                     node_id: await session.get(AgentWorkflowRun, identity)
-                    for node_id, identity in root.state.get(
-                        "task_runs", root.snapshot["task_runs"]
-                    ).items()
+                    for node_id, identity in _current_task_runs(root).items()
                 }
                 # A saved answer is consumed under the same root admission lock
                 # as successor claims. Pause retains it; cancel cannot release it.
@@ -2178,25 +2181,7 @@ class WorkflowService:
                                     assert value is not None
                                     for name in rule["field"].split("."):
                                         value = value[name]
-                                    other = rule["value"]
-                                    op = rule["operator"]
-                                    # JSON booleans are distinct from numeric 0/1.
-                                    equal = value == other and isinstance(
-                                        value, bool
-                                    ) == isinstance(other, bool)
-                                    match = (
-                                        equal
-                                        if op == "eq"
-                                        else not equal
-                                        if op == "ne"
-                                        else value > other
-                                        if op == "gt"
-                                        else value >= other
-                                        if op == "ge"
-                                        else value < other
-                                        if op == "lt"
-                                        else value <= other
-                                    )
+                                    match = matches_condition(value, rule)
                                 if match:
                                     matched.append(source)
                             elif source.status != "skipped":

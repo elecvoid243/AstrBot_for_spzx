@@ -1,5 +1,6 @@
 """Declarative DAG definitions and field rules; no user code is evaluated."""
 
+from operator import ge, gt, le, lt
 from string import Formatter
 from typing import Literal
 
@@ -158,6 +159,23 @@ class GraphDefinition(BaseModel):
     tasks: list[GraphTask] = Field(min_length=1, max_length=100)
     edges: list[GraphEdge] = Field(default_factory=list, max_length=500)
     loops: list[GraphLoop] = Field(default_factory=list, max_length=30)
+
+
+def matches_condition(value: str | bool | int | float | None, rule: dict) -> bool:
+    """Compare a validated scalar with the same rules at dependencies and exits.
+
+    Args:
+        value: Scalar resolved from the source's validated result.
+        rule: Frozen, validated field comparison with a typed expected value.
+
+    Returns:
+        Whether the comparison matches, treating JSON booleans distinctly.
+    """
+    other = rule["value"]
+    equal = value == other and isinstance(value, bool) == isinstance(other, bool)
+    if rule["operator"] in {"eq", "ne"}:
+        return equal if rule["operator"] == "eq" else not equal
+    return {"gt": gt, "ge": ge, "lt": lt, "le": le}[rule["operator"]](value, other)
 
 
 def field_schema(contract: dict | None, path: str) -> dict:

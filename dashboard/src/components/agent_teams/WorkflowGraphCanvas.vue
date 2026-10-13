@@ -527,32 +527,24 @@ const nodes = computed<FlowNode[]>(() => [
 ]);
 const edges = computed(() =>
   (draft.value.edges ?? [])
-    .map((edge) => ({
-      id: `${edge.source}:${edge.target}`,
-      source: collapsedGroups.value.find((loop) =>
+    .map((edge) => {
+      const sourceGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.source),
-      )
-        ? `loop:${
-            collapsedGroups.value.find((loop) =>
-              loop.body.includes(edge.source),
-            )!.id
-          }`
-        : edge.source,
-      target: collapsedGroups.value.find((loop) =>
+      );
+      const targetGroup = collapsedGroups.value.find((loop) =>
         loop.body.includes(edge.target),
-      )
-        ? `loop:${
-            collapsedGroups.value.find((loop) =>
-              loop.body.includes(edge.target),
-            )!.id
-          }`
-        : edge.target,
-      label: edge.condition
-        ? `${edge.condition.field} ${edge.condition.operator} ${JSON.stringify(
-            edge.condition.value,
-          )}`
-        : undefined,
-    }))
+      );
+      return {
+        id: `${edge.source}:${edge.target}`,
+        source: sourceGroup ? `loop:${sourceGroup.id}` : edge.source,
+        target: targetGroup ? `loop:${targetGroup.id}` : edge.target,
+        label: edge.condition
+          ? `${edge.condition.field} ${
+              edge.condition.operator
+            } ${JSON.stringify(edge.condition.value)}`
+          : undefined,
+      };
+    })
     .filter((edge) => edge.source !== edge.target),
 );
 

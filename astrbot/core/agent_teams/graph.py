@@ -125,6 +125,29 @@ class GraphEdge(BaseModel):
     condition: FieldCondition | None = None
 
 
+class LoopFeedback(BaseModel):
+    """Explicit next-round input from a completed previous-round result."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target: str
+    input: str
+    source: str
+    field: str = "text"
+
+
+class GraphLoop(BaseModel):
+    """A disjoint, finite task group with a typed exit and explicit feedback."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z][\w-]*$")
+    name: str = Field(min_length=1, max_length=128)
+    body: list[str] = Field(min_length=1, max_length=100)
+    exit_task_id: str
+    exit_condition: FieldCondition
+    max_iterations: int = Field(ge=1, le=100)
+    feedback: list[LoopFeedback] = Field(default_factory=list, max_length=100)
+
+
 class GraphDefinition(BaseModel):
     """A bounded, versioned workflow graph with persisted editor layout."""
 
@@ -134,6 +157,7 @@ class GraphDefinition(BaseModel):
     max_parallel: int = Field(default=4, ge=1, le=100)
     tasks: list[GraphTask] = Field(min_length=1, max_length=100)
     edges: list[GraphEdge] = Field(default_factory=list, max_length=500)
+    loops: list[GraphLoop] = Field(default_factory=list, max_length=30)
 
 
 def field_schema(contract: dict | None, path: str) -> dict:
@@ -254,8 +278,24 @@ def validate_graph(definition: GraphDefinition) -> None:
         )
     predecessors: dict[str, set[str]] = {name: set() for name in tasks}
     seen = set()
-    for index, edge in enumerate(definition.edges):
-        path = f"definition.edges.{index}"
+    # Exit rules share the exact scalar/type validation used by graph edges.
+    rules = [
+        (edge, f"definition.edges.{i}", False)
+        for i, edge in enumerate(definition.edges)
+    ]
+    rules += [
+        (
+            GraphEdge(
+                source=loop.exit_task_id,
+                target=loop.exit_task_id,
+                condition=loop.exit_condition,
+            ),
+            f"definition.loops.{i}.exit",
+            True,
+        )
+        for i, loop in enumerate(definition.loops)
+    ]
+    for edge, path, exit_rule in rules:
         if edge.source not in tasks or edge.target not in tasks:
             fields.append(
                 {
@@ -265,7 +305,7 @@ def validate_graph(definition: GraphDefinition) -> None:
                 }
             )
             continue
-        if (edge.source, edge.target) in seen:
+        if not exit_rule and (edge.source, edge.target) in seen:
             fields.append(
                 {
                     "path": path,
@@ -273,8 +313,9 @@ def validate_graph(definition: GraphDefinition) -> None:
                     "message": "Dependency already exists",
                 }
             )
-        seen.add((edge.source, edge.target))
-        predecessors[edge.target].add(edge.source)
+        if not exit_rule:
+            seen.add((edge.source, edge.target))
+            predecessors[edge.target].add(edge.source)
         if edge.condition:
             rule = edge.condition
             try:
@@ -321,6 +362,50 @@ def validate_graph(definition: GraphDefinition) -> None:
                 *(ancestors[p] for p in predecessors[name])
             )
         pending -= ready
+    grouped: set[str] = set()
+    loop_ids: set[str] = set()
+    for index, loop in enumerate(definition.loops):
+        path = f"definition.loops.{index}"
+        body = set(loop.body)
+        try:
+            if loop.id in loop_ids or len(body) != len(loop.body):
+                raise ValueError("Loop and body identities must be unique")
+            if not body <= tasks.keys() or body & grouped:
+                raise ValueError(
+                    "Loop bodies must use existing, disjoint tasks; nesting is not supported"
+                )
+            if loop.exit_task_id not in body or not body <= {
+                loop.exit_task_id,
+                *ancestors.get(loop.exit_task_id, set()),
+            }:
+                raise ValueError("The exit task must depend on every task in its body")
+            for node in body:
+                for ancestor in ancestors.get(node, set()) - body:
+                    if ancestors.get(ancestor, set()) & body:
+                        raise ValueError(
+                            "A loop body cannot leave the group and reenter it"
+                        )
+            targets = set()
+            for feedback in loop.feedback:
+                if feedback.source not in body or feedback.target not in body:
+                    raise ValueError(
+                        "Feedback must explicitly connect tasks within the loop body"
+                    )
+                target = tasks[feedback.target]
+                if target.human or feedback.input not in target.inputs:
+                    raise ValueError(
+                        "Feedback must override a declared agent task input"
+                    )
+                if (feedback.target, feedback.input) in targets:
+                    raise ValueError(
+                        "Each next-round input has exactly one feedback source"
+                    )
+                targets.add((feedback.target, feedback.input))
+                field_schema(tasks[feedback.source].output_contract, feedback.field)
+        except ValueError as exc:
+            fields.append({"path": path, "code": "LOOP", "message": str(exc)})
+        grouped |= body
+        loop_ids.add(loop.id)
     members = {}
     for index, task in enumerate(definition.tasks):
         path = f"definition.tasks.{index}"

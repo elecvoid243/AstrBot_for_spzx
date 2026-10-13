@@ -650,7 +650,23 @@ class WorkflowService:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is None or row.owner_username != username:
                 raise RoleAssetError("Run not found", status=404)
-            identities = [run_id, *row.snapshot.get("task_runs", {}).values()]
+            identities = list(
+                dict.fromkeys(
+                    [
+                        run_id,
+                        *row.state.get(
+                            "task_runs", row.snapshot.get("task_runs", {})
+                        ).values(),
+                        *row.state.get("task_runs", {}).values(),
+                        *(
+                            identity
+                            for loop in row.state.get("loops", {}).values()
+                            for iteration in loop["iterations"]
+                            for identity in iteration["task_runs"].values()
+                        ),
+                    ]
+                )
+            )
             root_id = row.snapshot.get("parent_run_id", run_id)
             control = await session.get(AgentWorkflowControl, root_id)
             rows = (
@@ -1011,27 +1027,52 @@ class WorkflowService:
         if row.snapshot.get("engine") == "graph_v2":
             result["tasks"] = [
                 {**results[identity], "node_id": node_id}
-                for node_id, identity in row.snapshot["task_runs"].items()
+                for node_id, identity in row.state.get(
+                    "task_runs", row.snapshot["task_runs"]
+                ).items()
             ]
+            result["loops"] = [
+                {
+                    "loop_id": loop_id,
+                    **loop,
+                    "iterations": [
+                        {
+                            **iteration,
+                            "tasks": [
+                                {**results[identity], "node_id": node_id}
+                                for node_id, identity in iteration["task_runs"].items()
+                            ],
+                        }
+                        for iteration in loop["iterations"]
+                    ],
+                }
+                for loop_id, loop in row.state.get("loops", {}).items()
+            ]
+            historical_tasks = {
+                task["run_id"]: task
+                for loop in result["loops"]
+                for iteration in loop["iterations"]
+                for task in iteration["tasks"]
+            }
+            all_tasks = list(
+                {
+                    **historical_tasks,
+                    **{task["run_id"]: task for task in result["tasks"]},
+                }.values()
+            )
             if include_details:
                 result["events"] = sorted(
                     [
                         *result["events"],
-                        *[
-                            event
-                            for task in result["tasks"]
-                            for event in task["events"]
-                        ],
+                        *[event for task in all_tasks for event in task["events"]],
                     ],
                     key=lambda event: event["cursor"],
                 )
             result["artifacts"] = [
-                artifact for task in result["tasks"] for artifact in task["artifacts"]
+                artifact for task in all_tasks for artifact in task["artifacts"]
             ]
             result["result_ref"] = None
-            result["todos"] = [
-                todo for task in result["tasks"] for todo in task["todos"]
-            ]
+            result["todos"] = [todo for task in all_tasks for todo in task["todos"]]
         if include_details:
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0
@@ -1199,7 +1240,9 @@ class WorkflowService:
                 if request.action == "pause":
                     for identity in [
                         run_id,
-                        *row.snapshot.get("task_runs", {}).values(),
+                        *row.state.get(
+                            "task_runs", row.snapshot.get("task_runs", {})
+                        ).values(),
                     ]:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -1207,7 +1250,21 @@ class WorkflowService:
                             child.state = {**child.state, "paused_resume": True}
                             session.add(child)
                 if request.action == "cancel":
-                    identities = [run_id, *row.snapshot.get("task_runs", {}).values()]
+                    loops = copy.deepcopy(row.state.get("loops", {}))
+                    for loop in loops.values():
+                        if loop["status"] not in {"passed", "exhausted"}:
+                            loop["status"] = "cancelled"
+                            if loop["iterations"][-1]["status"] == "running":
+                                loop["iterations"][-1]["status"] = "cancelled"
+                    if loops:
+                        row.state = {**row.state, "loops": loops}
+                        session.add(row)
+                    identities = [
+                        run_id,
+                        *row.state.get(
+                            "task_runs", row.snapshot.get("task_runs", {})
+                        ).values(),
+                    ]
                     for identity in identities:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -1226,7 +1283,12 @@ class WorkflowService:
                             )
                 await session.commit()
             if request.action == "continue":
-                for identity in [run_id, *row.snapshot.get("task_runs", {}).values()]:
+                for identity in [
+                    run_id,
+                    *row.state.get(
+                        "task_runs", row.snapshot.get("task_runs", {})
+                    ).values(),
+                ]:
                     child = await session.get(AgentWorkflowRun, identity)
                     if (
                         child is not None
@@ -1391,7 +1453,9 @@ class WorkflowService:
                         parent.status = "running"
                         parent.state = {**parent.state, "reason": None}
                         session.add(parent)
-                    for identity in parent.snapshot.get("task_runs", {}).values():
+                    for identity in parent.state.get(
+                        "task_runs", parent.snapshot.get("task_runs", {})
+                    ).values():
                         child = await session.get(AgentWorkflowRun, identity)
                         if child is not None and child.status == "dependency_failed":
                             child.status = "pending"
@@ -1540,12 +1604,23 @@ class WorkflowService:
                     select(
                         AgentWorkflowRun.owner_username,
                         AgentWorkflowRun.snapshot["task_runs"],
+                        AgentWorkflowRun.state,
                     ).where(AgentWorkflowRun.run_id == run_id)
                 )
             ).first()
             if run is None or run[0] != username:
                 raise RoleAssetError("Run not found", status=404)
-            identities = [run_id, *(run[1] or {}).values()]
+            identities = [
+                run_id,
+                *(run[1] or {}).values(),
+                *run[2].get("task_runs", {}).values(),
+                *(
+                    identity
+                    for loop in run[2].get("loops", {}).values()
+                    for iteration in loop["iterations"]
+                    for identity in iteration["task_runs"].values()
+                ),
+            ]
             cursor = (
                 await session.execute(
                     select(func.max(AgentWorkflowEvent.id)).where(
@@ -1654,6 +1729,22 @@ class WorkflowService:
                         }
                     ],
                 )
+        for index, loop in enumerate(definition.loops):
+            for task in definition.tasks:
+                if task.id not in loop.body or task.human is not None:
+                    continue
+                limit = members[task.member]["effective"].get("max_iterations")
+                if limit is not None and loop.max_iterations > limit:
+                    raise RoleAssetError(
+                        "Loop exceeds the effective member iteration limit",
+                        [
+                            {
+                                "path": f"definition.loops.{index}.max_iterations",
+                                "code": "LIMIT",
+                                "message": f"Member {task.member} permits at most {limit} iterations",
+                            }
+                        ],
+                    )
         run_id = uuid.uuid4().hex
         scope_id = uuid.uuid4().hex
         task_runs = {task.id: uuid.uuid4().hex for task in definition.tasks}
@@ -1675,7 +1766,26 @@ class WorkflowService:
                     run_id=run_id,
                     owner_username=username,
                     snapshot=snapshot,
-                    state={"scope_id": scope_id, "reason": None},
+                    state={
+                        "scope_id": scope_id,
+                        "reason": None,
+                        "loops": {
+                            loop.id: {
+                                "status": "running",
+                                "iterations": [
+                                    {
+                                        "iteration": 1,
+                                        "status": "running",
+                                        "task_runs": {
+                                            node_id: task_runs[node_id]
+                                            for node_id in loop.body
+                                        },
+                                    }
+                                ],
+                            }
+                            for loop in definition.loops
+                        },
+                    },
                 )
             )
             session.add(AgentWorkflowSchedule(run_id=run_id))
@@ -1721,6 +1831,14 @@ class WorkflowService:
                             else "single_task_v2",
                             "parent_run_id": run_id,
                             "node_id": task.id,
+                            **next(
+                                (
+                                    {"loop_id": loop.id, "iteration": 1}
+                                    for loop in definition.loops
+                                    if task.id in loop.body
+                                ),
+                                {},
+                            ),
                             "asset_id": asset["asset_id"],
                             "asset_version": asset["version"],
                             "definition": child_definition,
@@ -1754,6 +1872,153 @@ class WorkflowService:
             await session.commit()
         await self.advance_run(username, run_id)
         return await self.get_run(username, run_id)
+
+    async def _advance_loops(
+        self, session: AsyncSession, root: AgentWorkflowRun, rows: dict
+    ) -> bool:
+        """Commit an exit or a fresh round under the existing admission lock.
+
+        Args:
+            session: Scheduler transaction holding the root control/revision lock.
+            root: Frozen graph with mutable progress stored separately in state.
+            rows: Current task instances; replacements join this scheduling pass.
+
+        Returns:
+            Whether loop progress changed. External work waits for the commit.
+        """
+        loops = copy.deepcopy(root.state.get("loops", {}))
+        current_runs = dict(root.state.get("task_runs", root.snapshot["task_runs"]))
+        for definition in root.snapshot["definition"].get("loops", []):
+            loop = loops[definition["id"]]
+            if loop["status"] in {"passed", "exhausted"}:
+                continue
+            iteration = loop["iterations"][-1]
+            body = [rows[node_id] for node_id in definition["body"]]
+            if any(
+                row.status in {"pending", "running", "waiting_human"} for row in body
+            ):
+                loop["status"] = "running"
+                continue
+            if any(row.status != "completed" for row in body):
+                loop["status"] = "blocked"
+                continue
+            rule = definition["exit_condition"]
+            source = rows[definition["exit_task_id"]]
+            value = source.result
+            for name in rule["field"].split("."):
+                value = value[name]
+            other, operator = rule["value"], rule["operator"]
+            equal = value == other and isinstance(value, bool) == isinstance(
+                other, bool
+            )
+            passed = (
+                equal
+                if operator == "eq"
+                else not equal
+                if operator == "ne"
+                else value > other
+                if operator == "gt"
+                else value >= other
+                if operator == "ge"
+                else value < other
+                if operator == "lt"
+                else value <= other
+            )
+            iteration["exit_reference"] = {"artifact_id": source.run_id, "version": 1}
+            iteration["exit_value"] = value
+            iteration["status"] = "passed" if passed else "rejected"
+            exhausted = iteration["iteration"] >= definition["max_iterations"]
+            loop["status"] = (
+                "passed" if passed else "exhausted" if exhausted else "running"
+            )
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=root.run_id,
+                    kind="loop.evaluated",
+                    data={
+                        "loop_id": definition["id"],
+                        "iteration": iteration["iteration"],
+                        "status": loop["status"],
+                        "exit_reference": iteration["exit_reference"],
+                        "exit_value": value,
+                    },
+                )
+            )
+            if passed or exhausted:
+                continue
+            feedback_inputs: dict[str, dict] = {}
+            for feedback in definition["feedback"]:
+                previous = rows[feedback["source"]]
+                value = previous.result
+                for name in feedback["field"].split("."):
+                    value = value[name]
+                feedback_inputs.setdefault(feedback["target"], {})[
+                    feedback["input"]
+                ] = {
+                    "value": value
+                    if isinstance(value, str)
+                    else json.dumps(value, ensure_ascii=False),
+                    "reference": {"artifact_id": previous.run_id, "version": 1},
+                }
+            next_runs = {}
+            for node_id in definition["body"]:
+                previous = rows[node_id]
+                identity = uuid.uuid4().hex
+                task = next(
+                    task
+                    for task in root.snapshot["definition"]["tasks"]
+                    if task["id"] == node_id
+                )
+                snapshot = {
+                    **copy.deepcopy(previous.snapshot),
+                    "iteration": iteration["iteration"] + 1,
+                    "inputs": root.snapshot["inputs"],
+                    "input_artifacts": root.snapshot.get("input_artifacts", []),
+                    "task": task["task"],
+                    "iteration_inputs": feedback_inputs.get(node_id, {}),
+                }
+                child = AgentWorkflowRun(
+                    run_id=identity,
+                    owner_username=root.owner_username,
+                    status="pending",
+                    snapshot=snapshot,
+                    state={
+                        "scope_id": root.state["scope_id"],
+                        "task_id": identity,
+                        "attempt_id": uuid.uuid4().hex,
+                        "message_id": uuid.uuid4().hex,
+                        "safe_to_finish": False,
+                        "reason": None,
+                        "response": None,
+                    },
+                )
+                session.add(child)
+                rows[node_id] = child
+                next_runs[node_id] = identity
+                current_runs[node_id] = identity
+            loop["iterations"].append(
+                {
+                    "iteration": iteration["iteration"] + 1,
+                    "status": "running",
+                    "task_runs": next_runs,
+                }
+            )
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=root.run_id,
+                    kind="loop.started",
+                    data={
+                        "loop_id": definition["id"],
+                        "iteration": iteration["iteration"] + 1,
+                        "task_runs": next_runs,
+                    },
+                )
+            )
+        changed = loops != root.state.get("loops", {})
+        if changed:
+            root.state = {**root.state, "loops": loops, "task_runs": current_runs}
+            session.add(root)
+        return changed
 
     async def advance_run(self, username: str, run_id: str) -> dict:
         """Wake dependency scheduling; persistent claims make notifications idempotent.
@@ -1801,7 +2066,9 @@ class WorkflowService:
                 definition = root.snapshot["definition"]
                 rows = {
                     node_id: await session.get(AgentWorkflowRun, identity)
-                    for node_id, identity in root.snapshot["task_runs"].items()
+                    for node_id, identity in root.state.get(
+                        "task_runs", root.snapshot["task_runs"]
+                    ).items()
                 }
                 # A saved answer is consumed under the same root admission lock
                 # as successor claims. Pause retains it; cancel cannot release it.
@@ -1858,6 +2125,7 @@ class WorkflowService:
                             },
                         )
                     )
+                await self._advance_loops(session, root, rows)
                 active = [
                     row
                     for row in rows.values()
@@ -1889,6 +2157,17 @@ class WorkflowService:
                         for edge in incoming:
                             source = rows[edge["source"]]
                             assert source is not None
+                            source_loop = source.snapshot.get("loop_id")
+                            if source_loop and source_loop != row.snapshot.get(
+                                "loop_id"
+                            ):
+                                loop_status = root.state["loops"][source_loop]["status"]
+                                if loop_status == "running":
+                                    unresolved = True
+                                    continue
+                                if loop_status != "passed":
+                                    failed = True
+                                    continue
                             if source.status in {"pending", "running", "waiting_human"}:
                                 unresolved = True
                             elif source.status == "completed":
@@ -2008,7 +2287,14 @@ class WorkflowService:
                                 else root.snapshot.get("input_artifacts", [])
                             )
                             missing = False
+                            iteration_inputs = row.snapshot.get("iteration_inputs", {})
                             for key, ref in [] if retrying else task["inputs"].items():
+                                if key in iteration_inputs:
+                                    fixed = iteration_inputs[key]
+                                    inputs[key] = fixed["value"]
+                                    if fixed["reference"] not in refs:
+                                        refs.append(fixed["reference"])
+                                    continue
                                 if ref.get("input") is not None:
                                     # Earlier task aliases must not change the source.
                                     inputs[key] = root.snapshot["inputs"][ref["input"]]
@@ -2065,12 +2351,18 @@ class WorkflowService:
                             )
                         )
                         progress = True
+                    if await self._advance_loops(session, root, rows):
+                        progress = True
+                loop_success = all(
+                    loop["status"] == "passed"
+                    for loop in root.state.get("loops", {}).values()
+                )
                 if all(
                     row is not None
                     and row.status not in {"pending", "running", "waiting_human"}
                     for row in rows.values()
                 ):
-                    success = all(
+                    success = loop_success and all(
                         row is not None and row.status in {"completed", "skipped"}
                         for row in rows.values()
                     )

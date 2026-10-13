@@ -40,21 +40,6 @@
           },
         ]"
       >
-        <v-avatar
-          v-if="!isUserMessage(msg) && !isBranchDivider(msg)"
-          class="bot-avatar"
-          :size="avatarSize"
-        >
-          <v-progress-circular
-            v-if="isMessageStreaming(msg, msgIndex)"
-            class="bot-streaming-spinner"
-            indeterminate
-            size="22"
-            width="2"
-          />
-          <span v-else class="bot-avatar-symbol" aria-hidden="true">✦</span>
-        </v-avatar>
-
         <!-- 2026-10-08 (elecvoid243): LLM request injection trail. Fixed-width
              rail so the marker never shifts the message layout; it stays empty
              for turns without injections and hides on narrow screens. -->
@@ -264,15 +249,29 @@
                   :aria-expanded="agentWorkExpanded(msg, msgIndex)"
                   @click="toggleAgentWork(msg, msgIndex)"
                 >
-                  <span class="agent-work-pill-badge">
-                    <v-icon size="11">mdi-check</v-icon>
+                  <Check
+                    class="agent-work-pill-icon"
+                    :size="14"
+                    :stroke-width="1.8"
+                    aria-hidden="true"
+                  />
+                  <span class="agent-work-pill-label">
+                    <template
+                      v-for="(label, index) in agentWorkLabel(msg)"
+                      :key="index"
+                    >
+                      <span v-if="index" class="agent-work-pill-duration">{{
+                        agentDuration(messageContent(msg).agentStats)
+                      }}</span
+                      >{{ label }}
+                    </template>
                   </span>
-                  <span class="agent-work-pill-label">{{
-                    agentWorkLabel(msg)
-                  }}</span>
-                  <v-icon class="agent-work-pill-chevron" size="14">
-                    mdi-chevron-right
-                  </v-icon>
+                  <ChevronDown
+                    class="agent-work-pill-chevron"
+                    :size="13"
+                    :stroke-width="1.8"
+                    aria-hidden="true"
+                  />
                 </button>
                 <template
                   v-for="(entry, blockIndex) in visibleBlocks(msg, msgIndex)"
@@ -641,6 +640,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { Check, ChevronDown } from "@lucide/vue";
 import axios from "axios";
 import { fileApi } from "@/api/v1";
 import RegenerateMenu, {
@@ -809,7 +809,6 @@ const imagePreview = reactive({ visible: false, url: "" });
 const refsSidebarOpen = ref(false);
 const selectedRefs = ref<Record<string, unknown> | null>(null);
 const listRoot = ref<HTMLElement | null>(null);
-const avatarSize = computed(() => (props.variant === "thread" ? 36 : 56));
 
 // ── Pinia store: blocking InteractiveChoice (Task 13/15) ────────────────
 // Spec §5.2: store mirrors any `interactive_choice` parts surfaced into
@@ -1572,12 +1571,21 @@ watch(
   { immediate: true },
 );
 
+/**
+ * Preserve translated word order while styling the duration separately.
+ *
+ * Args:
+ *   message: Completed bot record containing optional duration statistics.
+ *
+ * Returns:
+ *   Text fragments surrounding the duration slot, or the standalone label.
+ */
 function agentWorkLabel(message: ChatRecord) {
   const stats = messageContent(message).agentStats;
   const duration = stats ? agentDuration(stats) : "";
   return duration
-    ? tm("agentWork.workedFor", { duration })
-    : tm("agentWork.worked");
+    ? tm("agentWork.workedFor", { duration: "{duration}" }).split("{duration}")
+    : [tm("agentWork.worked")];
 }
 
 function handleMouseUp(event: MouseEvent, message: ChatRecord) {
@@ -2074,23 +2082,6 @@ function formatDuration(seconds: number) {
   line-height: 18px;
 }
 
-.bot-avatar {
-  margin-top: 2px;
-  color: rgb(var(--v-theme-primary));
-  user-select: none;
-}
-
-.bot-avatar-symbol {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 30px;
-  margin-top: -2px;
-  line-height: 0;
-  pointer-events: none;
-  user-select: none;
-}
-
 .message-bubble {
   border-radius: 8px;
   padding: 10px 14px;
@@ -2345,21 +2336,20 @@ function formatDuration(seconds: number) {
   }
 }
 
-/* Collapsed agent-work toggle: a quiet capsule that mirrors the chat's
-   hairline-chip language (ReasoningBlock file chips) with a small
-   primary-tinted "done" badge. Expanding rotates the chevron and lifts the
-   fill slightly so the row reads as an interactive group header. */
+/* The completed-work capsule uses neutral ink and a bare checkmark.
+   Only its fill and chevron change on interaction, keeping its size stable. */
 .agent-work-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   max-width: 100%;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  height: 30px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
   border-radius: 999px;
-  padding: 3px 9px 3px 4px;
+  padding: 0 10px;
   margin: 2px 0 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  color: rgba(var(--v-theme-on-surface), 0.62);
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  color: rgba(var(--v-theme-on-surface), 0.68);
   font-size: 12px;
   font-weight: 500;
   line-height: 18px;
@@ -2369,35 +2359,23 @@ function formatDuration(seconds: number) {
   transition:
     background 0.16s ease,
     border-color 0.16s ease,
-    color 0.16s ease,
-    transform 0.1s ease;
+    color 0.16s ease;
 }
 
 .agent-work-pill:hover {
-  background: rgba(var(--v-theme-on-surface), 0.07);
+  background: rgba(var(--v-theme-on-surface), 0.065);
   border-color: rgba(var(--v-theme-on-surface), 0.22);
   color: rgba(var(--v-theme-on-surface), 0.86);
 }
 
-.agent-work-pill:active {
-  transform: scale(0.98);
-}
-
 .agent-work-pill:focus-visible {
   outline: 2px solid rgba(var(--v-theme-primary), 0.5);
-  outline-offset: 1px;
+  outline-offset: 3px;
 }
 
-.agent-work-pill-badge {
+.agent-work-pill-icon {
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: rgba(var(--v-theme-primary), 0.16);
-  color: rgb(var(--v-theme-primary));
+  color: rgba(var(--v-theme-on-surface), 0.58);
 }
 
 .agent-work-pill-label {
@@ -2408,9 +2386,14 @@ function formatDuration(seconds: number) {
   font-variant-numeric: tabular-nums;
 }
 
+.agent-work-pill-duration {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.87);
+}
+
 .agent-work-pill-chevron {
   flex-shrink: 0;
-  margin-left: -1px;
+  margin-left: 1px;
   opacity: 0.65;
   transition:
     transform 0.18s ease,
@@ -2422,13 +2405,20 @@ function formatDuration(seconds: number) {
 }
 
 .agent-work-pill--expanded {
-  background: rgba(var(--v-theme-on-surface), 0.055);
+  background: rgba(var(--v-theme-on-surface), 0.065);
   border-color: rgba(var(--v-theme-on-surface), 0.18);
   color: rgba(var(--v-theme-on-surface), 0.74);
 }
 
 .agent-work-pill--expanded .agent-work-pill-chevron {
-  transform: rotate(90deg);
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-work-pill,
+  .agent-work-pill-chevron {
+    transition: none;
+  }
 }
 
 .message-meta {
@@ -2554,14 +2544,6 @@ function formatDuration(seconds: number) {
   max-width: 92%;
 }
 
-.variant-thread .bot-avatar-symbol {
-  font-size: 24px;
-}
-
-.variant-thread .from-bot .bot-avatar {
-  display: none;
-}
-
 .variant-thread .from-bot .message-stack {
   max-width: 100%;
 }
@@ -2585,10 +2567,6 @@ function formatDuration(seconds: number) {
 }
 
 @container chat-messages (max-width: 600px) {
-  .message-row.from-bot .bot-avatar {
-    display: none;
-  }
-
   .message-bubble.bot {
     padding-inline: 0;
   }
@@ -2602,10 +2580,6 @@ function formatDuration(seconds: number) {
   .message-row.from-bot {
     flex-direction: column;
     gap: 2px;
-  }
-
-  .message-row.from-bot .bot-avatar {
-    display: none;
   }
 
   .message-row.from-bot .message-stack {

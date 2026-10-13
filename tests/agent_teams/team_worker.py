@@ -40,6 +40,8 @@ async def run_team_scenario(
                 flush_context: SQLAlchemy flush context.
             """
             for row in [*session.new, *session.dirty]:
+                if scenario == "team_message_parameters_checkpoint" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request" and row.data.get("stage") == "parameters" and (row.data.get("parent_response") or {}).get("id") == "effect-plan-writer-one-first":
+                    session.info["team_boundary"] = True
                 message_boundary = (
                     isinstance(row, AgentWorkflowMessage) and row.request_id == "initial-note"
                     and scenario in {"team_message_delivery_pre", "team_message_delivery_post"}
@@ -272,7 +274,7 @@ async def run_team_scenario(
         if current["status"] != "running":
             break
         await asyncio.sleep(0.02)
-    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live"}:
+    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters"}:
         (folder / "team-evidence.json").write_text(
             json.dumps({"after": current}), encoding="utf-8"
         )

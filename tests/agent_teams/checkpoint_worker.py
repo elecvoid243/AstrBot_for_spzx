@@ -70,7 +70,7 @@ async def run_worker(
     if scenario.startswith("overflow"):
         config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
-    if scenario.startswith(("parameters", "repair")):
+    if scenario.startswith(("parameters", "repair", "team_message_parameters")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
     config["agent_runner"]["config"]["model"]["provider_id"] = "model-original"
     config["test_profile"] = "original" if action == "start" else "edited"

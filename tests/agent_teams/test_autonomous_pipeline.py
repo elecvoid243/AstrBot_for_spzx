@@ -37,6 +37,8 @@ import pytest
         "team_message_consume_post",
         "team_message_delivery_failure",
         "team_message_consume_failure",
+        "team_message_parameters",
+        "team_message_parameters_checkpoint",
     ],
 )
 def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decisions(
@@ -49,7 +51,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
         scenario: Normal execution or a selected real storage failure boundary.
         preview: Keep the real dashboard and external model available for UI checks.
     """
-    requests, effects = [], []
+    requests, effects, parameter_plans = [], [], {}
 
     class Recorder(BaseHTTPRequestHandler):
         """Independent external model and tool boundary."""
@@ -100,7 +102,10 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                         "reasoning_signature": "team-signature",
                     }
 
-                if "team_manage" in payload["tools"]:
+                if scenario.startswith("team_message_parameters") and payload["parameter_query"]:
+                    response = {**parameter_plans[payload["member_id"]],
+                                "id": parameter_plans[payload["member_id"]]["id"] + "-parameters"}
+                elif "team_manage" in payload["tools"]:
                     role_id = re.search(
                         r'Allowed roles: \{"([^"]+)"',
                         payload["tool_descriptions"]["team_manage"],
@@ -336,6 +341,8 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                         )
                     else:
                         response = {"role": "assistant", "completion_text": "Submitted"}
+                if scenario.startswith("team_message_parameters") and not payload["parameter_query"] and response["role"] == "tool":
+                    parameter_plans[payload["member_id"]] = response
             (tmp_path / "external-ledger.json").write_text(
                 json.dumps({"requests": requests, "effects": effects}), encoding="utf-8"
             )
@@ -359,7 +366,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
     ]
     environment = {**os.environ, "PYTHONUTF8": "1"}
     try:
-        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live"}:
+        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters"}:
             first = subprocess.run(
                 [*command, "start", scenario],
                 cwd=root,

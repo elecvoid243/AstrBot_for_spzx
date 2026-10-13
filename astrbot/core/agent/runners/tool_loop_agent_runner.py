@@ -672,6 +672,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 }
             )
         await execution.save_checkpoint(copy.deepcopy(self._call_checkpoint))
+        if phase == "request":
+            # Parameter and fallback requests carry this context, but the delivery
+            # belongs to the first committed request that included it.
+            self._member_message_receipts = []
 
     def _read_tool_hint(self) -> str:
         if self.read_tool is not None:

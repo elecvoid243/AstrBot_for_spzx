@@ -8,6 +8,7 @@ import mimetypes
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from string import Formatter
 from typing import Literal, cast
 
@@ -3187,7 +3188,12 @@ class WorkflowService:
                         ) from exc
                     for ref in refs:
                         await self.read_artifact(
-                            username, **ref, consumer_run_id=run_id
+                            username,
+                            **ref,
+                            consumer_run_id=run_id,
+                            attempt_id=attempt_id,
+                            execution_id=execution_id,
+                            _session=session,
                         )
                     return_task = next(
                         task
@@ -4404,6 +4410,8 @@ class WorkflowService:
         consumer_run_id: str | None = None,
         attempt_id: str | None = None,
         execution_id: str | None = None,
+        *,
+        _session: AsyncSession | None = None,
     ) -> dict:
         """Read full content and record actual reads by a pinned consumer.
 
@@ -4414,6 +4422,9 @@ class WorkflowService:
             consumer_run_id: Task run recording a read, when invoked by an Agent.
             attempt_id: Active attempt required for task reads.
             execution_id: Current executor fence for runtime tool reads.
+            _session: Existing dependent-write transaction, when recording a read
+                must commit atomically with its coordinator operation. The caller
+                commits this session; standalone reads own their transaction.
 
         Returns:
             Exact reference and complete content.
@@ -4421,7 +4432,9 @@ class WorkflowService:
         Raises:
             RoleAssetError: Inaccessible version or a read outside the pinned inputs.
         """
-        async with self.db.get_db() as session:
+        async with (
+            self.db.get_db() if _session is None else nullcontext(_session)
+        ) as session:
             artifact = await session.get(AgentWorkflowArtifact, (artifact_id, version))
             origin = (
                 await session.get(AgentWorkflowRun, artifact.run_id)
@@ -4508,7 +4521,8 @@ class WorkflowService:
                             data={"reference": ref, "attempt_id": attempt_id},
                         )
                     )
-                    await session.commit()
+                    if _session is None:
+                        await session.commit()
             files = []
             for file_ref in artifact.content.get("files", []):
                 metadata = (

@@ -88,8 +88,6 @@ async def run_reverse_scenario(
                 while True:
                     time.sleep(0.1)
 
-        sql_event.listen(Session, "after_flush", after_flush)
-        sql_event.listen(Session, "after_commit", after_commit)
         writer = (await roles.list_roles("alice"))["roles"][0]
         writer = await roles.save_role(
             "alice",
@@ -216,17 +214,69 @@ async def run_reverse_scenario(
             ),
             encoding="utf-8",
         )
+        input_asset = await service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Pinned input source",
+                    "role_id": writer["role_id"],
+                    "role_version": 1,
+                    "task": "Reverse input source",
+                    "output_contract": contract,
+                }
+            },
+        )
+        source = await service.start_run(
+            "alice", input_asset["asset_id"], {"version": 1}
+        )
+        for _ in range(1200):
+            source = await service.get_run("alice", source["run_id"])
+            if source["status"] != "running":
+                break
+            await asyncio.sleep(0.02)
+        assert source["status"] == "completed", source
+        pinned_input = {"reference": source["result_ref"], "content": source["result"]}
+        (folder / "reverse-input.json").write_text(
+            json.dumps(pinned_input), encoding="utf-8"
+        )
+        sql_event.listen(Session, "after_flush", after_flush)
+        sql_event.listen(Session, "after_commit", after_commit)
         run = await service.start_run(
             "alice",
             team["asset_id"],
-            {"version": 1, "inputs": {"goal": "PRIVATE_PARENT_GOAL"}},
+            {
+                "version": 1,
+                "inputs": {"goal": "PRIVATE_PARENT_GOAL"},
+                "input_artifacts": [pinned_input["reference"]],
+            },
         )
         run_id = run["run_id"]
+        await service.revise_artifact(
+            "alice",
+            pinned_input["reference"]["artifact_id"],
+            {
+                "expected_version": 1,
+                "request_id": "source-v2",
+                "content": {**pinned_input["content"], "text": "Changed source v2"},
+            },
+        )
     else:
         run_id = json.loads((folder / "reverse-run.json").read_text(encoding="utf-8"))[
             "run_id"
         ]
         before = await service.get_run("alice", run_id)
+        pinned_input = json.loads(
+            (folder / "reverse-input.json").read_text(encoding="utf-8")
+        )
+        await service.revise_artifact(
+            "alice",
+            pinned_input["reference"]["artifact_id"],
+            {
+                "expected_version": 1,
+                "request_id": "source-v2",
+                "content": {**pinned_input["content"], "text": "Changed source v2"},
+            },
+        )
         # New role, asset and default-resource values cannot replace frozen state.
         assets = json.loads(
             (folder / "reverse-assets.json").read_text(encoding="utf-8")

@@ -43,6 +43,7 @@ def test_reverse_workflow_survives_actual_process_loss(
     """
     requests, effects = [], []
     report = "完整证据\n" * 2000 + "COMPLETE_END"
+    input_report = "Pinned input evidence\n" * 1000 + "PINNED_INPUT_END"
 
     class Recorder(BaseHTTPRequestHandler):
         """Keep external model and tool effects outside the killed process."""
@@ -68,6 +69,30 @@ def test_reverse_workflow_survives_actual_process_loss(
                     if message.get("role") == "tool"
                 }
                 context = json.dumps(payload["contexts"], ensure_ascii=False)
+                prompt = (
+                    (payload.get("system_prompt") or "")
+                    + "\n"
+                    + "\n".join(
+                        text
+                        for message in payload["contexts"]
+                        for text in (
+                            [message["content"]]
+                            if isinstance(message.get("content"), str)
+                            else [
+                                part["text"]
+                                for part in message.get("content", [])
+                                if part.get("type") == "text"
+                            ]
+                        )
+                    )
+                )
+                refs = (
+                    json.JSONDecoder().raw_decode(
+                        prompt.split("Pinned input references: ", 1)[1]
+                    )[0]
+                    if "Pinned input references: " in prompt
+                    else []
+                )
 
                 def call(identity, name, args):
                     """Produce one original provider plan with traceable call identity.
@@ -109,6 +134,7 @@ def test_reverse_workflow_survives_actual_process_loss(
                                 "asset_id": workflow["asset_id"],
                                 "version": workflow["version"],
                                 "inputs": {"topic": "Literal {notes}"},
+                                "input_artifacts": refs,
                             },
                         )
                     elif "reverse-wait" not in results:
@@ -146,8 +172,59 @@ def test_reverse_workflow_survives_actual_process_loss(
                             "role": "assistant",
                             "completion_text": "Delivered.",
                         }
+                elif "Reverse input source" in context:
+                    if "input-file" not in results:
+                        response = call(
+                            "input-file",
+                            "store_task_file",
+                            {"filename": "input.txt", "content": input_report},
+                        )
+                    elif "input-submit" not in results:
+                        response = call(
+                            "input-submit",
+                            "submit_task_result",
+                            {
+                                "result_json": json.dumps(
+                                    {
+                                        "text": input_report,
+                                        "files": [
+                                            {
+                                                "file_id": json.loads(
+                                                    results["input-file"]
+                                                )["file_id"]
+                                            }
+                                        ],
+                                    }
+                                )
+                            },
+                        )
+                    else:
+                        response = {
+                            "role": "assistant",
+                            "completion_text": "Input submitted.",
+                        }
                 elif "Reverse effect" in context:
-                    if "reverse-effect" not in results:
+                    if "reverse-input-read" not in results:
+                        response = call(
+                            "reverse-input-read", "read_task_artifact", refs[0]
+                        )
+                    elif "reverse-input-file" not in results:
+                        original = json.loads(results["reverse-input-read"])
+                        assert original["content"]["text"] == input_report
+                        response = call(
+                            "reverse-input-file",
+                            "read_task_artifact",
+                            {
+                                **refs[0],
+                                "file_id": original["content"]["files"][0]["file_id"],
+                            },
+                        )
+                    elif "reverse-effect" not in results:
+                        original_file = json.loads(results["reverse-input-file"])
+                        assert (
+                            original_file["content"] == input_report
+                            and original_file["version"] == 1
+                        )
                         response = call(
                             "reverse-effect", "external_evidence", {"value": "once"}
                         )
@@ -287,6 +364,25 @@ def test_reverse_workflow_survives_actual_process_loss(
         assert effects == [{"value": "once"}]
         assert len(current["scopes"]) == 1
         scope = current["scopes"][0]
+        pinned_input = json.loads(
+            (tmp_path / "reverse-input.json").read_text(encoding="utf-8")
+        )
+        input_ref = pinned_input["reference"]
+        assert scope["snapshot"]["input_artifacts"] == [input_ref]
+        coordinator = current["tasks"][0]
+        input_consumer = scope["tasks"][0]
+        for consumer in (coordinator, input_consumer):
+            assert input_ref in consumer["read_artifacts"]
+            assert (
+                sum(
+                    event["kind"] == "artifact.read"
+                    and event["data"]["reference"] == input_ref
+                    for event in consumer["events"]
+                )
+                == 1
+            )
+        if scenario == "reverse_call_pre":
+            assert evidence["before"]["tasks"][0]["read_artifacts"] == []
         if scenario == "reverse_cancel":
             assert current["status"] == "cancelled"
             assert scope["status"] == "cancelled"

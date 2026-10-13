@@ -447,18 +447,17 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             and "profile=original" in json.dumps(request["contexts"])
             for request in requests
         )
-        assert all(
-            "team_manage" not in request["tools"]
+        member_requests = [
+            request
             for request in requests
-            if "Original role prompt"
-            in json.dumps(
-                [
-                    message
-                    for message in request["contexts"]
-                    if message["role"] == "system"
-                ]
+            if any(
+                "Original role prompt" in json.dumps(message)
+                for message in request["contexts"]
+                if message["role"] == "user"
             )
-        )
+        ]
+        assert len(member_requests) >= 3
+        assert all("team_manage" not in request["tools"] for request in member_requests)
         assert current["tasks"][0]["read_artifacts"] == [
             {"artifact_id": current["tasks"][1]["run_id"], "version": 1}
         ]

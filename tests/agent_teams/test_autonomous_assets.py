@@ -173,6 +173,16 @@ async def team_env(tmp_path):
         return message_id
 
     async def collect(session_id, message_id, member_id):
+        """Run the coordinator plan or submit evidence from an authorized member.
+
+        Args:
+            session_id: Isolated execution session containing the registered tools.
+            message_id: Delivered task message identity supplied by the runtime.
+            member_id: Runtime member identity supplied by the collection port.
+
+        Returns:
+            Collected reply and empty attachments after the task tool calls finish.
+        """
         tools = {
             tool.name: tool
             for tool in AgentTeamToolRegistry.get_tools(
@@ -269,6 +279,12 @@ async def test_coordinator_creates_two_instances_dispatches_and_reads_complete_r
     collected = []
 
     async def script(tools, binding):
+        """Exercise idempotent decisions, serial members and complete artifact reads.
+
+        Args:
+            tools: Tools registered for the active coordinator execution.
+            binding: Current coordinator execution identity from the public port.
+        """
         import json
 
         manage = tools["team_manage"]
@@ -380,6 +396,12 @@ async def test_required_team_approval_blocks_root_completion(team_env):
     )
 
     async def script(tools, binding):
+        """Reject a circular dispatch before submitting the report for approval.
+
+        Args:
+            tools: Tools registered for the active coordinator execution.
+            binding: Current coordinator execution identity from the public port.
+        """
         import json
 
         member = json.loads(
@@ -462,6 +484,12 @@ async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_e
     )
 
     async def script(tools, binding):
+        """Exercise frozen role bounds and retain a live owner for authority checks.
+
+        Args:
+            tools: Tools registered for the active coordinator execution.
+            binding: Current coordinator execution identity from the public port.
+        """
         manage = tools["team_manage"]
         assert "Error" in await manage.call(
             None,
@@ -582,6 +610,12 @@ async def test_whole_run_controls_apply_while_coordinator_waits(team_env, decisi
     env.member_started = asyncio.Event()
 
     async def script(tools, binding):
+        """Wait for two serial members while external controls change the root.
+
+        Args:
+            tools: Tools registered for the active coordinator execution.
+            binding: Current coordinator execution identity from the public port.
+        """
         manage = tools["team_manage"]
         tasks = []
         for index in range(2):

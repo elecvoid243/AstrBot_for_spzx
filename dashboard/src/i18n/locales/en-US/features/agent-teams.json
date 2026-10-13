@@ -484,5 +484,35 @@
       "completed": "Answer consumed",
       "rejected": "Rejected with feedback"
     }
+  },
+  "loops": {
+    "add": "Add bounded loop",
+    "new": "Review and revise",
+    "body": "Loop body",
+    "exitTask": "Exit result task",
+    "maximum": "Maximum iterations",
+    "tasks": "tasks",
+    "group": "Bounded loop",
+    "collapse": "Collapse body",
+    "expand": "Expand body",
+    "feedbackHint": "Each later round explicitly replaces the selected input using the previous round result. First-round inputs use the task input configuration.",
+    "target": "Next-round task",
+    "source": "Previous-round result",
+    "addFeedback": "Add feedback input",
+    "remove": "Remove loop",
+    "rules": "Disjoint task groups use validated scalar fields. Only a passing exit releases consumers outside the group; reaching the limit requires attention.",
+    "history": "Loop iterations",
+    "iteration": "Iteration",
+    "exitResult": "Validated exit result",
+    "usage": "Model calls for this task",
+    "unknown": "Unknown",
+    "states": {
+      "running": "Running",
+      "passed": "Passed",
+      "rejected": "Review failed",
+      "exhausted": "Iteration limit reached",
+      "blocked": "Needs attention",
+      "cancelled": "Cancelled"
+    }
   }
 }

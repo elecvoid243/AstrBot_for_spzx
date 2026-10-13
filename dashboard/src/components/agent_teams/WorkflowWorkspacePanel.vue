@@ -160,9 +160,13 @@
             v-if="selectedRun.tasks?.length"
             v-model="selectedTaskNode"
             :items="
-              selectedRun.tasks.map((task: any) => ({
-                title: task.snapshot.definition.name,
-                value: task.node_id,
+              allRunTasks.map((task: any) => ({
+                title: `${task.snapshot.definition.name}${
+                  task.snapshot.iteration
+                    ? ` · ${tm('loops.iteration')} ${task.snapshot.iteration}`
+                    : ''
+                }`,
+                value: task.run_id,
               }))
             "
             :label="tm('graph.selectTask')"
@@ -603,10 +607,22 @@ const currentOperation = computed(() =>
     : undefined,
 );
 const selectedTaskNode = ref<string | null>(null);
+const allRunTasks = computed<any[]>(() => [
+  ...new Map(
+    [
+      ...(selectedRun.value?.tasks ?? []),
+      ...(selectedRun.value?.loops ?? []).flatMap((loop: any) =>
+        loop.iterations.flatMap((iteration: any) => iteration.tasks),
+      ),
+    ].map((task: any) => [task.run_id, task]),
+  ).values(),
+]);
 const detailRun = computed(
   () =>
-    selectedRun.value?.tasks?.find(
-      (task: any) => task.node_id === selectedTaskNode.value,
+    allRunTasks.value.find(
+      (task: any) =>
+        task.node_id === selectedTaskNode.value ||
+        task.run_id === selectedTaskNode.value,
     ) ??
     selectedRun.value?.tasks?.[0] ??
     selectedRun.value,
@@ -726,7 +742,7 @@ async function refresh() {
           const snapshot = await workflowAssetsApi.run(id);
           if (disposed || read !== runRead) return;
           selectedRun.value = snapshot;
-          selectedTaskNode.value = snapshot.tasks?.[0]?.node_id ?? null;
+          selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
         }
         if (artifactId !== detailRun.value.result_ref?.artifact_id) {
           artifactVersion.value = detailRun.value.result_ref?.version ?? 1;
@@ -801,7 +817,12 @@ async function saveGraph() {
 }
 
 function selectRunTask(nodeId: string | null) {
-  if (nodeId) selectedTaskNode.value = nodeId;
+  if (nodeId)
+    selectedTaskNode.value =
+      allRunTasks.value.find((task) => task.run_id === nodeId)?.run_id ??
+      selectedRun.value?.tasks?.find((task: any) => task.node_id === nodeId)
+        ?.run_id ??
+      nodeId;
 }
 watch(
   () => detailRun.value?.run_id,
@@ -897,7 +918,7 @@ async function openRun(runId: string) {
     const snapshot = await workflowAssetsApi.run(runId);
     if (disposed || read !== runRead) return;
     selectedRun.value = snapshot;
-    selectedTaskNode.value = snapshot.tasks?.[0]?.node_id ?? null;
+    selectedTaskNode.value = snapshot.tasks?.[0]?.run_id ?? null;
     await router.replace({ query: { ...route.query, workflow_run: runId } });
     if (disposed || read !== runRead) return;
     artifactVersion.value = detailRun.value.result_ref?.version ?? 1;

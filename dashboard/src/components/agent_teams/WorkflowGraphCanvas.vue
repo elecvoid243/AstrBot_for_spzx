@@ -62,6 +62,16 @@
         >{{ tm("graph.minimap") }}</v-btn
       >
     </div>
+    <WorkflowLoopPanel
+      :definition="draft"
+      :readonly="readonly"
+      :collapsed="collapsedLoops"
+      @update:loops="
+        draft.loops = $event;
+        checkpoint();
+      "
+      @toggle="toggleLoop"
+    />
     <v-alert
       v-if="localError || Object.keys(contractErrors).length"
       type="error"
@@ -379,6 +389,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
+import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import type { FlowNode } from "./TeamsFlowCanvas.vue";
 import type { GraphDefinition } from "@/api/generated/openapi-v1";
 import { useModuleI18n } from "@/i18n/composables";
@@ -406,6 +417,7 @@ const canvas = ref<InstanceType<typeof TeamsFlowCanvas>>();
 const selectedNode = ref<string | null>(null);
 const selectedEdgeKey = ref<string | null>(null);
 const minimap = ref(true);
+const collapsedLoops = ref<string[]>([]);
 const localError = ref("");
 const contractErrors = ref<Record<string, string>>({});
 const contractTexts = ref<Record<string, string>>({});
@@ -436,7 +448,7 @@ const inputSources = computed(() => [
     .map((task) => ({ title: task.name, value: task.id })),
 ]);
 const operators = ["eq", "ne", "gt", "ge", "lt", "le"];
-const nodes = computed<FlowNode[]>(() =>
+const taskNodes = computed<FlowNode[]>(() =>
   draft.value.tasks.map((task, index) => {
     const running = props.tasks.find((item) => item.node_id === task.id);
     const role = props.roles.find((item) => item.role_id === task.role_id);
@@ -487,18 +499,68 @@ const nodes = computed<FlowNode[]>(() =>
     };
   }),
 );
-const edges = computed(() =>
-  (draft.value.edges ?? []).map((edge) => ({
-    id: `${edge.source}:${edge.target}`,
-    source: edge.source,
-    target: edge.target,
-    label: edge.condition
-      ? `${edge.condition.field} ${edge.condition.operator} ${JSON.stringify(
-          edge.condition.value,
-        )}`
-      : undefined,
-  })),
+const collapsedGroups = computed(() =>
+  (draft.value.loops ?? []).filter((loop) =>
+    collapsedLoops.value.includes(loop.id),
+  ),
 );
+const nodes = computed<FlowNode[]>(() => [
+  ...taskNodes.value.filter(
+    (node) =>
+      !collapsedGroups.value.some((loop) => loop.body.includes(node.id)),
+  ),
+  ...collapsedGroups.value.map((loop) => ({
+    id: `loop:${loop.id}`,
+    position: taskNodes.value.find((node) => loop.body.includes(node.id))
+      ?.position ?? { x: 0, y: 0 },
+    data: {
+      label: loop.name,
+      memberName: tm("loops.group"),
+      taskPreview: `${loop.exit_task_id}.${loop.exit_condition.field} ${
+        loop.exit_condition.operator ?? "eq"
+      } ${JSON.stringify(loop.exit_condition.value)}`,
+      configLabel: `${tm("loops.maximum")} ${loop.max_iterations}`,
+      inputLabel: `${loop.body.length} ${tm("loops.tasks")}`,
+      outputLabel: tm("loops.expand"),
+    },
+  })),
+]);
+const edges = computed(() =>
+  (draft.value.edges ?? [])
+    .map((edge) => ({
+      id: `${edge.source}:${edge.target}`,
+      source: collapsedGroups.value.find((loop) =>
+        loop.body.includes(edge.source),
+      )
+        ? `loop:${
+            collapsedGroups.value.find((loop) =>
+              loop.body.includes(edge.source),
+            )!.id
+          }`
+        : edge.source,
+      target: collapsedGroups.value.find((loop) =>
+        loop.body.includes(edge.target),
+      )
+        ? `loop:${
+            collapsedGroups.value.find((loop) =>
+              loop.body.includes(edge.target),
+            )!.id
+          }`
+        : edge.target,
+      label: edge.condition
+        ? `${edge.condition.field} ${edge.condition.operator} ${JSON.stringify(
+            edge.condition.value,
+          )}`
+        : undefined,
+    }))
+    .filter((edge) => edge.source !== edge.target),
+);
+
+function toggleLoop(id: string) {
+  collapsedLoops.value = collapsedLoops.value.includes(id)
+    ? collapsedLoops.value.filter((value) => value !== id)
+    : [...collapsedLoops.value, id];
+}
 
 watch(
   () => props.definition,
@@ -598,6 +660,10 @@ function dragRole(event: DragEvent, roleId: string) {
   event.dataTransfer?.setData("application/x-member-id", roleId);
 }
 function selectNode(id: string | null) {
+  if (id?.startsWith("loop:")) {
+    toggleLoop(id.slice(5));
+    return;
+  }
   selectedNode.value = id;
   selectedEdgeKey.value = null;
   emit("selectTask", id);
@@ -613,6 +679,7 @@ function changeRole(id: string) {
   checkpoint();
 }
 function connect({ from, to }: { from: string; to: string }) {
+  if (from.startsWith("loop:") || to.startsWith("loop:")) return;
   if (
     !draft.value.edges?.some(
       (edge) => edge.source === from && edge.target === to,

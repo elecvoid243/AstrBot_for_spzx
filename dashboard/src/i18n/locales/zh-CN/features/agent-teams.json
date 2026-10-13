@@ -484,5 +484,35 @@
       "completed": "回答已消费",
       "rejected": "已拒绝并反馈"
     }
+  },
+  "loops": {
+    "add": "添加有界循环",
+    "new": "审查与修订",
+    "body": "循环体任务",
+    "exitTask": "退出结果任务",
+    "maximum": "最大轮数",
+    "tasks": "个任务",
+    "group": "有界循环",
+    "collapse": "折叠循环体",
+    "expand": "展开循环体",
+    "feedbackHint": "后续轮次显式使用上一轮结果替换所选输入。第一轮使用任务自身的输入配置。",
+    "target": "下一轮任务",
+    "source": "上一轮结果任务",
+    "addFeedback": "添加反馈输入",
+    "remove": "删除循环",
+    "rules": "循环体互不重叠，退出条件仅读取已校验的标量字段。通过后才放行循环外消费者，达到上限需要处理。",
+    "history": "循环轮次",
+    "iteration": "轮次",
+    "exitResult": "已校验退出结果",
+    "usage": "本任务模型调用",
+    "unknown": "未知",
+    "states": {
+      "running": "进行中",
+      "passed": "通过",
+      "rejected": "审查未通过",
+      "exhausted": "已达轮次上限",
+      "blocked": "需要处理",
+      "cancelled": "已取消"
+    }
   }
 }

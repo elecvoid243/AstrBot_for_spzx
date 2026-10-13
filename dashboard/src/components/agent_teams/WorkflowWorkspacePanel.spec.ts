@@ -115,6 +115,100 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("opens an earlier iteration's complete result without replacing the current round", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const first = {
+      ...run,
+      run_id: "first-round",
+      node_id: "write",
+      status: "completed",
+      snapshot: { ...run.snapshot, iteration: 1 },
+      result: { text: "Original reviewed content" },
+      result_ref: { artifact_id: "first-round", version: 1 },
+    };
+    const second = {
+      ...first,
+      run_id: "second-round",
+      snapshot: { ...run.snapshot, iteration: 2 },
+      result: { text: "Revised approved content" },
+      result_ref: { artifact_id: "second-round", version: 1 },
+    };
+    api.artifact.mockImplementation(async (id: string) => ({
+      artifact_id: id,
+      version: 1,
+      content: id === "first-round" ? first.result : second.result,
+    }));
+    api.run.mockResolvedValue({
+      ...run,
+      status: "completed",
+      snapshot: {
+        ...run.snapshot,
+        definition: {
+          name: "Revision graph",
+          tasks: [
+            {
+              id: "write",
+              name: "Writer",
+              member: "writer",
+              role_id: "role-1",
+              role_version: 1,
+              task: "Write",
+            },
+          ],
+          edges: [],
+          loops: [],
+        },
+      },
+      tasks: [second],
+      loops: [
+        {
+          loop_id: "revision",
+          status: "passed",
+          iterations: [
+            {
+              iteration: 1,
+              status: "rejected",
+              tasks: [first],
+              task_runs: { write: "first-round" },
+            },
+            {
+              iteration: 2,
+              status: "passed",
+              tasks: [second],
+              task_runs: { write: "second-round" },
+            },
+          ],
+        },
+      ],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper
+        .get('[data-testid="iteration-task-first-round"]')
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="result-text"]').text()).toContain(
+        "Original reviewed content",
+      );
+      await wrapper
+        .get('[data-testid="iteration-task-second-round"]')
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="result-text"]').text()).toContain(
+        "Revised approved content",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("allows answering another run while an earlier answer is pending", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

@@ -9066,6 +9066,12 @@ components:
           maxItems: 500
           title: Edges
           type: array
+        loops:
+          items:
+            $ref: '#/components/schemas/GraphLoop'
+          maxItems: 30
+          title: Loops
+          type: array
       required:
       - name
       - tasks
@@ -9436,3 +9442,73 @@ components:
       - action
       title: HumanAnswerRequest
       description: Idempotent answer or explicit version decision with rejection feedback.
+    GraphLoop:
+      additionalProperties: false
+      description: A disjoint, finite task group with a typed exit and explicit feedback.
+      properties:
+        id:
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-zA-Z][\w-]*$
+          title: Id
+          type: string
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        body:
+          items:
+            type: string
+          maxItems: 100
+          minItems: 1
+          title: Body
+          type: array
+        exit_task_id:
+          title: Exit Task Id
+          type: string
+        exit_condition:
+          $ref: '#/components/schemas/FieldCondition'
+        max_iterations:
+          maximum: 100
+          minimum: 1
+          title: Max Iterations
+          type: integer
+        feedback:
+          items:
+            $ref: '#/components/schemas/LoopFeedback'
+          maxItems: 100
+          title: Feedback
+          type: array
+      required:
+      - id
+      - name
+      - body
+      - exit_task_id
+      - exit_condition
+      - max_iterations
+      title: GraphLoop
+      type: object
+    LoopFeedback:
+      additionalProperties: false
+      description: Explicit next-round input from a completed previous-round result.
+      properties:
+        target:
+          title: Target
+          type: string
+        input:
+          title: Input
+          type: string
+        source:
+          title: Source
+          type: string
+        field:
+          default: text
+          title: Field
+          type: string
+      required:
+      - target
+      - input
+      - source
+      title: LoopFeedback
+      type: object

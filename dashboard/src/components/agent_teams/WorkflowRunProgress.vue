@@ -51,7 +51,10 @@
             v-for="task in tasks"
             :key="task.run_id"
             class="run-task"
-            :class="{ 'run-task-selected': task.node_id === selectedTask }"
+            :class="{
+              'run-task-selected':
+                task.node_id === selectedTask || task.run_id === selectedTask,
+            }"
             @click="$emit('select', task.node_id ?? null)"
           >
             <v-icon
@@ -133,6 +136,7 @@
         </v-card>
       </aside>
     </div>
+    <WorkflowLoopHistory :run="run" @select="$emit('select', $event)" />
     <details v-if="run.snapshot.definition.tasks" class="mt-4">
       <summary>{{ tm("progress.graph") }}</summary>
       <WorkflowGraphCanvas
@@ -150,6 +154,7 @@
 import { computed } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import WorkflowLoopHistory from "./WorkflowLoopHistory.vue";
 const props = defineProps<{ run: any; selectedTask: string | null }>();
 defineEmits<{ select: [nodeId: string | null] }>();
 const { tm } = useModuleI18n("features/agent-teams");

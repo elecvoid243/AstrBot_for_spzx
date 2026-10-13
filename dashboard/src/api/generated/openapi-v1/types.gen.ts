@@ -494,6 +494,7 @@ export type GraphDefinition = {
     max_parallel?: number;
     tasks: Array<GraphTask>;
     edges?: Array<GraphEdge>;
+    loops?: Array<GraphLoop>;
 };
 
 /**
@@ -503,6 +504,19 @@ export type GraphEdge = {
     source: string;
     target: string;
     condition?: (FieldCondition | null);
+};
+
+/**
+ * A disjoint, finite task group with a typed exit and explicit feedback.
+ */
+export type GraphLoop = {
+    id: string;
+    name: string;
+    body: Array<(string)>;
+    exit_task_id: string;
+    exit_condition: FieldCondition;
+    max_iterations: number;
+    feedback?: Array<LoopFeedback>;
 };
 
 /**
@@ -613,6 +627,16 @@ export type LoginRequest = {
      */
     code?: string;
     trust_device_flag?: boolean;
+};
+
+/**
+ * Explicit next-round input from a completed previous-round result.
+ */
+export type LoopFeedback = {
+    target: string;
+    input: string;
+    source: string;
+    field?: string;
 };
 
 export type McpServerConfig = {

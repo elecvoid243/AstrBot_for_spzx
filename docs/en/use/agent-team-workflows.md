@@ -127,6 +127,22 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 
 ![Artifact versions, complete output and submission field errors in the actual WebUI](/images/agent-workflow-artifacts-en.jpg)
 
+## Configure a bounded review and revision loop
+
+Open **Agent Teams → Workflow Assets → New Canvas Workflow / Edit Asset**. Configure the writer and independent review tasks, an acyclic dependency from writer to reviewer, and the review output contract with a required Boolean `approved` field. Use **Add bounded loop** to choose the explicit body, exit result task, field comparison (`approved eq true`) and maximum iterations (1–100, within the effective member limit). Arbitrary expressions, graph back edges, overlapping bodies and a body that leaves and reenters its group are rejected before execution.
+
+For the writer, declare first-round draft and feedback inputs. Under the loop, **Add feedback input** explicitly maps the previous writer's text to the next writer's draft and the previous review's text to its feedback. Ordinary dependency inputs within each round read that round's output. Collapse or expand the body to inspect the group on the actual canvas. Saving appends an asset version; existing runs retain their definition and configuration.
+
+Each iteration creates new Task instances with new Attempts, frozen input references and separate model/tool records. Its revised result has its own immutable artifact identity: compare both `artifact_id` and `version`, not the version number alone. A retry keeps the Task and its original round inputs but creates a new Attempt. Recovery continues the original Attempt from its saved checkpoint. Earlier content and review/approval references remain unchanged.
+
+In **Independent Runs → View Run → Loop iterations**, expand a round to inspect inputs, results, the exact exit result reference and task model-call counts. Unknown usage is labelled unknown. Click a task to open its complete saved process, artifacts and controls; expand its round graph for the real task states. Only a matching validated exit releases consumers outside the body. An unmatched final round shows **Iteration limit reached** and the run needs attention without a final successful result. Independent paths still run while a body waits. Whole-run pause or cancellation also applies across round boundaries; restarting does not create duplicate rounds or repeat saved effects.
+
+A loop runs independently without a human node. To confirm a report, add a **Version approval** task after its review dependency and select the writer artifact task. The todo pins the passing iteration's concrete artifact. Export uses that approved reference. New manual revisions never automatically reschedule consumers or inherit old approvals.
+
+![Bounded loop configuration in the actual WebUI](/images/agent-workflow-loop-editor-en.jpg)
+
+![Review failure followed by a passing revision in the actual WebUI](/images/agent-workflow-loop-run-en.jpg)
+
 ## Previous and new entry points
 
 | Previous entry | Current purpose |
@@ -140,6 +156,7 @@ Switching or closing the page does not stop core execution. Refreshing a URL wit
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
+| Revision used only ordinary task dependencies | Workflow Assets → Edit Asset → Add bounded loop; Independent Runs → View Run → Loop iterations. |
 | New workflows had no persistent human entry | Workflow Assets → Edit Asset → Human question / Version approval; Independent Runs → View Run → Human requests. Legacy Workflow Editor human entries remain separate. |
 
-Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops and team orchestration connect in subsequent tasks. Unknown tool decisions are available inside the selected task's process details.
+Single-task assets remain compatible. Dependency assets provide acyclic scheduling, field conditions and persistent human requests through the same task result protocol. Bounded revision loops share the same scheduler; team orchestration connects in subsequent tasks. Unknown tool decisions are available inside the selected task's process details.

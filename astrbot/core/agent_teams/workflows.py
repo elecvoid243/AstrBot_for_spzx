@@ -1262,7 +1262,7 @@ class WorkflowService:
                 if request.action == "cancel":
                     loops = copy.deepcopy(row.state.get("loops", {}))
                     for loop in loops.values():
-                        if loop["status"] not in {"passed", "exhausted"}:
+                        if loop["status"] not in {"passed", "exhausted", "skipped"}:
                             loop["status"] = "cancelled"
                             if loop["iterations"][-1]["status"] == "running":
                                 loop["iterations"][-1]["status"] = "cancelled"
@@ -1894,10 +1894,23 @@ class WorkflowService:
         current_runs = dict(_current_task_runs(root))
         for definition in root.snapshot["definition"].get("loops", []):
             loop = loops[definition["id"]]
-            if loop["status"] in {"passed", "exhausted"}:
+            if loop["status"] in {"passed", "exhausted", "skipped"}:
                 continue
             iteration = loop["iterations"][-1]
             body = [rows[node_id] for node_id in definition["body"]]
+            # A wholly unselected first round is neutral at downstream merges.
+            if iteration["iteration"] == 1 and all(
+                row.status == "skipped" for row in body
+            ):
+                loop["status"] = iteration["status"] = "skipped"
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=root.run_id,
+                        kind="loop.skipped",
+                        data={"loop_id": definition["id"], "iteration": 1},
+                    )
+                )
+                continue
             if any(
                 row.status in {"pending", "running", "waiting_human"} for row in body
             ):
@@ -2170,6 +2183,8 @@ class WorkflowService:
                                 if loop_status == "running":
                                     unresolved = True
                                     continue
+                                if loop_status == "skipped":
+                                    continue
                                 if loop_status != "passed":
                                     failed = True
                                     continue
@@ -2344,7 +2359,7 @@ class WorkflowService:
                     if await self._advance_loops(session, root, rows):
                         progress = True
                 loop_success = all(
-                    loop["status"] == "passed"
+                    loop["status"] in {"passed", "skipped"}
                     for loop in root.state.get("loops", {}).values()
                 )
                 if all(

@@ -135,7 +135,9 @@ For the writer, declare first-round draft and feedback inputs. Under the loop, *
 
 Each iteration creates new Task instances with new Attempts, frozen input references and separate model/tool records. Its revised result has its own immutable artifact identity: compare both `artifact_id` and `version`, not the version number alone. A retry keeps the Task and its original round inputs but creates a new Attempt. Recovery continues the original Attempt from its saved checkpoint. Earlier content and review/approval references remain unchanged.
 
-In **Independent Runs → View Run → Loop iterations**, expand a round to inspect inputs, results, the exact exit result reference and task model-call counts. Unknown usage is labelled unknown. Click a task to open its complete saved process, artifacts and controls; expand its round graph for the real task states. Only a matching validated exit releases consumers outside the body. An unmatched final round shows **Iteration limit reached** and the run needs attention without a final successful result. Independent paths still run while a body waits. Whole-run pause or cancellation also applies across round boundaries; restarting does not create duplicate rounds or repeat saved effects.
+In **Independent Runs → View Run → Loop iterations**, expand a round to inspect inputs, results, the exact exit result reference and task model-call counts. Unknown usage is labelled unknown. Click a task to open its complete saved process, artifacts and controls; expand its round graph for the real task states. Consumers of an executed body wait for a matching validated exit. An unmatched final round shows **Iteration limit reached** and the run needs attention without a final successful result. Independent paths still run while a body waits. Whole-run pause or cancellation also applies across round boundaries; restarting does not create duplicate rounds or repeat saved effects.
+
+If conditions skip the entire first-round body, the loop and round show **Skipped (unselected path)**. They produce no exit artifact or additional round. Merges ignore that unselected path and use their active branch inputs. A loop that already executed but has a skipped exit, failed work or an exhausted limit still blocks its dependent consumers; skipped task inputs never produce substitute results.
 
 Optional conditional body paths may be skipped when the exit still produces a passing validated result. If a rejected exit needs feedback from a skipped task, the loop requires attention because that round has no result to pin.
 
@@ -144,6 +146,8 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 ![Bounded loop configuration in the actual WebUI](/images/agent-workflow-loop-editor-en.jpg)
 
 ![Review failure followed by a passing revision in the actual WebUI](/images/agent-workflow-loop-run-en.jpg)
+
+![An unselected loop stays skipped while its active branch completes the merge](/images/agent-workflow-loop-skip-en.png)
 
 ## Previous and new entry points
 

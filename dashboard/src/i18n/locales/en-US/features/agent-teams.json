@@ -500,7 +500,7 @@
     "source": "Previous-round result",
     "addFeedback": "Add feedback input",
     "remove": "Remove loop",
-    "rules": "Disjoint task groups use validated scalar fields. Only a passing exit releases consumers outside the group; reaching the limit requires attention.",
+    "rules": "Disjoint task groups use validated scalar fields. Executed loops release outside consumers only after a passing exit. Unselected groups are skipped; reaching the limit requires attention.",
     "history": "Loop iterations",
     "iteration": "Iteration",
     "exitResult": "Validated exit result",
@@ -510,6 +510,7 @@
       "running": "Running",
       "passed": "Passed",
       "rejected": "Review failed",
+      "skipped": "Skipped (unselected path)",
       "exhausted": "Iteration limit reached",
       "blocked": "Needs attention",
       "cancelled": "Cancelled"

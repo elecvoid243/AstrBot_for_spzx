@@ -9,7 +9,9 @@ import pytest_asyncio
 
 from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry
-from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
+from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.services.agent_team_ports import TeamPorts
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 from tests.agent_teams.test_workflow_graph import wait_graph
@@ -242,6 +244,140 @@ async def test_failed_review_creates_new_tasks_and_pins_explicit_revision(loop_s
         == first[1]["snapshot"]
     )
     assert len(loop_script.observations) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loop_enabled", [False, True])
+async def test_unselected_whole_loop_preserves_merge_and_reopened_history(
+    loop_script, tmp_path, loop_enabled
+):
+    """Keep an unselected path neutral across reads and service reconstruction.
+
+    Args:
+        loop_script: External execution observations with real public services.
+        tmp_path: Persistent test data reopened by a fresh database and service.
+        loop_enabled: Whether the otherwise identical conditional DAG has a loop.
+    """
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    gate = {
+        **definition["tasks"][0],
+        "id": "gate",
+        "name": "Gate",
+        "task": "Choose {draft}",
+        "inputs": {"draft": {"input": "draft"}},
+    }
+    definition["tasks"] = [
+        gate,
+        {**gate, "id": "selected", "name": "Selected path"},
+        *definition["tasks"],
+    ]
+    definition["tasks"][-1]["inputs"] = {"draft": {"task_id": "selected"}}
+    definition["edges"] += [
+        {
+            "source": "gate",
+            "target": "write",
+            "condition": {"field": "text", "value": "unselected"},
+        },
+        {"source": "gate", "target": "selected"},
+        {"source": "selected", "target": "publish"},
+    ]
+    if not loop_enabled:
+        definition["loops"] = []
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "completed"
+    assert [(task["node_id"], task["status"]) for task in finished["tasks"]] == [
+        ("gate", "completed"),
+        ("selected", "completed"),
+        ("write", "skipped"),
+        ("review", "skipped"),
+        ("publish", "completed"),
+    ]
+    assert await env.service.get_result("alice", run["run_id"]) == {
+        "tasks": {
+            "gate": {"text": "Original"},
+            "selected": {"text": "Original"},
+            "publish": {"text": "Original"},
+        }
+    }
+    assert finished["tasks"][-1]["snapshot"]["input_artifacts"] == [
+        finished["tasks"][1]["result_ref"]
+    ]
+    if loop_enabled:
+        loop = finished["loops"][0]
+        assert loop["status"] == "skipped"
+        assert len(loop["iterations"]) == 1
+        iteration = loop["iterations"][0]
+        assert iteration["status"] == "skipped"
+        assert "exit_reference" not in iteration
+        assert "exit_value" not in iteration
+        assert all(task["result"] is None for task in iteration["tasks"])
+        assert all(task["artifacts"] == [] for task in iteration["tasks"])
+    await env.service.advance_run("alice", run["run_id"])
+    refreshed = await env.service.get_run("alice", run["run_id"])
+    assert refreshed["loops"] == finished["loops"]
+    await env.service.shutdown()
+    await env.db.engine.dispose()
+    reopened_db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+    reopened = WorkflowService(
+        reopened_db,
+        RoleAssetService(reopened_db),
+        ports_factory=env.service.ports_factory,
+    )
+    try:
+        await reopened.boot_sweep()
+        await reopened.advance_run("alice", run["run_id"])
+        restored = await reopened.get_run("alice", run["run_id"])
+        assert restored["status"] == "completed"
+        assert restored["loops"] == finished["loops"]
+        assert restored["result"] == finished["result"]
+        assert [task["run_id"] for task in restored["tasks"]] == [
+            task["run_id"] for task in finished["tasks"]
+        ]
+        if loop_enabled:
+            assert len(
+                [event for event in restored["events"] if event["kind"] == "loop.skipped"]
+            ) == 1
+            assert not any(
+                event["kind"] == "loop.evaluated" for event in restored["events"]
+            )
+        assert [item["snapshot"]["node_id"] for item in loop_script.observations] == [
+            "gate", "selected", "publish"
+        ]
+    finally:
+        await reopened.shutdown()
+        await reopened_db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_executed_loop_with_skipped_exit_cannot_release_final_consumer(loop_script):
+    env = loop_script.env
+    definition = revision_definition(env.role["role_id"])
+    definition["edges"][0]["condition"] = {
+        "field": "text", "value": "unselected"
+    }
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice", asset["asset_id"],
+        {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
+    )
+    finished = await wait_graph(env.service, run["run_id"])
+    assert finished["status"] == "blocked"
+    assert finished["result"] is None
+    assert [task["status"] for task in finished["tasks"]] == [
+        "completed", "skipped", "dependency_failed"
+    ]
+    loop = finished["loops"][0]
+    assert loop["status"] == "blocked"
+    assert len(loop["iterations"]) == 1
+    assert "exit_reference" not in loop["iterations"][0]
+    assert len(loop_script.observations) == 1
 
 
 @pytest.mark.asyncio

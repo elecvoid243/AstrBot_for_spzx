@@ -2385,6 +2385,7 @@ class WorkflowService:
                         caller.snapshot.get("coordinator")
                         or origin.snapshot.get("member", {}).get("member_id")
                         == sender_id
+                        or ref in caller.snapshot.get("input_artifacts", [])
                         or any(
                             ref in message.payload["artifact_refs"]
                             for message in received
@@ -2460,55 +2461,62 @@ class WorkflowService:
             execution_id: Current executor fence.
 
         Returns:
-            Unconsumed messages; consumption only commits with their model context.
+            Unconsumed messages after global continuation permits receiving;
+            consumption only commits with their model context.
 
         Raises:
-            RoleAssetError: Stale execution or globally blocked admission.
+            RoleAssetError: Stale execution, stale attempt or global cancellation.
         """
-        async with self.db.get_db() as session:
-            caller = await session.get(AgentWorkflowRun, run_id)
-            if caller is None or caller.owner_username != username:
-                raise RoleAssetError("Run not found", status=404)
-            control = await self._lock_control(session, caller)
-            await session.refresh(caller)
-            await self._require_execution_owner(session, run_id, execution_id)
-            if (
-                caller.state.get("attempt_id") != attempt_id
-                or control.status != "active"
-            ):
-                raise RoleAssetError(
-                    "Message consumption requires active execution", status=409
-                )
-            rows = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowMessage)
-                        .where(
-                            AgentWorkflowMessage.root_run_id
-                            == caller.snapshot.get("parent_run_id"),
-                            AgentWorkflowMessage.scope_id == caller.state["scope_id"],
-                            AgentWorkflowMessage.recipient_member_id
-                            == caller.snapshot["member"]["member_id"],
-                            col(AgentWorkflowMessage.consumption).is_(None),
-                        )
-                        .order_by(
-                            col(AgentWorkflowMessage.created_at),
-                            col(AgentWorkflowMessage.message_id),
-                        )
+        while True:
+            async with self.db.get_db() as session:
+                caller = await session.get(AgentWorkflowRun, run_id)
+                if caller is None or caller.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                control = await self._lock_control(session, caller)
+                await session.refresh(caller)
+                await self._require_execution_owner(session, run_id, execution_id)
+                if (
+                    caller.state.get("attempt_id") != attempt_id
+                    or control.status == "cancelled"
+                ):
+                    raise RoleAssetError(
+                        "Message consumption requires active execution", status=409
                     )
-                )
-                .scalars()
-                .all()
-            )
-            return [
-                {
-                    **message.model_dump(
-                        mode="json", exclude={"payload", "consumption"}
-                    ),
-                    **message.payload,
-                }
-                for message in rows
-            ]
+                if control.status == "active":
+                    rows = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowMessage)
+                                .where(
+                                    AgentWorkflowMessage.root_run_id
+                                    == caller.snapshot.get("parent_run_id"),
+                                    AgentWorkflowMessage.scope_id
+                                    == caller.state["scope_id"],
+                                    AgentWorkflowMessage.recipient_member_id
+                                    == caller.snapshot["member"]["member_id"],
+                                    col(AgentWorkflowMessage.consumption).is_(None),
+                                )
+                                .order_by(
+                                    col(AgentWorkflowMessage.created_at),
+                                    col(AgentWorkflowMessage.message_id),
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    return [
+                        {
+                            **message.model_dump(
+                                mode="json", exclude={"payload", "consumption"}
+                            ),
+                            **message.payload,
+                        }
+                        for message in rows
+                    ]
+            # Pause can arrive after the runner's previous admission. Release the
+            # transaction before parking, then recheck control and ownership.
+            await self._await_execution_permission(username, run_id, execution_id)
 
     async def manage_team(
         self,

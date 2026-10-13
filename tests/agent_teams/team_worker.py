@@ -31,6 +31,66 @@ async def run_team_scenario(
         roles: Existing role assets with real providers and configuration.
     """
     if action == "start":
+        if scenario in {"team_message_pause", "team_message_cancel", "team_message_replace"}:
+            original_pending = service.pending_member_messages
+            injected = False
+
+            async def pending(username, run_id, attempt_id, execution_id):
+                """Insert a public control decision in the admission/read window.
+
+                Args:
+                    username: Actual initiating owner.
+                    run_id: Current task reaching the public receiving boundary.
+                    attempt_id: Original task attempt.
+                    execution_id: Current execution fence.
+
+                Returns:
+                    The unmodified public service result after independent control.
+                """
+                nonlocal injected
+                if injected:
+                    return await original_pending(username, run_id, attempt_id, execution_id)
+                injected = True
+                task = await service.get_run(username, run_id)
+                root_id = task["snapshot"]["parent_run_id"]
+                before = await service.control_run(username, root_id,
+                    {"action": "pause", "request_id": "message-read-pause"})
+                observed = {"before": before, "execution_id": execution_id}
+                obsolete = asyncio.Event()
+
+                async def control():
+                    """Continue, cancel or reclaim from an independent user operation."""
+                    await asyncio.sleep(0.2)
+                    ledger = folder / "external-ledger.json"
+                    observed["requests_while_paused"] = len(json.loads(ledger.read_text(encoding="utf-8"))["requests"]) if ledger.exists() else 0
+                    (folder / "message-admission.json").write_text(json.dumps(observed), encoding="utf-8")
+                    if scenario == "team_message_replace":
+                        await service.boot_sweep()
+                    await service.control_run(username, root_id, {
+                        "action": "cancel" if scenario == "team_message_cancel" else "continue",
+                        "request_id": "message-read-decision"})
+                    if scenario == "team_message_replace":
+                        await asyncio.wait_for(obsolete.wait(), 5)
+                        await service.control_run(username, root_id,
+                            {"action": "cancel", "request_id": "replacement-cleanup"})
+
+                decision = asyncio.create_task(control())
+                try:
+                    result = await original_pending(username, run_id, attempt_id, execution_id)
+                    observed["returned"] = True
+                    return result
+                except RoleAssetError as exc:
+                    observed["rejection"] = exc.status
+                    observed["error"] = str(exc)
+                    obsolete.set()
+                    raise
+                finally:
+                    try:
+                        await asyncio.shield(decision)
+                    finally:
+                        (folder / "message-admission.json").write_text(json.dumps(observed), encoding="utf-8")
+
+            service.pending_member_messages = pending
 
         def after_flush(session, flush_context):
             """Select an actual durable boundary for external termination.
@@ -274,7 +334,7 @@ async def run_team_scenario(
         if current["status"] != "running":
             break
         await asyncio.sleep(0.02)
-    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters"}:
+    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
         (folder / "team-evidence.json").write_text(
             json.dumps({"after": current}), encoding="utf-8"
         )

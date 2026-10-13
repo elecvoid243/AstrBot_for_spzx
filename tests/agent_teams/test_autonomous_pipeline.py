@@ -39,6 +39,9 @@ import pytest
         "team_message_consume_failure",
         "team_message_parameters",
         "team_message_parameters_checkpoint",
+        "team_message_pause",
+        "team_message_cancel",
+        "team_message_replace",
     ],
 )
 def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decisions(
@@ -366,7 +369,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
     ]
     environment = {**os.environ, "PYTHONUTF8": "1"}
     try:
-        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters"}:
+        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
             first = subprocess.run(
                 [*command, "start", scenario],
                 cwd=root,
@@ -422,6 +425,29 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             (tmp_path / "team-evidence.json").read_text(encoding="utf-8")
         )
         current = evidence["after"]
+        if scenario in {"team_message_pause", "team_message_cancel", "team_message_replace"}:
+            admission = json.loads((tmp_path / "message-admission.json").read_text(encoding="utf-8"))
+            assert admission["requests_while_paused"] == 0
+            assert admission["before"]["control"]["status"] == "paused"
+            if scenario == "team_message_cancel":
+                assert current["status"] == "cancelled"
+                assert requests == effects == []
+                assert current["messages"] == []
+                assert not admission.get("returned", False)
+                return
+            task = next(task for task in current["tasks"] if task["snapshot"].get("coordinator"))
+            assert task["state"]["attempt_id"] == admission["before"]["tasks"][0]["state"]["attempt_id"]
+            if scenario == "team_message_pause":
+                assert admission.get("returned", False), {"rejection": admission.get("rejection"), "status": current["status"], "control": current["control"]}
+                assert task["state"]["execution_id"] == admission["execution_id"]
+            else:
+                assert admission["rejection"] == 409
+                assert admission["error"] == "Execution ownership has changed"
+                assert not admission.get("returned", False)
+                assert task["state"]["execution_id"] != admission["execution_id"]
+                assert current["status"] == "cancelled"
+                assert requests == effects == []
+                return
         if scenario == "team_inputs":
             coordinator_requests = [
                 request for request in requests if "team_manage" in request["tools"]

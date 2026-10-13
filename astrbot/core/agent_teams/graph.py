@@ -2,7 +2,7 @@
 
 from operator import ge, gt, le, lt
 from string import Formatter
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from referencing import Registry, Resource
@@ -175,7 +175,9 @@ def matches_condition(value: str | bool | int | float | None, rule: dict) -> boo
     equal = value == other and isinstance(value, bool) == isinstance(other, bool)
     if rule["operator"] in {"eq", "ne"}:
         return equal if rule["operator"] == "eq" else not equal
-    return {"gt": gt, "ge": ge, "lt": lt, "le": le}[rule["operator"]](value, other)
+    return {"gt": gt, "ge": ge, "lt": lt, "le": le}[rule["operator"]](
+        cast(int | float, value), other
+    )
 
 
 def field_schema(contract: dict | None, path: str) -> dict:

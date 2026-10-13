@@ -139,6 +139,128 @@ async def test_one_capacity_workflow_calls_pinned_team_with_declared_inputs(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["", " \n\t"])
+async def test_child_required_input_rejects_empty_upstream_result(workflow_env, value):
+    """Validate required child inputs before creating or dispatching its scope.
+
+    Args:
+        workflow_env: Public services with an external execution boundary.
+        value: A valid custom result that cannot satisfy a required text input.
+    """
+    env = workflow_env
+    contract = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "valid": {"type": "boolean"}},
+        "required": ["text", "valid"],
+        "additionalProperties": False,
+    }
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Child",
+                "coordinator": {"role_id": env.role["role_id"], "role_version": 1},
+                "allowed_roles": [{"role_id": env.role["role_id"], "role_version": 1}],
+            }
+        },
+    )
+    with pytest.raises(RoleAssetError) as direct:
+        await env.service.start_run(
+            "alice", team["asset_id"], {"version": 1, "inputs": {"goal": value}}
+        )
+    assert direct.value.fields == [
+        {"path": "inputs.goal", "code": "REQUIRED", "message": "Provide non-empty text"}
+    ]
+    agent = {
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "Produce",
+    }
+    parent = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Input boundary",
+                "max_parallel": 1,
+                "tasks": [
+                    {
+                        "id": "produce",
+                        "name": "Produce",
+                        "member": "worker",
+                        **agent,
+                        "output_contract": contract,
+                    },
+                    {
+                        "id": "call",
+                        "name": "Child call",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"task_id": "produce", "field": "text"}},
+                    },
+                    {
+                        "id": "dependent",
+                        "name": "Dependent",
+                        "member": "worker",
+                        **agent,
+                    },
+                    {
+                        "id": "independent",
+                        "name": "Independent",
+                        "member": "worker",
+                        **agent,
+                    },
+                ],
+                "edges": [
+                    {"source": "produce", "target": "call"},
+                    {"source": "call", "target": "dependent"},
+                ],
+            }
+        },
+    )
+    delivered, bindings = [], {}
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        bindings[session_id] = binding
+        delivered.append(binding.node_id)
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        tool = next(
+            tool
+            for tool in AgentTeamToolRegistry.get_tools(
+                f"webchat:FriendMessage:{session_id}"
+            )
+            if tool.name == "submit_task_result"
+        )
+        response = (
+            await tool.call(None, result_json=json.dumps({"text": value, "valid": True}))
+            if bindings[session_id].node_id == "produce"
+            else await tool.call(None, text="Complete")
+        )
+        assert response == "Result accepted."
+        return "Done", []
+
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver, collect=collect, is_busy=lambda _: False, emit=lambda _: None
+    )
+    run = await env.service.start_run("alice", parent["asset_id"], {"version": 1})
+    sessions = await env.db.get_platform_sessions_by_creator("alice")
+    current = await completed_run(env.service, run["run_id"])
+    assert current["status"] == "blocked", current
+    tasks = {task["node_id"]: task for task in current["tasks"]}
+    assert tasks["call"]["status"] == "blocked"
+    assert tasks["call"]["state"]["issues"] == direct.value.fields
+    assert tasks["dependent"]["status"] == "dependency_failed"
+    assert tasks["independent"]["status"] == "completed"
+    assert current["scopes"] == []
+    assert delivered == ["produce", "independent"]
+    assert await env.db.get_platform_sessions_by_creator("alice") == sessions
+
+
+@pytest.mark.asyncio
 async def test_root_cancel_reaches_child_scope_and_keeps_effects(workflow_env):
     """A whole-run cancellation fences every child without deleting prior effects.
 

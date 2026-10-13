@@ -278,6 +278,28 @@ async def _descendant_runs(
     return [row for row in family if row.run_id in identities]
 
 
+def _has_scope_capacity(
+    root: AgentWorkflowRun,
+    scope: AgentWorkflowRun,
+    active: list[AgentWorkflowRun],
+) -> bool:
+    """Apply the shared root and local scope limits at every admission boundary.
+
+    Args:
+        root: Whole run whose frozen limit applies to all scopes.
+        scope: Graph owning the task being admitted or resumed.
+        active: Executing member tasks that still occupy capacity.
+
+    Returns:
+        Whether both limits allow another executing task.
+    """
+    return (
+        len(active) < root.snapshot["definition"]["max_parallel"]
+        and sum(task.snapshot.get("parent_run_id") == scope.run_id for task in active)
+        < scope.snapshot["definition"]["max_parallel"]
+    )
+
+
 class WorkflowService:
     """Public asset/run boundary backed by the existing database and execution port."""
 
@@ -3161,13 +3183,7 @@ class WorkflowService:
                     role_limit = caller.snapshot["effective"].get("max_parallel")
                     if (
                         control.status == "active"
-                        and len(active)
-                        < whole_root.snapshot["definition"]["max_parallel"]
-                        and sum(
-                            task.snapshot.get("parent_run_id") == root_id
-                            for task in active
-                        )
-                        < observed["snapshot"]["definition"]["max_parallel"]
+                        and _has_scope_capacity(whole_root, root, active)
                         and (
                             role_limit is None
                             or sum(
@@ -3545,13 +3561,7 @@ class WorkflowService:
                                 "max_parallel"
                             )
                             if not task.get("team") and (
-                                len(active)
-                                >= whole_root.snapshot["definition"]["max_parallel"]
-                                or sum(
-                                    item.snapshot.get("parent_run_id") == run_id
-                                    for item in active
-                                )
-                                >= definition["max_parallel"]
+                                not _has_scope_capacity(whole_root, root, active)
                                 or member_id in occupied
                                 or (
                                     role_limit is not None
@@ -3634,6 +3644,21 @@ class WorkflowService:
                                     "input_artifacts": refs,
                                 }
                                 try:
+                                    fields = [
+                                        {
+                                            "path": f"inputs.{name}",
+                                            "code": "REQUIRED",
+                                            "message": "Provide non-empty text",
+                                        }
+                                        for name in frozen["definition"][
+                                            "required_inputs"
+                                        ]
+                                        if not frozen["inputs"].get(name, "").strip()
+                                    ]
+                                    if fields:
+                                        raise RoleAssetError(
+                                            "Invalid run inputs", fields
+                                        )
                                     depth = root.snapshot.get("depth", 0) + 1
                                     if depth > whole_root.snapshot["definition"].get(
                                         "max_depth", 3
@@ -4586,12 +4611,7 @@ class WorkflowService:
                 role_id = row.snapshot["definition"]["role_id"]
                 role_limit = row.snapshot["effective"].get("max_parallel")
                 if not row.state.get("capacity_released") and (
-                    len(active) >= whole_root.snapshot["definition"]["max_parallel"]
-                    or sum(
-                        task.snapshot.get("parent_run_id") == parent_id
-                        for task in active
-                    )
-                    >= parent.snapshot["definition"]["max_parallel"]
+                    not _has_scope_capacity(whole_root, parent, active)
                     or any(
                         task.snapshot["member"]["member_id"]
                         == row.snapshot["member"]["member_id"]

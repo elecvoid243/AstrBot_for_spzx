@@ -44,7 +44,7 @@ At startup, accepted task submissions at saved safe points finish idempotently. 
 
 Save a ready autonomous team first. In **Workflow Assets → New Canvas Workflow**, choose **Call autonomous team** in the role toolbox. Select the node to choose its **Pinned child team asset** and **Pinned team version**. Declare exactly the inputs required by that version, using workflow inputs or upstream result fields with dependency paths. The output contract comes from the chosen team version. Expand the team definition above the canvas to inspect its pinned coordinator and allowed roles; collapse it to keep the parent graph compact.
 
-Set **Root nesting depth limit** and **Maximum concurrent tasks**, then **Save New Version**. Reopening retains the selected version, references and layout. A run freezes every child definition, role configuration and resource binding before dispatch. Editing the child later affects new runs. Declared multiline inputs and literal braces reach its coordinator unchanged.
+Set **Root nesting depth limit** and **Maximum concurrent tasks**, then **Save New Version**. Reopening retains the selected version, references and layout. A run freezes every child definition, role configuration and resource binding before dispatch. Editing the child later affects new runs. Declared multiline inputs and literal braces reach its coordinator unchanged. Required inputs must remain nonempty after resolving upstream results; invalid values show input field errors before any child scope is created, while independent branches continue.
 
 ![A newly authored fixed-version child call in the actual canvas](/images/agent-workflow-child-editor-en.jpg)
 

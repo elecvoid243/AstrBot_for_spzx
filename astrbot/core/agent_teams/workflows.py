@@ -4820,10 +4820,16 @@ class WorkflowService:
                         cancelled = (
                             decision is not None and decision.status == "cancelled"
                         )
+                        capacity_released = False
+                        if snapshot.get("coordinator"):
+                            current = await session.get(AgentWorkflowRun, run_id)
+                            capacity_released = bool(
+                                current is not None
+                                and current.state.get("capacity_released")
+                            )
                     if cancelled:
                         raise asyncio.CancelledError
-                    current = await self.get_run(username, run_id)
-                    if not paused and not current["state"].get("capacity_released"):
+                    if not paused and not capacity_released:
                         remaining -= now - previous
                         if remaining <= 0:
                             raise asyncio.TimeoutError("Workflow execution timed out")

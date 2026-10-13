@@ -107,6 +107,33 @@
         todo.response.answer ?? todo.response.feedback ?? tm("human.approve")
       }}</pre>
     </v-card-text>
+    <v-dialog v-model="previewingFile" max-width="900">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("v2.previewFile")
+        }}</v-card-title>
+        <v-card-text>
+          <pre
+            v-if="fileText"
+            class="human-content"
+            data-testid="human-file-content"
+            >{{ fileText }}</pre
+          >
+          <iframe
+            v-else-if="fileUrl"
+            :src="fileUrl"
+            sandbox=""
+            :title="tm('v2.previewFile')"
+            style="width: 100%; height: 60vh; border: 0"
+          />
+        </v-card-text>
+        <v-card-actions
+          ><v-btn variant="text" @click="previewingFile = false">{{
+            tm("v2.close")
+          }}</v-btn></v-card-actions
+        >
+      </v-card>
+    </v-dialog>
   </v-card>
 </template>
 
@@ -133,8 +160,12 @@ const preview = ref<any>(null);
 const reading = ref(false);
 const exporting = ref(false);
 const error = ref("");
+const previewingFile = ref(false);
+const fileText = ref("");
+const fileUrl = ref("");
 const requests = new Map<string, string>();
 let disposed = false;
+let fileRead = 0;
 const urls: string[] = [];
 
 function submit(action: HumanAnswerRequest["action"]) {
@@ -210,7 +241,7 @@ async function exportVersion() {
 }
 
 async function readFile(fileId: string, download: boolean) {
-  const windowPreview = download ? null : window.open("", "_blank");
+  const read = download ? null : ++fileRead;
   try {
     const response = await workflowAssetsApi.file(
       props.todo.artifact_ref.artifact_id,
@@ -218,23 +249,28 @@ async function readFile(fileId: string, download: boolean) {
       fileId,
       download,
     );
-    if (disposed) {
-      windowPreview?.close();
-      return;
-    }
-    const url = URL.createObjectURL(response.data);
-    urls.push(url);
+    if (disposed || (!download && read !== fileRead)) return;
     if (download) {
+      const url = URL.createObjectURL(response.data);
+      urls.push(url);
       const link = document.createElement("a");
       link.href = url;
       link.download =
         preview.value?.files.find((file: any) => file.file_id === fileId)
           ?.filename ?? fileId;
       link.click();
-    } else if (windowPreview) windowPreview.location.href = url;
+    } else {
+      const content = response.data.type.startsWith("text/")
+        ? await response.data.text()
+        : "";
+      if (disposed || read !== fileRead) return;
+      fileText.value = content;
+      fileUrl.value = content ? "" : URL.createObjectURL(response.data);
+      if (fileUrl.value) urls.push(fileUrl.value);
+      previewingFile.value = true;
+    }
   } catch (err) {
-    windowPreview?.close();
-    if (!disposed)
+    if (!disposed && (download || read === fileRead))
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   }
 }

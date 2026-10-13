@@ -37,6 +37,43 @@ const todo = {
 };
 
 describe("persistent human request handling", () => {
+  it.each(["text/html", "application/octet-stream"])(
+    "previews untrusted %s files without opening an executable page",
+    async (type) => {
+      const content =
+        "<script>window.previewInjected = true</script><h1>Complete report</h1>";
+      api.artifact.mockResolvedValue({
+        content: { text: "Report" },
+        files: [{ file_id: "file", filename: "report.html" }],
+      });
+      api.file.mockResolvedValue({ data: new Blob([content], { type }) });
+      const open = vi.spyOn(window, "open").mockReturnValue(null);
+      const wrapper = mount(WorkflowHumanTodo, {
+        props: { todo, busy: false, paused: false, cancelled: false },
+        global: { stubs },
+      });
+      try {
+        await wrapper.get('[data-testid="human-preview"]').trigger("click");
+        await flushPromises();
+        await wrapper
+          .findAll("button")
+          .find((button) => button.text().includes("report.html"))!
+          .trigger("click");
+        await flushPromises();
+        expect(api.file).toHaveBeenLastCalledWith("report", 1, "file", false);
+        expect(open).not.toHaveBeenCalled();
+        if (type === "text/html") {
+          expect(
+            wrapper.get('[data-testid="human-file-content"]').text(),
+          ).toContain(content);
+          expect(wrapper.find("script").exists()).toBe(false);
+        } else expect(wrapper.get("iframe").attributes("sandbox")).toBe("");
+      } finally {
+        wrapper.unmount();
+        open.mockRestore();
+      }
+    },
+  );
   it("previews every contracted field before approving a structured result", async () => {
     api.artifact.mockResolvedValue({
       artifact_id: "report",

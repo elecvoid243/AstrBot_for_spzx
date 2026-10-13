@@ -1916,7 +1916,9 @@ class WorkflowService:
             value = source.result
             for name in rule["field"].split("."):
                 value = value[name]
-            passed = matches_condition(value, rule)
+            passed = matches_condition(
+                cast(str | bool | int | float | None, value), rule
+            )
             iteration["exit_reference"] = {"artifact_id": source.run_id, "version": 1}
             iteration["exit_value"] = value
             iteration["status"] = "passed" if passed else "rejected"
@@ -2181,7 +2183,10 @@ class WorkflowService:
                                     assert value is not None
                                     for name in rule["field"].split("."):
                                         value = value[name]
-                                    match = matches_condition(value, rule)
+                                    match = matches_condition(
+                                        cast(str | bool | int | float | None, value),
+                                        rule,
+                                    )
                                 if match:
                                     matched.append(source)
                             elif source.status != "skipped":

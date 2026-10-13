@@ -115,6 +115,336 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("allows answering another run while an earlier answer is pending", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const firstTodo = {
+      todo_id: "q1",
+      task_run_id: "q1",
+      kind: "question",
+      question: "First question",
+      status: "pending",
+      constraints: { choices: [], max_length: 100 },
+    };
+    const secondTodo = {
+      ...firstTodo,
+      todo_id: "q2",
+      task_run_id: "q2",
+      question: "Second question",
+    };
+    const first = { ...run, todos: [firstTodo] };
+    const second = {
+      ...run,
+      run_id: "run-2",
+      todos: [secondTodo],
+      snapshot: {
+        ...run.snapshot,
+        definition: { ...asset.definition, name: "Second report" },
+      },
+    };
+    api.run.mockImplementation(async (id: string) =>
+      id === "run-1" ? first : second,
+    );
+    api.runs.mockResolvedValue({
+      runs: [runOverview, { ...runOverview, run_id: "run-2" }],
+    });
+    let finishFirst!: (value: any) => void;
+    api.answer.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishFirst = resolve;
+      }),
+    );
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      expect(api.answer).toHaveBeenCalledTimes(1);
+      await wrapper
+        .findAll("button")
+        .filter((button) => button.text() === "v2.details")[1]
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Second question",
+      );
+      await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+      api.answer.mockResolvedValueOnce({
+        ...second,
+        todos: [
+          {
+            ...secondTodo,
+            status: "completed",
+            response: { answer: "Europe" },
+          },
+        ],
+      });
+      expect(
+        wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+      ).toBeUndefined();
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      await flushPromises();
+      expect(api.answer).toHaveBeenLastCalledWith(
+        "run-2",
+        "q2",
+        expect.objectContaining({ answer: "Europe" }),
+      );
+    } finally {
+      finishFirst({ ...first, todos: [{ ...firstTodo, status: "completed" }] });
+      await flushPromises();
+      wrapper.unmount();
+    }
+  });
+  it.each(
+    ["answer", "control", "resolve", "recover"].flatMap((operation) =>
+      ["success", "failure"].flatMap((oldOutcome) =>
+        ["success", "failure"].map((outcome) => ({
+          operation,
+          oldOutcome,
+          outcome,
+        })),
+      ),
+    ),
+  )(
+    "isolates human operations across runs ($operation / old $oldOutcome / current $outcome)",
+    async ({ operation, oldOutcome, outcome }) => {
+      const router = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: "/", component: slotStub }],
+      });
+      await router.push("/?workflow_run=run-1");
+      const todo = {
+        todo_id: "q1",
+        task_run_id: "q1",
+        kind: "question",
+        question: "First question",
+        status: "pending",
+        constraints: { choices: [], max_length: 100 },
+      };
+      const task = {
+        ...run,
+        run_id: "child-1",
+        node_id: "report",
+        status: "interrupted",
+        recovery: { available: true, boundary: "response" },
+        tool_calls: [
+          {
+            record_id: "call-1",
+            name: "publish",
+            status: "unknown",
+            args: {},
+            recovery: {},
+            available_actions: ["retry"],
+          },
+        ],
+      };
+      const first = {
+        ...run,
+        control: { status: "active", revision: 0 },
+        todos: [todo],
+        tasks: [task],
+      };
+      const action =
+        operation === "control"
+          ? "approve"
+          : operation === "resolve"
+          ? "reject"
+          : "answer";
+      const secondTodo = {
+        ...todo,
+        todo_id: "q2",
+        task_run_id: "q2",
+        question: "Second question",
+        kind: action === "answer" ? "question" : "approval",
+        artifact_ref:
+          action === "answer" ? null : { artifact_id: "report-2", version: 1 },
+      };
+      const second = {
+        ...run,
+        run_id: "run-2",
+        todos: [secondTodo],
+        control: { status: "active", revision: 0 },
+        snapshot: {
+          ...run.snapshot,
+          definition: { ...asset.definition, name: "Second report" },
+        },
+      };
+      api.run.mockImplementation(async (id) =>
+        id === "run-1" ? first : second,
+      );
+      api.runs.mockResolvedValue({
+        runs: [runOverview, { ...runOverview, run_id: "run-2" }],
+      });
+      api.artifact.mockResolvedValue({
+        artifact_id: "report-2",
+        version: 1,
+        content: { text: "Complete approval content" },
+        files: [],
+      });
+      let finishOld!: (value: any) => void;
+      let failOld!: (error: Error) => void;
+      const oldApi =
+        operation === "answer"
+          ? api.answer
+          : operation === "control"
+          ? api.control
+          : operation === "resolve"
+          ? api.resolveTool
+          : api.recover;
+      oldApi.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          finishOld = resolve;
+          failOld = reject;
+        }),
+      );
+      let finishCurrent!: (value: any) => void;
+      let failCurrent!: (error: Error) => void;
+      const wrapper = mount(WorkflowWorkspacePanel, {
+        props: { mode: "runs" },
+        global: { plugins: [router], stubs },
+      });
+      try {
+        await flushPromises();
+        if (operation === "answer") {
+          await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+          await wrapper.get('[data-testid="human-submit"]').trigger("click");
+        } else if (operation === "control") {
+          await wrapper.get('[data-testid="pause-run"]').trigger("click");
+        } else if (operation === "recover") {
+          await wrapper.get('[data-testid="recover-attempt"]').trigger("click");
+        } else {
+          const form = wrapper.get('[data-testid="tool-resolution"]');
+          await form.get("select").setValue("retry");
+          await form
+            .get('[data-testid="resolution-evidence"]')
+            .setValue("Owner verified the first operation.");
+          await form.get("button").trigger("click");
+        }
+        expect(oldApi).toHaveBeenCalledTimes(1);
+        const firstCallCount = api.answer.mock.calls.length;
+        await wrapper
+          .findAll("button")
+          .filter((button) => button.text() === "v2.details")[1]
+          .trigger("click");
+        await flushPromises();
+        if (action === "answer") {
+          await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+        } else if (action === "approve") {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
+        } else {
+          await wrapper
+            .get('[data-testid="human-feedback"]')
+            .setValue("Second report needs verified evidence.");
+        }
+        const button = action === "reject" ? "human-reject" : "human-submit";
+        expect(
+          wrapper.get(`[data-testid="${button}"]`).attributes("disabled"),
+        ).toBeUndefined();
+        api.answer.mockReturnValueOnce(
+          new Promise((resolve, reject) => {
+            finishCurrent = resolve;
+            failCurrent = reject;
+          }),
+        );
+        await wrapper.get(`[data-testid="${button}"]`).trigger("click");
+        await wrapper.get(`[data-testid="${button}"]`).trigger("click");
+        expect(api.answer).toHaveBeenCalledTimes(firstCallCount + 1);
+        expect(api.answer).toHaveBeenLastCalledWith(
+          "run-2",
+          "q2",
+          expect.objectContaining({ action }),
+        );
+        await wrapper
+          .findAll("button")
+          .filter((button) => button.text() === "v2.details")[0]
+          .trigger("click");
+        await flushPromises();
+        await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+        expect(
+          wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+        ).toBeDefined();
+        await wrapper.get('[data-testid="human-submit"]').trigger("click");
+        expect(api.answer).toHaveBeenCalledTimes(firstCallCount + 1);
+        expect(
+          wrapper.get('[data-testid="pause-run"]').attributes("disabled"),
+        ).toBeDefined();
+        await wrapper
+          .findAll("button")
+          .filter((button) => button.text() === "v2.details")[1]
+          .trigger("click");
+        await flushPromises();
+        if (action === "answer")
+          await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+        else if (action === "approve") {
+          await wrapper.get('[data-testid="human-preview"]').trigger("click");
+          await flushPromises();
+        } else
+          await wrapper
+            .get('[data-testid="human-feedback"]')
+            .setValue("Second report needs verified evidence.");
+        if (outcome === "failure") {
+          failCurrent(new Error("Current response failed"));
+          await flushPromises();
+          expect(wrapper.text()).toContain("Current response failed");
+        }
+        if (oldOutcome === "success")
+          finishOld({ ...task, status: "completed" });
+        else failOld(new Error("Old operation failed"));
+        await flushPromises();
+        expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+          "Second question",
+        );
+        expect(wrapper.text()).not.toContain("Old operation failed");
+        if (outcome === "success") {
+          expect(
+            wrapper.get(`[data-testid="${button}"]`).attributes("disabled"),
+          ).toBeDefined();
+          expect(
+            wrapper
+              .findAll("button")
+              .find((item) => item.text() === "page.refresh")!
+              .attributes("disabled"),
+          ).toBeDefined();
+          finishCurrent({
+            ...second,
+            todos: [
+              { ...secondTodo, status: "answered", response: { action } },
+            ],
+          });
+          await flushPromises();
+        } else {
+          expect(wrapper.text()).toContain("Current response failed");
+          expect(
+            wrapper.get(`[data-testid="${button}"]`).attributes("disabled"),
+          ).toBeUndefined();
+          api.answer.mockResolvedValueOnce({
+            ...second,
+            todos: [
+              { ...secondTodo, status: "answered", response: { action } },
+            ],
+          });
+          await wrapper.get(`[data-testid="${button}"]`).trigger("click");
+          await flushPromises();
+          expect(wrapper.text()).not.toContain("Current response failed");
+        }
+        expect(
+          wrapper.get('[data-testid="pause-run"]').attributes("disabled"),
+        ).toBeUndefined();
+      } finally {
+        finishOld(task);
+        finishCurrent?.(second);
+        await flushPromises();
+        wrapper.unmount();
+      }
+    },
+  );
   it("releases answer busy state so the next request and controls can run", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

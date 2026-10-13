@@ -10,9 +10,12 @@
         @click="editGraph(null)"
         >{{ tm("graph.create") }}</v-btn
       >
-      <v-btn variant="text" :loading="loading" @click="refresh">{{
-        tm("page.refresh")
-      }}</v-btn>
+      <v-btn
+        variant="text"
+        :loading="loading || !!currentOperation"
+        @click="refresh"
+        >{{ tm("page.refresh") }}</v-btn
+      >
       <v-btn
         v-if="mode === 'assets'"
         variant="tonal"
@@ -141,9 +144,7 @@
               :todo="todo"
               :paused="selectedRun.control?.status === 'paused'"
               :cancelled="selectedRun.control?.status === 'cancelled'"
-              :busy="
-                !!answering || !!controlling || !!resolving || !!recovering
-              "
+              :busy="!!currentOperation"
               @submit="answerTodo"
             />
           </section>
@@ -151,12 +152,7 @@
             :key="selectedRun.run_id"
             :run="selectedRun"
             :task="detailRun"
-            :busy="
-              controlling?.rootId === selectedRun.run_id ||
-              recovering === detailRun.run_id ||
-              resolving?.taskId === detailRun.run_id ||
-              answering?.rootId === selectedRun.run_id
-            "
+            :busy="!!currentOperation"
             @submit="applyRunControl"
           />
           <h3 class="text-h6 mt-6 mb-3">{{ tm("progress.artifacts") }}</h3>
@@ -211,10 +207,12 @@
               v-if="detailRun.recovery.available"
               variant="tonal"
               class="mt-3"
-              :loading="recovering === detailRun.run_id"
+              :loading="
+                currentOperation?.kind === 'recover' &&
+                currentOperation.taskId === detailRun.run_id
+              "
               :disabled="
-                resolving?.taskId === detailRun.run_id ||
-                controlling?.rootId === selectedRun.run_id ||
+                !!currentOperation ||
                 selectedRun.control?.status === 'paused' ||
                 selectedRun.control?.status === 'cancelled'
               "
@@ -331,10 +329,7 @@
           </v-expansion-panels>
           <WorkflowRunProcess
             :run="detailRun"
-            :busy="
-              resolving?.taskId === detailRun.run_id ||
-              recovering === detailRun.run_id
-            "
+            :busy="!!currentOperation"
             @resolve="resolveTool"
           />
         </v-card-text>
@@ -596,10 +591,17 @@ const assets = ref<any[]>([]);
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);
-const recovering = ref<string | null>(null);
-const controlling = ref<{ rootId: string; requestId: string } | null>(null);
-const resolving = ref<{ taskId: string; recordId: string } | null>(null);
-const answering = ref<{ rootId: string; todoId: string } | null>(null);
+const runOperations = ref(
+  new Map<
+    string,
+    { kind: "recover" | "control" | "resolve" | "answer"; taskId: string }
+  >(),
+);
+const currentOperation = computed(() =>
+  selectedRun.value
+    ? runOperations.value.get(selectedRun.value.run_id)
+    : undefined,
+);
 const selectedTaskNode = ref<string | null>(null);
 const detailRun = computed(
   () =>
@@ -684,7 +686,7 @@ let runRead = 0;
 let openingRun = false;
 
 async function refresh() {
-  if (loading.value || openingRun) return;
+  if (loading.value || currentOperation.value || openingRun) return;
   const read = ++runRead;
   loading.value = true;
   try {
@@ -914,17 +916,15 @@ async function openRun(runId: string) {
 
 async function recoverAttempt() {
   if (
-    recovering.value === detailRun.value?.run_id ||
+    currentOperation.value ||
     openingRun ||
-    controlling.value?.rootId === selectedRun.value?.run_id ||
-    !detailRun.value?.recovery?.available ||
-    resolving.value?.taskId === detailRun.value.run_id
+    !detailRun.value?.recovery?.available
   )
     return;
   const taskId = detailRun.value.run_id;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
-  recovering.value = taskId;
+  runOperations.value.set(rootId, { kind: "recover", taskId });
   loading.value = true;
   try {
     error.value = "";
@@ -937,24 +937,16 @@ async function recoverAttempt() {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
-    if (recovering.value === taskId) recovering.value = null;
+    runOperations.value.delete(rootId);
   }
 }
 
 async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
   const taskId = detailRun.value?.run_id;
-  if (
-    !taskId ||
-    openingRun ||
-    controlling.value?.rootId === selectedRun.value?.run_id ||
-    recovering.value === taskId ||
-    resolving.value?.taskId === taskId
-  )
-    return;
+  if (!taskId || openingRun || currentOperation.value) return;
   const rootId = selectedRun.value.run_id;
   const read = ++runRead;
-  const operation = { taskId, recordId };
-  resolving.value = operation;
+  runOperations.value.set(rootId, { kind: "resolve", taskId });
   loading.value = true;
   try {
     error.value = "";
@@ -971,43 +963,27 @@ async function resolveTool(recordId: string, payload: ToolResolutionRequest) {
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
-    if (
-      resolving.value?.taskId === operation.taskId &&
-      resolving.value?.recordId === operation.recordId
-    )
-      resolving.value = null;
+    runOperations.value.delete(rootId);
   }
 }
 
 async function answerTodo(todoId: string, payload: HumanAnswerRequest) {
   const rootId = selectedRun.value?.run_id;
-  if (
-    !rootId ||
-    openingRun ||
-    answering.value ||
-    controlling.value ||
-    resolving.value ||
-    recovering.value
-  )
-    return;
+  if (!rootId || openingRun || currentOperation.value) return;
   const read = ++runRead;
-  const operation = { rootId, todoId };
-  answering.value = operation;
+  runOperations.value.set(rootId, { kind: "answer", taskId: todoId });
   loading.value = true;
   try {
     error.value = "";
     const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
     if (!disposed && read === runRead) selectedRun.value = updated;
   } catch (err) {
-    if (!disposed && read === runRead)
+    // Returning to the same run keeps its pending response and failure visible.
+    if (!disposed && !openingRun && selectedRun.value?.run_id === rootId)
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
-    if (
-      answering.value?.rootId === operation.rootId &&
-      answering.value?.todoId === operation.todoId
-    )
-      answering.value = null;
+    runOperations.value.delete(rootId);
   }
 }
 
@@ -1015,19 +991,10 @@ async function applyRunControl(
   payload: WorkflowControlRequest | WorkflowRetryRequest,
 ) {
   const rootId = selectedRun.value?.run_id;
-  if (
-    !rootId ||
-    answering.value?.rootId === rootId ||
-    openingRun ||
-    controlling.value?.rootId === rootId ||
-    recovering.value === detailRun.value?.run_id ||
-    resolving.value?.taskId === detailRun.value?.run_id
-  )
-    return;
+  if (!rootId || openingRun || currentOperation.value) return;
   const taskId = detailRun.value.run_id;
   const read = ++runRead;
-  const operation = { rootId, requestId: payload.request_id };
-  controlling.value = operation;
+  runOperations.value.set(rootId, { kind: "control", taskId });
   loading.value = true;
   try {
     error.value = "";
@@ -1046,11 +1013,7 @@ async function applyRunControl(
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
     if (read === runRead) loading.value = false;
-    if (
-      controlling.value?.rootId === operation.rootId &&
-      controlling.value?.requestId === operation.requestId
-    )
-      controlling.value = null;
+    runOperations.value.delete(rootId);
   }
 }
 

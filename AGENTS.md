@@ -135,3 +135,9 @@ For one-off release candidate branches, delete the release branch after the tag 
 git branch -d release/4.25.0
 git push origin --delete release/4.25.0
 ```
+
+## Agent skills
+
+- Before reading or writing issues, read `docs/agents/issue-tracker.md`.
+- Before triaging issues, read `docs/agents/triage-labels.md`.
+- Before exploring the codebase, read `docs/agents/domain.md` and follow its domain-document reading rules.

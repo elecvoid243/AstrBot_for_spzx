@@ -44,6 +44,7 @@ async def run_team_scenario(
                     "team_create": "team.create_member",
                     "team_dispatch": "team.dispatch",
                     "team_wait": "team.wait",
+                    "team_inputs": "team.wait",
                 }.get(scenario):
                     session.info["team_boundary"] = row.run_id
                 if (
@@ -116,6 +117,9 @@ async def run_team_scenario(
                     "max_parallel": 1,
                     "max_members": 3,
                     "max_tasks": 5,
+                    "required_inputs": ["goal", "constraints"]
+                    if scenario == "team_inputs"
+                    else ["goal"],
                 }
             },
         )
@@ -132,7 +136,14 @@ async def run_team_scenario(
             {
                 "version": 1,
                 "inputs": {
-                    "goal": "Research energy with two independent writers, then revise with the first writer."
+                    "goal": "Research energy with two independent writers, then revise with the first writer.",
+                    **(
+                        {
+                            "constraints": 'ONLY_USE_2025_DATA\nKeep {"year": 2025} and {goal} literally.'
+                        }
+                        if scenario == "team_inputs"
+                        else {}
+                    ),
                 },
             },
         )
@@ -158,6 +169,23 @@ async def run_team_scenario(
             "run_id"
         ]
         before = await service.get_run("alice", run_id)
+        if scenario == "team_inputs":
+            original = await service.get_asset(
+                "alice",
+                before["snapshot"]["asset_id"],
+                before["snapshot"]["asset_version"],
+            )
+            await service.save_asset(
+                "alice",
+                {
+                    "definition": {
+                        **original["definition"],
+                        "required_inputs": ["goal", "replacement"],
+                    },
+                    "expected_version": 1,
+                },
+                original["asset_id"],
+            )
         if scenario == "team_save_failure":
             async with service.db.engine.begin() as connection:
                 await connection.execute(

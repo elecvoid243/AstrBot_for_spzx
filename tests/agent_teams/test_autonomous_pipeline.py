@@ -26,6 +26,7 @@ import pytest
         "team_slow",
         "team_unknown",
         "team_steps",
+        "team_inputs",
     ],
 )
 def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decisions(
@@ -369,6 +370,34 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             (tmp_path / "team-evidence.json").read_text(encoding="utf-8")
         )
         current = evidence["after"]
+        if scenario == "team_inputs":
+            coordinator_requests = [
+                request for request in requests if "team_manage" in request["tools"]
+            ]
+            assert len(coordinator_requests) > 1
+            for request in coordinator_requests:
+                texts = []
+                for message in request["contexts"]:
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        texts.append(content)
+                    elif isinstance(content, list):
+                        texts.extend(part["text"] for part in content if "text" in part)
+                framing = next(
+                    text for text in texts if "Declared run inputs (JSON):\n" in text
+                )
+                decoded, _ = json.JSONDecoder().raw_decode(
+                    framing.split("Declared run inputs (JSON):\n", 1)[1]
+                )
+                assert decoded == {
+                    "goal": "Research energy with two independent writers, then revise with the first writer.",
+                    "constraints": 'ONLY_USE_2025_DATA\nKeep {"year": 2025} and {goal} literally.',
+                }
+            assert current["snapshot"]["asset_version"] == 1
+            assert current["snapshot"]["team_definition"]["required_inputs"] == [
+                "goal",
+                "constraints",
+            ]
         if scenario == "team_unknown":
             assert current["status"] == "blocked"
             assert [effect["value"] for effect in effects] == [

@@ -160,6 +160,7 @@ async def team_env(tmp_path):
         },
     )
     observations = []
+    framings = []
     bindings = {}
     script = None
     errors = []
@@ -170,6 +171,7 @@ async def team_env(tmp_path):
         binding = AgentTeamExecutionRegistry.resolve(execution_token)
         bindings[session_id] = binding
         observations.append((binding, text))
+        framings.append(context)
         return message_id
 
     async def collect(session_id, message_id, member_id):
@@ -255,6 +257,7 @@ async def team_env(tmp_path):
         coordinator=coordinator,
         inventory=inventory,
         observations=observations,
+        framings=framings,
         bindings=bindings,
         script=script,
         errors=errors,
@@ -264,6 +267,217 @@ async def team_env(tmp_path):
     finally:
         await service.shutdown()
         await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_all_declared_inputs_reach_the_coordinator_and_remain_frozen(team_env):
+    """Deliver literal declared values and retain them after an asset edit/reopen.
+
+    Args:
+        team_env: Public services, real SQLite and the external execution boundary.
+    """
+    import json
+
+    env = team_env
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def script(tools, binding):
+        """Keep the coordinator live while its launch definition is edited.
+
+        Args:
+            tools: Tools provided to this coordinator execution.
+            binding: Actual execution identity from the public collection port.
+        """
+        ready.set()
+        await release.wait()
+        await tools["submit_task_result"].call(None, text="Complete")
+
+    env.script = script
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **env.asset["definition"],
+                "required_inputs": ["constraints", "goal", "notes"],
+            }
+        },
+    )
+    inputs = {
+        "goal": "Research {constraints}.\nPreserve the literal {goal}.",
+        "constraints": 'ONLY_USE_2025_DATA\nKeep {"year": 2025} and {notes}.',
+        "notes": "First line.\n第二行 {constraints}\n  Preserve spacing.",
+    }
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": inputs}
+    )
+    await asyncio.wait_for(ready.wait(), 5)
+    framing = env.framings[0]
+    assert "Declared run inputs (JSON):\n" in framing
+    decoded, _ = json.JSONDecoder().raw_decode(
+        framing.split("Declared run inputs (JSON):\n", 1)[1]
+    )
+    assert decoded == inputs
+    assert env.observations[0][1] == inputs["goal"]
+    await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **asset["definition"],
+                "required_inputs": ["goal", "replacement"],
+            },
+            "expected_version": 1,
+        },
+        asset["asset_id"],
+    )
+    await env.service.shutdown()
+    reopened = WorkflowService(env.db, env.roles)
+    try:
+        restored = await reopened.get_run("alice", run["run_id"])
+        assert restored["snapshot"]["inputs"] == inputs
+        assert restored["snapshot"]["team_definition"]["required_inputs"] == [
+            "constraints",
+            "goal",
+            "notes",
+        ]
+        assert restored["tasks"][0]["snapshot"]["inputs"] == inputs
+    finally:
+        await reopened.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt_size", [16, 50_000])
+async def test_team_overviews_preserve_member_identities_without_frozen_prompts(
+    team_env, prompt_size
+):
+    """Keep member/relationship metadata lightweight while retaining full details.
+
+    Args:
+        team_env: Public services with real persisted members and tasks.
+        prompt_size: Small or large role prompt, without changing the overview contract.
+    """
+    import json
+
+    env = team_env
+    prompts = {
+        env.coordinator["role_id"]: "COORDINATOR_PRIVATE_PROMPT_" + "C" * prompt_size,
+        env.writer["role_id"]: "WRITER_PRIVATE_PROMPT_" + "W" * prompt_size,
+    }
+    for role in [env.coordinator, env.writer]:
+        await env.roles.save_role(
+            "alice",
+            {
+                "definition": {
+                    **role["definition"],
+                    "prompt": prompts[role["role_id"]],
+                },
+                "installation": role["installation"],
+                "expected_version": 1,
+            },
+            role["role_id"],
+        )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **env.asset["definition"],
+                "coordinator": {
+                    "role_id": env.coordinator["role_id"],
+                    "role_version": 2,
+                },
+                "allowed_roles": [
+                    {"role_id": env.writer["role_id"], "role_version": 2}
+                ],
+            }
+        },
+    )
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def script(tools, binding):
+        """Create an idle member and two dependent tasks before releasing capacity.
+
+        Args:
+            tools: Tools bound to the actual coordinator execution.
+            binding: Public execution identity from the collection boundary.
+        """
+        members = []
+        for index in range(2):
+            members.append(
+                json.loads(
+                    await tools["team_manage"].call(
+                        None,
+                        action="create_member",
+                        request_id=f"member-{index}",
+                        role_id=env.writer["role_id"],
+                        name=f"Writer {index}",
+                    )
+                )["member_id"]
+            )
+        tasks = []
+        for index in range(2):
+            tasks.append(
+                json.loads(
+                    await tools["team_manage"].call(
+                        None,
+                        action="dispatch",
+                        request_id=f"task-{index}",
+                        member_id=members[0],
+                        name=f"Evidence {index}",
+                        task="Gather evidence",
+                        dependencies=tasks[:],
+                    )
+                )["task_id"]
+            )
+        ready.set()
+        await release.wait()
+        await tools["team_manage"].call(
+            None, action="wait", request_id="wait", task_ids=tasks
+        )
+        await tools["submit_task_result"].call(None, text="Complete")
+
+    env.script = script
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"goal": "Research"}}
+    )
+    await asyncio.wait_for(ready.wait(), 5)
+    detailed = await env.service.get_run("alice", run["run_id"])
+    overview = await env.service.get_run("alice", run["run_id"], include_details=False)
+    listed = (await env.service.list_runs("alice"))["runs"][0]
+    for lightweight in [overview, listed]:
+        assert len(lightweight["members"]) == 3
+        assert all(
+            "system_prompt" not in member for member in lightweight["members"].values()
+        )
+        assert all(prompt not in json.dumps(lightweight) for prompt in prompts.values())
+        assert {
+            key: (
+                member["member_id"],
+                member["name"],
+                member["session_id"],
+                member["conversation_id"],
+            )
+            for key, member in lightweight["members"].items()
+        } == {
+            key: (
+                member["member_id"],
+                member["name"],
+                member["session_id"],
+                member["conversation_id"],
+            )
+            for key, member in detailed["members"].items()
+        }
+        assert lightweight["relationships"] == detailed["relationships"]
+        assert len(lightweight["relationships"]) == 1
+        assert [
+            (task["node_id"], task["snapshot"]["definition"]["name"], task["status"])
+            for task in lightweight["tasks"]
+        ] == [
+            (task["node_id"], task["snapshot"]["definition"]["name"], task["status"])
+            for task in detailed["tasks"]
+        ]
+    assert {member["system_prompt"] for member in detailed["members"].values()} == set(
+        prompts.values()
+    )
+    release.set()
 
 
 @pytest.mark.asyncio

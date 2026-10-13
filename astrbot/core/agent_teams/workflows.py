@@ -1124,6 +1124,17 @@ class WorkflowService:
             if row.snapshot.get("team_definition"):
                 result["members"] = {
                     key: frozen["member"]
+                    if include_details
+                    else {
+                        field: frozen["member"][field]
+                        for field in (
+                            "member_id",
+                            "name",
+                            "session_id",
+                            "conversation_id",
+                            "umo",
+                        )
+                    }
                     for key, frozen in {
                         **row.snapshot["members"],
                         **row.state.get("members", {}),
@@ -2478,6 +2489,18 @@ class WorkflowService:
         if result is not None:
             return result
         while True:
+            if request.action == "wait":
+                progress = await self.get_run(username, root_id, include_details=False)
+                if any(
+                    task["status"] in {"pending", "running"}
+                    for task in progress["tasks"]
+                    if not request.task_ids or task["node_id"] in request.task_ids
+                ):
+                    await self._await_execution_permission(
+                        username, run_id, execution_id
+                    )
+                    await asyncio.sleep(0.05)
+                    continue
             observed = await self.get_run(username, root_id)
             selected = [
                 task
@@ -4790,7 +4813,14 @@ class WorkflowService:
                     ),
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
-                    + json.dumps(snapshot.get("input_artifacts", [])),
+                    + json.dumps(snapshot.get("input_artifacts", []))
+                    + (
+                        # Frozen inputs are data, never a second task template.
+                        "\nDeclared run inputs (JSON):\n"
+                        + json.dumps(snapshot["inputs"], ensure_ascii=False)
+                        if snapshot.get("coordinator")
+                        else ""
+                    ),
                     execution={
                         **effective,
                         "config_id": snapshot["profile_id"],

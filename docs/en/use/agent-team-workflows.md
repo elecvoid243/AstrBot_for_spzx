@@ -10,6 +10,8 @@ Choose **Workflow Assets → New Autonomous Team**. Enter the **Team name**, cho
 
 Save the asset, choose **Start Run**, enter a nonempty **goal**, and start. The coordinator uses `team_manage` to create allowed instances, dispatch tasks, inspect complete results and wait. Members submit contracted outputs through `submit_task_result`. A dependency pins the producer's original artifact for `read_task_artifact`; the coordinator can also read members' complete original artifacts. Plain completion text and premature submissions cannot complete the run. Calling a tool name does not grant a member coordinator authority.
 
+If the asset declares additional inputs, fill each field when starting. All declared values reach the coordinator from the frozen run inputs, including multiline text and literal braces. Later asset edits do not change recovered inputs. Run overviews retain member identities and relationships; open the run detail to read complete frozen configuration.
+
 In **Independent Runs → View Run**, inspect dynamically created tasks and **Members in this run**. **Expand execution graph (read-only)** shows dependencies and dashed **Dispatched** links from the coordinator. Dispatch links show who created a task; they are not execution prerequisites. Select a task to read its complete artifacts, frozen configuration and saved member process. Distinct instances and new runs have isolated conversations; a member continues its context across this run's tasks, including after checkpoint recovery.
 
 ![Actual autonomous team run with independent instances and a revision task](/images/agent-autonomous-run-en.jpg)

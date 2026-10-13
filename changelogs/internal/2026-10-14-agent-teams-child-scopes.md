@@ -5,6 +5,7 @@
 - Scope creation, parent waiting and exact result handoff persist atomically. Recovery retains original scopes and Attempts; child task retries remain explicit new Attempts. Frozen child versions and resource settings survive later edits.
 - Independent Runs → View Run shows real child tasks, scope relationships, local waiting reasons, immutable outputs and saved model/step counts. The canvas and run detail support collapsed child definitions and execution graphs.
 - Parent/child ancestry does not grant message or artifact access across scopes. Declared exact inputs and outputs define the handoff.
+- Parent revisions retain already returned files while rejecting other stored files. Team version selection ignores responses from superseded choices or expired editor contexts.
 - Coordinator calls to saved workflows and detailed budget reporting remain separate tasks.
 
 # 工作流调用自主团队

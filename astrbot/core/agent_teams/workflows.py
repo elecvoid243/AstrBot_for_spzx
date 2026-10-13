@@ -4357,9 +4357,17 @@ class WorkflowService:
                 )
             fields = validate_result(latest.contract, request.content)
             if not fields:
+                # A child handoff authorizes only the files in this parent version,
+                # without changing their storage owner or granting scope-wide access.
+                retained_files = {
+                    ref["file_id"] for ref in latest.content.get("files", [])
+                }
                 for index, file_ref in enumerate(request.content.get("files", [])):
                     file = await session.get(AgentWorkflowFile, file_ref["file_id"])
-                    if file is None or file.run_id != latest.run_id:
+                    if file is None or (
+                        file.run_id != latest.run_id
+                        and file_ref["file_id"] not in retained_files
+                    ):
                         fields.append(
                             {
                                 "path": f"result.files.{index}.file_id",

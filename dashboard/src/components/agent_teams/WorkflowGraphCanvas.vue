@@ -468,7 +468,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import TeamsFlowCanvas from "./TeamsFlowCanvas.vue";
 import WorkflowLoopPanel from "./WorkflowLoopPanel.vue";
 import type { FlowNode } from "./TeamsFlowCanvas.vue";
@@ -517,12 +517,35 @@ const aliasTexts = ref<Record<string, string>>({});
 const inputRenderKeys = ref<Record<string, string>>({});
 const pinnedTeams = ref<Record<string, any>>({});
 const teamReadError = ref(false);
+const selectingTeam = ref(false);
+const readingTeams = ref(false);
+let teamSelectionRequest = 0;
+let teamReadRequest = 0;
 const narrow = window.matchMedia?.("(max-width: 1000px)").matches ?? false;
 const history = ref<string[]>([JSON.stringify(draft.value)]);
 const historyIndex = ref(0);
 const selectedTask = computed(() =>
   draft.value.tasks.find((task) => task.id === selectedNode.value),
 );
+watch(
+  [selectedTask, () => props.readonly],
+  () => {
+    teamSelectionRequest++;
+    if (!selectingTeam.value) return;
+    selectingTeam.value = false;
+    emit(
+      "validation",
+      readingTeams.value ||
+        teamReadError.value ||
+        !!Object.keys(contractErrors.value).length,
+    );
+  },
+  { flush: "sync" },
+);
+onBeforeUnmount(() => {
+  teamSelectionRequest++;
+  teamReadRequest++;
+});
 const selectedEdge = computed(
   () =>
     draft.value.edges?.find(
@@ -664,8 +687,18 @@ watch(
     props.childAssets,
   ],
   async () => {
+    const request = ++teamReadRequest;
+    const definition = draft.value;
+    /** Check whether a definition read still belongs to the current canvas.
+     * Returns:
+     *   Whether this read can publish its cache and validation state.
+     */
+    const isCurrent = () =>
+      request === teamReadRequest && draft.value === definition;
+    readingTeams.value = true;
     teamReadError.value = false;
-    for (const task of draft.value.tasks) {
+    emit("validation", true);
+    for (const task of definition.tasks) {
       if (!task.team) continue;
       const { asset_id, version } = task.team;
       const key = `${asset_id}:${version}`;
@@ -675,17 +708,24 @@ watch(
         (team) => team.asset_id === asset_id && team.version === version,
       );
       try {
-        pinnedTeams.value[key] = frozen
+        const team = frozen
           ? { asset_id, version, definition: frozen.team_definition }
           : listed ?? (await workflowAssetsApi.get(asset_id, version));
+        if (!isCurrent()) return;
+        pinnedTeams.value[key] = team;
       } catch {
+        if (!isCurrent()) return;
         teamReadError.value = true;
         localError.value = tm("child.unavailable");
       }
     }
+    if (!isCurrent()) return;
+    readingTeams.value = false;
     emit(
       "validation",
-      teamReadError.value || !!Object.keys(contractErrors.value).length,
+      selectingTeam.value ||
+        teamReadError.value ||
+        !!Object.keys(contractErrors.value).length,
     );
   },
   { immediate: true, deep: true },
@@ -700,6 +740,16 @@ function toggleLoop(id: string) {
 watch(
   () => props.definition,
   (value) => {
+    teamSelectionRequest++;
+    if (selectingTeam.value) {
+      selectingTeam.value = false;
+      emit(
+        "validation",
+        readingTeams.value ||
+          teamReadError.value ||
+          !!Object.keys(contractErrors.value).length,
+      );
+    }
     if (JSON.stringify(value) === JSON.stringify(draft.value)) return;
     draft.value = JSON.parse(JSON.stringify(value));
     history.value = [JSON.stringify(draft.value)];
@@ -817,10 +867,22 @@ function addTask(roleId: string, position?: { x: number; y: number }) {
  */
 async function changeTeam(assetId: string, version?: number) {
   const task = selectedTask.value;
-  if (!task?.team) return;
+  if (!task?.team || props.readonly) return;
   const listed = props.teams.find((item) => item.asset_id === assetId);
   const pinnedVersion = version ?? listed?.version;
   if (!pinnedVersion) return;
+  const request = ++teamSelectionRequest;
+  const definition = draft.value;
+  /** Check ownership after every asynchronous boundary.
+   * Returns:
+   *   Whether the response still matches the latest choice and editor context.
+   */
+  const isCurrent = () =>
+    request === teamSelectionRequest &&
+    draft.value === definition &&
+    selectedTask.value === task &&
+    !props.readonly;
+  selectingTeam.value = true;
   emit("validation", true);
   try {
     const team =
@@ -828,6 +890,7 @@ async function changeTeam(assetId: string, version?: number) {
       (listed?.version === pinnedVersion
         ? listed
         : await workflowAssetsApi.get(assetId, pinnedVersion));
+    if (!isCurrent()) return;
     if (team.definition.kind !== "autonomous")
       throw new Error("Invalid team asset");
     pinnedTeams.value[`${assetId}:${pinnedVersion}`] = team;
@@ -844,13 +907,20 @@ async function changeTeam(assetId: string, version?: number) {
     teamReadError.value = false;
     checkpoint();
   } catch {
-    teamReadError.value = true;
-    localError.value = tm("child.unavailable");
+    if (isCurrent()) {
+      teamReadError.value = true;
+      localError.value = tm("child.unavailable");
+    }
   } finally {
-    emit(
-      "validation",
-      teamReadError.value || !!Object.keys(contractErrors.value).length,
-    );
+    if (isCurrent()) {
+      selectingTeam.value = false;
+      emit(
+        "validation",
+        readingTeams.value ||
+          teamReadError.value ||
+          !!Object.keys(contractErrors.value).length,
+      );
+    }
   }
 }
 

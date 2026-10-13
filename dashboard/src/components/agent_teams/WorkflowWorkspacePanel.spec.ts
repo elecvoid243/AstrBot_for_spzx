@@ -115,6 +115,82 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("navigates from a nested coordinator through its call to the child task", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    const coordinator = {
+      ...run,
+      run_id: "nested-coordinator",
+      snapshot: {
+        ...run.snapshot,
+        coordinator: true,
+        definition: { name: "Nested coordinator" },
+      },
+      state: { ...run.state, task_id: "coordinator-task" },
+    };
+    const call = {
+      ...run,
+      run_id: "nested-call",
+      snapshot: {
+        ...run.snapshot,
+        engine: "workflow_call_v2",
+        workflow: { asset_id: "report", version: 1, result_task_id: "result" },
+        created_by_task_id: "coordinator-task",
+        definition: { name: "Pinned report call" },
+      },
+      state: { ...run.state, child_scope_run_id: "child-workflow" },
+    };
+    const child = {
+      ...run,
+      run_id: "child-result",
+      snapshot: {
+        ...run.snapshot,
+        definition: { name: "Independent report writer" },
+      },
+    };
+    api.run.mockResolvedValue({
+      ...run,
+      tasks: [run],
+      scopes: [
+        { run_id: "nested-team", tasks: [coordinator, call] },
+        { run_id: "child-workflow", tasks: [child] },
+      ],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: {
+        plugins: [router],
+        stubs: { ...stubs, WorkflowRunProgress: true },
+      },
+    });
+    try {
+      await flushPromises();
+      wrapper
+        .findComponent({ name: "WorkflowRunProgress" })
+        .vm.$emit("select", coordinator.run_id);
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Nested coordinator",
+      );
+      await wrapper
+        .get('[data-testid="coordinator-workflow-call"]')
+        .trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Pinned report call",
+      );
+      await wrapper.get('[data-testid="open-child-workflow"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+        "Independent report writer",
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("opens an earlier iteration's complete result without replacing the current round", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

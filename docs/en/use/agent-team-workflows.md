@@ -30,7 +30,7 @@ In **Workflow Assets → New Autonomous Team / Edit Asset → Allowed workflows*
 
 Set **Root nesting depth limit** and **Maximum concurrent tasks**, then choose **Start Run** and enter the goal. The coordinator may call an allowed workflow with every declared input and optional visible, exact artifact references. Each call creates independent members; parent conversations and unrelated artifacts are not inherited. The coordinator waits for the call's task, then reads its complete result and immutable artifact. The chosen return task must have a validated result; a skipped return requires attention even if the workflow's other paths completed.
 
-In **Independent Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. The call shows the returned result, its own artifact and the exact child return reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
+In **Independent Runs → View Run**, select the coordinator and choose **View child workflow** beside its call. This route also works for coordinators inside a nested team. The call shows the returned result, its own artifact and the exact child return reference. Choose **View child workflow** again to inspect the child tasks, or expand **Child scope** to see the saved workflow graph. **Human requests**, progress and **Saved member process** show the actual tasks and their waits, attempts and tool results.
 
 ![Coordinator, workflow tasks and exact returned artifacts in the actual WebUI](/images/agent-team-workflow-run-en.jpg)
 
@@ -38,7 +38,7 @@ Waiting releases the shared root capacity, so calls can finish with concurrency 
 
 Running and recovered calls retain their original asset, role, input, resource configuration and exact result versions. Editing an allowed workflow affects new team versions and runs. Returned managed files remain fully readable, and an explicit revision can retain the exact files already handed off. Unsubmitted child files and unrelated files remain inaccessible; old artifacts, approvals and consumer input versions retain their meaning.
 
-Version reads belong to the current selection and editor. A delayed older response cannot replace the latest version, required inputs or return contract. The saved version remains the one displayed after the latest choice.
+Version reads belong to the current selection and editor. A delayed older response cannot replace the latest version, required inputs or return contract. Changing another workflow row preserves each row's latest selection; saving waits for all current version reads. The saved version remains the one displayed after the latest choice.
 
 ![A delayed older version leaves the latest explicit workflow selection unchanged](/images/agent-team-workflow-selection-race-zh.jpg)
 

@@ -4,3 +4,4 @@
 - Calls share the existing scope scheduler, immutable artifacts, root capacity, role limits, bounded depth, persistent waits, controls and recovery. Concurrency one can complete mixed nesting without sharing member conversations or replaying saved tool effects.
 - **Workflow Assets → New Autonomous Team / Edit Asset → Allowed workflows** adds configuration. **Independent Runs → View Run → select coordinator → View child workflow** replaces the previous member-dispatch-only route for these calls and shows actual child tasks and exact return references. Existing team calls and legacy entry points retain their existing navigation.
 - Chinese and English workflow instructions and actual WebUI screenshots cover fixed workflow configuration and result tracing.
+- Independent workflow rows preserve concurrent pinned-version choices, and nested team coordinators expose the same child-workflow navigation.

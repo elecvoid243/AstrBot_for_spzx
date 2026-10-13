@@ -28,7 +28,11 @@ const versions = [1, 2, 3].map((version) => ({
   },
 }));
 
-function openPanel() {
+function openPanel(
+  initialRefs = [
+    { asset_id: "research", version: 3, result_task_id: "result3" },
+  ],
+) {
   vi.mocked(workflowAssetsApi.list).mockResolvedValue({
     assets: [
       versions[2],
@@ -38,9 +42,7 @@ function openPanel() {
   const host = defineComponent({
     components: { AllowedWorkflowsPanel },
     setup: () => ({
-      refs: ref([
-        { asset_id: "research", version: 3, result_task_id: "result3" },
-      ]),
+      refs: ref(initialRefs),
       active: ref(true),
     }),
     template: '<AllowedWorkflowsPanel v-model="refs" :active="active" />',
@@ -61,6 +63,48 @@ function openPanel() {
 }
 
 describe("allowed fixed workflow versions", () => {
+  it("preserves concurrent selections in independent workflow rows", async () => {
+    let finishFirst!: (value: any) => void;
+    const delayed = new Promise((resolve) => {
+      finishFirst = resolve;
+    });
+    const other = versions.map((asset) => ({ ...asset, asset_id: "other" }));
+    vi.mocked(workflowAssetsApi.get)
+      .mockReset()
+      .mockImplementation((id, version) =>
+        id === "research" && version === 1
+          ? delayed
+          : Promise.resolve(
+              (id === "research" ? versions : other)[version! - 1],
+            ),
+      );
+    const wrapper = openPanel([
+      { asset_id: "research", version: 3, result_task_id: "result3" },
+      { asset_id: "other", version: 3, result_task_id: "result3" },
+    ]);
+    try {
+      await flushPromises();
+      const panel = wrapper.getComponent(AllowedWorkflowsPanel);
+      panel
+        .getComponent<any>('[data-testid="allowed-workflow-version-0"]')
+        .vm.$emit("update:modelValue", 1);
+      await flushPromises();
+      panel
+        .getComponent<any>('[data-testid="allowed-workflow-version-1"]')
+        .vm.$emit("update:modelValue", 2);
+      await flushPromises();
+      expect(panel.emitted("validation")?.at(-1)).toEqual([true]);
+      finishFirst(versions[0]);
+      await flushPromises();
+      expect(panel.props("modelValue")).toEqual([
+        { asset_id: "research", version: 1, result_task_id: "result1" },
+        { asset_id: "other", version: 2, result_task_id: "result2" },
+      ]);
+      expect(panel.emitted("validation")?.at(-1)).toEqual([false]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("shows only saved workflows and declares the chosen return contract", async () => {
     vi.mocked(workflowAssetsApi.get).mockReset().mockResolvedValue(versions[2]);
     const wrapper = openPanel();

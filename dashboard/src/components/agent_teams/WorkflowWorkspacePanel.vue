@@ -203,7 +203,7 @@
           </p>
           <template v-if="detailRun.snapshot.coordinator">
             <v-btn
-              v-for="call in selectedRun.tasks.filter(
+              v-for="call in allRunTasks.filter(
                 (task: any) =>
                   task.snapshot.workflow &&
                   task.snapshot.created_by_task_id === detailRun.state.task_id,

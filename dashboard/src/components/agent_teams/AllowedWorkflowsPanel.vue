@@ -107,16 +107,32 @@ const { tm } = useModuleI18n("features/agent-teams");
 const assets = ref<any[]>([]);
 const definitions = ref<Record<string, any>>({});
 const error = ref("");
-const loading = ref(false);
+const reading = ref(false);
+const versionReads = ref(new Map<WorkflowCall, symbol>());
+const loading = computed(() => reading.value || versionReads.value.size > 0);
 const newWorkflow = ref<string | null>(null);
 let generation = 0;
 onBeforeUnmount(() => {
   generation++;
+  versionReads.value.clear();
 });
+
+watch(
+  [() => props.active, loading, error],
+  () => {
+    emit("validation", props.active && (loading.value || !!error.value));
+  },
+  { immediate: true },
+);
 
 watch(
   () => [props.active, props.modelValue] as const,
   async ([active, refs]) => {
+    // Independent rows retain their requests when another row changes.
+    for (const selected of versionReads.value.keys()) {
+      if (!active || !refs.includes(selected))
+        versionReads.value.delete(selected);
+    }
     const request = ++generation;
     const signature = JSON.stringify(refs);
     const current = () =>
@@ -124,8 +140,7 @@ watch(
       props.active &&
       JSON.stringify(props.modelValue) === signature;
     error.value = "";
-    loading.value = active;
-    emit("validation", active);
+    reading.value = active;
     if (!active) return;
     try {
       const list = await workflowAssetsApi.list();
@@ -145,8 +160,7 @@ watch(
       error.value = extractApiError(err, tm("errors.operationFailed")).message;
     } finally {
       if (current()) {
-        loading.value = false;
-        emit("validation", !!error.value);
+        reading.value = false;
       }
     }
   },
@@ -201,15 +215,13 @@ function addWorkflow(assetId: string | null) {
 async function changeVersion(index: number, version: number) {
   const selected = props.modelValue[index];
   if (!selected || !props.active) return;
-  const request = ++generation;
-  const signature = JSON.stringify(props.modelValue);
+  const request = Symbol();
+  versionReads.value.set(selected, request);
   const current = () =>
-    request === generation &&
+    versionReads.value.get(selected) === request &&
     props.active &&
-    JSON.stringify(props.modelValue) === signature;
+    props.modelValue.includes(selected);
   error.value = "";
-  loading.value = true;
-  emit("validation", true);
   try {
     const key = `${selected.asset_id}:${version}`;
     const asset =
@@ -220,8 +232,8 @@ async function changeVersion(index: number, version: number) {
     const tasks = asset.definition.tasks ?? [{ id: "result" }];
     emit(
       "update:modelValue",
-      props.modelValue.map((item, i) =>
-        i === index
+      props.modelValue.map((item) =>
+        item === selected
           ? {
               ...item,
               version,
@@ -238,10 +250,8 @@ async function changeVersion(index: number, version: number) {
     if (!current()) return;
     error.value = extractApiError(err, tm("errors.operationFailed")).message;
   } finally {
-    if (current()) {
-      loading.value = false;
-      emit("validation", !!error.value);
-    }
+    if (versionReads.value.get(selected) === request)
+      versionReads.value.delete(selected);
   }
 }
 </script>

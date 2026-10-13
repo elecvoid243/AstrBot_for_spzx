@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
-from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent
+from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowMessage
 
 
 async def run_team_scenario(
@@ -40,6 +40,23 @@ async def run_team_scenario(
                 flush_context: SQLAlchemy flush context.
             """
             for row in [*session.new, *session.dirty]:
+                message_boundary = (
+                    isinstance(row, AgentWorkflowMessage) and row.request_id == "initial-note"
+                    and scenario in {"team_message_delivery_pre", "team_message_delivery_post"}
+                    and row.consumption is None
+                    or isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result"
+                    and scenario in {"team_message_tool_pre", "team_message_tool_post"}
+                    and (row.data.get("response") or {}).get("id") == "team-message-initial"
+                    or isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request"
+                    and scenario in {"team_message_consume_pre", "team_message_consume_post"}
+                    and row.data.get("member_messages")
+                )
+                if message_boundary:
+                    if scenario.endswith("_pre"):
+                        (folder / "kill-ready.json").write_text("uncommitted", encoding="utf-8")
+                        while True:
+                            time.sleep(1)
+                    session.info["team_boundary"] = True
                 if isinstance(row, AgentWorkflowEvent) and row.kind == {
                     "team_create": "team.create_member",
                     "team_dispatch": "team.dispatch",
@@ -83,6 +100,7 @@ async def run_team_scenario(
                     "name": "Researcher",
                     "max_instances": 2,
                     "max_parallel": 1,
+                    **({"max_steps": 12} if scenario.startswith("team_message_") else {}),
                 },
                 "installation": writer["installation"],
             },
@@ -130,6 +148,13 @@ async def run_team_scenario(
                         "CREATE TRIGGER reject_team_decision BEFORE INSERT ON agent_workflow_events WHEN NEW.kind = 'team.create_member' BEGIN SELECT RAISE(ABORT, 'team storage unavailable'); END"
                     )
                 )
+        if scenario in {"team_message_delivery_failure", "team_message_consume_failure"}:
+            async with service.db.engine.begin() as connection:
+                await connection.execute(text(
+                    "CREATE TRIGGER reject_member_message BEFORE INSERT ON agent_workflow_messages BEGIN SELECT RAISE(ABORT, 'message storage unavailable'); END"
+                    if scenario == "team_message_delivery_failure" else
+                    "CREATE TRIGGER reject_member_message BEFORE UPDATE ON agent_workflow_messages WHEN NEW.consumption IS NOT NULL BEGIN SELECT RAISE(ABORT, 'consumption storage unavailable'); END"
+                ))
         run = await service.start_run(
             "alice",
             asset["asset_id"],
@@ -191,7 +216,29 @@ async def run_team_scenario(
                 await connection.execute(
                     text("DROP TRIGGER IF EXISTS reject_team_decision")
                 )
+        if scenario in {"team_message_delivery_failure", "team_message_consume_failure"}:
+            async with service.db.engine.begin() as connection:
+                await connection.execute(text("DROP TRIGGER reject_member_message"))
         await service.boot_sweep()
+        late_rejections = []
+        if scenario.startswith("team_message_"):
+            old = next(task for task in before["tasks"] if task["snapshot"].get("coordinator"))
+            for operation in [
+                service.communicate_member("alice", old["run_id"], old["state"]["attempt_id"], old["state"]["execution_id"], {"action": "inspect", "request_id": "late"}),
+                service.pending_member_messages("alice", old["run_id"], old["state"]["attempt_id"], old["state"]["execution_id"]),
+            ]:
+                try:
+                    await operation
+                except RoleAssetError as exc:
+                    late_rejections.append(exc.status)
+                else:
+                    raise AssertionError("The terminated executor retained message authority")
+        if scenario == "team_message_consume_failure":
+            for task in before["tasks"]:
+                if task["status"] == "failed" and task["recovery"]["boundary"] is None:
+                    await service.retry_task("alice", task["run_id"], {
+                        "request_id": "retry-unsaved-consumption", "attempt_id": task["state"]["attempt_id"], "input_policy": "original",
+                    })
         # Recovery remains an explicit same-Attempt operation on the shared API.
         for _ in range(500):
             current = await service.get_run("alice", run_id)
@@ -210,19 +257,26 @@ async def run_team_scenario(
                 break
             await asyncio.sleep(0.02)
         (folder / "team-evidence.json").write_text(
-            json.dumps({"before": before, "after": current}), encoding="utf-8"
+            json.dumps({"before": before, "after": current, "late_rejections": late_rejections}), encoding="utf-8"
         )
         return
     for _ in range(1000):
         current = await service.get_run("alice", run["run_id"])
+        if scenario == "team_message_live" and (folder / "model-held").exists() and not (folder / "mid-model-sent").exists():
+            coordinator = next(task for task in current["tasks"] if task["snapshot"].get("coordinator"))
+            recipient = next(member for member in current["members"].values() if member["name"] == "Writer A")
+            await service.communicate_member("alice", coordinator["run_id"], coordinator["state"]["attempt_id"], coordinator["state"]["execution_id"], {
+                "action": "send", "request_id": "mid-model", "recipient_member_id": recipient["member_id"], "text": "MID_MODEL_MESSAGE",
+            })
+            (folder / "mid-model-sent").write_text("ready", encoding="utf-8")
         if current["status"] != "running":
             break
         await asyncio.sleep(0.02)
-    if scenario in {"team_pipeline", "team_slow", "team_steps"}:
+    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live"}:
         (folder / "team-evidence.json").write_text(
             json.dumps({"after": current}), encoding="utf-8"
         )
         return
-    if scenario == "team_save_failure":
+    if scenario in {"team_save_failure", "team_message_delivery_failure", "team_message_consume_failure"}:
         (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
         await asyncio.Future()

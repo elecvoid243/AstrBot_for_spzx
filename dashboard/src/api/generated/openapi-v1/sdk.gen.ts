@@ -3982,6 +3982,7 @@ export const listRunsApiV1WorkflowRunsGet = <ThrowOnError extends boolean = fals
 
 /**
  * Get Run
+ * Complete task details include scoped member messages with sender, recipient, source task and attempt, exact artifact references, and durable consumption context positions. Overview queries omit message content.
  */
 export const getRunApiV1WorkflowRunsRunIdGet = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetRunApiV1WorkflowRunsRunIdGetData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetRunApiV1WorkflowRunsRunIdGetResponse, GetRunApiV1WorkflowRunsRunIdGetError, ThrowOnError>({

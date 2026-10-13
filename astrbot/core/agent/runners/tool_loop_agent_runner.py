@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import sys
 import time
 import traceback
@@ -75,6 +76,7 @@ from ..message import (
     AssistantMessageSegment,
     Message,
     ToolCallMessageSegment,
+    UserMessageSegment,
     bind_checkpoint_messages,
 )
 from ..response import AgentResponseData, AgentStats
@@ -478,6 +480,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
         )
         self._call_checkpoint: dict | None = None
+        self._member_message_receipts: list[dict] = []
         self._resume_requery: dict | None = None
         self._restored_call = False
         self._resumed_attempt = False
@@ -575,6 +578,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "format_version": 2,
                 "invocation_id": uuid.uuid4().hex,
                 "messages": dump_call_messages(self.run_context.messages),
+                "member_messages": self._member_message_receipts,
                 "input_contexts": dump_call_messages(
                     contexts or self.run_context.messages
                 ),
@@ -1000,8 +1004,37 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self, *, include_model: bool = True
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Yields chunks *and* a final LLMResponse."""
-        contexts = self._sanitize_contexts_for_provider(self.run_context.messages)
         restored_request = self._restored_call
+        message_context_position = len(self.run_context.messages)
+        execution = current_team_execution.get()
+        if (
+            not restored_request
+            and execution
+            and execution.pending_messages
+            and self._checkpoint_enabled
+        ):
+            if execution.admit_work:
+                await execution.admit_work()
+            pending = await execution.pending_messages()
+            self._member_message_receipts = []
+            for message in pending:
+                self._member_message_receipts.append(
+                    {
+                        "message_id": message["message_id"],
+                        "context_position": len(self.run_context.messages),
+                    }
+                )
+                self.run_context.messages.append(
+                    UserMessageSegment(
+                        content=[
+                            TextPart(
+                                text="Team member message (JSON):\n"
+                                + json.dumps(message, ensure_ascii=False)
+                            )
+                        ]
+                    )
+                )
+        contexts = self._sanitize_contexts_for_provider(self.run_context.messages)
         if restored_request:
             assert self._call_checkpoint is not None
             contexts = bind_checkpoint_messages(self._call_checkpoint["input_contexts"])
@@ -1037,7 +1070,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # For primary provider we keep explicit model selection if provided.
             payload["model"] = self.req.model
         if not restored_request:
-            await self._save_call_checkpoint("request", contexts=contexts)
+            try:
+                await self._save_call_checkpoint("request", contexts=contexts)
+            except (Exception, asyncio.CancelledError):
+                # Failed admission/persistence must not leak an uncommitted delivery
+                # into normal error-history cleanup and then inject it again on retry.
+                if self._member_message_receipts:
+                    del self.run_context.messages[message_context_position:]
+                    self._member_message_receipts = []
+                raise
         execution = current_team_execution.get()
         if execution and execution.admit_work:
             await execution.admit_work()

@@ -6498,6 +6498,7 @@ paths:
       tags:
       - Agent Teams workflows
       summary: Get Run
+      description: Complete task details include scoped member messages with sender, recipient, source task and attempt, exact artifact references, and durable consumption context positions. Overview queries omit message content.
       operationId: get_run_api_v1_workflow_runs__run_id__get
       parameters:
       - name: run_id

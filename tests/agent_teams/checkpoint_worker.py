@@ -256,6 +256,8 @@ async def run_worker(
             Returns:
                 An original plan, explicit result submission or final response.
             """
+            from astrbot.core.agent_team_execution import current_team_execution
+            execution = current_team_execution.get()
             async with httpx.AsyncClient() as client:
                 response = await client.post(endpoint + "/model", json={
                     "contexts": [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in kwargs["contexts"]],
@@ -263,6 +265,7 @@ async def run_worker(
                     "parameter_query": all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
                     **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith("team_") else {}),
+                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith("team_message_") else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution

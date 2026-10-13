@@ -88,6 +88,8 @@ class NodeExecutionBinding:
     """Original attempt state to restore after rebuilding the normal main pipeline."""
     admit_work: Callable[[], Awaitable[None]] | None = None
     """Durable whole-run admission before fresh or restored external invocations."""
+    pending_messages: Callable[[], Awaitable[list[dict]]] | None = None
+    """Read member deliveries at the runner's serialized model-request boundary."""
     recovery_error: CheckpointRecoveryError | None = None
     """Restore failure retained when the main pipeline renders an error reply."""
 
@@ -116,6 +118,7 @@ async def execute_team_turn(
     save_checkpoint: Callable[[dict], Awaitable[None]] | None = None,
     checkpoint: dict | None = None,
     admit_work: Callable[[], Awaitable[None]] | None = None,
+    pending_messages: Callable[[], Awaitable[list[dict]]] | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -137,6 +140,7 @@ async def execute_team_turn(
         save_checkpoint: Saves the built-in runner's durable execution boundaries.
         checkpoint: Saved effective context and response for this original attempt.
         admit_work: Wait for durable whole-run permission before external work.
+        pending_messages: Scoped deliveries to commit with the next fresh context.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -176,6 +180,7 @@ async def execute_team_turn(
         save_checkpoint=save_checkpoint,
         checkpoint=checkpoint,
         admit_work=admit_work,
+        pending_messages=pending_messages,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (

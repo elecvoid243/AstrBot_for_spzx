@@ -38,6 +38,8 @@ from astrbot.core.agent_teams.assets import (
     RoleOverrides,
 )
 from astrbot.core.agent_teams.autonomous_tools import (
+    MemberCommunicationRequest,
+    TeamCommunicateTool,
     TeamManageTool,
     TeamOperationRequest,
 )
@@ -60,6 +62,7 @@ from astrbot.core.db.po import (
     AgentWorkflowControl,
     AgentWorkflowEvent,
     AgentWorkflowFile,
+    AgentWorkflowMessage,
     AgentWorkflowProcess,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
@@ -787,6 +790,22 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            messages = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowMessage)
+                        .where(AgentWorkflowMessage.root_run_id == root_id)
+                        .order_by(
+                            col(AgentWorkflowMessage.created_at),
+                            col(AgentWorkflowMessage.message_id),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if include_details
+                else []
+            )
             artifacts = (
                 (
                     await session.execute(
@@ -968,6 +987,18 @@ class WorkflowService:
                 if include_details:
                     results[current.run_id].update(
                         {
+                            "messages": [
+                                {
+                                    **message.model_dump(
+                                        mode="json", exclude={"payload"}
+                                    ),
+                                    **message.payload,
+                                }
+                                for message in messages
+                                if message.sender_task_run_id == current.run_id
+                                or message.recipient_member_id
+                                == current.snapshot.get("member", {}).get("member_id")
+                            ],
                             "recovery": {
                                 "capability": "saved_model_response"
                                 if "member" in current.snapshot
@@ -1203,6 +1234,17 @@ class WorkflowService:
                 ]
             result["todos"] = [todo for task in all_tasks for todo in task["todos"]]
         if include_details:
+            result["messages"] = [
+                {
+                    **message.model_dump(mode="json", exclude={"payload"}),
+                    **message.payload,
+                }
+                for message in messages
+                if run_id == root_id
+                or message.sender_task_run_id == run_id
+                or message.recipient_member_id
+                == row.snapshot.get("member", {}).get("member_id")
+            ]
             result["cursor"] = max(
                 (event["cursor"] for event in result["events"]), default=0
             )
@@ -2220,6 +2262,253 @@ class WorkflowService:
             root.state = {**root.state, "loops": loops, "task_runs": current_runs}
             session.add(root)
         return changed
+
+    async def communicate_member(
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        execution_id: str,
+        payload: dict,
+    ) -> dict:
+        """Persist a permitted message without altering scheduling or task results.
+
+        Args:
+            username: Authenticated initiating owner.
+            run_id: Calling task, which determines member and scope authority.
+            attempt_id: Active original attempt.
+            execution_id: Current executor fence, checked before deduplication.
+            payload: Recipient, literal message and exact visible artifact versions.
+
+        Returns:
+            Scoped member identities or a stable committed delivery receipt.
+
+        Raises:
+            RoleAssetError: Stale caller, inaccessible recipient/artifact or reused identity.
+        """
+        try:
+            request = MemberCommunicationRequest.model_validate(payload)
+            refs = [
+                ArtifactReference.model_validate(ref).model_dump()
+                for ref in request.artifact_refs
+            ]
+        except ValidationError as exc:
+            raise RoleAssetError("Invalid member communication", status=400) from exc
+        async with self.db.get_db() as session:
+            caller = await session.get(AgentWorkflowRun, run_id)
+            if caller is None or caller.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, caller)
+            await session.refresh(caller)
+            await self._require_execution_owner(session, run_id, execution_id)
+            if (
+                caller.state.get("attempt_id") != attempt_id
+                or caller.pending_result is not None
+                or control.status != "active"
+            ):
+                raise RoleAssetError(
+                    "Communication requires the active task attempt", status=409
+                )
+            root_id = caller.snapshot.get("parent_run_id")
+            root = await session.get(AgentWorkflowRun, root_id) if root_id else None
+            if root is None or caller.state["scope_id"] != root.state["scope_id"]:
+                raise RoleAssetError(
+                    "Communication requires a shared execution scope", status=403
+                )
+            root_id = root.run_id
+            members = {
+                frozen["member"]["member_id"]: frozen
+                for frozen in {
+                    **root.snapshot["members"],
+                    **root.state.get("members", {}),
+                }.values()
+            }
+            sender_id = caller.snapshot["member"]["member_id"]
+            if sender_id not in members:
+                raise RoleAssetError("Caller is not a member of this scope", status=403)
+            await self.roles.validate_frozen_role(caller.snapshot["role"])
+            if request.action == "inspect":
+                return {
+                    "scope_id": caller.state["scope_id"],
+                    "members": [
+                        {
+                            "member_id": identity,
+                            "name": frozen["member"]["name"],
+                            "role_id": frozen["role"]["role_id"],
+                        }
+                        for identity, frozen in members.items()
+                    ],
+                }
+            if (
+                not request.recipient_member_id
+                or request.recipient_member_id not in members
+                or not request.text
+            ):
+                raise RoleAssetError(
+                    "Choose a member in the same scope and nonempty text", status=403
+                )
+            await self.roles.validate_frozen_role(
+                members[request.recipient_member_id]["role"]
+            )
+            received = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowMessage).where(
+                            AgentWorkflowMessage.root_run_id == root_id,
+                            AgentWorkflowMessage.scope_id == caller.state["scope_id"],
+                            AgentWorkflowMessage.recipient_member_id == sender_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for ref in refs:
+                artifact = await session.get(
+                    AgentWorkflowArtifact, (ref["artifact_id"], ref["version"])
+                )
+                origin = (
+                    await session.get(AgentWorkflowRun, artifact.run_id)
+                    if artifact
+                    else None
+                )
+                scoped_output = (
+                    origin is not None
+                    and origin.owner_username == username
+                    and origin.snapshot.get("parent_run_id") == root_id
+                    and origin.state.get("scope_id") == caller.state["scope_id"]
+                )
+                if artifact is None or not (
+                    scoped_output
+                    and origin is not None
+                    and (
+                        caller.snapshot.get("coordinator")
+                        or origin.snapshot.get("member", {}).get("member_id")
+                        == sender_id
+                        or any(
+                            ref in message.payload["artifact_refs"]
+                            for message in received
+                        )
+                    )
+                    or ref in caller.snapshot.get("input_artifacts", [])
+                    and ref in root.snapshot.get("input_artifacts", [])
+                ):
+                    raise RoleAssetError(
+                        "Artifact version is outside the sender or recipient visibility",
+                        status=403,
+                    )
+            content = {"text": request.text, "artifact_refs": refs}
+            previous = (
+                await session.execute(
+                    select(AgentWorkflowMessage).where(
+                        AgentWorkflowMessage.root_run_id == root_id,
+                        AgentWorkflowMessage.sender_member_id == sender_id,
+                        AgentWorkflowMessage.request_id == request.request_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if previous is not None:
+                if (
+                    previous.recipient_member_id != request.recipient_member_id
+                    or previous.payload != content
+                ):
+                    raise RoleAssetError(
+                        "Message identity already belongs to another delivery",
+                        status=409,
+                    )
+                return {"message_id": previous.message_id}
+            message = AgentWorkflowMessage(
+                message_id=uuid.uuid4().hex,
+                root_run_id=root_id,
+                scope_id=caller.state["scope_id"],
+                sender_member_id=sender_id,
+                recipient_member_id=request.recipient_member_id,
+                sender_task_run_id=run_id,
+                sender_attempt_id=attempt_id,
+                request_id=request.request_id,
+                payload=content,
+            )
+            session.add(message)
+            session.add(
+                AgentWorkflowEvent(
+                    run_id=run_id,
+                    kind="member.message_sent",
+                    data={
+                        "message_id": message.message_id,
+                        "recipient_member_id": request.recipient_member_id,
+                        "scope_id": caller.state["scope_id"],
+                        "attempt_id": attempt_id,
+                    },
+                )
+            )
+            await session.commit()
+            return {"message_id": message.message_id}
+
+    async def pending_member_messages(
+        self,
+        username: str,
+        run_id: str,
+        attempt_id: str,
+        execution_id: str,
+    ) -> list[dict]:
+        """Read pending deliveries at the member runner's serialized safe point.
+
+        Args:
+            username: Authenticated initiating owner.
+            run_id: Receiving task with the member's current execution ownership.
+            attempt_id: Active original attempt.
+            execution_id: Current executor fence.
+
+        Returns:
+            Unconsumed messages; consumption only commits with their model context.
+
+        Raises:
+            RoleAssetError: Stale execution or globally blocked admission.
+        """
+        async with self.db.get_db() as session:
+            caller = await session.get(AgentWorkflowRun, run_id)
+            if caller is None or caller.owner_username != username:
+                raise RoleAssetError("Run not found", status=404)
+            control = await self._lock_control(session, caller)
+            await session.refresh(caller)
+            await self._require_execution_owner(session, run_id, execution_id)
+            if (
+                caller.state.get("attempt_id") != attempt_id
+                or control.status != "active"
+            ):
+                raise RoleAssetError(
+                    "Message consumption requires active execution", status=409
+                )
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowMessage)
+                        .where(
+                            AgentWorkflowMessage.root_run_id
+                            == caller.snapshot.get("parent_run_id"),
+                            AgentWorkflowMessage.scope_id == caller.state["scope_id"],
+                            AgentWorkflowMessage.recipient_member_id
+                            == caller.snapshot["member"]["member_id"],
+                            col(AgentWorkflowMessage.consumption).is_(None),
+                        )
+                        .order_by(
+                            col(AgentWorkflowMessage.created_at),
+                            col(AgentWorkflowMessage.message_id),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    **message.model_dump(
+                        mode="json", exclude={"payload", "consumption"}
+                    ),
+                    **message.payload,
+                }
+                for message in rows
+            ]
 
     async def manage_team(
         self,
@@ -3292,6 +3581,7 @@ class WorkflowService:
         version: int,
         consumer_run_id: str | None = None,
         attempt_id: str | None = None,
+        execution_id: str | None = None,
     ) -> dict:
         """Read full content and record actual reads by a pinned consumer.
 
@@ -3301,6 +3591,7 @@ class WorkflowService:
             version: Exact immutable version.
             consumer_run_id: Task run recording a read, when invoked by an Agent.
             attempt_id: Active attempt required for task reads.
+            execution_id: Current executor fence for runtime tool reads.
 
         Returns:
             Exact reference and complete content.
@@ -3330,15 +3621,47 @@ class WorkflowService:
                     raise RoleAssetError(
                         "Consumer attempt is no longer active", status=409
                     )
+                if execution_id is not None:
+                    await self._require_execution_owner(
+                        session, consumer_run_id, execution_id
+                    )
                 team_output = (
                     consumer.snapshot.get("coordinator")
                     and origin.snapshot.get("parent_run_id")
                     == consumer.snapshot.get("parent_run_id")
-                    and version == 1
+                    and origin.state.get("scope_id") == consumer.state.get("scope_id")
+                )
+                own_output = (
+                    origin.snapshot.get("parent_run_id")
+                    == consumer.snapshot.get("parent_run_id")
+                    and origin.state.get("scope_id") == consumer.state.get("scope_id")
+                    and origin.snapshot.get("member", {}).get("member_id")
+                    == consumer.snapshot.get("member", {}).get("member_id")
+                )
+                deliveries = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowMessage).where(
+                                AgentWorkflowMessage.root_run_id
+                                == consumer.snapshot.get("parent_run_id"),
+                                AgentWorkflowMessage.scope_id
+                                == consumer.state["scope_id"],
+                                AgentWorkflowMessage.recipient_member_id
+                                == consumer.snapshot["member"]["member_id"],
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                shared_output = any(
+                    ref in message.payload["artifact_refs"] for message in deliveries
                 )
                 if (
                     ref not in consumer.snapshot.get("input_artifacts", [])
                     and not team_output
+                    and not own_output
+                    and not shared_output
                 ):
                     raise RoleAssetError(
                         "Artifact version is not a pinned task input", status=403
@@ -4329,6 +4652,33 @@ class WorkflowService:
             checkpoint.data = data
             row = await session.get(AgentWorkflowRun, run_id)
             assert row is not None
+            for receipt in data.get("member_messages", []):
+                message = await session.get(AgentWorkflowMessage, receipt["message_id"])
+                consumption = {
+                    "task_run_id": run_id,
+                    "attempt_id": attempt_id,
+                    "invocation_id": data["invocation_id"],
+                    "context_position": receipt["context_position"],
+                }
+                if (
+                    message is None
+                    or message.root_run_id != row.snapshot.get("parent_run_id")
+                    or message.scope_id != row.state["scope_id"]
+                    or message.recipient_member_id
+                    != row.snapshot["member"]["member_id"]
+                ):
+                    raise RoleAssetError(
+                        "Message is outside this member's scope", status=403
+                    )
+                if (
+                    message.consumption is not None
+                    and message.consumption != consumption
+                ):
+                    raise RoleAssetError(
+                        "Message was already consumed by another context", status=409
+                    )
+                message.consumption = consumption
+                session.add(message)
             checkpoint.result_submission = (data.get("response") or {}).get(
                 "tools_call_name"
             ) == ["submit_task_result"]
@@ -4681,6 +5031,29 @@ class WorkflowService:
                         raise ProcessPersistenceError(checkpoint_error) from exc
 
                 tools.append(TeamManageTool(manage, root["snapshot"]["allowed_roles"]))
+            if snapshot.get("parent_run_id"):
+
+                async def communicate(payload: dict) -> dict:
+                    """Apply communication using the current attempt's authority.
+
+                    Args:
+                        payload: Scoped member message operation.
+
+                    Returns:
+                        Durable delivery receipt or visible member identities.
+                    """
+                    nonlocal checkpoint_error
+                    try:
+                        return await self.communicate_member(
+                            username, run_id, state["attempt_id"], execution_id, payload
+                        )
+                    except RoleAssetError:
+                        raise
+                    except Exception as exc:
+                        checkpoint_error = "Failed to save member communication"
+                        raise ProcessPersistenceError(checkpoint_error) from exc
+
+                tools.append(TeamCommunicateTool(communicate))
             # Composed schemas can declare files through local references or allOf.
             # The frozen contract decides whether the final file result is valid.
             if snapshot["definition"].get("output_contract") is not None:
@@ -4705,7 +5078,7 @@ class WorkflowService:
                     )
 
                 tools.append(StoreTaskFileTool(store))
-            if snapshot.get("input_artifacts") or snapshot.get("coordinator"):
+            if snapshot.get("input_artifacts") or snapshot.get("parent_run_id"):
 
                 async def read(
                     artifact_id: str, version: int, file_id: str | None
@@ -4721,7 +5094,12 @@ class WorkflowService:
                         Full artifact or encoded file content.
                     """
                     artifact = await self.read_artifact(
-                        username, artifact_id, version, run_id, state["attempt_id"]
+                        username,
+                        artifact_id,
+                        version,
+                        run_id,
+                        state["attempt_id"],
+                        execution_id,
                     )
                     if file_id is None:
                         return artifact
@@ -4808,6 +5186,13 @@ class WorkflowService:
                     record_process=record,
                     save_checkpoint=save,
                     checkpoint=checkpoint,
+                    pending_messages=(
+                        lambda: self.pending_member_messages(
+                            username, run_id, state["attempt_id"], execution_id
+                        )
+                    )
+                    if snapshot.get("parent_run_id")
+                    else None,
                     admit_work=lambda: self._await_execution_permission(
                         username, run_id, execution_id
                     ),

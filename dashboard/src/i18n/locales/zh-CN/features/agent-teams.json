@@ -516,6 +516,14 @@
       "cancelled": "已取消"
     }
   },
+  "communication": {
+    "title": "成员消息",
+    "pending": "等待安全消费",
+    "consumed": "已消费并保存上下文",
+    "scope": "作用域",
+    "receivedBy": "接收任务与尝试",
+    "readVersion": "读取完整版本"
+  },
   "autonomous": {
     "create": "新建自主团队",
     "title": "自主团队",

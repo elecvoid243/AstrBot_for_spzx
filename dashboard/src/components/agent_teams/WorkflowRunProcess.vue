@@ -4,6 +4,81 @@
     <p class="text-caption text-medium-emphasis mb-3">
       {{ tm("progress.observation") }}
     </p>
+    <h4 v-if="run.messages?.length" class="text-subtitle-1 mt-4">
+      {{ tm("communication.title") }}
+    </h4>
+    <details
+      v-for="message in run.messages ?? []"
+      :key="message.message_id"
+      class="process-record"
+      data-testid="member-message"
+    >
+      <summary>
+        <span class="font-weight-medium"
+          >{{ message.sender_member_id }} →
+          {{ message.recipient_member_id }}</span
+        >
+        <span class="process-id text-caption"
+          >{{ message.message_id }} ·
+          {{
+            tm(
+              message.consumption
+                ? "communication.consumed"
+                : "communication.pending",
+            )
+          }}</span
+        >
+      </summary>
+      <div class="pa-4">
+        <p class="process-text text-caption">
+          {{ tm("communication.scope") }}: {{ message.scope_id }} ·
+          {{ tm("progress.task") }}: {{ message.sender_task_run_id }} ·
+          {{ tm("v2.attempt") }}: {{ message.sender_attempt_id }}
+        </p>
+        <pre class="process-text my-3">{{ message.text }}</pre>
+        <p v-if="message.consumption" class="process-text text-caption">
+          {{ tm("communication.receivedBy") }}:
+          {{ message.consumption.task_run_id }} ·
+          {{ message.consumption.attempt_id }} ·
+          {{ tm("recovery.contextPosition") }}:
+          {{ message.consumption.context_position }} ·
+          {{ message.consumption.invocation_id }}
+        </p>
+        <div
+          v-for="reference in message.artifact_refs"
+          :key="JSON.stringify(reference)"
+          class="mt-3"
+        >
+          <v-btn
+            variant="tonal"
+            class="message-artifact-read"
+            :loading="artifactReads[JSON.stringify(reference)]?.loading"
+            @click="readMessageArtifact(reference)"
+            >{{ tm("communication.readVersion") }} ·
+            {{ reference.artifact_id }} · v{{ reference.version }}</v-btn
+          >
+          <p
+            v-if="artifactReads[JSON.stringify(reference)]?.error"
+            role="alert"
+            class="process-text mt-2"
+          >
+            {{ artifactReads[JSON.stringify(reference)].error }}
+          </p>
+          <pre
+            v-if="artifactReads[JSON.stringify(reference)]?.artifact"
+            class="process-text mt-3"
+            data-testid="message-artifact"
+            >{{
+              JSON.stringify(
+                artifactReads[JSON.stringify(reference)].artifact,
+                null,
+                2,
+              )
+            }}</pre
+          >
+        </div>
+      </div>
+    </details>
     <details
       v-for="call in run.tool_calls ?? []"
       :key="call.record_id"
@@ -140,6 +215,9 @@
   </section>
 </template>
 <script setup lang="ts">
+import { reactive } from "vue";
+import { workflowAssetsApi } from "@/api/workflowAssets";
+import { extractApiError } from "@/utils/extractApiError";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowToolResolution from "./WorkflowToolResolution.vue";
 import type { ToolResolutionRequest } from "@/api/generated/openapi-v1";
@@ -148,6 +226,30 @@ const emit = defineEmits<{
   (event: "resolve", recordId: string, payload: ToolResolutionRequest): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
+const artifactReads = reactive<
+  Record<string, { loading: boolean; artifact?: any; error?: string }>
+>({});
+async function readMessageArtifact(reference: {
+  artifact_id: string;
+  version: number;
+}) {
+  const key = JSON.stringify(reference);
+  if (artifactReads[key]?.loading) return;
+  artifactReads[key] = { loading: true };
+  try {
+    artifactReads[key].artifact = await workflowAssetsApi.artifact(
+      reference.artifact_id,
+      reference.version,
+    );
+  } catch (error) {
+    artifactReads[key].error = extractApiError(
+      error,
+      tm("errors.operationFailed"),
+    ).message;
+  } finally {
+    artifactReads[key].loading = false;
+  }
+}
 </script>
 <style scoped>
 .run-process {
@@ -175,6 +277,15 @@ summary {
   max-height: 32rem;
   overflow: auto;
   font: inherit;
+}
+.message-artifact-read {
+  max-width: 100%;
+  min-height: 36px;
+  height: auto;
+}
+.message-artifact-read :deep(.v-btn__content) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 500px) {
   summary {

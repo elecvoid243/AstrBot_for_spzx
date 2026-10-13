@@ -516,6 +516,14 @@
       "cancelled": "Cancelled"
     }
   },
+  "communication": {
+    "title": "Member messages",
+    "pending": "Pending safe consumption",
+    "consumed": "Consumed in saved context",
+    "scope": "Scope",
+    "receivedBy": "Receiving task and attempt",
+    "readVersion": "Read complete version"
+  },
   "autonomous": {
     "create": "New Autonomous Team",
     "title": "Autonomous Team",

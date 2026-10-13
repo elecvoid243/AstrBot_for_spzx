@@ -333,6 +333,27 @@ class AgentWorkflowEvent(SQLModel, table=True):
     data: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentWorkflowMessage(TimestampMixin, SQLModel, table=True):
+    """A scoped member delivery and its atomic context-checkpoint consumption."""
+
+    __tablename__: str = "agent_workflow_messages"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (
+        UniqueConstraint("root_run_id", "sender_member_id", "request_id"),
+    )
+    message_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    scope_id: str
+    sender_member_id: str
+    recipient_member_id: str = Field(index=True)
+    sender_task_run_id: str
+    sender_attempt_id: str
+    request_id: str
+    payload: dict = Field(sa_type=JSON)
+    consumption: dict | None = Field(
+        default=None, sa_column=Column(JSON(none_as_null=True))
+    )
+
+
 class AgentWorkflowProcess(TimestampMixin, SQLModel, table=True):
     """Complete observed responses/results, independent of execution checkpoints."""
 

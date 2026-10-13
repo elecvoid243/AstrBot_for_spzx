@@ -60,6 +60,22 @@ On narrow screens, progress, waiting reasons and members stack vertically. Long 
 
 ![Progress, artifacts and process on a narrow screen](/images/agent-workflow-progress-mobile.png)
 
+## Member communication
+
+Open **Independent Runs → View Run → select a task → Saved member process → Member messages**. Each delivery shows its sender and recipient instance, scope, source task and Attempt. Expand it to read the complete message, see whether it is pending or consumed, and inspect the receiving task, Attempt and saved context position. **Read complete version** reads the exact artifact reference in the message; editing an artifact does not change that reference.
+
+Members use `team_communicate` to inspect permitted recipients and send questions or feedback. Communication stays within the current run and execution scope. A member can share its own outputs, frozen common inputs or exact versions already shared with it; a message cannot grant access to another run or an unshared version. The coordinator retains member creation, dispatch and whole-run completion authority. Sending a message does not start a new task or complete one.
+
+Messages arriving during a model request wait for the next safe request boundary. Their consumption position commits together with that request's effective context. Repeating a delivery or restarting after message, tool-result or context persistence does not append another copy of a consumed message. Existing pause, cancellation, capacity and same-Attempt recovery controls apply.
+
+![Scoped delivery, saved consumption position and complete artifact version in the actual WebUI](/images/agent-team-messages-en.jpg)
+
+Long identities and version controls wrap on narrow screens; the same records remain readable in the dark theme.
+
+![Member message and complete version on a narrow screen](/images/agent-team-messages-mobile.jpg)
+
+![Member message and complete version in the dark theme](/images/agent-team-messages-dark.jpg)
+
 ## Continue the original attempt
 
 Open **Independent Runs → View Run**, select the interrupted task and choose **Continue same attempt**. The page shows whether the last saved boundary is a model request, a complete model response, or a started tool. Recovery keeps the original Attempt, asset version, member conversation, effective configuration, temporary framing, multimodal content, provider thinking/signatures and execution counters. Missing resources or changed permissions block execution instead of selecting defaults.
@@ -182,6 +198,7 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
+| Member communication appeared only in tool results | Independent Runs → View Run → select task → Saved member process → Member messages; expand a reference to read its complete version. |
 | Revision used only ordinary task dependencies | Workflow Assets → Edit Asset → Add bounded loop; Independent Runs → View Run → Loop iterations. |
 | New workflows had no persistent human entry | Workflow Assets → Edit Asset → Human question / Version approval; Independent Runs → View Run → Human requests. Legacy Workflow Editor human entries remain separate. |
 

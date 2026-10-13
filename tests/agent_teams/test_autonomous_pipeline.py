@@ -27,6 +27,16 @@ import pytest
         "team_unknown",
         "team_steps",
         "team_inputs",
+        "team_message_pipeline",
+        "team_message_live",
+        "team_message_delivery_pre",
+        "team_message_delivery_post",
+        "team_message_tool_pre",
+        "team_message_tool_post",
+        "team_message_consume_pre",
+        "team_message_consume_post",
+        "team_message_delivery_failure",
+        "team_message_consume_failure",
     ],
 )
 def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decisions(
@@ -126,6 +136,15 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                                 ),
                             ],
                         )
+                    elif scenario.startswith("team_message_") and "message-initial" not in results:
+                        response = call("team-message-initial", [
+                            ("team_communicate", {"action": "send", "request_id": "initial-note",
+                             "recipient_member_id": json.JSONDecoder().raw_decode(results["create-a"])[0]["member_id"],
+                             "text": "INITIAL_MESSAGE 中文 {literal}"}, "message-initial"),
+                            ("team_communicate", {"action": "send", "request_id": "initial-note",
+                             "recipient_member_id": json.JSONDecoder().raw_decode(results["create-a"])[0]["member_id"],
+                             "text": "INITIAL_MESSAGE 中文 {literal}"}, "message-duplicate"),
+                        ])
                     elif "dispatch-a" not in results:
                         response = call(
                             "team-dispatch",
@@ -183,6 +202,13 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                                 )
                             ],
                         )
+                    elif scenario.startswith("team_message_") and "message-artifact" not in results:
+                        response = call("team-message-artifact", [
+                            ("team_communicate", {"action": "send", "request_id": "evidence-note",
+                             "recipient_member_id": json.JSONDecoder().raw_decode(results["create-a"])[0]["member_id"],
+                             "text": "READ_SHARED_VERSION",
+                             "artifact_refs": [{"artifact_id": json.JSONDecoder().raw_decode(results["dispatch-b"])[0]["run_id"], "version": 1}]}, "message-artifact"),
+                        ])
                     elif "dispatch-followup" not in results:
                         response = call(
                             "team-followup",
@@ -259,7 +285,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                     user = next(
                         message
                         for message in reversed(messages)
-                        if message["role"] == "user"
+                        if message["role"] == "user" and any(name in json.dumps(message) for name in ["writer-followup", "writer-two-first", "writer-one-first"])
                     )
                     goal = next(
                         name
@@ -270,11 +296,27 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                         ]
                         if name in json.dumps(user)
                     )
+                    if scenario == "team_message_live" and goal == "writer-one-first" and "effect-" + goal not in results and not (tmp_path / "model-held").exists():
+                        (tmp_path / "model-held").write_text("ready", encoding="utf-8")
+                        deadline = time.monotonic() + 15
+                        while not (tmp_path / "mid-model-sent").exists():
+                            assert time.monotonic() < deadline
+                            time.sleep(0.02)
                     if "effect-" + goal not in results:
                         response = call(
                             "effect-plan-" + goal,
                             [("external_evidence", {"value": goal}, "effect-" + goal)],
                         )
+                    elif scenario.startswith("team_message_") and goal == "writer-two-first" and "inspect-peers" not in results:
+                        response = call("member-inspect", [("team_communicate", {"action": "inspect", "request_id": "inspect-peers"}, "inspect-peers")])
+                    elif scenario.startswith("team_message_") and goal == "writer-two-first" and "member-feedback" not in results:
+                        coordinator = next(member for member in json.JSONDecoder().raw_decode(results["inspect-peers"])[0]["members"] if member["name"] == "Coordinator")
+                        response = call("member-feedback", [("team_communicate", {"action": "send", "request_id": "member-feedback", "recipient_member_id": coordinator["member_id"], "text": "MEMBER_FEEDBACK"}, "member-feedback")])
+                    elif scenario.startswith("team_message_") and goal == "writer-followup" and "read-shared" not in results:
+                        delivery = next(json.loads(part["text"].split("Team member message (JSON):\n", 1)[1])
+                                        for message in messages for part in message.get("content", [])
+                                        if isinstance(part, dict) and "READ_SHARED_VERSION" in part.get("text", ""))
+                        response = call("member-read-shared", [("read_task_artifact", delivery["artifact_refs"][0], "read-shared")])
                     elif "submit-" + goal not in results:
                         response = call(
                             "member-submit-" + goal,
@@ -317,7 +359,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
     ]
     environment = {**os.environ, "PYTHONUTF8": "1"}
     try:
-        if scenario in {"team_pipeline", "team_slow", "team_steps"}:
+        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live"}:
             first = subprocess.run(
                 [*command, "start", scenario],
                 cwd=root,
@@ -350,6 +392,9 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                     if scenario == "team_save_failure":
                         assert len(requests) == 1
                         assert effects == []
+                    if scenario == "team_message_consume_failure":
+                        assert not any(effect["value"] == "writer-one-first" for effect in effects)
+                        assert not any("team_manage" not in request["tools"] and "writer-one-first" in json.dumps(request["contexts"]) for request in requests)
                     worker.kill()
                     worker.wait(timeout=10)
                 finally:
@@ -421,13 +466,34 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             assert effects == []
             return
         assert current["status"] == "completed", current
+        if scenario.startswith("team_message_"):
+            assert len(current["messages"]) == (4 if scenario == "team_message_live" else 3)
+            assert all(message["consumption"] is not None for message in current["messages"])
+            if "before" in evidence:
+                assert evidence["late_rejections"] == [409, 409]
+            message_ids = [message["message_id"] for message in current["messages"]]
+            for request in requests:
+                injected = [json.loads(part["text"].split("Team member message (JSON):\n", 1)[1])["message_id"]
+                            for message in request["contexts"] for part in message.get("content", [])
+                            if isinstance(part, dict) and part.get("text", "").startswith("Team member message (JSON):\n")]
+                assert all(injected.count(identity) <= 1 for identity in message_ids)
+                assert all(next(message for message in current["messages"] if message["message_id"] == identity)["recipient_member_id"] == request["member_id"] for identity in injected)
+            if scenario == "team_message_live":
+                writer_requests = [request for request in requests if request["member_id"] == next(message for message in current["messages"] if message["text"] == "MID_MODEL_MESSAGE")["recipient_member_id"]]
+                assert "MID_MODEL_MESSAGE" not in json.dumps(writer_requests[0]["contexts"])
+                assert "MID_MODEL_MESSAGE" in json.dumps(writer_requests[1]["contexts"])
+            shared = next(request for request in requests if any(message.get("tool_call_id") == "read-shared" for message in request["contexts"]))
+            assert "COMPLETE_END" in json.dumps(shared["contexts"])
+            assert "Complete evidence writer-two-first" in json.dumps(shared["contexts"])
+            assert all("Error:" not in message.get("content", "") for message in shared["contexts"] if message.get("tool_call_id") == "read-shared")
         assert len(current["members"]) == 3
         assert len(current["tasks"]) == 4
-        assert [effect["value"] for effect in effects] == [
-            "writer-one-first",
-            "writer-two-first",
-            "writer-followup",
-        ]
+        if scenario.startswith("team_message_"):
+            assert sorted(effect["value"] for effect in effects) == ["writer-followup", "writer-one-first", "writer-two-first"]
+        else:
+            assert [effect["value"] for effect in effects] == [
+                "writer-one-first", "writer-two-first", "writer-followup",
+            ]
         assert (
             len(
                 [
@@ -456,7 +522,11 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
                     for item in current["tasks"]
                     if item["run_id"] == task["run_id"]
                 )
-                assert task["state"]["attempt_id"] == recovered["state"]["attempt_id"]
+                if scenario == "team_message_consume_failure" and task["recovery"]["boundary"] is None:
+                    assert task["state"]["attempt_id"] != recovered["state"]["attempt_id"]
+                    assert any(attempt["attempt_id"] == task["state"]["attempt_id"] for attempt in recovered["attempts"])
+                else:
+                    assert task["state"]["attempt_id"] == recovered["state"]["attempt_id"]
         followup = next(
             request
             for request in requests

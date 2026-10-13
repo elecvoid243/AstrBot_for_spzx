@@ -9197,6 +9197,7 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WorkflowDefinition'
           - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
           title: Definition
         expected_version:
           anyOf:
@@ -9511,4 +9512,92 @@ components:
       - input
       - source
       title: LoopFeedback
+      type: object
+    TeamRole:
+      additionalProperties: false
+      description: A pinned role permitted by an autonomous asset.
+      properties:
+        role_id:
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+          type: string
+        role_version:
+          minimum: 1
+          title: Role Version
+          type: integer
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+      required:
+      - role_id
+      - role_version
+      title: TeamRole
+      type: object
+    AutonomousDefinition:
+      additionalProperties: false
+      description: A coordinator and allowed role templates sharing the workflow executor.
+      properties:
+        kind:
+          const: autonomous
+          title: Kind
+          type: string
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        coordinator:
+          $ref: '#/components/schemas/TeamRole'
+        allowed_roles:
+          items:
+            $ref: '#/components/schemas/TeamRole'
+          maxItems: 100
+          minItems: 1
+          title: Allowed Roles
+          type: array
+        required_inputs:
+          items:
+            type: string
+          maxItems: 30
+          title: Required Inputs
+          type: array
+        max_members:
+          default: 8
+          maximum: 100
+          minimum: 2
+          title: Max Members
+          type: integer
+        max_parallel:
+          default: 4
+          maximum: 100
+          minimum: 1
+          title: Max Parallel
+          type: integer
+        max_tasks:
+          default: 50
+          maximum: 100
+          minimum: 1
+          title: Max Tasks
+          type: integer
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Output Contract
+        approval_question:
+          anyOf:
+          - maxLength: 100000
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Approval Question
+      required:
+      - kind
+      - name
+      - coordinator
+      - allowed_roles
+      title: AutonomousDefinition
       type: object

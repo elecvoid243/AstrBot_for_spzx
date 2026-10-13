@@ -57,6 +57,24 @@ export type ArtifactRevisionRequest = {
     };
 };
 
+/**
+ * A coordinator and allowed role templates sharing the workflow executor.
+ */
+export type AutonomousDefinition = {
+    kind: "autonomous";
+    name: string;
+    coordinator: TeamRole;
+    allowed_roles: Array<TeamRole>;
+    required_inputs?: Array<(string)>;
+    max_members?: number;
+    max_parallel?: number;
+    max_tasks?: number;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
+    approval_question?: (string | null);
+};
+
 export type BackupChunkUploadRequest = {
     upload_id: string;
     chunk_index: number;
@@ -1042,6 +1060,15 @@ export type TaskInput = {
     field?: string;
 };
 
+/**
+ * A pinned role permitted by an autonomous asset.
+ */
+export type TeamRole = {
+    role_id: string;
+    role_version: number;
+    overrides?: RoleOverrides;
+};
+
 export type ToolPermissionPatch = {
     permission: 'admin' | 'member';
 };
@@ -1179,7 +1206,7 @@ export type WorkflowRetryRequest = {
  * Create an asset or append an immutable version using optimistic locking.
  */
 export type WorkflowSaveRequest = {
-    definition: (WorkflowDefinition | GraphDefinition);
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
     expected_version?: (number | null);
 };
 

@@ -278,7 +278,7 @@
   "v2": {
     "assets": "Workflow Assets",
     "runs": "Independent Runs",
-    "scope": "Workflows pin roles, contracts and input versions. Ready dependencies advance independently. Interrupted built-in attempts reuse saved model responses and tool results; unknown external effects require confirmation.",
+    "scope": "Autonomous teams and workflows share frozen roles, contracted results, scheduling, controls and recovery. Waiting releases execution capacity; unknown external effects require confirmation.",
     "create": "New Workflow",
     "emptyAssets": "No workflow assets yet. Create a role template, then save a workflow.",
     "emptyRuns": "No independent runs yet.",
@@ -515,5 +515,19 @@
       "blocked": "Needs attention",
       "cancelled": "Cancelled"
     }
+  },
+  "autonomous": {
+    "create": "New Autonomous Team",
+    "title": "Autonomous Team",
+    "explanation": "Pin the coordinator and allowed role templates. Each run freezes their configuration; the coordinator creates independent members within these limits. Enter the goal when starting the run.",
+    "coordinator": "Coordinator role",
+    "allowedRoles": "Allowed role templates",
+    "maxMembers": "Maximum members",
+    "maxTasks": "Maximum member tasks",
+    "approval": "Final version approval question (optional)",
+    "waiting": "Waiting for members",
+    "dispatched": "Dispatched",
+    "name": "Team name",
+    "coordinatorCount": "Includes the coordinator."
   }
 }

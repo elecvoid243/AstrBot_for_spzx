@@ -117,6 +117,9 @@ async def run_worker(
                 (folder / "kill-ready.json").write_text(json.dumps({"run_id": event.get_extra("agent_team_execution").run_id}), encoding="utf-8")
                 await asyncio.Future()
             data = response.json()
+            if action == "start" and scenario == "team_unknown":
+                (folder / "kill-ready.json").write_text("ready", encoding="utf-8")
+                await asyncio.Future()
             if action == "start" and scenario in {
                 "control_pause",
                 "control_continue",
@@ -259,6 +262,7 @@ async def run_worker(
                     "tools": kwargs["func_tool"].names(), "model": kwargs.get("model"),
                     "parameter_query": all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
+                    **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith("team_") else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution
@@ -475,6 +479,11 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("team_") and action != "serve":
+            from tests.agent_teams.team_worker import run_team_scenario
+
+            await run_team_scenario(folder, action, scenario, service, roles)
+            return
         if scenario.startswith("loop_") and action != "serve":
             from tests.agent_teams.loop_worker import run_loop_scenario
 

@@ -177,7 +177,7 @@ class MainAgentBuildConfig:
     """The main agent build configuration.
     Most of the configs can be found in the cmd_config.json"""
 
-    tool_call_timeout: int
+    tool_call_timeout: float
     """The timeout (in seconds) for a tool call.
     When the tool call exceeds this time,
     a timeout error as a tool result will be returned.

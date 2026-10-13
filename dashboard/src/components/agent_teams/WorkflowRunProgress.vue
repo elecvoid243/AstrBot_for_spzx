@@ -83,7 +83,11 @@
               </p>
             </div>
             <span class="text-caption run-status">{{
-              tm(`v2.states.${task.status}`)
+              tm(
+                task.status === "running" && task.state.capacity_released
+                  ? "autonomous.waiting"
+                  : `v2.states.${task.status}`,
+              )
             }}</span>
           </button>
         </v-card-text>
@@ -140,8 +144,15 @@
     <details v-if="run.snapshot.definition.tasks" class="mt-4">
       <summary>{{ tm("progress.graph") }}</summary>
       <WorkflowGraphCanvas
-        :definition="run.snapshot.definition"
+        :definition="run.runtime_definition ?? run.snapshot.definition"
         :tasks="run.tasks"
+        :dispatch-tasks="
+          run.snapshot.team_definition
+            ? run.tasks
+                .filter((task: any) => task.snapshot.created_by_task_id)
+                .map((task: any) => task.node_id)
+            : []
+        "
         readonly
         class="mt-3"
         @select-task="$emit('select', $event)"
@@ -174,13 +185,20 @@ const progress = computed(
       ).length,
     },
 );
-const members = computed(() => [
-  ...new Map(
-    tasks.value
-      .filter((task) => task.snapshot.member)
-      .map((task) => [task.snapshot.member.member_id, task.snapshot.member]),
-  ).values(),
-]);
+const members = computed(() =>
+  props.run.members
+    ? Object.values(props.run.members)
+    : [
+        ...new Map(
+          tasks.value
+            .filter((task) => task.snapshot.member)
+            .map((task) => [
+              task.snapshot.member.member_id,
+              task.snapshot.member,
+            ]),
+        ).values(),
+      ],
+);
 </script>
 
 <style scoped>

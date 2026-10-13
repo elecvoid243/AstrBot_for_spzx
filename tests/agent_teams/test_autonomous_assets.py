@@ -1,0 +1,642 @@
+"""Autonomous assets use the shared public asset and run boundary."""
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+import pytest_asyncio
+
+from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
+from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.dashboard.services.agent_team_ports import TeamPorts
+
+
+@pytest.mark.asyncio
+async def test_team_launch_freezes_allowed_roles_without_creating_unused_contexts(
+    tmp_path,
+):
+    """Launch a pinned team with one coordinator and frozen member capabilities.
+
+    Args:
+        tmp_path: Isolated real database directory.
+    """
+    db = SQLiteDatabase(str(tmp_path / "team.db"))
+
+    async def catalog():
+        return {
+            "profiles": [{"id": "default"}],
+            "models": [{"id": "model"}],
+            "personas": [],
+            "tools": [],
+            "skills": [],
+            "knowledge_bases": [],
+        }
+
+    roles = RoleAssetService(db, catalog_loader=catalog)
+    coordinator = await roles.save_role(
+        "alice",
+        {
+            "definition": {"name": "Coordinator", "prompt": "Coordinate evidence"},
+            "installation": {"bindings": {"model": "model"}},
+        },
+    )
+    writer = await roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Writer",
+                "prompt": "Original evidence",
+                "max_instances": 2,
+            },
+            "installation": {"bindings": {"model": "model"}},
+        },
+    )
+    blocked = asyncio.Event()
+
+    async def deliver(*args, **kwargs):
+        return kwargs["message_id"]
+
+    async def collect(*args):
+        await blocked.wait()
+        return "Done", []
+
+    service = WorkflowService(
+        db,
+        roles,
+        ports_factory=lambda username: TeamPorts(
+            deliver=deliver,
+            collect=collect,
+            is_busy=lambda sid: False,
+            emit=lambda event: None,
+        ),
+    )
+    try:
+        asset = await service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "kind": "autonomous",
+                    "name": "Research team",
+                    "coordinator": {
+                        "role_id": coordinator["role_id"],
+                        "role_version": 1,
+                    },
+                    "allowed_roles": [
+                        {"role_id": writer["role_id"], "role_version": 1}
+                    ],
+                    "max_members": 3,
+                    "max_parallel": 1,
+                    "max_tasks": 8,
+                }
+            },
+        )
+        run = await service.start_run(
+            "alice",
+            asset["asset_id"],
+            {"version": 1, "inputs": {"goal": "Research energy"}},
+        )
+        assert len(run["tasks"]) == 1
+        assert run["tasks"][0]["snapshot"]["coordinator"] is True
+        assert (
+            run["snapshot"]["allowed_roles"][writer["role_id"]]["effective"]["prompt"]
+            == "Original evidence"
+        )
+        assert len(await db.get_platform_sessions_by_creator("alice")) == 1
+        assert run["tasks"][0]["snapshot"]["task"] == "Research energy"
+    finally:
+        await service.shutdown()
+        await db.engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def team_env(tmp_path):
+    """Provide public services with real persistence and a controlled Agent boundary.
+
+    Args:
+        tmp_path: Isolated database directory.
+
+    Yields:
+        Team assets, public service and bound execution observations.
+    """
+    db = SQLiteDatabase(str(tmp_path / "team.db"))
+    inventory = {
+        "profiles": [{"id": "default"}],
+        "models": [{"id": "model"}],
+        "personas": [],
+        "tools": [],
+        "skills": [],
+        "knowledge_bases": [],
+    }
+
+    async def catalog():
+        return inventory
+
+    roles = RoleAssetService(db, catalog_loader=catalog)
+    coordinator = await roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Coordinator",
+                "prompt": "Coordinate",
+                "max_steps": 20,
+            },
+            "installation": {"bindings": {"model": "model"}},
+        },
+    )
+    writer = await roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Writer",
+                "prompt": "Original writer",
+                "max_instances": 2,
+                "max_parallel": 1,
+                "max_steps": 4,
+            },
+            "installation": {"bindings": {"model": "model"}},
+        },
+    )
+    observations = []
+    bindings = {}
+    script = None
+    errors = []
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        bindings[session_id] = binding
+        observations.append((binding, text))
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        tools = {
+            tool.name: tool
+            for tool in AgentTeamToolRegistry.get_tools(
+                f"webchat:FriendMessage:{session_id}"
+            )
+        }
+        try:
+            if bindings[session_id].node_id == "coordinator":
+                await env.script(tools, bindings[session_id])
+            else:
+                from astrbot.core.agent_teams.assets import RoleAssetError
+
+                caller = await service.get_run("alice", bindings[session_id].run_id)
+                with pytest.raises(RoleAssetError) as forbidden:
+                    await service.manage_team(
+                        "alice",
+                        caller["run_id"],
+                        caller["state"]["attempt_id"],
+                        caller["state"]["execution_id"],
+                        {
+                            "action": "create_member",
+                            "request_id": "member-attack",
+                            "role_id": writer["role_id"],
+                            "name": "Unauthorized",
+                        },
+                    )
+                assert forbidden.value.status == 403
+                if getattr(env, "member_release", None) is not None:
+                    env.member_started.set()
+                    await env.member_release.wait()
+                await tools["submit_task_result"].call(
+                    None, text="Evidence " * 2000 + "COMPLETE_END"
+                )
+        except Exception as exc:
+            errors.append(exc)
+            raise
+        return "Done", []
+
+    service = WorkflowService(
+        db,
+        roles,
+        ports_factory=lambda username: TeamPorts(
+            deliver=deliver,
+            collect=collect,
+            is_busy=lambda sid: False,
+            emit=lambda event: None,
+            reply_timeout=5,
+        ),
+    )
+    asset = await service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Team",
+                "coordinator": {"role_id": coordinator["role_id"], "role_version": 1},
+                "allowed_roles": [{"role_id": writer["role_id"], "role_version": 1}],
+                "max_parallel": 1,
+                "max_members": 3,
+                "max_tasks": 8,
+            }
+        },
+    )
+    env = SimpleNamespace(
+        db=db,
+        roles=roles,
+        service=service,
+        asset=asset,
+        writer=writer,
+        coordinator=coordinator,
+        inventory=inventory,
+        observations=observations,
+        bindings=bindings,
+        script=script,
+        errors=errors,
+    )
+    try:
+        yield env
+    finally:
+        await service.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_creates_two_instances_dispatches_and_reads_complete_results_at_capacity_one(
+    team_env,
+):
+    """Dynamic tasks run during a coordinator wait and keep stable member contexts.
+
+    Args:
+        team_env: Public services backed by real SQLite.
+    """
+    env = team_env
+    collected = []
+
+    async def script(tools, binding):
+        import json
+
+        manage = tools["team_manage"]
+        members = []
+        for i in range(2):
+            request = {
+                "action": "create_member",
+                "request_id": f"member-{i}",
+                "role_id": env.writer["role_id"],
+                "name": f"Writer {i}",
+            }
+            created = json.loads(await manage.call(None, **request))
+            assert json.loads(await manage.call(None, **request)) == created
+            members.append(created["member_id"])
+        tasks = []
+        for i, member_id in enumerate(members):
+            tasks.append(
+                json.loads(
+                    await manage.call(
+                        None,
+                        action="dispatch",
+                        request_id=f"task-{i}",
+                        member_id=member_id,
+                        name=f"Evidence {i}",
+                        task=f"First {i}",
+                    )
+                )["task_id"]
+            )
+        assert "Error" in await tools["submit_task_result"].call(
+            None, text="Premature completion"
+        )
+        waited = json.loads(
+            await manage.call(
+                None, action="wait", request_id="wait-first", task_ids=tasks
+            )
+        )
+        assert all(
+            task["result"]["text"].endswith("COMPLETE_END") for task in waited["tasks"]
+        )
+        following = json.loads(
+            await manage.call(
+                None,
+                action="dispatch",
+                request_id="follow-up",
+                member_id=members[0],
+                name="Follow-up",
+                task="Use this run's history",
+                dependencies=[tasks[0]],
+            )
+        )
+        await manage.call(
+            None, action="wait", request_id="wait-next", task_ids=[following["task_id"]]
+        )
+        inspected = json.loads(
+            await manage.call(None, action="inspect", request_id="inspect")
+        )
+        collected.append(inspected)
+        assert (
+            await tools["submit_task_result"].call(None, text="Complete research")
+            == "Result accepted."
+        )
+
+    env.script = script
+    run = await env.service.start_run(
+        "alice", env.asset["asset_id"], {"version": 1, "inputs": {"goal": "Research"}}
+    )
+    for _ in range(500):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert not env.errors, env.errors
+    assert current["status"] == "completed", current
+    assert len(current["tasks"]) == 4
+    assert len(current["members"]) == 3
+    assert await env.service.get_result("alice", run["run_id"]) == {
+        "text": "Complete research"
+    }
+    turns = [
+        (binding, text) for binding, text in env.observations if text != "Research"
+    ]
+    assert turns[0][0].conversation_id != turns[1][0].conversation_id
+    assert turns[0][0].conversation_id == turns[2][0].conversation_id
+    assert current["tasks"][3]["snapshot"]["input_artifacts"] == [
+        {"artifact_id": current["tasks"][1]["run_id"], "version": 1}
+    ]
+    assert (
+        collected[0]["tasks"][1]["result"]["text"]
+        == "Evidence " * 2000 + "COMPLETE_END"
+    )
+
+
+@pytest.mark.asyncio
+async def test_required_team_approval_blocks_root_completion(team_env):
+    """Valid coordinator output cannot bypass required version approval.
+
+    Args:
+        team_env: Public services with real persistent human requests.
+    """
+    env = team_env
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                **env.asset["definition"],
+                "approval_question": "Approve the final report?",
+            }
+        },
+    )
+
+    async def script(tools, binding):
+        import json
+
+        member = json.loads(
+            await tools["team_manage"].call(
+                None,
+                action="create_member",
+                request_id="member",
+                role_id=env.writer["role_id"],
+                name="Writer",
+            )
+        )
+        assert "Error" in await tools["team_manage"].call(
+            None,
+            action="dispatch",
+            request_id="circular",
+            member_id=member["member_id"],
+            name="Circular task",
+            task="Wait for final approval",
+            dependencies=["approval"],
+        )
+        assert (
+            await tools["submit_task_result"].call(None, text="Final report")
+            == "Result accepted."
+        )
+
+    env.script = script
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"goal": "Research"}}
+    )
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["todos"]:
+            break
+        await asyncio.sleep(0.01)
+    assert not env.errors
+    assert current["status"] == "running"
+    todo = current["todos"][0]
+    assert todo["artifact_ref"] == {
+        "artifact_id": current["tasks"][0]["run_id"],
+        "version": 1,
+    }
+    approved = await env.service.answer_todo(
+        "alice",
+        run["run_id"],
+        todo["todo_id"],
+        {"request_id": "approval", "action": "approve"},
+    )
+    assert approved["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_authority_limits_and_frozen_templates_are_enforced(team_env):
+    """Members and stale coordinators cannot manage the root or bypass bounds.
+
+    Args:
+        team_env: Public services and controlled task execution.
+    """
+    import json
+
+    from astrbot.core.agent_teams.assets import RoleAssetError
+
+    env = team_env
+    coordinator_ready = asyncio.Event()
+    release = asyncio.Event()
+    asset = await env.service.save_asset(
+        "alice", {"definition": {**env.asset["definition"], "max_tasks": 1}}
+    )
+    await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                **env.writer["definition"],
+                "prompt": "Edited writer",
+                "max_instances": 1,
+            },
+            "installation": env.writer["installation"],
+            "expected_version": 1,
+        },
+        env.writer["role_id"],
+    )
+
+    async def script(tools, binding):
+        manage = tools["team_manage"]
+        assert "Error" in await manage.call(
+            None,
+            action="create_member",
+            request_id="forbidden",
+            role_id=env.coordinator["role_id"],
+            name="Unauthorized",
+        )
+        members = []
+        for index in range(2):
+            members.append(
+                json.loads(
+                    await manage.call(
+                        None,
+                        action="create_member",
+                        request_id=f"member-{index}",
+                        role_id=env.writer["role_id"],
+                        name=f"Writer {index}",
+                    )
+                )["member_id"]
+            )
+        assert "limit" in await manage.call(
+            None,
+            action="create_member",
+            request_id="overflow",
+            role_id=env.writer["role_id"],
+            name="Writer 3",
+        )
+        task = json.loads(
+            await manage.call(
+                None,
+                action="dispatch",
+                request_id="first",
+                member_id=members[0],
+                name="Evidence",
+                task="Work",
+            )
+        )
+        assert "limit" in await manage.call(
+            None,
+            action="dispatch",
+            request_id="second",
+            member_id=members[1],
+            name="Overflow",
+            task="Work",
+        )
+        await manage.call(
+            None, action="wait", request_id="wait", task_ids=[task["task_id"]]
+        )
+        coordinator_ready.set()
+        await release.wait()
+        assert (
+            await tools["submit_task_result"].call(None, text="Complete")
+            == "Result accepted."
+        )
+
+    env.script = script
+    run = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"goal": "Research"}}
+    )
+    await asyncio.wait_for(coordinator_ready.wait(), 5)
+    current = await env.service.get_run("alice", run["run_id"])
+    coord, member = current["tasks"]
+    for task in [member, coord]:
+        with pytest.raises(RoleAssetError):
+            await env.service.manage_team(
+                "alice",
+                task["run_id"],
+                task["state"]["attempt_id"],
+                "stale-owner",
+                {
+                    "action": "create_member",
+                    "request_id": "attack",
+                    "role_id": env.writer["role_id"],
+                    "name": "Attack",
+                },
+            )
+    assert member["snapshot"]["effective"]["prompt"] == "Original writer"
+    assert member["snapshot"]["effective"]["max_instances"] == 2
+    assert "team_manage" not in [
+        tool.name
+        for tool in AgentTeamToolRegistry.get_tools(member["snapshot"]["member"]["umo"])
+    ]
+    with pytest.raises(RoleAssetError):
+        await env.service.submit_result(
+            "alice", run["run_id"], member["state"]["attempt_id"], {"text": "End root"}
+        )
+    release.set()
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["status"] == "completed":
+            break
+        await asyncio.sleep(0.01)
+    assert not env.errors, env.errors
+    assert current["status"] == "completed"
+    again = await env.service.start_run(
+        "alice", asset["asset_id"], {"version": 1, "inputs": {"goal": "Research again"}}
+    )
+    assert (
+        again["tasks"][0]["snapshot"]["member"]["conversation_id"]
+        != coord["snapshot"]["member"]["conversation_id"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["continue", "cancel"])
+async def test_whole_run_controls_apply_while_coordinator_waits(team_env, decision):
+    """A local coordinator wait preserves global admission and cancellation.
+
+    Args:
+        team_env: Real persistence and public runtime.
+        decision: Continue the paused run or permanently cancel it.
+    """
+    import json
+
+    env = team_env
+    env.member_release = asyncio.Event()
+    env.member_started = asyncio.Event()
+
+    async def script(tools, binding):
+        manage = tools["team_manage"]
+        tasks = []
+        for index in range(2):
+            member = json.loads(
+                await manage.call(
+                    None,
+                    action="create_member",
+                    request_id=f"member-{index}",
+                    role_id=env.writer["role_id"],
+                    name=f"Writer {index}",
+                )
+            )
+            tasks.append(
+                json.loads(
+                    await manage.call(
+                        None,
+                        action="dispatch",
+                        request_id=f"task-{index}",
+                        member_id=member["member_id"],
+                        name=f"Evidence {index}",
+                        task="Work",
+                    )
+                )["task_id"]
+            )
+        await manage.call(None, action="wait", request_id="wait", task_ids=tasks)
+        await tools["submit_task_result"].call(None, text="Complete")
+
+    env.script = script
+    run = await env.service.start_run(
+        "alice", env.asset["asset_id"], {"version": 1, "inputs": {"goal": "Research"}}
+    )
+    await asyncio.wait_for(env.member_started.wait(), 5)
+    paused = await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "pause", "action": "pause"}
+    )
+    assert paused["tasks"][0]["state"]["capacity_released"] is True
+    assert paused["tasks"][2]["status"] == "pending"
+    assert paused["progress"]["running"] == 1
+    env.member_release.set()
+    if decision == "continue":
+        for _ in range(200):
+            current = await env.service.get_run("alice", run["run_id"])
+            if current["tasks"][1]["status"] == "completed":
+                break
+            await asyncio.sleep(0.01)
+        assert current["tasks"][2]["status"] == "pending"
+        assert len(env.observations) == 2
+    current = await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "decision", "action": decision}
+    )
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        if current["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert current["status"] == ("completed" if decision == "continue" else "cancelled")
+    assert len(env.observations) == (3 if decision == "continue" else 2)
+    assert not env.errors

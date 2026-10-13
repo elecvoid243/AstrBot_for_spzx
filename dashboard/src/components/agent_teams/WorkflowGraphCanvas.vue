@@ -401,8 +401,14 @@ const props = withDefaults(
     roles?: any[];
     readonly?: boolean;
     tasks?: any[];
+    dispatchTasks?: string[];
   }>(),
-  { roles: () => [], readonly: false, tasks: () => [] },
+  {
+    roles: () => [],
+    readonly: false,
+    tasks: () => [],
+    dispatchTasks: () => [],
+  },
 );
 const emit = defineEmits<{
   (event: "update:definition", definition: GraphDefinition): void;
@@ -542,7 +548,15 @@ const edges = computed(() =>
           ? `${edge.condition.field} ${
               edge.condition.operator
             } ${JSON.stringify(edge.condition.value)}`
+          : props.dispatchTasks.includes(edge.target) &&
+            edge.source === "coordinator"
+          ? tm("autonomous.dispatched")
           : undefined,
+        style:
+          props.dispatchTasks.includes(edge.target) &&
+          edge.source === "coordinator"
+            ? { strokeDasharray: "5 5" }
+            : undefined,
       };
     })
     .filter((edge) => edge.source !== edge.target),

@@ -2,6 +2,24 @@
 
 Open **More Features → Agent Teams → Workflow Assets**. First save a ready role under **Role Templates**, bind a local model that supports tool calls and select the built-in Agent executor.
 
+## Autonomous teams
+
+Choose **Workflow Assets → New Autonomous Team**. Enter the **Team name**, choose the **Coordinator role** and its pinned version, then select **Allowed role templates** and pin each version. Set **Maximum members** (including the coordinator), **Maximum concurrent tasks** and **Maximum member tasks**. Role instance and concurrency limits also apply. An optional **Final version approval question** requires approval of the coordinator's exact final artifact before the run can complete. **Output contract (JSON Schema)** applies to that final result; leaving it empty uses the standard text contract.
+
+![Actual autonomous team configuration](/images/agent-autonomous-editor-en.jpg)
+
+Save the asset, choose **Start Run**, enter a nonempty **goal**, and start. The coordinator uses `team_manage` to create allowed instances, dispatch tasks, inspect complete results and wait. Members submit contracted outputs through `submit_task_result`. A dependency pins the producer's original artifact for `read_task_artifact`; the coordinator can also read members' complete original artifacts. Plain completion text and premature submissions cannot complete the run. Calling a tool name does not grant a member coordinator authority.
+
+In **Independent Runs → View Run**, inspect dynamically created tasks and **Members in this run**. **Expand execution graph (read-only)** shows dependencies and dashed **Dispatched** links from the coordinator. Dispatch links show who created a task; they are not execution prerequisites. Select a task to read its complete artifacts, frozen configuration and saved member process. Distinct instances and new runs have isolated conversations; a member continues its context across this run's tasks, including after checkpoint recovery.
+
+![Actual autonomous team run with independent instances and a revision task](/images/agent-autonomous-run-en.jpg)
+
+Waiting releases active execution capacity, including at a concurrency limit of one. **Waiting for members** is a local wait. Pause, continue, cancel, same-Attempt recovery, explicit retry and unknown-tool decisions retain the shared workflow semantics below. Failed member tasks and unknown calls prevent success. Edited templates affect new runs; dynamic members in an existing run use the original frozen templates and settings. Required final approval uses the existing persistent human-request controls.
+
+For the versioned autonomous path, **team sidebar / Run Monitor → Workflow Assets → New Autonomous Team / Independent Runs → View Run**. Older records and entry points remain separate until migration. Direct member communication and nested asset calls are handled in later work.
+
+![Autonomous run on a narrow screen](/images/agent-autonomous-mobile.jpg)
+
 ## Dependency canvas
 
 Choose **New Canvas Workflow**. Enter the workflow name, required text inputs and maximum concurrent tasks, then drag a role from the toolbox onto the canvas (or click it). Select a task to edit its name, instructions, pinned role version, member instance key, input references and output contract. Tasks sharing a member key use the same frozen role and configuration and advance one conversation serially; distinct member keys create isolated contexts and may run in parallel within the workflow and role limits.

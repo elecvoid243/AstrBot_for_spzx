@@ -225,7 +225,7 @@ class Context:
         system_prompt: str | None = None,
         contexts: list[Message] | None = None,
         max_steps: int = 128,
-        tool_call_timeout: int = 120,
+        tool_call_timeout: float = 120,
         tool_call_timeout_exclude: list[str] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:

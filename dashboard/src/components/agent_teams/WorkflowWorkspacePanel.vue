@@ -7,6 +7,14 @@
         v-if="mode === 'assets'"
         variant="tonal"
         color="primary"
+        data-testid="create-autonomous-team"
+        @click="editTeam(null)"
+        >{{ tm("autonomous.create") }}</v-btn
+      >
+      <v-btn
+        v-if="mode === 'assets'"
+        variant="tonal"
+        color="primary"
         @click="editGraph(null)"
         >{{ tm("graph.create") }}</v-btn
       >
@@ -48,7 +56,11 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
-          <p v-if="asset.definition.tasks">
+          <p v-if="asset.definition.kind === 'autonomous'">
+            {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
+            {{ asset.definition.allowed_roles.length }}
+          </p>
+          <p v-else-if="asset.definition.tasks">
             {{ tm("graph.count", { count: asset.definition.tasks.length }) }} ·
             {{ tm("graph.parallel") }}: {{ asset.definition.max_parallel }}
           </p>
@@ -65,7 +77,13 @@
         <v-card-actions class="flex-wrap">
           <v-btn
             variant="text"
-            @click="asset.definition.tasks ? editGraph(asset) : edit(asset)"
+            @click="
+              asset.definition.kind === 'autonomous'
+                ? editTeam(asset)
+                : asset.definition.tasks
+                ? editGraph(asset)
+                : edit(asset)
+            "
             >{{ tm("v2.edit") }}</v-btn
           >
           <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
@@ -340,6 +358,12 @@
       </v-card>
     </template>
 
+    <AutonomousTeamDialog
+      v-model="teamEditing"
+      :asset="editingAsset"
+      :roles="roles"
+      @saved="refresh"
+    />
     <v-dialog v-model="graphEditing" max-width="1600" :persistent="saving">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
@@ -573,6 +597,7 @@ import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
@@ -628,6 +653,7 @@ const detailRun = computed(
     selectedRun.value,
 );
 const graphEditing = ref(false);
+const teamEditing = ref(false);
 const graphInvalid = ref(false);
 const graphForm = ref<GraphDefinition>({
   name: "",
@@ -793,6 +819,11 @@ function editGraph(asset: any) {
   formError.value = "";
   graphInvalid.value = false;
   graphEditing.value = true;
+}
+
+function editTeam(asset: any) {
+  editingAsset.value = asset;
+  teamEditing.value = true;
 }
 
 async function saveGraph() {

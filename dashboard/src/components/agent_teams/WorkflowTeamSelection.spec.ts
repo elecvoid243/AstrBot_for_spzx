@@ -56,6 +56,58 @@ const canvasGlobal = {
 };
 
 describe("pinned child team selection", () => {
+  it.each(["success", "failure"])(
+    "clears an unavailable choice when reselecting the cached pin before old %s",
+    async (outcome) => {
+      let resolveOld!: (value: any) => void;
+      let rejectOld!: (reason: Error) => void;
+      const delayed = new Promise<any>((resolve, reject) => {
+        resolveOld = resolve;
+        rejectOld = reject;
+      });
+      vi.mocked(workflowAssetsApi.get)
+        .mockReset()
+        .mockImplementation((_id, version) =>
+          version === 1
+            ? delayed
+            : Promise.reject(new Error("Unavailable choice")),
+        );
+      const wrapper = mount(WorkflowGraphCanvas, {
+        props: { definition, teams: [teams[2]] },
+        global: canvasGlobal,
+      });
+      try {
+        wrapper.getComponent(TeamsFlowCanvas).vm.$emit("selectNode", "first");
+        await flushPromises();
+        const select = wrapper.getComponent<any>(
+          '[data-testid="team-call-version"]',
+        );
+        select.vm.$emit("update:modelValue", 1);
+        await flushPromises();
+        select.vm.$emit("update:modelValue", 2);
+        await flushPromises();
+        expect(wrapper.text()).toContain("child.unavailable");
+        expect(wrapper.emitted("validation")?.at(-1)).toEqual([true]);
+        select.vm.$emit("update:modelValue", 3);
+        await flushPromises();
+        expect(wrapper.text()).not.toContain("child.unavailable");
+        expect(wrapper.emitted("validation")?.at(-1)).toEqual([false]);
+        if (outcome === "success") resolveOld(teams[0]);
+        else rejectOld(new Error("Old unavailable"));
+        await flushPromises();
+        expect(wrapper.text()).not.toContain("child.unavailable");
+        expect(wrapper.emitted("validation")?.at(-1)).toEqual([false]);
+        expect(
+          wrapper.getComponent(TeamsFlowCanvas).props("nodes")[0].data
+            .configLabel,
+        ).toBe("v3");
+        expect(wrapper.emitted("update:definition")).toBeUndefined();
+      } finally {
+        wrapper.unmount();
+        vi.restoreAllMocks();
+      }
+    },
+  );
   it.each([
     ["success", "success"],
     ["failure", "success"],

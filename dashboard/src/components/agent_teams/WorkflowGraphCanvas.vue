@@ -905,6 +905,7 @@ async function changeTeam(assetId: string, version?: number) {
     task.output_contract = team.definition.output_contract;
     delete contractTexts.value[task.id];
     teamReadError.value = false;
+    localError.value = "";
     checkpoint();
   } catch {
     if (isCurrent()) {

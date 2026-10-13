@@ -3708,8 +3708,9 @@ class ChatService:
             truncation flag. Indices are 1:1 positions in the full ascending
             history, matching the absolute index space the ChatUI renders.
             Markers older than a ``branch_info`` divider carry
-            ``inherited=True`` so the ChatUI can color them red and hide
-            them while the inherited history is collapsed.
+            ``inherited=True`` so the ChatUI can distinguish them and hide
+            them while the inherited history is collapsed. Each marker also
+            includes a bounded plain-text reply preview for its turn.
         """
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:
@@ -3728,6 +3729,7 @@ class ChatService:
         cursor = None
         position_from_newest = 0
         inherited = False
+        reply_snippet = ""
         while True:
             page = await self.platform_history_mgr.get(
                 platform_id=platform_id,
@@ -3751,6 +3753,13 @@ class ChatService:
                     # conversation.
                     if content.get("type") == "branch_info":
                         inherited = True
+                        reply_snippet = ""
+                    elif content.get("type") == "bot":
+                        # Walking backwards lets us associate replies across
+                        # scan pages without fetching each turn separately.
+                        text = " ".join(extract_platform_message_text(content).split())
+                        if text:
+                            reply_snippet = f"{text} {reply_snippet}".strip()[:160]
                     elif content.get("type") == "user":
                         if len(markers) >= cap:
                             truncated = True
@@ -3761,9 +3770,11 @@ class ChatService:
                                 "id": record.id,
                                 "index": total - 1 - position_from_newest,
                                 "snippet": extract_platform_message_text(content)[:40],
+                                "reply_snippet": reply_snippet,
                                 "inherited": inherited,
                             }
                         )
+                        reply_snippet = ""
                 position_from_newest += 1
             if finished:
                 break

@@ -90,6 +90,7 @@ type SessionMarker = {
   id: number;
   index: number;
   snippet: string;
+  replySnippet: string;
   /** True when the message was inherited from a branched source session
    * (older than the branch_info divider) — hidden while
    * the inherited history is collapsed. */
@@ -231,6 +232,13 @@ export interface ChatRecord {
   sender_name?: string;
   llm_checkpoint_id?: string | null;
   threads?: ChatThread[];
+}
+
+export interface MessagePreview {
+  preview: string;
+  replyPreview: string;
+  replyLoading: boolean;
+  messageIndex: number;
 }
 
 export interface ChatThread {
@@ -416,6 +424,46 @@ export function useMessages(options: UseMessagesOptions) {
       ? messagesBySession[options.currentSessionId.value] || []
       : [],
   );
+
+  // Pair loaded replies with their questions so the gutter previews stay live
+  // while streaming. History-only questions use the server's marker previews.
+  const activeMessagePreviews = computed(() => {
+    const previews = new Map<string, MessagePreview>();
+    let turn: MessagePreview | null = null;
+    const sessionId = options.currentSessionId.value;
+    const offset = sessionId ? historyOffsetBySession[sessionId] || 0 : 0;
+    for (let i = 0; i < activeMessages.value.length; i++) {
+      const message = activeMessages.value[i];
+      const type = messageContent(message).type;
+      if (type === "branch_info") turn = null;
+      if (type !== "user" && type !== "bot") continue;
+      const text = messageParts(message)
+        .filter((part) => part.type === "plain" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (type === "user") {
+        turn = null;
+        if (message.id != null) {
+          turn = {
+            preview: text.slice(0, 160),
+            replyPreview: "",
+            replyLoading: false,
+            messageIndex: offset + i,
+          };
+          previews.set(String(message.id), turn);
+        }
+      } else if (turn) {
+        if (text)
+          turn.replyPreview = `${turn.replyPreview} ${text}`.trim().slice(0, 160);
+        turn.replyLoading ||= Boolean(
+          messageContent(message).isLoading || isMessageStreaming(message, i),
+        );
+      }
+    }
+    return previews;
+  });
 
   onBeforeUnmount(() => {
     cleanupConnections();
@@ -894,6 +942,7 @@ export function useMessages(options: UseMessagesOptions) {
           id: Number(m.id),
           index: Number(m.index),
           snippet: String(m.snippet || ""),
+          replySnippet: String(m.reply_snippet || ""),
           inherited: Boolean(m.inherited),
         })),
         totalMessages: Number(payload.total_messages || 0),
@@ -2300,6 +2349,7 @@ export function useMessages(options: UseMessagesOptions) {
     historyOffsetBySession,
     sessionMarkersBySession,
     activeMessages,
+    activeMessagePreviews,
     isSessionRunning,
     hasLiveSystemRecord,
     isUserMessage,

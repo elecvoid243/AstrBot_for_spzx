@@ -160,7 +160,12 @@
     "jump": "点击跳转到这条提问",
     "choose": "选择要查看的提问",
     "close": "关闭提问列表",
-    "loading": "正在加载更早的消息…"
+    "loading": "正在加载更早的消息…",
+    "replyLoading": "回复生成中…",
+    "noReply": "暂无回复正文",
+    "previousPage": "上一页",
+    "nextPage": "下一页",
+    "page": "{number} / {total} 页"
   },
   "actions": {
     "scrollToBottom": "回到底部",

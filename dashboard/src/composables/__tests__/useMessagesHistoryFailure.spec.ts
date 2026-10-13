@@ -103,6 +103,80 @@ describe("useMessages windowed history failures", () => {
     expect(composable.historyPagingBySession["s1"].error).toBeNull();
   });
 
+  it("pairs loaded and streaming reply previews with the correct user turn", () => {
+    const composable = createComposable();
+    composable.historyOffsetBySession.s1 = 80;
+    composable.messagesBySession.s1 = [
+      {
+        id: 1,
+        content: {
+          type: "user",
+          message: [{ type: "plain", text: "First question" }],
+        },
+      },
+      {
+        id: 2,
+        content: {
+          type: "bot",
+          message: [
+            { type: "think", think: "hidden reasoning" },
+            { type: "tool_call_result", text: "hidden tool output" },
+            { type: "plain", text: "First\n answer" },
+          ],
+          isLoading: true,
+        },
+      },
+      {
+        id: 3,
+        content: {
+          type: "user",
+          message: [{ type: "plain", text: "Next question" }],
+        },
+      },
+      {
+        id: 4,
+        content: {
+          type: "bot",
+          message: [{ type: "plain", text: "Second answer" }],
+        },
+      },
+      {
+        id: 5,
+        content: {
+          type: "user",
+          message: [{ type: "plain", text: "Inherited unanswered question" }],
+        },
+      },
+      { id: 6, content: { type: "branch_info", message: [] } },
+      {
+        id: 7,
+        content: {
+          type: "bot",
+          message: [{ type: "plain", text: "Child reply" }],
+        },
+      },
+    ];
+    expect(composable.activeMessagePreviews.value.get("1")).toEqual({
+      preview: "First question",
+      replyPreview: "First answer",
+      replyLoading: true,
+      messageIndex: 80,
+    });
+    expect(composable.activeMessagePreviews.value.get("3")?.replyPreview).toBe(
+      "Second answer",
+    );
+    expect(composable.activeMessagePreviews.value.get("5")?.replyPreview).toBe(
+      "",
+    );
+    composable.messagesBySession.s1[1].content.message.push({
+      type: "plain",
+      text: "\nLive continuation",
+    });
+    expect(composable.activeMessagePreviews.value.get("1")?.replyPreview).toBe(
+      "First answer Live continuation",
+    );
+  });
+
   it("pauses automatic loading after a failure and resumes on an explicit retry", async () => {
     api.getSession.mockResolvedValue(
       sessionPayload([6, 7, 8, 9, 10].map(record), 10, true),

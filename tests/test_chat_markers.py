@@ -205,6 +205,83 @@ async def test_markers_truncate_snippet_at_40_chars():
 
 
 @pytest.mark.asyncio
+async def test_markers_pair_reply_text_with_the_correct_question():
+    """Keep replies in turn order and exclude reasoning and tool payloads."""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=8)
+    reasoning = _record(3, "bot")
+    reasoning.content["message"] = [
+        {"type": "think", "think": "private reasoning"},
+        {"type": "tool_call_result", "text": "tool output"},
+    ]
+    service.platform_history_mgr.get = AsyncMock(
+        return_value=[
+            _record(1, "user", "Question one"),
+            _record(2, "bot", "First\n paragraph."),
+            reasoning,
+            _record(4, "bot", "Another paragraph."),
+            _record(5, "user", "Question two"),
+            _record(6, "bot", "Second reply."),
+            _record(7, "user", "No reply yet"),
+            _record(8, "user", "Also unanswered"),
+        ]
+    )
+
+    result = await service.get_message_markers("alice", SRC_SESSION_ID)
+
+    assert [(m["id"], m["reply_snippet"]) for m in result["markers"]] == [
+        (1, "First paragraph. Another paragraph."),
+        (5, "Second reply."),
+        (7, ""),
+        (8, ""),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_markers_keep_reply_previews_across_scan_pages():
+    """A reply and its question may sit on opposite sides of a page cursor."""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=1000)
+    page = [_record(i, "bot") for i in range(501, 1001)]
+    for record in page:
+        record.content["message"] = []
+    page[0].content["message"] = [{"type": "plain", "text": "Cross-page reply"}]
+    service.platform_history_mgr.get = AsyncMock(
+        side_effect=[page, [_record(500, "user", "Question")]]
+    )
+
+    result = await service.get_message_markers("alice", SRC_SESSION_ID)
+
+    assert result["markers"][0]["index"] == 499
+    assert result["markers"][0]["reply_snippet"] == "Cross-page reply"
+    assert (
+        service.platform_history_mgr.get.await_args_list[1].kwargs["before_id"] == 501
+    )
+
+
+@pytest.mark.asyncio
+async def test_markers_bound_reply_previews_and_stop_at_branch_dividers():
+    """Do not attach the child session's replies to inherited questions."""
+    service = _make_service()
+    service.db.count_platform_message_history = AsyncMock(return_value=5)
+    service.platform_history_mgr.get = AsyncMock(
+        return_value=[
+            _record(1, "user", "Inherited question"),
+            _record(2, "branch_info"),
+            _record(3, "bot", "Orphaned child reply"),
+            _record(4, "user", "Current question"),
+            _record(5, "bot", "r" * 500),
+        ]
+    )
+
+    result = await service.get_message_markers("alice", SRC_SESSION_ID)
+
+    assert result["markers"][0]["reply_snippet"] == ""
+    assert result["markers"][0]["inherited"] is True
+    assert result["markers"][1]["reply_snippet"] == "r" * 160
+
+
+@pytest.mark.asyncio
 async def test_markers_denies_non_creator():
     """非会话创建者不能读取标记索引。"""
     service = _make_service()

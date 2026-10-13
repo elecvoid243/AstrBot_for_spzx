@@ -1493,7 +1493,16 @@ paths:
         - $ref: "#/components/parameters/SessionId"
       responses:
         "200":
-          $ref: "#/components/responses/Ok"
+          description: User questions with bounded reply previews.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ChatMessageMarkers"
 
   /api/v1/chat/sessions/{session_id}/goal:
     get:
@@ -6899,6 +6908,40 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ChatFileChangeStatusItem"
+      additionalProperties: false
+
+    ChatMessageMarker:
+      type: object
+      required: [id, index, snippet, reply_snippet, inherited]
+      properties:
+        id:
+          type: integer
+        index:
+          type: integer
+          description: Absolute message index in ascending session history.
+        snippet:
+          type: string
+          maxLength: 40
+        reply_snippet:
+          type: string
+          maxLength: 160
+          description: Plain reply text before the next user message or branch divider; excludes reasoning and tool events.
+        inherited:
+          type: boolean
+      additionalProperties: false
+
+    ChatMessageMarkers:
+      type: object
+      required: [markers, total_messages, truncated]
+      properties:
+        markers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessageMarker"
+        total_messages:
+          type: integer
+        truncated:
+          type: boolean
       additionalProperties: false
 
     ChatMessagePatchRequest:

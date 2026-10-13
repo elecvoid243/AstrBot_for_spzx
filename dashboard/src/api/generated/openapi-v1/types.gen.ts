@@ -158,6 +158,26 @@ export type ChatFlags = {
     enable_reasoning?: boolean;
 };
 
+export type ChatMessageMarker = {
+    id: number;
+    /**
+     * Absolute message index in ascending session history.
+     */
+    index: number;
+    snippet: string;
+    /**
+     * Plain reply text before the next user message or branch divider; excludes reasoning and tool events.
+     */
+    reply_snippet: string;
+    inherited: boolean;
+};
+
+export type ChatMessageMarkers = {
+    markers: Array<ChatMessageMarker>;
+    total_messages: number;
+    truncated: boolean;
+};
+
 export type ChatMessagePatchRequest = {
     content: {
         [key: string]: unknown;
@@ -1759,7 +1779,9 @@ export type GetChatSessionMarkersData = {
     };
 };
 
-export type GetChatSessionMarkersResponse = (SuccessEnvelope);
+export type GetChatSessionMarkersResponse = ((SuccessEnvelope & {
+    data?: ChatMessageMarkers;
+}));
 
 export type GetChatSessionMarkersError = unknown;
 

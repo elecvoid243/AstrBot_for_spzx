@@ -2052,6 +2052,7 @@ const {
   historyOffsetBySession,
   sessionMarkersBySession,
   activeMessages,
+  activeMessagePreviews,
   isSessionRunning,
   hasLiveSystemRecord,
   isUserMessage,
@@ -4599,17 +4600,49 @@ function updateScrollMarkers() {
     ? sessionMarkersBySession[currSessionId.value]
     : null;
   if (markerIndex?.loaded && markerIndex.markers.length) {
-    const total = Math.max(1, markerIndex.totalMessages);
-    scrollMarkers.value = markerIndex.markers
-      .map((m, i) => ({
-        id: m.id,
-        index: m.index,
-        messageIndex: m.index,
-        ordinal: i + 1,
-        topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
-        preview: m.snippet || "…",
-        inherited: m.inherited,
-      }))
+    const total = Math.max(
+      1,
+      markerIndex.totalMessages,
+      historyOffset.value + activeMessages.value.length,
+    );
+    const rows = container.querySelectorAll(".message-row");
+    const markers: ChatScrollMarker[] = markerIndex.markers.map((m) => ({
+      id: m.id,
+      index: m.index,
+      messageIndex: m.index,
+      ordinal: 0,
+      topPct: total > 1 ? (m.index / (total - 1)) * 100 : 0,
+      preview:
+        activeMessagePreviews.value.get(String(m.id))?.preview ||
+        m.snippet ||
+        "…",
+      replyPreview:
+        activeMessagePreviews.value.get(String(m.id))?.replyPreview ??
+        m.replySnippet,
+      replyLoading:
+        activeMessagePreviews.value.get(String(m.id))?.replyLoading ?? false,
+      inherited: m.inherited,
+    }));
+    const indexedIds = new Set(markers.map((m) => String(m.id)));
+    // Include newly sent questions and older loaded turns beyond the index cap.
+    for (const [id, preview] of activeMessagePreviews.value) {
+      if (indexedIds.has(id)) continue;
+      const localIndex = preview.messageIndex - historyOffset.value;
+      const message = activeMessages.value[localIndex];
+      if (message?.id == null) continue;
+      markers.push({
+        ...preview,
+        id: message.id,
+        index: preview.messageIndex,
+        ordinal: 0,
+        topPct: total > 1 ? (preview.messageIndex / (total - 1)) * 100 : 0,
+        inherited:
+          rows[localIndex]?.classList.contains("inherited-row") ?? false,
+      });
+    }
+    scrollMarkers.value = markers
+      .sort((a, b) => a.messageIndex - b.messageIndex)
+      .map((m, i) => ({ ...m, ordinal: i + 1 }))
       .filter((m) => !m.inherited || !branchHistoryCollapsed.value);
     return;
   }
@@ -4630,10 +4663,15 @@ function updateScrollMarkers() {
     markers.push({
       id: msg.id,
       index: -1,
-      messageIndex: (historyOffsetBySession[currSessionId.value ?? ""] ?? 0) + i,
+      messageIndex:
+        (historyOffsetBySession[currSessionId.value ?? ""] ?? 0) + i,
       ordinal: markers.length + 1,
       topPct: (offsetTop / scrollable) * 100,
       preview: truncate(plainTextFromMessage(msg), 160),
+      replyPreview:
+        activeMessagePreviews.value.get(String(msg.id))?.replyPreview || "",
+      replyLoading:
+        activeMessagePreviews.value.get(String(msg.id))?.replyLoading ?? false,
       inherited: row.classList.contains("inherited-row"),
     });
   }

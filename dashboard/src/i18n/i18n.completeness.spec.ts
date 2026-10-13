@@ -48,6 +48,11 @@ describe("conversation marker labels", () => {
         "choose",
         "close",
         "loading",
+        "replyLoading",
+        "noReply",
+        "previousPage",
+        "nextPage",
+        "page",
       ] as const) {
         expect(translations.markers[key]).toBeTruthy();
       }

@@ -68,7 +68,7 @@
       :style="{
         top: `${popoverTop}px`,
         width: `${Math.min(
-          280,
+          320,
           Math.max(
             120,
             (container?.clientWidth ?? 320) - (coarsePointer ? 80 : 64),
@@ -79,7 +79,7 @@
       :role="selectionOpen ? 'dialog' : 'tooltip'"
       :aria-label="selectionOpen ? tm('markers.choose') : undefined"
     >
-      <div class="marker-preview-meta">
+      <div v-if="selectionOpen" class="marker-preview-meta">
         <span>
           {{
             activeGroup.markers.length > 1
@@ -108,23 +108,26 @@
         </button>
       </div>
       <template v-if="!selectionOpen">
-        <div class="marker-preview-text">
-          {{ activeGroup.markers[0].preview }}
+        <div class="marker-preview-heading">
+          <div class="marker-preview-title">{{ previewMarker?.preview }}</div>
+          <span v-if="previewMarker?.inherited" class="marker-origin">{{
+            tm("markers.inherited")
+          }}</span>
         </div>
-        <div class="marker-preview-hint">
-          <ChevronRight :size="12" aria-hidden="true" />
+        <div class="marker-preview-reply">
           {{
+            previewMarker?.replyPreview ||
             tm(
-              activeGroup.markers.length > 1
-                ? "markers.expand"
-                : "markers.jump",
+              previewMarker?.replyLoading
+                ? "markers.replyLoading"
+                : "markers.noReply",
             )
           }}
         </div>
       </template>
       <div v-else class="marker-choice-list">
         <button
-          v-for="marker in activeGroup.markers"
+          v-for="marker in selectionMembers"
           :key="marker.id"
           type="button"
           class="marker-choice"
@@ -136,8 +139,47 @@
             <span v-if="marker.inherited" class="marker-choice-origin">{{
               tm("markers.inherited")
             }}</span>
-            {{ marker.preview }}
+            <span class="marker-choice-title">{{ marker.preview }}</span>
+            <span class="marker-choice-reply">
+              {{
+                marker.replyPreview ||
+                tm(
+                  marker.replyLoading
+                    ? "markers.replyLoading"
+                    : "markers.noReply",
+                )
+              }}
+            </span>
           </span>
+        </button>
+      </div>
+      <div
+        v-if="selectionOpen && selectionPageCount > 1"
+        class="marker-choice-pager"
+      >
+        <button
+          type="button"
+          class="marker-close"
+          :disabled="selectionPage === 0"
+          :aria-label="tm('markers.previousPage')"
+          @click="selectionPage--"
+        >
+          <ChevronLeft :size="14" aria-hidden="true" />
+        </button>
+        <span aria-live="polite">{{
+          tm("markers.page", {
+            number: selectionPage + 1,
+            total: selectionPageCount,
+          })
+        }}</span>
+        <button
+          type="button"
+          class="marker-close"
+          :disabled="selectionPage + 1 >= selectionPageCount"
+          :aria-label="tm('markers.nextPage')"
+          @click="selectionPage++"
+        >
+          <ChevronRight :size="14" aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -155,6 +197,8 @@ export interface ChatScrollMarker {
   ordinal: number;
   topPct: number;
   preview: string;
+  replyPreview?: string;
+  replyLoading?: boolean;
   inherited: boolean;
 }
 </script>
@@ -168,7 +212,7 @@ import {
   ref,
   watch,
 } from "vue";
-import { ChevronRight, LoaderCircle, X } from "@lucide/vue";
+import { ChevronLeft, ChevronRight, LoaderCircle, X } from "@lucide/vue";
 import { useModuleI18n } from "@/i18n/composables";
 
 const props = defineProps<{
@@ -187,6 +231,7 @@ const coarsePointer = ref(false);
 const visibleMessageIndex = ref<number | null>(null);
 const activeSlot = ref<number | null>(null);
 const selectionOpen = ref(false);
+const selectionPage = ref(0);
 const popoverTop = ref(8);
 let scrollFrame = 0;
 let pointerQuery: MediaQueryList | null = null;
@@ -231,6 +276,28 @@ const currentId = computed(() => {
   }
   return null;
 });
+const previewMarker = computed(
+  () =>
+    activeGroup.value?.markers.find((m) => m.id === currentId.value) ??
+    activeGroup.value?.markers[0],
+);
+const selectionPageCount = computed(() =>
+  Math.ceil((activeGroup.value?.markers.length ?? 0) / 20),
+);
+const selectionMembers = computed(
+  () =>
+    activeGroup.value?.markers.slice(
+      selectionPage.value * 20,
+      (selectionPage.value + 1) * 20,
+    ) ?? [],
+);
+
+watch(selectionPage, () =>
+  nextTick(() => {
+    const list = popover.value?.querySelector(".marker-choice-list");
+    if (list) list.scrollTop = 0;
+  }),
+);
 
 /** Read the visible message without changing the chat's scroll position. */
 function updateReadingPosition() {
@@ -305,6 +372,10 @@ async function openPopover(
   if (props.loading || (selectionOpen.value && !select)) return;
   activeSlot.value = group.slot;
   selectionOpen.value = select;
+  if (select) {
+    const current = group.markers.findIndex((m) => m.id === currentId.value);
+    selectionPage.value = Math.floor(Math.max(0, current) / 20);
+  }
   await nextTick();
   if (activeSlot.value !== group.slot || !popover.value) return;
   popoverTop.value = Math.max(
@@ -499,7 +570,27 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   padding: 1px 5px;
 }
-.marker-preview-text {
+.marker-preview-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.marker-preview-title {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.marker-preview-heading .marker-origin {
+  flex-shrink: 0;
+  color: var(--marker-muted);
+}
+.marker-preview-reply {
+  margin-top: 5px;
+  color: var(--marker-muted);
   font-size: 13px;
   line-height: 1.6;
   display: -webkit-box;
@@ -507,14 +598,6 @@ onBeforeUnmount(() => {
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
-}
-.marker-preview-hint {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--marker-muted);
-  margin-top: 9px;
 }
 .marker-close {
   margin-left: auto;
@@ -564,9 +647,45 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 .marker-choice-text {
+  min-width: 0;
+  flex: 1;
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+.marker-choice-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.marker-choice-reply {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--marker-muted);
+  margin-top: 3px;
+}
+.marker-choice-pager {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 7px 0;
+  margin-top: 4px;
+  border-top: 1px solid var(--marker-border);
+  font-size: 11px;
+  color: var(--marker-muted);
+}
+.marker-choice-pager .marker-close {
+  margin-left: 0;
+}
+.marker-close:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 .marker-choice-origin {
   display: block;

@@ -49,6 +49,7 @@ function mountMarkers(count = 12, height = 600, coarse = false) {
     ordinal: i + 1,
     topPct: (i / Math.max(1, count - 1)) * 100,
     preview: `Question ${i + 1}`,
+    replyPreview: `Answer ${i + 1}`,
     inherited: i < 2,
   }));
   const wrapper = mount(ChatScrollMarkers, {
@@ -87,9 +88,86 @@ describe("conversation scroll markers", () => {
     const { wrapper, markers, geometry } = mountMarkers();
     await wrapper.findAll(".scroll-marker-dot")[3].trigger("mouseenter");
     expect(wrapper.get('[role="tooltip"]').text()).toContain("Question 4");
+    expect(wrapper.get(".marker-preview-reply").text()).toBe("Answer 4");
     await wrapper.findAll(".scroll-marker-dot")[3].trigger("click");
     expect(wrapper.emitted("jump")).toEqual([[markers[3]]]);
     expect(geometry.writes).toBe(0);
+  });
+
+  it("shows the current question and reply when its tick represents a dense group", async () => {
+    const { wrapper, container, geometry } = mountMarkers(1200, 244);
+    geometry.top = 55 * 160;
+    container.dispatchEvent(new Event("scroll"));
+    frames.forEach((callback) => callback(performance.now()));
+    frames.clear();
+    await nextTick();
+    await wrapper.get(".scroll-marker-dot--current").trigger("mouseenter");
+    expect(wrapper.get(".marker-preview-title").text()).toBe("Question 56");
+    expect(wrapper.get(".marker-preview-reply").text()).toBe("Answer 56");
+  });
+
+  it("paginates long groups in batches of twenty without dropping any question", async () => {
+    const { wrapper, geometry } = mountMarkers(1200, 244);
+    await wrapper.findAll(".scroll-marker-dot")[0].trigger("click");
+    const numbers: number[] = [];
+    while (true) {
+      const choices = wrapper.findAll(".marker-choice");
+      expect(choices.length).toBeLessThanOrEqual(20);
+      numbers.push(
+        ...choices.map((choice) =>
+          Number(choice.get(".marker-choice-number").text()),
+        ),
+      );
+      const next = wrapper.get('button[aria-label="下一页"]');
+      if (next.attributes("disabled") !== undefined) break;
+      await next.trigger("click");
+    }
+    expect(numbers).toEqual(Array.from({ length: 67 }, (_, i) => i + 1));
+    expect(geometry.writes).toBe(0);
+    await wrapper.get('button[aria-label="上一页"]').trigger("click");
+    await wrapper.findAll(".marker-choice")[0].trigger("click");
+    expect(wrapper.emitted("jump")?.[0][0]).toMatchObject({
+      ordinal: 41,
+      index: 80,
+    });
+  });
+
+  it("opens on the page containing the current turn and keeps response updates live", async () => {
+    const { wrapper, markers, container, geometry } = mountMarkers(1200, 244);
+    geometry.top = 55 * 160;
+    container.dispatchEvent(new Event("scroll"));
+    frames.forEach((callback) => callback(performance.now()));
+    frames.clear();
+    await nextTick();
+    await wrapper.get(".scroll-marker-dot--current").trigger("click");
+    expect(wrapper.get(".marker-choice-pager").text()).toContain("3 / 4 页");
+    expect(wrapper.get('.marker-choice[aria-current="true"]').text()).toContain(
+      "Answer 56",
+    );
+    await wrapper.setProps({
+      markers: markers.map((marker) =>
+        marker.id === "question-55"
+          ? { ...marker, replyPreview: "Updated streamed reply" }
+          : marker,
+      ),
+    });
+    expect(wrapper.get('.marker-choice[aria-current="true"]').text()).toContain(
+      "Updated streamed reply",
+    );
+    expect(wrapper.get(".marker-choice-pager").text()).toContain("3 / 4 页");
+  });
+
+  it("distinguishes an unfinished reply from a turn without reply text", async () => {
+    const { wrapper, markers } = mountMarkers();
+    await wrapper.setProps({
+      markers: [{ ...markers[0], replyPreview: "", replyLoading: true }],
+    });
+    await wrapper.get(".scroll-marker-dot").trigger("mouseenter");
+    expect(wrapper.get(".marker-preview-reply").text()).toBe("回复生成中…");
+    await wrapper.setProps({
+      markers: [{ ...markers[0], replyPreview: "", replyLoading: false }],
+    });
+    expect(wrapper.get(".marker-preview-reply").text()).toBe("暂无回复正文");
   });
 
   it("keeps every dense question selectable, including inherited boundaries", async () => {

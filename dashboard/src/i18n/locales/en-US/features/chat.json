@@ -160,7 +160,12 @@
     "jump": "Jump to this question",
     "choose": "Choose a question",
     "close": "Close question list",
-    "loading": "Loading older messages…"
+    "loading": "Loading older messages…",
+    "replyLoading": "Reply in progress…",
+    "noReply": "No reply text yet",
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "page": "Page {number} of {total}"
   },
   "actions": {
     "scrollToBottom": "Scroll to bottom",

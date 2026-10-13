@@ -173,7 +173,12 @@
     "jump": "この質問へ移動",
     "choose": "質問を選択",
     "close": "質問一覧を閉じる",
-    "loading": "以前のメッセージを読み込み中…"
+    "loading": "以前のメッセージを読み込み中…",
+    "replyLoading": "回答を生成中…",
+    "noReply": "回答の本文はまだありません",
+    "previousPage": "前のページ",
+    "nextPage": "次のページ",
+    "page": "{number} / {total} ページ"
   },
   "reply": {
     "replyTo": "引用",

@@ -300,6 +300,9 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
 
         output_text = ""
         doc_references = None
+        remote_chunks = []
+        remote_usage = None
+        completed = False
 
         while True:
             try:
@@ -316,6 +319,11 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
             elif item_type == "data":
                 chunk = item_data
                 assert isinstance(chunk, ApplicationResponse)
+                if self.remote_checkpoint:
+                    remote_chunks.append(dict(chunk))
+                    if chunk.usage and chunk.usage.models:
+                        remote_usage = dict(chunk.usage)
+                    completed = chunk.output.finish_reason == "stop"
 
                 (
                     output_text,
@@ -340,6 +348,8 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                         value=chunk.output.session_id,
                     )
 
+        if self.remote_checkpoint and not completed:
+            raise ValueError("DashScope stream ended without confirmed completion")
         # 添加 RAG 引用
         if self.output_reference and doc_references:
             ref_text = self._format_doc_references(doc_references)
@@ -357,7 +367,7 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         if self.remote_checkpoint:
             await self.remote_checkpoint.complete(
                 self.final_llm_resp,
-                {"text": output_text, "doc_references": doc_references},
+                {"chunks": remote_chunks, "usage": remote_usage},
             )
         self._transition_state(AgentState.DONE)
 
@@ -383,16 +393,8 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
             if restored:
                 assert restored.result_chain is not None
                 self.final_llm_resp = restored
-                self._transition_state(AgentState.DONE)
-                if self.streaming:
-                    yield AgentResponse(
-                        type="streaming_delta",
-                        data=AgentResponseData(chain=restored.result_chain),
-                    )
-                yield AgentResponse(
-                    type="llm_result",
-                    data=AgentResponseData(chain=restored.result_chain),
-                )
+                async for response in self._finish_recovered_response(restored):
+                    yield response
                 return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"

@@ -144,16 +144,8 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
                     await self.remote_checkpoint.complete(restored, queried)
                 self.final_llm_resp = restored
                 assert restored is not None and restored.result_chain is not None
-                self._transition_state(AgentState.DONE)
-                if self.streaming:
-                    yield AgentResponse(
-                        type="streaming_delta",
-                        data=AgentResponseData(chain=restored.result_chain),
-                    )
-                yield AgentResponse(
-                    type="llm_result",
-                    data=AgentResponseData(chain=restored.result_chain),
-                )
+                async for response in self._finish_recovered_response(restored):
+                    yield response
                 return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"

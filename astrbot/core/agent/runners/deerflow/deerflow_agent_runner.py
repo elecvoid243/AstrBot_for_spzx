@@ -692,6 +692,35 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
             ),
         )
 
+    def _response_from_remote_messages(self, queried: dict) -> LLMResponse:
+        """Map canonical run-owned output outside the lengthy stream event loop.
+
+        Args:
+            queried: Status and messages already verified against the exact run.
+
+        Returns:
+            The last nonempty lead-agent answer through the existing mapper.
+
+        Raises:
+            ValueError: The successful run has no confirmed lead-agent answer.
+        """
+        candidates = [
+            row["content"]
+            for row in queried["messages"]
+            if row.get("category") == "message"
+            and row.get("event_type") == "llm.ai.response"
+            and row.get("metadata", {}).get("caller") in (None, "lead_agent")
+            and isinstance(row.get("content"), dict)
+            and row["content"].get("type") == "ai"
+        ]
+        for message in reversed(candidates):
+            chain = build_chain_from_ai_content(
+                message.get("content"), image_component_from_url
+            )
+            if chain.get_plain_text().strip():
+                return LLMResponse(role="assistant", result_chain=chain)
+        raise ValueError("DeerFlow success has no confirmed lead-agent answer")
+
     async def _execute_deerflow_request(self):
         """Execute or query exact run-owned messages through the normal mapper.
 
@@ -705,42 +734,12 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
             restored, queried = await self.remote_checkpoint.restore(self.api_client)
             if restored or queried:
                 if queried:
-                    candidates = [
-                        row["content"]
-                        for row in queried["messages"]
-                        if row.get("category") == "message"
-                        and row.get("event_type") == "llm.ai.response"
-                        and row.get("metadata", {}).get("caller")
-                        in (None, "lead_agent")
-                        and isinstance(row.get("content"), dict)
-                        and row["content"].get("type") == "ai"
-                    ]
-                    chain = MessageChain()
-                    for message in reversed(candidates):
-                        candidate = build_chain_from_ai_content(
-                            message.get("content"), image_component_from_url
-                        )
-                        if candidate.get_plain_text().strip():
-                            chain = candidate
-                            break
-                    if not chain.chain:
-                        raise ValueError(
-                            "DeerFlow success has no confirmed lead-agent answer"
-                        )
-                    restored = LLMResponse(role="assistant", result_chain=chain)
+                    restored = self._response_from_remote_messages(queried)
                     await self.remote_checkpoint.complete(restored, queried)
                 self.final_llm_resp = restored
                 assert restored is not None and restored.result_chain is not None
-                self._transition_state(AgentState.DONE)
-                if self.streaming:
-                    yield AgentResponse(
-                        type="streaming_delta",
-                        data=AgentResponseData(chain=restored.result_chain),
-                    )
-                yield AgentResponse(
-                    type="llm_result",
-                    data=AgentResponseData(chain=restored.result_chain),
-                )
+                async for response in self._finish_recovered_response(restored):
+                    yield response
                 return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or f"{DEERFLOW_SESSION_PREFIX}-{uuid4()}"
@@ -822,10 +821,14 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
                 raise ValueError(
                     "DeerFlow stream did not confirm a complete successful result"
                 )
-            await self.remote_checkpoint.complete(
-                LLMResponse(role=final_result.role, result_chain=final_result.chain),
-                {"messages": state.run_values_messages},
+            _, queried = await self.remote_checkpoint.restore(self.api_client)
+            assert queried is not None
+            confirmed_response = self._response_from_remote_messages(queried)
+            assert confirmed_response.result_chain is not None
+            final_result = self._FinalResult(
+                role="assistant", chain=confirmed_response.result_chain
             )
+            await self.remote_checkpoint.complete(confirmed_response, queried)
 
         if self.streaming:
             extra_response = self._emit_non_plain_components_at_end(final_result.chain)

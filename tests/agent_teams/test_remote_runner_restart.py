@@ -18,6 +18,11 @@ import pytest
         ("dify", "identity_saved"),
         ("coze", "identity_saved"),
         ("deerflow", "identity_saved"),
+        ("deerflow", "end_interrupted"),
+        ("deerflow", "end_success"),
+        ("dashscope", "result_saved"),
+        ("dashscope", "identity_missing"),
+        ("dashscope", "partial_eof"),
         *[
             ("dify", scenario)
             for scenario in (
@@ -31,6 +36,9 @@ import pytest
                 "query_missing_output",
                 "query_interrupted",
                 "chat_unknown",
+                "workflow_eof",
+                "chat_eof",
+                "chat_result_saved",
             )
         ],
     ],
@@ -61,6 +69,32 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                     "Content-Location", "/api/threads/thread-original/runs/run-original"
                 )
             self.end_headers()
+            if runner == "dashscope" and scenario == "result_saved":
+                self.wfile.write(
+                    b'data: {"request_id":"request-original","output":{"text":"Original verified ","session_id":"session-original","finish_reason":"null"},"usage":{"models":[{"input_tokens":7,"output_tokens":3,"model_id":"model-original"}]}}\n\n'
+                    b'data: {"request_id":"request-original","output":{"text":"evidence.","session_id":"session-original","finish_reason":"null"},"usage":{"models":[{"input_tokens":7,"output_tokens":9,"model_id":"model-original"}]}}\n\n'
+                    b'data: {"request_id":"request-original","output":{"text":"","session_id":"session-original","finish_reason":"stop"},"usage":{}}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if runner == "dashscope" and scenario == "partial_eof":
+                self.wfile.write(
+                    b'data: {"request_id":"request-original","output":{"text":"Unconfirmed partial answer","session_id":"session-original","finish_reason":"null"},"usage":{}}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if scenario == "chat_eof":
+                self.wfile.write(
+                    b'data: {"event":"message","answer":"Unconfirmed partial answer","conversation_id":"conversation-original"}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if scenario == "chat_result_saved":
+                self.wfile.write(
+                    b'data: {"event":"message","answer":"Original verified evidence.","conversation_id":"conversation-original"}\n\ndata: {"event":"message_end","metadata":{"usage":{"prompt_tokens":11,"completion_tokens":20,"total_tokens":31}}}\n\n'
+                )
+                self.wfile.flush()
+                return
             if scenario in {"identity_missing", "chat_unknown"}:
                 self.wfile.flush()
                 deadline = time.monotonic() + 20
@@ -83,6 +117,14 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                 else b'event: metadata\ndata: {"thread_id":"thread-original","run_id":"run-original"}\n\n'
             )
             self.wfile.flush()
+            if runner == "deerflow" and scenario.startswith("end_"):
+                self.wfile.write(
+                    b'event: values\ndata: {"messages":[{"id":"partial-message","type":"ai","content":"Partial before interruption."}]}\n\nevent: end\ndata: {}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if scenario == "workflow_eof":
+                return
             if scenario in {"pre_create", "result_saved"}:
                 self.wfile.write(
                     b'data: {"event":"workflow_finished","workflow_run_id":"remote-original","data":{"id":"remote-original","status":"succeeded","outputs":{"astrbot_wf_output":{"text":"Original verified evidence."}},"error":null,"total_tokens":31}}\n\n'
@@ -166,6 +208,8 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                 )
             if scenario == "query_running":
                 response["status"] = "running"
+            elif scenario == "end_interrupted":
+                response["status"] = "interrupted"
             elif scenario == "query_mismatched":
                 response["id"] = "another-run"
             elif scenario == "query_missing_output":
@@ -254,6 +298,27 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             evidence["after"]["state"]["attempt_id"]
             == evidence["before"]["state"]["attempt_id"]
         )
+        if scenario in {"workflow_eof", "chat_eof", "partial_eof"}:
+            assert evidence["before"]["status"] == "blocked"
+            assert evidence["before"]["recovery"]["boundary"] != "remote_result"
+        if scenario in {"chat_eof", "partial_eof"}:
+            assert evidence["error"]["status"] == 409
+            assert evidence["after"]["result"] is None
+            assert evidence["after"]["recovery"]["available"] is False
+            assert [entry["method"] for entry in ledger] == ["POST"]
+            return
+        if scenario == "end_interrupted":
+            assert evidence["before"]["status"] == "blocked"
+            assert evidence["before"]["recovery"]["boundary"] == "remote_running"
+            assert evidence["after"]["status"] == "blocked"
+            assert evidence["after"]["result"] is None
+            assert [entry["method"] for entry in ledger] == [
+                "POST",
+                "POST",
+                "GET",
+                "GET",
+            ]
+            return
         if scenario in {"identity_save_failure", "identity_missing", "chat_unknown"}:
             assert evidence["error"]["status"] == 409
             assert "requires confirmation" in evidence["error"]["message"]
@@ -274,12 +339,34 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             )
             assert [entry["method"] for entry in ledger] == ["POST", "GET"]
             return
-        if scenario in {"pre_create", "result_saved"}:
+        if scenario in {"pre_create", "result_saved"} and runner != "dashscope":
             assert evidence["after"]["status"] == "completed"
             assert evidence["after"]["result"] == {
                 "text": "Original verified evidence."
             }
             assert [entry["method"] for entry in ledger] == ["POST"]
+            return
+        hooks = [
+            json.loads(line)
+            for line in (tmp_path / "hooks.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [entry["kind"] for entry in hooks] == ["request", "response", "done"]
+        assert hooks[1]["text"].endswith("[Checked by completion hook]")
+        if scenario == "chat_result_saved":
+            assert evidence["after"]["status"] == "awaiting_result"
+            assert evidence["after"]["usage"]["tokens"]["reported"] == 31
+            assert evidence["after"]["usage"]["model_calls"] == 1
+            assert evidence["stopped"]["recovery"]["capability"] == "external_boundary"
+            assert [entry["method"] for entry in ledger] == ["POST"]
+            return
+        if runner == "dashscope":
+            assert evidence["after"]["status"] == "awaiting_result"
+            assert evidence["after"]["usage"]["tokens"]["reported"] == 16
+            assert evidence["after"]["usage"]["model_calls"] == 1
+            assert [entry["method"] for entry in ledger] == ["POST"]
+            assert ledger[0]["path"] == "/api/v1/apps/app-original/completion"
             return
         assert evidence["stopped"]["recovery"]["capability"] == "remote_query"
         assert evidence["stopped"]["recovery"]["remote_identity"] == (
@@ -306,7 +393,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             assert evidence["after"]["result"] is None
             assert (
                 evidence["after"]["state"]["response"]["text"]
-                == "Original verified evidence."
+                == "Original verified evidence.[Checked by completion hook]"
             )
         assert (
             evidence["after"]["state"]["attempt_id"]

@@ -214,6 +214,22 @@ class DeerFlowAPIClient:
         timeout: float = 120,
         capture_identity: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """Stream events, optionally saving exact run identity before body events.
+
+        Args:
+            thread_id: Original thread receiving this run.
+            payload: Effective run request.
+            timeout: Maximum duration of the streaming request in seconds.
+            capture_identity: Emit metadata parsed from Content-Location before
+                reading the body. A missing header leaves body metadata unchanged.
+
+        Yields:
+            Run identity metadata followed by the original stream events.
+
+        Raises:
+            ValueError: Content-Location does not identify a run in this thread.
+            DeerFlowAPIError: The service rejects the streaming request.
+        """
         session = self._get_session()
         url = f"{self.api_base}/api/langgraph/threads/{thread_id}/runs/stream"
         input_payload = payload.get("input")

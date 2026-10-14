@@ -31,7 +31,12 @@ from astrbot.core.platform.sources.webchat import webchat_adapter, webchat_event
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
 from astrbot.core.provider.manager import ProviderManager
 from astrbot.core.star.context import Context
-from astrbot.core.star.star_handler import star_handlers_registry
+from astrbot.core.star.star import star_map
+from astrbot.core.star.star_handler import (
+    EventType,
+    StarHandlerMetadata,
+    star_handlers_registry,
+)
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
 from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
@@ -65,7 +70,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             "timeout": 10,
         },
     }
-    if window == "chat_unknown":
+    if window in {"chat_unknown", "chat_eof", "chat_result_saved"}:
         config["agent_runner"]["config"]["dify_api_type"] = "chat"
     if scenario.startswith("coze:"):
         config["agent_runner"] = {
@@ -84,6 +89,18 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             "config": {
                 "deerflow_api_base": endpoint,
                 "timeout": 10,
+            },
+        }
+    elif scenario.startswith("dashscope:"):
+        import dashscope
+
+        patch.setattr(dashscope, "base_http_api_url", endpoint + "/api/v1")
+        config["agent_runner"] = {
+            "runner_type": "dashscope",
+            "config": {
+                "dashscope_api_key": "local-only-key",
+                "dashscope_app_id": "app-original",
+                "dashscope_app_type": "agent",
             },
         }
     acm = AstrBotConfigManager(config, UmopConfigRouter(preferences), preferences)
@@ -126,6 +143,80 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
     patch.setattr(webchat_event, "db_helper", db)
     patch.setattr(star_handlers_registry, "_handlers", [])
     patch.setattr(star_handlers_registry, "star_handlers_map", {})
+    patch.setitem(
+        star_map,
+        "t18_completion_hook",
+        SimpleNamespace(name="t18_completion_hook", activated=True, reserved=False),
+    )
+
+    def record_hook(kind, response=None):
+        """Persist the observable effects of the real plugin callbacks.
+
+        Args:
+            kind: Hook event delivered by the production dispatcher.
+            response: Effective provider response, when supplied.
+        """
+        with (folder / "hooks.jsonl").open("a", encoding="utf-8") as log:
+            log.write(
+                json.dumps(
+                    {
+                        "kind": kind,
+                        "text": response.result_chain.get_plain_text()
+                        if response and response.result_chain
+                        else None,
+                    }
+                )
+                + "\n"
+            )
+
+    async def request_hook(event, request):
+        """Observe the effective request hook through the production dispatcher.
+
+        Args:
+            event: Team WebChat event.
+            request: Shared provider input before its durable checkpoint.
+        """
+        record_hook("request")
+
+    async def response_hook(event, response):
+        """Transform a complete response as a normal installed plugin would.
+
+        Args:
+            event: Team WebChat event.
+            response: Shared effective provider response.
+        """
+        if response.role == "assistant":
+            from astrbot.core.message.components import Plain
+
+            response.result_chain.chain.append(Plain("[Checked by completion hook]"))
+            record_hook("response", response)
+
+    async def done_hook(event, run_context, response):
+        """Observe agent completion after the response transformation.
+
+        Args:
+            event: Team WebChat event.
+            run_context: Actual Agent execution context.
+            response: Shared effective provider response.
+        """
+        if response.role == "assistant":
+            record_hook("done", response)
+
+    for hook_type, callback in (
+        (EventType.OnLLMRequestEvent, request_hook),
+        (EventType.OnLLMResponseEvent, response_hook),
+        (EventType.OnAgentDoneEvent, done_hook),
+    ):
+        star_handlers_registry._handlers.append(
+            StarHandlerMetadata(
+                event_type=hook_type,
+                handler_full_name="t18_completion_hook_" + callback.__name__,
+                handler_name=callback.__name__,
+                handler_module_path="t18_completion_hook",
+                handler=callback,
+                event_filters=[],
+            )
+        )
     queue = WebChatQueueMgr()
     patch.setattr(webchat_event, "webchat_queue_mgr", queue)
     adapter = webchat_adapter.WebChatAdapter(
@@ -168,7 +259,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                     "name": "Remote researcher",
                     "prompt": "Check evidence.",
                     "runner_capabilities": []
-                    if window == "chat_unknown"
+                    if window in {"chat_unknown", "chat_eof", "chat_result_saved"}
+                    or scenario.startswith("dashscope:")
                     else ["remote_query"],
                 },
             },
@@ -197,12 +289,18 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                     "request"
                     if window == "pre_create"
                     else "remote_result"
-                    if window == "result_saved"
+                    if window in {"result_saved", "end_success", "chat_result_saved"}
                     else "remote_running"
                 ):
                     if window == "identity_save_failure":
                         raise RuntimeError("Injected remote identity storage failure")
-                    if window in {"identity_missing", "chat_unknown"}:
+                    if window == "end_interrupted" or window in {
+                        "identity_missing",
+                        "chat_unknown",
+                        "workflow_eof",
+                        "chat_eof",
+                        "partial_eof",
+                    }:
                         continue
                     session.info["remote_boundary"] = row.run_id
 
@@ -276,7 +374,13 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             (folder / "started.json").write_text(
                 json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
             )
-            if window == "identity_save_failure":
+            if window in {
+                "identity_save_failure",
+                "workflow_eof",
+                "chat_eof",
+                "end_interrupted",
+                "partial_eof",
+            }:
                 for _ in range(500):
                     current = await service.get_run("alice", run["run_id"])
                     if current["status"] != "running":

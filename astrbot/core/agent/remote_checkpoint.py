@@ -160,6 +160,25 @@ class RemoteAgentCheckpoint:
                     data.get("total_tokens"), int
                 ):
                     usage = {"total_tokens": data["total_tokens"]}
+                elif self.capabilities["type"] == "dify" and raw.get("terminal"):
+                    tokens = raw["terminal"].get("metadata", {}).get("usage") or {}
+                    usage = {
+                        target: tokens[source]
+                        for source, target in (
+                            ("prompt_tokens", "input_tokens"),
+                            ("completion_tokens", "output_tokens"),
+                            ("total_tokens", "total_tokens"),
+                        )
+                        if isinstance(tokens.get(source), int)
+                    }
+                elif self.capabilities["type"] == "dashscope":
+                    models = (raw.get("usage") or {}).get("models") or []
+                    usage = {
+                        field: sum(model[field] for model in models)
+                        for field in ("input_tokens", "output_tokens")
+                        if models
+                        and all(isinstance(model.get(field), int) for model in models)
+                    }
                 elif self.capabilities["type"] == "coze":
                     tokens = data.get("usage") or {}
                     usage = {

@@ -167,16 +167,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                 self.final_llm_resp is not None
                 and self.final_llm_resp.result_chain is not None
             )
-            self._transition_state(AgentState.DONE)
-            if self.streaming:
-                yield AgentResponse(
-                    type="streaming_delta",
-                    data=AgentResponseData(chain=self.final_llm_resp.result_chain),
-                )
-            yield AgentResponse(
-                type="llm_result",
-                data=AgentResponseData(chain=self.final_llm_resp.result_chain),
-            )
+            async for response in self._finish_recovered_response(self.final_llm_resp):
+                yield response
             return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
@@ -190,6 +182,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
             default="",
         )
         result = ""
+        completed = False
+        terminal = None
 
         # 处理图片上传
         files_payload = []
@@ -253,6 +247,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                 ),
                             )
                     elif chunk["event"] == "message_end":
+                        terminal = chunk
+                        completed = True
                         logger.debug("Dify message end")
                         break
                     elif chunk["event"] == "error":
@@ -323,9 +319,12 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     f"Dify 工作流的输出不包含指定的键名：{self.workflow_output_key}"
                                 )
                             result = chunk
+                            completed = True
             case _:
                 raise Exception(f"未知的 Dify API 类型：{self.api_type}")
 
+        if self.remote_checkpoint and not completed:
+            raise ValueError("Dify stream ended without a confirmed complete result")
         if not result:
             logger.warning("Dify 请求结果为空，请查看 Debug 日志。")
 
@@ -335,7 +334,10 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         # 创建最终响应
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
         if self.remote_checkpoint:
-            await self.remote_checkpoint.complete(self.final_llm_resp, result)
+            await self.remote_checkpoint.complete(
+                self.final_llm_resp,
+                {"answer": result, "terminal": terminal} if terminal else result,
+            )
         self._transition_state(AgentState.DONE)
 
         try:

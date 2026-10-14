@@ -610,7 +610,11 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
 
 
 def test_dashscope_retry_policy_is_local_to_the_team_session(tmp_path):
-    """Use the real SDK to contrast one team delivery with ordinary chat retries."""
+    """Use the real SDK to contrast one team delivery with ordinary chat retries.
+
+    Args:
+        tmp_path: Isolated directory storing the observed request ledger.
+    """
     import requests
     from dashscope import Application
 

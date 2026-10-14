@@ -15,6 +15,8 @@ Tool and skill availability follows the selected profile's enabled plugins, and 
 
 The preview distinguishes internal checkpoints, remote queries and an external call boundary. Remote executors cannot execute AstrBot's local tools, skills or knowledge bases, or enforce local `max_steps`, tool timeout or context-length overrides. Explicit unsupported requirements receive field errors. Autonomous coordinators require local task/team tools. Missing remote credentials are reported against the profile without exposing their values. Unsupported model-level token allowances and output ceilings are rejected; outer call-step limits still apply.
 
+Dify, Coze and DashScope Application receive the frozen role/persona framing as a prefix to the supported task or user input. The remote application's own system instructions remain configured on that service.
+
 ![Role configuration and missing-resource diagnostics in the actual WebUI](/images/agent-team-roles-en.jpg)
 
 ![Required internal recovery rejected for an actual remote executor](/images/agent-teams-runner-role-en.jpg)

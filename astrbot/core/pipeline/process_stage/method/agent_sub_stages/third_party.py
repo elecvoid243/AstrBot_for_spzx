@@ -364,6 +364,16 @@ class ThirdPartyAgentSubStage(Stage):
                 req.system_prompt = event.get_extra("team_context", "")
                 if await call_event_hook(event, EventType.OnLLMRequestEvent, req):
                     return
+                if (
+                    self.runner_type in {"dify", "coze", "dashscope"}
+                    and req.system_prompt
+                ):
+                    # These services accept task input rather than a local system
+                    # instruction. Freeze the framed input once, before dispatch.
+                    req.prompt = req.system_prompt + "\n\n" + (req.prompt or "")
+                    if self.runner_type == "coze":
+                        # Coze additional_messages only accepts user/assistant.
+                        req.system_prompt = ""
             remote_checkpoint = RemoteAgentCheckpoint(
                 execution, self.conf["agent_runner"], req
             )

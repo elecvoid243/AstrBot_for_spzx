@@ -58,6 +58,15 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             ledger.append({"method": "POST", "path": self.path, "body": body})
+            if runner == "coze" and any(
+                message["role"] not in {"user", "assistant"}
+                for message in body["additional_messages"]
+            ):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"code":400,"msg":"Unsupported message role"}')
+                return
             if runner == "deerflow" and self.path == "/api/langgraph/threads":
                 self.send_response(201)
                 self.send_header("Content-Type", "application/json")
@@ -315,6 +324,19 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         )
         assert restarted.returncode == 0, restarted.stdout + restarted.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
+        if runner == "coze":
+            messages = ledger[0]["body"]["additional_messages"]
+            assert all(message["role"] in {"user", "assistant"} for message in messages)
+            assert "Check evidence." in messages[-1]["content"]
+            assert "Find the original evidence." in messages[-1]["content"]
+        elif runner == "dify":
+            task_input = (
+                ledger[0]["body"]["query"]
+                if scenario.startswith("chat_")
+                else ledger[0]["body"]["inputs"]["astrbot_text_query"]
+            )
+            assert "Check evidence." in task_input
+            assert "Find the original evidence." in task_input
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
         assert "local-only-key" not in json.dumps(evidence["after"]["snapshot"])
         assert (
@@ -385,6 +407,8 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             assert [entry["method"] for entry in ledger] == ["POST"]
             return
         if runner == "dashscope":
+            assert "Check evidence." in ledger[0]["body"]["input"]["prompt"]
+            assert "Find the original evidence." in ledger[0]["body"]["input"]["prompt"]
             assert evidence["after"]["status"] == "awaiting_result"
             assert evidence["after"]["usage"]["tokens"]["reported"] == (
                 None

@@ -581,6 +581,7 @@
     "stopped": "Stopped by limit",
     "calls": "Admitted calls",
     "historicalSteps": "Historical checkpoint steps",
+    "historicalModelCalls": "Historical checkpoint model calls",
     "historicalUnknown": "Consumption before usage tracking remains unknown. Historical responses are not admission receipts; reported totals cover the metered portion.",
     "historicalResponses": "Saved historical model responses",
     "details": "Call details",

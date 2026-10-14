@@ -16,9 +16,20 @@
           }}
         </p>
         <p v-if="run.usage" class="text-caption mt-2">
-          {{ tm("child.modelCalls") }}:
-          {{ run.usage.model_calls ?? tm("child.unknownUsage") }} ·
-          {{ tm("child.steps") }}:
+          {{
+            tm(
+              run.usage.count_basis === "checkpoint"
+                ? "usage.historicalModelCalls"
+                : "child.modelCalls",
+            )
+          }}: {{ run.usage.model_calls ?? tm("child.unknownUsage") }} ·
+          {{
+            tm(
+              run.usage.count_basis === "checkpoint"
+                ? "usage.historicalSteps"
+                : "child.steps",
+            )
+          }}:
           {{ run.usage.steps_used ?? tm("child.unknownUsage") }}
         </p>
       </div>

@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
-from sqlalchemy import func, or_, true
+from sqlalchemy import case, func, literal, or_, true
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -879,20 +879,22 @@ class WorkflowService:
         )
         if not role["ready"]:
             raise RoleAssetError("Role resources are not ready", role["issues"])
+        if role["effective"]["runner"]["type"] != "local":
+            for limit in ("token_budget", "max_output_tokens"):
+                if (definition.get("limits") or {}).get(limit) is not None:
+                    raise RoleAssetError(
+                        "Remote executor cannot enforce this model limit",
+                        [
+                            {
+                                "path": "definition.limits." + limit,
+                                "code": "INCOMPATIBLE",
+                                "message": f"{role['effective']['runner']['label']} does not provide model-level {limit} enforcement",
+                            }
+                        ],
+                    )
         profile_id = role["installation"]["profile_id"]
         core = self.roles.core_lifecycle
         profile = core.astrbot_config_mgr.confs[profile_id] if core else {}
-        if profile.get("agent_runner", {}).get("runner_type", "local") != "local":
-            raise RoleAssetError(
-                "Single-task workflows require the built-in Agent executor",
-                [
-                    {
-                        "path": "installation.profile_id",
-                        "code": "INCOMPATIBLE",
-                        "message": "Explicit result submission requires the built-in Agent executor",
-                    }
-                ],
-            )
         # Credentials stay in the local provider manager. Freeze the pipeline's
         # behavior settings, never provider/platform definitions or dashboard auth.
         profile_snapshot = copy.deepcopy(
@@ -902,6 +904,17 @@ class WorkflowService:
                 if key not in {"provider", "provider_sources", "platform", "dashboard"}
             }
         )
+        if profile_snapshot.get("agent_runner", {}).get("runner_type") != "local":
+            for credential in (
+                "dify_api_key",
+                "coze_api_key",
+                "dashscope_api_key",
+                "deerflow_api_key",
+                "deerflow_auth_header",
+            ):
+                profile_snapshot.get("agent_runner", {}).get("config", {}).pop(
+                    credential, None
+                )
         effective = copy.deepcopy(role["effective"])
         persona = next(
             (
@@ -931,6 +944,71 @@ class WorkflowService:
             "profile": profile_snapshot,
             "persona": persona,
             "member": member,
+        }
+
+    async def check_readiness(
+        self, username: str, asset_id: str, version: int | None = None
+    ) -> dict:
+        """Check local capabilities using the exact same resolution as launch.
+
+        Args:
+            username: Authenticated asset owner.
+            asset_id: Saved team or workflow identity.
+            version: Exact version, or latest when omitted.
+
+        Returns:
+            Readiness, field diagnostics and effective runner information.
+            No run, member conversation or external operation is created.
+
+        Raises:
+            RoleAssetError: The saved asset is inaccessible.
+        """
+        asset = await self.get_asset(username, asset_id, version)
+        definition = asset["definition"]
+        try:
+            if definition.get("kind") == "autonomous" or "tasks" in definition:
+                frozen = await self._freeze_graph(
+                    username,
+                    asset,
+                    WorkflowStartRequest(
+                        version=asset["version"],
+                        inputs={
+                            name: "{" + name + "}"
+                            for name in definition.get("required_inputs", [])
+                        },
+                    ),
+                )
+                members = [
+                    *frozen["members"].values(),
+                    *frozen.get("allowed_roles", {}).values(),
+                ]
+            else:
+                members = [await self._freeze_member(username, definition)]
+        except RoleAssetError as exc:
+            return {
+                "ready": False,
+                "issues": exc.fields
+                or [
+                    {
+                        "path": "definition",
+                        "code": "INCOMPATIBLE",
+                        "message": str(exc),
+                    }
+                ],
+                "roles": [],
+            }
+        return {
+            "ready": True,
+            "issues": [],
+            "roles": [
+                {
+                    "role_id": member["role"]["role_id"],
+                    "version": member["role"]["version"],
+                    "name": member["role"]["definition"]["name"],
+                    "runner": member["effective"]["runner"],
+                }
+                for member in members
+            ],
         }
 
     async def get_run(
@@ -1054,6 +1132,15 @@ class WorkflowService:
                 if include_details
                 else []
             )
+            remote_run_ids = [
+                item.run_id
+                for item in rows
+                if include_details
+                and item.snapshot.get("effective", {})
+                .get("runner", {})
+                .get("type", "local")
+                != "local"
+            ]
             checkpoints = {
                 item.run_id: item
                 for item in (
@@ -1064,6 +1151,36 @@ class WorkflowService:
                             col(AgentWorkflowCheckpoint.invocation_id),
                             col(AgentWorkflowCheckpoint.started_tools),
                             col(AgentWorkflowCheckpoint.result_submission),
+                            (
+                                case(
+                                    (
+                                        col(AgentWorkflowCheckpoint.run_id).in_(
+                                            remote_run_ids
+                                        ),
+                                        AgentWorkflowCheckpoint.data["remote"][
+                                            "runner"
+                                        ],
+                                    ),
+                                    else_=None,
+                                )
+                                if remote_run_ids
+                                else literal(None)
+                            ).label("remote_runner"),
+                            (
+                                case(
+                                    (
+                                        col(AgentWorkflowCheckpoint.run_id).in_(
+                                            remote_run_ids
+                                        ),
+                                        AgentWorkflowCheckpoint.data["remote"][
+                                            "identity"
+                                        ],
+                                    ),
+                                    else_=None,
+                                )
+                                if remote_run_ids
+                                else literal(None)
+                            ).label("remote_identity"),
                             AgentWorkflowCheckpoint.data["step_budget_used"]
                             .as_integer()
                             .label("steps_used"),
@@ -1295,12 +1412,21 @@ class WorkflowService:
                                 == current.snapshot.get("member", {}).get("member_id")
                             ],
                             "recovery": {
-                                "capability": "saved_model_response"
+                                "capability": boundary.remote_runner["recovery"]
+                                if boundary and boundary.remote_runner
+                                else "saved_model_response"
                                 if "member" in current.snapshot
                                 else "task_boundaries",
                                 "available": current.status
                                 in {"interrupted", "failed", "blocked"}
                                 and boundary is not None
+                                and (
+                                    not boundary.remote_runner
+                                    or boundary.phase in {"request", "remote_result"}
+                                    or boundary.remote_identity is not None
+                                    and "remote_query"
+                                    in boundary.remote_runner["capabilities"]
+                                )
                                 and (
                                     not boundary.started_tools
                                     or pending_calls
@@ -1329,7 +1455,21 @@ class WorkflowService:
                                 "model_calls": boundary.model_calls
                                 if boundary
                                 else None,
-                                "reason": "Started tools require confirmation before recovery."
+                                **(
+                                    {"remote_identity": boundary.remote_identity}
+                                    if boundary and boundary.remote_runner
+                                    else {}
+                                ),
+                                "reason": "Remote result requires confirmation; no reliable run identity/query is available."
+                                if boundary
+                                and boundary.remote_runner
+                                and boundary.phase not in {"request", "remote_result"}
+                                and (
+                                    boundary.remote_identity is None
+                                    or "remote_query"
+                                    not in boundary.remote_runner["capabilities"]
+                                )
+                                else "Started tools require confirmation before recovery."
                                 if boundary
                                 and (
                                     unknown_calls
@@ -2152,22 +2292,37 @@ class WorkflowService:
                 )
             previous = receipt.data
             reported = (
-                report.input_tokens is not None and report.output_tokens is not None
+                report.total_tokens is not None
+                or report.input_tokens is not None
+                and report.output_tokens is not None
             )
-            if previous.get("report") == report.model_dump():
+            report_data = report.model_dump(
+                exclude={"total_tokens"} if report.total_tokens is None else set()
+            )
+            if (
+                report.total_tokens is not None
+                and report.input_tokens is not None
+                and report.output_tokens is not None
+                and report.total_tokens != report.input_tokens + report.output_tokens
+            ):
+                raise RoleAssetError(
+                    "Reported total tokens do not match token components", status=409
+                )
+            if previous.get("report") == report_data:
                 return {**receipt.model_dump(mode="json", exclude={"data"}), **previous}
             if previous["quality"] == "reported":
                 raise RoleAssetError("Reported usage cannot be replaced", status=409)
             receipt.data = {
                 **previous,
-                "report": report.model_dump(),
+                "report": report_data,
                 "quality": "reported"
                 if reported
                 else "estimated"
                 if report.estimated_tokens is not None
                 else "unknown",
-                "reported_tokens": (report.input_tokens or 0)
-                + (report.output_tokens or 0)
+                "reported_tokens": report.total_tokens
+                if report.total_tokens is not None
+                else (report.input_tokens or 0) + (report.output_tokens or 0)
                 if reported
                 else None,
                 "estimated_tokens": None
@@ -2870,6 +3025,22 @@ class WorkflowService:
                 frozen = await self._freeze_member(
                     username, task.model_dump(exclude_none=True)
                 )
+                if (
+                    team
+                    and task.id == "coordinator"
+                    and "task_tools"
+                    not in frozen["effective"]["runner"]["capabilities"]
+                ):
+                    raise RoleAssetError(
+                        "Coordinator runner cannot execute team management tools",
+                        [
+                            {
+                                "path": "definition.coordinator",
+                                "code": "INCOMPATIBLE",
+                                "message": f"{frozen['effective']['runner']['label']} does not support task_tools",
+                            }
+                        ],
+                    )
                 role_counts[task.role_id] = role_counts.get(task.role_id, 0) + 1
                 members[task.member] = frozen
         for frozen in members.values():
@@ -2947,6 +3118,39 @@ class WorkflowService:
                 **frozen,
                 "result_task_id": ref["result_task_id"],
             }
+        if definition.limits:
+            remote_members = [*members.values(), *allowed_roles.values()]
+            scopes = [*child_assets.values(), *allowed_workflows.values()]
+            while scopes:
+                scope = scopes.pop()
+                remote_members.extend(
+                    [
+                        *scope["members"].values(),
+                        *scope.get("allowed_roles", {}).values(),
+                    ]
+                )
+                scopes.extend(
+                    [
+                        *scope.get("child_assets", {}).values(),
+                        *scope.get("allowed_workflows", {}).values(),
+                    ]
+                )
+            if any(
+                member["effective"]["runner"]["type"] != "local"
+                for member in remote_members
+            ):
+                for limit in ("token_budget", "max_output_tokens"):
+                    if getattr(definition.limits, limit) is not None:
+                        raise RoleAssetError(
+                            "Remote executor cannot enforce this model limit",
+                            [
+                                {
+                                    "path": "definition.limits." + limit,
+                                    "code": "INCOMPATIBLE",
+                                    "message": f"A remote executor in this scope does not provide model-level {limit} enforcement",
+                                }
+                            ],
+                        )
         return {
             "engine": "graph_v2",
             "usage_protocol": 1,
@@ -5633,7 +5837,10 @@ class WorkflowService:
                 raise RoleAssetError("No resumable execution checkpoint", status=409)
             checkpoint.data = copy.deepcopy(checkpoint.data)
             calls = checkpoint.data.get("tool_calls", [])
-            if "tool_result_files" not in checkpoint.data:
+            if (
+                "remote" not in checkpoint.data
+                and "tool_result_files" not in checkpoint.data
+            ):
                 # Older request boundaries keep prior raw results in durable calls.
                 messages = [
                     message
@@ -5684,6 +5891,19 @@ class WorkflowService:
             unknown = [
                 call for call in calls if call["status"] in {"started", "unknown"}
             ]
+            remote = checkpoint.data.get("remote")
+            if (
+                remote
+                and checkpoint.phase not in {"request", "remote_result"}
+                and (
+                    not remote.get("identity")
+                    or "remote_query" not in remote["runner"]["capabilities"]
+                )
+            ):
+                raise RoleAssetError(
+                    "Remote result requires confirmation; no reliable run identity/query is available",
+                    status=409,
+                )
             if (
                 checkpoint.started_tools
                 and not checkpoint.result_submission
@@ -6765,8 +6985,25 @@ class WorkflowService:
                 """
                 nonlocal checkpoint_error
                 try:
+                    reporting_execution_id = execution_id
+                    if (
+                        checkpoint
+                        and checkpoint.get("remote", {}).get("receipt_id") == receipt_id
+                    ):
+                        async with self.db.get_db() as session:
+                            original = await session.get(AgentWorkflowUsage, receipt_id)
+                            if (
+                                original is None
+                                or original.run_id != run_id
+                                or original.attempt_id != state["attempt_id"]
+                            ):
+                                raise RoleAssetError(
+                                    "Remote usage belongs to another attempt",
+                                    status=409,
+                                )
+                            reporting_execution_id = original.execution_id
                     return await self.report_usage(
-                        username, receipt_id, execution_id, payload
+                        username, receipt_id, reporting_execution_id, payload
                     )
                 except Exception as exc:
                     checkpoint_error = "Failed to save usage report"
@@ -6856,6 +7093,29 @@ class WorkflowService:
                 if not turn.done():
                     turn.cancel()
                 await asyncio.gather(turn, return_exceptions=True)
+            if effective.get("runner", {}).get("type") == "dify":
+                async with self.db.get_db() as session:
+                    saved_remote = await session.get(AgentWorkflowCheckpoint, run_id)
+                    remote_data = (
+                        copy.deepcopy(saved_remote.data) if saved_remote else {}
+                    )
+                if (
+                    remote_data.get("phase") == "remote_result"
+                    and snapshot["profile"]["agent_runner"]["config"].get(
+                        "dify_api_type"
+                    )
+                    == "workflow"
+                ):
+                    output_key = snapshot["profile"]["agent_runner"]["config"].get(
+                        "dify_workflow_output_key", "astrbot_wf_output"
+                    )
+                    output = remote_data["remote"]["result"]["data"]["outputs"].get(
+                        output_key
+                    )
+                    if isinstance(output, dict):
+                        # Only the declared structured remote output is a result
+                        # submission. Chat text or displayed JSON is not one.
+                        await accept(output)
             outcome["response"] = {
                 "text": reply,
                 "parts": parts,

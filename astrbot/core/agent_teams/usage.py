@@ -33,6 +33,7 @@ class UsageReport(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     estimated_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
 
 
 def summarize_usage(receipts: list[dict], limits: dict, details: bool) -> dict:

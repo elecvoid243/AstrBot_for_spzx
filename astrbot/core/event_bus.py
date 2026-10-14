@@ -105,6 +105,22 @@ class EventBus:
                 frozen_config.__dict__.update(vars(scheduler.ctx.astrbot_config))
                 frozen_config.update(copy.deepcopy(dict(scheduler.ctx.astrbot_config)))
                 frozen_config.update(copy.deepcopy(binding.profile_snapshot))
+                runner = frozen_config.get("agent_runner", {})
+                if runner.get("runner_type") != "local":
+                    live_runner = self.astrbot_config_mgr.confs[
+                        binding.config_id or conf_id
+                    ].get("agent_runner", {})
+                    for credential in (
+                        "dify_api_key",
+                        "coze_api_key",
+                        "dashscope_api_key",
+                        "deerflow_api_key",
+                        "deerflow_auth_header",
+                    ):
+                        if credential in live_runner.get("config", {}):
+                            runner.setdefault("config", {})[credential] = live_runner[
+                                "config"
+                            ][credential]
                 scheduler = PipelineScheduler(
                     PipelineContext(
                         astrbot_config=frozen_config,

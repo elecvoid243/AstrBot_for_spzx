@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from astrbot.core import logger
+from astrbot.core.agent.remote_checkpoint import RemoteAgentCheckpoint
 from astrbot.core.agent.runners.coze.coze_agent_runner import CozeAgentRunner
 from astrbot.core.agent.runners.dashscope.dashscope_agent_runner import (
     DashscopeAgentRunner,
@@ -13,6 +14,7 @@ from astrbot.core.agent.runners.deerflow.deerflow_agent_runner import (
     DeerFlowAgentRunner,
 )
 from astrbot.core.agent.runners.dify.dify_agent_runner import DifyAgentRunner
+from astrbot.core.agent_team_execution import CheckpointRecoveryError
 from astrbot.core.astr_agent_hooks import MAIN_AGENT_HOOKS
 from astrbot.core.astr_main_agent import _matches_provider_wake_prefix
 from astrbot.core.message.components import Image, Record
@@ -72,6 +74,11 @@ async def run_third_party_agent(
                 if stream_to_general:
                     yield resp.data["chain"], False
             elif resp.type == "err":
+                remote = getattr(runner, "remote_checkpoint", None)
+                if remote and remote.binding.recovery_error is None:
+                    remote.binding.recovery_error = CheckpointRecoveryError(
+                        "Remote execution did not return a confirmed complete result; inspect the original remote run"
+                    )
                 yield resp.data["chain"], True
     except Exception as e:
         logger.error(f"Third party agent runner error: {e}")
@@ -341,8 +348,26 @@ class ThirdPartyAgentSubStage(Stage):
         custom_error_message = await self._resolve_persona_custom_error_message(event)
         set_persona_custom_error_message_on_event(event, custom_error_message)
 
-        # call event hook
-        if await call_event_hook(event, EventType.OnLLMRequestEvent, req):
+        execution = event.get_extra("agent_team_execution")
+        remote_checkpoint = None
+        if execution is not None and execution.save_checkpoint is not None:
+            if execution.checkpoint:
+                saved_request = execution.checkpoint.get("request")
+                if saved_request is None:
+                    execution.recovery_error = CheckpointRecoveryError(
+                        "Saved execution does not contain remote request context"
+                    )
+                    raise execution.recovery_error
+                for field, value in saved_request.items():
+                    setattr(req, field, value)
+            else:
+                req.system_prompt = event.get_extra("team_context", "")
+                if await call_event_hook(event, EventType.OnLLMRequestEvent, req):
+                    return
+            remote_checkpoint = RemoteAgentCheckpoint(
+                execution, self.conf["agent_runner"], req
+            )
+        elif await call_event_hook(event, EventType.OnLLMRequestEvent, req):
             return
 
         if self.runner_type == "dify":
@@ -400,6 +425,11 @@ class ThirdPartyAgentSubStage(Stage):
                 agent_hooks=MAIN_AGENT_HOOKS,
                 provider_config=self.runner_config,
                 streaming=streaming_response,
+                **(
+                    {"remote_checkpoint": remote_checkpoint}
+                    if remote_checkpoint
+                    else {}
+                ),
             )
 
             if streaming_used:

@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   list: vi.fn(),
   save: vi.fn(),
   start: vi.fn(),
+  readiness: vi.fn(),
   runs: vi.fn(),
   run: vi.fn(),
   artifact: vi.fn(),
@@ -1645,6 +1646,7 @@ describe("single-task workflow workspace", () => {
   });
   beforeEach(() => {
     vi.resetAllMocks();
+    api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
     api.list.mockResolvedValue({ assets: [asset] });
     roles.list.mockResolvedValue({
       roles: [
@@ -1754,6 +1756,48 @@ describe("single-task workflow workspace", () => {
     expect(api.start).not.toHaveBeenCalled();
   });
 
+  it("blocks a launch when local executor readiness is incompatible", async () => {
+    api.readiness.mockResolvedValue({
+      ready: false,
+      roles: [],
+      issues: [
+        {
+          path: "definition.runner_capabilities.0",
+          code: "INCOMPATIBLE",
+          message: "dify (workflow) does not support internal_checkpoint",
+        },
+      ],
+    });
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "assets" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "v2.start")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      wrapper.get('[data-testid="runner-readiness-blocked"]').text(),
+    ).toContain("definition.runner_capabilities.0");
+    expect(wrapper.text()).toContain(
+      "dify (workflow) does not support internal_checkpoint",
+    );
+    const launch = wrapper
+      .findAll(".dialog button")
+      .find((button) => button.text() === "v2.start")!;
+    expect(launch.attributes("disabled")).toBeDefined();
+    await launch.trigger("click");
+    expect(api.start).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("saves a pinned asset and presents required input errors before starting a run", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -1786,6 +1830,7 @@ describe("single-task workflow workspace", () => {
       .findAll("button")
       .find((button) => button.text() === "v2.start")!
       .trigger("click");
+    await flushPromises();
     api.start.mockRejectedValueOnce({
       response: {
         data: {

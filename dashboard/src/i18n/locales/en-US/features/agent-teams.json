@@ -436,7 +436,10 @@
       "tool_result": "Tool result saved; recover without repeating its external effect.",
       "tool_progress": "Tool output saved; execution completion is not confirmed.",
       "tools_applied": "Tool results applied to context; continue the next model step.",
-      "none": "No resumable execution checkpoint."
+      "none": "No resumable execution checkpoint.",
+      "remote_started": "Remote request may have started; identity/result must be confirmed",
+      "remote_running": "Original remote identity saved; query that run",
+      "remote_result": "Complete original remote response saved"
     }
   },
   "controls": {
@@ -595,6 +598,26 @@
       "estimated": "Estimated",
       "unknown": "Unknown",
       "in_flight": "In flight"
+    }
+  },
+  "runner": {
+    "title": "Executor",
+    "requirements": "Required executor capabilities",
+    "identity": "Original remote run identity",
+    "query": "Query original remote run",
+    "check": "Check readiness",
+    "checking": "Checking local dependencies and executor capabilities…",
+    "boundaries": "Remote queries do not restore internal remote tools. Plugin hooks and tool-internal calls are covered only by boundaries actually saved by AstrBot. Thinking is shown only when supplied by the provider.",
+    "recovery": {
+      "internal_checkpoint": "Internal model and tool checkpoints",
+      "remote_query": "Query the original remote run; no internal tool checkpoint guarantee",
+      "external_boundary": "External call boundary only; an interrupted result requires confirmation"
+    },
+    "capabilities": {
+      "internal_checkpoint": "Internal invocation checkpoints",
+      "remote_query": "Original remote run query",
+      "task_tools": "Local task and team tools",
+      "task_result": "Explicit task result submission"
     }
   }
 }

@@ -46,6 +46,7 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         self.api_key = provider_config.get("dashscope_api_key", "")
         if not self.api_key:
@@ -353,6 +354,11 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         # 创建最终响应
         chain = MessageChain(chain=[Comp.Plain(output_text)])
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.complete(
+                self.final_llm_resp,
+                {"text": output_text, "doc_references": doc_references},
+            )
         self._transition_state(AgentState.DONE)
 
         try:
@@ -367,7 +373,27 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         )
 
     async def _execute_dashscope_request(self):
-        """执行 Dashscope 请求的核心逻辑"""
+        """Execute an Application call within its external recovery boundary.
+
+        Yields:
+            Normal Application output or a previously saved complete response.
+        """
+        if self.remote_checkpoint:
+            restored, _ = await self.remote_checkpoint.restore(None)
+            if restored:
+                assert restored.result_chain is not None
+                self.final_llm_resp = restored
+                self._transition_state(AgentState.DONE)
+                if self.streaming:
+                    yield AgentResponse(
+                        type="streaming_delta",
+                        data=AgentResponseData(chain=restored.result_chain),
+                    )
+                yield AgentResponse(
+                    type="llm_result",
+                    data=AgentResponseData(chain=restored.result_chain),
+                )
+                return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
         image_urls = self.req.image_urls or []
@@ -387,6 +413,8 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
             payload["incremental_output"] = False
 
         # 发起请求
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
         partial = functools.partial(Application.call, **payload)
         response = await asyncio.get_running_loop().run_in_executor(None, partial)
 

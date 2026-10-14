@@ -1,36 +1,36 @@
 <template>
   <section :aria-label="tm('roles.title')">
     <div class="d-flex align-center flex-wrap ga-3 mb-4">
-      <h2 class="text-h5">{{ tm('roles.title') }}</h2>
+      <h2 class="text-h5">{{ tm("roles.title") }}</h2>
       <v-btn
         data-testid="new-role"
         variant="tonal"
         color="primary"
         @click="edit()"
-        >{{ tm('roles.create') }}</v-btn
+        >{{ tm("roles.create") }}</v-btn
       >
       <v-btn variant="text" :loading="loading" @click="load">{{
-        tm('page.refresh')
+        tm("page.refresh")
       }}</v-btn>
     </div>
-    <p class="text-body-2 mb-4">{{ tm('roles.intro') }}</p>
+    <p class="text-body-2 mb-4">{{ tm("roles.intro") }}</p>
     <v-alert v-if="loadError" type="error" variant="tonal" class="mb-4">{{
       loadError
     }}</v-alert>
-    <p v-if="loading" role="status">{{ tm('roles.loading') }}</p>
-    <p v-else-if="!roles.length && !loadError">{{ tm('roles.empty') }}</p>
+    <p v-if="loading" role="status">{{ tm("roles.loading") }}</p>
+    <p v-else-if="!roles.length && !loadError">{{ tm("roles.empty") }}</p>
     <div class="role-grid">
       <v-card v-for="role in roles" :key="role.role_id" variant="outlined">
         <v-card-text>
           <h3 class="role-name text-h6">{{ role.definition.name }}</h3>
           <p class="text-caption">
-            {{ tm('roles.version') }} {{ role.version }}
+            {{ tm("roles.version") }} {{ role.version }}
           </p>
           <p class="role-name my-2">
             {{
               role.definition.description ||
               role.definition.prompt ||
-              tm('roles.personaPrompt')
+              tm("roles.personaPrompt")
             }}
           </p>
           <v-chip
@@ -39,20 +39,30 @@
             variant="tonal"
           >
             {{
-              role.readiness?.ready ? tm('roles.ready') : tm('roles.pending')
+              role.readiness?.ready ? tm("roles.ready") : tm("roles.pending")
             }}
           </v-chip>
-          <p class="text-caption mt-2">
-            {{ tm('roles.model') }}:
+          <p
+            v-if="
+              role.readiness?.effective?.runner?.type &&
+              role.readiness.effective.runner.type !== 'local'
+            "
+            class="text-caption mt-2"
+          >
+            {{ tm("runner.title") }}:
+            {{ role.readiness.effective.runner.label }}
+          </p>
+          <p v-else class="text-caption mt-2">
+            {{ tm("roles.model") }}:
             {{
               role.installation.bindings[role.definition.model_slot] ||
-              tm('roles.unbound')
+              tm("roles.unbound")
             }}
           </p>
         </v-card-text>
         <v-card-actions
           ><v-btn variant="text" @click="edit(role)">{{
-            tm('roles.edit')
+            tm("roles.edit")
           }}</v-btn></v-card-actions
         >
       </v-card>
@@ -61,7 +71,7 @@
     <v-dialog v-model="dialog" max-width="1100" scrollable :fullscreen="mobile">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          currentId ? tm('roles.edit') : tm('roles.create')
+          currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
         <v-card-text>
           <v-alert
@@ -72,7 +82,7 @@
             >{{ errorMessage }}</v-alert
           >
           <v-alert v-if="currentId" type="info" variant="tonal" class="mb-4">{{
-            tm('roles.versionNotice')
+            tm("roles.versionNotice")
           }}</v-alert>
           <v-select
             v-if="versions.length"
@@ -98,7 +108,7 @@
               <v-expansion-panels v-model="groups" multiple>
                 <v-expansion-panel value="responsibility">
                   <v-expansion-panel-title>{{
-                    tm('roles.responsibility')
+                    tm("roles.responsibility")
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-select
@@ -135,12 +145,12 @@
                         )
                       "
                     />
-                    <p class="text-caption">{{ tm('roles.exportNotice') }}</p>
+                    <p class="text-caption">{{ tm("roles.exportNotice") }}</p>
                   </v-expansion-panel-text>
                 </v-expansion-panel>
                 <v-expansion-panel value="model">
                   <v-expansion-panel-title>{{
-                    tm('roles.model')
+                    tm("roles.model")
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-select
@@ -153,11 +163,17 @@
                       :error-messages="fieldErrors('installation.profile_id')"
                     />
                     <v-text-field
+                      v-if="
+                        (selectedProfile?.runner_type ?? 'local') === 'local'
+                      "
                       v-model="definition.model_slot"
                       :label="tm('roles.modelSlot')"
                       :error-messages="fieldErrors('definition.model_slot')"
                     />
                     <v-select
+                      v-if="
+                        (selectedProfile?.runner_type ?? 'local') === 'local'
+                      "
                       v-model="installation.bindings[definition.model_slot]"
                       :items="catalog.models"
                       item-title="name"
@@ -178,6 +194,28 @@
                       chips
                       :label="tm('roles.modelCapabilities')"
                       :aria-label="tm('roles.modelCapabilities')"
+                    />
+                    <v-select
+                      data-testid="runner-requirements"
+                      v-model="definition.runner_capabilities"
+                      :items="
+                        [
+                          'internal_checkpoint',
+                          'remote_query',
+                          'task_tools',
+                          'task_result',
+                        ].map((value) => ({
+                          value,
+                          title: tm(`runner.capabilities.${value}`),
+                        }))
+                      "
+                      multiple
+                      chips
+                      :label="tm('runner.requirements')"
+                      :aria-label="tm('runner.requirements')"
+                      :error-messages="
+                        fieldErrors('definition.runner_capabilities')
+                      "
                     />
                   </v-expansion-panel-text>
                 </v-expansion-panel>
@@ -229,11 +267,11 @@
                 </v-expansion-panel>
                 <v-expansion-panel value="limits">
                   <v-expansion-panel-title>{{
-                    tm('roles.limits')
+                    tm("roles.limits")
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <p class="text-caption mb-3">
-                      {{ tm('roles.limitsNotice') }}
+                      {{ tm("roles.limitsNotice") }}
                     </p>
                     <v-text-field
                       v-for="field in limitFields"
@@ -250,9 +288,9 @@
               </v-expansion-panels>
             </div>
             <aside :aria-label="tm('roles.effective')">
-              <h3 class="text-h6 mb-3">{{ tm('roles.effective') }}</h3>
+              <h3 class="text-h6 mb-3">{{ tm("roles.effective") }}</h3>
               <p v-if="previewStale" role="status" class="mb-3">
-                {{ tm('roles.previewStale') }}
+                {{ tm("roles.previewStale") }}
               </p>
               <v-btn
                 data-testid="preview-role"
@@ -260,7 +298,7 @@
                 :loading="previewing"
                 :disabled="saving"
                 @click="preview"
-                >{{ tm('roles.preview') }}</v-btn
+                >{{ tm("roles.preview") }}</v-btn
               >
               <div
                 v-for="issue in issues"
@@ -283,11 +321,11 @@
                   class="my-3"
                   :color="resolved.ready ? 'success' : 'warning'"
                   >{{
-                    resolved.ready ? tm('roles.ready') : tm('roles.pending')
+                    resolved.ready ? tm("roles.ready") : tm("roles.pending")
                   }}</v-chip
                 >
                 <div
-                  v-for="(value, field) in resolved.effective"
+                  v-for="(value, field) in effectiveFields"
                   :key="field"
                   class="effective-row"
                 >
@@ -298,16 +336,17 @@
                   <p>
                     {{
                       Array.isArray(value)
-                        ? value.join(', ') || tm('roles.none')
-                        : value ?? tm('roles.none')
+                        ? value.join(", ") || tm("roles.none")
+                        : value ?? tm("roles.none")
                     }}
                   </p>
                 </div>
+                <RunnerCapabilities :runner="resolved.effective.runner" />
                 <p class="text-caption mt-3">
-                  {{ tm('roles.exportPrompt') }}:
+                  {{ tm("roles.exportPrompt") }}:
                   {{
                     resolved.export_content.prompt ||
-                    tm('roles.personaDependency')
+                    tm("roles.personaDependency")
                   }}
                 </p>
               </template>
@@ -316,7 +355,7 @@
         </v-card-text>
         <v-card-actions class="pa-4">
           <v-btn variant="text" :disabled="saving" @click="dialog = false">{{
-            tm('roles.cancel')
+            tm("roles.cancel")
           }}</v-btn>
           <v-spacer />
           <v-btn
@@ -326,7 +365,7 @@
             :loading="saving"
             :disabled="loading || previewing"
             @click="save"
-            >{{ currentId ? tm('roles.saveVersion') : tm('roles.save') }}</v-btn
+            >{{ currentId ? tm("roles.saveVersion") : tm("roles.save") }}</v-btn
           >
         </v-card-actions>
       </v-card>
@@ -335,13 +374,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { useDisplay } from 'vuetify';
-import { roleAssetsApi } from '@/api/roleAssets';
-import { useModuleI18n } from '@/i18n/composables';
-import { extractApiError } from '@/utils/extractApiError';
+import { computed, onMounted, ref, watch } from "vue";
+import { useDisplay } from "vuetify";
+import { roleAssetsApi } from "@/api/roleAssets";
+import { useModuleI18n } from "@/i18n/composables";
+import { extractApiError } from "@/utils/extractApiError";
+import RunnerCapabilities from "./RunnerCapabilities.vue";
 
-const { tm } = useModuleI18n('features/agent-teams');
+const { tm } = useModuleI18n("features/agent-teams");
 const { mobile } = useDisplay();
 const roles = ref<any[]>([]);
 const catalog = ref<Record<string, any[]>>({
@@ -353,7 +393,7 @@ const catalog = ref<Record<string, any[]>>({
   knowledge_bases: [],
 });
 const loading = ref(false);
-const loadError = ref('');
+const loadError = ref("");
 const dialog = ref(false);
 const currentId = ref<string | null>(null);
 const latestVersion = ref<number | null>(null);
@@ -363,35 +403,55 @@ const definition = ref<Record<string, any>>({});
 const installation = ref<{
   profile_id: string;
   bindings: Record<string, string | null>;
-}>({ profile_id: 'default', bindings: {} });
-const resourceFields = ['tools', 'skills', 'knowledge_bases'] as const;
+}>({ profile_id: "default", bindings: {} });
+const resourceFields = ["tools", "skills", "knowledge_bases"] as const;
 const limitFields = [
-  'max_instances',
-  'max_parallel',
-  'max_steps',
-  'max_iterations',
-  'max_depth',
-  'tool_call_timeout',
-  'context_length',
+  "max_instances",
+  "max_parallel",
+  "max_steps",
+  "max_iterations",
+  "max_depth",
+  "tool_call_timeout",
+  "context_length",
 ] as const;
 const modes = ref<Record<string, string>>({});
-const promptMode = ref('inline');
+const promptMode = ref("inline");
 const promptModes = computed(() => [
-  { title: tm('roles.inlinePrompt'), value: 'inline' },
-  { title: tm('roles.personaPrompt'), value: 'persona' },
+  { title: tm("roles.inlinePrompt"), value: "inline" },
+  { title: tm("roles.personaPrompt"), value: "persona" },
 ]);
 const capabilityModes = computed(() => [
-  { title: tm('roles.inherit'), value: 'inherit' },
-  { title: tm('roles.disable'), value: 'none' },
-  { title: tm('roles.override'), value: 'custom' },
+  { title: tm("roles.inherit"), value: "inherit" },
+  { title: tm("roles.disable"), value: "none" },
+  { title: tm("roles.override"), value: "custom" },
 ]);
-const groups = ref<string[]>(['responsibility', 'model']);
+const groups = ref<string[]>(["responsibility", "model"]);
 const resolved = ref<any>(null);
+const effectiveFields = computed(() =>
+  Object.fromEntries(
+    Object.entries(resolved.value?.effective ?? {}).filter(
+      ([field]) =>
+        field !== "runner" &&
+        ((resolved.value?.effective?.runner?.type ?? "local") === "local" ||
+          ![
+            "provider_id",
+            "max_steps",
+            "tool_call_timeout",
+            "context_length",
+          ].includes(field)),
+    ),
+  ),
+);
+const selectedProfile = computed(() =>
+  catalog.value.profiles.find(
+    (profile: any) => profile.id === installation.value.profile_id,
+  ),
+);
 const issues = ref<{ path: string; code?: string; message: string }[]>([]);
 const previewStale = ref(true);
 const previewing = ref(false);
 const saving = ref(false);
-const errorMessage = ref('');
+const errorMessage = ref("");
 let editorRevision = 0;
 watch(
   [definition, installation, modes, promptMode],
@@ -404,7 +464,7 @@ watch(
 
 async function load() {
   loading.value = true;
-  loadError.value = '';
+  loadError.value = "";
   try {
     const [directory, resources] = await Promise.all([
       roleAssetsApi.list(),
@@ -418,7 +478,7 @@ async function load() {
       })),
     );
   } catch (err) {
-    loadError.value = extractApiError(err, tm('roles.loadFailed')).message;
+    loadError.value = extractApiError(err, tm("roles.loadFailed")).message;
   } finally {
     loading.value = false;
   }
@@ -432,28 +492,29 @@ function edit(role?: any) {
   definition.value = role
     ? JSON.parse(JSON.stringify(role.definition))
     : {
-        name: '',
-        description: '',
-        prompt: '',
-        model_slot: 'model',
+        name: "",
+        description: "",
+        prompt: "",
+        model_slot: "model",
         persona_slot: null,
         model_capabilities: [],
+        runner_capabilities: [],
       };
   installation.value = role
     ? JSON.parse(JSON.stringify(role.installation))
-    : { profile_id: 'default', bindings: {} };
-  promptMode.value = definition.value.prompt == null ? 'persona' : 'inline';
+    : { profile_id: "default", bindings: {} };
+  promptMode.value = definition.value.prompt == null ? "persona" : "inline";
   for (const field of resourceFields)
     modes.value[field] =
       definition.value[field] == null
-        ? 'inherit'
+        ? "inherit"
         : definition.value[field].length
-        ? 'custom'
-        : 'none';
+        ? "custom"
+        : "none";
   issues.value = [];
   resolved.value = null;
-  errorMessage.value = '';
-  groups.value = ['responsibility', 'model'];
+  errorMessage.value = "";
+  groups.value = ["responsibility", "model"];
   dialog.value = true;
 }
 
@@ -462,7 +523,7 @@ async function openVersion(version: number) {
   try {
     edit(await roleAssetsApi.get(currentId.value, version));
   } catch (err) {
-    errorMessage.value = extractApiError(err, tm('roles.loadFailed')).message;
+    errorMessage.value = extractApiError(err, tm("roles.loadFailed")).message;
   }
 }
 
@@ -470,19 +531,19 @@ function payload() {
   // Preserve null (inherit), [] (disable), and logical slots (custom) in storage.
   const content: Record<string, any> = {
     ...definition.value,
-    prompt: promptMode.value === 'persona' ? null : definition.value.prompt,
+    prompt: promptMode.value === "persona" ? null : definition.value.prompt,
   };
   content.persona_slot = content.persona_slot?.trim() || null;
   for (const field of resourceFields)
     content[field] =
-      modes.value[field] === 'inherit'
+      modes.value[field] === "inherit"
         ? null
-        : modes.value[field] === 'none'
+        : modes.value[field] === "none"
         ? []
         : content[field] ?? [];
   for (const field of limitFields)
     content[field] =
-      content[field] == null || content[field] === ''
+      content[field] == null || content[field] === ""
         ? null
         : Number.isFinite(Number(content[field]))
         ? Number(content[field])
@@ -511,7 +572,7 @@ async function preview() {
   // Ignore responses for an earlier edit so stale values cannot appear current.
   const revision = editorRevision;
   previewing.value = true;
-  errorMessage.value = '';
+  errorMessage.value = "";
   try {
     const result = await roleAssetsApi.preview(payload());
     if (editorRevision !== revision) return;
@@ -520,7 +581,7 @@ async function preview() {
     previewStale.value = false;
   } catch (err) {
     if (editorRevision !== revision) return;
-    const failure = extractApiError(err, tm('roles.previewFailed'));
+    const failure = extractApiError(err, tm("roles.previewFailed"));
     errorMessage.value = failure.message;
     issues.value = failure.fields;
   } finally {
@@ -530,13 +591,13 @@ async function preview() {
 
 async function save() {
   saving.value = true;
-  errorMessage.value = '';
+  errorMessage.value = "";
   try {
     await roleAssetsApi.save(currentId.value, payload());
     dialog.value = false;
     await load();
   } catch (err) {
-    const failure = extractApiError(err, tm('roles.saveFailed'));
+    const failure = extractApiError(err, tm("roles.saveFailed"));
     errorMessage.value = failure.message;
     issues.value = failure.fields;
   } finally {
@@ -552,24 +613,24 @@ function fieldErrors(path: string) {
 
 function focusIssue(path: string) {
   // Binding errors name logical slots; reveal the section that owns that slot.
-  const field = path.split('.')[1];
-  const group = path.startsWith('installation.bindings.')
+  const field = path.split(".")[1];
+  const group = path.startsWith("installation.bindings.")
     ? resourceFields.find(
         (key) =>
           definition.value[key]?.includes(
-            path.slice('installation.bindings.'.length),
+            path.slice("installation.bindings.".length),
           ),
       ) ||
       (path.endsWith(definition.value.persona_slot)
-        ? 'responsibility'
-        : 'model')
+        ? "responsibility"
+        : "model")
     : resourceFields.includes(field as any)
     ? field
     : limitFields.includes(field as any)
-    ? 'limits'
-    : ['name', 'prompt', 'persona_slot'].includes(field)
-    ? 'responsibility'
-    : 'model';
+    ? "limits"
+    : ["name", "prompt", "persona_slot"].includes(field)
+    ? "responsibility"
+    : "model";
   groups.value = [...new Set([...groups.value, group])];
 }
 

@@ -42,6 +42,14 @@ export const workflowAssetsApi = {
   async runs() {
     return (await httpClient.get("/api/v1/workflow_runs")).data.data;
   },
+  async readiness(assetId: string, version: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/readiness`,
+        { params: { version } },
+      )
+    ).data.data;
+  },
   async run(runId: string) {
     return (
       await httpClient.get(`/api/v1/workflow_runs/${encodeURIComponent(runId)}`)

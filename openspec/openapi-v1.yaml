@@ -6952,6 +6952,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/readiness:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Check Readiness
+      description: "Check required local runner capabilities without creating execution.\n\
+        \nArgs:\n    asset_id: Saved team or workflow identity.\n    version: Pinned\
+        \ definition version, or latest when omitted.\n    username: Authenticated owner.\n\
+        \    service: Shared asset and run service.\n\nReturns:\n    Readiness and field-level\
+        \ blocking reasons used by launch."
+      operationId: check_readiness_api_v1_workflow_assets__asset_id__readiness_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -8776,6 +8815,16 @@ components:
             - audio
             type: string
           title: Model Capabilities
+          type: array
+        runner_capabilities:
+          items:
+            enum:
+            - internal_checkpoint
+            - remote_query
+            - task_tools
+            - task_result
+            type: string
+          title: Runner Capabilities
           type: array
       required:
       - name

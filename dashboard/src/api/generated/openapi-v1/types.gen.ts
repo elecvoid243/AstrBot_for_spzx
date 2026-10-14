@@ -937,6 +937,7 @@ export type RoleDefinition = {
     model_slot?: string;
     persona_slot?: (string | null);
     model_capabilities?: Array<('tool_use' | 'image' | 'audio')>;
+    runner_capabilities?: Array<('internal_checkpoint' | 'remote_query' | 'task_tools' | 'task_result')>;
 };
 
 /**
@@ -5170,3 +5171,16 @@ export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportG
 export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetResponse = (unknown);
 
 export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetError = (HTTPValidationError);
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetResponse = (unknown);
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetError = (HTTPValidationError);

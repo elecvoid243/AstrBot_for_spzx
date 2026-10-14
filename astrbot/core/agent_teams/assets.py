@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 
+from astrbot.core.config.agent_runner import get_agent_runner_capabilities
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import AgentRoleInstallation, AgentRoleVersion
 
@@ -41,6 +42,9 @@ class RoleDefinition(RoleOverrides):
     model_capabilities: list[Literal["tool_use", "image", "audio"]] = Field(
         default_factory=list
     )
+    runner_capabilities: list[
+        Literal["internal_checkpoint", "remote_query", "task_tools", "task_result"]
+    ] = Field(default_factory=list)
 
 
 class RoleInstallation(BaseModel):
@@ -139,6 +143,25 @@ class RoleAssetService:
                 {
                     "id": profile_id,
                     "name": profile_id,
+                    "runner_type": runner.get("runner_type", "local"),
+                    "runner_config": get_agent_runner_capabilities(runner)["binding"],
+                    "runner_issues": [
+                        {
+                            "path": "installation.profile_id.runner_config." + field,
+                            "code": "MISSING",
+                            "message": f"Configure {field} in profile {profile_id}",
+                        }
+                        for field in {
+                            "dify": ["dify_api_key"],
+                            "coze": ["coze_api_key", "bot_id"],
+                            "dashscope": [
+                                "dashscope_api_key",
+                                "dashscope_app_id",
+                                "dashscope_app_type",
+                            ],
+                        }.get(runner.get("runner_type"), [])
+                        if not runner_config.get(field)
+                    ],
                     "provider_pool": settings.get("provider_pool", ["*"]),
                     "persona_pool": settings.get("persona_pool", ["*"]),
                     # Implicit Webchat defaults do not apply a stored persona.
@@ -304,12 +327,27 @@ class RoleAssetService:
         profiles = [p for p in catalog["profiles"] if p["id"] == profile_id]
         profile = profiles[0] if len(profiles) == 1 else {}
         issues = []
+        issues.extend(profile.get("runner_issues", []))
         if not profile:
             issues.append(
                 {
                     "path": "installation.profile_id",
                     "code": "MISSING",
                     "message": "Bound profile is missing or ambiguous",
+                }
+            )
+        runner = get_agent_runner_capabilities(
+            {
+                "runner_type": profile.get("runner_type", "local"),
+                "config": profile.get("runner_config", {}),
+            }
+        )
+        if effective.get("runner", runner) != runner:
+            issues.append(
+                {
+                    "path": "installation.profile_id",
+                    "code": "INCOMPATIBLE",
+                    "message": "Bound profile no longer has the frozen runner capabilities",
                 }
             )
         persona = next(
@@ -420,6 +458,24 @@ class RoleAssetService:
         profile_id = installation.get("profile_id", "default")
         profiles = [p for p in catalog["profiles"] if p["id"] == profile_id]
         profile = profiles[0] if len(profiles) == 1 else {}
+        issues.extend(profile.get("runner_issues", []))
+        runner = get_agent_runner_capabilities(
+            {
+                "runner_type": profile.get("runner_type", "local"),
+                "config": profile.get("runner_config", {}),
+            }
+        )
+        effective["runner"] = runner
+        sources["runner"] = f"profile:{profile_id}"
+        for index, capability in enumerate(definition["runner_capabilities"]):
+            if capability not in runner["capabilities"]:
+                issues.append(
+                    {
+                        "path": f"definition.runner_capabilities.{index}",
+                        "code": "INCOMPATIBLE",
+                        "message": f"{runner['label']} does not support {capability}",
+                    }
+                )
         if not profile:
             issues.append(
                 {
@@ -430,6 +486,19 @@ class RoleAssetService:
             )
         persona: dict = {}
         requirements = [("provider_id", "models", definition["model_slot"])]
+        if runner["type"] != "local":
+            requirements = []
+            effective["provider_id"] = None
+            sources["provider_id"] = f"profile:{profile_id}"
+            for index, capability in enumerate(definition["model_capabilities"]):
+                if capability not in runner["modalities"]:
+                    issues.append(
+                        {
+                            "path": f"definition.model_capabilities.{index}",
+                            "code": "INCOMPATIBLE",
+                            "message": f"{runner['label']} does not support {capability}",
+                        }
+                    )
         if definition.get("persona_slot"):
             requirements.insert(
                 0, ("persona_id", "personas", definition["persona_slot"])
@@ -506,7 +575,29 @@ class RoleAssetService:
         }
         for field, default in defaults.items():
             value = profile.get(field, default)
+            if runner["type"] != "local" and field in (
+                "tools",
+                "skills",
+                "knowledge_bases",
+            ):
+                value = []
             source = f"profile:{profile_id}"
+            if runner["type"] != "local" and field in (
+                "max_steps",
+                "tool_call_timeout",
+                "context_length",
+            ):
+                value, source = None, f"runner:{runner['type']}"
+                if definition.get(field) is not None or field in task:
+                    issues.append(
+                        {
+                            "path": f"overrides.{field}"
+                            if field in task
+                            else f"definition.{field}",
+                            "code": "INCOMPATIBLE",
+                            "message": f"{runner['label']} does not enforce the local runner setting {field}",
+                        }
+                    )
             if field in ("prompt", "tools", "skills") and (
                 definition.get("persona_slot") or (field != "prompt" and persona)
             ):
@@ -521,6 +612,18 @@ class RoleAssetService:
                 value, source, logical = definition[field], "role", True
             if field in task:
                 value, source, logical = task[field], "task", True
+            if (
+                runner["type"] != "local"
+                and field in ("tools", "skills", "knowledge_bases")
+                and value
+            ):
+                issues.append(
+                    {
+                        "path": f"effective.{field}",
+                        "code": "INCOMPATIBLE",
+                        "message": f"{runner['label']} does not execute local {field}",
+                    }
+                )
             if field in ("tools", "skills", "knowledge_bases"):
                 # Null expands only enabled resources; [] explicitly disables.
                 selected = (

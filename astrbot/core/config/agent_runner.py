@@ -6,6 +6,65 @@ from typing import Any
 AGENT_RUNNER_TYPES = ("local", "dify", "coze", "dashscope", "deerflow")
 THIRD_PARTY_AGENT_RUNNER_TYPES = AGENT_RUNNER_TYPES[1:]
 
+
+def get_agent_runner_capabilities(agent_runner: dict) -> dict:
+    """Describe only the recovery and execution protocols AstrBot integrates.
+
+    Args:
+        agent_runner: Selected runner type and its effective configuration.
+
+    Returns:
+        Public capability metadata, without credentials or conversation history.
+        Remote queries never imply access to the remote internal tool checkpoints.
+    """
+    runner_type = agent_runner.get("runner_type", "local")
+    api_type = agent_runner.get("config", {}).get("dify_api_type", "chat")
+    capabilities = []
+    modalities = []
+    recovery = "external_boundary"
+    if runner_type == "local":
+        capabilities = ["internal_checkpoint", "task_tools", "task_result"]
+        recovery = "internal_checkpoint"
+    elif runner_type == "dify" and api_type == "workflow":
+        capabilities = ["remote_query", "task_result"]
+        recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type == "coze":
+        if agent_runner.get("config", {}).get("auto_save_history", True):
+            capabilities = ["remote_query"]
+            recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type == "deerflow":
+        capabilities = ["remote_query"]
+        recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type in {"dify", "deerflow"}:
+        modalities = ["image"]
+    return {
+        "type": runner_type,
+        "label": f"dify ({api_type})" if runner_type == "dify" else runner_type,
+        "capabilities": capabilities,
+        "recovery": recovery,
+        "modalities": modalities,
+        "binding": {
+            key: value
+            for key, value in agent_runner.get("config", {}).items()
+            if key
+            in {
+                "dify_api_base",
+                "dify_api_type",
+                "coze_api_base",
+                "bot_id",
+                "auto_save_history",
+                "dashscope_app_id",
+                "dashscope_app_type",
+                "deerflow_api_base",
+                "deerflow_assistant_id",
+            }
+        },
+    }
+
+
 AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "local": {
         "model": {

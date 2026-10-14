@@ -274,6 +274,7 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         await self._load_config_and_client(provider_config)
 
@@ -692,11 +693,62 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
         )
 
     async def _execute_deerflow_request(self):
+        """Execute or query exact run-owned messages through the normal mapper.
+
+        Yields:
+            Agent output belonging to this remote execution.
+
+        Raises:
+            ValueError: Remote identity or complete output cannot be confirmed.
+        """
+        if self.remote_checkpoint:
+            restored, queried = await self.remote_checkpoint.restore(self.api_client)
+            if restored or queried:
+                if queried:
+                    candidates = [
+                        row["content"]
+                        for row in queried["messages"]
+                        if row.get("category") == "message"
+                        and row.get("event_type") == "llm.ai.response"
+                        and row.get("metadata", {}).get("caller")
+                        in (None, "lead_agent")
+                        and isinstance(row.get("content"), dict)
+                        and row["content"].get("type") == "ai"
+                    ]
+                    chain = MessageChain()
+                    for message in reversed(candidates):
+                        candidate = build_chain_from_ai_content(
+                            message.get("content"), image_component_from_url
+                        )
+                        if candidate.get_plain_text().strip():
+                            chain = candidate
+                            break
+                    if not chain.chain:
+                        raise ValueError(
+                            "DeerFlow success has no confirmed lead-agent answer"
+                        )
+                    restored = LLMResponse(role="assistant", result_chain=chain)
+                    await self.remote_checkpoint.complete(restored, queried)
+                self.final_llm_resp = restored
+                assert restored is not None and restored.result_chain is not None
+                self._transition_state(AgentState.DONE)
+                if self.streaming:
+                    yield AgentResponse(
+                        type="streaming_delta",
+                        data=AgentResponseData(chain=restored.result_chain),
+                    )
+                yield AgentResponse(
+                    type="llm_result",
+                    data=AgentResponseData(chain=restored.result_chain),
+                )
+                return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or f"{DEERFLOW_SESSION_PREFIX}-{uuid4()}"
         image_urls = self.req.image_urls or []
         system_prompt = self.req.system_prompt
 
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
         thread_id = await self._ensure_thread_id(session_id)
         payload = await self._build_payload_resolved(
             thread_id=thread_id,
@@ -705,15 +757,33 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
             system_prompt=system_prompt,
         )
         state = self._StreamState()
+        if self.remote_checkpoint:
+            payload["on_disconnect"] = "continue"
+        completed = False
 
         try:
             async for event in self.api_client.stream_run(
                 thread_id=thread_id,
                 payload=payload,
                 timeout=self.timeout,
+                **({"capture_identity": True} if self.remote_checkpoint else {}),
             ):
                 event_type = event.get("event")
                 data = event.get("data")
+
+                if self.remote_checkpoint and event_type == "metadata":
+                    if (
+                        not isinstance(data, dict)
+                        or data.get("thread_id") != thread_id
+                        or not data.get("run_id")
+                    ):
+                        raise ValueError(
+                            "DeerFlow stream did not confirm its original run identity"
+                        )
+                    await self.remote_checkpoint.save_identity(
+                        {"thread_id": thread_id, "run_id": data["run_id"]}
+                    )
+                    continue
 
                 if event_type == "values":
                     for response in self._handle_values_event(data, state):
@@ -736,6 +806,7 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
                     raise Exception(f"DeerFlow stream returned error event: {data}")
 
                 if event_type == "end":
+                    completed = True
                     break
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning(
@@ -746,6 +817,15 @@ class DeerFlowAgentRunner(BaseAgentRunner[TContext]):
             state.timed_out = True
 
         final_result = self._build_final_result(state)
+        if self.remote_checkpoint:
+            if state.timed_out or not completed or final_result.role == "err":
+                raise ValueError(
+                    "DeerFlow stream did not confirm a complete successful result"
+                )
+            await self.remote_checkpoint.complete(
+                LLMResponse(role=final_result.role, result_chain=final_result.chain),
+                {"messages": state.run_values_messages},
+            )
 
         if self.streaming:
             extra_response = self._emit_non_plain_components_at_end(final_result.chain)

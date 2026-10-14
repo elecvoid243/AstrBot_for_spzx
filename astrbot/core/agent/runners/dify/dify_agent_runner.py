@@ -40,6 +40,7 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         self.api_key = provider_config.get("dify_api_key", "")
         self.api_base = provider_config.get("dify_api_base", "https://api.dify.ai/v1")
@@ -140,7 +141,43 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         }
 
     async def _execute_dify_request(self):
-        """执行 Dify 请求的核心逻辑"""
+        """Execute a fresh request or reuse the original remote response.
+
+        Yields:
+            Normal Agent responses, with complete remote evidence saved first.
+
+        Raises:
+            ValueError: Remote completion cannot be confirmed.
+        """
+        restored_response = None
+        queried_result = None
+        if self.remote_checkpoint:
+            restored_response, queried_result = await self.remote_checkpoint.restore(
+                self.api_client
+            )
+        if restored_response or queried_result:
+            assert self.remote_checkpoint is not None
+            self.final_llm_resp = restored_response
+            if queried_result:
+                raw = {"data": queried_result}
+                chain = await self.parse_dify_result(raw)
+                self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+                await self.remote_checkpoint.complete(self.final_llm_resp, raw)
+            assert (
+                self.final_llm_resp is not None
+                and self.final_llm_resp.result_chain is not None
+            )
+            self._transition_state(AgentState.DONE)
+            if self.streaming:
+                yield AgentResponse(
+                    type="streaming_delta",
+                    data=AgentResponseData(chain=self.final_llm_resp.result_chain),
+                )
+            yield AgentResponse(
+                type="llm_result",
+                data=AgentResponseData(chain=self.final_llm_resp.result_chain),
+            )
+            return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
         image_urls = self.req.image_urls or []
@@ -178,6 +215,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         payload_vars["system_prompt"] = system_prompt
 
         # 处理不同的 API 类型
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
         match self.api_type:
             case "chat" | "agent" | "chatflow":
                 if not prompt:
@@ -236,6 +275,10 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     logger.debug(f"dify workflow resp chunk: {chunk}")
                     match chunk["event"]:
                         case "workflow_started":
+                            if self.remote_checkpoint:
+                                await self.remote_checkpoint.save_identity(
+                                    {"workflow_run_id": chunk["workflow_run_id"]}
+                                )
                             logger.info(
                                 f"Dify 工作流(ID: {chunk['workflow_run_id']})开始运行。"
                             )
@@ -254,6 +297,16 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     ),
                                 )
                         case "workflow_finished":
+                            if self.remote_checkpoint and (
+                                chunk.get("workflow_run_id")
+                                != self.remote_checkpoint.data["remote"]["identity"][
+                                    "workflow_run_id"
+                                ]
+                                or chunk["data"].get("status") != "succeeded"
+                            ):
+                                raise ValueError(
+                                    "Dify did not confirm successful completion of the original workflow"
+                                )
                             logger.info(
                                 f"Dify 工作流(ID: {chunk['workflow_run_id']})运行结束"
                             )
@@ -281,6 +334,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
 
         # 创建最终响应
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.complete(self.final_llm_resp, result)
         self._transition_state(AgentState.DONE)
 
         try:

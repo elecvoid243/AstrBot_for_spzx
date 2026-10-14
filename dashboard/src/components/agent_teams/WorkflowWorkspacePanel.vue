@@ -255,6 +255,10 @@
             data-testid="recovery-info"
           >
             <p>{{ tm("recovery.sameAttempt") }}</p>
+            <RunnerCapabilities
+              :runner="detailRun.snapshot.effective?.runner"
+              :identity="detailRun.recovery.remote_identity"
+            />
             <p class="mt-2">
               {{
                 tm(
@@ -267,7 +271,12 @@
             <p v-if="detailRun.recovery.reason" class="mt-2">
               {{ detailRun.recovery.reason }}
             </p>
-            <p class="text-body-2 mt-2">{{ tm("recovery.limits") }}</p>
+            <p
+              v-if="!detailRun.recovery.remote_identity"
+              class="text-body-2 mt-2"
+            >
+              {{ tm("recovery.limits") }}
+            </p>
             <v-btn
               v-if="detailRun.recovery.available"
               variant="tonal"
@@ -283,9 +292,23 @@
               "
               data-testid="recover-attempt"
               @click="recoverAttempt"
-              >{{ tm("recovery.continue") }}</v-btn
+              >{{
+                tm(
+                  detailRun.recovery.capability === "remote_query"
+                    ? "runner.query"
+                    : "recovery.continue",
+                )
+              }}</v-btn
             >
           </v-alert>
+          <RunnerCapabilities
+            v-if="
+              !['interrupted', 'failed', 'blocked'].includes(detailRun.status)
+            "
+            :runner="detailRun.snapshot.effective?.runner"
+            :identity="detailRun.recovery?.remote_identity"
+            class="my-3"
+          />
           <v-alert
             v-if="detailRun.state.reason"
             type="warning"
@@ -560,6 +583,25 @@
           tm("v2.start")
         }}</v-card-title>
         <v-card-text v-if="runAsset">
+          <p v-if="checkingReadiness" role="status">
+            {{ tm("runner.checking") }}
+          </p>
+          <v-alert
+            v-if="readiness && !readiness.ready"
+            type="warning"
+            variant="tonal"
+            data-testid="runner-readiness-blocked"
+          >
+            <p v-for="issue in readiness.issues" :key="issue.path">
+              {{ issue.path }} · {{ issue.message }}
+            </p>
+          </v-alert>
+          <RunnerCapabilities
+            v-for="role in readiness?.roles ?? []"
+            :key="role.role_id + ':' + role.version"
+            :runner="role.runner"
+            class="mb-3"
+          />
           <p class="mb-4">
             {{ runAsset.definition.name }} · v{{ runAsset.version }}
           </p>
@@ -589,9 +631,16 @@
             tm("v2.close")
           }}</v-btn>
           <v-btn
+            variant="text"
+            :disabled="saving || checkingReadiness"
+            @click="checkReadiness"
+            >{{ tm("runner.check") }}</v-btn
+          >
+          <v-btn
             variant="tonal"
             color="primary"
             :loading="saving"
+            :disabled="checkingReadiness || !readiness?.ready"
             @click="start"
             >{{ tm("v2.start") }}</v-btn
           >
@@ -671,6 +720,7 @@ import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
 import WorkflowRunControls from "./WorkflowRunControls.vue";
 import WorkflowHumanTodo from "./WorkflowHumanTodo.vue";
+import RunnerCapabilities from "./RunnerCapabilities.vue";
 import type {
   GraphDefinition,
   WorkflowDefinition,
@@ -978,6 +1028,41 @@ async function save() {
   }
 }
 
+const readiness = ref<any>(null);
+const checkingReadiness = ref(false);
+let readinessRevision = 0;
+
+async function checkReadiness() {
+  if (!runAsset.value) return false;
+  const asset = runAsset.value;
+  const revision = ++readinessRevision;
+  checkingReadiness.value = true;
+  readiness.value = null;
+  try {
+    const result = await workflowAssetsApi.readiness(
+      asset.asset_id,
+      asset.version,
+    );
+    if (
+      revision !== readinessRevision ||
+      !starting.value ||
+      runAsset.value !== asset
+    )
+      return false;
+    readiness.value = result;
+    return result.ready;
+  } catch (error) {
+    if (revision === readinessRevision)
+      formError.value = extractApiError(
+        error,
+        tm("errors.operationFailed"),
+      ).message;
+    return false;
+  } finally {
+    if (revision === readinessRevision) checkingReadiness.value = false;
+  }
+}
+
 function prepareRun(asset: any) {
   runAsset.value = asset;
   inputs.value = Object.fromEntries(
@@ -986,6 +1071,7 @@ function prepareRun(asset: any) {
   formError.value = "";
   starting.value = true;
   inputArtifacts.value = [];
+  void checkReadiness();
 }
 
 async function start() {
@@ -993,6 +1079,7 @@ async function start() {
   saving.value = true;
   formError.value = "";
   try {
+    if (!(await checkReadiness())) return;
     const run = await workflowAssetsApi.start(runAsset.value.asset_id, {
       version: runAsset.value.version,
       inputs: inputs.value,

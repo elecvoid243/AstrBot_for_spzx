@@ -241,6 +241,26 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 
 ![An unselected loop stays skipped while its active branch completes the merge](/images/agent-workflow-loop-skip-en.png)
 
+## Executor readiness and remote recovery
+
+Open **Workflow Assets → Start Run**. The dialog checks the saved version's dependencies and executor capabilities before enabling **Start Run**. **Check readiness** refreshes the same check used by launch. Blocked requirements show field paths. Roles, canvas workflows and autonomous teams share these rules; coordinators need local task/team tools.
+
+| Executor | Integrated recovery boundary |
+| --- | --- |
+| Built-in | Complete model/context and per-tool invocation checkpoints. |
+| Dify workflow | Original `workflow_run_id` and configured workflow outputs. |
+| Coze with saved history enabled | Original `chat_id` plus `conversation_id` and per-chat answers. Disabling saved history removes query capability. |
+| Current DeerFlow API | Original thread/run IDs, exact status and paginated run-owned messages. Missing routes or output require confirmation. |
+| Dify chat/agent/chatflow, DashScope Application | External call boundary. Chatflow status alone cannot recover its canonical moderated chat answer. |
+
+In **Independent Runs → View Run**, select the affected task. Its executor panel shows the boundary and original remote identity. **Query original remote run** keeps the Attempt and queries that identity without creating another operation. Saved complete responses are reused. Missing identity, unreachable queries, mismatched identity, an active/unknown status or missing output leave the result unconfirmed. Inspect the original service before deliberately choosing a new Attempt; failed queries do not prove the operation never happened.
+
+Dify workflows submit structured objects from the configured output key through the normal contract validator. Plain remote text and displayed JSON do not complete tasks. Coze and DeerFlow answers are saved as process output and remain **Awaiting result** when explicit result submission is missing; a required `task_result` capability rejects those executors. Remote queries do not restore remote internal tools. Uninstrumented plugin/tool-internal calls have only boundaries actually saved by AstrBot. Thinking and signatures are retained when supplied; models without thinking work normally.
+
+![Actual launch blocked by an executor requirement](/images/agent-teams-runner-readiness-en.jpg)
+
+![Original remote identity and query action in actual run detail](/images/agent-teams-runner-recovery-en.jpg)
+
 ## Root usage and limits
 
 Open **Workflow Assets → Edit Asset → Scope limits** to configure total call steps, subtree member instances, rounds per loop, token allowance and output tokens per model call. Single tasks, canvas workflows and autonomous teams share this form. Blank fields add no ceiling. Save a new version and start a run; existing runs retain their frozen limits. Existing concurrency, depth and local team instance limits still apply, together with ancestor scope limits.
@@ -274,6 +294,7 @@ An exhausted limit stops new calls and exposes the limit, value and affected tas
 | Default graph and reply JSON within the detail | Progress appears first. The graph moves to Expand execution graph (read-only), and replies move to expandable Saved member process records. |
 | Editing a template and inspecting run configuration | Workflow Assets appends versions; Independent Runs displays frozen snapshots. |
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
+| Continue same attempt for every executor | Query original remote run for queryable remote executors; Continue same attempt remains the built-in checkpoint action. |
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
 | Usage only showed checkpoint model/step counters | Workflow Assets → Edit Asset → Scope limits; Independent Runs → View Run → Usage and limits → Call details. |

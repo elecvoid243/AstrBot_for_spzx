@@ -208,6 +208,46 @@ class CozeAPIClient:
         except Exception as e:
             raise Exception(f"Coze API 流式请求失败: {e!s}")
 
+    async def get_chat_run(self, identity: dict) -> dict:
+        """Read the status of the exact saved chat.
+
+        Args:
+            identity: Original conversation_id and chat_id, not a history cursor.
+
+        Returns:
+            Coze's original status envelope.
+        """
+        session = await self._ensure_session()
+        async with session.get(
+            f"{self.api_base}/v3/chat/retrieve",
+            params={
+                "conversation_id": identity["conversation_id"],
+                "chat_id": identity["chat_id"],
+            },
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+    async def get_chat_run_messages(self, identity: dict) -> dict:
+        """Read completed output for one chat, excluding conversation history.
+
+        Args:
+            identity: Original conversation_id and chat_id.
+
+        Returns:
+            Coze's per-chat message envelope.
+        """
+        session = await self._ensure_session()
+        async with session.get(
+            f"{self.api_base}/v3/chat/message/list",
+            params={
+                "conversation_id": identity["conversation_id"],
+                "chat_id": identity["chat_id"],
+            },
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
     async def clear_context(self, conversation_id: str):
         """清空会话上下文
 

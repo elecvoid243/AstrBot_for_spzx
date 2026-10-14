@@ -74,6 +74,32 @@ async def save_asset(
         )
 
 
+@router.get("/workflow_assets/{asset_id}/readiness")
+async def check_readiness(
+    asset_id: str,
+    version: int | None = Query(default=None, ge=1),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Check required local runner capabilities without creating execution.
+
+    Args:
+        asset_id: Saved team or workflow identity.
+        version: Pinned definition version, or latest when omitted.
+        username: Authenticated owner.
+        service: Shared asset and run service.
+
+    Returns:
+        Readiness and field-level blocking reasons used by launch.
+    """
+    try:
+        return ok(await service.check_readiness(username, asset_id, version))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
 @router.post("/workflow_assets/{asset_id}/runs")
 async def start_run(
     asset_id: str,

@@ -436,7 +436,10 @@
       "tool_result": "工具结果已保存，恢复不会重复该外部效果。",
       "tool_progress": "工具输出已保存，尚未确认执行已完成。",
       "tools_applied": "工具结果已应用到上下文，可继续下一模型步骤。",
-      "none": "没有可恢复的执行检查点。"
+      "none": "没有可恢复的执行检查点。",
+      "remote_started": "远端请求可能已开始；身份与结果须确认",
+      "remote_running": "已保存原远端身份；按该身份查询",
+      "remote_result": "已保存原远端完整响应"
     }
   },
   "controls": {
@@ -595,6 +598,26 @@
       "estimated": "估算",
       "unknown": "未知",
       "in_flight": "在途"
+    }
+  },
+  "runner": {
+    "title": "执行器",
+    "requirements": "必需的执行器能力",
+    "identity": "原远端运行身份",
+    "query": "查询原远端运行",
+    "check": "检查就绪",
+    "checking": "正在检查本机依赖与执行器能力…",
+    "boundaries": "远端查询不恢复远端内部工具。插件钩子和工具内部调用仅保证 AstrBot 实际保存的边界。仅展示提供商实际返回的思考内容。",
+    "recovery": {
+      "internal_checkpoint": "内部模型与工具调用检查点",
+      "remote_query": "按原身份查询远端运行；不保证远端内部工具检查点",
+      "external_boundary": "仅外部调用边界；中断后结果须确认"
+    },
+    "capabilities": {
+      "internal_checkpoint": "内部调用检查点",
+      "remote_query": "原远端运行查询",
+      "task_tools": "本机任务与团队工具",
+      "task_result": "显式提交任务结果"
     }
   }
 }

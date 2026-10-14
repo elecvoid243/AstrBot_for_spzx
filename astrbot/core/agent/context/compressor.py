@@ -441,12 +441,20 @@ class LLMSummaryCompressor:
                 response = None
                 try:
                     with model_delivery(receipt):
-                        response = await self.provider.text_chat(
-                            contexts=sanitized_summary_contexts,
-                            func_tool=schemas,
-                            llm_params=params or None,
-                            request_max_retries=1,
-                        )
+                        if schemas is None and func_tool is not None:
+                            # Tool-free recovery omits the original schema argument.
+                            response = await self.provider.text_chat(
+                                contexts=sanitized_summary_contexts,
+                                llm_params=params or None,
+                                request_max_retries=1,
+                            )
+                        else:
+                            response = await self.provider.text_chat(
+                                contexts=sanitized_summary_contexts,
+                                func_tool=schemas,
+                                llm_params=params or None,
+                                request_max_retries=1,
+                            )
                 finally:
                     if receipt and execution and execution.report_usage:
                         report = (

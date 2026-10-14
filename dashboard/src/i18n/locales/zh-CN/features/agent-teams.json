@@ -346,6 +346,7 @@
     "thinking": "提供商返回的思考内容",
     "toolCalls": "工具调用与参数",
     "toolResult": "工具结果",
+    "remoteEvent": "远端过程事件",
     "fullRecord": "展开完整原始记录",
     "events": "持久事件与观测游标",
     "emptyProcess": "尚无已完成的成员响应或工具结果。",

@@ -346,6 +346,7 @@
     "thinking": "Thinking returned by the provider",
     "toolCalls": "Tool calls and arguments",
     "toolResult": "Tool result",
+    "remoteEvent": "Remote process event",
     "fullRecord": "Expand complete original record",
     "events": "Persistent events and observation cursor",
     "emptyProcess": "No completed member response or tool result yet.",

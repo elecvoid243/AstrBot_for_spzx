@@ -2728,7 +2728,7 @@ class WorkflowService:
             run_id: Task run producing the record.
             attempt_id: Actual execution attempt; stale writers are rejected.
             record_id: Stable delivery identity within this attempt.
-            kind: Model response or tool result from the real execution chain.
+            kind: Model response, tool result, or original remote process event.
             data: Complete returned payload, never parsed from display text.
             execution_id: Durable execution owner; late executors cannot append records.
 
@@ -2739,7 +2739,7 @@ class WorkflowService:
             RoleAssetError: Invalid identity, inaccessible run or conflicting replay.
         """
         if (
-            kind not in {"model_response", "tool_result"}
+            kind not in {"model_response", "tool_result", "remote_event"}
             or not record_id
             or len(record_id) > 256
         ):
@@ -6897,7 +6897,7 @@ class WorkflowService:
 
                 Args:
                     record_id: Stable response or tool delivery identity.
-                    kind: Model response or tool result.
+                    kind: Model response, tool result, or original remote event.
                     data: Complete original payload from the runner.
                 """
                 nonlocal checkpoint_error

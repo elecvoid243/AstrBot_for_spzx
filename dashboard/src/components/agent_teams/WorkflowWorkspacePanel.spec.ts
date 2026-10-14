@@ -1665,6 +1665,56 @@ describe("single-task workflow workspace", () => {
     vi.useRealTimers();
   });
 
+  it("shows original remote thoughts as observations tied to their attempt", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/?workflow_run=run-1");
+    api.run.mockResolvedValue({
+      ...run,
+      status: "awaiting_result",
+      process: [
+        {
+          record_id: "remote-record-1",
+          kind: "remote_event",
+          task_id: "task-1",
+          attempt_id: "attempt-1",
+          member_id: "member-1",
+          data: {
+            provider: "dify",
+            event: {
+              event: "agent_thought",
+              id: "thought-original",
+              thought: "Original provider reasoning.",
+              tool: "evidence_lookup",
+              tool_input: '{"query":"original evidence"}',
+              observation: "Original tool observation.",
+            },
+          },
+        },
+      ],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    const record = wrapper.find('[data-testid="process-record"]');
+    expect(record.find("summary").text()).toContain("progress.remoteEvent");
+    expect(record.find("summary").text()).toContain("dify · agent_thought");
+    expect(record.text()).toContain("attempt-1");
+    const event = record.find('[data-testid="remote-event"]');
+    expect(event.text()).toContain("thought-original");
+    expect(event.text()).toContain("Original provider reasoning.");
+    expect(event.text()).toContain("evidence_lookup");
+    expect(event.text()).toContain("Original tool observation.");
+    expect(wrapper.find('[data-testid="durable-tool-call"]').exists()).toBe(
+      false,
+    );
+    wrapper.unmount();
+  });
+
   it("keeps selected complete process records while polling overview-only history", async () => {
     vi.useFakeTimers();
     const router = createRouter({

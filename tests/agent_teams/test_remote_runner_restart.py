@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -23,6 +24,8 @@ import pytest
         ("dashscope", "result_saved"),
         ("dashscope", "identity_missing"),
         ("dashscope", "partial_eof"),
+        ("dashscope", "accepted_disconnect"),
+        ("dashscope", "accepted_redirect"),
         ("dashscope", "usage_missing"),
         ("dashscope", "usage_zero"),
         *[
@@ -41,6 +44,9 @@ import pytest
                 "workflow_eof",
                 "chat_eof",
                 "chat_result_saved",
+                "chat_thoughts",
+                "chat_thought_process_failure",
+                "chat_thought_checkpoint_failure",
             )
         ],
     ],
@@ -58,6 +64,16 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             ledger.append({"method": "POST", "path": self.path, "body": body})
+            if runner == "dashscope" and scenario == "accepted_disconnect":
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.connection.close()
+                self.close_connection = True
+                return
+            if runner == "dashscope" and scenario == "accepted_redirect":
+                self.send_response(307)
+                self.send_header("Location", "/another-creation")
+                self.end_headers()
+                return
             if runner == "coze" and any(
                 message["role"] not in {"user", "assistant"}
                 for message in body["additional_messages"]
@@ -121,7 +137,36 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                 )
                 self.wfile.flush()
                 return
-            if scenario == "chat_result_saved":
+            if scenario.startswith("chat_thought"):
+                thought = {
+                    "event": "agent_thought",
+                    "id": "thought-original",
+                    "task_id": "task-original",
+                    "message_id": "message-original",
+                    "conversation_id": "conversation-original",
+                    "position": 1,
+                    "thought": "Original provider reasoning.",
+                    "tool": "evidence_lookup",
+                    "tool_input": '{"query":"original evidence"}',
+                    "observation": "",
+                }
+                for event in (
+                    thought,
+                    thought,
+                    {**thought, "observation": "Original tool observation."},
+                    {
+                        **thought,
+                        "id": "thought-second",
+                        "position": 2,
+                        "thought": "Second provider reasoning.",
+                        "tool": "",
+                        "tool_input": "",
+                        "observation": "",
+                    },
+                ):
+                    self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
+                self.wfile.flush()
+            if scenario == "chat_result_saved" or scenario.startswith("chat_thought"):
                 self.wfile.write(
                     b'data: {"event":"message","answer":"Original verified evidence.","conversation_id":"conversation-original"}\n\ndata: {"event":"message_end","metadata":{"usage":{"prompt_tokens":11,"completion_tokens":20,"total_tokens":31}}}\n\n'
                 )
@@ -343,14 +388,36 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             evidence["after"]["state"]["attempt_id"]
             == evidence["before"]["state"]["attempt_id"]
         )
-        if scenario in {"workflow_eof", "chat_eof", "partial_eof"}:
+        if scenario in {
+            "workflow_eof",
+            "chat_eof",
+            "partial_eof",
+            "accepted_disconnect",
+            "accepted_redirect",
+        }:
             assert evidence["before"]["status"] == "blocked"
             assert evidence["before"]["recovery"]["boundary"] != "remote_result"
-        if scenario in {"chat_eof", "partial_eof"}:
+        if (
+            scenario
+            in {"chat_eof", "partial_eof", "accepted_disconnect", "accepted_redirect"}
+            or scenario.endswith("thought_process_failure")
+            or scenario.endswith("thought_checkpoint_failure")
+        ):
             assert evidence["error"]["status"] == 409
             assert evidence["after"]["result"] is None
             assert evidence["after"]["recovery"]["available"] is False
             assert [entry["method"] for entry in ledger] == ["POST"]
+            assert evidence["after"]["usage"]["model_calls"] == 1
+            assert evidence["after"]["usage"]["tokens"]["unknown_calls"] == 1
+            if scenario.startswith("chat_thought"):
+                assert evidence["before"]["status"] == "blocked"
+                assert "save" in evidence["before"]["state"]["reason"].lower()
+                records = evidence["after"]["process"]
+                assert (
+                    records[0]["data"]["event"]["thought"]
+                    == "Original provider reasoning."
+                )
+                assert not any(record["kind"] == "model_response" for record in records)
             return
         if scenario == "end_interrupted":
             assert evidence["before"]["status"] == "blocked"
@@ -399,12 +466,52 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         ]
         assert [entry["kind"] for entry in hooks] == ["request", "response", "done"]
         assert hooks[1]["text"].endswith("[Checked by completion hook]")
-        if scenario == "chat_result_saved":
+        if scenario in {"chat_result_saved", "chat_thoughts"}:
             assert evidence["after"]["status"] == "awaiting_result"
             assert evidence["after"]["usage"]["tokens"]["reported"] == 31
             assert evidence["after"]["usage"]["model_calls"] == 1
             assert evidence["stopped"]["recovery"]["capability"] == "external_boundary"
             assert [entry["method"] for entry in ledger] == ["POST"]
+            if scenario == "chat_thoughts":
+                records = [
+                    record
+                    for record in evidence["after"]["process"]
+                    if record["kind"] == "remote_event"
+                ]
+                assert len(records) == 3
+                assert len({record["record_id"] for record in records}) == 3
+                assert {record["attempt_id"] for record in records} == {
+                    evidence["before"]["state"]["attempt_id"]
+                }
+                assert [record["data"]["event"]["id"] for record in records] == [
+                    "thought-original",
+                    "thought-original",
+                    "thought-second",
+                ]
+                assert (
+                    records[1]["data"]["event"]["observation"]
+                    == "Original tool observation."
+                )
+                assert records[0]["data"]["event"]["tool"] == "evidence_lookup"
+                assert (
+                    records[0]["data"]["event"]["tool_input"]
+                    == '{"query":"original evidence"}'
+                )
+                assert (
+                    records[2]["data"]["event"]["thought"]
+                    == "Second provider reasoning."
+                )
+                assert not evidence["after"]["tool_calls"]
+                assert (
+                    len(
+                        [
+                            record
+                            for record in evidence["after"]["process"]
+                            if record["kind"] == "model_response"
+                        ]
+                    )
+                    == 1
+                )
             return
         if runner == "dashscope":
             assert "Check evidence." in ledger[0]["body"]["input"]["prompt"]
@@ -496,6 +603,60 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             process.wait(timeout=10)
         release_unknown.set()
         release_query.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        (tmp_path / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+
+def test_dashscope_retry_policy_is_local_to_the_team_session(tmp_path):
+    """Use the real SDK to contrast one team delivery with ordinary chat retries."""
+    import requests
+    from dashscope import Application
+
+    from astrbot.core.agent.runners.dashscope.dashscope_agent_runner import (
+        _SingleDeliverySession,
+    )
+
+    ledger = []
+
+    class RemoteService(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            ledger.append(body["input"]["prompt"])
+            if ledger.count("ordinary chat") != 2:
+                self.connection.shutdown(socket.SHUT_RDWR)
+                self.connection.close()
+                self.close_connection = True
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                b'{"request_id":"ordinary-original","output":{"text":"Ordinary answer","finish_reason":"stop"},"usage":{}}'
+            )
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RemoteService)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    parameters = {
+        "app_id": "app-original",
+        "api_key": "local-only-key",
+        "base_address": f"http://127.0.0.1:{server.server_port}",
+    }
+    try:
+        with _SingleDeliverySession() as session:
+            with pytest.raises(
+                requests.RequestException, match="requires confirmation"
+            ):
+                Application.call(prompt="team request", session=session, **parameters)
+        response = Application.call(prompt="ordinary chat", **parameters)
+        assert response.output.text == "Ordinary answer"
+        assert ledger == ["team request", "ordinary chat", "ordinary chat"]
+    finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

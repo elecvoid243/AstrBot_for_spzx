@@ -225,6 +225,16 @@ class RemoteAgentCheckpoint:
         Raises:
             CheckpointRecoveryError: The original operation cannot be confirmed.
         """
+        if self.binding.record_process:
+            try:
+                for record_id, data in self.data["remote"].get("events", {}).items():
+                    await self.binding.record_process(record_id, "remote_event", data)
+            except Exception as exc:
+                error = CheckpointRecoveryError(
+                    "Remote process event could not be saved; result requires confirmation"
+                )
+                self.binding.recovery_error = error
+                raise error from exc
         if self.data["phase"] == "request":
             return None, None
         if self.data["phase"] == "remote_result":

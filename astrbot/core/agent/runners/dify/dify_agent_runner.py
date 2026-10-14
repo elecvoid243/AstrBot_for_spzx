@@ -1,8 +1,12 @@
+import copy
+import hashlib
+import json
 import sys
 import typing as T
 
 import astrbot.core.message.components as Comp
 from astrbot.core import logger, sp
+from astrbot.core.agent_team_execution import CheckpointRecoveryError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import (
     LLMResponse,
@@ -246,6 +250,32 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     chain=MessageChain().message(chunk["answer"])
                                 ),
                             )
+                    elif chunk["event"] == "agent_thought" and self.remote_checkpoint:
+                        # Dify can supplement an existing thought ID with its tool
+                        # observation. Keep each distinct original snapshot immutable.
+                        record_id = (
+                            self.remote_checkpoint.data["invocation_id"]
+                            + ":dify:"
+                            + hashlib.sha256(
+                                json.dumps(chunk, sort_keys=True).encode("utf-8")
+                            ).hexdigest()
+                        )
+                        data = {"provider": "dify", "event": copy.deepcopy(chunk)}
+                        self.remote_checkpoint.data["remote"].setdefault("events", {})[
+                            record_id
+                        ] = data
+                        await self.remote_checkpoint.save()
+                        if self.remote_checkpoint.binding.record_process:
+                            try:
+                                await self.remote_checkpoint.binding.record_process(
+                                    record_id, "remote_event", data
+                                )
+                            except Exception as exc:
+                                error = CheckpointRecoveryError(
+                                    "Remote process event could not be saved; result requires confirmation"
+                                )
+                                self.remote_checkpoint.binding.recovery_error = error
+                                raise error from exc
                     elif chunk["event"] == "message_end":
                         terminal = chunk
                         completed = True

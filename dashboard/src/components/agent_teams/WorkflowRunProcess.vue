@@ -153,6 +153,10 @@
         <span class="font-weight-medium">{{
           record.kind === "model_response"
             ? tm("progress.response")
+            : record.kind === "remote_event"
+            ? `${tm("progress.remoteEvent")} · ${record.data.provider} · ${
+                record.data.event.event
+              }`
             : `${tm("progress.toolResult")} · ${record.data.name}`
         }}</span>
         <span class="text-caption text-medium-emphasis process-id"
@@ -188,6 +192,12 @@
         <pre v-if="record.kind === 'tool_result'" class="process-text">{{
           JSON.stringify(record.data.raw_result ?? record.data.result, null, 2)
         }}</pre>
+        <pre
+          v-if="record.kind === 'remote_event'"
+          class="process-text"
+          data-testid="remote-event"
+          >{{ JSON.stringify(record.data.event, null, 2) }}</pre
+        >
         <details class="mt-3">
           <summary>{{ tm("progress.fullRecord") }}</summary>
           <pre class="process-text pa-3">{{

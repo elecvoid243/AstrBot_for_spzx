@@ -19,7 +19,7 @@ from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.conversation_mgr import ConversationManager
-from astrbot.core.db.po import AgentWorkflowCheckpoint
+from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowProcess
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
 from astrbot.core.knowledge_base import kb_mgr
@@ -70,8 +70,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             "timeout": 10,
         },
     }
-    if window in {"chat_unknown", "chat_eof", "chat_result_saved"}:
+    if window.startswith("chat_"):
         config["agent_runner"]["config"]["dify_api_type"] = "chat"
+    if window.startswith("chat_thought"):
+        config["agent_runner"]["config"]["dify_api_type"] = "agent"
     if scenario.startswith("coze:"):
         config["agent_runner"] = {
             "runner_type": "coze",
@@ -259,8 +261,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                     "name": "Remote researcher",
                     "prompt": "Check evidence.",
                     "runner_capabilities": []
-                    if window in {"chat_unknown", "chat_eof", "chat_result_saved"}
-                    or scenario.startswith("dashscope:")
+                    if window.startswith("chat_") or scenario.startswith("dashscope:")
                     else ["remote_query"],
                 },
             },
@@ -285,6 +286,19 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                 flush_context: ORM flush context.
             """
             for row in [*session.new, *session.dirty]:
+                if (
+                    window == "chat_thought_process_failure"
+                    and isinstance(row, AgentWorkflowProcess)
+                    and row.kind == "remote_event"
+                    and row.data["event"].get("observation")
+                ):
+                    raise RuntimeError("Injected remote process storage failure")
+                if (
+                    window == "chat_thought_checkpoint_failure"
+                    and isinstance(row, AgentWorkflowCheckpoint)
+                    and len(row.data.get("remote", {}).get("events", {})) > 1
+                ):
+                    raise RuntimeError("Injected remote event checkpoint failure")
                 if isinstance(row, AgentWorkflowCheckpoint) and row.phase == (
                     "request"
                     if window == "pre_create"
@@ -294,6 +308,7 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                         "result_saved",
                         "end_success",
                         "chat_result_saved",
+                        "chat_thoughts",
                         "usage_missing",
                         "usage_zero",
                     }
@@ -307,6 +322,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                         "workflow_eof",
                         "chat_eof",
                         "partial_eof",
+                        "accepted_disconnect",
+                        "accepted_redirect",
+                        "chat_thought_process_failure",
+                        "chat_thought_checkpoint_failure",
                     }:
                         continue
                     session.info["remote_boundary"] = row.run_id
@@ -335,10 +354,11 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             from fastapi.staticfiles import StaticFiles
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
-            from astrbot.dashboard.api.auth import require_dashboard_user
-            from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.dashboard.api.role_assets import router as role_router
+
             from astrbot.dashboard.api.agent_teams import router as team_router
+            from astrbot.dashboard.api.auth import require_dashboard_user
+            from astrbot.dashboard.api.role_assets import router as role_router
+            from astrbot.dashboard.api.workflow_assets import router as workflow_router
             from astrbot.dashboard.services.agent_team_service import AgentTeamService
             from tests.agent_teams.test_agent_team_service import FakeChatService
 
@@ -387,6 +407,10 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                 "chat_eof",
                 "end_interrupted",
                 "partial_eof",
+                "accepted_disconnect",
+                "accepted_redirect",
+                "chat_thought_process_failure",
+                "chat_thought_checkpoint_failure",
             }:
                 for _ in range(500):
                     current = await service.get_run("alice", run["run_id"])

@@ -7,6 +7,7 @@ import sys
 import threading
 import typing as T
 
+import requests
 from dashscope import Application
 from dashscope.api_entities.dashscope_response import DashScopeAPIResponse
 from dashscope.app.application_response import ApplicationResponse
@@ -28,6 +29,33 @@ if sys.version_info >= (3, 12):
     from typing import override
 else:
     from typing_extensions import override
+
+
+class _SingleDeliverySession(requests.Session):
+    """Keep a team creation request from being replayed after ambiguous delivery."""
+
+    def send(self, request, **kwargs):
+        """Send once while preserving the SDK's normal response parsing.
+
+        Args:
+            request: Prepared SDK request.
+            **kwargs: Requests transport options.
+
+        Returns:
+            The original HTTP response, without following redirects.
+
+        Raises:
+            requests.RequestException: Delivery failed without a confirmed result.
+        """
+        kwargs["allow_redirects"] = False
+        try:
+            return super().send(request, **kwargs)
+        except requests.ConnectionError as exc:
+            # The SDK retries ConnectionError even after the server accepts a POST.
+            # Preserve the cause without letting it trigger another delivery.
+            raise requests.RequestException(
+                "DashScope delivery failed; remote result requires confirmation"
+            ) from exc
 
 
 class DashscopeAgentRunner(BaseAgentRunner[TContext]):
@@ -422,6 +450,7 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
             payload["incremental_output"] = False
 
         # 发起请求
+        delivery_session = None
         if self.remote_checkpoint:
             await self.remote_checkpoint.before_request()
         if self.remote_checkpoint:
@@ -438,6 +467,7 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                 payload.pop("messages", None),
                 **payload,
             )
+            delivery_session = _SingleDeliverySession()
             request = _build_api_request(
                 model="",
                 input=request_input,
@@ -447,15 +477,19 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                 api_key=api_key,
                 is_service=False,
                 sdk_module="app",
+                session=delivery_session,
                 **parameters,
             )
             partial = request.call
         else:
             partial = functools.partial(Application.call, **payload)
-        response = await asyncio.get_running_loop().run_in_executor(None, partial)
-
-        async for resp in self._handle_streaming_response(response, session_id):
-            yield resp
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(None, partial)
+            async for resp in self._handle_streaming_response(response, session_id):
+                yield resp
+        finally:
+            if delivery_session is not None:
+                delivery_session.close()
 
     @override
     def done(self) -> bool:

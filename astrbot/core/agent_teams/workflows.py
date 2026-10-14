@@ -1185,7 +1185,7 @@ class WorkflowService:
                                 col(AgentWorkflowProcess.member_id),
                             ).where(
                                 col(AgentWorkflowProcess.run_id).in_(historical_ids),
-                                AgentWorkflowProcess.kind == "model_response",
+                                col(AgentWorkflowProcess.kind) == "model_response",
                             )
                         )
                     )

@@ -26,6 +26,10 @@ from astrbot.core.agent.message import (
     TextPart,
 )
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.agent_team_execution import (
+    apply_model_output_limit,
+    current_model_usage,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsResult
@@ -571,6 +575,15 @@ class ProviderOpenAIOfficial(Provider):
 
         self._sanitize_assistant_messages(payloads)
 
+        apply_model_output_limit(
+            payloads,
+            "max_completion_tokens"
+            if "max_completion_tokens" in payloads
+            or "max_completion_tokens" in extra_body
+            else "max_tokens",
+            extra_body,
+        )
+
         completion = await retry_provider_request(
             "OpenAI",
             lambda: self.client.chat.completions.create(
@@ -630,6 +643,15 @@ class ProviderOpenAIOfficial(Provider):
         self._apply_provider_specific_request_overrides(payloads, extra_body)
 
         self._sanitize_assistant_messages(payloads)
+
+        apply_model_output_limit(
+            payloads,
+            "max_completion_tokens"
+            if "max_completion_tokens" in payloads
+            or "max_completion_tokens" in extra_body
+            else "max_tokens",
+            extra_body,
+        )
 
         stream = await retry_provider_request(
             "OpenAI",
@@ -952,7 +974,11 @@ class ProviderOpenAIOfficial(Provider):
         llm_response.id = completion.id
 
         llm_response.usage = (
-            self._extract_usage(completion.usage) if completion.usage else TokenUsage()
+            self._extract_usage(completion.usage)
+            if completion.usage
+            else None
+            if current_model_usage.get() is not None
+            else TokenUsage()
         )
 
         return llm_response

@@ -447,7 +447,7 @@
     "retry": "重试失败任务",
     "confirm": "确认决定",
     "states": {
-      "active": "允许放行新工作",
+      "active": "全局控制：活动",
       "paused": "已暂停：停止放行新工作",
       "cancelled": "已取消：不再启动新工作"
     },
@@ -549,8 +549,8 @@
     "maxDepth": "根嵌套深度上限",
     "scope": "子作用域",
     "root": "根运行",
-    "modelCalls": "已保存模型调用数",
-    "steps": "已保存执行步骤",
+    "modelCalls": "获准模型调用数",
+    "steps": "已用调用步骤",
     "unknownUsage": "未知"
   },
   "workflowCall": {
@@ -561,5 +561,36 @@
     "returnTask": "返回任务",
     "open": "查看子工作流",
     "remove": "移除允许工作流"
+  },
+  "usage": {
+    "title": "用量与限制",
+    "limits": "作用域限制",
+    "limitHint": "留空不增加上限。根额度包含协调者、成员、重试及嵌套调用。步骤按每次获准的模型、工具或状态查询投递计数；迭代上限适用于每个循环。",
+    "boundary": "预留按估算约束新增调用。提供商报告可能超过估算或输出上限，不能保证绝不超支。中断调用保留不明消耗；未报告 token 的工具显示未知用量。",
+    "max_steps": "总调用步骤",
+    "max_members": "子树内成员实例数",
+    "max_iterations": "每个循环的轮次",
+    "token_budget": "Token 额度",
+    "max_output_tokens": "单次模型输出 token",
+    "reported": "已报告 token",
+    "estimated": "估算 token",
+    "reserved": "在途预留 token",
+    "unknownCalls": "未知或在途调用",
+    "unknown": "未知",
+    "unlimited": "不增加上限",
+    "stopped": "因限制停止",
+    "calls": "获准调用数",
+    "details": "调用明细",
+    "tokens": "Token",
+    "scope": "作用域",
+    "task": "任务",
+    "invocation": "调用",
+    "delivery": "投递",
+    "quality": {
+      "reported": "提供商已报告",
+      "estimated": "估算",
+      "unknown": "未知",
+      "in_flight": "在途"
+    }
   }
 }

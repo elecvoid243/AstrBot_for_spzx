@@ -8956,6 +8956,47 @@ components:
       - msg
       - type
       title: ValidationError
+    RunLimits:
+      properties:
+        max_steps:
+          anyOf:
+          - type: integer
+            maximum: 100000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Steps
+        max_members:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Members
+        max_iterations:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Iterations
+        token_budget:
+          anyOf:
+          - type: integer
+            maximum: 1000000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Token Budget
+        max_output_tokens:
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Output Tokens
+      additionalProperties: false
+      type: object
+      title: RunLimits
+      description: Optional whole-scope ceilings; nested scopes also obey their ancestors.
     WorkflowDefinition:
       properties:
         name:
@@ -8991,6 +9032,10 @@ components:
             type: object
           - type: 'null'
           title: Output Contract
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -9034,56 +9079,60 @@ components:
       title: FieldCondition
       type: object
     GraphDefinition:
-      additionalProperties: false
-      description: A bounded, versioned workflow graph with persisted editor layout.
       properties:
         name:
+          type: string
           maxLength: 128
           minLength: 1
           title: Name
-          type: string
         required_inputs:
           items:
             type: string
+          type: array
           maxItems: 30
           title: Required Inputs
-          type: array
         max_parallel:
-          default: 4
-          maximum: 100
-          minimum: 1
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
           title: Max Parallel
-          type: integer
+          default: 4
         max_depth:
-          default: 3
-          maximum: 20
-          minimum: 1
-          title: Max Depth
           type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Depth
+          default: 3
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
         tasks:
           items:
             $ref: '#/components/schemas/GraphTask'
+          type: array
           maxItems: 100
           minItems: 1
           title: Tasks
-          type: array
         edges:
           items:
             $ref: '#/components/schemas/GraphEdge'
+          type: array
           maxItems: 500
           title: Edges
-          type: array
         loops:
           items:
             $ref: '#/components/schemas/GraphLoop'
+          type: array
           maxItems: 30
           title: Loops
-          type: array
+      additionalProperties: false
+      type: object
       required:
       - name
       - tasks
       title: GraphDefinition
-      type: object
+      description: A bounded, versioned workflow graph with persisted editor layout.
     GraphEdge:
       additionalProperties: false
       description: A required dependency, optionally activated by a field condition.
@@ -9556,86 +9605,87 @@ components:
       title: TeamRole
       type: object
     AutonomousDefinition:
-      additionalProperties: false
-      description: A coordinator and allowed role templates sharing the workflow executor.
       properties:
         kind:
+          type: string
           const: autonomous
           title: Kind
-          type: string
         name:
+          type: string
           maxLength: 128
           minLength: 1
           title: Name
-          type: string
         coordinator:
           $ref: '#/components/schemas/TeamRole'
         allowed_roles:
           items:
             $ref: '#/components/schemas/TeamRole'
+          type: array
           maxItems: 100
           minItems: 1
           title: Allowed Roles
-          type: array
         required_inputs:
           items:
             type: string
+          type: array
           maxItems: 30
           title: Required Inputs
-          type: array
         max_members:
-          default: 8
-          maximum: 100
-          minimum: 2
+          type: integer
+          maximum: 100.0
+          minimum: 2.0
           title: Max Members
-          type: integer
+          default: 8
         max_parallel:
-          default: 4
-          maximum: 100
-          minimum: 1
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
           title: Max Parallel
-          type: integer
+          default: 4
         max_tasks:
-          default: 50
-          maximum: 100
-          minimum: 1
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
           title: Max Tasks
-          type: integer
+          default: 50
         max_depth:
-          default: 3
-          maximum: 20
-          minimum: 1
-          title: Max Depth
           type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Depth
+          default: 3
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
         allowed_workflows:
           items:
             $ref: '#/components/schemas/WorkflowCall'
+          type: array
           maxItems: 30
           title: Allowed Workflows
-          type: array
         output_contract:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
-          default: null
           title: Output Contract
         approval_question:
           anyOf:
-          - maxLength: 100000
+          - type: string
+            maxLength: 100000
             minLength: 1
-            type: string
           - type: 'null'
-          default: null
           title: Approval Question
+      additionalProperties: false
+      type: object
       required:
       - kind
       - name
       - coordinator
       - allowed_roles
       title: AutonomousDefinition
-      type: object
-
+      description: A coordinator and allowed role templates sharing the workflow executor.
     TeamCall:
       additionalProperties: false
       description: An exact autonomous asset version invoked in an independent scope.

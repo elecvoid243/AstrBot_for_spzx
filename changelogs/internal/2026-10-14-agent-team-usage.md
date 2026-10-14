@@ -1,0 +1,7 @@
+# Agent Teams root usage and limits
+
+- Track unique delivery receipts across coordinator/member calls, nested scopes, loop Tasks and Attempts. Preserve reported, estimated and unknown consumption after termination, recovery and explicit retry; accept late reports without changing execution ownership.
+- Admit calls under the existing root control lock, sharing token reservations and scope ceilings. Apply ancestor concurrency, subtree member limits, call steps, loop rounds and per-call output caps. Reservation waits release active capacity; uncertain consumption remains conservative and provider reports may exceed estimates.
+- Configure versioned scope limits in the existing asset editors and inspect root/subtree totals, stop reasons and Invocation receipts in run details. No new navigation entry is introduced: **checkpoint usage counters → Independent Runs → View Run → Usage and limits → Call details**; configuration lives in **Workflow Assets → Edit Asset → Scope limits**.
+- Keep validated results finishable when an exhausted allowance rejects only subsequent narration. Retain frozen inputs, executor fences, checkpoint/tool recovery and atomic artifact handoff.
+- Update English/Chinese instructions and screenshots; regenerate the OpenAPI client. The token allowance covers instrumented, estimable model calls, not arbitrary opaque tool/plugin charges, and does not promise zero overspend.

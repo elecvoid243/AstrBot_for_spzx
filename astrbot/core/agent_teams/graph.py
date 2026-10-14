@@ -9,6 +9,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleOverrides
+from astrbot.core.agent_teams.usage import RunLimits
 
 HUMAN_APPROVAL_CONTRACT = {
     "type": "object",
@@ -187,6 +188,7 @@ class GraphDefinition(BaseModel):
     required_inputs: list[str] = Field(default_factory=list, max_length=30)
     max_parallel: int = Field(default=4, ge=1, le=100)
     max_depth: int = Field(default=3, ge=1, le=20)
+    limits: RunLimits | None = None
     tasks: list[GraphTask] = Field(min_length=1, max_length=100)
     edges: list[GraphEdge] = Field(default_factory=list, max_length=500)
     loops: list[GraphLoop] = Field(default_factory=list, max_length=30)

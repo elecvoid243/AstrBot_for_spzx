@@ -408,6 +408,19 @@ class AgentWorkflowToolRecovery(SQLModel, table=True):
     data: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentWorkflowUsage(TimestampMixin, SQLModel, table=True):
+    """Durable delivery receipts; accounting never owns execution state."""
+
+    __tablename__: str = "agent_workflow_usage"  # pyright: ignore[reportIncompatibleVariableOverride]
+    receipt_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    run_id: str = Field(index=True)
+    attempt_id: str
+    invocation_id: str
+    execution_id: str
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 

@@ -1,10 +1,12 @@
+import json
+import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ...provider.modalities import (
     log_context_sanitize_stats,
     sanitize_contexts_by_modalities,
 )
-from ..message import Message
+from ..message import Message, bind_checkpoint_messages
 from .token_counter import EstimateTokenCounter, TokenCounter
 
 if TYPE_CHECKING:
@@ -326,6 +328,12 @@ class LLMSummaryCompressor:
                 still answers with a tool call (empty text), the request is
                 retried once without tools.
         """
+        from astrbot.core.agent_team_execution import (
+            ProcessPersistenceError,
+            current_team_execution,
+            model_delivery,
+        )
+
         from .round_utils import split_into_rounds
 
         rounds = split_into_rounds(messages)
@@ -390,30 +398,65 @@ class LLMSummaryCompressor:
         # Generate summary. A single attempt is enough: on failure the caller
         # falls back to truncation, so retrying (e.g. on an exhausted quota)
         # would only hold up the reply.
+        summary_content = ""
         try:
-            response = await self.provider.text_chat(
-                contexts=sanitized_summary_contexts,
-                func_tool=func_tool,
-                llm_params=self.llm_params or None,
-                request_max_retries=1,
-            )
-            summary_content = (response.completion_text or "").strip()
-            if not summary_content and func_tool is not None:
-                # The model answered with a tool call instead of a summary.
-                # Retry without tools so the reply cannot be a tool call;
-                # the retry is rare and gives up prefix-cache parity for
-                # correctness.
-                logger.info(
-                    "Summary request with tools returned empty completion; "
-                    "retrying without tools.",
+            for schemas in [func_tool, None] if func_tool is not None else [None]:
+                execution = current_team_execution.get()
+                params = dict(self.llm_params or {})
+                receipt = None
+                input_tokens = EstimateTokenCounter().count_tokens(
+                    bind_checkpoint_messages(sanitized_summary_contexts)
+                ) + (
+                    (len(json.dumps([tool.parameters for tool in schemas.tools])) + 3)
+                    // 4
+                    if schemas
+                    else 0
                 )
-                response = await self.provider.text_chat(
-                    contexts=sanitized_summary_contexts,
-                    llm_params=self.llm_params or None,
-                    request_max_retries=1,
+                if execution and execution.begin_usage:
+                    receipt = await execution.begin_usage(
+                        {
+                            "receipt_id": uuid.uuid4().hex,
+                            "invocation_id": uuid.uuid4().hex,
+                            "kind": "model",
+                            "name": self.provider.provider_config.get("id"),
+                            "input_tokens": input_tokens,
+                            "max_output_tokens": params.get("max_tokens"),
+                        }
+                    )
+                    params["max_tokens"] = receipt["max_output_tokens"]
+                response = None
+                try:
+                    with model_delivery(receipt):
+                        response = await self.provider.text_chat(
+                            contexts=sanitized_summary_contexts,
+                            func_tool=schemas,
+                            llm_params=params or None,
+                            request_max_retries=1,
+                        )
+                finally:
+                    if receipt and execution and execution.report_usage:
+                        report = (
+                            {
+                                "input_tokens": response.usage.input,
+                                "output_tokens": response.usage.output,
+                            }
+                            if response and response.usage
+                            else {
+                                "estimated_tokens": input_tokens
+                                + (len(response.completion_text) + 3) // 4
+                            }
+                            if response and response.role != "err"
+                            else {}
+                        )
+                        await execution.report_usage(receipt["receipt_id"], report)
+                summary_content = (
+                    (response.completion_text or "").strip() if response else ""
                 )
-                summary_content = (response.completion_text or "").strip()
+                if summary_content:
+                    break
         except Exception as e:
+            if isinstance(e, ProcessPersistenceError):
+                raise
             logger.error(f"Failed to generate summary: {e}")
             return messages
 

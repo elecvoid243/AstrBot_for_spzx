@@ -241,6 +241,24 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 
 ![An unselected loop stays skipped while its active branch completes the merge](/images/agent-workflow-loop-skip-en.png)
 
+## Root usage and limits
+
+Open **Workflow Assets → Edit Asset → Scope limits** to configure total call steps, subtree member instances, rounds per loop, token allowance and output tokens per model call. Single tasks, canvas workflows and autonomous teams share this form. Blank fields add no ceiling. Save a new version and start a run; existing runs retain their frozen limits. Existing concurrency, depth and local team instance limits still apply, together with ancestor scope limits.
+
+Each admitted model, tool or status-query delivery uses one call step, including the coordinator, members, parameter generation, compression, retries and nested calls. Human, child and reservation waits release active capacity. Recovery continues the original Attempt; an explicit retry creates a new Attempt without resetting consumption or allowances. The iteration ceiling applies to each loop and cannot be bypassed by recovery or retry.
+
+Open **Independent Runs → View Run → Usage and limits** for the root total. Select a task or child scope for its detail. Expand **Call details** to trace the scope, Task, Attempt, Invocation and actual delivery receipt. Parent and child views refer to the same receipts and do not double count. Reading an input artifact from another root does not transfer that run's historical consumption.
+
+Token totals separate the provider-reported portion, estimates, in-flight reservations and calls without confirmed usage. Missing reports remain unknown. Tools without token reports also remain unknown; this does not mean they have no other charges. The token allowance governs estimable model requests connected to this protocol. Uninstrumented charges inside plugins or tools cannot be hard limited. If no output ceiling is configured, the existing request ceiling is used, or 2048 when the request has none. Reservations constrain concurrent admission, but inaccurate estimates or provider output enforcement can still cause reported consumption to exceed the allowance. There is no unconditional zero-overspend guarantee.
+
+An exhausted limit stops new calls and exposes the limit, value and affected task. Saved results and effects remain traceable. A validated result and fully applied tool batch can finish even when the allowance rejects a subsequent narration request. Interrupted consumption retains conservative uncertainty; late reports update the original receipt without taking execution ownership. Allowance held only by other in-flight calls waits for release without occupying active capacity.
+
+![Scope limits in the actual WebUI](/images/agent-team-usage-config-en.jpg)
+
+![Stopped calls retain their reported consumption](/images/agent-team-usage-limit-en.jpg)
+
+![Root and child invocation details](/images/agent-team-usage-child-en.jpg)
+
 ## Previous and new entry points
 
 | Previous entry | Current purpose |
@@ -254,6 +272,7 @@ A loop runs independently without a human node. To confirm a report, add a **Ver
 | An interrupted task only exposed process records | Independent Runs → View Run → select task → Continue same attempt; saved tool results are reused, and unknown effects require confirmation. |
 | Unknown tool effects only displayed a waiting reason | Independent Runs → View Run → select task → Saved member process → expand the unknown call → reconcile, record a verified outcome or explicitly request a new execution. |
 | Run details only showed checkpoint recovery | Independent Runs → View Run → Whole run controls; select the failed task → Retry failed task. |
+| Usage only showed checkpoint model/step counters | Workflow Assets → Edit Asset → Scope limits; Independent Runs → View Run → Usage and limits → Call details. |
 | Member communication appeared only in tool results | Independent Runs → View Run → select task → Saved member process → Member messages; expand a reference to read its complete version. |
 | Coordinators could only dispatch member tasks | Workflow Assets → New Autonomous Team / Edit Asset → Allowed workflows; Independent Runs → View Run → select coordinator → View child workflow. |
 | Revision used only ordinary task dependencies | Workflow Assets → Edit Asset → Add bounded loop; Independent Runs → View Run → Loop iterations. |

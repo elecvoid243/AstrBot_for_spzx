@@ -51,7 +51,7 @@
           <p>{{ tm("v2.attempt") }} {{ task.state.attempt_id }}</p>
           <p>
             {{ tm("loops.usage") }}:
-            {{ task.recovery?.model_calls ?? tm("loops.unknown") }}
+            {{ task.usage?.model_calls ?? task.recovery?.model_calls ?? tm("loops.unknown") }}
           </p>
           <p>
             {{ tm("graph.inputs") }}: {{ JSON.stringify(task.snapshot.inputs) }}

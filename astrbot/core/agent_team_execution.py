@@ -17,7 +17,8 @@ in `resolve`.
 """
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -90,6 +91,10 @@ class NodeExecutionBinding:
     """Durable whole-run admission before fresh or restored external invocations."""
     pending_messages: Callable[[], Awaitable[list[dict]]] | None = None
     """Read member deliveries at the runner's serialized model-request boundary."""
+    begin_usage: Callable[[dict], Awaitable[dict]] | None = None
+    """Reserve one actual model/tool delivery within the shared root allowance."""
+    report_usage: Callable[[str, dict], Awaitable[dict]] | None = None
+    """Account for the admitted delivery, including late provider reports."""
     recovery_error: CheckpointRecoveryError | None = None
     """Restore failure retained when the main pipeline renders an error reply."""
 
@@ -97,6 +102,54 @@ class NodeExecutionBinding:
 current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
     "current_team_execution", default=None
 )
+
+current_model_usage: ContextVar[dict | None] = ContextVar(
+    "current_model_usage", default=None
+)
+
+
+@contextmanager
+def model_delivery(receipt: dict | None) -> Iterator[None]:
+    """Expose a mutable receipt to native transport retries during one await.
+
+    Args:
+        receipt: Admitted delivery, updated in place when transport retries occur.
+
+    Yields:
+        None while the provider executes in the existing member invocation.
+    """
+    token = current_model_usage.set(receipt)
+    try:
+        yield
+    finally:
+        current_model_usage.reset(token)
+
+
+def apply_model_output_limit(
+    payload: dict, field: str, extra_body: dict | None = None
+) -> None:
+    """Apply the admitted output ceiling after native provider configuration.
+
+    Args:
+        payload: Actual native provider request.
+        field: Native output-limit parameter name.
+        extra_body: Optional body overrides that otherwise replace SDK parameters.
+    """
+    receipt = current_model_usage.get()
+    if receipt is None:
+        return
+    cap = receipt["max_output_tokens"]
+    for body in [payload, extra_body] if extra_body is not None else [payload]:
+        for alias in (
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "maxOutputTokens",
+        ):
+            configured = body.pop(alias, None)
+            if isinstance(configured, int) and configured > 0:
+                cap = min(cap, configured)
+    payload[field] = cap
 
 
 async def execute_team_turn(
@@ -119,6 +172,8 @@ async def execute_team_turn(
     checkpoint: dict | None = None,
     admit_work: Callable[[], Awaitable[None]] | None = None,
     pending_messages: Callable[[], Awaitable[list[dict]]] | None = None,
+    begin_usage: Callable[[dict], Awaitable[dict]] | None = None,
+    report_usage: Callable[[str, dict], Awaitable[dict]] | None = None,
 ) -> tuple[str, list]:
     """Execute a member or coordinator turn through the existing pipeline ports.
 
@@ -141,6 +196,8 @@ async def execute_team_turn(
         checkpoint: Saved effective context and response for this original attempt.
         admit_work: Wait for durable whole-run permission before external work.
         pending_messages: Scoped deliveries to commit with the next fresh context.
+        begin_usage: Reserve an actual delivery under shared frozen limits.
+        report_usage: Save consumption without altering the current executor fence.
 
     Returns:
         Full reply text and existing chat message parts.
@@ -181,6 +238,8 @@ async def execute_team_turn(
         checkpoint=checkpoint,
         admit_work=admit_work,
         pending_messages=pending_messages,
+        begin_usage=begin_usage,
+        report_usage=report_usage,
     )
     token = AgentTeamExecutionRegistry.register(binding)
     framing = (

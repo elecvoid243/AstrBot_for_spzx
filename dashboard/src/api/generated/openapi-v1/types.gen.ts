@@ -70,6 +70,7 @@ export type AutonomousDefinition = {
     max_parallel?: number;
     max_tasks?: number;
     max_depth?: number;
+    limits?: (RunLimits | null);
     allowed_workflows?: Array<WorkflowCall>;
     output_contract?: ({
     [key: string]: unknown;
@@ -513,6 +514,7 @@ export type GraphDefinition = {
     required_inputs?: Array<(string)>;
     max_parallel?: number;
     max_depth?: number;
+    limits?: (RunLimits | null);
     tasks: Array<GraphTask>;
     edges?: Array<GraphEdge>;
     loops?: Array<GraphLoop>;
@@ -974,6 +976,17 @@ export type RoleSaveRequest = {
 };
 
 /**
+ * Optional whole-scope ceilings; nested scopes also obey their ancestors.
+ */
+export type RunLimits = {
+    max_steps?: (number | null);
+    max_members?: (number | null);
+    max_iterations?: (number | null);
+    token_budget?: (number | null);
+    max_output_tokens?: (number | null);
+};
+
+/**
  * The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.
  */
 export type RuntimeInfo = {
@@ -1196,6 +1209,7 @@ export type WorkflowDefinition = {
     output_contract?: ({
     [key: string]: unknown;
 } | null);
+    limits?: (RunLimits | null);
 };
 
 export type WorkflowEdge = {

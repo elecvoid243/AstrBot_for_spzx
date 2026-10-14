@@ -447,7 +447,7 @@
     "retry": "Retry failed task",
     "confirm": "Confirm decision",
     "states": {
-      "active": "New work is allowed",
+      "active": "Whole-run control: active",
       "paused": "Paused — new work is stopped",
       "cancelled": "Cancelled — no new work will start"
     },
@@ -549,8 +549,8 @@
     "maxDepth": "Root nesting depth limit",
     "scope": "Child scope",
     "root": "Root run",
-    "modelCalls": "Saved model calls",
-    "steps": "Saved execution steps",
+    "modelCalls": "Admitted model calls",
+    "steps": "Call steps used",
     "unknownUsage": "Unknown"
   },
   "workflowCall": {
@@ -561,5 +561,36 @@
     "returnTask": "Return task",
     "open": "View child workflow",
     "remove": "Remove allowed workflow"
+  },
+  "usage": {
+    "title": "Usage and limits",
+    "limits": "Scope limits",
+    "limitHint": "Blank fields add no ceiling. The root allowance includes the coordinator, members, retries and nested calls. Steps count each admitted model, tool or status-query delivery; the iteration ceiling applies to every loop.",
+    "boundary": "Reservations use estimates and limit new calls. Provider reports can exceed estimates or output caps; this is not a guarantee of zero overspend. Interrupted calls keep uncertain consumption. Tools without token reports show unknown usage.",
+    "max_steps": "Total call steps",
+    "max_members": "Member instances in this subtree",
+    "max_iterations": "Rounds per loop",
+    "token_budget": "Token allowance",
+    "max_output_tokens": "Output tokens per model call",
+    "reported": "Reported tokens",
+    "estimated": "Estimated tokens",
+    "reserved": "In-flight reserved tokens",
+    "unknownCalls": "Unknown or in-flight calls",
+    "unknown": "Unknown",
+    "unlimited": "No added ceiling",
+    "stopped": "Stopped by limit",
+    "calls": "Admitted calls",
+    "details": "Call details",
+    "tokens": "Tokens",
+    "scope": "Scope",
+    "task": "Task",
+    "invocation": "Invocation",
+    "delivery": "Delivery",
+    "quality": {
+      "reported": "Provider reported",
+      "estimated": "Estimated",
+      "unknown": "Unknown",
+      "in_flight": "In flight"
+    }
   }
 }

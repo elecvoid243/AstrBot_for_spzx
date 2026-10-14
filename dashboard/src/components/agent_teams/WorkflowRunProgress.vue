@@ -34,6 +34,7 @@
         >{{ tm(`v2.states.${run.status}`) }}</v-chip
       >
     </div>
+    <RunUsagePanel :run="run" />
     <div class="run-columns">
       <v-card variant="outlined" class="run-progress">
         <v-card-title
@@ -226,6 +227,7 @@
 </template>
 
 <script setup lang="ts">
+import RunUsagePanel from "./RunUsagePanel.vue";
 import { computed } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";

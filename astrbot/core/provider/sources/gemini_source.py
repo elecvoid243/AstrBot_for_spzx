@@ -16,6 +16,7 @@ import astrbot.core.message.components as Comp
 from astrbot import logger
 from astrbot.api.provider import Provider
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart
+from astrbot.core.agent_team_execution import apply_model_output_limit
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
@@ -323,6 +324,7 @@ class ProviderGoogleGenAI(Provider):
                 # silently no-op and the level would never reach the API.
                 thinking_config.thinking_level = level
 
+        apply_model_output_limit(payloads, "max_tokens")
         return types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature,

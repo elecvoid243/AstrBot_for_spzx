@@ -10,6 +10,10 @@ import astrbot.core.message.components as Comp
 from astrbot import logger
 from astrbot.core.agent.message import ContentPart, Message
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.agent_team_execution import (
+    apply_model_output_limit,
+    current_model_usage,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage, ToolCallsResult
@@ -356,6 +360,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         payloads.pop("previous_response_id", None)
         payloads.pop("conversation", None)
         payloads["store"] = False
+        apply_model_output_limit(payloads, "max_output_tokens", extra_body)
 
         response = await retry_provider_request(
             "OpenAI Responses",
@@ -427,6 +432,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
         payloads.pop("previous_response_id", None)
         payloads.pop("conversation", None)
         payloads["store"] = False
+        apply_model_output_limit(payloads, "max_output_tokens", extra_body)
 
         stream = await retry_provider_request(
             "OpenAI Responses",
@@ -618,7 +624,9 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
                 output=output_tokens,
             )
         else:
-            llm_response.usage = TokenUsage()
+            llm_response.usage = (
+                None if current_model_usage.get() is not None else TokenUsage()
+            )
 
         has_text = bool((llm_response.completion_text or "").strip())
         has_reasoning = bool((llm_response.reasoning_content or "").strip())

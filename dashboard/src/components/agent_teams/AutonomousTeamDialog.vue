@@ -88,6 +88,10 @@
             :label="tm('child.maxDepth')"
           />
         </div>
+        <RunLimitsForm
+          v-model="form.limits"
+          @validation="usageInvalid = $event"
+        />
         <AllowedWorkflowsPanel
           :model-value="form.allowed_workflows ?? []"
           @update:model-value="form.allowed_workflows = $event"
@@ -117,7 +121,8 @@
             !form.name.trim() ||
             !form.coordinator.role_id ||
             !form.allowed_roles.length ||
-            workflowInvalid
+            workflowInvalid ||
+            usageInvalid
           "
           data-testid="team-save"
           @click="save"
@@ -129,6 +134,7 @@
 </template>
 
 <script setup lang="ts">
+import RunLimitsForm from "./RunLimitsForm.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
 import { workflowAssetsApi } from "@/api/workflowAssets";
@@ -151,6 +157,7 @@ onBeforeUnmount(() => {
 });
 const approval = ref("");
 const contract = ref("");
+const usageInvalid = ref(false);
 const allowedIds = ref<string[]>([]);
 const form = ref<AutonomousDefinition>({
   kind: "autonomous",
@@ -217,7 +224,7 @@ function selectAllowed(identities: string[]) {
 }
 
 async function save() {
-  if (saving.value) return;
+  if (saving.value || usageInvalid.value) return;
   const generation = editGeneration;
   const asset = props.asset;
   const current = () =>

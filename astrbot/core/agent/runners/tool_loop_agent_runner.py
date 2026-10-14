@@ -43,6 +43,7 @@ from astrbot.core.agent_team_execution import (
     CheckpointRecoveryError,
     ProcessPersistenceError,
     current_team_execution,
+    model_delivery,
 )
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.components import Json
@@ -677,6 +678,89 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # belongs to the first committed request that included it.
             self._member_message_receipts = []
 
+    async def _begin_metered_call(
+        self,
+        kind: str,
+        invocation_id: str,
+        *,
+        name: str | None = None,
+        contexts: list | None = None,
+        tools: ToolSet | None = None,
+    ) -> dict | None:
+        """Admit one actual delivery, shared by model, parameter and tool calls.
+
+        Args:
+            kind: Model, tool execution or tool status query.
+            invocation_id: Original checkpoint or tool-call identity.
+            name: Provider or tool name for the durable detail.
+            contexts: Actual provider-facing messages used for estimation.
+            tools: Actual provider-facing schemas used for estimation.
+
+        Returns:
+            Committed receipt with the permitted output cap, or None outside v2.
+        """
+        execution = current_team_execution.get()
+        if not execution or not execution.begin_usage:
+            return None
+        payload = {
+            "receipt_id": uuid.uuid4().hex,
+            "invocation_id": invocation_id,
+            "kind": kind,
+            "name": name,
+        }
+        if kind == "model":
+            messages = bind_checkpoint_messages(
+                dump_call_messages(contexts or self.run_context.messages)
+            )
+            payload["input_tokens"] = (
+                self._tool_result_token_counter.count_tokens(messages)
+                + (
+                    len(
+                        json.dumps(
+                            [tool.parameters for tool in tools.tools],
+                            ensure_ascii=False,
+                        )
+                    )
+                    + 3
+                )
+                // 4
+                if tools
+                else self._tool_result_token_counter.count_tokens(messages)
+            )
+            payload["max_output_tokens"] = (self.req.llm_params or {}).get(
+                "max_completion_tokens"
+            ) or (self.req.llm_params or {}).get("max_tokens")
+        return await execution.begin_usage(payload)
+
+    async def _report_metered_call(
+        self, receipt: dict | None, response: LLMResponse | None = None
+    ) -> None:
+        """Persist complete reports or conservative uncertainty for a delivery.
+
+        Args:
+            receipt: Original admitted delivery, absent for ordinary chat.
+            response: Complete provider response; missing usage remains marked.
+        """
+        execution = current_team_execution.get()
+        if receipt is None or not execution or not execution.report_usage:
+            return
+        report = {}
+        if response and response.usage:
+            report = {
+                "input_tokens": response.usage.input,
+                "output_tokens": response.usage.output,
+            }
+        elif response and response.role != "err":
+            report = {
+                "estimated_tokens": receipt["request"]["input_tokens"]
+                + (
+                    len(json.dumps(dump_call_response(response), ensure_ascii=False))
+                    + 3
+                )
+                // 4
+            }
+        await execution.report_usage(receipt["receipt_id"], report)
+
     def _read_tool_hint(self) -> str:
         if self.read_tool is not None:
             return f"`{self.read_tool.name}`"
@@ -1086,23 +1170,50 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         execution = current_team_execution.get()
         if execution and execution.admit_work:
             await execution.admit_work()
-        if self.streaming:
-            stream = self.provider.text_chat_stream(**payload)
-            try:
-                while True:
-                    try:
-                        resp = await self._await_or_stop(anext(stream))  # type: ignore
-                    except StopAsyncIteration:
-                        return
-                    if resp is None:
-                        return
+        receipt = await self._begin_metered_call(
+            "model",
+            (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
+            name=self.provider.provider_config.get("id"),
+            contexts=contexts,
+            tools=func_tool,
+        )
+        if receipt:
+            params = dict(self.req.llm_params or {})
+            params[
+                "max_completion_tokens"
+                if "max_completion_tokens" in params
+                else "max_tokens"
+            ] = receipt["max_output_tokens"]
+            payload["llm_params"] = params
+        reported = False
+        try:
+            if self.streaming:
+                stream = self.provider.text_chat_stream(**payload)
+                try:
+                    while True:
+                        try:
+                            with model_delivery(receipt):
+                                resp = await self._await_or_stop(anext(stream))  # type: ignore
+                        except StopAsyncIteration:
+                            return
+                        if resp is None:
+                            return
+                        if not resp.is_chunk:
+                            await self._report_metered_call(receipt, resp)
+                            reported = True
+                        yield resp
+                finally:
+                    await self._close_executor(stream)
+            else:
+                with model_delivery(receipt):
+                    resp = await self._await_or_stop(self.provider.text_chat(**payload))
+                if resp is not None:
+                    await self._report_metered_call(receipt, resp)
+                    reported = True
                     yield resp
-            finally:
-                await self._close_executor(stream)
-        else:
-            resp = await self._await_or_stop(self.provider.text_chat(**payload))
-            if resp is not None:
-                yield resp
+        finally:
+            if not reported:
+                await self._report_metered_call(receipt)
 
     async def _iter_llm_responses_with_fallback(
         self,
@@ -2008,6 +2119,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             execution = current_team_execution.get()
             if execution and execution.admit_work:
                 await execution.admit_work()
+            receipt = await self._begin_metered_call(
+                "query", call["record_id"], name=call["name"]
+            )
             try:
                 queried = await self._await_or_stop(
                     asyncio.wait_for(
@@ -2027,6 +2141,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     status="unknown",
                     evidence=f"Status query failed: {type(exc).__name__}: {exc}",
                 )
+            finally:
+                await self._report_metered_call(receipt)
             metadata.setdefault("queries", []).append(
                 result.model_dump(
                     mode="json",
@@ -2284,6 +2400,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 continue
             tool_failed = False
             invocation_token = None
+            usage_receipt = None
             try:
                 if not req.func_tool:
                     return
@@ -2354,6 +2471,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 execution = current_team_execution.get()
                 if execution and execution.admit_work:
                     await execution.admit_work()
+                if not reused:
+                    usage_receipt = await self._begin_metered_call(
+                        "tool",
+                        call_state["record_id"] if call_state else uuid.uuid4().hex,
+                        name=func_tool_name,
+                    )
                 if call_state is not None and not reused:
                     assert self._call_checkpoint is not None
                     if func_tool_id not in self._call_checkpoint["started_tools"]:
@@ -2625,6 +2748,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             finally:
                 if invocation_token is not None:
                     current_tool_invocation.reset(invocation_token)
+                await self._report_metered_call(usage_receipt)
 
             if call_state is not None and not reused:
                 if tool_failed and retry_prefix is not None:
@@ -2752,42 +2876,51 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 response = load_call_response(resumed["response"])
                 self._reused_response = True
             else:
-                response = await self._await_or_stop(
-                    self.provider.text_chat(
-                        contexts=bind_checkpoint_messages(resumed["input_contexts"]),
-                        func_tool=tools,
-                        model=self.req.model,
-                        session_id=self.req.session_id,
-                        extra_user_content_parts=self.req.extra_user_content_parts,
-                        abort_signal=self._abort_signal,
-                        request_max_retries=self.request_max_retries,
-                    )
-                )
-            if response:
-                # Fill an observation commit gap with the original invocation identity.
-                await self._record_model_response(response)
+                contexts = bind_checkpoint_messages(resumed["input_contexts"])
         else:
-            effective_contexts = self._sanitize_contexts_for_provider(contexts)
+            contexts = self._sanitize_contexts_for_provider(contexts)
             await self._save_call_checkpoint(
                 "request",
-                contexts=effective_contexts,
+                contexts=contexts,
                 stage=stage,
                 parent_response=parent,
                 previous_response=previous,
             )
-            response = await self._await_or_stop(
-                self.provider.text_chat(
-                    contexts=effective_contexts,
-                    func_tool=tools,
-                    model=self.req.model,
-                    session_id=self.req.session_id,
-                    extra_user_content_parts=self.req.extra_user_content_parts,
-                    abort_signal=self._abort_signal,
-                    request_max_retries=self.request_max_retries,
-                )
+        if resumed is None or resumed["response"] is None:
+            receipt = await self._begin_metered_call(
+                "model",
+                (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
+                name=self.provider.provider_config.get("id"),
+                contexts=contexts,
+                tools=tools,
             )
-            if response:
-                await self._record_model_response(response)
+            params = dict(self.req.llm_params or {})
+            if receipt:
+                params[
+                    "max_completion_tokens"
+                    if "max_completion_tokens" in params
+                    else "max_tokens"
+                ] = receipt["max_output_tokens"]
+            response = None
+            try:
+                with model_delivery(receipt):
+                    response = await self._await_or_stop(
+                        self.provider.text_chat(
+                            contexts=contexts,
+                            func_tool=tools,
+                            model=self.req.model,
+                            session_id=self.req.session_id,
+                            extra_user_content_parts=self.req.extra_user_content_parts,
+                            abort_signal=self._abort_signal,
+                            request_max_retries=self.request_max_retries,
+                            llm_params=params,
+                        )
+                    )
+            finally:
+                await self._report_metered_call(receipt, response)
+        if response:
+            # Fill an observation commit gap with the original invocation identity.
+            await self._record_model_response(response)
         if (
             response
             and response.usage

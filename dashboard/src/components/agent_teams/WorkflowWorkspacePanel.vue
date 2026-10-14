@@ -293,6 +293,10 @@
             class="my-3"
             >{{ detailRun.state.reason }}</v-alert
           >
+          <RunUsagePanel
+            v-if="detailRun.run_id !== selectedRun.run_id"
+            :run="detailRun"
+          />
           <p class="text-body-2 text-medium-emphasis mb-3">
             {{ detailRun.snapshot.definition.name }} · {{ tm("v2.result") }}
           </p>
@@ -447,6 +451,10 @@
               style="max-width: 220px"
             />
           </div>
+          <RunLimitsForm
+            v-model="graphForm.limits"
+            @validation="graphUsageInvalid = $event"
+          />
           <WorkflowGraphCanvas
             v-model:definition="graphForm"
             :roles="roles"
@@ -475,7 +483,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="graphInvalid"
+            :disabled="graphInvalid || graphUsageInvalid"
             @click="saveGraph"
             >{{ tm("v2.save") }}</v-btn
           ></v-card-actions
@@ -521,6 +529,10 @@
             :hint="tm('v2.contractHint')"
             persistent-hint
           />
+          <RunLimitsForm
+            v-model="form.limits"
+            @validation="usageInvalid = $event"
+          />
           <v-alert v-if="formError" type="error" variant="tonal" class="mt-3">{{
             formError
           }}</v-alert>
@@ -534,6 +546,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
+            :disabled="usageInvalid"
             @click="save"
             >{{ tm("v2.save") }}</v-btn
           >
@@ -651,6 +664,8 @@ import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import RunLimitsForm from "./RunLimitsForm.vue";
+import RunUsagePanel from "./RunUsagePanel.vue";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
 import WorkflowRunProgress from "./WorkflowRunProgress.vue";
 import WorkflowRunProcess from "./WorkflowRunProcess.vue";
@@ -710,6 +725,8 @@ const detailRun = computed(
 const graphEditing = ref(false);
 const teamEditing = ref(false);
 const graphInvalid = ref(false);
+const usageInvalid = ref(false);
+const graphUsageInvalid = ref(false);
 const graphForm = ref<GraphDefinition>({
   name: "",
   required_inputs: [],
@@ -890,7 +907,7 @@ function editTeam(asset: any) {
 }
 
 async function saveGraph() {
-  if (saving.value || graphInvalid.value) return;
+  if (saving.value || graphInvalid.value || graphUsageInvalid.value) return;
   saving.value = true;
   formError.value = "";
   try {
@@ -934,7 +951,7 @@ function selectRole(id: string) {
 }
 
 async function save() {
-  if (saving.value) return;
+  if (saving.value || usageInvalid.value) return;
   saving.value = true;
   formError.value = "";
   try {

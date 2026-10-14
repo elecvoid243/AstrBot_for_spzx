@@ -23,7 +23,7 @@ from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.conversation_mgr import ConversationManager
-from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowProcess, AgentWorkflowToolCall
+from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowProcess, AgentWorkflowToolCall, AgentWorkflowUsage
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
 from astrbot.core.knowledge_base import kb_mgr
@@ -46,7 +46,7 @@ from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
 
 
 async def run_worker(
-    folder: Path, endpoint: str, action: str, scenario: str = "response"
+    folder: Path, endpoint: str, action: str, scenario: str = "response", limits: dict | None = None
 ) -> None:
     """Build actual AstrBot services and stop at a committed response boundary.
 
@@ -55,6 +55,7 @@ async def run_worker(
         endpoint: External model/tool recorder owned by the parent process.
         action: Start an initial run or recover the saved original attempt.
         scenario: Persistence or external boundary at which to terminate the worker.
+        limits: Optional frozen root limits for accounting acceptance scenarios.
     """
     monkeypatch = MonkeyPatch()
     db = SQLiteDatabase(str(folder / "pipeline.db"))
@@ -70,6 +71,8 @@ async def run_worker(
     if scenario.startswith("overflow"):
         config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
+    if scenario == "usage_compression":
+        config["agent_runner"]["config"]["compression"].update({"overflow_strategy": "llm_compress", "provider_id": "model-original", "keep_recent_ratio": 0.15, "max_turns": 50})
     if scenario.startswith(("parameters", "repair", "team_message_parameters")):
         config["agent_runner"]["config"]["misc"]["tool_schema_mode"] = "skills_like"
     config["agent_runner"]["config"]["model"]["provider_id"] = "model-original"
@@ -264,9 +267,10 @@ async def run_worker(
             async with httpx.AsyncClient() as client:
                 response = await client.post(endpoint + "/model", json={
                     "contexts": [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in kwargs["contexts"]],
-                    "tools": kwargs["func_tool"].names(), "model": kwargs.get("model"),
-                    "parameter_query": all(not tool.description for tool in kwargs["func_tool"].tools),
+                    "tools": kwargs["func_tool"].names() if kwargs["func_tool"] else [], "model": kwargs.get("model"),
+                    "parameter_query": bool(kwargs["func_tool"]) and all(not tool.description for tool in kwargs["func_tool"].tools),
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
+                    **({"llm_params": kwargs.get("llm_params")} if scenario.startswith("usage_") else {}),
                     **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_")) else {}),
                     **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_")) else {}),
                 })
@@ -282,7 +286,12 @@ async def run_worker(
                 return LLMResponse(**data)
 
     provider = RecordedProvider({"id": "model-original", "type": "openai_chat_completion", "modalities": ["text", "image", "tool_use"]}, {})
+    if scenario.startswith("usage_native_"):
+        from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
+        provider = ProviderOpenAIOfficial({"id": "model-original", "type": "openai_chat_completion", "model": "model-original", "api_base": endpoint + "/v1", "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
     provider.set_model("model-original")
+    if scenario == "usage_compression":
+        provider.provider_config["max_context_tokens"] = 512
     providers.inst_map["model-original"] = provider
     providers.provider_insts.append(provider)
     conversations = ConversationManager(db)
@@ -409,6 +418,8 @@ async def run_worker(
                 None after recording any matching kill boundary on the session.
             """
             for row in [*session.new, *session.dirty]:
+                if isinstance(row, AgentWorkflowUsage) and row.data["kind"] == "model" and ((scenario == "usage_reserved" and row.data["quality"] == "in_flight") or (scenario == "usage_reported" and row.data["quality"] == "reported")):
+                    session.info["kill_boundary"] = row.run_id
                 if scenario.startswith("overflow") and not scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "tool_result") and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario.startswith("overflow") and scenario.endswith("request") and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "request" and row.data["model_calls"] == 2:
@@ -456,10 +467,30 @@ async def run_worker(
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
         role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 512} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
             "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
         })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}
+        if limits is not None:
+            definition["limits"] = limits
+        if scenario in {"usage_reservation_failure", "usage_report_failure"}:
+            async with db.engine.begin() as connection:
+                await connection.execute(text("CREATE TRIGGER reject_usage BEFORE INSERT ON agent_workflow_usage BEGIN SELECT RAISE(ABORT, 'usage storage unavailable'); END" if scenario == "usage_reservation_failure" else "CREATE TRIGGER reject_usage BEFORE UPDATE ON agent_workflow_usage WHEN json_extract(NEW.data, '$.quality') = 'reported' BEGIN SELECT RAISE(ABORT, 'usage report unavailable'); END"))
+        if scenario == "usage_report_pre":
+            def usage_before_flush(session, flush_context, instances):
+                """Terminate after the response, before its accounting commit.
+
+                Args:
+                    session: Real SQLite transaction.
+                    flush_context: Actual flush context.
+                    instances: Explicit flush targets, if any.
+                """
+                for receipt in session.dirty:
+                    if isinstance(receipt, AgentWorkflowUsage) and receipt.data["quality"] == "reported":
+                        (folder / "kill-ready.json").write_text(json.dumps({"run_id": receipt.run_id}), encoding="utf-8")
+                        while True:
+                            time.sleep(1)
+            sql_event.listen(Session, "before_flush", usage_before_flush)
         if scenario.startswith(("submit_custom", "submit_file")):
             contract = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False}
             if scenario.startswith("submit_file"):
@@ -467,6 +498,11 @@ async def run_worker(
                 contract["required"].append("files")
             definition["output_contract"] = contract
         asset = await service.save_asset("alice", {"definition": definition})
+        if scenario in {"usage_parallel", "usage_compression"}:
+            asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "max_parallel": 2, "limits": limits, "tasks": [
+                {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" else key, "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
+                for key in ["a", "b"]
+            ], "edges": [{"source": "a", "target": "b"}] if scenario == "usage_compression" else []}})
         if scenario == "manual_graph":
             asset = await service.save_asset("alice", {"definition": {"name": "Unknown effect graph", "max_parallel": 1, "tasks": [
                 {"id": "write", "name": "Unknown effect", "member": "writer", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."},
@@ -572,6 +608,13 @@ async def run_worker(
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
+            if scenario in {"usage_parallel", "usage_compression"} or scenario.startswith("usage_native_"):
+                await service.boot_sweep()
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
+                return
+            if scenario in {"usage_reservation_failure", "usage_report_failure"}:
+                async with db.engine.begin() as connection:
+                    await connection.execute(text("DROP TRIGGER reject_usage"))
             if action == "pause_decision":
                 await service.control_run(
                     "alice",
@@ -1031,6 +1074,10 @@ async def run_worker(
                 ),
                 encoding="utf-8",
             )
+        elif scenario.startswith("usage_"):
+            (folder / "completed.json").write_text(json.dumps({"after": current}), encoding="utf-8")
+            (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
+            await asyncio.Future()
         elif scenario in {"save_failure", "observation_failure", "tool_save_failure", "tool_observation_failure", "generator_error"}:
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()
@@ -1046,4 +1093,4 @@ async def run_worker(
 
 
 if __name__ == "__main__":
-    asyncio.run(run_worker(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "response"))
+    asyncio.run(run_worker(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "response", json.loads(sys.argv[5]) if len(sys.argv) > 5 else None))

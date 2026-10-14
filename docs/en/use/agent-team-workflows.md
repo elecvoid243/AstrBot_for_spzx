@@ -251,6 +251,8 @@ Open **Independent Runs → View Run → Usage and limits** for the root total. 
 
 Token totals separate the provider-reported portion, estimates, in-flight reservations and calls without confirmed usage. Missing reports remain unknown. Tools without token reports also remain unknown; this does not mean they have no other charges. The token allowance governs estimable model requests connected to this protocol. Uninstrumented charges inside plugins or tools cannot be hard limited. If no output ceiling is configured, the existing request ceiling is used, or 2048 when the request has none. Reservations constrain concurrent admission, but inaccurate estimates or provider output enforcement can still cause reported consumption to exceed the allowance. There is no unconditional zero-overspend guarantee.
 
+Runs created before usage tracking retain their original process records. The panel separately shows saved historical model responses and historical uncertainty, even after recovery records new usage. Historical responses and checkpoint steps are not admission receipts; reported totals cover the metered portion. The total number of calls with unknown consumption remains unknown for these runs.
+
 An exhausted limit stops new calls and exposes the limit, value and affected task. Saved results and effects remain traceable. A validated result and fully applied tool batch can finish even when the allowance rejects a subsequent narration request. Interrupted consumption retains conservative uncertainty; late reports update the original receipt without taking execution ownership. Allowance held only by other in-flight calls waits for release without occupying active capacity.
 
 ![Scope limits in the actual WebUI](/images/agent-team-usage-config-en.jpg)

@@ -33,6 +33,8 @@ import pytest
         "usage_shared_wait",
         "usage_native_gemini_empty",
         "usage_native_gemini_components",
+        "usage_legacy_response",
+        "usage_legacy_applied",
     ],
 )
 def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
@@ -65,24 +67,130 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
             if scenario.startswith("usage_native_"):
                 requests.append(payload)
                 data = json.dumps(
-                    {"error": {"message": "Transient failure", "type": "server_error", "code": 500, "status": "INTERNAL"}}
+                    {
+                        "error": {
+                            "message": "Transient failure",
+                            "type": "server_error",
+                            "code": 500,
+                            "status": "INTERNAL",
+                        }
+                    }
                     if len(requests) == 1
-                    else {"id": "native-response", "object": "chat.completion", "created": 1, "model": "model-original", "choices": [{"index": 0, "message": {"role": "assistant", "content": "Observed."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+                    else {
+                        "id": "native-response",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "model-original",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "Observed.",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 2,
+                            "total_tokens": 12,
+                        },
+                    }
                 ).encode()
                 if len(requests) > 1 and payload.get("stream"):
-                    chunk = {"id": "native-response", "object": "chat.completion.chunk", "created": 1, "model": "model-original", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Observed."}, "finish_reason": "stop"}]}
-                    data = ("data: " + json.dumps(chunk) + "\n\ndata: " + json.dumps({**chunk, "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}) + "\n\ndata: [DONE]\n\n").encode()
+                    chunk = {
+                        "id": "native-response",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "model-original",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": "Observed."},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                    data = (
+                        "data: "
+                        + json.dumps(chunk)
+                        + "\n\ndata: "
+                        + json.dumps(
+                            {
+                                **chunk,
+                                "choices": [],
+                                "usage": {
+                                    "prompt_tokens": 10,
+                                    "completion_tokens": 2,
+                                    "total_tokens": 12,
+                                },
+                            }
+                        )
+                        + "\n\ndata: [DONE]\n\n"
+                    ).encode()
                     if scenario == "usage_native_missing":
-                        data = ("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode()
-                if scenario in {"usage_native_gemini_usage", "usage_native_gemini_empty", "usage_native_gemini_components"}:
-                    metadata = {"promptTokenCount": 10, "candidatesTokenCount": 2, "thoughtsTokenCount": 80, "toolUsePromptTokenCount": 3, "totalTokenCount": 95}
+                        data = (
+                            "data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n"
+                        ).encode()
+                if scenario in {
+                    "usage_native_gemini_usage",
+                    "usage_native_gemini_empty",
+                    "usage_native_gemini_components",
+                }:
+                    metadata = {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 2,
+                        "thoughtsTokenCount": 80,
+                        "toolUsePromptTokenCount": 3,
+                        "totalTokenCount": 95,
+                    }
                     if scenario == "usage_native_gemini_empty":
                         metadata = {}
                     elif scenario == "usage_native_gemini_components":
                         metadata.pop("totalTokenCount")
-                    data = ("data: " + json.dumps({"candidates": [{"content": {"parts": [{"text": "Observed."}], "role": "model"}, "finishReason": "STOP"}], "usageMetadata": metadata}) + "\n\n").encode()
-                self.send_response(500 if len(requests) == 1 and scenario not in {"usage_native_gemini_usage", "usage_native_gemini_empty", "usage_native_gemini_components"} else 200)
-                self.send_header("Content-Type", "text/event-stream" if len(requests) > 1 and payload.get("stream") or scenario in {"usage_native_gemini_usage", "usage_native_gemini_empty", "usage_native_gemini_components"} else "application/json")
+                    data = (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "candidates": [
+                                    {
+                                        "content": {
+                                            "parts": [{"text": "Observed."}],
+                                            "role": "model",
+                                        },
+                                        "finishReason": "STOP",
+                                    }
+                                ],
+                                "usageMetadata": metadata,
+                            }
+                        )
+                        + "\n\n"
+                    ).encode()
+                self.send_response(
+                    500
+                    if len(requests) == 1
+                    and scenario
+                    not in {
+                        "usage_native_gemini_usage",
+                        "usage_native_gemini_empty",
+                        "usage_native_gemini_components",
+                    }
+                    else 200
+                )
+                self.send_header(
+                    "Content-Type",
+                    "text/event-stream"
+                    if len(requests) > 1
+                    and payload.get("stream")
+                    or scenario
+                    in {
+                        "usage_native_gemini_usage",
+                        "usage_native_gemini_empty",
+                        "usage_native_gemini_components",
+                    }
+                    else "application/json",
+                )
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -170,9 +278,32 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     threading.Thread(target=server.serve_forever, daemon=True).start()
     root = Path(__file__).resolve().parents[2]
     environment = {**os.environ, "PYTHONUTF8": "1"}
+    if scenario.startswith("usage_legacy_"):
+        legacy_source = subprocess.check_output(
+            [
+                "git",
+                "show",
+                "882a108b8fe8430b8d1dbe58cd5dc6cfe47ba907:astrbot/core/agent_teams/workflows.py",
+            ],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+        )
+        source_path = tmp_path / "baseline_workflows.py"
+        source_path.write_text(legacy_source, encoding="utf-8")
+        environment["ASTRBOT_TEST_LEGACY_WORKFLOWS"] = str(source_path)
     limits = {
         "max_steps": 1
-        if scenario in {"usage_limit", "usage_native_limit", "usage_native_anthropic", "usage_native_gemini", "usage_native_gemini_usage", "usage_native_gemini_empty", "usage_native_gemini_components"}
+        if scenario
+        in {
+            "usage_limit",
+            "usage_native_limit",
+            "usage_native_anthropic",
+            "usage_native_gemini",
+            "usage_native_gemini_usage",
+            "usage_native_gemini_empty",
+            "usage_native_gemini_components",
+        }
         else 2
         if scenario in {"usage_native_retry", "usage_native_missing"}
         else 4
@@ -193,7 +324,14 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     try:
         with (tmp_path / "start.log").open("w", encoding="utf-8") as log:
             worker = subprocess.Popen(
-                [*command, "start", scenario, json.dumps(limits)],
+                [
+                    *command,
+                    "start",
+                    scenario,
+                    json.dumps(
+                        None if scenario.startswith("usage_legacy_") else limits
+                    ),
+                ],
                 cwd=root,
                 env=environment,
                 stdout=log,
@@ -215,7 +353,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     else [{"value": "once"}] * 2
                     if scenario in {"usage_parallel", "usage_compression"}
                     else [{"value": "once"}]
-                    if scenario == "usage_completed_limit"
+                    if scenario in {"usage_completed_limit", "usage_legacy_applied"}
                     else []
                 )
                 assert (
@@ -223,14 +361,19 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     if scenario == "usage_compression"
                     else len(requests)
                     == (
-                            9
-                            if scenario == "usage_shared_wait"
-                            else 6
+                        9
+                        if scenario == "usage_shared_wait"
+                        else 6
                         if scenario == "usage_parallel"
                         else 0
                         if scenario in {"usage_reserved", "usage_reservation_failure"}
                         else 2
-                            if scenario in {"usage_completed_limit", "usage_native_retry", "usage_native_missing"}
+                        if scenario
+                        in {
+                            "usage_completed_limit",
+                            "usage_native_retry",
+                            "usage_native_missing",
+                        }
                         else 1
                     )
                 )
@@ -258,21 +401,80 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
         }
         ledger = after["usage"]["ledger"]
         assert len({r["receipt_id"] for r in ledger}) == len(ledger)
+        if scenario.startswith("usage_legacy_"):
+            assert before["snapshot"].get("usage_protocol") is None
+            assert after["status"] == "completed"
+            assert len(requests) == 3 and effects == [{"value": "once"}]
+            assert after["usage"]["model_calls"] == len(requests) - 1
+            assert after["usage"]["tokens"]["reported"] == 24
+            assert after["usage"]["tokens"]["unknown_calls"] is None
+            history = after["usage"]["historical"]
+            assert history["unmetered"] is True
+            assert history["model_responses"] == 1
+            assert {
+                record["record_id"]
+                for record in before["process"]
+                if record["kind"] == "model_response"
+            } <= {record["record_id"] for record in history["records"]}
+            assert {record["record_id"] for record in before["process"]} <= {
+                record["record_id"] for record in after["process"]
+            }
+            assert all(
+                record["attempt_id"] == before["state"]["attempt_id"]
+                for record in history["records"]
+            )
+            assert len(history["records"]) == 1
+            overview = evidence["overview"]["usage"]
+            assert overview["historical"] == {**history, "records": []}
+            assert overview["tokens"] == after["usage"]["tokens"]
+            return
         if scenario.startswith("usage_native_"):
             assert len(requests) == len(ledger) == limits["max_steps"]
-            assert all((request["generationConfig"]["maxOutputTokens"] if scenario.startswith("usage_native_gemini") else request["max_tokens"]) == 7 for request in requests)
+            assert all(
+                (
+                    request["generationConfig"]["maxOutputTokens"]
+                    if scenario.startswith("usage_native_gemini")
+                    else request["max_tokens"]
+                )
+                == 7
+                for request in requests
+            )
             assert len({r["invocation_id"] for r in ledger}) == 1
-            assert ledger[0]["quality"] == ("reported" if scenario in {"usage_native_gemini_usage", "usage_native_gemini_components"} else "estimated" if scenario == "usage_native_gemini_empty" else "unknown")
+            assert ledger[0]["quality"] == (
+                "reported"
+                if scenario
+                in {"usage_native_gemini_usage", "usage_native_gemini_components"}
+                else "estimated"
+                if scenario == "usage_native_gemini_empty"
+                else "unknown"
+            )
             assert after["usage"]["model_calls"] == len(requests)
-            assert after["usage"]["tokens"]["reported"] == (12 if scenario == "usage_native_retry" else 95 if scenario in {"usage_native_gemini_usage", "usage_native_gemini_components"} else None)
-            assert after["status"] == ("awaiting_result" if limits["max_steps"] == 2 or scenario.startswith("usage_native_gemini") else "blocked")
+            assert after["usage"]["tokens"]["reported"] == (
+                12
+                if scenario == "usage_native_retry"
+                else 95
+                if scenario
+                in {"usage_native_gemini_usage", "usage_native_gemini_components"}
+                else None
+            )
+            assert after["status"] == (
+                "awaiting_result"
+                if limits["max_steps"] == 2
+                or scenario.startswith("usage_native_gemini")
+                else "blocked"
+            )
             if scenario == "usage_native_missing":
                 assert ledger[1]["quality"] == "estimated"
-            if scenario in {"usage_native_gemini_usage", "usage_native_gemini_components"}:
+            if scenario in {
+                "usage_native_gemini_usage",
+                "usage_native_gemini_components",
+            }:
                 assert ledger[0]["report"]["input_tokens"] == 13
                 assert ledger[0]["report"]["output_tokens"] == 82
             if scenario == "usage_native_anthropic":
-                assert json.loads((tmp_path / "native-config.json").read_text(encoding="utf-8"))["custom_extra_body"] == {"max_tokens": 500}
+                assert json.loads(
+                    (tmp_path / "native-config.json").read_text(encoding="utf-8")
+                )["custom_extra_body"] == {"max_tokens": 500}
             assert not effects
             return
         assert all(
@@ -287,7 +489,11 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
         else:
             assert after["status"] == "completed", after["state"]
             assert effects == [{"value": "once"}] * (
-                3 if scenario == "usage_shared_wait" else 2 if scenario in {"usage_parallel", "usage_compression"} else 1
+                3
+                if scenario == "usage_shared_wait"
+                else 2
+                if scenario in {"usage_parallel", "usage_compression"}
+                else 1
             )
             assert after["usage"]["model_calls"] == len(requests) + (
                 1 if scenario == "usage_reserved" else 0
@@ -309,7 +515,9 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
             if scenario == "usage_reported":
                 assert after["usage"]["tokens"]["reported"] == 48
             if scenario in {"usage_parallel", "usage_shared_wait"}:
-                assert after["usage"]["tokens"]["reported"] == (108 if scenario == "usage_shared_wait" else 72)
+                assert after["usage"]["tokens"]["reported"] == (
+                    108 if scenario == "usage_shared_wait" else 72
+                )
                 assert peak_models == 1
                 assert any(
                     event["kind"] == "usage.waiting" for event in after["events"]

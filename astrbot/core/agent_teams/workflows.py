@@ -1156,6 +1156,46 @@ class WorkflowService:
                 .scalars()
                 .all()
             ]
+            historical_ids = {
+                item.run_id
+                for item in rows
+                if "member" in item.snapshot
+                and item.snapshot.get("usage_protocol") != 1
+                and item.status not in {"pending", "skipped", "dependency_failed"}
+            }
+            metered_process_ids = {
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{receipt['run_id']}:{receipt['attempt_id']}:{receipt['invocation_id']}",
+                ).hex
+                for receipt in usage_receipts
+                if receipt["kind"] == "model"
+            }
+            # Old responses lack delivery receipts. Read only their associations;
+            # neither prompt bodies nor provider-specific usage can prove admission.
+            historical_responses = (
+                [
+                    dict(item)
+                    for item in (
+                        await session.execute(
+                            sa_select(
+                                col(AgentWorkflowProcess.record_id),
+                                col(AgentWorkflowProcess.run_id),
+                                col(AgentWorkflowProcess.attempt_id),
+                                col(AgentWorkflowProcess.member_id),
+                            ).where(
+                                col(AgentWorkflowProcess.run_id).in_(historical_ids),
+                                AgentWorkflowProcess.kind == "model_response",
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                    if item["record_id"] not in metered_process_ids
+                ]
+                if historical_ids
+                else []
+            )
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
                 current_calls = [
@@ -1640,6 +1680,22 @@ class WorkflowService:
                     }
                 )
             view["usage"]["constraints"] = record.snapshot.get("scope_limits", [])
+            if historical_ids & selected_ids:
+                historical = [
+                    response
+                    for response in historical_responses
+                    if response["run_id"] in selected_ids
+                ]
+                view["usage"]["historical"] = {
+                    "unmetered": True,
+                    "model_responses": len(historical),
+                    "records": historical if include_details else [],
+                }
+                # The unknown historical delivery count cannot become zero when
+                # the first modern receipt supplies only the newly metered portion.
+                view["usage"]["tokens"]["unknown_calls"] = None
+                if not selected:
+                    view["usage"]["count_basis"] = "checkpoint"
             if (
                 not selected
                 and record.snapshot.get("usage_protocol") == 1

@@ -73,3 +73,28 @@ it("shows unknown consumption, a limit stop and original call identities", () =>
   expect(wrapper.text()).toContain("child-scope");
   expect(wrapper.text()).toContain("usage.boundary");
 });
+
+it("keeps historical uncertainty beside newly reported consumption", () => {
+  const wrapper = mount(RunUsagePanel, {
+    props: {
+      run: {
+        usage: {
+          steps_used: 1,
+          tokens: { reported: 12, unknown_calls: null },
+          historical: { unmetered: true, model_responses: 3 },
+        },
+      },
+    },
+  });
+  expect(wrapper.find('[data-testid="reported-tokens"]').text()).toContain(
+    "12",
+  );
+  expect(wrapper.find('[data-testid="historical-usage"]').text()).toContain(
+    "usage.historicalUnknown",
+  );
+  expect(wrapper.find('[data-testid="historical-usage"]').text()).toContain(
+    "3",
+  );
+  expect(wrapper.text()).toContain("usage.unknownCalls: usage.unknown");
+  expect(wrapper.text()).toContain("usage.calls: 1");
+});

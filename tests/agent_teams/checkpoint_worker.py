@@ -4,8 +4,10 @@ import asyncio
 import contextlib
 import copy
 import json
+import os
 import sys
 import time
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -364,7 +366,15 @@ async def run_worker(
     queue_manager.set_listener(listener)
     lifecycle = SimpleNamespace(conversation_manager=conversations, provider_manager=providers, persona_mgr=personas, astrbot_config_mgr=acm, kb_manager=knowledge)
     roles = RoleAssetService(db, lifecycle)
-    service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
+    workflow_class = WorkflowService
+    if action == "start" and scenario.startswith("usage_legacy_"):
+        # Execute the exact pre-protocol service, rather than relabelling a new run.
+        source_path = Path(os.environ["ASTRBOT_TEST_LEGACY_WORKFLOWS"])
+        legacy_module = types.ModuleType("astrbot_test_legacy_workflows")
+        sys.modules[legacy_module.__name__] = legacy_module
+        exec(compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec"), legacy_module.__dict__)
+        workflow_class = legacy_module.WorkflowService
+    service = workflow_class(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
     if action == "recover_first":
         def retry_flush(session, flush_context):
             """Select a complete retried result transaction for a second crash.
@@ -434,7 +444,7 @@ async def run_worker(
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"submit_conflict_applied", "submit_conflict_pre"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tools_applied" if scenario.endswith("applied") else "response") and row.data["response"]["id"] == "submission-conflict":
                     session.info["kill_boundary"] = row.run_id
-                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "legacy_response", "legacy_upgrade_failure"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
+                if scenario in {"response", "no_thinking", "graph", "concurrent", "missing_model", "changed_tool", "legacy_response", "legacy_upgrade_failure", "usage_legacy_response"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"parameters", "repair"} and isinstance(row, AgentWorkflowProcess) and row.kind == "model_response" and row.data["id"] == "parameters-original":
                     session.info["kill_boundary"] = row.run_id
@@ -447,6 +457,8 @@ async def run_worker(
                 if scenario in {"tool_result", "parameters_tool_result"} and isinstance(row, AgentWorkflowProcess) and row.kind == "tool_result":
                     session.info["kill_boundary"] = row.run_id
                 if scenario in {"tool_checkpoint", "tool_applied"} and isinstance(row, AgentWorkflowCheckpoint) and row.phase == ("tool_result" if scenario == "tool_checkpoint" else "tools_applied") and row.data["response"]["id"] == "plan-original":
+                    session.info["kill_boundary"] = row.run_id
+                if scenario == "usage_legacy_applied" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tools_applied" and row.data["response"]["id"] == "plan-original":
                     session.info["kill_boundary"] = row.run_id
                 if scenario == "tool_image_protocol" and isinstance(row, AgentWorkflowCheckpoint) and row.phase == "tool_result" and row.data["tool_calls"][0]["protocol_results"]:
                     session.info["kill_boundary"] = row.run_id
@@ -1062,6 +1074,7 @@ async def run_worker(
                     {
                         "before": before,
                         "after": current,
+                        **({"overview": await service.get_run("alice", run["run_id"], include_details=False)} if scenario.startswith("usage_legacy_") else {}),
                         "result": result,
                         "file": file_result,
                         "parent": parent,

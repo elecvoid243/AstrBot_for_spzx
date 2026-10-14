@@ -7058,6 +7058,7 @@ class WorkflowService:
             # the built-in runner parks at its saved boundary.
             remaining = ports.reply_timeout
             previous = time.monotonic()
+            previous_suspended = False
             try:
                 while not turn.done():
                     await asyncio.wait({turn}, timeout=min(0.5, max(remaining, 0.01)))
@@ -7083,10 +7084,13 @@ class WorkflowService:
                         )
                     if cancelled:
                         raise asyncio.CancelledError
-                    if not paused and not capacity_released:
+                    suspended = paused or capacity_released
+                    # A resumed observation can end an interval spent suspended.
+                    if not suspended and not previous_suspended:
                         remaining -= now - previous
                         if remaining <= 0:
                             raise asyncio.TimeoutError("Workflow execution timed out")
+                    previous_suspended = suspended
                     previous = now
                 reply, parts = await turn
             finally:

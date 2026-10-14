@@ -432,3 +432,54 @@ async def test_paused_time_does_not_exhaust_the_reply_timeout(workflow_env):
     )
     release.set()
     assert (await completed_run(env.service, run["run_id"]))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resumed_reply_budget_excludes_a_previously_paused_poll(workflow_env):
+    """Do not charge a suspended polling interval after continuation.
+
+    Args:
+        workflow_env: Public services with real persistence and external execution.
+    """
+    env = workflow_env
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        from astrbot.core.agent_team_tools import AgentTeamToolRegistry
+
+        entered.set()
+        await release.wait()
+        # Cross the resumed poll while staying within the active reply budget.
+        await asyncio.sleep(1.8)
+        await AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[
+            0
+        ].call(None, text="Completed after paused interval")
+        return "Done", []
+
+    env.service.ports_factory = lambda _: TeamPorts(
+        deliver=deliver,
+        collect=collect,
+        is_busy=lambda _: False,
+        emit=lambda _: None,
+        reply_timeout=2,
+    )
+    run = await env.service.start_run("alice", env.asset["asset_id"], {"version": 1})
+    await asyncio.wait_for(entered.wait(), 3)
+    await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "pause-sampling", "action": "pause"}
+    )
+    await asyncio.sleep(2.3)
+    assert (await env.service.get_run("alice", run["run_id"]))["status"] == "running"
+    await env.service.control_run(
+        "alice", run["run_id"], {"request_id": "continue-sampling", "action": "continue"}
+    )
+    release.set()
+    finished = await completed_run(env.service, run["run_id"])
+    assert finished["status"] == "completed", finished
+    assert finished["result"] == {"text": "Completed after paused interval"}

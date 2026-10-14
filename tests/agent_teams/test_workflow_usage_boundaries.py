@@ -278,20 +278,6 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     threading.Thread(target=server.serve_forever, daemon=True).start()
     root = Path(__file__).resolve().parents[2]
     environment = {**os.environ, "PYTHONUTF8": "1"}
-    if scenario.startswith("usage_legacy_"):
-        legacy_source = subprocess.check_output(
-            [
-                "git",
-                "show",
-                "882a108b8fe8430b8d1dbe58cd5dc6cfe47ba907:astrbot/core/agent_teams/workflows.py",
-            ],
-            cwd=root,
-            text=True,
-            encoding="utf-8",
-        )
-        source_path = tmp_path / "baseline_workflows.py"
-        source_path.write_text(legacy_source, encoding="utf-8")
-        environment["ASTRBOT_TEST_LEGACY_WORKFLOWS"] = str(source_path)
     limits = {
         "max_steps": 1
         if scenario

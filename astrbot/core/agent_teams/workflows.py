@@ -1859,237 +1859,261 @@ class WorkflowService:
             request = UsageStart.model_validate(payload)
         except ValidationError as exc:
             raise RoleAssetError("Invalid usage reservation") from exc
-        async with self.db.get_db() as session:
-            row = await session.get(AgentWorkflowRun, run_id)
-            if row is None or row.owner_username != username:
-                raise RoleAssetError("Run not found", status=404)
-            control = await self._lock_control(session, row)
-            await session.refresh(row)
-            await self._require_execution_owner(session, run_id, execution_id)
-            await self._check_member_limits(session, row)
-            if control.status != "active" or row.state.get("attempt_id") != attempt_id:
-                raise RoleAssetError("Execution cannot admit another call", status=409)
-            previous = await session.get(AgentWorkflowUsage, request.receipt_id)
-            if previous:
+        wake_root_id: str | None = None
+        try:
+            async with self.db.get_db() as session:
+                row = await session.get(AgentWorkflowRun, run_id)
+                if row is None or row.owner_username != username:
+                    raise RoleAssetError("Run not found", status=404)
+                control = await self._lock_control(session, row)
+                await session.refresh(row)
+                await self._require_execution_owner(session, run_id, execution_id)
+                await self._check_member_limits(session, row)
                 if (
-                    previous.run_id,
-                    previous.attempt_id,
-                    previous.execution_id,
-                    previous.invocation_id,
-                ) != (
-                    run_id,
-                    attempt_id,
-                    execution_id,
-                    request.invocation_id,
-                ) or previous.data["request"] != request.model_dump():
+                    control.status != "active"
+                    or row.state.get("attempt_id") != attempt_id
+                ):
                     raise RoleAssetError(
-                        "Usage receipt identity was reused", status=409
+                        "Execution cannot admit another call", status=409
                     )
-                return {
-                    **previous.model_dump(mode="json", exclude={"data"}),
-                    **previous.data,
-                }
-            root = await session.get(AgentWorkflowRun, _root_run_id(row))
-            assert root is not None
-            ancestors = [row]
-            current = row
-            while current.snapshot.get("parent_run_id"):
-                current = await session.get(
-                    AgentWorkflowRun, current.snapshot["parent_run_id"]
-                )
-                assert current is not None
-                ancestors.append(current)
-            receipts = (
-                (
-                    await session.execute(
-                        select(AgentWorkflowUsage).where(
-                            AgentWorkflowUsage.root_run_id == root.run_id
+                previous = await session.get(AgentWorkflowUsage, request.receipt_id)
+                if previous:
+                    if (
+                        previous.run_id,
+                        previous.attempt_id,
+                        previous.execution_id,
+                        previous.invocation_id,
+                    ) != (
+                        run_id,
+                        attempt_id,
+                        execution_id,
+                        request.invocation_id,
+                    ) or previous.data["request"] != request.model_dump():
+                        raise RoleAssetError(
+                            "Usage receipt identity was reused", status=409
+                        )
+                    return {
+                        **previous.model_dump(mode="json", exclude={"data"}),
+                        **previous.data,
+                    }
+                root = await session.get(AgentWorkflowRun, _root_run_id(row))
+                assert root is not None
+                ancestors = [row]
+                current = row
+                while current.snapshot.get("parent_run_id"):
+                    current = await session.get(
+                        AgentWorkflowRun, current.snapshot["parent_run_id"]
+                    )
+                    assert current is not None
+                    ancestors.append(current)
+                receipts = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowUsage).where(
+                                AgentWorkflowUsage.root_run_id == root.run_id
+                            )
                         )
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
-            )
-            output_caps = (
-                [request.max_output_tokens] if request.max_output_tokens else []
-            )
-            for scope in ancestors:
-                cap = (scope.snapshot["definition"].get("limits") or {}).get(
-                    "max_output_tokens"
+                output_caps = (
+                    [request.max_output_tokens] if request.max_output_tokens else []
                 )
-                if cap:
-                    output_caps.append(cap)
-            output_cap = min(output_caps) if output_caps else 2048
-            reserved = (
-                (request.input_tokens or 0) + output_cap
-                if request.kind == "model"
-                else 0
-            )
-            reason = None
-            for scope in ancestors:
-                limits = scope.snapshot["definition"].get("limits") or {}
-                subtree = {r.run_id for r in await _descendant_runs(session, scope)}
-                selected = [r.data for r in receipts if r.run_id in subtree]
-                steps = limits.get("max_steps")
-                if steps is not None and len(selected) >= steps:
-                    reason = {
-                        "limit": "max_steps",
-                        "scope_run_id": scope.run_id,
-                        "value": steps,
-                    }
-                    break
-                budget = limits.get("token_budget")
-                committed = sum(
-                    r["reported_tokens"]
-                    if r.get("reported_tokens") is not None
-                    else r["estimated_tokens"]
-                    if r.get("estimated_tokens") is not None
-                    else r["reserved_tokens"]
-                    for r in selected
-                )
-                if budget is not None and (
-                    committed >= budget
-                    or request.kind == "model"
-                    and (request.input_tokens is None or committed + reserved > budget)
-                ):
-                    in_flight = sum(
-                        r["reserved_tokens"]
-                        for r in selected
-                        if r["quality"] == "in_flight"
+                for scope in ancestors:
+                    cap = (scope.snapshot["definition"].get("limits") or {}).get(
+                        "max_output_tokens"
                     )
-                    if (
-                        (request.kind != "model" or request.input_tokens is not None)
-                        and committed - in_flight + reserved <= budget
-                        and in_flight
-                    ):
-                        if not row.state.get("usage_wait"):
-                            session.add(
-                                AgentWorkflowEvent(
-                                    run_id=run_id,
-                                    kind="usage.waiting",
-                                    data={
-                                        "attempt_id": attempt_id,
-                                        "scope_run_id": scope.run_id,
-                                    },
-                                )
-                            )
-                        row.state = {
-                            **row.state,
-                            "capacity_released": True,
-                            "usage_wait": True,
-                            "reason": "Waiting for in-flight usage reservations.",
+                    if cap:
+                        output_caps.append(cap)
+                output_cap = min(output_caps) if output_caps else 2048
+                reserved = (
+                    (request.input_tokens or 0) + output_cap
+                    if request.kind == "model"
+                    else 0
+                )
+                reason = None
+                for scope in ancestors:
+                    limits = scope.snapshot["definition"].get("limits") or {}
+                    subtree = {r.run_id for r in await _descendant_runs(session, scope)}
+                    selected = [r.data for r in receipts if r.run_id in subtree]
+                    steps = limits.get("max_steps")
+                    if steps is not None and len(selected) >= steps:
+                        reason = {
+                            "limit": "max_steps",
+                            "scope_run_id": scope.run_id,
+                            "value": steps,
                         }
-                        session.add(row)
-                        await session.commit()
-                        return {"waiting": True, "scope_run_id": scope.run_id}
-                    reason = {
-                        "limit": "token_budget",
-                        "scope_run_id": scope.run_id,
-                        "value": budget,
-                        "required_tokens": reserved,
-                        "committed_tokens": committed,
-                    }
-                    break
-            if reason:
-                row.state = {**row.state, "limit_stop": reason}
-                session.add(row)
-                session.add(
-                    AgentWorkflowEvent(
-                        run_id=run_id,
-                        kind="limit.reached",
-                        data={**reason, "attempt_id": attempt_id},
+                        break
+                    budget = limits.get("token_budget")
+                    committed = sum(
+                        r["reported_tokens"]
+                        if r.get("reported_tokens") is not None
+                        else r["estimated_tokens"]
+                        if r.get("estimated_tokens") is not None
+                        else r["reserved_tokens"]
+                        for r in selected
                     )
-                )
-                await session.commit()
-                raise RoleAssetError(
-                    f"Execution limit reached: {reason['limit']}", status=409
-                )
-            if row.state.get("usage_wait"):
-                parent_id = row.snapshot.get("parent_run_id")
-                if parent_id:
-                    scope = await session.get(AgentWorkflowRun, parent_id)
-                    assert scope is not None
-                    family = await _descendant_runs(session, root)
-                    active = [
-                        r
-                        for r in family
-                        if r.status == "running"
-                        and "member" in r.snapshot
-                        and not r.state.get("capacity_released")
-                        and r.run_id != run_id
-                    ]
-                    if not _has_scope_capacity(root, scope, active):
-                        return {"waiting": True, "scope_run_id": scope.run_id}
-                    role_id = row.snapshot["definition"]["role_id"]
-                    role_limit = row.snapshot["effective"].get("max_parallel")
-                    if (
-                        any(
-                            r.snapshot["member"]["member_id"]
-                            == row.snapshot["member"]["member_id"]
+                    if budget is not None and (
+                        committed >= budget
+                        or request.kind == "model"
+                        and (
+                            request.input_tokens is None
+                            or committed + reserved > budget
+                        )
+                    ):
+                        in_flight = sum(
+                            r["reserved_tokens"]
+                            for r in selected
+                            if r["quality"] == "in_flight"
+                        )
+                        if (
+                            (
+                                request.kind != "model"
+                                or request.input_tokens is not None
+                            )
+                            and committed - in_flight + reserved <= budget
+                            and in_flight
+                        ):
+                            new_wait = not row.state.get("usage_wait")
+                            if new_wait:
+                                session.add(
+                                    AgentWorkflowEvent(
+                                        run_id=run_id,
+                                        kind="usage.waiting",
+                                        data={
+                                            "attempt_id": attempt_id,
+                                            "scope_run_id": scope.run_id,
+                                        },
+                                    )
+                                )
+                            row.state = {
+                                **row.state,
+                                "capacity_released": True,
+                                "usage_wait": True,
+                                "reason": "Waiting for in-flight usage reservations.",
+                            }
+                            session.add(row)
+                            await session.commit()
+                            if new_wait and row.snapshot.get("parent_run_id"):
+                                wake_root_id = root.run_id
+                            return {"waiting": True, "scope_run_id": scope.run_id}
+                        reason = {
+                            "limit": "token_budget",
+                            "scope_run_id": scope.run_id,
+                            "value": budget,
+                            "required_tokens": reserved,
+                            "committed_tokens": committed,
+                        }
+                        break
+                if reason:
+                    row.state = {**row.state, "limit_stop": reason}
+                    session.add(row)
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=run_id,
+                            kind="limit.reached",
+                            data={**reason, "attempt_id": attempt_id},
+                        )
+                    )
+                    await session.commit()
+                    raise RoleAssetError(
+                        f"Execution limit reached: {reason['limit']}", status=409
+                    )
+                if row.state.get("usage_wait"):
+                    parent_id = row.snapshot.get("parent_run_id")
+                    if parent_id:
+                        scope = await session.get(AgentWorkflowRun, parent_id)
+                        assert scope is not None
+                        family = await _descendant_runs(session, root)
+                        active = [
+                            r
                             for r in family
                             if r.status == "running"
                             and "member" in r.snapshot
+                            and not r.state.get("capacity_released")
                             and r.run_id != run_id
+                        ]
+                        if not _has_scope_capacity(root, scope, active):
+                            return {"waiting": True, "scope_run_id": scope.run_id}
+                        role_id = row.snapshot["definition"]["role_id"]
+                        role_limit = row.snapshot["effective"].get("max_parallel")
+                        if (
+                            any(
+                                r.snapshot["member"]["member_id"]
+                                == row.snapshot["member"]["member_id"]
+                                for r in family
+                                if r.status == "running"
+                                and "member" in r.snapshot
+                                and r.run_id != run_id
+                            )
+                            or role_limit is not None
+                            and sum(
+                                r.snapshot["definition"]["role_id"] == role_id
+                                for r in active
+                            )
+                            >= role_limit
+                        ):
+                            return {"waiting": True, "scope_run_id": scope.run_id}
+                    row.state = {
+                        **row.state,
+                        "capacity_released": False,
+                        "usage_wait": False,
+                        "reason": None,
+                    }
+                    session.add(row)
+                    session.add(
+                        AgentWorkflowEvent(
+                            run_id=run_id,
+                            kind="usage.resumed",
+                            data={"attempt_id": attempt_id},
                         )
-                        or role_limit is not None
-                        and sum(
-                            r.snapshot["definition"]["role_id"] == role_id
-                            for r in active
-                        )
-                        >= role_limit
-                    ):
-                        return {"waiting": True, "scope_run_id": scope.run_id}
-                row.state = {
-                    **row.state,
-                    "capacity_released": False,
-                    "usage_wait": False,
-                    "reason": None,
-                }
-                session.add(row)
+                    )
+                receipt = AgentWorkflowUsage(
+                    receipt_id=request.receipt_id,
+                    root_run_id=root.run_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    execution_id=execution_id,
+                    invocation_id=request.invocation_id,
+                    data={
+                        "request": request.model_dump(),
+                        "kind": request.kind,
+                        "name": request.name,
+                        "task_id": row.state["task_id"],
+                        "scope_id": row.state["scope_id"],
+                        "member_id": row.snapshot["member"]["member_id"],
+                        "quality": "in_flight",
+                        "max_output_tokens": output_cap
+                        if request.kind == "model"
+                        else None,
+                        "reserved_tokens": reserved,
+                        "reported_tokens": None,
+                        "estimated_tokens": None,
+                    },
+                )
+                session.add(receipt)
                 session.add(
                     AgentWorkflowEvent(
                         run_id=run_id,
-                        kind="usage.resumed",
-                        data={"attempt_id": attempt_id},
+                        kind="usage.started",
+                        data={
+                            "receipt_id": receipt.receipt_id,
+                            "invocation_id": receipt.invocation_id,
+                            "attempt_id": attempt_id,
+                        },
                     )
                 )
-            receipt = AgentWorkflowUsage(
-                receipt_id=request.receipt_id,
-                root_run_id=root.run_id,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                execution_id=execution_id,
-                invocation_id=request.invocation_id,
-                data={
-                    "request": request.model_dump(),
-                    "kind": request.kind,
-                    "name": request.name,
-                    "task_id": row.state["task_id"],
-                    "scope_id": row.state["scope_id"],
-                    "member_id": row.snapshot["member"]["member_id"],
-                    "quality": "in_flight",
-                    "max_output_tokens": output_cap
-                    if request.kind == "model"
-                    else None,
-                    "reserved_tokens": reserved,
-                    "reported_tokens": None,
-                    "estimated_tokens": None,
-                },
-            )
-            session.add(receipt)
-            session.add(
-                AgentWorkflowEvent(
-                    run_id=run_id,
-                    kind="usage.started",
-                    data={
-                        "receipt_id": receipt.receipt_id,
-                        "invocation_id": receipt.invocation_id,
-                        "attempt_id": attempt_id,
-                    },
-                )
-            )
-            await session.commit()
-            return {**receipt.model_dump(mode="json", exclude={"data"}), **receipt.data}
+                await session.commit()
+                return {
+                    **receipt.model_dump(mode="json", exclude={"data"}),
+                    **receipt.data,
+                }
+        finally:
+            # Only a committed wait transition wakes scheduling, after releasing
+            # the session and root lock. Polls retain the original executor.
+            if wake_root_id is not None and not self._closing:
+                await self.advance_run(username, wake_root_id)
 
     async def report_usage(
         self, username: str, receipt_id: str, execution_id: str, payload: dict

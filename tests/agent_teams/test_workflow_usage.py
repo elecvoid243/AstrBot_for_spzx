@@ -1,6 +1,7 @@
 """Root accounting and admission through the shared public run boundary."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -8,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 
 from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.utils.session_lock import session_lock_manager
 from astrbot.dashboard.api.auth import require_dashboard_user
@@ -17,6 +19,259 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 from tests.agent_teams.test_workflow_graph import wait_graph
 from tests.agent_teams.test_workflow_loops import loop_script as loop_script
 from tests.agent_teams.test_workflow_loops import revision_definition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout", ["flat", "root_ceiling", "local_ceiling"])
+async def test_quota_wait_automatically_admits_ready_branches_without_reusing_member(
+    workflow_env,
+    layout,
+):
+    """Released slots start independent work without restarting the parked owner.
+
+    Args:
+        workflow_env: Public execution services with real SQLite persistence.
+        layout: Flat graph or nested graph whose root/local ceiling is binding.
+    """
+    env = workflow_env
+    ports = env.service.ports_factory("alice")
+    original_collect = ports.collect
+    bindings, deliveries = {}, []
+    original_attempt = None
+    b_reserved, c_started, e_finished = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    release_b, release_c = asyncio.Event(), asyncio.Event()
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        """Observe the original delivery identity at the public execution port.
+
+        Args:
+            session_id: Frozen member session.
+            text: Frozen task text.
+            context: Runner context.
+            execution_token: Registered executor binding.
+            message_id: Original delivery identity.
+
+        Returns:
+            The unchanged delivery identity.
+        """
+        nonlocal original_attempt
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        bindings[message_id] = binding
+        if binding.node_id != "coordinator":
+            deliveries.append(binding.node_id)
+        if binding.node_id == "a" and original_attempt is None:
+            original_attempt = binding.turn_id
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        """Keep real session ownership while external usage is awaiting release.
+
+        Args:
+            session_id: Actual member session.
+            message_id: Observed delivery identity.
+            member_id: Frozen member identity.
+
+        Returns:
+            A validated result from the original public collection port.
+        """
+        binding = bindings[message_id]
+        node = binding.node_id
+        async with session_lock_manager.acquire_lock(binding.umo):
+            if node == "coordinator":
+                tools = {
+                    tool.name: tool
+                    for tool in AgentTeamToolRegistry.get_tools(binding.umo)
+                }
+                called = json.loads(
+                    await tools["team_manage"].call(
+                        None,
+                        action="call_workflow",
+                        request_id="child-call",
+                        name="Nested work",
+                        asset_id=child["asset_id"],
+                        version=1,
+                        inputs={},
+                    )
+                )
+                await tools["team_manage"].call(
+                    None,
+                    action="wait",
+                    request_id="child-wait",
+                    task_ids=[called["task_id"]],
+                )
+                return await original_collect(session_id, message_id, member_id)
+            if node == "a":
+                await b_reserved.wait()
+            large = node in {"a", "b"}
+            receipt = await binding.begin_usage(
+                {
+                    "receipt_id": "delivery-" + node,
+                    "invocation_id": message_id,
+                    "kind": "model",
+                    "input_tokens": 10 if large else 1,
+                    "max_output_tokens": 10 if large else 1,
+                }
+            )
+            if node == "b":
+                b_reserved.set()
+                await release_b.wait()
+            if node == "c":
+                c_started.set()
+                await release_c.wait()
+            await binding.report_usage(
+                receipt["receipt_id"],
+                {
+                    "input_tokens": 1,
+                    "output_tokens": 1 if large else 0,
+                },
+            )
+            result = await original_collect(session_id, message_id, member_id)
+            if node == "e":
+                e_finished.set()
+            return result
+
+    ports.deliver, ports.collect = deliver, collect
+    env.service.ports_factory = lambda username: ports
+    definition = {
+        "name": "Quota release wakes ready work",
+        "max_parallel": 2,
+        "limits": {"token_budget": 25, "max_output_tokens": 10},
+        "tasks": [
+            {
+                "id": key,
+                "name": key,
+                "member": "shared" if key in {"a", "d"} else key,
+                "role_id": env.role["role_id"],
+                "role_version": 1,
+                "task": key,
+                "overrides": {"max_parallel": 5, "max_instances": 6},
+            }
+            for key in ("b", "a", "d", "c", "e")
+        ],
+    }
+    if layout != "flat":
+        child = await env.service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "name": "Nested ready work",
+                    "max_parallel": 3 if layout == "root_ceiling" else 1,
+                    "tasks": definition["tasks"][1:],
+                }
+            },
+        )
+        team = await env.service.save_asset(
+            "alice",
+            {
+                "definition": {
+                    "kind": "autonomous",
+                    "name": "Nested coordinator",
+                    "max_parallel": 3,
+                    "coordinator": {
+                        "role_id": env.role["role_id"],
+                        "role_version": 1,
+                        "overrides": {"max_parallel": 5, "max_instances": 6},
+                    },
+                    "allowed_roles": [
+                        {"role_id": env.role["role_id"], "role_version": 1}
+                    ],
+                    "allowed_workflows": [
+                        {
+                            "asset_id": child["asset_id"],
+                            "version": 1,
+                            "result_task_id": "e",
+                        }
+                    ],
+                }
+            },
+        )
+        definition["max_parallel"] = 2 if layout == "root_ceiling" else 3
+        definition["required_inputs"] = ["goal"]
+        definition["tasks"] = [
+            definition["tasks"][0],
+            {
+                "id": "nested",
+                "name": "Nested",
+                "team": {"asset_id": team["asset_id"], "version": 1},
+                "inputs": {"goal": {"input": "goal"}},
+            },
+        ]
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    run = await env.service.start_run(
+        "alice",
+        asset["asset_id"],
+        {"version": 1, "inputs": {"goal": "Work"} if layout != "flat" else {}},
+    )
+    try:
+        await asyncio.wait_for(c_started.wait(), 5)
+        current = await env.service.get_run("alice", run["run_id"])
+        tasks = {
+            task["node_id"]: task
+            for task in [
+                *current["tasks"],
+                *[
+                    task
+                    for scope in current.get("scopes", [])
+                    for task in scope["tasks"]
+                ],
+            ]
+        }
+        assert tasks["a"]["state"]["usage_wait"]
+        assert tasks["a"]["state"]["attempt_id"] == original_attempt
+        assert tasks["d"]["status"] == tasks["e"]["status"] == "pending"
+        # Concurrent notifications cannot duplicate ownership or exceed root slots.
+        await asyncio.gather(
+            *(env.service.advance_run("alice", run["run_id"]) for _ in range(4))
+        )
+        assert sorted(deliveries) == ["a", "b", "c"]
+        release_c.set()
+        await asyncio.wait_for(e_finished.wait(), 3)
+        current = await env.service.get_run("alice", run["run_id"])
+        assert (
+            next(
+                task
+                for task in [
+                    *current["tasks"],
+                    *[
+                        task
+                        for scope in current.get("scopes", [])
+                        for task in scope["tasks"]
+                    ],
+                ]
+                if task["node_id"] == "d"
+            )["status"]
+            == "pending"
+        )
+        release_b.set()
+        final = await completed_run(env.service, run["run_id"])
+        assert final["status"] == "completed"
+        assert final["usage"]["model_calls"] == 5
+        assert final["usage"]["tokens"]["reported"] == 7
+        assert sorted(deliveries) == ["a", "b", "c", "d", "e"]
+        assert (
+            next(
+                task
+                for task in [
+                    *final["tasks"],
+                    *[
+                        task
+                        for scope in final.get("scopes", [])
+                        for task in scope["tasks"]
+                    ],
+                ]
+                if task["node_id"] == "a"
+            )["state"]["attempt_id"]
+            == original_attempt
+        )
+    finally:
+        release_c.set()
+        release_b.set()
 
 
 @pytest.mark.asyncio
@@ -33,7 +288,9 @@ async def test_quota_wait_keeps_the_member_session_exclusive(workflow_env):
     reserved = asyncio.Event()
     release = asyncio.Event()
 
-    async def deliver(session_id, text, context=None, execution_token=None, message_id=None):
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
         bindings[message_id] = AgentTeamExecutionRegistry.resolve(execution_token)
         return message_id
 
@@ -43,39 +300,58 @@ async def test_quota_wait_keeps_the_member_session_exclusive(workflow_env):
         async with session_lock_manager.acquire_lock(binding.umo):
             if binding.node_id == "a":
                 await reserved.wait()
-            receipt = await binding.begin_usage({
-                "receipt_id": binding.node_id + "-delivery",
-                "invocation_id": message_id,
-                "kind": "model",
-                "input_tokens": 0 if binding.node_id == "b" else 10,
-                "max_output_tokens": 1 if binding.node_id == "b" else 10,
-            })
+            receipt = await binding.begin_usage(
+                {
+                    "receipt_id": binding.node_id + "-delivery",
+                    "invocation_id": message_id,
+                    "kind": "model",
+                    "input_tokens": 0 if binding.node_id == "b" else 10,
+                    "max_output_tokens": 1 if binding.node_id == "b" else 10,
+                }
+            )
             if binding.node_id == "c":
                 reserved.set()
                 await release.wait()
-            await binding.report_usage(receipt["receipt_id"], {
-                "input_tokens": 0 if binding.node_id == "b" else 1,
-                "output_tokens": 1,
-            })
+            await binding.report_usage(
+                receipt["receipt_id"],
+                {
+                    "input_tokens": 0 if binding.node_id == "b" else 1,
+                    "output_tokens": 1,
+                },
+            )
             return await original_collect(session_id, message_id, member_id)
 
     ports.deliver = deliver
     ports.collect = collect
     env.service.ports_factory = lambda username: ports
-    asset = await env.service.save_asset("alice", {"definition": {
-        "name": "Shared member quota wait",
-        "max_parallel": 2,
-        "limits": {"token_budget": 25, "max_output_tokens": 10},
-        "tasks": [{
-            "id": key, "name": key, "member": "shared" if key in {"a", "b"} else "other",
-            "role_id": env.role["role_id"], "role_version": 1, "task": key,
-            "overrides": {"max_parallel": 2, "max_instances": 2},
-        } for key in ("c", "a", "b")],
-    }})
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared member quota wait",
+                "max_parallel": 2,
+                "limits": {"token_budget": 25, "max_output_tokens": 10},
+                "tasks": [
+                    {
+                        "id": key,
+                        "name": key,
+                        "member": "shared" if key in {"a", "b"} else "other",
+                        "role_id": env.role["role_id"],
+                        "role_version": 1,
+                        "task": key,
+                        "overrides": {"max_parallel": 2, "max_instances": 2},
+                    }
+                    for key in ("c", "a", "b")
+                ],
+            }
+        },
+    )
     run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
     for _ in range(200):
         current = await env.service.get_run("alice", run["run_id"])
-        parked = next(task for task in current["tasks"] if task["snapshot"]["node_id"] == "a")
+        parked = next(
+            task for task in current["tasks"] if task["snapshot"]["node_id"] == "a"
+        )
         if parked["state"].get("usage_wait"):
             break
         await asyncio.sleep(0.01)
@@ -83,7 +359,12 @@ async def test_quota_wait_keeps_the_member_session_exclusive(workflow_env):
     assert parked["state"]["capacity_released"] is True
     await env.service.advance_run("alice", run["run_id"])
     current = await env.service.get_run("alice", run["run_id"])
-    assert next(task for task in current["tasks"] if task["snapshot"]["node_id"] == "b")["status"] == "pending"
+    assert (
+        next(task for task in current["tasks"] if task["snapshot"]["node_id"] == "b")[
+            "status"
+        ]
+        == "pending"
+    )
     release.set()
     final = await completed_run(env.service, run["run_id"])
     assert final["status"] == "completed"

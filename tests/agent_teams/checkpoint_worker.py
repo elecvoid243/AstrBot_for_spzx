@@ -1,13 +1,12 @@
 """Independent real-pipeline worker for public crash-recovery acceptance."""
 
 import asyncio
+import base64
 import contextlib
 import copy
 import json
-import os
 import sys
 import time
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -366,15 +365,37 @@ async def run_worker(
     queue_manager.set_listener(listener)
     lifecycle = SimpleNamespace(conversation_manager=conversations, provider_manager=providers, persona_mgr=personas, astrbot_config_mgr=acm, kb_manager=knowledge)
     roles = RoleAssetService(db, lifecycle)
-    workflow_class = WorkflowService
+    service = WorkflowService(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
     if action == "start" and scenario.startswith("usage_legacy_"):
-        # Execute the exact pre-protocol service, rather than relabelling a new run.
-        source_path = Path(os.environ["ASTRBOT_TEST_LEGACY_WORKFLOWS"])
-        legacy_module = types.ModuleType("astrbot_test_legacy_workflows")
-        sys.modules[legacy_module.__name__] = legacy_module
-        exec(compile(source_path.read_text(encoding="utf-8"), str(source_path), "exec"), legacy_module.__dict__)
-        workflow_class = legacy_module.WorkflowService
-    service = workflow_class(db, roles, ports_factory=lambda username: build_ports_for_test(queue_manager, username, lambda event: None))
+        # Replay committed native T16 inputs, independent of checkout history.
+        # Recovery still runs in a new process through the actual current pipeline.
+        fixture_path = Path(__file__).parent / "fixtures" / "usage_pre_protocol.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8").replace("{data_dir}", folder.as_posix()))
+        assert fixture["format_version"] == 1
+        for filename, encoded in fixture["files"].items():
+            assert Path(filename).name == filename
+            (folder / filename).write_bytes(base64.b64decode(encoded))
+        prepared = fixture["cases"][scenario]
+        async with httpx.AsyncClient() as client:
+            for request in prepared["external"]["requests"]:
+                response = await client.post(endpoint + "/model", json=request)
+                response.raise_for_status()
+                assert response.json()["id"] == "plan-original"
+            for effect in prepared["external"]["effects"]:
+                response = await client.post(endpoint + "/tool", json=effect)
+                response.raise_for_status()
+                assert response.json()["text"] == "Verified evidence."
+        async with db.engine.begin() as connection:
+            for table_name, rows in prepared["tables"].items():
+                assert table_name.isidentifier()
+                for row in rows:
+                    assert all(column.isidentifier() for column in row)
+                    columns = ", ".join('"' + column + '"' for column in row)
+                    values = ", ".join(":" + column for column in row)
+                    await connection.execute(text(f'INSERT OR REPLACE INTO "{table_name}" ({columns}) VALUES ({values})'), row)
+        run_id = prepared["tables"]["agent_workflow_runs"][0]["run_id"]
+        (folder / "kill-ready.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+        await asyncio.Future()
     if action == "recover_first":
         def retry_flush(session, flush_context):
             """Select a complete retried result transaction for a second crash.

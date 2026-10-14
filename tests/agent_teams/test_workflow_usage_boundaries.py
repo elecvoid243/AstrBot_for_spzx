@@ -26,6 +26,10 @@ import pytest
         "usage_compression",
         "usage_native_retry",
         "usage_native_limit",
+        "usage_native_anthropic",
+        "usage_native_gemini",
+        "usage_native_gemini_usage",
+        "usage_native_missing",
     ],
 )
 def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
@@ -55,18 +59,22 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 None after writing the independent ledger and response.
             """
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path == "/v1/chat/completions":
+            if scenario.startswith("usage_native_"):
                 requests.append(payload)
                 data = json.dumps(
-                    {"error": {"message": "Transient failure", "type": "server_error"}}
+                    {"error": {"message": "Transient failure", "type": "server_error", "code": 500, "status": "INTERNAL"}}
                     if len(requests) == 1
                     else {"id": "native-response", "object": "chat.completion", "created": 1, "model": "model-original", "choices": [{"index": 0, "message": {"role": "assistant", "content": "Observed."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
                 ).encode()
                 if len(requests) > 1 and payload.get("stream"):
                     chunk = {"id": "native-response", "object": "chat.completion.chunk", "created": 1, "model": "model-original", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Observed."}, "finish_reason": "stop"}]}
                     data = ("data: " + json.dumps(chunk) + "\n\ndata: " + json.dumps({**chunk, "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}) + "\n\ndata: [DONE]\n\n").encode()
-                self.send_response(500 if len(requests) == 1 else 200)
-                self.send_header("Content-Type", "text/event-stream" if len(requests) > 1 and payload.get("stream") else "application/json")
+                    if scenario == "usage_native_missing":
+                        data = ("data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n").encode()
+                if scenario == "usage_native_gemini_usage":
+                    data = ("data: " + json.dumps({"candidates": [{"content": {"parts": [{"text": "Observed."}], "role": "model"}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2, "thoughtsTokenCount": 80, "toolUsePromptTokenCount": 3, "totalTokenCount": 95}}) + "\n\n").encode()
+                self.send_response(500 if len(requests) == 1 and scenario != "usage_native_gemini_usage" else 200)
+                self.send_header("Content-Type", "text/event-stream" if len(requests) > 1 and payload.get("stream") or scenario == "usage_native_gemini_usage" else "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -156,9 +164,9 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     environment = {**os.environ, "PYTHONUTF8": "1"}
     limits = {
         "max_steps": 1
-        if scenario in {"usage_limit", "usage_native_limit"}
+        if scenario in {"usage_limit", "usage_native_limit", "usage_native_anthropic", "usage_native_gemini", "usage_native_gemini_usage"}
         else 2
-        if scenario == "usage_native_retry"
+        if scenario in {"usage_native_retry", "usage_native_missing"}
         else 4
         if scenario == "usage_completed_limit"
         else 20,
@@ -210,7 +218,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                         else 0
                         if scenario in {"usage_reserved", "usage_reservation_failure"}
                         else 2
-                        if scenario in {"usage_completed_limit", "usage_native_retry"}
+                            if scenario in {"usage_completed_limit", "usage_native_retry", "usage_native_missing"}
                         else 1
                     )
                 )
@@ -240,12 +248,16 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
         assert len({r["receipt_id"] for r in ledger}) == len(ledger)
         if scenario.startswith("usage_native_"):
             assert len(requests) == len(ledger) == limits["max_steps"]
-            assert all(request["max_tokens"] == 7 for request in requests)
+            assert all((request["generationConfig"]["maxOutputTokens"] if scenario.startswith("usage_native_gemini") else request["max_tokens"]) == 7 for request in requests)
             assert len({r["invocation_id"] for r in ledger}) == 1
-            assert ledger[0]["quality"] == "unknown"
+            assert ledger[0]["quality"] == ("reported" if scenario == "usage_native_gemini_usage" else "unknown")
             assert after["usage"]["model_calls"] == len(requests)
-            assert after["usage"]["tokens"]["reported"] == (12 if scenario == "usage_native_retry" else None)
-            assert after["status"] == ("awaiting_result" if scenario == "usage_native_retry" else "blocked")
+            assert after["usage"]["tokens"]["reported"] == (12 if scenario == "usage_native_retry" else 95 if scenario == "usage_native_gemini_usage" else None)
+            assert after["status"] == ("awaiting_result" if limits["max_steps"] == 2 or scenario.startswith("usage_native_gemini") else "blocked")
+            if scenario == "usage_native_missing":
+                assert ledger[1]["quality"] == "estimated"
+            if scenario == "usage_native_anthropic":
+                assert json.loads((tmp_path / "native-config.json").read_text(encoding="utf-8"))["custom_extra_body"] == {"max_tokens": 500}
             assert not effects
             return
         assert all(

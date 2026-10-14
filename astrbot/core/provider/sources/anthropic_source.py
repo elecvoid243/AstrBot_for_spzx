@@ -550,6 +550,8 @@ class ProviderAnthropic(Provider):
         if not isinstance(extra_body, dict):
             # An explicit null or malformed custom body carries nothing to merge.
             extra_body = {}
+        else:
+            extra_body = extra_body.copy()
         # Server-side tools declared in the custom body (e.g. web search on
         # Anthropic-compatible endpoints) must coexist with the registered
         # function tools: extra_body replaces same-named top-level keys,
@@ -576,7 +578,11 @@ class ProviderAnthropic(Provider):
         try:
             completion = await retry_provider_request(
                 "Anthropic",
-                lambda: self.client.messages.create(
+                lambda: (
+                    self.client.with_options(max_retries=0)
+                    if current_model_usage.get() is not None
+                    else self.client
+                ).messages.create(
                     **payloads,
                     stream=False,
                     extra_body=extra_body,
@@ -679,6 +685,8 @@ class ProviderAnthropic(Provider):
         extra_body = self.provider_config.get("custom_extra_body") or {}
         if not isinstance(extra_body, dict):
             extra_body = {}
+        else:
+            extra_body = extra_body.copy()
         # See _query: custom server-side tools must not replace the
         # registered function tools, and a name collision overrides
         # instead of duplicating.
@@ -702,7 +710,11 @@ class ProviderAnthropic(Provider):
 
         async with retry_provider_request_context(
             "Anthropic",
-            lambda: self.client.messages.stream(
+            lambda: (
+                self.client.with_options(max_retries=0)
+                if current_model_usage.get() is not None
+                else self.client
+            ).messages.stream(
                 **payloads,
                 extra_body=extra_body,
                 extra_headers=build_conversation_headers(conversation_id),

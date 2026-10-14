@@ -289,6 +289,12 @@ async def run_worker(
     if scenario.startswith("usage_native_"):
         from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
         provider = ProviderOpenAIOfficial({"id": "model-original", "type": "openai_chat_completion", "model": "model-original", "api_base": endpoint + "/v1", "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
+        if scenario == "usage_native_anthropic":
+            from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
+            provider = ProviderAnthropic({"id": "model-original", "type": "anthropic_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"], "custom_extra_body": {"max_tokens": 500}}, {})
+        elif scenario in {"usage_native_gemini", "usage_native_gemini_usage"}:
+            from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
+            provider = ProviderGoogleGenAI({"id": "model-original", "type": "googlegenai_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
     provider.set_model("model-original")
     if scenario == "usage_compression":
         provider.provider_config["max_context_tokens"] = 512
@@ -1075,6 +1081,8 @@ async def run_worker(
                 encoding="utf-8",
             )
         elif scenario.startswith("usage_"):
+            if scenario.startswith("usage_native_"):
+                (folder / "native-config.json").write_text(json.dumps(provider.provider_config), encoding="utf-8")
             (folder / "completed.json").write_text(json.dumps({"after": current}), encoding="utf-8")
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": run["run_id"]}), encoding="utf-8")
             await asyncio.Future()

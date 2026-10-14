@@ -84,7 +84,7 @@ In **Independent Runs → View Run**, progress includes the actual child coordin
 
 ![A revised parent caption still previews the complete returned file](/images/agent-workflow-child-file-revision-zh.jpg)
 
-Parent waits release root execution capacity, so a root limit of one still permits child tasks to complete. A child human request, provider failure or unknown external effect leaves independent parent branches ready. Handle child human requests in the root run's **Human requests** section; select the affected child task to recover, retry or resolve an unknown tool. Retrying a child task creates a new Attempt in the existing scope. Saved model-call and step counts include child tasks and prior attempts; unavailable counts display **Unknown**. Detailed budget reporting is added separately.
+Parent waits release root execution capacity, so a root limit of one still permits child tasks to complete. A child human request, provider failure or unknown external effect leaves independent parent branches ready. Handle child human requests in the root run's **Human requests** section; select the affected child task to recover, retry or resolve an unknown tool. Retrying a child task creates a new Attempt in the existing scope. Usage and limits include child tasks and prior attempts; unavailable consumption displays **Unknown**. See **Root usage and limits** below for accounting details.
 
 Whole-run pause, continue and cancel apply to every scope and executor. A paused answer remains saved until continuation; other local waits remain. Recovery uses the original child scope, Attempt and frozen inputs. Different scopes have independent members and conversations. Ancestry grants no cross-scope message or artifact access; only declared exact input/output references cross the boundary. Coordinator calls use the explicit permissions described under Coordinator calls to saved workflows.
 
@@ -258,6 +258,8 @@ An exhausted limit stops new calls and exposes the limit, value and affected tas
 ![Stopped calls retain their reported consumption](/images/agent-team-usage-limit-en.jpg)
 
 ![Root and child invocation details](/images/agent-team-usage-child-en.jpg)
+
+![Actual dark theme at a 390-pixel viewport](/images/agent-team-usage-dark-narrow-zh.jpg)
 
 ## Previous and new entry points
 

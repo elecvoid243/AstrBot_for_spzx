@@ -2867,6 +2867,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         Raises:
             ProcessPersistenceError: Saving the request or response failed.
         """
+        response = None
         resumed = self._resume_requery
         if resumed is not None and resumed["stage"] != stage:
             return load_call_response(resumed["previous_response"])

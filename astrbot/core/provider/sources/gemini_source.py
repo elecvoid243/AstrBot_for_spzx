@@ -16,7 +16,10 @@ import astrbot.core.message.components as Comp
 from astrbot import logger
 from astrbot.api.provider import Provider
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart
-from astrbot.core.agent_team_execution import apply_model_output_limit
+from astrbot.core.agent_team_execution import (
+    apply_model_output_limit,
+    current_model_usage,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
@@ -326,6 +329,11 @@ class ProviderGoogleGenAI(Provider):
 
         apply_model_output_limit(payloads, "max_tokens")
         return types.GenerateContentConfig(
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=1)
+            )
+            if current_model_usage.get() is not None
+            else None,
             system_instruction=system_instruction,
             temperature=temperature,
             max_output_tokens=payloads.get("max_tokens")
@@ -524,7 +532,15 @@ class ProviderGoogleGenAI(Provider):
         return TokenUsage(
             input_other=prompt_tokens - cached,
             input_cached=cached,
-            output=usage_metadata.candidates_token_count or 0,
+            output=(
+                max(0, usage_metadata.total_token_count - prompt_tokens)
+                if current_model_usage.get() is not None
+                and usage_metadata.total_token_count is not None
+                else (usage_metadata.candidates_token_count or 0)
+                + (usage_metadata.thoughts_token_count or 0)
+                if current_model_usage.get() is not None
+                else usage_metadata.candidates_token_count or 0
+            ),
         )
 
     @staticmethod

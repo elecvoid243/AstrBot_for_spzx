@@ -407,7 +407,21 @@ class LLMSummaryCompressor:
                 input_tokens = EstimateTokenCounter().count_tokens(
                     bind_checkpoint_messages(sanitized_summary_contexts)
                 ) + (
-                    (len(json.dumps([tool.parameters for tool in schemas.tools])) + 3)
+                    (
+                        len(
+                            json.dumps(
+                                [
+                                    {
+                                        "name": tool.name,
+                                        "description": tool.description,
+                                        "parameters": tool.parameters,
+                                    }
+                                    for tool in schemas.tools
+                                ]
+                            )
+                        )
+                        + 3
+                    )
                     // 4
                     if schemas
                     else 0

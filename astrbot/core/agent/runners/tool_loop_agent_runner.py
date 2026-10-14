@@ -717,7 +717,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 + (
                     len(
                         json.dumps(
-                            [tool.parameters for tool in tools.tools],
+                            [
+                                {
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.parameters,
+                                }
+                                for tool in tools.tools
+                            ],
                             ensure_ascii=False,
                         )
                     )

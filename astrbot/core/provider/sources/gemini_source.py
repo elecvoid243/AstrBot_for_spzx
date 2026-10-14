@@ -544,6 +544,8 @@ class ProviderGoogleGenAI(Provider):
         ):
             return None
         prompt_tokens = usage_metadata.prompt_token_count or 0
+        if current_model_usage.get() is not None:
+            prompt_tokens += usage_metadata.tool_use_prompt_token_count or 0
         cached = usage_metadata.cached_content_token_count or 0
         return TokenUsage(
             input_other=prompt_tokens - cached,

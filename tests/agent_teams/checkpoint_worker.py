@@ -292,7 +292,7 @@ async def run_worker(
         if scenario == "usage_native_anthropic":
             from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
             provider = ProviderAnthropic({"id": "model-original", "type": "anthropic_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"], "custom_extra_body": {"max_tokens": 500}}, {})
-        elif scenario in {"usage_native_gemini", "usage_native_gemini_usage", "usage_native_gemini_empty"}:
+        elif scenario.startswith("usage_native_gemini"):
             from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
             provider = ProviderGoogleGenAI({"id": "model-original", "type": "googlegenai_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
     provider.set_model("model-original")

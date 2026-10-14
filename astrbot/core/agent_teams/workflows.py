@@ -1953,9 +1953,10 @@ class WorkflowService:
                 if parent_id:
                     scope = await session.get(AgentWorkflowRun, parent_id)
                     assert scope is not None
+                    family = await _descendant_runs(session, root)
                     active = [
                         r
-                        for r in await _descendant_runs(session, root)
+                        for r in family
                         if r.status == "running"
                         and "member" in r.snapshot
                         and not r.state.get("capacity_released")
@@ -1969,7 +1970,10 @@ class WorkflowService:
                         any(
                             r.snapshot["member"]["member_id"]
                             == row.snapshot["member"]["member_id"]
-                            for r in active
+                            for r in family
+                            if r.status == "running"
+                            and "member" in r.snapshot
+                            and r.run_id != run_id
                         )
                         or role_limit is not None
                         and sum(
@@ -4248,6 +4252,15 @@ class WorkflowService:
                     and not row.state.get("capacity_released")
                 ]
                 occupied = {row.snapshot["member"]["member_id"] for row in active}
+                # Quota waits free execution slots but retain their session lock.
+                # A sibling must not claim this member until the parked turn exits.
+                occupied.update(
+                    row.snapshot["member"]["member_id"]
+                    for row in family
+                    if row is not None
+                    and row.status == "running"
+                    and "member" in row.snapshot
+                )
                 role_active: dict[str, int] = {}
                 for row in active:
                     role_id = row.snapshot["definition"]["role_id"]
@@ -5455,28 +5468,34 @@ class WorkflowService:
                 )
                 whole_root = await session.get(AgentWorkflowRun, _root_run_id(row))
                 assert whole_root is not None
+                family = await _descendant_runs(session, whole_root)
                 active = [
                     task
-                    for task in await _descendant_runs(session, whole_root)
+                    for task in family
                     if task.status == "running"
                     and "member" in task.snapshot
                     and not task.state.get("capacity_released")
                 ]
                 role_id = row.snapshot["definition"]["role_id"]
                 role_limit = row.snapshot["effective"].get("max_parallel")
-                if not row.state.get("capacity_released") and (
-                    not _has_scope_capacity(whole_root, parent, active)
-                    or any(
-                        task.snapshot["member"]["member_id"]
-                        == row.snapshot["member"]["member_id"]
-                        for task in active
+                member_busy = any(
+                    task.snapshot["member"]["member_id"]
+                    == row.snapshot["member"]["member_id"]
+                    for task in family
+                    if task.status == "running" and "member" in task.snapshot
+                )
+                if (
+                    member_busy
+                    or not row.state.get("capacity_released")
+                    and (
+                        not _has_scope_capacity(whole_root, parent, active)
+                        or role_limit is not None
+                        and sum(
+                            task.snapshot["definition"]["role_id"] == role_id
+                            for task in active
+                        )
+                        >= role_limit
                     )
-                    or role_limit is not None
-                    and sum(
-                        task.snapshot["definition"]["role_id"] == role_id
-                        for task in active
-                    )
-                    >= role_limit
                 ):
                     raise RoleAssetError(
                         "Recovery is waiting for workflow or member capacity",

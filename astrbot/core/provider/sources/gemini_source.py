@@ -520,13 +520,29 @@ class ProviderGoogleGenAI(Provider):
 
     def _extract_usage(
         self, usage_metadata: types.GenerateContentResponseUsageMetadata
-    ) -> TokenUsage:
+    ) -> TokenUsage | None:
         """Extract usage from response metadata.
 
         `prompt_token_count` includes tokens served from cache, so subtract
         `cached_content_token_count` to avoid double-counting cached input
         (matching the OpenAI provider's TokenUsage accounting).
+
+        Args:
+            usage_metadata: Native provider token counts, including thinking.
+
+        Returns:
+            Normalized usage, or None for incomplete team-call accounting.
         """
+        if (
+            current_model_usage.get() is not None
+            and usage_metadata.total_token_count is None
+            and (
+                usage_metadata.prompt_token_count is None
+                or usage_metadata.candidates_token_count is None
+                and usage_metadata.thoughts_token_count is None
+            )
+        ):
+            return None
         prompt_tokens = usage_metadata.prompt_token_count or 0
         cached = usage_metadata.cached_content_token_count or 0
         return TokenUsage(

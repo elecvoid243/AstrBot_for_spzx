@@ -292,7 +292,7 @@ async def run_worker(
         if scenario == "usage_native_anthropic":
             from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
             provider = ProviderAnthropic({"id": "model-original", "type": "anthropic_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"], "custom_extra_body": {"max_tokens": 500}}, {})
-        elif scenario in {"usage_native_gemini", "usage_native_gemini_usage"}:
+        elif scenario in {"usage_native_gemini", "usage_native_gemini_usage", "usage_native_gemini_empty"}:
             from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
             provider = ProviderGoogleGenAI({"id": "model-original", "type": "googlegenai_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
     provider.set_model("model-original")
@@ -504,10 +504,10 @@ async def run_worker(
                 contract["required"].append("files")
             definition["output_contract"] = contract
         asset = await service.save_asset("alice", {"definition": definition})
-        if scenario in {"usage_parallel", "usage_compression"}:
+        if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"}:
             asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "max_parallel": 2, "limits": limits, "tasks": [
-                {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" else key, "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
-                for key in ["a", "b"]
+                {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario == "usage_shared_wait" else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
+                for key in (["b", "a", "a2"] if scenario == "usage_shared_wait" else ["a", "b"])
             ], "edges": [{"source": "a", "target": "b"}] if scenario == "usage_compression" else []}})
         if scenario == "manual_graph":
             asset = await service.save_asset("alice", {"definition": {"name": "Unknown effect graph", "max_parallel": 1, "tasks": [
@@ -614,7 +614,7 @@ async def run_worker(
         else:
             run_id = json.loads((folder / "kill-ready.json").read_text(encoding="utf-8"))["run_id"]
             before = await service.get_run("alice", run_id)
-            if scenario in {"usage_parallel", "usage_compression"} or scenario.startswith("usage_native_"):
+            if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"} or scenario.startswith("usage_native_"):
                 await service.boot_sweep()
                 (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
                 return

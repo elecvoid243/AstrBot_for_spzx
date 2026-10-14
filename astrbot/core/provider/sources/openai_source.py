@@ -973,9 +973,15 @@ class ProviderOpenAIOfficial(Provider):
         llm_response.raw_completion = completion
         llm_response.id = completion.id
 
+        usage = completion.usage
+        if current_model_usage.get() is not None and (
+            getattr(usage, "prompt_tokens", None) is None
+            or getattr(usage, "completion_tokens", None) is None
+        ):
+            usage = None
         llm_response.usage = (
-            self._extract_usage(completion.usage)
-            if completion.usage
+            self._extract_usage(usage)
+            if usage
             else None
             if current_model_usage.get() is not None
             else TokenUsage()

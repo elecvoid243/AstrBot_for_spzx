@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.utils.session_lock import session_lock_manager
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import router
 from tests.agent_teams.test_workflow_assets import completed_run
@@ -16,6 +17,78 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 from tests.agent_teams.test_workflow_graph import wait_graph
 from tests.agent_teams.test_workflow_loops import loop_script as loop_script
 from tests.agent_teams.test_workflow_loops import revision_definition
+
+
+@pytest.mark.asyncio
+async def test_quota_wait_keeps_the_member_session_exclusive(workflow_env):
+    """Released global slots cannot admit a sibling holding the same session.
+
+    Args:
+        workflow_env: Public services, actual SQLite storage and execution ports.
+    """
+    env = workflow_env
+    ports = env.service.ports_factory("alice")
+    original_collect = ports.collect
+    bindings = {}
+    reserved = asyncio.Event()
+    release = asyncio.Event()
+
+    async def deliver(session_id, text, context=None, execution_token=None, message_id=None):
+        bindings[message_id] = AgentTeamExecutionRegistry.resolve(execution_token)
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        binding = bindings[message_id]
+        # The real Agent pipeline retains this exact lock across quota waits.
+        async with session_lock_manager.acquire_lock(binding.umo):
+            if binding.node_id == "a":
+                await reserved.wait()
+            receipt = await binding.begin_usage({
+                "receipt_id": binding.node_id + "-delivery",
+                "invocation_id": message_id,
+                "kind": "model",
+                "input_tokens": 0 if binding.node_id == "b" else 10,
+                "max_output_tokens": 1 if binding.node_id == "b" else 10,
+            })
+            if binding.node_id == "c":
+                reserved.set()
+                await release.wait()
+            await binding.report_usage(receipt["receipt_id"], {
+                "input_tokens": 0 if binding.node_id == "b" else 1,
+                "output_tokens": 1,
+            })
+            return await original_collect(session_id, message_id, member_id)
+
+    ports.deliver = deliver
+    ports.collect = collect
+    env.service.ports_factory = lambda username: ports
+    asset = await env.service.save_asset("alice", {"definition": {
+        "name": "Shared member quota wait",
+        "max_parallel": 2,
+        "limits": {"token_budget": 25, "max_output_tokens": 10},
+        "tasks": [{
+            "id": key, "name": key, "member": "shared" if key in {"a", "b"} else "other",
+            "role_id": env.role["role_id"], "role_version": 1, "task": key,
+            "overrides": {"max_parallel": 2, "max_instances": 2},
+        } for key in ("c", "a", "b")],
+    }})
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    for _ in range(200):
+        current = await env.service.get_run("alice", run["run_id"])
+        parked = next(task for task in current["tasks"] if task["snapshot"]["node_id"] == "a")
+        if parked["state"].get("usage_wait"):
+            break
+        await asyncio.sleep(0.01)
+    assert parked["state"].get("usage_wait")
+    assert parked["state"]["capacity_released"] is True
+    await env.service.advance_run("alice", run["run_id"])
+    current = await env.service.get_run("alice", run["run_id"])
+    assert next(task for task in current["tasks"] if task["snapshot"]["node_id"] == "b")["status"] == "pending"
+    release.set()
+    final = await completed_run(env.service, run["run_id"])
+    assert final["status"] == "completed"
+    assert final["usage"]["model_calls"] == 3
+    assert final["usage"]["tokens"]["reported"] == 5
 
 
 @pytest.mark.asyncio

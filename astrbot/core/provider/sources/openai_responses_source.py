@@ -613,6 +613,11 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
             llm_response.role = "tool"
 
         usage = self._field(response, "usage")
+        if current_model_usage.get() is not None and (
+            self._field(usage, "input_tokens") is None
+            or self._field(usage, "output_tokens") is None
+        ):
+            usage = None
         if usage is not None:
             input_details = self._field(usage, "input_tokens_details")
             cached_tokens = self._field(input_details, "cached_tokens", 0) or 0

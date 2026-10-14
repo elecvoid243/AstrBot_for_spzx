@@ -628,7 +628,11 @@ class ProviderAnthropic(Provider):
         llm_response.id = completion.id
         llm_response.usage = (
             self._extract_usage(completion.usage)
-            if completion.usage is not None or current_model_usage.get() is None
+            if current_model_usage.get() is None
+            or (
+                getattr(completion.usage, "input_tokens", None) is not None
+                and getattr(completion.usage, "output_tokens", None) is not None
+            )
             else None
         )
 
@@ -727,7 +731,9 @@ class ProviderAnthropic(Provider):
                     # the usage contains input token usage
                     id = event.message.id
                     usage = self._extract_usage(event.message.usage)
-                    usage_input_received = event.message.usage is not None
+                    usage_input_received = (
+                        getattr(event.message.usage, "input_tokens", None) is not None
+                    )
                 if event.type == "content_block_start":
                     if event.content_block.type == "text":
                         # 文本块开始
@@ -824,7 +830,9 @@ class ProviderAnthropic(Provider):
                         del tool_use_buffer[event.index]
 
                 elif event.type == "message_delta":
-                    usage_output_received = event.usage is not None
+                    usage_output_received = (
+                        getattr(event.usage, "output_tokens", None) is not None
+                    )
                     if event.usage:
                         self._update_usage(usage, event.usage)
 

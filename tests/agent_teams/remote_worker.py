@@ -289,7 +289,14 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                     "request"
                     if window == "pre_create"
                     else "remote_result"
-                    if window in {"result_saved", "end_success", "chat_result_saved"}
+                    if window
+                    in {
+                        "result_saved",
+                        "end_success",
+                        "chat_result_saved",
+                        "usage_missing",
+                        "usage_zero",
+                    }
                     else "remote_running"
                 ):
                     if window == "identity_save_failure":

@@ -219,7 +219,8 @@ class DeerFlowAPIClient:
         Args:
             thread_id: Original thread receiving this run.
             payload: Effective run request.
-            timeout: Maximum duration of the streaming request in seconds.
+            timeout: Read-idle timeout in seconds; connection timeouts are capped
+                at the smaller of this value and 30 seconds. Total time is unbounded.
             capture_identity: Emit metadata parsed from Content-Location before
                 reading the body. A missing header leaves body metadata unchanged.
 

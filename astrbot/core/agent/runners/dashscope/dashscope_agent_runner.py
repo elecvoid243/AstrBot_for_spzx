@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import functools
 import queue
 import re
@@ -7,6 +8,7 @@ import threading
 import typing as T
 
 from dashscope import Application
+from dashscope.api_entities.dashscope_response import DashScopeAPIResponse
 from dashscope.app.application_response import ApplicationResponse
 
 import astrbot.core.message.components as Comp
@@ -318,11 +320,16 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                 raise item_data
             elif item_type == "data":
                 chunk = item_data
+                if self.remote_checkpoint:
+                    assert isinstance(chunk, DashScopeAPIResponse)
+                    raw_chunk = copy.deepcopy(dict(chunk))
+                    raw_chunk["headers"] = dict(raw_chunk.get("headers") or {})
+                    remote_chunks.append(raw_chunk)
+                    if chunk.usage and chunk.usage.get("models"):
+                        remote_usage = copy.deepcopy(chunk.usage)
+                    chunk = ApplicationResponse.from_api_response(chunk)
                 assert isinstance(chunk, ApplicationResponse)
                 if self.remote_checkpoint:
-                    remote_chunks.append(dict(chunk))
-                    if chunk.usage and chunk.usage.models:
-                        remote_usage = dict(chunk.usage)
                     completed = chunk.output.finish_reason == "stop"
 
                 (
@@ -417,7 +424,34 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         # 发起请求
         if self.remote_checkpoint:
             await self.remote_checkpoint.before_request()
-        partial = functools.partial(Application.call, **payload)
+        if self.remote_checkpoint:
+            from dashscope.api_entities.api_request_factory import _build_api_request
+            from dashscope.app.application import Application as RawApplication
+
+            # Preserve raw counter presence before ApplicationUsage adds zeros.
+            api_key, app_id = RawApplication._validate_params(
+                payload.pop("api_key"), payload.pop("app_id")
+            )
+            request_input, parameters = RawApplication._build_input_parameters(
+                payload.pop("prompt"),
+                payload.pop("history", None),
+                payload.pop("messages", None),
+                **payload,
+            )
+            request = _build_api_request(
+                model="",
+                input=request_input,
+                task_group=RawApplication.task_group,
+                task=app_id,
+                function=RawApplication.function,
+                api_key=api_key,
+                is_service=False,
+                sdk_module="app",
+                **parameters,
+            )
+            partial = request.call
+        else:
+            partial = functools.partial(Application.call, **payload)
         response = await asyncio.get_running_loop().run_in_executor(None, partial)
 
         async for resp in self._handle_streaming_response(response, session_id):

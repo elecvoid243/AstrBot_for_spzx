@@ -23,6 +23,8 @@ import pytest
         ("dashscope", "result_saved"),
         ("dashscope", "identity_missing"),
         ("dashscope", "partial_eof"),
+        ("dashscope", "usage_missing"),
+        ("dashscope", "usage_zero"),
         *[
             ("dify", scenario)
             for scenario in (
@@ -69,6 +71,27 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                     "Content-Location", "/api/threads/thread-original/runs/run-original"
                 )
             self.end_headers()
+            if runner == "dashscope" and scenario in {"usage_missing", "usage_zero"}:
+                model = {"model_id": "model-original"}
+                if scenario == "usage_zero":
+                    model.update(input_tokens=0, output_tokens=0)
+                self.wfile.write(
+                    b"data: "
+                    + json.dumps(
+                        {
+                            "request_id": "request-original",
+                            "output": {
+                                "text": "Original verified evidence.",
+                                "session_id": "session-original",
+                                "finish_reason": "stop",
+                            },
+                            "usage": {"models": [model]},
+                        }
+                    ).encode()
+                    + b"\n\n"
+                )
+                self.wfile.flush()
+                return
             if runner == "dashscope" and scenario == "result_saved":
                 self.wfile.write(
                     b'data: {"request_id":"request-original","output":{"text":"Original verified ","session_id":"session-original","finish_reason":"null"},"usage":{"models":[{"input_tokens":7,"output_tokens":3,"model_id":"model-original"}]}}\n\n'
@@ -363,7 +386,16 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             return
         if runner == "dashscope":
             assert evidence["after"]["status"] == "awaiting_result"
-            assert evidence["after"]["usage"]["tokens"]["reported"] == 16
+            assert evidence["after"]["usage"]["tokens"]["reported"] == (
+                None
+                if scenario == "usage_missing"
+                else 0
+                if scenario == "usage_zero"
+                else 16
+            )
+            assert evidence["after"]["usage"]["tokens"]["unknown_calls"] == (
+                1 if scenario == "usage_missing" else 0
+            )
             assert evidence["after"]["usage"]["model_calls"] == 1
             assert [entry["method"] for entry in ledger] == ["POST"]
             assert ledger[0]["path"] == "/api/v1/apps/app-original/completion"

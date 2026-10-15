@@ -722,6 +722,7 @@ export type PackageDependency = {
     capabilities?: Array<(string)>;
     logical_slots?: Array<(string)>;
     description?: string;
+    display_name?: string;
     input_schema?: ({
     [key: string]: unknown;
 } | null);

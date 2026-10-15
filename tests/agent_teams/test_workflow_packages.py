@@ -142,6 +142,25 @@ async def test_dependencies_keep_logical_purpose_and_reject_incompatible_tool_co
 
 
 @pytest.mark.asyncio
+async def test_export_keeps_inherited_knowledge_purpose_without_local_identity(workflow_env):
+    env = workflow_env
+    env.inventory["profiles"][0]["knowledge_bases"] = ["Corporate financial evidence"]
+    env.inventory["knowledge_bases"] = [{"id": "source-kb-uuid", "name": "Corporate financial evidence", "description": ""}]
+    role = await env.roles.save_role("alice", {
+        "definition": {"name": "Inherited evidence", "prompt": "Review the facts"},
+        "installation": {"bindings": {"model": "model-a"}},
+    })
+    asset = await env.service.save_asset("alice", {"definition": {
+        "name": "Financial facts", "role_id": role["role_id"], "role_version": 1, "task": "Review evidence",
+    }})
+    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))["ready"] is True
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    dependency = next(dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "knowledge_bases")
+    assert dependency["display_name"] == "Corporate financial evidence"
+    assert "source-kb-uuid" not in json.dumps(package)
+
+
+@pytest.mark.asyncio
 async def test_different_instance_previews_unique_compatible_resources_before_install(
     workflow_env, tmp_path
 ):
@@ -352,6 +371,11 @@ async def test_confirmation_failure_leaves_no_partial_installation_and_retry_suc
 
 @pytest.mark.asyncio
 async def test_concurrent_confirmation_persists_bindings_after_pending_import(workflow_env):
+    """Force a pending import to commit while a ready confirmation is previewing.
+
+    Args:
+        workflow_env: Isolated services and controllable resource inventory.
+    """
     env = workflow_env
     package = await env.service.export_asset("alice", env.asset["asset_id"], 1)
     observed, release = asyncio.Event(), asyncio.Event()
@@ -360,6 +384,8 @@ async def test_concurrent_confirmation_persists_bindings_after_pending_import(wo
     async def inventory():
         nonlocal blocked
         if asyncio.current_task().get_name() == "ready-import" and not blocked:
+            # Pause the first inventory read after the registry lookup so the
+            # competing pending import wins the initial transaction.
             blocked = True
             observed.set()
             await release.wait()

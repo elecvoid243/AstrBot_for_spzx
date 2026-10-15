@@ -156,6 +156,7 @@ class PackageDependency(BaseModel):
     capabilities: list[str] = Field(default_factory=list, max_length=20)
     logical_slots: list[str] = Field(default_factory=list, max_length=500)
     description: str = ""
+    display_name: str = ""
     input_schema: dict | None = None
 
 
@@ -943,6 +944,9 @@ class WorkflowService:
                                     "runner_type": None,
                                     "logical_slots": [],
                                     "description": resource.get("description") or "",
+                                    "display_name": resource.get("name", "")
+                                    if resource.get("name") != resource_id
+                                    else "",
                                     "input_schema": resource.get("input_schema")
                                     if field == "tools"
                                     else None,

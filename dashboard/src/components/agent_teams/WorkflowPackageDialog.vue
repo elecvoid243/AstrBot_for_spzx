@@ -86,8 +86,10 @@
                   class="my-4"
                 >
                   <p class="package-text">
-                    <strong>{{ dependency.slot }}</strong> ·
-                    {{ dependency.kind }} ·
+                    <strong>{{
+                      dependency.display_name || dependency.slot
+                    }}</strong>
+                    · {{ dependency.kind }} ·
                     {{ tm(`package.status.${dependency.status}`) }}
                   </p>
                   <p class="text-caption package-text">

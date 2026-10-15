@@ -9920,6 +9920,10 @@ components:
           type: string
           title: Description
           default: ''
+        display_name:
+          type: string
+          title: Display Name
+          default: ''
         input_schema:
           anyOf:
           - additionalProperties: true

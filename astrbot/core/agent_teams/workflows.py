@@ -945,7 +945,8 @@ class WorkflowService:
                                     "logical_slots": [],
                                     "description": resource.get("description") or "",
                                     "display_name": resource.get("name", "")
-                                    if resource.get("name") != resource_id
+                                    if field == "knowledge_bases"
+                                    and resource.get("name") != resource_id
                                     else "",
                                     "input_schema": resource.get("input_schema")
                                     if field == "tools"

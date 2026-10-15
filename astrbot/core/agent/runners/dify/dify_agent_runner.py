@@ -144,6 +144,78 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
             "upload_file_id": file_response["id"],
         }
 
+    async def _record_remote_event(self, chunk: dict) -> None:
+        """Save original process observations from either Dify streaming API.
+
+        Args:
+            chunk: Original provider frame, including its node execution identity.
+
+        Raises:
+            CheckpointRecoveryError: The observation could not be durably saved.
+        """
+        if not self.remote_checkpoint:
+            return
+        event = chunk.get("event")
+        if event not in {
+            "agent_thought",
+            "agent_log",
+            "workflow_started",
+            "workflow_finished",
+            "workflow_paused",
+            "node_started",
+            "node_finished",
+            "node_retry",
+            "iteration_started",
+            "iteration_next",
+            "iteration_completed",
+            "loop_started",
+            "loop_next",
+            "loop_completed",
+            "reasoning_chunk",
+            "human_input_required",
+            "human_input_form_filled",
+            "human_input_form_timeout",
+        } and not (
+            event == "message_end" and chunk.get("metadata", {}).get("reasoning")
+        ):
+            return
+        # Full snapshots include execution/iteration IDs, so repeated nodes do
+        # not collapse, while a repeated identical frame remains idempotent.
+        record_id = (
+            self.remote_checkpoint.data["invocation_id"]
+            + ":dify:"
+            + hashlib.sha256(
+                json.dumps(chunk, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        )
+        events = self.remote_checkpoint.data["remote"].setdefault("events", {})
+        if event == "reasoning_chunk":
+            # Unsequenced deltas may legitimately repeat the same text. Preserve
+            # arrival order; checkpoint replay still uses these saved record IDs.
+            record_id += ":" + str(len(events))
+        data = {"provider": "dify", "event": copy.deepcopy(chunk)}
+        events[record_id] = data
+        checkpoint_error = None
+        try:
+            await self.remote_checkpoint.save()
+        except CheckpointRecoveryError as exc:
+            # Keep the received frame through the public process transaction
+            # when the checkpoint transaction fails, then still block the result.
+            checkpoint_error = exc
+        if self.remote_checkpoint.binding.record_process:
+            try:
+                await self.remote_checkpoint.binding.record_process(
+                    record_id, "remote_event", data
+                )
+            except Exception as exc:
+                error = CheckpointRecoveryError(
+                    "Remote process event could not be saved; result requires confirmation"
+                )
+                self.remote_checkpoint.binding.recovery_error = error
+                raise error from exc
+        if checkpoint_error:
+            raise checkpoint_error
+
     async def _execute_dify_request(self):
         """Execute a fresh request or reuse the original remote response.
 
@@ -231,6 +303,7 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     timeout=self.timeout,
                 ):
                     logger.debug(f"dify resp chunk: {chunk}")
+                    await self._record_remote_event(chunk)
                     if chunk["event"] == "message" or chunk["event"] == "agent_message":
                         result += chunk["answer"]
                         if not conversation_id:
@@ -250,32 +323,6 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     chain=MessageChain().message(chunk["answer"])
                                 ),
                             )
-                    elif chunk["event"] == "agent_thought" and self.remote_checkpoint:
-                        # Dify can supplement an existing thought ID with its tool
-                        # observation. Keep each distinct original snapshot immutable.
-                        record_id = (
-                            self.remote_checkpoint.data["invocation_id"]
-                            + ":dify:"
-                            + hashlib.sha256(
-                                json.dumps(chunk, sort_keys=True).encode("utf-8")
-                            ).hexdigest()
-                        )
-                        data = {"provider": "dify", "event": copy.deepcopy(chunk)}
-                        self.remote_checkpoint.data["remote"].setdefault("events", {})[
-                            record_id
-                        ] = data
-                        await self.remote_checkpoint.save()
-                        if self.remote_checkpoint.binding.record_process:
-                            try:
-                                await self.remote_checkpoint.binding.record_process(
-                                    record_id, "remote_event", data
-                                )
-                            except Exception as exc:
-                                error = CheckpointRecoveryError(
-                                    "Remote process event could not be saved; result requires confirmation"
-                                )
-                                self.remote_checkpoint.binding.recovery_error = error
-                                raise error from exc
                     elif chunk["event"] == "message_end":
                         terminal = chunk
                         completed = True
@@ -299,6 +346,7 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     timeout=self.timeout,
                 ):
                     logger.debug(f"dify workflow resp chunk: {chunk}")
+                    await self._record_remote_event(chunk)
                     match chunk["event"]:
                         case "workflow_started":
                             if self.remote_checkpoint:

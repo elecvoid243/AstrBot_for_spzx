@@ -269,7 +269,7 @@ Dify 工作流通过已配置输出键提供结构化对象，由原输出契约
 
 ![实际运行详情中的原远端身份与查询操作](/images/agent-teams-runner-recovery-zh.jpg)
 
-Dify Agent 实际返回的 `agent_thought` 事件显示在 **已保存的成员过程 → 远端过程事件** 中，保留提供商的 thought ID、思考、工具输入和 observation。同一 thought 后补的观察结果作为独立快照保留，重复帧与恢复不会重复记录。这些记录用于观察远端执行过程；存储失败时，任务会在接受完整回答之前阻塞。团队 DashScope 调用在连接结果不明或重定向时同样等待确认，不会重新发送创建请求。
+Dify Agent 实际返回的 `agent_thought` 事件显示在 **已保存的成员过程 → 远端过程事件** 中，保留提供商的 thought ID、思考、工具输入和 observation。Workflow 与 chatflow 的过程事件保留实际节点执行 ID、inputs、process_data 和 outputs，包括提供商实际返回的思考及 agent 日志。同一 thought 后补的观察结果作为独立快照保留；重复快照与恢复不会重复记录，没有帧序号的相同思考增量则按收到的顺序分别保留。同一节点的多次执行通过原执行 ID 和迭代 ID 区分。这些记录用于观察远端执行过程；存储失败时，任务会在接受完整回答之前阻塞，恢复先重放已保存的观察记录，再查询原运行。团队 DashScope 调用在连接结果不明或重定向时同样等待确认，不会重新发送创建请求。
 
 ![实际运行过程中的 Dify Agent 原始事件](/images/agent-teams-runner-events-zh.jpg)
 

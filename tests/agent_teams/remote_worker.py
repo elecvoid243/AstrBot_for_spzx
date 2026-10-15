@@ -74,6 +74,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
         config["agent_runner"]["config"]["dify_api_type"] = "chat"
     if window.startswith("chat_thought"):
         config["agent_runner"]["config"]["dify_api_type"] = "agent"
+    if window == "chat_workflow_events":
+        config["agent_runner"]["config"]["dify_api_type"] = "chatflow"
     if scenario.startswith("coze:"):
         config["agent_runner"] = {
             "runner_type": "coze",
@@ -287,6 +289,26 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
             """
             for row in [*session.new, *session.dirty]:
                 if (
+                    window == "workflow_events_process_failure"
+                    and isinstance(row, AgentWorkflowProcess)
+                    and row.kind == "remote_event"
+                    and row.data["event"].get("data", {}).get("id")
+                    == "tool-execution-original"
+                ):
+                    raise RuntimeError("Injected workflow process storage failure")
+                if (
+                    window == "workflow_events_checkpoint_failure"
+                    and isinstance(row, AgentWorkflowCheckpoint)
+                    and any(
+                        event["event"].get("data", {}).get("id")
+                        == "tool-execution-original"
+                        for event in row.data.get("remote", {})
+                        .get("events", {})
+                        .values()
+                    )
+                ):
+                    raise RuntimeError("Injected workflow event checkpoint failure")
+                if (
                     window == "chat_thought_process_failure"
                     and isinstance(row, AgentWorkflowProcess)
                     and row.kind == "remote_event"
@@ -309,11 +331,21 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                         "end_success",
                         "chat_result_saved",
                         "chat_thoughts",
+                        "workflow_events_saved",
+                        "chat_workflow_events",
                         "usage_missing",
                         "usage_zero",
                     }
                     else "remote_running"
                 ):
+                    if window == "workflow_events_query" and not any(
+                        event["event"].get("data", {}).get("id")
+                        == "tool-execution-next"
+                        for event in row.data.get("remote", {})
+                        .get("events", {})
+                        .values()
+                    ):
+                        continue
                     if window == "identity_save_failure":
                         raise RuntimeError("Injected remote identity storage failure")
                     if window == "end_interrupted" or window in {
@@ -326,6 +358,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                         "accepted_redirect",
                         "chat_thought_process_failure",
                         "chat_thought_checkpoint_failure",
+                        "workflow_events_process_failure",
+                        "workflow_events_checkpoint_failure",
                     }:
                         continue
                     session.info["remote_boundary"] = row.run_id
@@ -411,6 +445,8 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                 "accepted_redirect",
                 "chat_thought_process_failure",
                 "chat_thought_checkpoint_failure",
+                "workflow_events_process_failure",
+                "workflow_events_checkpoint_failure",
             }:
                 for _ in range(500):
                     current = await service.get_run("alice", run["run_id"])

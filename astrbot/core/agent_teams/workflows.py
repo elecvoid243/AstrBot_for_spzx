@@ -2225,7 +2225,17 @@ class WorkflowService:
                 new_assets = []
                 # Recheck the complete registry in the same transaction as all writes.
                 # Concurrent confirmations retry against the winning immutable rows.
-                for content, proposed in zip(contents, preview["assets"], strict=True):
+                # Allocate pinned versions before the selected entry so that the
+                # entry stays the default even when its closure shares its identity.
+                for content, proposed in sorted(
+                    zip(contents, preview["assets"], strict=True),
+                    key=lambda item: (
+                        (item[0]["asset_id"], item[0]["version"])
+                        == (package.asset_id, package.version),
+                        item[0]["asset_id"],
+                        item[0]["version"],
+                    ),
+                ):
                     key = (content["asset_id"], content["version"])
                     row = records.get(key)
                     if row:

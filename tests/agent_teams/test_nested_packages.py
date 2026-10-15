@@ -1039,3 +1039,120 @@ async def test_parent_only_tool_upgrade_reuses_unchanged_child_and_binding(
         assert not (
             await env.service.check_readiness("bob", upgraded["asset"]["asset_id"], 2)
         )["ready"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pinned_version", [1, 3])
+async def test_import_keeps_selected_entry_latest_with_pinned_self_version(
+    workflow_env, pinned_version
+):
+    """Keep the selected entry visible without retargeting its fixed child.
+
+    Args:
+        workflow_env: Public asset services and real isolated SQLite persistence.
+        pinned_version: Same-identity child version declared in the portable closure.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Stable role",
+                "prompt": "Read evidence",
+                "tools": [],
+                "skills": [],
+                "knowledge_bases": [],
+                "max_instances": 4,
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    old = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Pinned leaf",
+                "tasks": [
+                    {
+                        "id": "leaf",
+                        "name": "Read evidence",
+                        "member": "leaf",
+                        "task": "Read evidence",
+                        **reference,
+                    }
+                ],
+            }
+        },
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Pinned team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": old["asset_id"],
+                        "version": 1,
+                        "result_task_id": "leaf",
+                    }
+                ],
+            }
+        },
+    )
+    entry = await env.service.save_asset(
+        "alice",
+        {
+            "expected_version": 1,
+            "definition": {
+                "name": "Selected entry",
+                "required_inputs": ["goal"],
+                "tasks": [
+                    {
+                        "id": "team",
+                        "name": "Call pinned team",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"input": "goal"}},
+                    }
+                ],
+            },
+        },
+        old["asset_id"],
+    )
+    package = copy.deepcopy(
+        await env.service.export_asset("alice", entry["asset_id"], 2)
+    )
+    for asset in package["assets"]:
+        if asset["asset_id"] == entry["asset_id"]:
+            asset["version"] = pinned_version
+        else:
+            asset["definition"]["allowed_workflows"][0]["version"] = pinned_version
+    assert (await env.service.preview_import("bob", {"package": package}))["ready"]
+    installed = await env.service.import_asset("bob", {"package": package})
+    current = await env.service.get_asset("bob", installed["asset"]["asset_id"])
+    assert current["version"] == installed["asset"]["version"]
+    assert current["definition"]["name"] == "Selected entry"
+    assert set(current["versions"]) == {1, 2}
+    team_ref = current["definition"]["tasks"][0]["team"]
+    local_team = await env.service.get_asset(
+        "bob", team_ref["asset_id"], team_ref["version"]
+    )
+    leaf_ref = local_team["definition"]["allowed_workflows"][0]
+    assert leaf_ref["asset_id"] == current["asset_id"]
+    assert leaf_ref["version"] == 1
+    pinned = await env.service.get_asset("bob", leaf_ref["asset_id"], 1)
+    assert pinned["definition"]["name"] == "Pinned leaf"
+    assert (
+        await env.service.export_asset("bob", leaf_ref["asset_id"], 1)
+    )["version"] == pinned_version
+    assert await env.service.export_asset("bob", current["asset_id"], 2) == package
+    repeated = await env.service.import_asset("bob", {"package": package})
+    assert repeated["existing"]
+    assert repeated["asset"] == current
+    assert (
+        await env.service.check_readiness("bob", current["asset_id"], 2)
+    )["ready"]

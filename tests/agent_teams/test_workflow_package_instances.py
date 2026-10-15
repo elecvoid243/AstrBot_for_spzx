@@ -169,9 +169,6 @@ def test_different_instances_export_import_and_run_actual_provider_pipeline(tmp_
             task["snapshot"]["effective"]["provider_id"] == "model-b"
             for task in result["run"]["tasks"]
         )
-        (tmp_path / "http-requests.json").write_text(
-            json.dumps(requests, indent=2), encoding="utf-8"
-        )
     finally:
         server.shutdown()
         thread.join(timeout=5)

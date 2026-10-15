@@ -15,7 +15,7 @@ from typing import Literal, cast
 
 from jsonschema import Draft202012Validator, SchemaError
 from mcp.types import CallToolResult, TextContent
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema
@@ -181,6 +181,24 @@ class WorkflowPackage(BaseModel):
     version: int = Field(ge=1)
     definition: WorkflowDefinition | GraphDefinition
     roles: list[PackageRole] = Field(max_length=100)
+
+    @field_validator("format_version", mode="before")
+    @classmethod
+    def validate_format_version(cls, value: object) -> int:
+        """Reject values that a literal validator would coerce to integer one.
+
+        Args:
+            value: Original JSON value, before request normalization.
+
+        Returns:
+            The unmodified integer for supported-version validation.
+
+        Raises:
+            ValueError: A boolean, float or another non-integer was supplied.
+        """
+        if type(value) is not int:
+            raise ValueError("Package format_version must be an integer")
+        return value
 
 
 class WorkflowImportRequest(BaseModel):
@@ -1008,6 +1026,21 @@ class WorkflowService:
         Raises:
             RoleAssetError: Unsupported format or invalid definitions and references.
         """
+        raw_package = payload.get("package")
+        if (
+            isinstance(raw_package, dict)
+            and type(raw_package.get("format_version")) is not int
+        ):
+            raise RoleAssetError(
+                "Package format_version must be an integer",
+                [
+                    {
+                        "path": "package.format_version",
+                        "code": "INVALID",
+                        "message": "Use an integer format version",
+                    }
+                ],
+            )
         try:
             request = WorkflowImportRequest.model_validate(payload)
         except ValidationError as exc:
@@ -1022,8 +1055,6 @@ class WorkflowService:
                     for e in exc.errors()
                 ],
             ) from exc
-        if type(payload.get("package", {}).get("format_version")) is not int:
-            raise RoleAssetError("Package format_version must be an integer")
         package = request.package
         references = {(role.role_id, role.version) for role in package.roles}
         if len(references) != len(package.roles):
@@ -1039,30 +1070,51 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Only single-layer workflow packages are supported"
                 )
-            validate_graph(definition)
         used = set()
-        for task in tasks:
+        for index, task in enumerate(tasks):
             if getattr(task, "human", None):
                 continue
             assert task.role_id is not None and task.role_version is not None
             used.add((task.role_id, task.role_version))
-            await self._validate_task_definition(
-                username,
-                WorkflowDefinition(
-                    name=task.name,
-                    task=task.task,
-                    role_id=task.role_id,
-                    role_version=task.role_version,
-                    overrides=task.overrides,
-                    required_inputs=list(
-                        dict.fromkeys(
-                            [*definition.required_inputs, *getattr(task, "inputs", {})]
-                        )
+            try:
+                await self._validate_task_definition(
+                    username,
+                    WorkflowDefinition(
+                        name=task.name,
+                        task=task.task,
+                        role_id=task.role_id,
+                        role_version=task.role_version,
+                        overrides=task.overrides,
+                        required_inputs=list(
+                            dict.fromkeys(
+                                [
+                                    *definition.required_inputs,
+                                    *getattr(task, "inputs", {}),
+                                ]
+                            )
+                        ),
+                        output_contract=task.output_contract,
                     ),
-                    output_contract=task.output_contract,
-                ),
-                references,
-            )
+                    references,
+                )
+            except RoleAssetError as exc:
+                if isinstance(definition, GraphDefinition):
+                    raise RoleAssetError(
+                        str(exc),
+                        [
+                            {
+                                **issue,
+                                "path": f"definition.tasks.{index}."
+                                + issue["path"].removeprefix("definition."),
+                            }
+                            for issue in exc.fields
+                        ],
+                        status=exc.status,
+                    ) from exc
+                raise
+        if isinstance(definition, GraphDefinition):
+            # Graph field resolution assumes well-formed task contracts.
+            validate_graph(definition)
         if used != references:
             raise RoleAssetError(
                 "Package must contain exactly the referenced role versions"
@@ -1119,6 +1171,177 @@ class WorkflowService:
                 )
         return request
 
+    async def _preview_package_role(
+        self,
+        package: WorkflowPackage,
+        role: PackageRole,
+        explicit: RoleInstallation | None,
+        catalog: dict,
+    ) -> tuple[dict, list[dict]]:
+        """Apply the same declared resource constraints at preview and launch.
+
+        Args:
+            package: Immutable package with the original task overrides.
+            role: Included role whose full dependency surface must be ready.
+            explicit: Saved or deliberately proposed local installation.
+            catalog: Current local resources, without performing installation.
+
+        Returns:
+            Grouped role preview and all dependency or permission issues.
+
+        Raises:
+            RoleAssetError: Bindings contain undeclared package slots.
+        """
+        definition = package.definition
+        tasks = (
+            definition.tasks
+            if isinstance(definition, GraphDefinition)
+            else [definition]
+        )
+        issues: list[dict] = []
+        key = f"{role.role_id}:{role.version}"
+        installation = {"profile_id": "__unconfigured__", "bindings": {}}
+        dependencies = []
+        allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
+        if explicit and set(explicit.bindings) - allowed_slots:
+            raise RoleAssetError("Bindings contain undeclared package slots")
+        for dep in role.dependencies:
+            candidates = []
+            for resource in catalog[dep.kind]:
+                fingerprint = resource.get("fingerprint")
+                if dep.kind == "profiles":
+                    runner_type = resource.get("runner_type", "local")
+                    if runner_type != dep.runner_type:
+                        continue
+                    if runner_type == "local":
+                        pool = resource.get("provider_pool", ["*"])
+                        model_requirement = next(
+                            d for d in role.dependencies if d.kind == "models"
+                        )
+                        if not any(
+                            ("*" in pool or model["id"] in pool)
+                            and model.get("enabled", True)
+                            and (
+                                not model_requirement.fingerprint
+                                or model.get("fingerprint")
+                                == model_requirement.fingerprint
+                            )
+                            and set(role.definition.model_capabilities).issubset(
+                                model.get("capabilities", [])
+                            )
+                            for model in catalog["models"]
+                        ):
+                            continue
+                    fingerprint = "astrbot.local.v1" if runner_type == "local" else None
+                if not resource.get("enabled", True) or not set(
+                    dep.capabilities
+                ).issubset(
+                    resource.get("capabilities", [])
+                    if dep.kind != "profiles"
+                    else get_agent_runner_capabilities(
+                        {
+                            "runner_type": resource.get("runner_type", "local"),
+                            "config": resource.get("runner_config", {}),
+                        }
+                    )["capabilities"]
+                ):
+                    continue
+                if dep.fingerprint and fingerprint != dep.fingerprint:
+                    continue
+                if (
+                    dep.input_schema is not None
+                    and resource.get("input_schema") != dep.input_schema
+                ):
+                    continue
+                candidates.append(
+                    {
+                        "id": resource["id"],
+                        "name": resource.get("name", resource["id"]),
+                        "description": resource.get("description") or "",
+                        "input_schema": resource.get("input_schema"),
+                    }
+                )
+            chosen = (
+                (
+                    explicit.profile_id
+                    if dep.kind == "profiles"
+                    else explicit.bindings.get(dep.slot)
+                )
+                if explicit
+                else None
+            )
+            automatic = bool(dep.fingerprint) and len(candidates) == 1 and not explicit
+            if automatic:
+                chosen = candidates[0]["id"]
+            compatible = (
+                chosen is not None and sum(c["id"] == chosen for c in candidates) == 1
+            )
+            status = (
+                "matched"
+                if compatible
+                else "ambiguous"
+                if len(candidates) > 1
+                else "missing"
+                if not candidates
+                else "confirmation_required"
+            )
+            path = f"roles.{key}." + (
+                "profile_id" if dep.kind == "profiles" else f"bindings.{dep.slot}"
+            )
+            if not compatible:
+                issues.append(
+                    {
+                        "path": path,
+                        "code": status.upper(),
+                        "message": f"Choose a compatible {dep.kind} resource for {dep.slot}",
+                    }
+                )
+            elif dep.kind == "profiles":
+                installation["profile_id"] = chosen
+            else:
+                installation["bindings"][dep.slot] = chosen
+            dependencies.append(
+                {
+                    **dep.model_dump(),
+                    "candidates": candidates,
+                    "selected": chosen if compatible else None,
+                    "automatic": automatic,
+                    "status": status,
+                }
+            )
+        base = {
+            "definition": role.definition.model_dump(),
+            "installation": installation,
+        }
+        resolved = await self.roles.preview_role(base)
+        role_issues = list(resolved["issues"])
+        for task in tasks:
+            if (
+                getattr(task, "role_id", None),
+                getattr(task, "role_version", None),
+            ) == (role.role_id, role.version):
+                result = await self.roles.preview_role(
+                    base, task.overrides.model_dump(exclude_none=True)
+                )
+                role_issues.extend(result["issues"])
+        issues.extend(
+            {**issue, "path": f"roles.{key}." + issue["path"]} for issue in role_issues
+        )
+        issues = list(
+            {
+                (issue["path"], issue["code"], issue["message"]): issue
+                for issue in issues
+            }.values()
+        )
+        return {
+            "key": key,
+            "name": role.definition.name,
+            "prompt": role.definition.prompt,
+            "prompt_source": role.prompt_source,
+            "dependencies": dependencies,
+            "installation": installation,
+        }, issues
+
     async def preview_import(self, username: str, payload: dict) -> dict:
         """Validate all content before reading candidates or proposing bindings.
 
@@ -1134,12 +1357,6 @@ class WorkflowService:
         """
         request = await self._validate_package(username, payload)
         package = request.package
-        definition = package.definition
-        tasks = (
-            definition.tasks
-            if isinstance(definition, GraphDefinition)
-            else [definition]
-        )
         normalized = package.model_dump()
         try:
             digest = hashlib.sha256(
@@ -1188,156 +1405,14 @@ class WorkflowService:
         previews, issues = [], []
         for role in package.roles:
             key = f"{role.role_id}:{role.version}"
-            explicit = request.installations.get(key) or saved_installations.get(key)
-            installation = {"profile_id": "__unconfigured__", "bindings": {}}
-            dependencies = []
-            allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
-            if explicit and set(explicit.bindings) - allowed_slots:
-                raise RoleAssetError("Bindings contain undeclared package slots")
-            for dep in role.dependencies:
-                candidates = []
-                for resource in catalog[dep.kind]:
-                    fingerprint = resource.get("fingerprint")
-                    if dep.kind == "profiles":
-                        runner_type = resource.get("runner_type", "local")
-                        if runner_type != dep.runner_type:
-                            continue
-                        if runner_type == "local":
-                            pool = resource.get("provider_pool", ["*"])
-                            model_requirement = next(
-                                d for d in role.dependencies if d.kind == "models"
-                            )
-                            if not any(
-                                ("*" in pool or model["id"] in pool)
-                                and model.get("enabled", True)
-                                and (
-                                    not model_requirement.fingerprint
-                                    or model.get("fingerprint")
-                                    == model_requirement.fingerprint
-                                )
-                                and set(role.definition.model_capabilities).issubset(
-                                    model.get("capabilities", [])
-                                )
-                                for model in catalog["models"]
-                            ):
-                                continue
-                        fingerprint = (
-                            "astrbot.local.v1" if runner_type == "local" else None
-                        )
-                    if not resource.get("enabled", True) or not set(
-                        dep.capabilities
-                    ).issubset(
-                        resource.get("capabilities", [])
-                        if dep.kind != "profiles"
-                        else get_agent_runner_capabilities(
-                            {
-                                "runner_type": resource.get("runner_type", "local"),
-                                "config": resource.get("runner_config", {}),
-                            }
-                        )["capabilities"]
-                    ):
-                        continue
-                    if dep.fingerprint and fingerprint != dep.fingerprint:
-                        continue
-                    if (
-                        dep.input_schema is not None
-                        and resource.get("input_schema") != dep.input_schema
-                    ):
-                        continue
-                    candidates.append(
-                        {
-                            "id": resource["id"],
-                            "name": resource.get("name", resource["id"]),
-                            "description": resource.get("description") or "",
-                            "input_schema": resource.get("input_schema"),
-                        }
-                    )
-                chosen = (
-                    (
-                        explicit.profile_id
-                        if dep.kind == "profiles"
-                        else explicit.bindings.get(dep.slot)
-                    )
-                    if explicit
-                    else None
-                )
-                automatic = (
-                    bool(dep.fingerprint) and len(candidates) == 1 and not explicit
-                )
-                if automatic:
-                    chosen = candidates[0]["id"]
-                compatible = (
-                    chosen is not None
-                    and sum(c["id"] == chosen for c in candidates) == 1
-                )
-                status = (
-                    "matched"
-                    if compatible
-                    else "ambiguous"
-                    if len(candidates) > 1
-                    else "missing"
-                    if not candidates
-                    else "confirmation_required"
-                )
-                path = f"roles.{key}." + (
-                    "profile_id" if dep.kind == "profiles" else f"bindings.{dep.slot}"
-                )
-                if not compatible:
-                    issues.append(
-                        {
-                            "path": path,
-                            "code": status.upper(),
-                            "message": f"Choose a compatible {dep.kind} resource for {dep.slot}",
-                        }
-                    )
-                elif dep.kind == "profiles":
-                    installation["profile_id"] = chosen
-                else:
-                    installation["bindings"][dep.slot] = chosen
-                dependencies.append(
-                    {
-                        **dep.model_dump(),
-                        "candidates": candidates,
-                        "selected": chosen if compatible else None,
-                        "automatic": automatic,
-                        "status": status,
-                    }
-                )
-            base = {
-                "definition": role.definition.model_dump(),
-                "installation": installation,
-            }
-            resolved = await self.roles.preview_role(base)
-            role_issues = list(resolved["issues"])
-            for task in tasks:
-                if (
-                    getattr(task, "role_id", None),
-                    getattr(task, "role_version", None),
-                ) == (role.role_id, role.version):
-                    result = await self.roles.preview_role(
-                        base, task.overrides.model_dump(exclude_none=True)
-                    )
-                    role_issues.extend(result["issues"])
-            issues.extend(
-                {**issue, "path": f"roles.{key}." + issue["path"]}
-                for issue in role_issues
+            proposed, role_issues = await self._preview_package_role(
+                package,
+                role,
+                request.installations.get(key) or saved_installations.get(key),
+                catalog,
             )
-            previews.append(
-                {
-                    "key": key,
-                    "name": role.definition.name,
-                    "prompt": role.definition.prompt,
-                    "prompt_source": role.prompt_source,
-                    "dependencies": dependencies,
-                    "installation": installation,
-                }
-            )
-        issues = list(
-            {
-                (issue["path"], issue["code"], issue["message"]): issue
-                for issue in issues
-            }.values()
-        )
+            previews.append(proposed)
+            issues.extend(role_issues)
         return {
             "package": normalized,
             "digest": digest,
@@ -1652,12 +1727,49 @@ class WorkflowService:
                     credential, None
                 )
         effective = copy.deepcopy(role["effective"])
+        catalog = await self.roles.get_resources()
+        if role["version"] == 1:
+            async with self.db.get_db() as session:
+                packages = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowPackage).where(
+                                AgentWorkflowPackage.owner_username == username
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            for record in packages:
+                source_key = next(
+                    (
+                        key
+                        for key, identity in record.role_ids.items()
+                        if identity == role["role_id"]
+                    ),
+                    None,
+                )
+                if source_key is None:
+                    continue
+                package = WorkflowPackage.model_validate(record.package)
+                source_role = next(
+                    item
+                    for item in package.roles
+                    if f"{item.role_id}:{item.version}" == source_key
+                )
+                # Task overrides cannot discard an installed package's declared
+                # constraints. Check current resources before creating a snapshot.
+                _, issues = await self._preview_package_role(
+                    package,
+                    source_role,
+                    RoleInstallation.model_validate(role["installation"]),
+                    catalog,
+                )
+                if issues:
+                    raise RoleAssetError("Package dependencies are not ready", issues)
         persona = next(
-            (
-                p
-                for p in (await self.roles.get_resources())["personas"]
-                if p["id"] == effective.get("persona_id")
-            ),
+            (p for p in catalog["personas"] if p["id"] == effective.get("persona_id")),
             None,
         )
         if core and effective.get("persona_id"):

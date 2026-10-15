@@ -1,15 +1,15 @@
 """Portable workflow behavior at the shared asset and run service boundary."""
 
 import asyncio
-import json
 import copy
+import json
 
 import pytest
 
-from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
-from astrbot.core.agent_teams.assets import RoleAssetService, RoleAssetError
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.sqlite import SQLiteDatabase
+from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
@@ -103,15 +103,33 @@ async def test_export_makes_inherited_persona_prompt_visible_without_knowledge_c
 @pytest.mark.asyncio
 async def test_export_accepts_roles_completed_by_actual_task_overrides(workflow_env):
     env = workflow_env
-    role = await env.roles.save_role("alice", {
-        "definition": {"name": "Task-defined responsibility", "tools": [], "skills": [], "knowledge_bases": []},
-        "installation": {"bindings": {"model": "model-a"}},
-    })
-    asset = await env.service.save_asset("alice", {"definition": {
-        "name": "Task prompt", "role_id": role["role_id"], "role_version": 1,
-        "task": "Write evidence", "overrides": {"prompt": "Actual task responsibility."},
-    }})
-    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))["ready"] is True
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Task-defined responsibility",
+                "tools": [],
+                "skills": [],
+                "knowledge_bases": [],
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Task prompt",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Write evidence",
+                "overrides": {"prompt": "Actual task responsibility."},
+            }
+        },
+    )
+    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))[
+        "ready"
+    ] is True
     package = await env.service.export_asset("alice", asset["asset_id"], 1)
     assert package["roles"][0]["definition"]["prompt"] == "Actual task responsibility."
     assert package["roles"][0]["prompt_source"] == "task"
@@ -119,43 +137,126 @@ async def test_export_accepts_roles_completed_by_actual_task_overrides(workflow_
 
 
 @pytest.mark.asyncio
-async def test_dependencies_keep_logical_purpose_and_reject_incompatible_tool_contracts(workflow_env):
+async def test_dependencies_keep_logical_purpose_and_reject_incompatible_tool_contracts(
+    workflow_env,
+):
     env = workflow_env
-    schema = {"type": "object", "properties": {"company": {"type": "string"}}, "required": ["company"]}
-    env.inventory["tools"] = [{"id": "private-financial-tool", "description": "Search approved company financial filings", "input_schema": schema}]
-    role = await env.roles.save_role("alice", {
-        "definition": {"name": "Financial researcher", "prompt": "Review filings", "tools": ["financial-filings-search"]},
-        "installation": {"bindings": {"model": "model-a", "financial-filings-search": "private-financial-tool"}},
-    })
-    asset = await env.service.save_asset("alice", {"definition": {"name": "Filings", "role_id": role["role_id"], "role_version": 1, "task": "Review evidence"}})
+    schema = {
+        "type": "object",
+        "properties": {"company": {"type": "string"}},
+        "required": ["company"],
+    }
+    env.inventory["tools"] = [
+        {
+            "id": "private-financial-tool",
+            "description": "Search approved company financial filings",
+            "input_schema": schema,
+        }
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Financial researcher",
+                "prompt": "Review filings",
+                "tools": ["financial-filings-search"],
+            },
+            "installation": {
+                "bindings": {
+                    "model": "model-a",
+                    "financial-filings-search": "private-financial-tool",
+                }
+            },
+        },
+    )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Filings",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Review evidence",
+            }
+        },
+    )
     package = await env.service.export_asset("alice", asset["asset_id"], 1)
-    dependency = next(dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "tools")
+    dependency = next(
+        dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "tools"
+    )
     assert dependency["logical_slots"] == ["financial-filings-search"]
     assert dependency["description"] == "Search approved company financial filings"
     assert dependency["input_schema"] == schema
     assert "private-financial-tool" not in json.dumps(package)
-    env.inventory["tools"] = [{"id": "weather", "description": "Weather only", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}]
+    env.inventory["tools"] = [
+        {
+            "id": "weather",
+            "description": "Weather only",
+            "input_schema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            },
+        }
+    ]
     key = f"{role['role_id']}:1"
-    preview = await env.service.preview_import("bob", {"package": package, "installations": {key: {"bindings": {"model": "model-a", "tools_1": "weather"}}}})
+    preview = await env.service.preview_import(
+        "bob",
+        {
+            "package": package,
+            "installations": {
+                key: {"bindings": {"model": "model-a", "tools_1": "weather"}}
+            },
+        },
+    )
     assert preview["ready"] is False
-    assert next(dep for dep in preview["roles"][0]["dependencies"] if dep["kind"] == "tools")["candidates"] == []
+    assert (
+        next(
+            dep for dep in preview["roles"][0]["dependencies"] if dep["kind"] == "tools"
+        )["candidates"]
+        == []
+    )
 
 
 @pytest.mark.asyncio
-async def test_export_keeps_inherited_knowledge_purpose_without_local_identity(workflow_env):
+async def test_export_keeps_inherited_knowledge_purpose_without_local_identity(
+    workflow_env,
+):
     env = workflow_env
     env.inventory["profiles"][0]["knowledge_bases"] = ["Corporate financial evidence"]
-    env.inventory["knowledge_bases"] = [{"id": "source-kb-uuid", "name": "Corporate financial evidence", "description": ""}]
-    role = await env.roles.save_role("alice", {
-        "definition": {"name": "Inherited evidence", "prompt": "Review the facts"},
-        "installation": {"bindings": {"model": "model-a"}},
-    })
-    asset = await env.service.save_asset("alice", {"definition": {
-        "name": "Financial facts", "role_id": role["role_id"], "role_version": 1, "task": "Review evidence",
-    }})
-    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))["ready"] is True
+    env.inventory["knowledge_bases"] = [
+        {
+            "id": "source-kb-uuid",
+            "name": "Corporate financial evidence",
+            "description": "",
+        }
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {"name": "Inherited evidence", "prompt": "Review the facts"},
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Financial facts",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Review evidence",
+            }
+        },
+    )
+    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))[
+        "ready"
+    ] is True
     package = await env.service.export_asset("alice", asset["asset_id"], 1)
-    dependency = next(dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "knowledge_bases")
+    dependency = next(
+        dep
+        for dep in package["roles"][0]["dependencies"]
+        if dep["kind"] == "knowledge_bases"
+    )
     assert dependency["display_name"] == "Corporate financial evidence"
     assert "source-kb-uuid" not in json.dumps(package)
 
@@ -370,7 +471,198 @@ async def test_confirmation_failure_leaves_no_partial_installation_and_retry_suc
 
 
 @pytest.mark.asyncio
-async def test_concurrent_confirmation_persists_bindings_after_pending_import(workflow_env):
+async def test_pending_package_dependencies_survive_service_restart(
+    workflow_env, tmp_path
+):
+    """Keep unused declared resources mandatory after rebuilding the services.
+
+    Args:
+        workflow_env: Source services and controllable resource inventory.
+        tmp_path: Data root used by the persistent public-service fixture.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "model-source-a"
+    env.inventory["tools"] = [{"id": "tool-a", "description": "Company evidence"}]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Researcher",
+                "prompt": "Write evidence",
+                "tools": ["evidence"],
+            },
+            "installation": {"bindings": {"model": "model-a", "evidence": "tool-a"}},
+        },
+    )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "No tools for this task",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "task": "Write report",
+                "overrides": {"tools": []},
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    env.inventory["tools"] = []
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "save_pending": True}
+    )
+    assert installed["ready"] is False
+    await env.service.shutdown()
+    await env.db.engine.dispose()
+
+    async def inventory():
+        return env.inventory
+
+    db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+    service = WorkflowService(
+        db,
+        RoleAssetService(db, catalog_loader=inventory),
+        ports_factory=env.service.ports_factory,
+    )
+    try:
+        ready = await service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+        preview = await service.preview_import("bob", {"package": package})
+        assert ready["ready"] is False
+        assert ready["issues"] == preview["issues"]
+        with pytest.raises(RoleAssetError):
+            await service.start_run(
+                "bob", installed["asset"]["asset_id"], {"version": 1}
+            )
+        assert (await service.list_runs("bob"))["runs"] == []
+        assert (
+            await service.get_asset("bob", installed["asset"]["asset_id"], 1)
+            == installed["asset"]
+        )
+    finally:
+        await service.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ["model_fingerprint", "tool_schema"])
+@pytest.mark.parametrize("graph", [False, True])
+async def test_installed_constraints_block_drift_after_restart_without_changing_runs(
+    workflow_env, tmp_path, drift, graph
+):
+    """Recheck stored requirements while retaining the previously frozen run.
+
+    Args:
+        workflow_env: Source services and controllable resource inventory.
+        tmp_path: Persistent database directory shared across service lifecycles.
+        drift: Compatibility metadata changed without changing the bound ID.
+        graph: Whether the imported asset uses the graph launch path.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "model-source-a"
+    env.inventory["tools"] = [
+        {
+            "id": "tool-a",
+            "description": "Company evidence",
+            "input_schema": {
+                "type": "object",
+                "properties": {"company": {"type": "string"}},
+            },
+        }
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Researcher",
+                "prompt": "Write evidence",
+                "tools": ["evidence"],
+            },
+            "installation": {"bindings": {"model": "model-a", "evidence": "tool-a"}},
+        },
+    )
+    task = {
+        "name": "Research",
+        "role_id": role["role_id"],
+        "role_version": 1,
+        "task": "Write report",
+    }
+    definition = (
+        {
+            "name": "Research graph",
+            "tasks": [{**task, "id": "research", "member": "researcher"}],
+        }
+        if graph
+        else task
+    )
+    asset = await env.service.save_asset("alice", {"definition": definition})
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    key = f"{role['role_id']}:1"
+    installed = await env.service.import_asset(
+        "bob",
+        {
+            "package": package,
+            "installations": {
+                key: {
+                    "profile_id": "default",
+                    "bindings": {"model": "model-a", "tools_1": "tool-a"},
+                }
+            },
+        },
+    )
+    run = await env.service.start_run(
+        "bob", installed["asset"]["asset_id"], {"version": 1}
+    )
+    for _ in range(200):
+        prior = await env.service.get_run("bob", run["run_id"])
+        if prior["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert prior["status"] == "completed"
+    frozen = copy.deepcopy(prior["snapshot"])
+    await env.service.shutdown()
+    await env.db.engine.dispose()
+    if drift == "model_fingerprint":
+        env.inventory["models"][0]["fingerprint"] = "different-source"
+    else:
+        env.inventory["tools"][0]["input_schema"] = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+        }
+
+    async def inventory():
+        return env.inventory
+
+    db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+    service = WorkflowService(
+        db,
+        RoleAssetService(db, catalog_loader=inventory),
+        ports_factory=env.service.ports_factory,
+    )
+    try:
+        preview = await service.preview_import("bob", {"package": package})
+        ready = await service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+        assert preview["ready"] is False
+        assert ready["ready"] is False
+        assert ready["issues"] == preview["issues"]
+        with pytest.raises(RoleAssetError):
+            await service.start_run(
+                "bob", installed["asset"]["asset_id"], {"version": 1}
+            )
+        assert len((await service.list_runs("bob"))["runs"]) == 1
+        assert (await service.get_run("bob", run["run_id"]))["snapshot"] == frozen
+        assert (
+            await service.export_asset("bob", installed["asset"]["asset_id"], 1)
+            == package
+        )
+    finally:
+        await service.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_confirmation_persists_bindings_after_pending_import(
+    workflow_env,
+):
     """Force a pending import to commit while a ready confirmation is previewing.
 
     Args:
@@ -395,19 +687,30 @@ async def test_concurrent_confirmation_persists_bindings_after_pending_import(wo
     service = WorkflowService(env.db, roles)
     key = f"{package['roles'][0]['role_id']}:1"
     proposed = {"profile_id": "default", "bindings": {"model": "model-a"}}
-    confirmation = asyncio.create_task(service.import_asset("bob", {
-        "package": package, "installations": {key: proposed},
-    }), name="ready-import")
+    confirmation = asyncio.create_task(
+        service.import_asset(
+            "bob",
+            {
+                "package": package,
+                "installations": {key: proposed},
+            },
+        ),
+        name="ready-import",
+    )
     try:
         await asyncio.wait_for(observed.wait(), 5)
-        pending = await service.import_asset("bob", {"package": package, "save_pending": True})
+        pending = await service.import_asset(
+            "bob", {"package": package, "save_pending": True}
+        )
         assert pending["ready"] is False
         release.set()
         confirmed = await asyncio.wait_for(confirmation, 5)
         assert confirmed["existing"] is True
         assert confirmed["ready"] is True
         assert confirmed["asset"]["asset_id"] == pending["asset"]["asset_id"]
-        assert (await service.check_readiness("bob", confirmed["asset"]["asset_id"], 1))["ready"] is True
+        assert (
+            await service.check_readiness("bob", confirmed["asset"]["asset_id"], 1)
+        )["ready"] is True
         assert len((await service.list_assets("bob"))["assets"]) == 1
         saved_roles = (await roles.list_roles("bob"))["roles"]
         assert len(saved_roles) == 1
@@ -416,6 +719,108 @@ async def test_concurrent_confirmation_persists_bindings_after_pending_import(wo
         release.set()
         await confirmation
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_package_http_reports_invalid_contract_before_resolving_graph_fields(
+    workflow_env,
+):
+    """Reject the malformed predecessor schema before its successor reads a field.
+
+    Args:
+        workflow_env: Public services used by the authenticated HTTP routes.
+    """
+    from types import SimpleNamespace
+
+    import httpx
+    from fastapi import FastAPI
+
+    from astrbot.dashboard.api.auth import require_dashboard_user
+    from astrbot.dashboard.api.workflow_assets import router
+
+    env = workflow_env
+    package = await env.service.export_asset("alice", env.asset["asset_id"], 1)
+    task = {
+        "id": "first",
+        "name": "First",
+        "member": "first",
+        "role_id": env.role["role_id"],
+        "role_version": 1,
+        "task": "Write report",
+    }
+    package["definition"] = {
+        "name": "Malformed contract",
+        "tasks": [
+            {**task, "output_contract": {"type": "object", "allOf": 1}},
+            {
+                **task,
+                "id": "second",
+                "member": "second",
+                "inputs": {"evidence": {"task_id": "first", "field": "text"}},
+            },
+        ],
+        "edges": [{"source": "first", "target": "second"}],
+    }
+    app = FastAPI()
+    app.state.services = SimpleNamespace(workflow_assets=env.service)
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        for route in ("import/preview", "import"):
+            response = await client.post(
+                f"/api/v1/workflow_assets/{route}",
+                json={"package": package, "save_pending": True},
+            )
+            assert response.status_code in {400, 422}, response.text
+            assert "definition.tasks.0.output_contract" in json.dumps(response.json())
+    assert (await env.service.list_assets("bob"))["assets"] == []
+    assert (await env.roles.list_roles("bob"))["roles"] == []
+    assert (await env.service.list_runs("bob"))["runs"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("format_version", [True, 1.0])
+async def test_package_http_rejects_noninteger_format_without_installation(
+    workflow_env, format_version
+):
+    """Keep original JSON types significant at the typed HTTP boundary.
+
+    Args:
+        workflow_env: Public services used by the authenticated HTTP routes.
+        format_version: A boolean or float that compares equal to integer one.
+    """
+    from types import SimpleNamespace
+
+    import httpx
+    from fastapi import FastAPI
+
+    from astrbot.dashboard.api.auth import require_dashboard_user
+    from astrbot.dashboard.api.workflow_assets import router
+
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "same-source"
+    package = await env.service.export_asset("alice", env.asset["asset_id"], 1)
+    package["format_version"] = format_version
+    app = FastAPI()
+    app.state.services = SimpleNamespace(workflow_assets=env.service)
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        for route in ("import/preview", "import"):
+            response = await client.post(
+                f"/api/v1/workflow_assets/{route}",
+                json={"package": package, "save_pending": True},
+            )
+            assert response.status_code in {400, 422}, response.text
+    assert (await env.service.list_assets("bob"))["assets"] == []
+    assert (await env.roles.list_roles("bob"))["roles"] == []
+    assert (await env.service.list_runs("bob"))["runs"] == []
 
 
 @pytest.mark.asyncio

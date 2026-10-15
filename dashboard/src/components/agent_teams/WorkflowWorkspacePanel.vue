@@ -769,7 +769,7 @@ async function exportWorkflow(asset: any) {
     );
     packageDialog.value = true;
   } catch (cause) {
-    error.value = extractApiError(cause, tm("v2.error")).message;
+    error.value = extractApiError(cause, tm("errors.operationFailed")).message;
   }
 }
 const roles = ref<any[]>([]);

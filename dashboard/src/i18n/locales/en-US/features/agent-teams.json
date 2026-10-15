@@ -627,7 +627,7 @@
     "resourceDetails": "Candidate description and input schema",
     "import": "Import workflow package",
     "export": "Export workflow JSON",
-    "scope": "Single-layer workflows only. Packages install definitions and reviewed local bindings. Plugins and services are configured separately; no scripts run during import.",
+    "scope": "Single-layer workflows only. Packages install definitions and reviewed local bindings. Plugins and services are configured separately; no scripts run during import. Every declared dependency is checked again before a new run, including resources unused by a task.",
     "includedPrompt": "Actual prompt content included in this package",
     "content": "Workflow JSON package",
     "file": "Choose a JSON package",

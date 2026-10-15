@@ -290,7 +290,7 @@ async function readFile(value: File | File[] | null) {
     if (current === generation) changeContent(text);
   } catch (cause) {
     if (current === generation)
-      error.value = extractApiError(cause, tm("v2.error")).message;
+      error.value = extractApiError(cause, tm("errors.operationFailed")).message;
   }
 }
 
@@ -311,7 +311,7 @@ async function previewPackage() {
   } catch (cause) {
     if (current !== generation) return;
     preview.value = null;
-    const failure = extractApiError(cause, tm("v2.error"));
+    const failure = extractApiError(cause, tm("errors.operationFailed"));
     error.value = [
       failure.message,
       ...failure.fields.map((field) => `${field.path}: ${field.message}`),
@@ -351,7 +351,7 @@ async function install(savePending: boolean) {
     emit("installed");
     emit("update:modelValue", false);
   } catch (cause) {
-    const failure = extractApiError(cause, tm("v2.error"));
+    const failure = extractApiError(cause, tm("errors.operationFailed"));
     error.value = [
       failure.message,
       ...failure.fields.map((field) => `${field.path}: ${field.message}`),

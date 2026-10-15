@@ -14,6 +14,10 @@ Review the included prompts and expand **Review complete definition, contracts, 
 
 ![Actual grouped dependency matching and ambiguity](/images/agent-workflow-package-import-en.jpg)
 
+Readiness and every new launch recheck all declared package dependencies, including base resources that a task override does not use. Rebuilding the services retains these requirements. If a bound resource keeps its ID but changes to an incompatible model source or tool input schema, new runs are blocked until compatible bindings are restored. Existing runs keep their original snapshots.
+
+![Actual source drift after process restart blocks normal launch](/images/agent-workflow-package-drift-en.jpg)
+
 With all dependencies ready, choose **Confirm installation** once. Definitions and reviewed local bindings are saved in one transaction. Then use the asset's normal **Start Run** action and provide its declared inputs. If dependencies are missing or ambiguous, **Save pending configuration** retains an asset that cannot start. Import the same JSON again to fill its local bindings; existing content is identified without creating duplicate roles or assets. The same identity and version with different content is rejected, and existing run snapshots retain their original configuration.
 
 ![Actual imported workflow run](/images/agent-workflow-package-run-zh.jpg)

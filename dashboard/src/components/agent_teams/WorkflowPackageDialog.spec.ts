@@ -40,6 +40,33 @@ const stubs = {
 };
 
 describe("workflow package review", () => {
+  it("shows typed HTTP format validation fields without offering installation", async () => {
+    api.previewImport.mockRejectedValueOnce({
+      response: {
+        data: {
+          detail: [
+            {
+              loc: ["body", "package", "format_version"],
+              msg: "Package format_version must be an integer",
+            },
+          ],
+        },
+      },
+    });
+    const wrapper = mount(WorkflowPackageDialog, {
+      props: { modelValue: true },
+      global: { stubs },
+    });
+    await wrapper.find("textarea").setValue('{"format_version":true}');
+    await wrapper.get('[data-testid="preview-package"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("package.format_version");
+    expect(wrapper.text()).toContain("must be an integer");
+    expect(wrapper.find('[data-testid="confirm-package"]').exists()).toBe(
+      false,
+    );
+  });
+
   it("discards a stale preview after the user replaces the package", async () => {
     let resolve!: (value: any) => void;
     api.previewImport.mockReturnValueOnce(

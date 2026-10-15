@@ -281,6 +281,21 @@ async def run_instance(
             app.dependency_overrides[require_dashboard_user] = lambda: "alice"
             app.include_router(router, prefix="/api/v1")
             app.include_router(role_router, prefix="/api/v1")
+            if action == "serve-runtime":
+
+                @app.post("/qa/model")
+                async def select_model(payload: dict):
+                    """Change the real fixture provider during an isolated UI run.
+
+                    Args:
+                        payload: Model name selected by the acceptance harness.
+
+                    Returns:
+                        Current model metadata from the actual provider instance.
+                    """
+                    provider.set_model(payload["model"])
+                    return {"model": provider.meta().model}
+
             dist = Path(__file__).resolve().parents[2] / "dashboard" / "dist"
             app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 

@@ -6,9 +6,12 @@ import json
 
 import pytest
 
+from astrbot.core.agent_team_execution import AgentTeamExecutionRegistry
+from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.dashboard.services.agent_team_ports import TeamPorts
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
@@ -657,6 +660,274 @@ async def test_installed_constraints_block_drift_after_restart_without_changing_
     finally:
         await service.shutdown()
         await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ["model_fingerprint", "tool_schema"])
+async def test_waiting_package_rechecks_frozen_bindings_before_execution_and_retry(
+    workflow_env, drift
+):
+    """Block incompatible execution until the original binding is restored.
+
+    Args:
+        workflow_env: Public services, execution observations and local inventory.
+        drift: Same-ID dependency that becomes incompatible during human waiting.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "original-source"
+    schema = {"type": "object", "properties": {"company": {"type": "string"}}}
+    env.inventory["tools"] = [{"id": "tool-a", "input_schema": schema}]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Waiting researcher",
+                "prompt": "Submit evidence",
+                "tools": ["evidence"],
+            },
+            "installation": {"bindings": {"model": "model-a", "evidence": "tool-a"}},
+        },
+    )
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Wait before research",
+                "tasks": [
+                    {
+                        "id": "gate",
+                        "name": "Question",
+                        "human": {"kind": "question", "question": "Continue?"},
+                    },
+                    {
+                        "id": "research",
+                        "name": "Research",
+                        "member": "researcher",
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "task": "Write evidence",
+                        "overrides": {"tools": []},
+                    },
+                ],
+                "edges": [{"source": "gate", "target": "research"}],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    key = f"{role['role_id']}:1"
+    installed = await env.service.import_asset(
+        "bob",
+        {
+            "package": package,
+            "installations": {
+                key: {
+                    "profile_id": "default",
+                    "bindings": {"model": "model-a", "tools_1": "tool-a"},
+                }
+            },
+        },
+    )
+    identity = installed["asset"]["asset_id"]
+    run = await env.service.start_run("bob", identity, {"version": 1})
+    for _ in range(200):
+        waiting = await env.service.get_run("bob", run["run_id"])
+        if waiting["todos"]:
+            break
+        await asyncio.sleep(0.01)
+    assert waiting["todos"]
+    frozen = copy.deepcopy(waiting["snapshot"])
+    if drift == "model_fingerprint":
+        env.inventory["models"][0]["fingerprint"] = "incompatible-source"
+    else:
+        env.inventory["tools"][0]["input_schema"] = {"type": "array"}
+    await env.service.answer_todo(
+        "bob",
+        run["run_id"],
+        waiting["todos"][0]["todo_id"],
+        {"request_id": "answer", "action": "answer", "answer": "Continue"},
+    )
+    for _ in range(200):
+        blocked = await env.service.get_run("bob", run["run_id"])
+        if blocked["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert blocked["status"] == "blocked", blocked
+    assert env.observations == []
+    assert blocked["snapshot"] == frozen
+    research = next(
+        task for task in blocked["tasks"] if task["snapshot"]["node_id"] == "research"
+    )
+    assert research["status"] == "blocked"
+    task_snapshot = copy.deepcopy(research["snapshot"])
+    assert research["state"]["issues"]
+
+    env.inventory["models"].append(
+        {"id": "replacement-model", "fingerprint": "original-source"}
+    )
+    env.inventory["tools"].append({"id": "replacement-tool", "input_schema": schema})
+    await env.service.import_asset(
+        "bob",
+        {
+            "package": package,
+            "installations": {
+                key: {
+                    "profile_id": "default",
+                    "bindings": {
+                        "model": "replacement-model",
+                        "tools_1": "replacement-tool",
+                    },
+                }
+            },
+        },
+    )
+    assert (await env.service.check_readiness("bob", identity, 1))["ready"] is True
+    for request_id, restored in [
+        ("retry-with-current-bindings", False),
+        ("retry-restored-original", True),
+    ]:
+        if restored:
+            env.inventory["models"][0]["fingerprint"] = "original-source"
+            env.inventory["tools"][0]["input_schema"] = schema
+        await env.service.retry_task(
+            "bob",
+            research["run_id"],
+            {
+                "request_id": request_id,
+                "attempt_id": research["state"]["attempt_id"],
+                "input_policy": "original",
+            },
+        )
+        for _ in range(200):
+            current = await env.service.get_run("bob", run["run_id"])
+            if current["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert current["status"] == ("completed" if restored else "blocked"), current
+        assert len(env.observations) == (1 if restored else 0)
+        assert current["snapshot"] == frozen
+        research = next(
+            task
+            for task in current["tasks"]
+            if task["snapshot"]["node_id"] == "research"
+        )
+        assert research["snapshot"] == task_snapshot
+        assert research["snapshot"]["effective"]["provider_id"] == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_paused_package_rechecks_resources_on_continue_and_recovers_original_attempt(
+    workflow_env, tmp_path
+):
+    """Resume a saved execution only while its original resources are compatible.
+
+    Args:
+        workflow_env: Public asset services and controllable resource inventory.
+        tmp_path: Original SQLite data directory reopened before recovery.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "original-source"
+    entered, release = asyncio.Event(), asyncio.Event()
+    permitted = []
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        """Park at the execution port before its next external work boundary.
+
+        Args:
+            session_id: Frozen member conversation.
+            text: Task input.
+            context: Task result instructions.
+            execution_token: Authorized execution binding.
+            message_id: Stable message identity.
+
+        Returns:
+            Original delivery identity after permission is granted.
+        """
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        entered.set()
+        await release.wait()
+        await binding.admit_work()
+        permitted.append(message_id)
+        return message_id
+
+    async def collect(session_id, message_id, member_id):
+        """Submit a contracted result through the actual execution tool.
+
+        Args:
+            session_id: Frozen member conversation.
+            message_id: Stable delivery identity.
+            member_id: Frozen member identity.
+
+        Returns:
+            Collected response and message parts.
+        """
+        tool = AgentTeamToolRegistry.get_tools(f"webchat:FriendMessage:{session_id}")[0]
+        await tool.call(None, text="Compatible evidence")
+        return "Done", []
+
+    service = WorkflowService(
+        env.db,
+        env.roles,
+        ports_factory=lambda username: TeamPorts(
+            deliver=deliver,
+            collect=collect,
+            is_busy=lambda sid: False,
+            emit=lambda event: None,
+        ),
+    )
+    reopened_db = None
+    try:
+        package = await service.export_asset("alice", env.asset["asset_id"], 1)
+        installed = await service.import_asset("bob", {"package": package})
+        run = await service.start_run(
+            "bob", installed["asset"]["asset_id"], {"version": 1}
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        before = await service.get_run("bob", run["run_id"])
+        frozen = copy.deepcopy(before["snapshot"])
+        attempt = before["state"]["attempt_id"]
+        await service.control_run(
+            "bob", run["run_id"], {"request_id": "pause", "action": "pause"}
+        )
+        env.inventory["models"][0]["fingerprint"] = "incompatible-source"
+        release.set()
+        await service.control_run(
+            "bob", run["run_id"], {"request_id": "continue", "action": "continue"}
+        )
+        for _ in range(200):
+            blocked = await service.get_run("bob", run["run_id"])
+            if blocked["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert blocked["status"] == "blocked", blocked
+        assert permitted == []
+        assert blocked["snapshot"] == frozen
+        assert blocked["state"]["attempt_id"] == attempt
+        await service.shutdown()
+        await env.db.engine.dispose()
+        reopened_db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+        service = WorkflowService(
+            reopened_db,
+            RoleAssetService(reopened_db, catalog_loader=env.roles.catalog_loader),
+            ports_factory=service.ports_factory,
+        )
+        env.inventory["models"][0]["fingerprint"] = "original-source"
+        await service.recover_run("bob", run["run_id"])
+        for _ in range(200):
+            recovered = await service.get_run("bob", run["run_id"])
+            if recovered["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert recovered["status"] == "completed", recovered
+        assert len(permitted) == 1
+        assert recovered["snapshot"] == frozen
+        assert recovered["state"]["attempt_id"] == attempt
+    finally:
+        release.set()
+        await service.shutdown()
+        if reopened_db is not None:
+            await reopened_db.engine.dispose()
 
 
 @pytest.mark.asyncio

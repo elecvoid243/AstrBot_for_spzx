@@ -3232,7 +3232,8 @@ class WorkflowService:
             execution_id: Fence preventing a displaced executor from continuing.
 
         Raises:
-            RoleAssetError: Cancellation or another executor displaced this one.
+            RoleAssetError: Cancellation, changed ownership or incompatible frozen
+                resources prevent this execution from continuing.
         """
         while True:
             async with self.db.get_db() as session:
@@ -3249,6 +3250,7 @@ class WorkflowService:
                     session.add(row)
                 await session.commit()
             if permitted:
+                await self.roles.validate_frozen_role(row.snapshot["role"])
                 return
             await asyncio.sleep(0.1)
 
@@ -7577,7 +7579,6 @@ class WorkflowService:
         self._executions[run_id] = current_task
         try:
             await self._await_execution_permission(username, run_id, execution_id)
-            await self.roles.validate_frozen_role(snapshot["role"])
             ports = self.ports_factory(username)
 
             async def accept(payload: dict) -> None:

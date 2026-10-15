@@ -6991,6 +6991,101 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/export:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Export Asset
+      description: "Download a validated definition package without local installation data.\n\
+        \nArgs:\n    asset_id: Workflow owned by the authenticated user.\n    version: Exact\
+        \ definition version, or latest.\n    username: Authenticated owner.\n    service: Shared\
+        \ public asset service.\n\nReturns:\n    Portable JSON content or field-specific errors."
+      operationId: export_asset_api_v1_workflow_assets__asset_id__export_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/import/preview:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Import
+      description: "Validate untrusted definitions before showing compatible local candidates.\n\
+        \nArgs:\n    payload: Package and optional deliberate local resource selections.\n \
+        \   username: Authenticated installing owner.\n    service: Shared public asset service.\n\
+        \nReturns:\n    Grouped dependency choices, issues and existing-installation identity."
+      operationId: preview_import_api_v1_workflow_assets_import_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/import:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Import Asset
+      description: "Confirm one atomic installation or retain a non-runnable pending asset.\n\
+        \nArgs:\n    payload: Package, reviewed local choices and pending-save preference.\n\
+        \    username: Authenticated installing owner; package content grants no rights.\n \
+        \   service: Shared public asset service.\n\nReturns:\n    The installed or existing\
+        \ workflow without creating any execution."
+      operationId: import_asset_api_v1_workflow_assets_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -9778,3 +9873,146 @@ components:
       - result_task_id
       title: WorkflowCall
       type: object
+
+    PackageDependency:
+      properties:
+        slot:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Slot
+        kind:
+          type: string
+          enum:
+          - profiles
+          - models
+          - tools
+          - skills
+          - knowledge_bases
+          title: Kind
+        fingerprint:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Fingerprint
+        runner_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Runner Type
+        capabilities:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Capabilities
+      additionalProperties: false
+      type: object
+      required:
+      - slot
+      - kind
+      title: PackageDependency
+      description: A logical resource requirement; fingerprints contain no local identity.
+
+    PackageRole:
+      properties:
+        role_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          $ref: '#/components/schemas/RoleDefinition'
+        prompt_source:
+          type: string
+          enum:
+          - role
+          - persona
+          - profile
+          title: Prompt Source
+        dependencies:
+          items:
+            $ref: '#/components/schemas/PackageDependency'
+          type: array
+          maxItems: 500
+          title: Dependencies
+      additionalProperties: false
+      type: object
+      required:
+      - role_id
+      - version
+      - definition
+      - prompt_source
+      - dependencies
+      title: PackageRole
+      description: Fixed role content with an explicit description of included prompt origin.
+
+    WorkflowImportRequest:
+      properties:
+        package:
+          $ref: '#/components/schemas/WorkflowPackage'
+        installations:
+          additionalProperties:
+            $ref: '#/components/schemas/RoleInstallation'
+          type: object
+          title: Installations
+        save_pending:
+          type: boolean
+          title: Save Pending
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - package
+      title: WorkflowImportRequest
+      description: Untrusted package and deliberate choices of this machine's resources.
+
+    WorkflowPackage:
+      properties:
+        format:
+          type: string
+          const: astrbot.workflow
+          title: Format
+        format_version:
+          type: integer
+          const: 1
+          title: Format Version
+        asset_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          title: Definition
+        roles:
+          items:
+            $ref: '#/components/schemas/PackageRole'
+          type: array
+          maxItems: 100
+          title: Roles
+      additionalProperties: false
+      type: object
+      required:
+      - format
+      - format_version
+      - asset_id
+      - version
+      - definition
+      - roles
+      title: WorkflowPackage
+      description: Single-layer, self-contained workflow definition without authorization.

@@ -1,19 +1,18 @@
 """Complete nested packages through the shared asset service boundary."""
 
-import copy
 import asyncio
+import copy
 
+import httpx
 import pytest
 import pytest_asyncio
-import httpx
 from fastapi import FastAPI
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
+from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import get_workflow_service, router
-
-from astrbot.core.agent_teams.assets import RoleAssetError
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
@@ -194,7 +193,11 @@ async def test_import_installs_and_reuses_every_pinned_definition(workflow_env):
     assert again["existing"] is True
     assert again["asset"] == installed["asset"]
     assert len((await env.service.list_assets("bob"))["assets"]) == 2
-    assert len((await env.roles.list_roles("bob"))["roles"]) == 1
+    assert len((await env.roles.list_roles("bob"))["roles"]) == 2
+    assert (
+        child["definition"]["role_id"]
+        != installed["asset"]["definition"]["coordinator"]["role_id"]
+    )
     assert (
         await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
         == package
@@ -351,7 +354,17 @@ async def test_upgrade_appends_version_and_preserves_existing_result(workflow_en
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["missing", "contract", "cycle", "depth", "return", "script"]
+    "change",
+    [
+        "missing",
+        "contract",
+        "cycle",
+        "depth",
+        "return",
+        "script",
+        "provenance",
+        "task_prompt",
+    ],
 )
 async def test_invalid_nested_package_has_no_partial_installation(
     nested_package, change
@@ -360,7 +373,7 @@ async def test_invalid_nested_package_has_no_partial_installation(
 
     Args:
         nested_package: Complete team and workflow package.
-        change: Invalid reference, contract, depth or unsupported script field.
+        change: Invalid reference, contract, provenance or unsupported script field.
     """
     env, package = nested_package
     if change == "missing":
@@ -404,6 +417,17 @@ async def test_invalid_nested_package_has_no_partial_installation(
         ]
     elif change == "return":
         package["definition"]["allowed_workflows"][0]["result_task_id"] = "absent"
+    elif change == "provenance":
+        package["roles"][0]["dependencies"][0]["uses"] = {"absent:1": []}
+    elif change == "task_prompt":
+        coordinator = package["definition"]["coordinator"]
+        role = next(
+            role
+            for role in package["roles"]
+            if role["role_id"] == coordinator["role_id"]
+        )
+        role["prompt_source"] = "task"
+        coordinator["overrides"]["prompt"] = None
     else:
         package["assets"][0]["install_script"] = "install-plugin"
     with pytest.raises(RoleAssetError):
@@ -663,7 +687,7 @@ async def test_nested_coordinator_requires_team_tools_even_if_package_omits_capa
 async def test_shared_role_child_exports_independently_and_keeps_unused_requirements(
     workflow_env, change
 ):
-    """A parent's extra tool remains a validated requirement of its shared role.
+    """Explicit unused role requirements survive an independent child transfer.
 
     Args:
         workflow_env: Public services backed by SQLite and an external resource catalog.
@@ -750,6 +774,16 @@ async def test_shared_role_child_exports_independently_and_keeps_unused_requirem
     child = await env.service.export_asset(
         "bob", leaf_ref["asset_id"], leaf_ref["version"]
     )
+    if not any(dep["kind"] == "tools" for dep in child["roles"][0]["dependencies"]):
+        declared = copy.deepcopy(
+            next(
+                dep
+                for dep in package["roles"][0]["dependencies"]
+                if dep["kind"] == "tools"
+            )
+        )
+        declared.pop("uses", None)
+        child["roles"][0]["dependencies"].append(declared)
     payload = {"package": child, "installations": installations}
     assert (await env.service.preview_import("carol", payload))["ready"]
     transferred = await env.service.import_asset("carol", payload)
@@ -768,3 +802,240 @@ async def test_shared_role_child_exports_independently_and_keeps_unused_requirem
             "carol", transferred["asset"]["asset_id"], {"version": 1}
         )
     assert (await env.service.list_runs("carol"))["runs"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("child_tool", ["none", "distinct", "alias"])
+@pytest.mark.parametrize("task_prompt", [False, True])
+async def test_parent_only_tool_upgrade_reuses_unchanged_child_and_binding(
+    workflow_env, child_tool, task_prompt
+):
+    """Keep child contracts and bindings stable when a shared parent gains a tool.
+
+    Args:
+        workflow_env: Public asset services and a mutable local resource inventory.
+        child_tool: No child tool, a distinct resource, or another alias for the same tool.
+        task_prompt: Supply missing base instructions through each task's override.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    env.inventory["tools"] = [
+        {
+            "id": "parent-search",
+            "fingerprint": "parent-tool",
+            "description": "Parent search",
+        },
+        {
+            "id": "child-search",
+            "fingerprint": "child-tool",
+            "description": "Child search",
+        },
+    ]
+    child_resource = "parent-search" if child_tool == "alias" else "child-search"
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared",
+                "prompt": None if task_prompt else "Read evidence",
+                "tools": [],
+            },
+            "installation": {
+                "bindings": {
+                    "model": "model-a",
+                    "parent-slot": "parent-search",
+                    "child-slot": child_resource,
+                }
+            },
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    leaf = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Leaf",
+                "task": "Read evidence",
+                **reference,
+                "overrides": {
+                    "tools": [] if child_tool == "none" else ["child-slot"],
+                    **({"prompt": "Leaf evidence"} if task_prompt else {}),
+                },
+            }
+        },
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Team",
+                "coordinator": {**reference, "overrides": {"prompt": "Team evidence"}}
+                if task_prompt
+                else reference,
+                "allowed_roles": [
+                    {**reference, "overrides": {"prompt": "Team evidence"}}
+                    if task_prompt
+                    else reference
+                ],
+                "allowed_workflows": [
+                    {
+                        "asset_id": leaf["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    root = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Parent",
+                "required_inputs": ["goal"],
+                "tasks": [
+                    {
+                        "id": "parent",
+                        "name": "Parent",
+                        "member": "parent",
+                        "task": "Read evidence",
+                        **reference,
+                        "overrides": {
+                            "tools": [],
+                            **({"prompt": "Parent evidence"} if task_prompt else {}),
+                        },
+                    },
+                    {
+                        "id": "team",
+                        "name": "Team",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"input": "goal"}},
+                    },
+                ],
+            }
+        },
+    )
+    original_role = await env.roles.get_role("alice", role["role_id"], 1)
+    first = await env.service.export_asset("alice", root["asset_id"], 1)
+    bindings = {"model": "model-a"}
+    bindings.update(
+        {
+            dependency["slot"]: "parent-search"
+            if dependency["fingerprint"] == "parent-tool"
+            else "child-search"
+            for dependency in first["roles"][0]["dependencies"]
+            if dependency["kind"] == "tools"
+        }
+    )
+    installations = {
+        f"{role['role_id']}:1": {
+            "profile_id": "default",
+            "bindings": bindings,
+        }
+    }
+    installed = await env.service.import_asset(
+        "bob", {"package": first, "installations": installations}
+    )
+    old_parent = installed["asset"]
+    team_ref = old_parent["definition"]["tasks"][1]["team"]
+    local_team = await env.service.get_asset("bob", team_ref["asset_id"], 1)
+    leaf_ref = local_team["definition"]["allowed_workflows"][0]
+    local_leaf = await env.service.get_asset("bob", leaf_ref["asset_id"], 1)
+    original_child_export = await env.service.export_asset(
+        "bob", leaf_ref["asset_id"], 1
+    )
+    definition = copy.deepcopy(root["definition"])
+    definition["tasks"][0]["overrides"]["tools"] = ["parent-slot"]
+    await env.service.save_asset(
+        "alice", {"definition": definition, "expected_version": 1}, root["asset_id"]
+    )
+    second = await env.service.export_asset("alice", root["asset_id"], 2)
+    assert await env.roles.get_role("alice", role["role_id"], 1) == original_role
+    assert await env.service.get_asset("alice", leaf["asset_id"], 1) == leaf
+    assert await env.service.get_asset("alice", team["asset_id"], 1) == team
+    installations[f"{role['role_id']}:1"]["bindings"] = {
+        "model": "model-a",
+        **{
+            dependency["slot"]: "parent-search"
+            if dependency["fingerprint"] == "parent-tool"
+            else "child-search"
+            for dependency in second["roles"][0]["dependencies"]
+            if dependency["kind"] == "tools"
+        },
+    }
+    payload = {"package": second, "installations": installations}
+    preview = await env.service.preview_import("bob", payload)
+    assert preview["ready"], preview
+    assert {row["asset_id"]: row["action"] for row in preview["assets"]} == {
+        root["asset_id"]: "new_version",
+        team["asset_id"]: "reuse",
+        leaf["asset_id"]: "reuse",
+    }
+    upgraded = await env.service.import_asset("bob", payload)
+    assert upgraded["asset"]["asset_id"] == old_parent["asset_id"]
+    assert upgraded["asset"]["version"] == 2
+    assert (await env.service.import_asset("bob", payload))["existing"]
+    assert (await env.service.get_asset("bob", old_parent["asset_id"], 1))[
+        "definition"
+    ] == old_parent["definition"]
+    assert await env.service.export_asset("bob", old_parent["asset_id"], 1) == first
+    assert (
+        await env.service.export_asset("bob", leaf_ref["asset_id"], 1)
+        == original_child_export
+    )
+    source_child = await env.service.export_asset("alice", leaf["asset_id"], 1)
+    child_installations = {
+        f"{role['role_id']}:1": {
+            "profile_id": "default",
+            "bindings": {
+                "model": "model-a",
+                **{
+                    dependency["slot"]: "parent-search"
+                    if dependency["fingerprint"] == "parent-tool"
+                    else "child-search"
+                    for dependency in source_child["roles"][0]["dependencies"]
+                    if dependency["kind"] == "tools"
+                },
+            },
+        }
+    }
+    repeated_child = await env.service.import_asset(
+        "bob", {"package": source_child, "installations": child_installations}
+    )
+    assert repeated_child["existing"]
+    assert repeated_child["asset"]["asset_id"] == leaf_ref["asset_id"]
+    parent_task = upgraded["asset"]["definition"]["tasks"][0]
+    parent_role = await env.roles.get_role(
+        "bob", parent_task["role_id"], parent_task["role_version"]
+    )
+    child_role = await env.roles.get_role("bob", local_leaf["definition"]["role_id"], 1)
+    assert parent_task["role_id"] != local_leaf["definition"]["role_id"]
+    assert (await env.roles.preview_role(parent_role, parent_task["overrides"]))[
+        "effective"
+    ]["tools"] == ["parent-search"]
+    assert (
+        await env.roles.preview_role(child_role, local_leaf["definition"]["overrides"])
+    )["effective"]["tools"] == ([] if child_tool == "none" else [child_resource])
+    changed = copy.deepcopy(second)
+    if task_prompt:
+        changed["roles"][0]["definition"]["max_steps"] += 1
+    else:
+        changed["roles"][0]["definition"]["prompt"] = (
+            "Changed immutable role instructions"
+        )
+    with pytest.raises(RoleAssetError) as conflict:
+        await env.service.preview_import(
+            "bob", {"package": changed, "installations": installations}
+        )
+    assert conflict.value.status == 409
+    if child_tool != "alias":
+        env.inventory["tools"] = [
+            tool for tool in env.inventory["tools"] if tool["id"] != "parent-search"
+        ]
+        assert (await env.service.check_readiness("bob", leaf_ref["asset_id"], 1))[
+            "ready"
+        ]
+        assert not (
+            await env.service.check_readiness("bob", upgraded["asset"]["asset_id"], 2)
+        )["ready"]

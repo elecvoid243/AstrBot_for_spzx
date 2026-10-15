@@ -730,6 +730,12 @@ export type PackageDependency = {
     runner_type?: (string | null);
     capabilities?: Array<(string)>;
     logical_slots?: Array<(string)>;
+    /**
+     * Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.
+     */
+    uses?: ({
+    [key: string]: Array<(string)>;
+} | null);
     description?: string;
     display_name?: string;
     input_schema?: ({

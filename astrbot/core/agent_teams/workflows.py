@@ -156,9 +156,21 @@ class PackageDependency(BaseModel):
     runner_type: str | None = Field(default=None, min_length=1, max_length=64)
     capabilities: list[str] = Field(default_factory=list, max_length=20)
     logical_slots: list[str] = Field(default_factory=list, max_length=500)
+    uses: dict[str, list[str]] | None = Field(
+        default=None,
+        description="Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.",
+    )
     description: str = ""
     display_name: str = ""
     input_schema: dict | None = None
+
+    def resource_content(self) -> dict:
+        """Read the resource contract independently of portable slot placement.
+
+        Returns:
+            Compatibility requirements without aliases or context provenance.
+        """
+        return self.model_dump(exclude={"slot", "logical_slots", "uses"})
 
 
 class PackageRole(BaseModel):
@@ -170,6 +182,110 @@ class PackageRole(BaseModel):
     definition: RoleDefinition
     prompt_source: Literal["role", "persona", "profile", "task"]
     dependencies: list[PackageDependency] = Field(max_length=500)
+
+    def immutable_content(self) -> dict:
+        """Separate the fixed role contract from asset-specific task overrides.
+
+        Returns:
+            Base definition and requirements with placement-independent slots.
+        """
+        requirements = {}
+        for dependency in self.dependencies:
+            if dependency.uses is not None and "role" not in dependency.uses:
+                continue
+            requirements[dependency.slot] = json.dumps(
+                {
+                    **dependency.resource_content(),
+                    "logical_slots": sorted(
+                        dependency.logical_slots
+                        if dependency.uses is None
+                        else dependency.uses["role"]
+                    ),
+                },
+                sort_keys=True,
+                allow_nan=False,
+            )
+        definition = self.definition.model_dump()
+        if self.prompt_source == "task":
+            definition["prompt"] = None
+        definition["model_slot"] = requirements.get(
+            self.definition.model_slot, self.definition.model_slot
+        )
+        for kind in ("tools", "skills", "knowledge_bases"):
+            definition[kind] = [
+                requirements.get(slot, slot) for slot in definition[kind] or []
+            ]
+        return {
+            "definition": definition,
+            "prompt_source": self.prompt_source,
+            "requirements": sorted(requirements.values()),
+        }
+
+    def remap_installation(
+        self, source: "PackageRole", installation: RoleInstallation
+    ) -> RoleInstallation:
+        """Move deliberate resource choices into this closure's portable slots.
+
+        Args:
+            source: Manifest under which the choices were made.
+            installation: Explicit or previously saved local choices.
+
+        Returns:
+            The same profile and resources under this manifest's slot names.
+
+        Raises:
+            RoleAssetError: A required slot has no unique source provenance.
+        """
+        if set(installation.bindings) - {
+            dependency.slot
+            for dependency in source.dependencies
+            if dependency.kind != "profiles"
+        }:
+            raise RoleAssetError("Bindings contain undeclared package slots")
+        bindings = {}
+        for dependency in self.dependencies:
+            matches = [
+                candidate
+                for candidate in source.dependencies
+                if candidate.resource_content() == dependency.resource_content()
+                and set(dependency.logical_slots).issubset(candidate.logical_slots)
+                and (
+                    dependency.uses is None
+                    or candidate.uses is None
+                    or all(
+                        origin in candidate.uses
+                        and set(aliases).issubset(candidate.uses[origin])
+                        for origin, aliases in dependency.uses.items()
+                    )
+                )
+            ]
+            if dependency.kind in {"tools", "skills", "knowledge_bases"}:
+                own_slots = getattr(self.definition, dependency.kind) or []
+                source_slots = getattr(source.definition, dependency.kind) or []
+                if dependency.slot in own_slots:
+                    position = own_slots.index(dependency.slot)
+                    matches = [
+                        candidate
+                        for candidate in matches
+                        if position < len(source_slots)
+                        and candidate.slot == source_slots[position]
+                    ]
+            if len(matches) != 1:
+                same_slot = [
+                    candidate
+                    for candidate in matches
+                    if candidate.slot == dependency.slot
+                ]
+                if len(same_slot) == 1:
+                    matches = same_slot
+            if len(matches) != 1:
+                raise RoleAssetError(
+                    "Dependency choices have ambiguous source provenance"
+                )
+            selected = installation.bindings.get(matches[0].slot)
+            if selected is not None:
+                bindings[dependency.slot] = selected
+        return RoleInstallation(profile_id=installation.profile_id, bindings=bindings)
 
 
 class PackageAsset(BaseModel):
@@ -189,6 +305,32 @@ class WorkflowPackage(PackageAsset):
     format_version: Literal[1, 2]
     roles: list[PackageRole] = Field(max_length=100)
     assets: list[PackageAsset] = Field(default_factory=list, max_length=100)
+
+    def role_content(self, role: PackageRole) -> dict:
+        """Read a manifest with the intrinsic coordinator requirements included.
+
+        Args:
+            role: Included source role version.
+
+        Returns:
+            Complete contract for matching an isolated local installation.
+        """
+        content = role.model_dump()
+        if any(
+            isinstance(definition, AutonomousDefinition)
+            and (definition.coordinator.role_id, definition.coordinator.role_version)
+            == (role.role_id, role.version)
+            for definition in [
+                self.definition,
+                *[asset.definition for asset in self.assets],
+            ]
+        ):
+            for dependency in content["dependencies"]:
+                if dependency["kind"] == "profiles":
+                    dependency["capabilities"] = sorted(
+                        set(dependency["capabilities"]) | {"task_tools"}
+                    )
+        return content
 
     @field_validator("format_version", mode="before")
     @classmethod
@@ -228,6 +370,24 @@ class WorkflowPackage(PackageAsset):
             if key in definitions:
                 raise RoleAssetError("Duplicate package asset versions")
             definitions[key] = asset
+        origins = {f"{key[0]}:{key[1]}" for key in definitions}
+        for role in self.roles:
+            for dependency in role.dependencies:
+                if dependency.uses is None:
+                    continue
+                if (
+                    not dependency.uses
+                    or dependency.kind in {"models", "profiles"}
+                    and "role" not in dependency.uses
+                    or set(dependency.uses) - origins - {"role"}
+                    or set(dependency.logical_slots)
+                    != {
+                        alias
+                        for aliases in dependency.uses.values()
+                        for alias in aliases
+                    }
+                ):
+                    raise RoleAssetError("Invalid dependency context provenance")
         results = []
         for identity, asset in definitions.items():
             included, roles = set(), set()
@@ -291,29 +451,197 @@ class WorkflowPackage(PackageAsset):
                     pending.append(
                         ((ref.asset_id, ref.version), (*ancestors, key), limit)
                     )
-            nested = len(included) > 1 or isinstance(
-                asset.definition, AutonomousDefinition
-            )
             content = {
                 **asset.model_dump(),
                 "format": self.format,
-                "format_version": 2 if nested else 1,
                 "roles": [
                     role.model_dump()
                     for role in self.roles
                     if (role.role_id, role.version) in roles
                 ],
             }
-            if nested:
-                content["assets"] = [
-                    definitions[key].model_dump()
-                    for key in sorted(included)
-                    if key != identity
+            children = [
+                definitions[key].model_dump()
+                for key in sorted(included)
+                if key != identity
+            ]
+            portable_definitions = {
+                identity: content["definition"],
+                **{
+                    (child["asset_id"], child["version"]): child["definition"]
+                    for child in children
+                },
+            }
+            contexts = []
+            for key, definition in sorted(portable_definitions.items()):
+                members = (
+                    [definition["coordinator"], *definition["allowed_roles"]]
+                    if definition.get("kind") == "autonomous"
+                    else definition.get("tasks", [definition])
+                )
+                contexts.extend(
+                    (f"{key[0]}:{key[1]}", member)
+                    for member in members
+                    if member.get("role_id")
+                )
+            included_origins = {f"{key[0]}:{key[1]}" for key in included}
+            for role in content["roles"]:
+                members = [
+                    (origin, member["overrides"])
+                    for origin, member in contexts
+                    if (member["role_id"], member["role_version"])
+                    == (role["role_id"], role["version"])
                 ]
+                if role["prompt_source"] == "task":
+                    if not members or any(
+                        not configuration.get("prompt") for _, configuration in members
+                    ):
+                        raise RoleAssetError(
+                            "Task-derived prompts must be explicit in every included context"
+                        )
+                    role["definition"]["prompt"] = members[0][1]["prompt"]
+                dependencies = []
+                for dependency in role["dependencies"]:
+                    uses = dependency.get("uses")
+                    if uses is not None:
+                        uses = {
+                            origin: aliases
+                            for origin, aliases in uses.items()
+                            if origin == "role" or origin in included_origins
+                        }
+                        if not uses:
+                            continue
+                        if "role" in uses:
+                            base_aliases = set(uses["role"])
+                            uses = {
+                                "role": uses["role"],
+                                **{
+                                    origin: [
+                                        alias
+                                        for alias in aliases
+                                        if alias not in base_aliases
+                                    ]
+                                    for origin, aliases in uses.items()
+                                    if origin != "role" and set(aliases) - base_aliases
+                                },
+                            }
+                        if set(uses) == {"role"}:
+                            dependency.pop("uses", None)
+                        else:
+                            dependency["uses"] = uses
+                        dependency["logical_slots"] = sorted(
+                            {alias for aliases in uses.values() for alias in aliases}
+                        )
+                    else:
+                        dependency.pop("uses", None)
+                    dependencies.append(dependency)
+                by_slot = {
+                    dependency["slot"]: dependency for dependency in dependencies
+                }
+                ordered = [
+                    dependency["slot"]
+                    for dependency in dependencies
+                    if dependency["kind"] == "profiles"
+                ]
+                ordered.append(role["definition"]["model_slot"])
+                for origin, configuration in [("role", role["definition"]), *members]:
+                    for kind in ("tools", "skills", "knowledge_bases"):
+                        for slot in configuration.get(kind) or []:
+                            dependency = by_slot.get(slot)
+                            if dependency is None or (
+                                dependency.get("uses") is not None
+                                and origin not in dependency["uses"]
+                                and "role" not in dependency["uses"]
+                            ):
+                                raise RoleAssetError(
+                                    "Dependency provenance omits a required slot"
+                                )
+                            ordered.append(slot)
+                ordered.extend(
+                    dependency["slot"]
+                    for dependency in sorted(
+                        dependencies,
+                        key=lambda dependency: json.dumps(
+                            {
+                                key: value
+                                for key, value in dependency.items()
+                                if key != "slot"
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                )
+                slots = {
+                    dependency["slot"]: dependency["slot"]
+                    for dependency in dependencies
+                    if dependency.get("uses") is None or "role" in dependency["uses"]
+                }
+                counters = {}
+                for slot in dict.fromkeys(ordered):
+                    if slot not in by_slot or slot in slots:
+                        continue
+                    kind = by_slot[slot]["kind"]
+                    while True:
+                        counters[kind] = counters.get(kind, 0) + 1
+                        target = f"{kind}_{counters[kind]}"
+                        if target not in slots.values():
+                            slots[slot] = target
+                            break
+                for _, configuration in [("role", role["definition"]), *members]:
+                    if "model_slot" in configuration:
+                        configuration["model_slot"] = slots.get(
+                            configuration["model_slot"], configuration["model_slot"]
+                        )
+                    for kind in ("tools", "skills", "knowledge_bases"):
+                        if configuration.get(kind) is not None:
+                            configuration[kind] = [
+                                slots[slot] for slot in configuration[kind]
+                            ]
+                role["dependencies"] = [
+                    {**by_slot[slot], "slot": target} for slot, target in slots.items()
+                ]
+            nested = (
+                len(included) > 1
+                or isinstance(asset.definition, AutonomousDefinition)
+                or any(
+                    dependency.get("uses") is not None
+                    for role in content["roles"]
+                    for dependency in role["dependencies"]
+                )
+            )
+            content["format_version"] = 2 if nested else 1
+            if nested:
+                content["assets"] = children
+            else:
+                for role in content["roles"]:
+                    for dependency in role["dependencies"]:
+                        dependency.pop("uses", None)
             results.append(content)
             if identity == entry and included != definitions.keys():
                 raise RoleAssetError("Package contains unreferenced child definitions")
         return results
+
+    @staticmethod
+    def content_digest(content: dict) -> str:
+        """Hash a canonical package while rejecting non-finite JSON numbers.
+
+        Args:
+            content: Canonical package produced by asset_packages.
+
+        Returns:
+            The immutable package content fingerprint.
+
+        Raises:
+            RoleAssetError: The content contains a non-finite number.
+        """
+        try:
+            return hashlib.sha256(
+                json.dumps(
+                    content, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode()
+            ).hexdigest()
+        except ValueError as exc:
+            raise RoleAssetError("Package numbers must be finite") from exc
 
 
 class WorkflowImportRequest(BaseModel):
@@ -1011,12 +1339,18 @@ class WorkflowService:
                 )
         definition = included[(asset_id, asset["version"])]["definition"]
         tasks = []
+        task_origins = {}
         for current in included.values():
             content = current["definition"]
-            tasks.extend(
+            members = (
                 [content["coordinator"], *content["allowed_roles"]]
                 if content.get("kind") == "autonomous"
                 else content.get("tasks", [content])
+            )
+            tasks.extend(members)
+            task_origins.update(
+                (id(task), f"{current['asset_id']}:{current['version']}")
+                for task in members
             )
         catalog = await self.roles.get_resources()
         portable_roles = []
@@ -1047,12 +1381,31 @@ class WorkflowService:
                         )
                     original_overrides = task.get("overrides", {})
                     task["overrides"] = {}
-                    contexts.append((task["overrides"], preview, original_overrides))
+                    contexts.append(
+                        (
+                            task["overrides"],
+                            preview,
+                            original_overrides,
+                            task_origins[id(task)],
+                        )
+                    )
             # Tasks can supply a missing inherited prompt or narrow unavailable
-            # resources. Export only configurations used by this workflow.
+            # resources. Do not turn the first task's overrides into role defaults.
             if not role["ready"]:
-                role = contexts[0][1]
-            contexts.insert(0, (portable, role, role["definition"]))
+                defaults = {}
+                if not role["effective"]["prompt"]:
+                    defaults["prompt"] = contexts[0][1]["effective"]["prompt"]
+                baseline = await self.roles.preview_role(role, defaults)
+                if not baseline["ready"]:
+                    defaults.update({"tools": [], "skills": [], "knowledge_bases": []})
+                    baseline = await self.roles.preview_role(role, defaults)
+                if not baseline["ready"]:
+                    raise RoleAssetError(
+                        "Resolve inherited role defaults before export",
+                        baseline["issues"],
+                    )
+                role = baseline
+            contexts.insert(0, (portable, role, role["definition"], "role"))
             profile = next(
                 p
                 for p in catalog["profiles"]
@@ -1068,9 +1421,10 @@ class WorkflowService:
                     if runner_type == "local"
                     else None,
                     "capabilities": portable["runner_capabilities"],
+                    "uses": {"role": []},
                 }
             )
-            for target, preview, original_config in contexts:
+            for target, preview, original_config, origin in contexts:
                 effective = preview["effective"]
                 for field in (
                     "prompt",
@@ -1115,6 +1469,7 @@ class WorkflowService:
                                     else [],
                                     "runner_type": None,
                                     "logical_slots": [],
+                                    "uses": {},
                                     "description": resource.get("description") or "",
                                     "display_name": resource.get("name", "")
                                     if field == "knowledge_bases"
@@ -1135,6 +1490,7 @@ class WorkflowService:
                             if field == "models"
                             else original_config.get(field) or []
                         )
+                        aliases = dependency["uses"].setdefault(origin, [])
                         for logical_slot in declared:
                             if (
                                 preview["installation"]["bindings"].get(logical_slot)
@@ -1142,6 +1498,12 @@ class WorkflowService:
                                 and logical_slot not in dependency["logical_slots"]
                             ):
                                 dependency["logical_slots"].append(logical_slot)
+                            if (
+                                preview["installation"]["bindings"].get(logical_slot)
+                                == resource_id
+                                and logical_slot not in aliases
+                            ):
+                                aliases.append(logical_slot)
                         slots.append(resource_slots[key])
                     if field != "models":
                         target[field] = slots
@@ -1219,7 +1581,13 @@ class WorkflowService:
             ) from exc
         package = request.package
         if package.format_version == 1 and (
-            package.assets or isinstance(package.definition, AutonomousDefinition)
+            package.assets
+            or isinstance(package.definition, AutonomousDefinition)
+            or any(
+                dependency.uses is not None
+                for role in package.roles
+                for dependency in role.dependencies
+            )
         ):
             raise RoleAssetError("Nested definitions require package format version 2")
         package.asset_packages()
@@ -1463,16 +1831,10 @@ class WorkflowService:
             RoleAssetError: Bindings contain undeclared package slots.
         """
         tasks = []
-        coordinator_role = False
         for definition in [
             package.definition,
             *[asset.definition for asset in package.assets],
         ]:
-            if isinstance(definition, AutonomousDefinition) and (
-                definition.coordinator.role_id,
-                definition.coordinator.role_version,
-            ) == (role.role_id, role.version):
-                coordinator_role = True
             tasks.extend(
                 [definition.coordinator, *definition.allowed_roles]
                 if isinstance(definition, AutonomousDefinition)
@@ -1487,15 +1849,13 @@ class WorkflowService:
         allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
         if explicit and set(explicit.bindings) - allowed_slots:
             raise RoleAssetError("Bindings contain undeclared package slots")
+        requirements = {
+            dependency["slot"]: dependency
+            for dependency in package.role_content(role)["dependencies"]
+        }
         for dep in role.dependencies:
             candidates = []
-            required_capabilities = list(dep.capabilities)
-            if (
-                dep.kind == "profiles"
-                and coordinator_role
-                and "task_tools" not in required_capabilities
-            ):
-                required_capabilities.append("task_tools")
+            required_capabilities = requirements[dep.slot]["capabilities"]
             for resource in catalog[dep.kind]:
                 fingerprint = resource.get("fingerprint")
                 if dep.kind == "profiles":
@@ -1654,9 +2014,21 @@ class WorkflowService:
             RoleAssetError: Invalid content or conflicting immutable identities.
         """
         request = await self._validate_package(username, payload)
-        package = request.package
-        contents = package.asset_packages()
+        source_package = request.package
+        contents = source_package.asset_packages()
         normalized = contents[0]
+        package = WorkflowPackage.model_validate(normalized)
+        for role in package.roles:
+            key = f"{role.role_id}:{role.version}"
+            if key in request.installations:
+                source = next(
+                    item
+                    for item in source_package.roles
+                    if (item.role_id, item.version) == (role.role_id, role.version)
+                )
+                request.installations[key] = role.remap_installation(
+                    source, request.installations[key]
+                )
         saved_installations, known_roles = {}, {}
         async with self.db.get_db() as session:
             rows = (
@@ -1672,29 +2044,32 @@ class WorkflowService:
             )
             records = {(row.package_id, row.version): row for row in rows}
             for row in rows:
-                for role in row.package["roles"]:
-                    key = f"{role['role_id']}:{role['version']}"
-                    if key in known_roles and known_roles[key][0] != role:
+                original_package = WorkflowPackage.model_validate(row.package)
+                for role in original_package.roles:
+                    key = f"{role.role_id}:{role.version}"
+                    if (
+                        key in known_roles
+                        and known_roles[key][0][0].immutable_content()
+                        != role.immutable_content()
+                    ):
                         raise RoleAssetError(
                             "Installed package role identity has conflicting content",
                             status=409,
                         )
-                    known_roles[key] = (role, row.role_ids[key])
+                    known_roles.setdefault(key, []).append(
+                        (role, row.role_ids[key], original_package.role_content(role))
+                    )
             assets = []
             for content in contents:
-                try:
-                    digest = hashlib.sha256(
-                        json.dumps(
-                            content,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            allow_nan=False,
-                        ).encode()
-                    ).hexdigest()
-                except ValueError as exc:
-                    raise RoleAssetError("Package numbers must be finite") from exc
+                digest = WorkflowPackage.content_digest(content)
                 row = records.get((content["asset_id"], content["version"]))
-                if row is not None and row.digest != digest:
+                if (
+                    row is not None
+                    and WorkflowPackage.content_digest(
+                        WorkflowPackage.model_validate(row.package).asset_packages()[0]
+                    )
+                    != digest
+                ):
                     raise RoleAssetError(
                         "Same package identity and version have different content",
                         [
@@ -1731,8 +2106,10 @@ class WorkflowService:
                 key = f"{role.role_id}:{role.version}"
                 if key not in known_roles:
                     continue
-                original, identity = known_roles[key]
-                if original != role.model_dump():
+                if (
+                    known_roles[key][0][0].immutable_content()
+                    != role.immutable_content()
+                ):
                     raise RoleAssetError(
                         "Same role identity and version have different content",
                         [
@@ -1744,13 +2121,24 @@ class WorkflowService:
                         ],
                         status=409,
                     )
+                matching = next(
+                    (
+                        (original, identity)
+                        for original, identity, manifest in known_roles[key]
+                        if manifest == package.role_content(role)
+                    ),
+                    None,
+                )
+                if matching is None:
+                    continue
+                original, identity = matching
                 local = await session.get(AgentRoleInstallation, (identity, 1))
                 if local is None:
                     raise RoleAssetError(
                         "Existing package installation is incomplete", status=409
                     )
-                saved_installations[key] = RoleInstallation.model_validate(
-                    local.installation
+                saved_installations[key] = role.remap_installation(
+                    original, RoleInstallation.model_validate(local.installation)
                 )
         catalog = await self.roles.get_resources()
         previews, issues = [], []
@@ -1796,7 +2184,7 @@ class WorkflowService:
             )
         package = WorkflowPackage.model_validate(preview["package"])
         contents = package.asset_packages()
-        asset_map, role_ids = {}, {}
+        asset_map, asset_roles, known_roles = {}, {}, {}
         previous_registry: set[tuple[str, int, str, int, str]] | None = None
         try:
             async with self.db.get_db() as session:
@@ -1824,7 +2212,16 @@ class WorkflowService:
                 }
                 existing = (package.asset_id, package.version) in records
                 for row in rows:
-                    role_ids.update(row.role_ids)
+                    original_package = WorkflowPackage.model_validate(row.package)
+                    for role in original_package.roles:
+                        key = f"{role.role_id}:{role.version}"
+                        known_roles.setdefault(key, []).append(
+                            (
+                                role,
+                                row.role_ids[key],
+                                original_package.role_content(role),
+                            )
+                        )
                 new_assets = []
                 # Recheck the complete registry in the same transaction as all writes.
                 # Concurrent confirmations retry against the winning immutable rows.
@@ -1832,12 +2229,20 @@ class WorkflowService:
                     key = (content["asset_id"], content["version"])
                     row = records.get(key)
                     if row:
-                        if row.digest != proposed["digest"]:
+                        if (
+                            WorkflowPackage.content_digest(
+                                WorkflowPackage.model_validate(
+                                    row.package
+                                ).asset_packages()[0]
+                            )
+                            != proposed["digest"]
+                        ):
                             raise RoleAssetError(
                                 "Same package identity and version have different content",
                                 status=409,
                             )
                         asset_map[key] = (row.asset_id, row.installed_version)
+                        asset_roles[key] = dict(row.role_ids)
                         continue
                     previous = [r for r in rows if r.package_id == key[0]]
                     identity = (
@@ -1879,51 +2284,82 @@ class WorkflowService:
                     )
                     asset_map[key] = (identity, version)
                     new_assets.append((content, proposed, identity, version))
-                for role, proposed in zip(package.roles, preview["roles"], strict=True):
-                    key = proposed["key"]
-                    original = next(
-                        (
-                            included
-                            for row in rows
-                            for included in row.package["roles"]
-                            if f"{included['role_id']}:{included['version']}" == key
-                        ),
-                        None,
-                    )
-                    if original is not None and original != role.model_dump():
-                        raise RoleAssetError(
-                            "Same role identity and version have different content",
-                            status=409,
-                        )
-                    if key not in role_ids:
-                        identity = uuid.uuid4().hex
-                        role_ids[key] = identity
-                        session.add(
-                            AgentRoleVersion(
-                                role_id=identity,
-                                version=1,
-                                owner_username=username,
-                                definition=role.definition.model_dump(),
-                            )
-                        )
-                        session.add(
-                            AgentRoleInstallation(
-                                role_id=identity,
-                                version=1,
-                                installation=proposed["installation"],
-                            )
-                        )
-                    elif key in payload.get("installations", {}):
-                        local = await session.get(
-                            AgentRoleInstallation, (role_ids[key], 1)
-                        )
-                        if local is None:
+                for content in contents:
+                    asset_key = (content["asset_id"], content["version"])
+                    role_ids = asset_roles.setdefault(asset_key, {})
+                    current_package = WorkflowPackage.model_validate(content)
+                    for role in current_package.roles:
+                        key = f"{role.role_id}:{role.version}"
+                        variants = known_roles.get(key, [])
+                        if any(
+                            original.immutable_content() != role.immutable_content()
+                            for original, _, _ in variants
+                        ):
                             raise RoleAssetError(
-                                "Existing package installation is incomplete",
+                                "Same role identity and version have different content",
                                 status=409,
                             )
-                        local.installation = proposed["installation"]
+                        identity = role_ids.get(key) or next(
+                            (
+                                identity
+                                for original, identity, manifest in variants
+                                if manifest == current_package.role_content(role)
+                            ),
+                            None,
+                        )
+                        source = next(
+                            item
+                            for item in package.roles
+                            if (item.role_id, item.version)
+                            == (role.role_id, role.version)
+                        )
+                        proposed = next(
+                            item for item in preview["roles"] if item["key"] == key
+                        )
+                        installation = role.remap_installation(
+                            source,
+                            RoleInstallation.model_validate(proposed["installation"]),
+                        )
+                        if identity is None:
+                            identity = uuid.uuid4().hex
+                            session.add(
+                                AgentRoleVersion(
+                                    role_id=identity,
+                                    version=1,
+                                    owner_username=username,
+                                    definition=role.definition.model_dump(),
+                                )
+                            )
+                            session.add(
+                                AgentRoleInstallation(
+                                    role_id=identity,
+                                    version=1,
+                                    installation=installation.model_dump(),
+                                )
+                            )
+                            known_roles.setdefault(key, []).append(
+                                (role, identity, current_package.role_content(role))
+                            )
+                        elif key in payload.get("installations", {}):
+                            local = await session.get(
+                                AgentRoleInstallation, (identity, 1)
+                            )
+                            if local is None:
+                                # An identical manifest may have been staged earlier
+                                # in this atomic import and not flushed yet.
+                                await session.flush()
+                                local = await session.get(
+                                    AgentRoleInstallation, (identity, 1)
+                                )
+                            if local is None:
+                                raise RoleAssetError(
+                                    "Existing package installation is incomplete",
+                                    status=409,
+                                )
+                            local.installation = installation.model_dump()
+                        role_ids[key] = identity
                 for content, proposed, identity, version in new_assets:
+                    role_ids = asset_roles[(content["asset_id"], content["version"])]
                     definition = copy.deepcopy(content["definition"])
                     contexts = (
                         [definition["coordinator"], *definition["allowed_roles"]]

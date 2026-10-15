@@ -9916,6 +9916,17 @@ components:
           type: array
           maxItems: 500
           title: Logical Slots
+        uses:
+          anyOf:
+          - additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+          - type: 'null'
+          title: Uses
+          description: Original aliases used by role defaults or exact asset_id:version
+            contexts; omitted provenance keeps all declared requirements global.
         description:
           type: string
           title: Description

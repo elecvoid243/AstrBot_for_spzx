@@ -712,6 +712,15 @@ export type NeoReleaseActionRequest = {
 };
 
 /**
+ * One exact portable asset version in the entry's reference closure.
+ */
+export type PackageAsset = {
+    asset_id: string;
+    version: number;
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+};
+
+/**
  * A logical resource requirement; fingerprints contain no local identity.
  */
 export type PackageDependency = {
@@ -1274,16 +1283,19 @@ export type WorkflowNode = {
 };
 
 /**
- * Single-layer, self-contained workflow definition without authorization.
+ * A self-contained definition closure without local authorization.
  */
 export type WorkflowPackage = {
-    format: "astrbot.workflow";
-    format_version: 1;
     asset_id: string;
     version: number;
-    definition: (WorkflowDefinition | GraphDefinition);
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    format: "astrbot.workflow";
+    format_version: 1 | 2;
     roles: Array<PackageRole>;
+    assets?: Array<PackageAsset>;
 };
+
+export type format_version = 1 | 2;
 
 /**
  * Explicit new attempt using the failed attempt's exact frozen inputs.

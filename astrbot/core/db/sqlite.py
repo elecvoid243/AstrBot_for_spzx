@@ -105,6 +105,16 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_chatui_project_spcode_columns(conn)
             await self._ensure_session_project_relation_position_column(conn)
             await self._ensure_conversation_indexes(conn)
+            # T19 installations stored every imported entry at local version one.
+            package_columns = await conn.execute(
+                text("PRAGMA table_info(agentworkflowpackage)")
+            )
+            if "installed_version" not in {row[1] for row in package_columns}:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE agentworkflowpackage ADD COLUMN installed_version INTEGER NOT NULL DEFAULT 1"
+                    )
+                )
             # The table-level unique constraint already provides an index for UMO
             # lookups. Older schemas also created this redundant explicit index.
             await conn.execute(text("DROP INDEX IF EXISTS ix_umo_aliases_umo"))

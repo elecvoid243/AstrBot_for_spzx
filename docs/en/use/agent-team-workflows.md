@@ -2,17 +2,17 @@
 
 Open **More Features → Agent Teams → Workflow Assets**. First save a ready role under **Role Templates**, bind a local model that supports tool calls and select the built-in Agent executor.
 
-## Move a single-layer workflow to another instance
+## Move a complete nested asset to another instance
 
-In instance A, choose **Workflow Assets → Export workflow JSON** on a single-task or canvas workflow. Review the actual included prompts and complete JSON, then choose **Download JSON**. Resolve missing source resources before exporting. The versioned `astrbot.workflow` package includes its identity, fixed role versions, contracts, conditions, bounded loops, layout and logical dependencies. Effective inherited prompts and resource allowlists are made explicit; `prompt_source` identifies whether the included prompt came from a role, persona, profile or task override. Knowledge-base content, credentials, local binding IDs, conversations and run history are excluded.
+In instance A, choose **Workflow Assets → Export asset JSON** on a single-task workflow, canvas workflow or autonomous team. Review the actual included prompts and complete JSON, then choose **Download JSON**. Resolve missing source resources before exporting. The versioned `astrbot.workflow` package includes its identity, fixed role versions, contracts, conditions, bounded loops, layout and logical dependencies. Format 2 includes the complete closure of exact team and workflow versions; a child never relies on an asset that exists only on the source machine. Existing format 1 single-layer packages remain supported. Effective inherited prompts and resource allowlists are made explicit; `prompt_source` identifies whether the included prompt came from a role, persona, profile or task override. Knowledge-base content, credentials, local binding IDs, conversations and run history are excluded.
 
-![Actual workflow export dialog](/images/agent-workflow-package-export-zh.jpg)
+![Actual complete asset export dialog](/images/agent-nested-package-export-zh.jpg)
 
-In instance B, choose **Workflow Assets → Import workflow package**. Select the JSON file or paste its complete contents, then choose **Validate and preview**. Format, contracts and references are validated before any installation. Autonomous and nested packages, unsupported format versions and package upgrades are explicitly rejected in this single-layer release.
+In instance B, choose **Workflow Assets → Import asset package**. Select the JSON file or paste its complete contents, then choose **Validate and preview**. Format, contracts, all pinned references, return tasks, depth, cycles and loop limits are validated before any installation. Unknown format versions and script fields are rejected. **Included exact asset versions** lists each definition and whether confirmation will install it, reuse identical content or add a new version.
 
 Review the included prompts and expand **Review complete definition, contracts, layout and dependencies**. Each role groups its local profile and resource slots, retaining original logical purposes and resource descriptions. Review the required tool input schema and the selected candidate's description and schema; a declared tool input schema must match. Model automatic matching requires the same declared adapter, model and source fingerprint, required capabilities and a unique candidate; profiles must permit a compatible model and satisfy the runner requirements. Matching display names never establishes equivalence. Resources without source evidence, including tools, skills and knowledge bases, require deliberate local review and selection. Local profile and persona restrictions still apply; the package grants no access. **Configure local resources** opens the existing configuration area when a candidate is missing; install required plugins or configure services yourself.
 
-![Actual grouped dependency matching and ambiguity](/images/agent-workflow-package-import-en.jpg)
+![Actual nested closure and grouped dependency matching](/images/agent-nested-package-import-en.jpg)
 
 Readiness and every new launch recheck all declared package dependencies, including base resources that a task override does not use. Rebuilding the services retains these requirements. Running tasks also recheck the original package requirements and their frozen bindings before further external work, including after a human wait, pause or checkpoint recovery. If a bound resource keeps its ID but changes to an incompatible model source or tool input schema, execution is blocked. Restore the original compatible resource before continuing or retrying the affected task. Editing the asset or rebinding its current installation only affects new runs; it does not replace an existing run's frozen bindings or rewrite its snapshot.
 
@@ -22,11 +22,17 @@ An incompatibility found after a model response or at a tool/usage boundary rema
 
 ![A saved human answer leaves research blocked after its bound model changes](/images/agent-workflow-package-waiting-en.jpg)
 
-With all dependencies ready, choose **Confirm installation** once. Definitions and reviewed local bindings are saved in one transaction. Then use the asset's normal **Start Run** action and provide its declared inputs. If dependencies are missing or ambiguous, **Save pending configuration** retains an asset that cannot start. Import the same JSON again to fill its local bindings; existing content is identified without creating duplicate roles or assets. The same identity and version with different content is rejected, and existing run snapshots retain their original configuration.
+With all dependencies ready, choose **Confirm installation** once. Every included definition and reviewed local binding is saved in one transaction; validation or storage failure leaves no executable partial installation. Then use the asset's normal **Start Run** action and provide its declared inputs. If dependencies are missing or ambiguous, **Save pending configuration** retains the whole closure, and affected entries cannot start. Import the same JSON again to fill its local bindings; identical versions are reused. An upgrade appends a selectable local version under the same asset identity and remaps each child to its exact installed version. Conflicting content under the same asset or role identity and version is rejected. Existing runs, children, artifacts and approvals keep their original snapshots, including after restart. Editing a local role version does not remove the original imported compatibility requirements or current permission checks.
 
 ![Actual imported workflow run](/images/agent-workflow-package-run-zh.jpg)
 
-The existing **Workflow Assets → Edit Asset / Start Run** entries remain; portability adds **Workflow Assets → Export workflow JSON / Import workflow package**. These controls use the same public asset, readiness and run services. Importing does not execute package scripts, install plugins or deploy models and services.
+The existing **Workflow Assets → Edit Asset / Start Run** entries remain. **Export workflow JSON / Import workflow package → Export asset JSON / Import asset package** now covers nested teams and workflows from the same workspace. These controls use the shared asset, readiness and run services. Importing does not execute package scripts, install plugins or deploy models and services. Historical HTML demo exports are design examples, with no production format compatibility promise.
+
+![Actual imported mixed nested canvas](/images/agent-nested-package-canvas-zh.jpg)
+
+![Actual imported role prompt and effective local configuration](/images/agent-nested-package-role-zh.jpg)
+
+![Actual full report and approval after nested execution](/images/agent-nested-package-run-en.jpg)
 
 ## Autonomous teams
 

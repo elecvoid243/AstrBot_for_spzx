@@ -9997,14 +9997,6 @@ components:
 
     WorkflowPackage:
       properties:
-        format:
-          type: string
-          const: astrbot.workflow
-          title: Format
-        format_version:
-          type: integer
-          const: 1
-          title: Format Version
         asset_id:
           type: string
           maxLength: 128
@@ -10018,21 +10010,63 @@ components:
           anyOf:
           - $ref: '#/components/schemas/WorkflowDefinition'
           - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
           title: Definition
+        format:
+          type: string
+          const: astrbot.workflow
+          title: Format
+        format_version:
+          type: integer
+          enum:
+          - 1
+          - 2
+          title: Format Version
         roles:
           items:
             $ref: '#/components/schemas/PackageRole'
           type: array
           maxItems: 100
           title: Roles
+        assets:
+          items:
+            $ref: '#/components/schemas/PackageAsset'
+          type: array
+          maxItems: 100
+          title: Assets
       additionalProperties: false
       type: object
       required:
-      - format
-      - format_version
       - asset_id
       - version
       - definition
+      - format
+      - format_version
       - roles
       title: WorkflowPackage
-      description: Single-layer, self-contained workflow definition without authorization.
+      description: A self-contained definition closure without local authorization.
+    PackageAsset:
+      properties:
+        asset_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
+          title: Definition
+      additionalProperties: false
+      type: object
+      required:
+      - asset_id
+      - version
+      - definition
+      title: PackageAsset
+      description: One exact portable asset version in the entry's reference closure.

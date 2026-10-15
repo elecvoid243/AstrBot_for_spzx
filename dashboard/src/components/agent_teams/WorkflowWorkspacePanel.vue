@@ -85,7 +85,6 @@
         </v-card-text>
         <v-card-actions class="flex-wrap">
           <v-btn
-            v-if="asset.definition.kind !== 'autonomous'"
             variant="text"
             @click="exportWorkflow(asset)"
             >{{ tm("package.export") }}</v-btn

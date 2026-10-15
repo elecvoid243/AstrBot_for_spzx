@@ -254,6 +254,7 @@ class AgentWorkflowPackage(SQLModel, table=True):
     package_id: str = Field(primary_key=True)
     version: int = Field(primary_key=True)
     asset_id: str = Field(index=True)
+    installed_version: int = Field(default=1)
     digest: str
     package: dict = Field(sa_type=JSON)
     role_ids: dict = Field(sa_type=JSON)

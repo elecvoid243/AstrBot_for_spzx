@@ -49,6 +49,7 @@ from astrbot.core.agent_teams.autonomous_tools import (
 )
 from astrbot.core.agent_teams.graph import (
     GraphDefinition,
+    GraphTask,
     WorkflowCall,
     matches_condition,
     validate_graph,
@@ -171,16 +172,23 @@ class PackageRole(BaseModel):
     dependencies: list[PackageDependency] = Field(max_length=500)
 
 
-class WorkflowPackage(BaseModel):
-    """Single-layer, self-contained workflow definition without authorization."""
+class PackageAsset(BaseModel):
+    """One exact portable asset version in the entry's reference closure."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    asset_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+    definition: WorkflowDefinition | GraphDefinition | AutonomousDefinition
+
+
+class WorkflowPackage(PackageAsset):
+    """A self-contained definition closure without local authorization."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     format: Literal["astrbot.workflow"]
-    format_version: Literal[1]
-    asset_id: str = Field(min_length=1, max_length=128)
-    version: int = Field(ge=1)
-    definition: WorkflowDefinition | GraphDefinition
+    format_version: Literal[1, 2]
     roles: list[PackageRole] = Field(max_length=100)
+    assets: list[PackageAsset] = Field(default_factory=list, max_length=100)
 
     @field_validator("format_version", mode="before")
     @classmethod
@@ -199,6 +207,113 @@ class WorkflowPackage(BaseModel):
         if type(value) is not int:
             raise ValueError("Package format_version must be an integer")
         return value
+
+    def asset_packages(self) -> list[dict]:
+        """Materialize each included asset's independent portable closure.
+
+        Returns:
+            Canonical packages for conflict detection, atomic storage and export.
+
+        Raises:
+            RoleAssetError: References are missing, cyclic, too deep or extraneous.
+        """
+        entry = (self.asset_id, self.version)
+        definitions = {
+            entry: PackageAsset(
+                asset_id=self.asset_id, version=self.version, definition=self.definition
+            )
+        }
+        for asset in self.assets:
+            key = (asset.asset_id, asset.version)
+            if key in definitions:
+                raise RoleAssetError("Duplicate package asset versions")
+            definitions[key] = asset
+        results = []
+        for identity, asset in definitions.items():
+            included, roles = set(), set()
+            checked_depths: dict[tuple[str, int], int] = {}
+            pending: list[tuple[tuple[str, int], tuple[tuple[str, int], ...], int]] = [
+                (identity, (), 20)
+            ]
+            while pending:
+                key, ancestors, depth_limit = pending.pop()
+                if key not in definitions:
+                    raise RoleAssetError(
+                        "Package is missing a pinned child definition",
+                        [
+                            {
+                                "path": f"package.assets.{key[0]}:{key[1]}",
+                                "code": "REFERENCE",
+                                "message": "Include the exact referenced asset version",
+                            }
+                        ],
+                    )
+                if key in ancestors:
+                    raise RoleAssetError("Package references contain a cycle")
+                if len(ancestors) > depth_limit:
+                    raise RoleAssetError(
+                        "Nested references exceed the declared depth limit"
+                    )
+                remaining = depth_limit - len(ancestors)
+                if checked_depths.get(key, 21) <= remaining:
+                    continue
+                checked_depths[key] = remaining
+                included.add(key)
+                definition = definitions[key].definition
+                if isinstance(definition, AutonomousDefinition):
+                    contexts = [definition.coordinator, *definition.allowed_roles]
+                    refs = definition.allowed_workflows
+                elif isinstance(definition, GraphDefinition):
+                    contexts = [task for task in definition.tasks if task.role_id]
+                    refs = [task.team for task in definition.tasks if task.team]
+                else:
+                    contexts, refs = [definition], []
+                roles.update(
+                    (context.role_id, context.role_version) for context in contexts
+                )
+                limit = min(depth_limit, getattr(definition, "max_depth", 20))
+                for context in contexts:
+                    role = next(
+                        (
+                            role
+                            for role in self.roles
+                            if (role.role_id, role.version)
+                            == (context.role_id, context.role_version)
+                        ),
+                        None,
+                    )
+                    role_limit = context.overrides.max_depth or (
+                        role.definition.max_depth if role else None
+                    )
+                    if role_limit is not None:
+                        limit = min(limit, role_limit)
+                for ref in refs:
+                    pending.append(
+                        ((ref.asset_id, ref.version), (*ancestors, key), limit)
+                    )
+            nested = len(included) > 1 or isinstance(
+                asset.definition, AutonomousDefinition
+            )
+            content = {
+                **asset.model_dump(),
+                "format": self.format,
+                "format_version": 2 if nested else 1,
+                "roles": [
+                    role.model_dump()
+                    for role in self.roles
+                    if (role.role_id, role.version) in roles
+                ],
+            }
+            if nested:
+                content["assets"] = [
+                    definitions[key].model_dump()
+                    for key in sorted(included)
+                    if key != identity
+                ]
+            results.append(content)
+            if identity == entry and included != definitions.keys():
+                raise RoleAssetError("Package contains unreferenced child definitions")
+        return results
 
 
 class WorkflowImportRequest(BaseModel):
@@ -828,7 +943,7 @@ class WorkflowService:
     async def export_asset(
         self, username: str, asset_id: str, version: int | None = None
     ) -> dict:
-        """Export a single-layer workflow with explicit portable resource slots.
+        """Export the pinned reference closure with portable resource slots.
 
         Args:
             username: Authenticated owner.
@@ -839,7 +954,7 @@ class WorkflowService:
             A versioned JSON definition package without local installations.
 
         Raises:
-            RoleAssetError: Nested assets or unresolved inherited configuration.
+            RoleAssetError: Invalid references or unresolved inherited configuration.
         """
         asset = await self.get_asset(username, asset_id, version)
         async with self.db.get_db() as session:
@@ -849,21 +964,60 @@ class WorkflowService:
                         select(AgentWorkflowPackage).where(
                             AgentWorkflowPackage.owner_username == username,
                             AgentWorkflowPackage.asset_id == asset_id,
+                            AgentWorkflowPackage.installed_version == asset["version"],
                         )
                     )
                 )
                 .scalars()
                 .first()
             )
-            if original is not None and asset["version"] == 1:
+            if original is not None:
                 return copy.deepcopy(original.package)
-        definition = copy.deepcopy(asset["definition"])
-        if definition.get("kind") == "autonomous" or any(
-            task.get("team") or task.get("workflow")
-            for task in definition.get("tasks", [])
-        ):
-            raise RoleAssetError("Only single-layer workflow packages are supported")
-        tasks = definition.get("tasks", [definition])
+        included = {}
+        pending: list[tuple[dict, tuple[tuple[str, int], ...]]] = [(asset, ())]
+        while pending:
+            current, ancestors = pending.pop()
+            key = (current["asset_id"], current["version"])
+            if key in ancestors or len(ancestors) > 20:
+                raise RoleAssetError(
+                    "Nested references contain a cycle or exceed the depth limit"
+                )
+            if key in included:
+                continue
+            if len(included) >= 100:
+                raise RoleAssetError("Package exceeds the supported asset limit")
+            current = {
+                field: copy.deepcopy(current[field])
+                for field in ("asset_id", "version", "definition")
+            }
+            included[key] = current
+            content = current["definition"]
+            references = [
+                *content.get("allowed_workflows", []),
+                *[
+                    task["team"]
+                    for task in content.get("tasks", [])
+                    if task.get("team")
+                ],
+            ]
+            for reference in references:
+                pending.append(
+                    (
+                        await self.get_asset(
+                            username, reference["asset_id"], reference["version"]
+                        ),
+                        (*ancestors, key),
+                    )
+                )
+        definition = included[(asset_id, asset["version"])]["definition"]
+        tasks = []
+        for current in included.values():
+            content = current["definition"]
+            tasks.extend(
+                [content["coordinator"], *content["allowed_roles"]]
+                if content.get("kind") == "autonomous"
+                else content.get("tasks", [content])
+            )
         catalog = await self.roles.get_resources()
         portable_roles = []
         references = sorted(
@@ -1000,16 +1154,24 @@ class WorkflowService:
                     "dependencies": dependencies,
                 }
             )
-        return WorkflowPackage.model_validate(
+        package = WorkflowPackage.model_validate(
             {
                 "format": "astrbot.workflow",
-                "format_version": 1,
+                "format_version": 2
+                if len(included) > 1 or definition.get("kind") == "autonomous"
+                else 1,
                 "asset_id": asset_id,
                 "version": asset["version"],
                 "definition": definition,
                 "roles": portable_roles,
+                "assets": [
+                    included[key]
+                    for key in sorted(included)
+                    if key != (asset_id, asset["version"])
+                ],
             }
-        ).model_dump()
+        )
+        return package.asset_packages()[0]
 
     async def _validate_package(
         self, username: str, payload: dict
@@ -1056,65 +1218,168 @@ class WorkflowService:
                 ],
             ) from exc
         package = request.package
+        if package.format_version == 1 and (
+            package.assets or isinstance(package.definition, AutonomousDefinition)
+        ):
+            raise RoleAssetError("Nested definitions require package format version 2")
+        package.asset_packages()
         references = {(role.role_id, role.version) for role in package.roles}
         if len(references) != len(package.roles):
             raise RoleAssetError("Duplicate package role versions")
-        definition = package.definition
-        tasks = (
-            definition.tasks
-            if isinstance(definition, GraphDefinition)
-            else [definition]
-        )
-        if isinstance(definition, GraphDefinition):
-            if any(task.team or task.workflow for task in definition.tasks):
-                raise RoleAssetError(
-                    "Only single-layer workflow packages are supported"
-                )
+        definitions = [
+            package.definition,
+            *[asset.definition for asset in package.assets],
+        ]
+        assets = {
+            (package.asset_id, package.version): package.definition,
+            **{
+                (asset.asset_id, asset.version): asset.definition
+                for asset in package.assets
+            },
+        }
+        tasks = []
         used = set()
-        for index, task in enumerate(tasks):
-            if getattr(task, "human", None):
-                continue
-            assert task.role_id is not None and task.role_version is not None
-            used.add((task.role_id, task.role_version))
-            try:
-                await self._validate_task_definition(
-                    username,
-                    WorkflowDefinition(
-                        name=task.name,
-                        task=task.task,
-                        role_id=task.role_id,
-                        role_version=task.role_version,
-                        overrides=task.overrides,
-                        required_inputs=list(
-                            dict.fromkeys(
-                                [
-                                    *definition.required_inputs,
-                                    *getattr(task, "inputs", {}),
-                                ]
-                            )
+        for asset_index, definition in enumerate(definitions):
+            prefix = (
+                "definition"
+                if asset_index == 0
+                else f"package.assets.{asset_index - 1}.definition"
+            )
+            contexts = (
+                [definition.coordinator, *definition.allowed_roles]
+                if isinstance(definition, AutonomousDefinition)
+                else definition.tasks
+                if isinstance(definition, GraphDefinition)
+                else [definition]
+            )
+            tasks.extend(contexts)
+            if isinstance(definition, AutonomousDefinition):
+                if "goal" not in definition.required_inputs:
+                    raise RoleAssetError("Autonomous teams require a goal input")
+                if len({role.role_id for role in definition.allowed_roles}) != len(
+                    definition.allowed_roles
+                ):
+                    raise RoleAssetError("Allowed role identities must be unique")
+                if len(
+                    {
+                        (ref.asset_id, ref.version)
+                        for ref in definition.allowed_workflows
+                    }
+                ) != len(definition.allowed_workflows):
+                    raise RoleAssetError("Allowed workflow versions must be unique")
+                for ref in definition.allowed_workflows:
+                    child = assets[(ref.asset_id, ref.version)]
+                    if isinstance(child, AutonomousDefinition):
+                        raise RoleAssetError(
+                            "Choose a saved workflow, not an autonomous team"
+                        )
+                    nodes = (
+                        [task.id for task in child.tasks]
+                        if isinstance(child, GraphDefinition)
+                        else ["result"]
+                    )
+                    if ref.result_task_id not in nodes:
+                        raise RoleAssetError(
+                            "Choose an existing pinned workflow return task"
+                        )
+            for index, task in enumerate(contexts):
+                if getattr(task, "workflow", None):
+                    raise RoleAssetError(
+                        "Workflow calls are created by the coordinator"
+                    )
+                if getattr(task, "human", None):
+                    continue
+                if isinstance(task, GraphTask) and task.team is not None:
+                    child = assets[(task.team.asset_id, task.team.version)]
+                    if not isinstance(child, AutonomousDefinition):
+                        raise RoleAssetError("Choose a pinned autonomous team")
+                    if (
+                        set(task.inputs) != set(child.required_inputs)
+                        or task.output_contract != child.output_contract
+                    ):
+                        raise RoleAssetError(
+                            "Invalid team call contracts",
+                            [
+                                {
+                                    "path": f"{prefix}.tasks.{index}",
+                                    "code": "CONTRACT",
+                                    "message": "Use the pinned team's exact inputs and output contract",
+                                }
+                            ],
+                        )
+                    continue
+                assert task.role_id is not None and task.role_version is not None
+                used.add((task.role_id, task.role_version))
+                try:
+                    await self._validate_task_definition(
+                        username,
+                        WorkflowDefinition(
+                            name=getattr(task, "name", definition.name),
+                            task=getattr(task, "task", "{goal}"),
+                            role_id=task.role_id,
+                            role_version=task.role_version,
+                            overrides=task.overrides,
+                            required_inputs=list(
+                                dict.fromkeys(
+                                    [
+                                        *definition.required_inputs,
+                                        *getattr(task, "inputs", {}),
+                                    ]
+                                )
+                            ),
+                            output_contract=getattr(
+                                task,
+                                "output_contract",
+                                getattr(definition, "output_contract", None),
+                            ),
                         ),
-                        output_contract=task.output_contract,
-                    ),
-                    references,
-                )
-            except RoleAssetError as exc:
-                if isinstance(definition, GraphDefinition):
+                        references,
+                    )
+                except RoleAssetError as exc:
                     raise RoleAssetError(
                         str(exc),
                         [
                             {
                                 **issue,
-                                "path": f"definition.tasks.{index}."
+                                "path": (
+                                    f"{prefix}.tasks.{index}."
+                                    if isinstance(definition, GraphDefinition)
+                                    else prefix + "."
+                                )
                                 + issue["path"].removeprefix("definition."),
                             }
                             for issue in exc.fields
                         ],
                         status=exc.status,
                     ) from exc
-                raise
-        if isinstance(definition, GraphDefinition):
-            # Graph field resolution assumes well-formed task contracts.
-            validate_graph(definition)
+            if isinstance(definition, GraphDefinition):
+                # Graph field resolution assumes well-formed task contracts.
+                validate_graph(definition)
+                for index, loop in enumerate(definition.loops):
+                    for task in definition.tasks:
+                        if task.id not in loop.body or not task.role_id:
+                            continue
+                        role = next(
+                            role
+                            for role in package.roles
+                            if (role.role_id, role.version)
+                            == (task.role_id, task.role_version)
+                        )
+                        limit = (
+                            task.overrides.max_iterations
+                            or role.definition.max_iterations
+                        )
+                        if limit is not None and loop.max_iterations > limit:
+                            raise RoleAssetError(
+                                "Loop exceeds the effective member iteration limit",
+                                [
+                                    {
+                                        "path": f"{prefix}.loops.{index}.max_iterations",
+                                        "code": "LIMIT",
+                                        "message": f"Member {task.member} permits at most {limit} iterations",
+                                    }
+                                ],
+                            )
         if used != references:
             raise RoleAssetError(
                 "Package must contain exactly the referenced role versions"
@@ -1192,12 +1457,24 @@ class WorkflowService:
         Raises:
             RoleAssetError: Bindings contain undeclared package slots.
         """
-        definition = package.definition
-        tasks = (
-            definition.tasks
-            if isinstance(definition, GraphDefinition)
-            else [definition]
-        )
+        tasks = []
+        coordinator_role = False
+        for definition in [
+            package.definition,
+            *[asset.definition for asset in package.assets],
+        ]:
+            if isinstance(definition, AutonomousDefinition) and (
+                definition.coordinator.role_id,
+                definition.coordinator.role_version,
+            ) == (role.role_id, role.version):
+                coordinator_role = True
+            tasks.extend(
+                [definition.coordinator, *definition.allowed_roles]
+                if isinstance(definition, AutonomousDefinition)
+                else definition.tasks
+                if isinstance(definition, GraphDefinition)
+                else [definition]
+            )
         issues: list[dict] = []
         key = f"{role.role_id}:{role.version}"
         installation = {"profile_id": "__unconfigured__", "bindings": {}}
@@ -1207,6 +1484,13 @@ class WorkflowService:
             raise RoleAssetError("Bindings contain undeclared package slots")
         for dep in role.dependencies:
             candidates = []
+            required_capabilities = list(dep.capabilities)
+            if (
+                dep.kind == "profiles"
+                and coordinator_role
+                and "task_tools" not in required_capabilities
+            ):
+                required_capabilities.append("task_tools")
             for resource in catalog[dep.kind]:
                 fingerprint = resource.get("fingerprint")
                 if dep.kind == "profiles":
@@ -1234,7 +1518,7 @@ class WorkflowService:
                             continue
                     fingerprint = "astrbot.local.v1" if runner_type == "local" else None
                 if not resource.get("enabled", True) or not set(
-                    dep.capabilities
+                    required_capabilities
                 ).issubset(
                     resource.get("capabilities", [])
                     if dep.kind != "profiles"
@@ -1303,6 +1587,7 @@ class WorkflowService:
             dependencies.append(
                 {
                     **dep.model_dump(),
+                    "capabilities": required_capabilities,
                     "candidates": candidates,
                     "selected": chosen if compatible else None,
                     "automatic": automatic,
@@ -1343,64 +1628,117 @@ class WorkflowService:
         }, issues
 
     async def preview_import(self, username: str, payload: dict) -> dict:
-        """Validate all content before reading candidates or proposing bindings.
+        """Validate the whole closure and present one set of local choices.
 
         Args:
             username: Authenticated installing owner.
             payload: Package and optional explicit local installation choices.
 
         Returns:
-            Validated package, grouped dependencies, proposed bindings and issues.
+            Definitions, grouped dependencies, version actions and blocking issues.
 
         Raises:
-            RoleAssetError: Invalid format, contract, reference or unsupported input.
+            RoleAssetError: Invalid content or conflicting immutable identities.
         """
         request = await self._validate_package(username, payload)
         package = request.package
-        normalized = package.model_dump()
-        try:
-            digest = hashlib.sha256(
-                json.dumps(
-                    normalized, sort_keys=True, separators=(",", ":"), allow_nan=False
-                ).encode()
-            ).hexdigest()
-        except ValueError as exc:
-            raise RoleAssetError("Package numbers must be finite") from exc
-        existing = None
-        saved_installations = {}
+        contents = package.asset_packages()
+        normalized = contents[0]
+        saved_installations, known_roles = {}, {}
         async with self.db.get_db() as session:
             rows = (
                 (
                     await session.execute(
                         select(AgentWorkflowPackage).where(
-                            AgentWorkflowPackage.owner_username == username,
-                            AgentWorkflowPackage.package_id == package.asset_id,
+                            AgentWorkflowPackage.owner_username == username
                         )
                     )
                 )
                 .scalars()
                 .all()
             )
+            records = {(row.package_id, row.version): row for row in rows}
             for row in rows:
-                if row.version != package.version:
-                    raise RoleAssetError(
-                        "Package upgrades are not supported yet", status=409
-                    )
-                if row.digest != digest:
+                for role in row.package["roles"]:
+                    key = f"{role['role_id']}:{role['version']}"
+                    if key in known_roles and known_roles[key][0] != role:
+                        raise RoleAssetError(
+                            "Installed package role identity has conflicting content",
+                            status=409,
+                        )
+                    known_roles[key] = (role, row.role_ids[key])
+            assets = []
+            for content in contents:
+                try:
+                    digest = hashlib.sha256(
+                        json.dumps(
+                            content,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ).encode()
+                    ).hexdigest()
+                except ValueError as exc:
+                    raise RoleAssetError("Package numbers must be finite") from exc
+                row = records.get((content["asset_id"], content["version"]))
+                if row is not None and row.digest != digest:
                     raise RoleAssetError(
                         "Same package identity and version have different content",
+                        [
+                            {
+                                "path": f"package.assets.{content['asset_id']}:{content['version']}",
+                                "code": "CONFLICT",
+                                "message": "The installed exact version has different content",
+                            }
+                        ],
                         status=409,
                     )
-                existing = row.asset_id
-                for key, identity in row.role_ids.items():
-                    local = await session.get(AgentRoleInstallation, (identity, 1))
-                    if local is None:
-                        raise RoleAssetError(
-                            "Existing package installation is incomplete", status=409
-                        )
-                    saved_installations[key] = RoleInstallation.model_validate(
-                        local.installation
+                previous = [r for r in rows if r.package_id == content["asset_id"]]
+                assets.append(
+                    {
+                        "asset_id": content["asset_id"],
+                        "version": content["version"],
+                        "name": content["definition"]["name"],
+                        "kind": content["definition"].get("kind", "workflow"),
+                        "action": "reuse"
+                        if row
+                        else "new_version"
+                        if previous
+                        else "install",
+                        "local_asset_id": row.asset_id
+                        if row
+                        else previous[0].asset_id
+                        if previous
+                        else None,
+                        "local_version": row.installed_version if row else None,
+                        "digest": digest,
+                    }
+                )
+            for role in package.roles:
+                key = f"{role.role_id}:{role.version}"
+                if key not in known_roles:
+                    continue
+                original, identity = known_roles[key]
+                if original != role.model_dump():
+                    raise RoleAssetError(
+                        "Same role identity and version have different content",
+                        [
+                            {
+                                "path": f"package.roles.{key}",
+                                "code": "CONFLICT",
+                                "message": "Create a new role version for changed content",
+                            }
+                        ],
+                        status=409,
                     )
+                local = await session.get(AgentRoleInstallation, (identity, 1))
+                if local is None:
+                    raise RoleAssetError(
+                        "Existing package installation is incomplete", status=409
+                    )
+                saved_installations[key] = RoleInstallation.model_validate(
+                    local.installation
+                )
         catalog = await self.roles.get_resources()
         previews, issues = [], []
         for role in package.roles:
@@ -1415,134 +1753,253 @@ class WorkflowService:
             issues.extend(role_issues)
         return {
             "package": normalized,
-            "digest": digest,
-            "existing_asset_id": existing,
+            "digest": assets[0]["digest"],
+            "existing_asset_id": assets[0]["local_asset_id"]
+            if assets[0]["action"] == "reuse"
+            else None,
+            "assets": assets,
             "roles": previews,
             "issues": issues,
             "ready": not issues,
         }
 
     async def import_asset(self, username: str, payload: dict) -> dict:
-        """Commit definitions and local bindings together after fresh validation.
+        """Atomically install or upgrade the complete validated reference closure.
 
         Args:
             username: Authenticated owner; package content cannot grant access.
             payload: Package, deliberate local bindings and pending-save choice.
 
         Returns:
-            The installed asset and whether identical content already existed.
+            The exact installed entry version and whether its content was reused.
 
         Raises:
             RoleAssetError: Invalid package, unresolved dependencies or conflict.
         """
         preview = await self.preview_import(username, payload)
-        if preview["existing_asset_id"]:
-            if payload.get("installations"):
-                if not preview["ready"] and not payload.get("save_pending", False):
-                    raise RoleAssetError(
-                        "Configure package dependencies before installation",
-                        preview["issues"],
-                    )
-                async with self.db.get_db() as session:
-                    record = await session.get(
-                        AgentWorkflowPackage,
-                        (
-                            username,
-                            preview["package"]["asset_id"],
-                            preview["package"]["version"],
-                        ),
-                    )
-                    assert record is not None
-                    for proposed in preview["roles"]:
-                        if proposed["key"] not in payload["installations"]:
-                            continue
-                        installation = await session.get(
-                            AgentRoleInstallation, (record.role_ids[proposed["key"]], 1)
-                        )
-                        assert installation is not None
-                        installation.installation = proposed["installation"]
-                    try:
-                        await session.commit()
-                    except BaseException:
-                        await session.rollback()
-                        raise
-            return {
-                "asset": await self.get_asset(
-                    username, preview["existing_asset_id"], 1
-                ),
-                "existing": True,
-                "ready": preview["ready"],
-            }
         if not preview["ready"] and not payload.get("save_pending", False):
             raise RoleAssetError(
                 "Configure package dependencies before installation", preview["issues"]
             )
-        package = preview["package"]
-        asset_id = uuid.uuid4().hex
-        definition = copy.deepcopy(package["definition"])
-        role_ids = {role["key"]: uuid.uuid4().hex for role in preview["roles"]}
-        for task in definition.get("tasks", [definition]):
-            if task.get("role_id"):
-                task["role_id"] = role_ids[f"{task['role_id']}:{task['role_version']}"]
-                task["role_version"] = 1
+        package = WorkflowPackage.model_validate(preview["package"])
+        contents = package.asset_packages()
+        asset_map, role_ids = {}, {}
+        previous_registry: set[tuple[str, int, str, int, str]] | None = None
         try:
             async with self.db.get_db() as session:
-                for role, proposed in zip(
-                    package["roles"], preview["roles"], strict=True
-                ):
-                    identity = role_ids[proposed["key"]]
+                rows = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowPackage).where(
+                                AgentWorkflowPackage.owner_username == username
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                records = {(row.package_id, row.version): row for row in rows}
+                previous_registry = {
+                    (
+                        row.package_id,
+                        row.version,
+                        row.asset_id,
+                        row.installed_version,
+                        row.digest,
+                    )
+                    for row in rows
+                }
+                existing = (package.asset_id, package.version) in records
+                for row in rows:
+                    role_ids.update(row.role_ids)
+                new_assets = []
+                # Recheck the complete registry in the same transaction as all writes.
+                # Concurrent confirmations retry against the winning immutable rows.
+                for content, proposed in zip(contents, preview["assets"], strict=True):
+                    key = (content["asset_id"], content["version"])
+                    row = records.get(key)
+                    if row:
+                        if row.digest != proposed["digest"]:
+                            raise RoleAssetError(
+                                "Same package identity and version have different content",
+                                status=409,
+                            )
+                        asset_map[key] = (row.asset_id, row.installed_version)
+                        continue
+                    previous = [r for r in rows if r.package_id == key[0]]
+                    identity = (
+                        previous[0].asset_id
+                        if previous
+                        else next(
+                            (
+                                value[0]
+                                for source, value in asset_map.items()
+                                if source[0] == key[0]
+                            ),
+                            None,
+                        )
+                        or uuid.uuid4().hex
+                    )
+                    versions = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowVersion).where(
+                                    AgentWorkflowVersion.owner_username == username,
+                                    AgentWorkflowVersion.asset_id == identity,
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    version = (
+                        max(
+                            [r.version for r in versions]
+                            + [
+                                value[1]
+                                for value in asset_map.values()
+                                if value[0] == identity
+                            ]
+                            + [0]
+                        )
+                        + 1
+                    )
+                    asset_map[key] = (identity, version)
+                    new_assets.append((content, proposed, identity, version))
+                for role, proposed in zip(package.roles, preview["roles"], strict=True):
+                    key = proposed["key"]
+                    original = next(
+                        (
+                            included
+                            for row in rows
+                            for included in row.package["roles"]
+                            if f"{included['role_id']}:{included['version']}" == key
+                        ),
+                        None,
+                    )
+                    if original is not None and original != role.model_dump():
+                        raise RoleAssetError(
+                            "Same role identity and version have different content",
+                            status=409,
+                        )
+                    if key not in role_ids:
+                        identity = uuid.uuid4().hex
+                        role_ids[key] = identity
+                        session.add(
+                            AgentRoleVersion(
+                                role_id=identity,
+                                version=1,
+                                owner_username=username,
+                                definition=role.definition.model_dump(),
+                            )
+                        )
+                        session.add(
+                            AgentRoleInstallation(
+                                role_id=identity,
+                                version=1,
+                                installation=proposed["installation"],
+                            )
+                        )
+                    elif key in payload.get("installations", {}):
+                        local = await session.get(
+                            AgentRoleInstallation, (role_ids[key], 1)
+                        )
+                        if local is None:
+                            raise RoleAssetError(
+                                "Existing package installation is incomplete",
+                                status=409,
+                            )
+                        local.installation = proposed["installation"]
+                for content, proposed, identity, version in new_assets:
+                    definition = copy.deepcopy(content["definition"])
+                    contexts = (
+                        [definition["coordinator"], *definition["allowed_roles"]]
+                        if definition.get("kind") == "autonomous"
+                        else definition.get("tasks", [definition])
+                    )
+                    for context in contexts:
+                        if context.get("role_id"):
+                            context["role_id"] = role_ids[
+                                f"{context['role_id']}:{context['role_version']}"
+                            ]
+                            context["role_version"] = 1
+                    references = [
+                        *definition.get("allowed_workflows", []),
+                        *[
+                            task["team"]
+                            for task in definition.get("tasks", [])
+                            if task.get("team")
+                        ],
+                    ]
+                    for ref in references:
+                        ref["asset_id"], ref["version"] = asset_map[
+                            (ref["asset_id"], ref["version"])
+                        ]
                     session.add(
-                        AgentRoleVersion(
-                            role_id=identity,
-                            version=1,
+                        AgentWorkflowVersion(
+                            asset_id=identity,
+                            version=version,
                             owner_username=username,
-                            definition=role["definition"],
+                            definition=definition,
                         )
                     )
                     session.add(
-                        AgentRoleInstallation(
-                            role_id=identity,
-                            version=1,
-                            installation=proposed["installation"],
+                        AgentWorkflowPackage(
+                            owner_username=username,
+                            package_id=content["asset_id"],
+                            version=content["version"],
+                            asset_id=identity,
+                            installed_version=version,
+                            digest=proposed["digest"],
+                            package=content,
+                            role_ids={
+                                f"{role['role_id']}:{role['version']}": role_ids[
+                                    f"{role['role_id']}:{role['version']}"
+                                ]
+                                for role in content["roles"]
+                            },
                         )
                     )
-                session.add(
-                    AgentWorkflowVersion(
-                        asset_id=asset_id,
-                        version=1,
-                        owner_username=username,
-                        definition=definition,
-                    )
-                )
-                session.add(
-                    AgentWorkflowPackage(
-                        owner_username=username,
-                        package_id=package["asset_id"],
-                        version=package["version"],
-                        asset_id=asset_id,
-                        digest=preview["digest"],
-                        package=package,
-                        role_ids=role_ids,
-                    )
-                )
                 try:
                     await session.commit()
                 except BaseException:
                     await session.rollback()
                     raise
         except IntegrityError as exc:
-            # Another confirmation may have committed the identical package.
-            repeated = await self.preview_import(username, payload)
-            if not repeated["existing_asset_id"]:
-                raise RoleAssetError(
-                    "Installation conflicted; preview again", status=409
-                ) from exc
-            # Reuse the existing-installation transaction to persist the losing
-            # confirmation's explicit choices before reporting readiness.
+            if previous_registry is None:
+                raise
+            # A competing atomic import can allocate the same next local version.
+            # A genuine storage failure must not masquerade as that confirmation.
+            async with self.db.get_db() as session:
+                current = (
+                    (
+                        await session.execute(
+                            select(AgentWorkflowPackage).where(
+                                AgentWorkflowPackage.owner_username == username
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if {
+                    (
+                        row.package_id,
+                        row.version,
+                        row.asset_id,
+                        row.installed_version,
+                        row.digest,
+                    )
+                    for row in current
+                } == previous_registry:
+                    raise RoleAssetError(
+                        "Installation conflicted; preview again", status=409
+                    ) from exc
             return await self.import_asset(username, payload)
+        identity, version = asset_map[(package.asset_id, package.version)]
         return {
-            "asset": await self.get_asset(username, asset_id, 1),
-            "existing": False,
+            "asset": await self.get_asset(username, identity, version),
+            "existing": existing,
             "ready": preview["ready"],
         }
 
@@ -1728,7 +2185,7 @@ class WorkflowService:
                 )
         effective = copy.deepcopy(role["effective"])
         catalog = await self.roles.get_resources()
-        if role["version"] == 1:
+        if role.get("role_id"):
             async with self.db.get_db() as session:
                 packages = (
                     (

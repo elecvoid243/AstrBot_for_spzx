@@ -51,6 +51,17 @@
             <p class="text-caption package-text">
               {{ preview.package.asset_id }}
             </p>
+            <h4 class="text-subtitle-1 mt-4">{{ tm("package.closure") }}</h4>
+            <ul class="pl-5 package-text">
+              <li
+                v-for="asset in preview.assets"
+                :key="`${asset.asset_id}:${asset.version}`"
+              >
+                {{ asset.name }} · v{{ asset.version }} ·
+                {{ tm(`package.actions.${asset.action}`) }}
+              </li>
+            </ul>
+            <p class="text-caption mt-2">{{ tm("package.versionSafety") }}</p>
             <v-alert
               v-if="preview.existing_asset_id"
               type="info"
@@ -75,6 +86,7 @@
             >
               <v-card-text>
                 <h4 class="text-subtitle-1 package-text">{{ role.name }}</h4>
+                <p class="text-caption package-text">{{ role.key }}</p>
                 <p class="text-caption">
                   {{ tm("package.includedPrompt") }} ·
                   {{ tm("package.promptOrigin") }}: {{ role.prompt_source }}
@@ -290,7 +302,10 @@ async function readFile(value: File | File[] | null) {
     if (current === generation) changeContent(text);
   } catch (cause) {
     if (current === generation)
-      error.value = extractApiError(cause, tm("errors.operationFailed")).message;
+      error.value = extractApiError(
+        cause,
+        tm("errors.operationFailed"),
+      ).message;
   }
 }
 

@@ -47,6 +47,17 @@ async def run_instance(
     from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
 
     folder.mkdir(parents=True, exist_ok=True)
+    (folder / "instance-process.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "parent_pid": os.getppid(),
+                "executable": sys.executable,
+                "action": action,
+            }
+        ),
+        encoding="utf-8",
+    )
     patch = MonkeyPatch()
     db = SQLiteDatabase(str(folder / "instance.db"))
     await db.initialize()
@@ -163,7 +174,13 @@ async def run_instance(
     )
     dispatch = asyncio.create_task(bus.dispatch())
     try:
-        if instance == "a":
+        if "nested" in action:
+            from tests.agent_teams.nested_package_scenario import exercise_nested
+
+            await exercise_nested(
+                service, roles, folder, instance, action, profile_id, model_id
+            )
+        elif instance == "a":
             assets = (await service.list_assets("alice"))["assets"]
             if assets:
                 asset = assets[0]

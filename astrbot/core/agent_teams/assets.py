@@ -436,7 +436,7 @@ class RoleAssetService:
                             "message": "Bound model no longer declares the required capabilities",
                         }
                     )
-        if role.get("version") == 1 and role.get("role_id"):
+        if role.get("role_id"):
             async with self.db.get_db() as session:
                 origin = await session.get(AgentRoleVersion, (role["role_id"], 1))
                 packages = (

@@ -40,6 +40,33 @@ const stubs = {
 };
 
 describe("workflow package review", () => {
+  it("shows each exact nested version and the reuse or upgrade action before confirmation", async () => {
+    api.previewImport.mockResolvedValueOnce({
+      package: { asset_id: "root", version: 2, definition: { name: "Report" } },
+      assets: [
+        { asset_id: "root", version: 2, name: "Report", action: "new_version" },
+        {
+          asset_id: "leaf",
+          version: 7,
+          name: "Pinned evidence",
+          action: "reuse",
+        },
+      ],
+      roles: [],
+      ready: true,
+      issues: [],
+    });
+    const wrapper = mount(WorkflowPackageDialog, {
+      props: { modelValue: true },
+      global: { stubs },
+    });
+    await wrapper.find("textarea").setValue('{"asset_id":"root"}');
+    await wrapper.get('[data-testid="preview-package"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Pinned evidence · v7");
+    expect(wrapper.text()).toContain("package.actions.new_version");
+    expect(wrapper.text()).toContain("package.actions.reuse");
+  });
   it("shows typed HTTP format validation fields without offering installation", async () => {
     api.previewImport.mockRejectedValueOnce({
       response: {

@@ -5,15 +5,22 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
 
-def test_different_instances_export_import_and_run_actual_provider_pipeline(tmp_path):
-    """Use real HTTP provider requests and an explicit contracted graph handoff.
+
+@pytest.fixture
+def package_model_endpoint(tmp_path):
+    """Provide an external native model boundary for real instance execution.
 
     Args:
-        tmp_path: Parent of separate instance A and instance B durable roots.
+        tmp_path: Isolated request gate and worker communication directory.
+
+    Yields:
+        Endpoint and the actual HTTP request ledger.
     """
     requests = []
 
@@ -24,6 +31,13 @@ def test_different_instances_export_import_and_run_actual_provider_pipeline(tmp_
             """Record each actual request and return a schema-correct tool response."""
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(body)
+            if (tmp_path / "hold-inflight").exists() and len(requests) == 1:
+                (tmp_path / "b/http-entered").write_text("entered", encoding="utf-8")
+                for _ in range(1000):
+                    if (tmp_path / "b/drift-ready").exists():
+                        break
+                    time.sleep(0.01)
+                assert (tmp_path / "b/drift-ready").exists()
             submitted = any(
                 message.get("role") == "tool" for message in body["messages"]
             )
@@ -115,61 +129,139 @@ def test_different_instances_export_import_and_run_actual_provider_pipeline(tmp_
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     endpoint = f"http://127.0.0.1:{server.server_port}"
-    root = Path(__file__).resolve().parents[2]
     try:
-        for instance, action in (("a", "export"), ("b", "import")):
-            folder = tmp_path / instance
-            folder.mkdir()
-            if instance == "b":
-                (folder / "input.json").write_bytes(
-                    (tmp_path / "a" / "export.json").read_bytes()
-                )
-            with (folder / "worker.log").open("w", encoding="utf-8") as output:
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "tests.agent_teams.package_worker",
-                        str(folder),
-                        endpoint,
-                        instance,
-                        action,
-                    ],
-                    cwd=root,
-                    env={**os.environ, "ASTRBOT_ROOT": str(folder), "PYTHONUTF8": "1"},
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    timeout=90,
-                )
-            assert completed.returncode == 0, (folder / "worker.log").read_text(
-                encoding="utf-8"
-            )
-        package = json.loads(
-            (tmp_path / "a" / "export.json").read_text(encoding="utf-8")
-        )
-        result = json.loads(
-            (tmp_path / "b" / "result.json").read_text(encoding="utf-8")
-        )
-        (tmp_path / "http-requests.json").write_text(
-            json.dumps(requests, indent=2), encoding="utf-8"
-        )
-        assert result["preview"]["ready"] is True
-        assert result["run"]["status"] == "completed", result["run"]
-        assert len(requests) == 4
-        assert all(request["model"] == "portable-test-model" for request in requests)
-        assert "Portable evidence" in json.dumps(requests[2]["messages"])
-        assert "private-key-a" not in json.dumps(package)
-        assert "model-a" not in json.dumps(package)
-        assert "profile-a" not in json.dumps(package)
-        assert result["installed"]["asset"]["definition"]["tasks"][1]["position"] == {
-            "x": 480.0,
-            "y": 60.0,
-        }
-        assert all(
-            task["snapshot"]["effective"]["provider_id"] == "model-b"
-            for task in result["run"]["tasks"]
-        )
+        yield endpoint, requests
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_different_instances_export_import_and_run_actual_provider_pipeline(
+    tmp_path, package_model_endpoint
+):
+    """Use real HTTP provider requests and an explicit contracted graph handoff.
+
+    Args:
+        tmp_path: Parent of separate instance A and instance B durable roots.
+        package_model_endpoint: External model endpoint and actual request ledger.
+    """
+    endpoint, requests = package_model_endpoint
+    root = Path(__file__).resolve().parents[2]
+    for instance, action in (("a", "export"), ("b", "import")):
+        folder = tmp_path / instance
+        folder.mkdir()
+        if instance == "b":
+            (folder / "input.json").write_bytes(
+                (tmp_path / "a" / "export.json").read_bytes()
+            )
+        with (folder / "worker.log").open("w", encoding="utf-8") as output:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "tests.agent_teams.package_worker",
+                    str(folder),
+                    endpoint,
+                    instance,
+                    action,
+                ],
+                cwd=root,
+                env={**os.environ, "ASTRBOT_ROOT": str(folder), "PYTHONUTF8": "1"},
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                timeout=90,
+            )
+        assert completed.returncode == 0, (folder / "worker.log").read_text(
+            encoding="utf-8"
+        )
+    package = json.loads((tmp_path / "a" / "export.json").read_text(encoding="utf-8"))
+    result = json.loads((tmp_path / "b" / "result.json").read_text(encoding="utf-8"))
+    (tmp_path / "http-requests.json").write_text(
+        json.dumps(requests, indent=2), encoding="utf-8"
+    )
+    assert result["preview"]["ready"] is True
+    assert result["run"]["status"] == "completed", result["run"]
+    assert len(requests) == 4
+    assert all(request["model"] == "portable-test-model" for request in requests)
+    assert "Portable evidence" in json.dumps(requests[2]["messages"])
+    assert "private-key-a" not in json.dumps(package)
+    assert "model-a" not in json.dumps(package)
+    assert "profile-a" not in json.dumps(package)
+    assert result["installed"]["asset"]["definition"]["tasks"][1]["position"] == {
+        "x": 480.0,
+        "y": 60.0,
+    }
+    assert all(
+        task["snapshot"]["effective"]["provider_id"] == "model-b"
+        for task in result["run"]["tasks"]
+    )
+
+
+def test_inflight_package_recovers_original_streamed_response(
+    tmp_path, package_model_endpoint
+):
+    """Restore the compatible resource and reuse its complete native response.
+
+    Args:
+        tmp_path: Separate durable source and target instance directories.
+        package_model_endpoint: External HTTP boundary and actual request ledger.
+    """
+    endpoint, requests = package_model_endpoint
+    (tmp_path / "hold-inflight").write_text("hold", encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    for instance, action in (("a", "export"), ("b", "inflight-recover")):
+        folder = tmp_path / instance
+        folder.mkdir()
+        if instance == "b":
+            (folder / "input.json").write_bytes(
+                (tmp_path / "a/export.json").read_bytes()
+            )
+        with (folder / "worker.log").open("w", encoding="utf-8") as output:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "tests.agent_teams.package_worker",
+                    str(folder),
+                    endpoint,
+                    instance,
+                    action,
+                ],
+                cwd=root,
+                env={**os.environ, "ASTRBOT_ROOT": str(folder), "PYTHONUTF8": "1"},
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                timeout=90,
+            )
+        assert completed.returncode == 0, (folder / "worker.log").read_text(
+            encoding="utf-8"
+        )
+    result = json.loads((tmp_path / "b/result.json").read_text(encoding="utf-8"))
+    (tmp_path / "http-requests.json").write_text(
+        json.dumps(requests, indent=2), encoding="utf-8"
+    )
+    assert result["readiness"]["ready"] is False
+    assert result["blocked"]["status"] == "blocked"
+    blocked = next(
+        task
+        for task in result["blocked"]["tasks"]
+        if task["snapshot"].get("node_id") == "research"
+    )
+    assert blocked["state"]["reason"] == "Frozen resources are no longer available"
+    assert any(
+        issue["path"] == "installation.bindings.model"
+        for issue in blocked["state"]["issues"]
+    )
+    assert blocked["pending_result"] is None and blocked["artifacts"] == []
+    assert result["run"]["status"] == "completed", result["run"]
+    assert result["run"]["snapshot"] == result["before"]["snapshot"]
+    recovered = next(
+        task for task in result["run"]["tasks"] if task["run_id"] == blocked["run_id"]
+    )
+    assert recovered["snapshot"] == blocked["snapshot"]
+    assert recovered["state"]["attempt_id"] == blocked["state"]["attempt_id"]
+    assert len(requests) == 4
+    assert all(request["model"] == "portable-test-model" for request in requests)
+    assert any(message.get("role") == "tool" for message in requests[1]["messages"])
+    assert any(event["kind"] == "task.blocked" for event in recovered["events"])

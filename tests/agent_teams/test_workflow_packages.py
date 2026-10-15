@@ -815,6 +815,170 @@ async def test_waiting_package_rechecks_frozen_bindings_before_execution_and_ret
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("boundary", "continuation"),
+    [
+        ("response", "recover"),
+        ("request", "recover"),
+        ("tools_started", "recover"),
+        ("tool_result", "recover"),
+        ("tools_applied", "recover"),
+        ("usage", "recover"),
+        ("admit_work", "recover"),
+        ("response", "retry"),
+    ],
+)
+async def test_inflight_package_block_retains_issues_and_recovers_saved_response(
+    workflow_env, tmp_path, boundary, continuation
+):
+    """Keep resource rejection distinct from storage failure at a saved response.
+
+    Args:
+        workflow_env: Public services and controllable resource inventory.
+        tmp_path: Original SQLite directory reopened before response recovery.
+        boundary: Normal checkpoint or admission callback after resource drift.
+        continuation: Recover the saved Attempt or explicitly retry a new one.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "original-source"
+    entered, release = asyncio.Event(), asyncio.Event()
+    model_calls = []
+    ports = env.service.ports_factory("bob")
+
+    async def deliver(
+        session_id, text, context=None, execution_token=None, message_id=None
+    ):
+        """Save the original response after the external model call returns.
+
+        Args:
+            session_id: Frozen member conversation.
+            text: Task input.
+            context: Contracted result instructions.
+            execution_token: Authorized normal execution binding.
+            message_id: Current delivery identity.
+
+        Returns:
+            Delivery identity after the response is safe to apply.
+        """
+        binding = AgentTeamExecutionRegistry.resolve(execution_token)
+        if binding.checkpoint is None:
+            model_calls.append(env.inventory["models"][0]["fingerprint"])
+            checkpoint = {
+                "phase": "response",
+                "invocation_id": "original-model-call",
+                "model_calls": 1,
+                "steps_used": 1,
+                "messages": [],
+                "tools": [],
+                "response": {"role": "assistant", "completion_text": "Evidence"},
+            }
+            if boundary != "response":
+                await binding.save_checkpoint(checkpoint)
+            entered.set()
+            await release.wait()
+            if boundary == "usage":
+                await binding.begin_usage(
+                    {
+                        "receipt_id": "next-call",
+                        "invocation_id": "next-call",
+                        "kind": "model",
+                    }
+                )
+            elif boundary == "admit_work":
+                await binding.admit_work()
+            else:
+                await binding.save_checkpoint({**checkpoint, "phase": boundary})
+        else:
+            assert binding.checkpoint["phase"] == (
+                boundary if boundary in {"tool_result", "tools_applied"} else "response"
+            )
+            assert binding.checkpoint["invocation_id"] == "original-model-call"
+        return message_id
+
+    ports.deliver = deliver
+    service = WorkflowService(env.db, env.roles, ports_factory=lambda username: ports)
+    reopened_db = None
+    try:
+        package = await service.export_asset("alice", env.asset["asset_id"], 1)
+        installed = await service.import_asset("bob", {"package": package})
+        run = await service.start_run(
+            "bob", installed["asset"]["asset_id"], {"version": 1}
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        before = await service.get_run("bob", run["run_id"])
+        env.inventory["models"][0]["fingerprint"] = "incompatible-source"
+        release.set()
+        for _ in range(200):
+            blocked = await service.get_run("bob", run["run_id"])
+            if blocked["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert blocked["status"] == "blocked", blocked
+        assert blocked["state"]["reason"] == "Frozen resources are no longer available"
+        assert any(
+            issue["path"] == "installation.bindings.model"
+            and issue["code"] == "INCOMPATIBLE"
+            for issue in blocked["state"]["issues"]
+        )
+        assert blocked["snapshot"] == before["snapshot"]
+        assert blocked["state"]["attempt_id"] == before["state"]["attempt_id"]
+        assert blocked["pending_result"] is None
+        assert blocked["artifacts"] == []
+        assert blocked["recovery"]["boundary"] == (
+            boundary if boundary in {"tool_result", "tools_applied"} else "response"
+        )
+        assert blocked["recovery"]["available"] is True
+        assert model_calls == ["original-source"]
+        await service.shutdown()
+        await env.db.engine.dispose()
+        reopened_db = SQLiteDatabase(str(tmp_path / "workflows.db"))
+        service = WorkflowService(
+            reopened_db,
+            RoleAssetService(reopened_db, catalog_loader=env.roles.catalog_loader),
+            ports_factory=lambda username: ports,
+        )
+        env.inventory["models"][0]["fingerprint"] = "original-source"
+        if continuation == "recover":
+            await service.recover_run("bob", run["run_id"])
+        else:
+            await service.retry_task(
+                "bob",
+                run["run_id"],
+                {
+                    "request_id": "retry-restored-original",
+                    "attempt_id": before["state"]["attempt_id"],
+                    "input_policy": "original",
+                },
+            )
+        for _ in range(200):
+            recovered = await service.get_run("bob", run["run_id"])
+            if recovered["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert recovered["status"] == "completed", recovered
+        assert recovered["snapshot"] == before["snapshot"]
+        if continuation == "recover":
+            assert recovered["state"]["attempt_id"] == before["state"]["attempt_id"]
+            assert model_calls == ["original-source"]
+        else:
+            assert recovered["state"]["attempt_id"] != before["state"]["attempt_id"]
+            assert model_calls == ["original-source", "original-source"]
+            previous = next(
+                attempt
+                for attempt in recovered["attempts"]
+                if attempt["attempt_id"] == before["state"]["attempt_id"]
+            )
+            assert previous["state"]["reason"] == blocked["state"]["reason"]
+            assert previous["state"]["issues"] == blocked["state"]["issues"]
+        assert any(event["kind"] == "task.blocked" for event in recovered["events"])
+    finally:
+        release.set()
+        await service.shutdown()
+        if reopened_db is not None:
+            await reopened_db.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_paused_package_rechecks_resources_on_continue_and_recovers_original_attempt(
     workflow_env, tmp_path
 ):

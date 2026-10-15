@@ -7573,7 +7573,7 @@ class WorkflowService:
         tools: list[FunctionTool] = []
         status = "failed"
         outcome: dict[str, object] = {}
-        checkpoint_error = None
+        checkpoint_error: str | RoleAssetError | None = None
         current_task = asyncio.current_task()
         assert current_task is not None
         self._executions[run_id] = current_task
@@ -7741,6 +7741,24 @@ class WorkflowService:
                 tools.append(ReadArtifactTool(read))
             AgentTeamToolRegistry.register(member["umo"], tools)
 
+            async def admit_work() -> None:
+                """Stop the runner while retaining an actionable admission error.
+
+                Raises:
+                    CheckpointRecoveryError: Frozen resources or run permission
+                        prevent further execution at this boundary.
+                """
+                nonlocal checkpoint_error
+                try:
+                    await self._await_execution_permission(
+                        username, run_id, execution_id
+                    )
+                except RoleAssetError as exc:
+                    checkpoint_error = exc
+                    # The runner must not treat a denied boundary as a failed
+                    # model/tool call and attempt fallback or dependent work.
+                    raise CheckpointRecoveryError(str(exc)) from exc
+
             async def record(record_id: str, kind: str, data: dict) -> None:
                 """Persist a structured observation before execution advances.
 
@@ -7771,25 +7789,25 @@ class WorkflowService:
 
                 Args:
                     data: Effective runner checkpoint preceding dependent work.
+
+                Raises:
+                    CheckpointRecoveryError: Current admission is blocked.
+                    ProcessPersistenceError: The checkpoint could not be saved.
                 """
                 nonlocal checkpoint_error
+                if data["phase"] in {"request", "tools_started"}:
+                    await admit_work()
                 try:
-                    if data["phase"] in {"request", "tools_started"}:
-                        await self._await_execution_permission(
-                            username, run_id, execution_id
-                        )
                     await self.save_checkpoint(
                         username, run_id, state["attempt_id"], execution_id, data
                     )
-                    if data["phase"] in {"response", "tool_result", "tools_applied"}:
-                        await self._await_execution_permission(
-                            username, run_id, execution_id
-                        )
                 except Exception as exc:
                     checkpoint_error = "Failed to save execution checkpoint"
                     raise ProcessPersistenceError(
                         "Failed to save execution checkpoint"
                     ) from exc
+                if data["phase"] in {"response", "tool_result", "tools_applied"}:
+                    await admit_work()
 
             async def begin_usage(payload: dict) -> dict:
                 """Wait for shared reservations while retaining the existing executor.
@@ -7804,20 +7822,18 @@ class WorkflowService:
                     CheckpointRecoveryError: Limits or persistence forbid execution.
                 """
                 nonlocal checkpoint_error
-                try:
-                    while True:
-                        await self._await_execution_permission(
-                            username, run_id, execution_id
-                        )
+                while True:
+                    await admit_work()
+                    try:
                         receipt = await self.begin_usage(
                             username, run_id, state["attempt_id"], execution_id, payload
                         )
-                        if not receipt.get("waiting"):
-                            return receipt
-                        await asyncio.sleep(0.05)
-                except Exception as exc:
-                    checkpoint_error = str(exc)
-                    raise CheckpointRecoveryError(str(exc)) from exc
+                    except Exception as exc:
+                        checkpoint_error = str(exc)
+                        raise CheckpointRecoveryError(str(exc)) from exc
+                    if not receipt.get("waiting"):
+                        return receipt
+                    await asyncio.sleep(0.05)
 
             async def report_usage(receipt_id: str, payload: dict) -> dict:
                 """Keep late consumption separate from checkpoint ownership.
@@ -7879,9 +7895,7 @@ class WorkflowService:
                     )
                     if snapshot.get("parent_run_id")
                     else None,
-                    admit_work=lambda: self._await_execution_permission(
-                        username, run_id, execution_id
-                    ),
+                    admit_work=admit_work,
                     text=snapshot["task"],
                     context="Submit the final result with submit_task_result according to its declared contract. Plain text does not complete this task. Read full input content with read_task_artifact. Pinned input references: "
                     + json.dumps(snapshot.get("input_artifacts", []))
@@ -7977,6 +7991,8 @@ class WorkflowService:
                 "attempt_id": state["attempt_id"],
                 "message_id": state["message_id"],
             }
+            if isinstance(checkpoint_error, RoleAssetError):
+                raise checkpoint_error
             if checkpoint_error is not None:
                 if checkpoint_error.startswith("Execution limit reached"):
                     saved = await self.get_run(username, run_id)
@@ -8043,7 +8059,11 @@ class WorkflowService:
             outcome["issues"] = exc.fields
         except CheckpointRecoveryError as exc:
             status = "blocked"
-            outcome["reason"] = str(exc)
+            if isinstance(checkpoint_error, RoleAssetError):
+                outcome["reason"] = str(checkpoint_error)
+                outcome["issues"] = checkpoint_error.fields
+            else:
+                outcome["reason"] = str(exc)
         except Exception as exc:
             outcome["reason"] = str(exc)
             logger.error("Single-task workflow execution failed: %s", exc)

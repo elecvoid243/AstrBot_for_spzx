@@ -42,8 +42,8 @@ async def run_instance(
     from astrbot.core.provider.manager import ProviderManager
     from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
     from astrbot.core.star.context import Context
-    from astrbot.core.utils.shared_preferences import SharedPreferences
     from astrbot.core.umop_config_router import UmopConfigRouter
+    from astrbot.core.utils.shared_preferences import SharedPreferences
     from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
 
     folder.mkdir(parents=True, exist_ok=True)
@@ -239,7 +239,7 @@ async def run_instance(
             (folder / "export.json").write_text(
                 json.dumps(package, indent=2), encoding="utf-8"
             )
-        elif action == "import":
+        elif action in {"import", "inflight-recover"}:
             package = json.loads((folder / "input.json").read_text(encoding="utf-8"))
             preview = await service.preview_import("alice", {"package": package})
             installed = await service.import_asset("alice", {"package": package})
@@ -248,11 +248,38 @@ async def run_instance(
                 installed["asset"]["asset_id"],
                 {"version": 1, "inputs": {"topic": "portable evidence"}},
             )
+            runtime = {}
+            if action == "inflight-recover":
+                for _ in range(1000):
+                    if (folder / "http-entered").exists():
+                        break
+                    await asyncio.sleep(0.01)
+                assert (folder / "http-entered").exists()
+                runtime["before"] = await service.get_run("alice", run["run_id"])
+                provider.set_model("incompatible-runtime-model")
+                runtime["readiness"] = await service.check_readiness(
+                    "alice", installed["asset"]["asset_id"], 1
+                )
+                (folder / "drift-ready").write_text("ready", encoding="utf-8")
             for _ in range(500):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.02)
+            if action == "inflight-recover":
+                runtime["blocked"] = current
+                research = next(
+                    task
+                    for task in current["tasks"]
+                    if task["snapshot"].get("node_id") == "research"
+                )
+                provider.set_model("portable-test-model")
+                await service.recover_run("alice", research["run_id"])
+                for _ in range(1000):
+                    current = await service.get_run("alice", run["run_id"])
+                    if current["status"] != "running":
+                        break
+                    await asyncio.sleep(0.01)
             (folder / "result.json").write_text(
                 json.dumps(
                     {
@@ -260,6 +287,7 @@ async def run_instance(
                         "installed": installed,
                         "run": current,
                         "resources": await roles.get_resources(),
+                        **runtime,
                     }
                 ),
                 encoding="utf-8",
@@ -270,9 +298,10 @@ async def run_instance(
             from fastapi.staticfiles import StaticFiles
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
+
             from astrbot.dashboard.api.auth import require_dashboard_user
-            from astrbot.dashboard.api.workflow_assets import router
             from astrbot.dashboard.api.role_assets import router as role_router
+            from astrbot.dashboard.api.workflow_assets import router
 
             app = FastAPI()
             app.state.services = SimpleNamespace(

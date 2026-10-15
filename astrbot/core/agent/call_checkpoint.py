@@ -2,6 +2,8 @@
 
 from dataclasses import asdict
 
+from openai.types.chat.parsed_chat_completion import ParsedChatCompletion
+
 from astrbot.core.agent.message import Message
 from astrbot.core.message.components import ComponentTypes
 from astrbot.core.message.message_event_result import MessageChain
@@ -74,7 +76,11 @@ def dump_call_response(response: LLMResponse) -> dict:
         "raw_completion": response.raw_completion.model_dump(mode="json")
         if response.raw_completion
         else None,
-        "raw_type": type(response.raw_completion).__name__
+        "raw_type": (
+            "ParsedChatCompletion"
+            if isinstance(response.raw_completion, ParsedChatCompletion)
+            else type(response.raw_completion).__name__
+        )
         if response.raw_completion
         else None,
         "id": response.id,
@@ -100,6 +106,9 @@ def load_call_response(data: dict) -> LLMResponse:
     if fields["raw_completion"] is not None:
         raw_type = {
             "ChatCompletion": ChatCompletion,
+            "ParsedChatCompletion": ParsedChatCompletion,
+            # Existing streamed checkpoints used the SDK's generated type name.
+            "ParsedChatCompletion[TypeVar]": ParsedChatCompletion,
             "Response": Response,
             "GenerateContentResponse": GenerateContentResponse,
             "Message": AnthropicMessage,

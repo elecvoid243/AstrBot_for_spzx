@@ -346,7 +346,6 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     timeout=self.timeout,
                 ):
                     logger.debug(f"dify workflow resp chunk: {chunk}")
-                    await self._record_remote_event(chunk)
                     match chunk["event"]:
                         case "workflow_started":
                             if self.remote_checkpoint:
@@ -398,6 +397,9 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                 )
                             result = chunk
                             completed = True
+                    # Keep the run identity durable before an observation creates
+                    # another crash boundary in the checkpoint/process callbacks.
+                    await self._record_remote_event(chunk)
             case _:
                 raise Exception(f"未知的 Dify API 类型：{self.api_type}")
 

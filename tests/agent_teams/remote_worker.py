@@ -288,6 +288,14 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
                 flush_context: ORM flush context.
             """
             for row in [*session.new, *session.dirty]:
+                if window == "workflow_start_observed":
+                    if (
+                        isinstance(row, AgentWorkflowProcess)
+                        and row.kind == "remote_event"
+                        and row.data["event"]["event"] == "workflow_started"
+                    ):
+                        session.info["remote_boundary"] = row.run_id
+                    continue
                 if (
                     window == "workflow_events_process_failure"
                     and isinstance(row, AgentWorkflowProcess)

@@ -9,6 +9,7 @@
 - Require the already locked DashScope SDK 1.27.7 or newer so team requests use the supported request-scoped transport instead of serializing a session as API input.
 - Apply that SDK minimum to both `pyproject.toml` and the documented `requirements.txt` installation/upgrade path.
 - Preserve Dify workflow/chatflow node inputs, process data, outputs, execution/iteration identities, agent logs and supplied reasoning. Repeated snapshots are idempotent; unsequenced reasoning deltas retain arrival order. Observations remain distinct from local tool checkpoints.
+- Persist the original Dify workflow identity before process-observation commits, so termination at that boundary can still query the original run.
 - Previous action **Continue the same attempt** → **Query original remote run** for compatible remote executors; built-in checkpoint recovery keeps its existing action. The entry remains **Independent Runs → View Run → select task**.
 - Include the conditional recovery-action mapping in both central WebUI navigation references.
 - Before launch: **Workflow Assets → Start Run → Check readiness**. Role requirements remain under **Role templates → Edit role → Model**, with the effective executor shown in the preview. No navigation entry moves.

@@ -33,6 +33,7 @@ import pytest
         ("dify", "workflow_events_process_failure"),
         ("dify", "workflow_events_checkpoint_failure"),
         ("dify", "chat_workflow_events"),
+        ("dify", "workflow_start_observed"),
         *[
             ("dify", scenario)
             for scenario in (
@@ -504,6 +505,16 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             assert "Check evidence." in task_input
             assert "Find the original evidence." in task_input
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
+        if scenario == "workflow_start_observed":
+            records = [
+                record
+                for record in evidence["after"]["process"]
+                if record["kind"] == "remote_event"
+                and record["data"]["event"]["event"] == "workflow_started"
+            ]
+            assert len(records) == 1
+            assert records[0]["data"]["event"]["workflow_run_id"] == "remote-original"
+            assert evidence["after"]["status"] == "completed"
         assert "local-only-key" not in json.dumps(evidence["after"]["snapshot"])
         assert (
             evidence["after"]["state"]["attempt_id"]

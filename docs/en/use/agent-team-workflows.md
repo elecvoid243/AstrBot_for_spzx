@@ -16,6 +16,8 @@ Review the included prompts and expand **Review complete definition, contracts, 
 
 Readiness and every new launch recheck all declared package dependencies, including base resources that a task override does not use. Rebuilding the services retains these requirements. Running tasks also recheck the original package requirements and their frozen bindings before further external work, including after a human wait, pause or checkpoint recovery. If a bound resource keeps its ID but changes to an incompatible model source or tool input schema, execution is blocked. Restore the original compatible resource before continuing or retrying the affected task. Editing the asset or rebinding its current installation only affects new runs; it does not replace an existing run's frozen bindings or rewrite its snapshot.
 
+An independently exported child keeps its shared role version's complete declared tool, skill and knowledge-base requirements. Unused slots still require compatible, authorized bindings; they do not expand the child's executable allowlist.
+
 An incompatibility found after a model response or at a tool/usage boundary remains a resource block with details of the affected binding. A genuine checkpoint or accounting storage failure still stops dependent work. After restoring the original resource, **Continue same attempt** reuses a complete saved response, including a streamed OpenAI response. **Retry failed task** creates a new Attempt and retains the blocked history.
 
 ![Actual source drift after process restart blocks normal launch](/images/agent-workflow-package-drift-en.jpg)

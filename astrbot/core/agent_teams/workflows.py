@@ -1428,9 +1428,14 @@ class WorkflowService:
                                 "Logical dependency slot has conflicting resource kinds"
                             )
                         required[slot] = kind
-            if required != {
-                slot: dependency.kind for slot, dependency in slots.items()
-            }:
+            declared = {slot: dependency.kind for slot, dependency in slots.items()}
+            if any(
+                declared.get(slot) != kind for slot, kind in required.items()
+            ) or any(
+                kind not in {"tools", "skills", "knowledge_bases"}
+                for slot, kind in declared.items()
+                if slot not in required
+            ):
                 raise RoleAssetError(
                     "Package dependency declarations do not match role and task slots"
                 )
@@ -1598,7 +1603,15 @@ class WorkflowService:
             "definition": role.definition.model_dump(),
             "installation": installation,
         }
-        resolved = await self.roles.preview_role(base)
+        # A shared role keeps its complete declared resource contract when a
+        # child uses fewer slots. Validate all permissions without widening the
+        # executable definition or its task overrides.
+        requirements = copy.deepcopy(base)
+        for kind in ("tools", "skills", "knowledge_bases"):
+            requirements["definition"][kind] = [
+                dep.slot for dep in role.dependencies if dep.kind == kind
+            ]
+        resolved = await self.roles.preview_role(requirements)
         role_issues = list(resolved["issues"])
         for task in tasks:
             if (

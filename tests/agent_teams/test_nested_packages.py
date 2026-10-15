@@ -656,3 +656,115 @@ async def test_nested_coordinator_requires_team_tools_even_if_package_omits_capa
     with pytest.raises(RoleAssetError):
         await env.service.import_asset("bob", payload)
     assert (await env.service.list_assets("bob"))["assets"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["missing", "forbidden"])
+async def test_shared_role_child_exports_independently_and_keeps_unused_requirements(
+    workflow_env, change
+):
+    """A parent's extra tool remains a validated requirement of its shared role.
+
+    Args:
+        workflow_env: Public services backed by SQLite and an external resource catalog.
+        change: Missing resource or revoked profile authorization after installation.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    env.inventory["tools"] = [{"id": "local-search", "description": "Search evidence"}]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared role",
+                "prompt": "Read evidence",
+                "tools": [],
+            },
+            "installation": {
+                "bindings": {"model": "model-a", "search": "local-search"}
+            },
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    leaf = await env.service.save_asset(
+        "alice", {"definition": {"name": "Leaf", "task": "Read evidence", **reference}}
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": leaf["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    root = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Parent",
+                "required_inputs": ["goal"],
+                "tasks": [
+                    {
+                        "id": "search",
+                        "name": "Search",
+                        "member": "searcher",
+                        "task": "Search evidence",
+                        **reference,
+                        "overrides": {"tools": ["search"]},
+                    },
+                    {
+                        "id": "team",
+                        "name": "Team",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"input": "goal"}},
+                    },
+                ],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", root["asset_id"], 1)
+    installations = {
+        f"{role['role_id']}:1": {
+            "profile_id": "default",
+            "bindings": {"model": "model-a", "tools_1": "local-search"},
+        }
+    }
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "installations": installations}
+    )
+    child_ref = installed["asset"]["definition"]["tasks"][1]["team"]
+    local_team = await env.service.get_asset(
+        "bob", child_ref["asset_id"], child_ref["version"]
+    )
+    leaf_ref = local_team["definition"]["allowed_workflows"][0]
+    child = await env.service.export_asset(
+        "bob", leaf_ref["asset_id"], leaf_ref["version"]
+    )
+    payload = {"package": child, "installations": installations}
+    assert (await env.service.preview_import("carol", payload))["ready"]
+    transferred = await env.service.import_asset("carol", payload)
+    assert child["definition"]["overrides"]["tools"] == []
+    assert any(dep["kind"] == "tools" for dep in child["roles"][0]["dependencies"])
+    if change == "missing":
+        env.inventory["tools"] = []
+    else:
+        env.inventory["tools"][0]["enabled_profiles"] = ["another-profile"]
+    assert not (await env.service.preview_import("carol", payload))["ready"]
+    assert not (
+        await env.service.check_readiness("carol", transferred["asset"]["asset_id"], 1)
+    )["ready"]
+    with pytest.raises(RoleAssetError):
+        await env.service.start_run(
+            "carol", transferred["asset"]["asset_id"], {"version": 1}
+        )
+    assert (await env.service.list_runs("carol"))["runs"] == []

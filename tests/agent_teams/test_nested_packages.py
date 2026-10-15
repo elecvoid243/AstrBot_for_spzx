@@ -1146,13 +1146,211 @@ async def test_import_keeps_selected_entry_latest_with_pinned_self_version(
     assert leaf_ref["version"] == 1
     pinned = await env.service.get_asset("bob", leaf_ref["asset_id"], 1)
     assert pinned["definition"]["name"] == "Pinned leaf"
-    assert (
-        await env.service.export_asset("bob", leaf_ref["asset_id"], 1)
-    )["version"] == pinned_version
+    assert (await env.service.export_asset("bob", leaf_ref["asset_id"], 1))[
+        "version"
+    ] == pinned_version
     assert await env.service.export_asset("bob", current["asset_id"], 2) == package
     repeated = await env.service.import_asset("bob", {"package": package})
     assert repeated["existing"]
     assert repeated["asset"] == current
+    assert (await env.service.check_readiness("bob", current["asset_id"], 2))["ready"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_limit", "loop_limit", "ready"),
+    [(None, 20, True), (None, 21, False), (30, 21, True), (10, 11, False)],
+)
+async def test_nested_loop_preview_uses_selected_profile_iteration_limit(
+    workflow_env, profile_limit, loop_limit, ready
+):
+    """Resolve null portable limits before reporting an executable installation.
+
+    Args:
+        workflow_env: Public asset services and isolated real persistence.
+        profile_limit: Explicit local limit or the ordinary inherited default.
+        loop_limit: Iterations requested by the included child definition.
+        ready: Expected agreement between import preview and ordinary readiness.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    if profile_limit is None:
+        env.inventory["profiles"][0].pop("max_iterations", None)
+    else:
+        env.inventory["profiles"][0]["max_iterations"] = profile_limit
+    reference = {"role_id": env.role["role_id"], "role_version": 1}
+    child = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Inherited loop child",
+                "tasks": [
+                    {
+                        "id": "write",
+                        "name": "Write",
+                        "member": "writer",
+                        "task": "Write evidence",
+                        **reference,
+                    }
+                ],
+                "loops": [
+                    {
+                        "id": "review",
+                        "name": "Review",
+                        "body": ["write"],
+                        "exit_task_id": "write",
+                        "max_iterations": loop_limit,
+                        "exit_condition": {"field": "text", "value": "Approved"},
+                    }
+                ],
+            }
+        },
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Loop parent team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": child["asset_id"],
+                        "version": 1,
+                        "result_task_id": "write",
+                    }
+                ],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    package["roles"][0]["definition"]["max_iterations"] = None
+    for member in [
+        package["definition"]["coordinator"],
+        *package["definition"]["allowed_roles"],
+        *package["assets"][0]["definition"]["tasks"],
+    ]:
+        member["overrides"]["max_iterations"] = None
+    preview = await env.service.preview_import("bob", {"package": package})
+    assert preview["ready"] is ready
+    if not ready:
+        assert any(
+            issue["path"] == "assets.0.definition.loops.0.max_iterations"
+            and issue["code"] == "LIMIT"
+            for issue in preview["issues"]
+        )
+        with pytest.raises(RoleAssetError, match="Configure package dependencies"):
+            await env.service.import_asset("bob", {"package": package})
+        assert (await env.service.list_assets("bob"))["assets"] == []
+        assert (await env.roles.list_roles("bob"))["roles"] == []
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "save_pending": not ready}
+    )
+    assert installed["ready"] is ready
     assert (
-        await env.service.check_readiness("bob", current["asset_id"], 2)
-    )["ready"]
+        await env.service.check_readiness(
+            "bob", installed["asset"]["asset_id"], installed["asset"]["version"]
+        )
+    )["ready"] is ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role_limit", "profile_limit", "member_count", "ready"),
+    [
+        (None, None, 2, False),
+        (None, None, 1, True),
+        (None, 3, 2, True),
+        (1, 3, 2, False),
+    ],
+)
+async def test_nested_preview_checks_distinct_effective_member_instances(
+    workflow_env, role_limit, profile_limit, member_count, ready
+):
+    """Count member identities while respecting role and profile inheritance.
+
+    Args:
+        workflow_env: Public services and isolated real SQLite persistence.
+        role_limit: Portable explicit limit or inherited local configuration.
+        profile_limit: Selected profile limit or the ordinary default.
+        member_count: Distinct members represented by two tasks.
+        ready: Expected agreement with ordinary saved-asset readiness.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    if profile_limit is None:
+        env.inventory["profiles"][0].pop("max_instances", None)
+    else:
+        env.inventory["profiles"][0]["max_instances"] = profile_limit
+    reference = {"role_id": env.role["role_id"], "role_version": 1}
+    child = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Distinct child members",
+                "tasks": [
+                    {
+                        "id": "first",
+                        "name": "First",
+                        "member": "writer",
+                        "task": "Read",
+                        **reference,
+                    },
+                    {
+                        "id": "second",
+                        "name": "Second",
+                        "member": "writer" if member_count == 1 else "other",
+                        "task": "Write",
+                        **reference,
+                    },
+                ],
+            }
+        },
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Capacity parent",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": child["asset_id"],
+                        "version": 1,
+                        "result_task_id": "second",
+                    }
+                ],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    package["roles"][0]["definition"]["max_instances"] = role_limit
+    for member in [
+        package["definition"]["coordinator"],
+        *package["definition"]["allowed_roles"],
+        *package["assets"][0]["definition"]["tasks"],
+    ]:
+        member["overrides"]["max_instances"] = None
+    preview = await env.service.preview_import("bob", {"package": package})
+    assert preview["ready"] is ready
+    if not ready:
+        assert any(
+            issue["path"] == "assets.0.definition.tasks" and issue["code"] == "LIMIT"
+            for issue in preview["issues"]
+        )
+        with pytest.raises(RoleAssetError, match="Configure package dependencies"):
+            await env.service.import_asset("bob", {"package": package})
+        assert (await env.service.list_assets("bob"))["assets"] == []
+        assert (await env.roles.list_roles("bob"))["roles"] == []
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "save_pending": not ready}
+    )
+    assert installed["ready"] is ready
+    assert (
+        await env.service.check_readiness(
+            "bob", installed["asset"]["asset_id"], installed["asset"]["version"]
+        )
+    )["ready"] is ready

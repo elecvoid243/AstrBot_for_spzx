@@ -1831,16 +1831,19 @@ class WorkflowService:
             RoleAssetError: Bindings contain undeclared package slots.
         """
         tasks = []
-        for definition in [
-            package.definition,
-            *[asset.definition for asset in package.assets],
-        ]:
+        for index, definition in enumerate(
+            [package.definition, *[asset.definition for asset in package.assets]]
+        ):
+            prefix = "definition" if index == 0 else f"assets.{index - 1}.definition"
             tasks.extend(
-                [definition.coordinator, *definition.allowed_roles]
-                if isinstance(definition, AutonomousDefinition)
-                else definition.tasks
-                if isinstance(definition, GraphDefinition)
-                else [definition]
+                (task, definition, prefix)
+                for task in (
+                    [definition.coordinator, *definition.allowed_roles]
+                    if isinstance(definition, AutonomousDefinition)
+                    else definition.tasks
+                    if isinstance(definition, GraphDefinition)
+                    else [definition]
+                )
             )
         issues: list[dict] = []
         key = f"{role.role_id}:{role.version}"
@@ -1973,7 +1976,7 @@ class WorkflowService:
             ]
         resolved = await self.roles.preview_role(requirements)
         role_issues = list(resolved["issues"])
-        for task in tasks:
+        for task, definition, prefix in tasks:
             if (
                 getattr(task, "role_id", None),
                 getattr(task, "role_version", None),
@@ -1982,6 +1985,40 @@ class WorkflowService:
                     base, task.overrides.model_dump(exclude_none=True)
                 )
                 role_issues.extend(result["issues"])
+                if isinstance(definition, GraphDefinition):
+                    member_count = len(
+                        {
+                            member.member
+                            for member in definition.tasks
+                            if (member.role_id, member.role_version)
+                            == (role.role_id, role.version)
+                        }
+                    )
+                    limit = result["effective"].get("max_instances")
+                    if limit is not None and member_count > limit:
+                        issues.append(
+                            {
+                                "path": f"{prefix}.tasks",
+                                "code": "LIMIT",
+                                "message": f"Role {role.role_id} permits {limit} member instances",
+                            }
+                        )
+                    # Null portable limits inherit the selected local profile.
+                    # Compare the same effective value that launch will enforce.
+                    limit = result["effective"].get("max_iterations")
+                    for index, loop in enumerate(definition.loops):
+                        if (
+                            getattr(task, "id", None) in loop.body
+                            and limit is not None
+                            and loop.max_iterations > limit
+                        ):
+                            issues.append(
+                                {
+                                    "path": f"{prefix}.loops.{index}.max_iterations",
+                                    "code": "LIMIT",
+                                    "message": f"Member {getattr(task, 'member', role.definition.name)} permits at most {limit} iterations",
+                                }
+                            )
         issues.extend(
             {**issue, "path": f"roles.{key}." + issue["path"]} for issue in role_issues
         )

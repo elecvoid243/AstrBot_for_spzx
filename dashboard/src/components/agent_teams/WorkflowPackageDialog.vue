@@ -315,7 +315,7 @@ async function previewPackage() {
   error.value = "";
   try {
     const result = await workflowAssetsApi.previewImport({
-      package: JSON.parse(content.value),
+      package: preview.value?.package ?? JSON.parse(content.value),
       installations: installations.value,
     });
     if (current !== generation) return;

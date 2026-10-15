@@ -40,6 +40,89 @@ const stubs = {
 };
 
 describe("workflow package review", () => {
+  it("keeps reviewed slots with local choices and resets them for edited content", async () => {
+    const raw = {
+      asset_id: "source",
+      version: 1,
+      definition: {
+        name: "Custom slots",
+        overrides: { tools: ["custom-search-slot"] },
+      },
+    };
+    const normalized = {
+      ...raw,
+      definition: { name: "Custom slots", overrides: { tools: ["tools_1"] } },
+    };
+    const role = {
+      key: "writer:1",
+      name: "Writer",
+      prompt: "Read evidence",
+      prompt_source: "role",
+      installation: { profile_id: "local", bindings: {} },
+      dependencies: [
+        {
+          slot: "tools_1",
+          kind: "tools",
+          capabilities: [],
+          status: "confirmation_required",
+          selected: null,
+          candidates: [{ id: "search-b", name: "Reviewed local search" }],
+        },
+      ],
+    };
+    api.previewImport.mockResolvedValueOnce({
+      package: normalized,
+      roles: [role],
+      ready: false,
+      issues: [],
+      assets: [],
+    });
+    api.previewImport.mockResolvedValueOnce({
+      package: normalized,
+      roles: [
+        {
+          ...role,
+          installation: {
+            profile_id: "local",
+            bindings: { tools_1: "search-b" },
+          },
+        },
+      ],
+      ready: true,
+      issues: [],
+      assets: [],
+    });
+    const wrapper = mount(WorkflowPackageDialog, {
+      props: { modelValue: true },
+      global: { stubs },
+    });
+    await wrapper.find("textarea").setValue(JSON.stringify(raw));
+    await wrapper.get('[data-testid="preview-package"]').trigger("click");
+    await flushPromises();
+    await wrapper.find("select").setValue("search-b");
+    await flushPromises();
+    expect(api.previewImport).toHaveBeenLastCalledWith({
+      package: normalized,
+      installations: {
+        "writer:1": { profile_id: "local", bindings: { tools_1: "search-b" } },
+      },
+    });
+    const edited = { ...raw, asset_id: "edited" };
+    api.previewImport.mockResolvedValueOnce({
+      package: edited,
+      roles: [],
+      assets: [],
+      ready: true,
+      issues: [],
+    });
+    await wrapper.find("textarea").setValue(JSON.stringify(edited));
+    await wrapper.get('[data-testid="preview-package"]').trigger("click");
+    await flushPromises();
+    expect(api.previewImport).toHaveBeenLastCalledWith({
+      package: edited,
+      installations: {},
+    });
+  });
   it("shows each exact nested version and the reuse or upgrade action before confirmation", async () => {
     api.previewImport.mockResolvedValueOnce({
       package: { asset_id: "root", version: 2, definition: { name: "Report" } },

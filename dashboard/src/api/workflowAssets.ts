@@ -7,9 +7,27 @@ import type {
   WorkflowControlRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
+  WorkflowImportRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async exportPackage(assetId: string, version: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/export`,
+        { params: { version } },
+      )
+    ).data.data;
+  },
+  async previewImport(payload: WorkflowImportRequest) {
+    return (
+      await httpClient.post("/api/v1/workflow_assets/import/preview", payload)
+    ).data.data;
+  },
+  async importPackage(payload: WorkflowImportRequest) {
+    return (await httpClient.post("/api/v1/workflow_assets/import", payload))
+      .data.data;
+  },
   async list() {
     return (await httpClient.get("/api/v1/workflow_assets")).data.data;
   },

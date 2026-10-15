@@ -620,5 +620,32 @@
       "task_tools": "Local task and team tools",
       "task_result": "Explicit task result submission"
     }
+  },
+  "package": {
+    "import": "Import workflow package",
+    "export": "Export workflow JSON",
+    "scope": "Single-layer workflows only. Packages install definitions and reviewed local bindings. Plugins and services are configured separately; no scripts run during import.",
+    "includedPrompt": "Actual prompt content included in this package",
+    "content": "Workflow JSON package",
+    "file": "Choose a JSON package",
+    "preview": "Validate and preview",
+    "existing": "Identical content is already installed. Confirmation preserves its identity; explicit choices can configure its local bindings.",
+    "ready": "Dependencies ready — review and confirm installation",
+    "pending": "Configuration required — saved pending assets cannot run",
+    "promptOrigin": "Prompt origin",
+    "verifiedSource": "Source fingerprint must match; names do not establish compatibility.",
+    "manualSource": "Source compatibility is unverified. Review this resource before selecting it.",
+    "localResource": "Local resource",
+    "configureResources": "Configure local resources",
+    "definition": "Review complete definition, contracts, layout and dependencies",
+    "download": "Download JSON",
+    "savePending": "Save pending configuration",
+    "confirm": "Confirm installation",
+    "status": {
+      "matched": "Matched",
+      "ambiguous": "Ambiguous — choose one",
+      "missing": "Missing or incompatible",
+      "confirmation_required": "Review and choose"
+    }
   }
 }

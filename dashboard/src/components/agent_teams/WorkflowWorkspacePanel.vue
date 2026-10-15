@@ -6,6 +6,15 @@
       <v-btn
         v-if="mode === 'assets'"
         variant="tonal"
+        @click="
+          exportedPackage = null;
+          packageDialog = true;
+        "
+        >{{ tm("package.import") }}</v-btn
+      >
+      <v-btn
+        v-if="mode === 'assets'"
+        variant="tonal"
         color="primary"
         data-testid="create-autonomous-team"
         @click="editTeam(null)"
@@ -75,6 +84,12 @@
           <p class="workflow-text mt-2">{{ asset.definition.task }}</p>
         </v-card-text>
         <v-card-actions class="flex-wrap">
+          <v-btn
+            v-if="asset.definition.kind !== 'autonomous'"
+            variant="text"
+            @click="exportWorkflow(asset)"
+            >{{ tm("package.export") }}</v-btn
+          >
           <v-btn
             variant="text"
             @click="
@@ -702,6 +717,11 @@
         >
       </v-card>
     </v-dialog>
+    <WorkflowPackageDialog
+      v-model="packageDialog"
+      :exported-package="exportedPackage"
+      @installed="refresh"
+    />
   </section>
 </template>
 
@@ -713,6 +733,7 @@ import { workflowAssetsApi } from "@/api/workflowAssets";
 import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
+import WorkflowPackageDialog from "./WorkflowPackageDialog.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import RunUsagePanel from "./RunUsagePanel.vue";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
@@ -728,6 +749,7 @@ import type {
   WorkflowControlRequest,
   WorkflowRetryRequest,
   HumanAnswerRequest,
+  WorkflowPackage,
 } from "@/api/generated/openapi-v1";
 
 const props = defineProps<{ mode: "assets" | "runs" }>();
@@ -736,6 +758,20 @@ const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const packageDialog = ref(false);
+const exportedPackage = ref<WorkflowPackage | null>(null);
+
+async function exportWorkflow(asset: any) {
+  try {
+    exportedPackage.value = await workflowAssetsApi.exportPackage(
+      asset.asset_id,
+      asset.version,
+    );
+    packageDialog.value = true;
+  } catch (cause) {
+    error.value = extractApiError(cause, tm("v2.error")).message;
+  }
+}
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
 const selectedRun = ref<any>(null);

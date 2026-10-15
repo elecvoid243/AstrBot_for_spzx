@@ -247,6 +247,18 @@ class AgentWorkflowVersion(TimestampMixin, SQLModel, table=True):
     definition: dict = Field(sa_type=JSON)
 
 
+class AgentWorkflowPackage(SQLModel, table=True):
+    """Imported identity and content recorded in the installation transaction."""
+
+    owner_username: str = Field(primary_key=True)
+    package_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    asset_id: str = Field(index=True)
+    digest: str
+    package: dict = Field(sa_type=JSON)
+    role_ids: dict = Field(sa_type=JSON)
+
+
 class AgentWorkflowRun(TimestampMixin, SQLModel, table=True):
     """Independent v2 runs; one task and attempt are stored atomically."""
 

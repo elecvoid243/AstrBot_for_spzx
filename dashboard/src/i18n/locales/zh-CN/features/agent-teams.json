@@ -620,5 +620,32 @@
       "task_tools": "本机任务与团队工具",
       "task_result": "显式提交任务结果"
     }
+  },
+  "package": {
+    "import": "导入工作流包",
+    "export": "导出工作流 JSON",
+    "scope": "仅支持单层工作流。导入只安装定义和明确选择的本机绑定；插件与服务需另行配置，导入时不运行脚本。",
+    "includedPrompt": "此包实际包含的提示词内容",
+    "content": "工作流 JSON 包",
+    "file": "选择 JSON 包",
+    "preview": "校验并预览",
+    "existing": "相同内容已安装。确认会保留资产身份；可通过明确选择补齐本机绑定。",
+    "ready": "依赖已就绪，请检查后确认安装",
+    "pending": "需要配置；保存为待配置的资产不能运行",
+    "promptOrigin": "提示词来源",
+    "verifiedSource": "来源指纹必须匹配；同名不能证明兼容。",
+    "manualSource": "来源兼容性未验证，请审查本机资源后明确选择。",
+    "localResource": "本机资源",
+    "configureResources": "配置本机资源",
+    "definition": "查看完整定义、契约、布局与依赖",
+    "download": "下载 JSON",
+    "savePending": "保存为待配置",
+    "confirm": "确认安装",
+    "status": {
+      "matched": "已匹配",
+      "ambiguous": "存在歧义，请选择",
+      "missing": "缺失或不兼容",
+      "confirmation_required": "需要审查并选择"
+    }
   }
 }

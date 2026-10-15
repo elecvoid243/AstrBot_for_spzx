@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import copy
+import hashlib
 import json
 import mimetypes
 import time
@@ -36,6 +37,8 @@ from astrbot.core.agent_team_tools import AgentTeamToolRegistry
 from astrbot.core.agent_teams.assets import (
     RoleAssetError,
     RoleAssetService,
+    RoleDefinition,
+    RoleInstallation,
     RoleOverrides,
 )
 from astrbot.core.agent_teams.autonomous_tools import (
@@ -62,8 +65,11 @@ from astrbot.core.agent_teams.usage import (
     UsageStart,
     summarize_usage,
 )
+from astrbot.core.config.agent_runner import get_agent_runner_capabilities
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
+    AgentRoleInstallation,
+    AgentRoleVersion,
     AgentWorkflowArtifact,
     AgentWorkflowAttempt,
     AgentWorkflowCheckpoint,
@@ -71,6 +77,7 @@ from astrbot.core.db.po import (
     AgentWorkflowEvent,
     AgentWorkflowFile,
     AgentWorkflowMessage,
+    AgentWorkflowPackage,
     AgentWorkflowProcess,
     AgentWorkflowRun,
     AgentWorkflowSchedule,
@@ -136,6 +143,49 @@ class WorkflowSaveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     definition: WorkflowDefinition | GraphDefinition | AutonomousDefinition
     expected_version: int | None = Field(default=None, ge=1)
+
+
+class PackageDependency(BaseModel):
+    """A logical resource requirement; fingerprints contain no local identity."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    slot: str = Field(min_length=1, max_length=128)
+    kind: Literal["profiles", "models", "tools", "skills", "knowledge_bases"]
+    fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
+    runner_type: str | None = Field(default=None, min_length=1, max_length=64)
+    capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class PackageRole(BaseModel):
+    """Fixed role content with an explicit description of included prompt origin."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    role_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+    definition: RoleDefinition
+    prompt_source: Literal["role", "persona", "profile"]
+    dependencies: list[PackageDependency] = Field(max_length=500)
+
+
+class WorkflowPackage(BaseModel):
+    """Single-layer, self-contained workflow definition without authorization."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    format: Literal["astrbot.workflow"]
+    format_version: Literal[1]
+    asset_id: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1)
+    definition: WorkflowDefinition | GraphDefinition
+    roles: list[PackageRole] = Field(max_length=100)
+
+
+class WorkflowImportRequest(BaseModel):
+    """Untrusted package and deliberate choices of this machine's resources."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    package: WorkflowPackage
+    installations: dict[str, RoleInstallation] = Field(default_factory=dict)
+    save_pending: bool = False
 
 
 class ArtifactReference(BaseModel):
@@ -574,13 +624,17 @@ class WorkflowService:
         return await self.get_asset(username, asset_id, version)
 
     async def _validate_task_definition(
-        self, username: str, definition: WorkflowDefinition
+        self,
+        username: str,
+        definition: WorkflowDefinition,
+        package_roles: set[tuple[str, int]] | None = None,
     ) -> None:
         """Validate the shared role, template and contracted output semantics.
 
         Args:
             username: Authenticated asset author.
             definition: One task, from either a single-task asset or a graph.
+            package_roles: Portable references validated before local installation.
 
         Raises:
             RoleAssetError: Invalid contract, template or inaccessible pinned role.
@@ -660,7 +714,21 @@ class WorkflowService:
                 "Invalid task template",
                 [{"path": "definition.task", "code": "INVALID", "message": str(exc)}],
             ) from exc
-        await self.roles.get_role(username, definition.role_id, definition.role_version)
+        if package_roles is None:
+            await self.roles.get_role(
+                username, definition.role_id, definition.role_version
+            )
+        elif (definition.role_id, definition.role_version) not in package_roles:
+            raise RoleAssetError(
+                "Package role reference not found",
+                [
+                    {
+                        "path": "definition.role_id",
+                        "code": "REFERENCE",
+                        "message": "Every task must reference an included exact role version",
+                    }
+                ],
+            )
 
     async def get_asset(
         self, username: str, asset_id: str, version: int | None = None
@@ -733,6 +801,639 @@ class WorkflowService:
             "assets": [
                 await self.get_asset(username, identity) for identity in identities
             ]
+        }
+
+    async def export_asset(
+        self, username: str, asset_id: str, version: int | None = None
+    ) -> dict:
+        """Export a single-layer workflow with explicit portable resource slots.
+
+        Args:
+            username: Authenticated owner.
+            asset_id: Saved workflow identity.
+            version: Exact version, or the latest version.
+
+        Returns:
+            A versioned JSON definition package without local installations.
+
+        Raises:
+            RoleAssetError: Nested assets or unresolved inherited configuration.
+        """
+        asset = await self.get_asset(username, asset_id, version)
+        async with self.db.get_db() as session:
+            original = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowPackage).where(
+                            AgentWorkflowPackage.owner_username == username,
+                            AgentWorkflowPackage.asset_id == asset_id,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if original is not None and asset["version"] == 1:
+                return copy.deepcopy(original.package)
+        definition = copy.deepcopy(asset["definition"])
+        if definition.get("kind") == "autonomous" or any(
+            task.get("team") or task.get("workflow")
+            for task in definition.get("tasks", [])
+        ):
+            raise RoleAssetError("Only single-layer workflow packages are supported")
+        tasks = definition.get("tasks", [definition])
+        catalog = await self.roles.get_resources()
+        portable_roles = []
+        references = sorted(
+            {
+                (task["role_id"], task["role_version"])
+                for task in tasks
+                if task.get("role_id")
+            }
+        )
+        for role_id, role_version in references:
+            role = await self.roles.resolve_role(username, role_id, role_version)
+            if not role["ready"]:
+                raise RoleAssetError(
+                    "Resolve inherited role resources before export", role["issues"]
+                )
+            portable = copy.deepcopy(role["definition"])
+            portable["persona_slot"] = None
+            portable["model_slot"] = "model"
+            dependencies = []
+            resource_slots: dict[tuple[str, str], str] = {}
+            profile = next(
+                p
+                for p in catalog["profiles"]
+                if p["id"] == role["installation"]["profile_id"]
+            )
+            runner_type = profile.get("runner_type", "local")
+            dependencies.append(
+                {
+                    "slot": "profile",
+                    "kind": "profiles",
+                    "runner_type": runner_type,
+                    "fingerprint": "astrbot.local.v1"
+                    if runner_type == "local"
+                    else None,
+                    "capabilities": portable["runner_capabilities"],
+                }
+            )
+            contexts = [(portable, role)]
+            for task in tasks:
+                if (task.get("role_id"), task.get("role_version")) == (
+                    role_id,
+                    role_version,
+                ):
+                    preview = await self.roles.preview_role(role, task.get("overrides"))
+                    if not preview["ready"]:
+                        raise RoleAssetError(
+                            "Resolve task resources before export", preview["issues"]
+                        )
+                    task["overrides"] = {}
+                    contexts.append((task["overrides"], preview))
+            for target, preview in contexts:
+                effective = preview["effective"]
+                for field in (
+                    "prompt",
+                    "max_steps",
+                    "tool_call_timeout",
+                    "context_length",
+                    "max_instances",
+                    "max_parallel",
+                    "max_iterations",
+                    "max_depth",
+                ):
+                    target[field] = effective[field]
+                for field, values in (
+                    (
+                        "models",
+                        [effective["provider_id"]] if effective["provider_id"] else [],
+                    ),
+                    ("tools", effective["tools"]),
+                    ("skills", effective["skills"]),
+                    ("knowledge_bases", effective["knowledge_bases"]),
+                ):
+                    slots = []
+                    for resource_id in values:
+                        key = (field, resource_id)
+                        if key not in resource_slots:
+                            slot = (
+                                "model"
+                                if field == "models"
+                                else f"{field}_{1 + sum(k[0] == field for k in resource_slots)}"
+                            )
+                            resource_slots[key] = slot
+                            resource = next(
+                                r for r in catalog[field] if r["id"] == resource_id
+                            )
+                            dependencies.append(
+                                {
+                                    "slot": slot,
+                                    "kind": field,
+                                    "fingerprint": resource.get("fingerprint"),
+                                    "capabilities": portable["model_capabilities"]
+                                    if field == "models"
+                                    else [],
+                                    "runner_type": None,
+                                }
+                            )
+                        slots.append(resource_slots[key])
+                    if field != "models":
+                        target[field] = slots
+            portable_roles.append(
+                {
+                    "role_id": role_id,
+                    "version": role_version,
+                    "definition": portable,
+                    "prompt_source": role["sources"]["prompt"].split(":", 1)[0],
+                    "dependencies": dependencies,
+                }
+            )
+        return WorkflowPackage.model_validate(
+            {
+                "format": "astrbot.workflow",
+                "format_version": 1,
+                "asset_id": asset_id,
+                "version": asset["version"],
+                "definition": definition,
+                "roles": portable_roles,
+            }
+        ).model_dump()
+
+    async def _validate_package(
+        self, username: str, payload: dict
+    ) -> WorkflowImportRequest:
+        """Validate the complete portable graph before reading machine resources.
+
+        Args:
+            username: Authenticated installing owner.
+            payload: Untrusted definition package and optional local choices.
+
+        Returns:
+            Typed request with self-contained role, contract and graph references.
+
+        Raises:
+            RoleAssetError: Unsupported format or invalid definitions and references.
+        """
+        try:
+            request = WorkflowImportRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise RoleAssetError(
+                "Invalid workflow package",
+                [
+                    {
+                        "path": ".".join(map(str, e["loc"])),
+                        "code": e["type"],
+                        "message": e["msg"],
+                    }
+                    for e in exc.errors()
+                ],
+            ) from exc
+        if type(payload.get("package", {}).get("format_version")) is not int:
+            raise RoleAssetError("Package format_version must be an integer")
+        package = request.package
+        references = {(role.role_id, role.version) for role in package.roles}
+        if len(references) != len(package.roles):
+            raise RoleAssetError("Duplicate package role versions")
+        definition = package.definition
+        tasks = (
+            definition.tasks
+            if isinstance(definition, GraphDefinition)
+            else [definition]
+        )
+        if isinstance(definition, GraphDefinition):
+            if any(task.team or task.workflow for task in definition.tasks):
+                raise RoleAssetError(
+                    "Only single-layer workflow packages are supported"
+                )
+            validate_graph(definition)
+        used = set()
+        for task in tasks:
+            if getattr(task, "human", None):
+                continue
+            assert task.role_id is not None and task.role_version is not None
+            used.add((task.role_id, task.role_version))
+            await self._validate_task_definition(
+                username,
+                WorkflowDefinition(
+                    name=task.name,
+                    task=task.task,
+                    role_id=task.role_id,
+                    role_version=task.role_version,
+                    overrides=task.overrides,
+                    required_inputs=list(
+                        dict.fromkeys(
+                            [*definition.required_inputs, *getattr(task, "inputs", {})]
+                        )
+                    ),
+                    output_contract=task.output_contract,
+                ),
+                references,
+            )
+        if used != references:
+            raise RoleAssetError(
+                "Package must contain exactly the referenced role versions"
+            )
+        keys = {f"{role.role_id}:{role.version}" for role in package.roles}
+        if set(request.installations) - keys:
+            raise RoleAssetError("Installation references an unknown package role")
+        # Validate the complete logical dependency surface before any matching.
+        for role in package.roles:
+            slots = {dependency.slot: dependency for dependency in role.dependencies}
+            profile = [d for d in role.dependencies if d.kind == "profiles"]
+            if len(slots) != len(role.dependencies) or len(profile) != 1:
+                raise RoleAssetError(
+                    "Package dependencies require unique slots and one profile"
+                )
+            if (
+                role.definition.persona_slot
+                or not role.definition.prompt
+                or any(
+                    getattr(role.definition, field) is None
+                    for field in ("tools", "skills", "knowledge_bases")
+                )
+            ):
+                raise RoleAssetError(
+                    "Package roles require included prompts and explicit resource lists"
+                )
+            required = {profile[0].slot: "profiles"}
+            if profile[0].runner_type == "local":
+                required[role.definition.model_slot] = "models"
+            for context in [
+                role.definition,
+                *[
+                    task.overrides
+                    for task in tasks
+                    if (
+                        getattr(task, "role_id", None),
+                        getattr(task, "role_version", None),
+                    )
+                    == (role.role_id, role.version)
+                ],
+            ]:
+                for kind in ("tools", "skills", "knowledge_bases"):
+                    for slot in getattr(context, kind) or []:
+                        if slot in required and required[slot] != kind:
+                            raise RoleAssetError(
+                                "Logical dependency slot has conflicting resource kinds"
+                            )
+                        required[slot] = kind
+            if required != {
+                slot: dependency.kind for slot, dependency in slots.items()
+            }:
+                raise RoleAssetError(
+                    "Package dependency declarations do not match role and task slots"
+                )
+        return request
+
+    async def preview_import(self, username: str, payload: dict) -> dict:
+        """Validate all content before reading candidates or proposing bindings.
+
+        Args:
+            username: Authenticated installing owner.
+            payload: Package and optional explicit local installation choices.
+
+        Returns:
+            Validated package, grouped dependencies, proposed bindings and issues.
+
+        Raises:
+            RoleAssetError: Invalid format, contract, reference or unsupported input.
+        """
+        request = await self._validate_package(username, payload)
+        package = request.package
+        definition = package.definition
+        tasks = (
+            definition.tasks
+            if isinstance(definition, GraphDefinition)
+            else [definition]
+        )
+        normalized = package.model_dump()
+        try:
+            digest = hashlib.sha256(
+                json.dumps(
+                    normalized, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode()
+            ).hexdigest()
+        except ValueError as exc:
+            raise RoleAssetError("Package numbers must be finite") from exc
+        existing = None
+        saved_installations = {}
+        async with self.db.get_db() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(AgentWorkflowPackage).where(
+                            AgentWorkflowPackage.owner_username == username,
+                            AgentWorkflowPackage.package_id == package.asset_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in rows:
+                if row.version != package.version:
+                    raise RoleAssetError(
+                        "Package upgrades are not supported yet", status=409
+                    )
+                if row.digest != digest:
+                    raise RoleAssetError(
+                        "Same package identity and version have different content",
+                        status=409,
+                    )
+                existing = row.asset_id
+                for key, identity in row.role_ids.items():
+                    local = await session.get(AgentRoleInstallation, (identity, 1))
+                    if local is None:
+                        raise RoleAssetError(
+                            "Existing package installation is incomplete", status=409
+                        )
+                    saved_installations[key] = RoleInstallation.model_validate(
+                        local.installation
+                    )
+        catalog = await self.roles.get_resources()
+        previews, issues = [], []
+        for role in package.roles:
+            key = f"{role.role_id}:{role.version}"
+            explicit = request.installations.get(key) or saved_installations.get(key)
+            installation = {"profile_id": "__unconfigured__", "bindings": {}}
+            dependencies = []
+            allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
+            if explicit and set(explicit.bindings) - allowed_slots:
+                raise RoleAssetError("Bindings contain undeclared package slots")
+            for dep in role.dependencies:
+                candidates = []
+                for resource in catalog[dep.kind]:
+                    fingerprint = resource.get("fingerprint")
+                    if dep.kind == "profiles":
+                        runner_type = resource.get("runner_type", "local")
+                        if runner_type != dep.runner_type:
+                            continue
+                        if runner_type == "local":
+                            pool = resource.get("provider_pool", ["*"])
+                            model_requirement = next(
+                                d for d in role.dependencies if d.kind == "models"
+                            )
+                            if not any(
+                                ("*" in pool or model["id"] in pool)
+                                and model.get("enabled", True)
+                                and (
+                                    not model_requirement.fingerprint
+                                    or model.get("fingerprint")
+                                    == model_requirement.fingerprint
+                                )
+                                and set(role.definition.model_capabilities).issubset(
+                                    model.get("capabilities", [])
+                                )
+                                for model in catalog["models"]
+                            ):
+                                continue
+                        fingerprint = (
+                            "astrbot.local.v1" if runner_type == "local" else None
+                        )
+                    if not resource.get("enabled", True) or not set(
+                        dep.capabilities
+                    ).issubset(
+                        resource.get("capabilities", [])
+                        if dep.kind != "profiles"
+                        else get_agent_runner_capabilities(
+                            {
+                                "runner_type": resource.get("runner_type", "local"),
+                                "config": resource.get("runner_config", {}),
+                            }
+                        )["capabilities"]
+                    ):
+                        continue
+                    if dep.fingerprint and fingerprint != dep.fingerprint:
+                        continue
+                    candidates.append(
+                        {
+                            "id": resource["id"],
+                            "name": resource.get("name", resource["id"]),
+                        }
+                    )
+                chosen = (
+                    (
+                        explicit.profile_id
+                        if dep.kind == "profiles"
+                        else explicit.bindings.get(dep.slot)
+                    )
+                    if explicit
+                    else None
+                )
+                automatic = (
+                    bool(dep.fingerprint) and len(candidates) == 1 and not explicit
+                )
+                if automatic:
+                    chosen = candidates[0]["id"]
+                compatible = (
+                    chosen is not None
+                    and sum(c["id"] == chosen for c in candidates) == 1
+                )
+                status = (
+                    "matched"
+                    if compatible
+                    else "ambiguous"
+                    if len(candidates) > 1
+                    else "missing"
+                    if not candidates
+                    else "confirmation_required"
+                )
+                path = f"roles.{key}." + (
+                    "profile_id" if dep.kind == "profiles" else f"bindings.{dep.slot}"
+                )
+                if not compatible:
+                    issues.append(
+                        {
+                            "path": path,
+                            "code": status.upper(),
+                            "message": f"Choose a compatible {dep.kind} resource for {dep.slot}",
+                        }
+                    )
+                elif dep.kind == "profiles":
+                    installation["profile_id"] = chosen
+                else:
+                    installation["bindings"][dep.slot] = chosen
+                dependencies.append(
+                    {
+                        **dep.model_dump(),
+                        "candidates": candidates,
+                        "selected": chosen if compatible else None,
+                        "automatic": automatic,
+                        "status": status,
+                    }
+                )
+            base = {
+                "definition": role.definition.model_dump(),
+                "installation": installation,
+            }
+            resolved = await self.roles.preview_role(base)
+            role_issues = list(resolved["issues"])
+            for task in tasks:
+                if (
+                    getattr(task, "role_id", None),
+                    getattr(task, "role_version", None),
+                ) == (role.role_id, role.version):
+                    result = await self.roles.preview_role(
+                        base, task.overrides.model_dump(exclude_none=True)
+                    )
+                    role_issues.extend(result["issues"])
+            issues.extend(
+                {**issue, "path": f"roles.{key}." + issue["path"]}
+                for issue in role_issues
+            )
+            previews.append(
+                {
+                    "key": key,
+                    "name": role.definition.name,
+                    "prompt": role.definition.prompt,
+                    "prompt_source": role.prompt_source,
+                    "dependencies": dependencies,
+                    "installation": installation,
+                }
+            )
+        issues = list(
+            {
+                (issue["path"], issue["code"], issue["message"]): issue
+                for issue in issues
+            }.values()
+        )
+        return {
+            "package": normalized,
+            "digest": digest,
+            "existing_asset_id": existing,
+            "roles": previews,
+            "issues": issues,
+            "ready": not issues,
+        }
+
+    async def import_asset(self, username: str, payload: dict) -> dict:
+        """Commit definitions and local bindings together after fresh validation.
+
+        Args:
+            username: Authenticated owner; package content cannot grant access.
+            payload: Package, deliberate local bindings and pending-save choice.
+
+        Returns:
+            The installed asset and whether identical content already existed.
+
+        Raises:
+            RoleAssetError: Invalid package, unresolved dependencies or conflict.
+        """
+        preview = await self.preview_import(username, payload)
+        if preview["existing_asset_id"]:
+            if payload.get("installations"):
+                if not preview["ready"] and not payload.get("save_pending", False):
+                    raise RoleAssetError(
+                        "Configure package dependencies before installation",
+                        preview["issues"],
+                    )
+                async with self.db.get_db() as session:
+                    record = await session.get(
+                        AgentWorkflowPackage,
+                        (
+                            username,
+                            preview["package"]["asset_id"],
+                            preview["package"]["version"],
+                        ),
+                    )
+                    assert record is not None
+                    for proposed in preview["roles"]:
+                        if proposed["key"] not in payload["installations"]:
+                            continue
+                        installation = await session.get(
+                            AgentRoleInstallation, (record.role_ids[proposed["key"]], 1)
+                        )
+                        assert installation is not None
+                        installation.installation = proposed["installation"]
+                    try:
+                        await session.commit()
+                    except BaseException:
+                        await session.rollback()
+                        raise
+            return {
+                "asset": await self.get_asset(
+                    username, preview["existing_asset_id"], 1
+                ),
+                "existing": True,
+                "ready": preview["ready"],
+            }
+        if not preview["ready"] and not payload.get("save_pending", False):
+            raise RoleAssetError(
+                "Configure package dependencies before installation", preview["issues"]
+            )
+        package = preview["package"]
+        asset_id = uuid.uuid4().hex
+        definition = copy.deepcopy(package["definition"])
+        role_ids = {role["key"]: uuid.uuid4().hex for role in preview["roles"]}
+        for task in definition.get("tasks", [definition]):
+            if task.get("role_id"):
+                task["role_id"] = role_ids[f"{task['role_id']}:{task['role_version']}"]
+                task["role_version"] = 1
+        try:
+            async with self.db.get_db() as session:
+                for role, proposed in zip(
+                    package["roles"], preview["roles"], strict=True
+                ):
+                    identity = role_ids[proposed["key"]]
+                    session.add(
+                        AgentRoleVersion(
+                            role_id=identity,
+                            version=1,
+                            owner_username=username,
+                            definition=role["definition"],
+                        )
+                    )
+                    session.add(
+                        AgentRoleInstallation(
+                            role_id=identity,
+                            version=1,
+                            installation=proposed["installation"],
+                        )
+                    )
+                session.add(
+                    AgentWorkflowVersion(
+                        asset_id=asset_id,
+                        version=1,
+                        owner_username=username,
+                        definition=definition,
+                    )
+                )
+                session.add(
+                    AgentWorkflowPackage(
+                        owner_username=username,
+                        package_id=package["asset_id"],
+                        version=package["version"],
+                        asset_id=asset_id,
+                        digest=preview["digest"],
+                        package=package,
+                        role_ids=role_ids,
+                    )
+                )
+                try:
+                    await session.commit()
+                except BaseException:
+                    await session.rollback()
+                    raise
+        except IntegrityError as exc:
+            # Another confirmation may have committed the identical package.
+            repeated = await self.preview_import(username, payload)
+            if not repeated["existing_asset_id"]:
+                raise RoleAssetError(
+                    "Installation conflicted; preview again", status=409
+                ) from exc
+            return {
+                "asset": await self.get_asset(
+                    username, repeated["existing_asset_id"], 1
+                ),
+                "existing": True,
+                "ready": repeated["ready"],
+            }
+        return {
+            "asset": await self.get_asset(username, asset_id, 1),
+            "existing": False,
+            "ready": preview["ready"],
         }
 
     async def start_run(self, username: str, asset_id: str, payload: dict) -> dict:

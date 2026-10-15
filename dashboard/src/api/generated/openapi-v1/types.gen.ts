@@ -711,6 +711,32 @@ export type NeoReleaseActionRequest = {
     [key: string]: unknown | string;
 };
 
+/**
+ * A logical resource requirement; fingerprints contain no local identity.
+ */
+export type PackageDependency = {
+    slot: string;
+    kind: 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+    fingerprint?: (string | null);
+    runner_type?: (string | null);
+    capabilities?: Array<(string)>;
+};
+
+export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+
+/**
+ * Fixed role content with an explicit description of included prompt origin.
+ */
+export type PackageRole = {
+    role_id: string;
+    version: number;
+    definition: RoleDefinition;
+    prompt_source: 'role' | 'persona' | 'profile';
+    dependencies: Array<PackageDependency>;
+};
+
+export type prompt_source = 'role' | 'persona' | 'profile';
+
 export type ParameterAttachmentId = string;
 
 export type ParameterAttachmentIdQuery = string;
@@ -1223,11 +1249,34 @@ export type WorkflowGraph = {
     edges?: Array<WorkflowEdge>;
 };
 
+/**
+ * Untrusted package and deliberate choices of this machine's resources.
+ */
+export type WorkflowImportRequest = {
+    package: WorkflowPackage;
+    installations?: {
+        [key: string]: RoleInstallation;
+    };
+    save_pending?: boolean;
+};
+
 export type WorkflowNode = {
     id: string;
     member_id: string;
     task: string;
     title?: (string) | null;
+};
+
+/**
+ * Single-layer, self-contained workflow definition without authorization.
+ */
+export type WorkflowPackage = {
+    format: "astrbot.workflow";
+    format_version: 1;
+    asset_id: string;
+    version: number;
+    definition: (WorkflowDefinition | GraphDefinition);
+    roles: Array<PackageRole>;
 };
 
 /**
@@ -5184,3 +5233,32 @@ export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetData = {
 export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetResponse = (unknown);
 
 export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetError = (HTTPValidationError);
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetResponse = (unknown);
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetError = (HTTPValidationError);
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostData = {
+    body: WorkflowImportRequest;
+};
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostResponse = (unknown);
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostError = (HTTPValidationError);
+
+export type ImportAssetApiV1WorkflowAssetsImportPostData = {
+    body: WorkflowImportRequest;
+};
+
+export type ImportAssetApiV1WorkflowAssetsImportPostResponse = (unknown);
+
+export type ImportAssetApiV1WorkflowAssetsImportPostError = (HTTPValidationError);

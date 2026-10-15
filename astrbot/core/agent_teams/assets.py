@@ -1,5 +1,7 @@
 """Versioned role assets and local installations without conversation state."""
 
+import hashlib
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
@@ -188,6 +190,22 @@ class RoleAssetService:
                     "name": f"{meta.id} / {meta.model or ''}",
                     "capabilities": config.get("modalities", []),
                     "enabled": config.get("enable", True),
+                    # Compare declared adapter/model/source, never display names
+                    # or credentials. Unidentified sources require manual review.
+                    "fingerprint": hashlib.sha256(
+                        json.dumps(
+                            {
+                                "adapter": meta.type,
+                                "model": meta.model,
+                                "source": config.get("api_base")
+                                or config.get("api_base_url"),
+                            },
+                            sort_keys=True,
+                        ).encode()
+                    ).hexdigest()
+                    if meta.model
+                    and (config.get("api_base") or config.get("api_base_url"))
+                    else None,
                 }
             )
         for persona in core.persona_mgr.personas_v3:

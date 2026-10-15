@@ -2,6 +2,24 @@
 
 Open **More Features → Agent Teams → Workflow Assets**. First save a ready role under **Role Templates**, bind a local model that supports tool calls and select the built-in Agent executor.
 
+## Move a single-layer workflow to another instance
+
+In instance A, choose **Workflow Assets → Export workflow JSON** on a single-task or canvas workflow. Review the actual included prompts and complete JSON, then choose **Download JSON**. Resolve missing source resources before exporting. The versioned `astrbot.workflow` package includes its identity, fixed role versions, contracts, conditions, bounded loops, layout and logical dependencies. Effective inherited prompts and resource allowlists are made explicit; `prompt_source` identifies whether the included prompt came from a role, persona or profile. Knowledge-base content, credentials, local binding IDs, conversations and run history are excluded.
+
+![Actual workflow export dialog](/images/agent-workflow-package-export-zh.jpg)
+
+In instance B, choose **Workflow Assets → Import workflow package**. Select the JSON file or paste its complete contents, then choose **Validate and preview**. Format, contracts and references are validated before any installation. Autonomous and nested packages, unsupported format versions and package upgrades are explicitly rejected in this single-layer release.
+
+Review the included prompts and expand **Review complete definition, contracts, layout and dependencies**. Each role groups its local profile and resource slots. Model automatic matching requires the same declared adapter, model and source fingerprint, required capabilities and a unique candidate; profiles must permit a compatible model and satisfy the runner requirements. Matching display names never establishes equivalence. Resources without source evidence, including tools, skills and knowledge bases, require deliberate local review and selection. Local profile and persona restrictions still apply; the package grants no access. **Configure local resources** opens the existing configuration area when a candidate is missing; install required plugins or configure services yourself.
+
+![Actual grouped dependency matching and ambiguity](/images/agent-workflow-package-import-en.jpg)
+
+With all dependencies ready, choose **Confirm installation** once. Definitions and reviewed local bindings are saved in one transaction. Then use the asset's normal **Start Run** action and provide its declared inputs. If dependencies are missing or ambiguous, **Save pending configuration** retains an asset that cannot start. Import the same JSON again to fill its local bindings; existing content is identified without creating duplicate roles or assets. The same identity and version with different content is rejected, and existing run snapshots retain their original configuration.
+
+![Actual imported workflow run](/images/agent-workflow-package-run-zh.jpg)
+
+The existing **Workflow Assets → Edit Asset / Start Run** entries remain; portability adds **Workflow Assets → Export workflow JSON / Import workflow package**. These controls use the same public asset, readiness and run services. Importing does not execute package scripts, install plugins or deploy models and services.
+
 ## Autonomous teams
 
 Choose **Workflow Assets → New Autonomous Team**. Enter the **Team name**, choose the **Coordinator role** and its pinned version, then select **Allowed role templates** and pin each version. Set **Maximum members** (including the coordinator), **Maximum concurrent tasks** and **Maximum member tasks**. Role instance and concurrency limits also apply. An optional **Final version approval question** requires approval of the coordinator's exact final artifact before the run can complete. **Output contract (JSON Schema)** applies to that final result; leaving it empty uses the standard text contract.

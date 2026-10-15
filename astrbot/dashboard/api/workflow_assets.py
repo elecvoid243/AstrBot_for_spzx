@@ -11,6 +11,7 @@ from astrbot.core.agent_teams.workflows import (
     HumanAnswerRequest,
     ToolResolutionRequest,
     WorkflowControlRequest,
+    WorkflowImportRequest,
     WorkflowRetryRequest,
     WorkflowSaveRequest,
     WorkflowService,
@@ -94,6 +95,80 @@ async def check_readiness(
     """
     try:
         return ok(await service.check_readiness(username, asset_id, version))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflow_assets/{asset_id}/export")
+async def export_asset(
+    asset_id: str,
+    version: int | None = Query(default=None, ge=1),
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Download a validated definition package without local installation data.
+
+    Args:
+        asset_id: Workflow owned by the authenticated user.
+        version: Exact definition version, or latest.
+        username: Authenticated owner.
+        service: Shared public asset service.
+
+    Returns:
+        Portable JSON content or field-specific errors.
+    """
+    try:
+        return ok(await service.export_asset(username, asset_id, version))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/import/preview")
+async def preview_import(
+    payload: WorkflowImportRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Validate untrusted definitions before showing compatible local candidates.
+
+    Args:
+        payload: Package and optional deliberate local resource selections.
+        username: Authenticated installing owner.
+        service: Shared public asset service.
+
+    Returns:
+        Grouped dependency choices, issues and existing-installation identity.
+    """
+    try:
+        return ok(await service.preview_import(username, payload.model_dump()))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/workflow_assets/import")
+async def import_asset(
+    payload: WorkflowImportRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Confirm one atomic installation or retain a non-runnable pending asset.
+
+    Args:
+        payload: Package, reviewed local choices and pending-save preference.
+        username: Authenticated installing owner; package content grants no rights.
+        service: Shared public asset service.
+
+    Returns:
+        The installed or existing workflow without creating any execution.
+    """
+    try:
+        return ok(await service.import_asset(username, payload.model_dump()))
     except RoleAssetError as exc:
         return JSONResponse(
             error(str(exc), {"fields": exc.fields}), status_code=exc.status

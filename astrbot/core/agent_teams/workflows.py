@@ -154,6 +154,9 @@ class PackageDependency(BaseModel):
     fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
     runner_type: str | None = Field(default=None, min_length=1, max_length=64)
     capabilities: list[str] = Field(default_factory=list, max_length=20)
+    logical_slots: list[str] = Field(default_factory=list, max_length=500)
+    description: str = ""
+    input_schema: dict | None = None
 
 
 class PackageRole(BaseModel):
@@ -163,7 +166,7 @@ class PackageRole(BaseModel):
     role_id: str = Field(min_length=1, max_length=128)
     version: int = Field(ge=1)
     definition: RoleDefinition
-    prompt_source: Literal["role", "persona", "profile"]
+    prompt_source: Literal["role", "persona", "profile", "task"]
     dependencies: list[PackageDependency] = Field(max_length=500)
 
 
@@ -853,15 +856,30 @@ class WorkflowService:
         )
         for role_id, role_version in references:
             role = await self.roles.resolve_role(username, role_id, role_version)
-            if not role["ready"]:
-                raise RoleAssetError(
-                    "Resolve inherited role resources before export", role["issues"]
-                )
             portable = copy.deepcopy(role["definition"])
             portable["persona_slot"] = None
             portable["model_slot"] = "model"
             dependencies = []
             resource_slots: dict[tuple[str, str], str] = {}
+            contexts = []
+            for task in tasks:
+                if (task.get("role_id"), task.get("role_version")) == (
+                    role_id,
+                    role_version,
+                ):
+                    preview = await self.roles.preview_role(role, task.get("overrides"))
+                    if not preview["ready"]:
+                        raise RoleAssetError(
+                            "Resolve task resources before export", preview["issues"]
+                        )
+                    original_overrides = task.get("overrides", {})
+                    task["overrides"] = {}
+                    contexts.append((task["overrides"], preview, original_overrides))
+            # Tasks can supply a missing inherited prompt or narrow unavailable
+            # resources. Export only configurations used by this workflow.
+            if not role["ready"]:
+                role = contexts[0][1]
+            contexts.insert(0, (portable, role, role["definition"]))
             profile = next(
                 p
                 for p in catalog["profiles"]
@@ -879,20 +897,7 @@ class WorkflowService:
                     "capabilities": portable["runner_capabilities"],
                 }
             )
-            contexts = [(portable, role)]
-            for task in tasks:
-                if (task.get("role_id"), task.get("role_version")) == (
-                    role_id,
-                    role_version,
-                ):
-                    preview = await self.roles.preview_role(role, task.get("overrides"))
-                    if not preview["ready"]:
-                        raise RoleAssetError(
-                            "Resolve task resources before export", preview["issues"]
-                        )
-                    task["overrides"] = {}
-                    contexts.append((task["overrides"], preview))
-            for target, preview in contexts:
+            for target, preview, original_config in contexts:
                 effective = preview["effective"]
                 for field in (
                     "prompt",
@@ -936,8 +941,30 @@ class WorkflowService:
                                     if field == "models"
                                     else [],
                                     "runner_type": None,
+                                    "logical_slots": [],
+                                    "description": resource.get("description") or "",
+                                    "input_schema": resource.get("input_schema")
+                                    if field == "tools"
+                                    else None,
                                 }
                             )
+                        dependency = next(
+                            dep
+                            for dep in dependencies
+                            if dep["slot"] == resource_slots[key]
+                        )
+                        declared = (
+                            [original_config.get("model_slot", "model")]
+                            if field == "models"
+                            else original_config.get(field) or []
+                        )
+                        for logical_slot in declared:
+                            if (
+                                preview["installation"]["bindings"].get(logical_slot)
+                                == resource_id
+                                and logical_slot not in dependency["logical_slots"]
+                            ):
+                                dependency["logical_slots"].append(logical_slot)
                         slots.append(resource_slots[key])
                     if field != "models":
                         target[field] = slots
@@ -1207,10 +1234,17 @@ class WorkflowService:
                         continue
                     if dep.fingerprint and fingerprint != dep.fingerprint:
                         continue
+                    if (
+                        dep.input_schema is not None
+                        and resource.get("input_schema") != dep.input_schema
+                    ):
+                        continue
                     candidates.append(
                         {
                             "id": resource["id"],
                             "name": resource.get("name", resource["id"]),
+                            "description": resource.get("description") or "",
+                            "input_schema": resource.get("input_schema"),
                         }
                     )
                 chosen = (
@@ -1423,13 +1457,9 @@ class WorkflowService:
                 raise RoleAssetError(
                     "Installation conflicted; preview again", status=409
                 ) from exc
-            return {
-                "asset": await self.get_asset(
-                    username, repeated["existing_asset_id"], 1
-                ),
-                "existing": True,
-                "ready": repeated["ready"],
-            }
+            # Reuse the existing-installation transaction to persist the losing
+            # confirmation's explicit choices before reporting readiness.
+            return await self.import_asset(username, payload)
         return {
             "asset": await self.get_asset(username, asset_id, 1),
             "existing": False,

@@ -82,6 +82,9 @@ describe("workflow package review", () => {
       dependencies: [
         {
           slot: "model",
+          logical_slots: ["financial-reasoning"],
+          description: "Analyze company filings",
+          input_schema: { type: "object", required: ["company"] },
           kind: "models",
           capabilities: [],
           status: "ambiguous",
@@ -119,6 +122,9 @@ describe("workflow package review", () => {
     await wrapper.get('[data-testid="preview-package"]').trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("Actual prompt");
+    expect(wrapper.text()).toContain("financial-reasoning");
+    expect(wrapper.text()).toContain("Analyze company filings");
+    expect(wrapper.text()).toContain('"company"');
     expect(
       wrapper.get('[data-testid="confirm-package"]').attributes("disabled"),
     ).toBeDefined();

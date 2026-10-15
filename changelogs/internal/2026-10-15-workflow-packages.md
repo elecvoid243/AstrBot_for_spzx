@@ -1,6 +1,6 @@
 # Single-layer workflow portability
 
 - Add versioned JSON export and validated import for single-task and canvas workflows, including pinned roles, explicit effective prompts, contracts, layout and logical dependencies. Credentials, local bindings, knowledge-base contents and runtime history remain local.
-- Preview compatible local candidates, require explicit choices for ambiguity or unverified sources, and atomically install definitions and local bindings. Pending assets cannot start. Reimport identifies existing content; conflicting content under the same identity/version is rejected.
+- Preview compatible local candidates with original logical purposes, descriptions and tool input schemas; require explicit choices for ambiguity or unverified sources, and atomically install definitions and local bindings, including concurrent confirmations. Pending assets cannot start. Reimport identifies existing content; conflicting content under the same identity/version is rejected.
 - Keep **Workflow Assets → Edit Asset / Start Run** and add **Workflow Assets → Export workflow JSON / Import workflow package** (工作流资产 → 导出工作流 JSON / 导入工作流包). Nested packages, autonomous packages and upgrades are explicitly unsupported in this release.
 - Verify separate instance directories and processes with different local profile/model IDs through the actual provider and execution pipeline, plus formal WebUI import configuration. Update the English/Chinese workflow instructions and central navigation reference.

@@ -720,6 +720,11 @@ export type PackageDependency = {
     fingerprint?: (string | null);
     runner_type?: (string | null);
     capabilities?: Array<(string)>;
+    logical_slots?: Array<(string)>;
+    description?: string;
+    input_schema?: ({
+    [key: string]: unknown;
+} | null);
 };
 
 export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
@@ -731,11 +736,11 @@ export type PackageRole = {
     role_id: string;
     version: number;
     definition: RoleDefinition;
-    prompt_source: 'role' | 'persona' | 'profile';
+    prompt_source: 'role' | 'persona' | 'profile' | 'task';
     dependencies: Array<PackageDependency>;
 };
 
-export type prompt_source = 'role' | 'persona' | 'profile';
+export type prompt_source = 'role' | 'persona' | 'profile' | 'task';
 
 export type ParameterAttachmentId = string;
 

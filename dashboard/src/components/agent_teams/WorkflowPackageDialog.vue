@@ -98,6 +98,22 @@
                         : tm("package.manualSource")
                     }}
                   </p>
+                  <p
+                    v-if="dependency.logical_slots?.length"
+                    class="package-text"
+                  >
+                    {{ tm("package.logicalPurpose") }}:
+                    {{ dependency.logical_slots.join(", ") }}
+                  </p>
+                  <p v-if="dependency.description" class="package-text my-2">
+                    {{ dependency.description }}
+                  </p>
+                  <details v-if="dependency.input_schema" class="my-2">
+                    <summary>{{ tm("package.requiredInput") }}</summary>
+                    <pre class="package-text">{{
+                      JSON.stringify(dependency.input_schema, null, 2)
+                    }}</pre>
+                  </details>
                   <v-select
                     :menu-props="{ contentClass: 'workflow-package-menu' }"
                     :model-value="dependency.selected"
@@ -117,6 +133,24 @@
                       }}</span></template
                     >
                   </v-select>
+                  <template
+                    v-for="candidate in dependency.candidates"
+                    :key="candidate.id"
+                  >
+                    <details
+                      v-if="candidate.description || candidate.input_schema"
+                      class="mb-3"
+                    >
+                      <summary class="package-text">
+                        {{ tm("package.resourceDetails") }} ·
+                        {{ candidate.name }}
+                      </summary>
+                      <p class="package-text">{{ candidate.description }}</p>
+                      <pre v-if="candidate.input_schema" class="package-text">{{
+                        JSON.stringify(candidate.input_schema, null, 2)
+                      }}</pre>
+                    </details>
+                  </template>
                   <router-link
                     v-if="!dependency.candidates.length"
                     :to="
@@ -356,8 +390,10 @@ function download() {
 </style>
 
 <style>
-.workflow-package-menu .v-list-item-title {
+.workflow-package-menu .v-list-item-title,
+.workflow-package-menu .v-list-item-subtitle {
   white-space: normal;
   overflow-wrap: anywhere;
+  -webkit-line-clamp: unset;
 }
 </style>

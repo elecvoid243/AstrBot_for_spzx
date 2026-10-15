@@ -622,6 +622,9 @@
     }
   },
   "package": {
+    "logicalPurpose": "原逻辑用途",
+    "requiredInput": "所需工具输入结构",
+    "resourceDetails": "候选资源的说明和输入结构",
     "import": "导入工作流包",
     "export": "导出工作流 JSON",
     "scope": "仅支持单层工作流。导入只安装定义和明确选择的本机绑定；插件与服务需另行配置，导入时不运行脚本。",

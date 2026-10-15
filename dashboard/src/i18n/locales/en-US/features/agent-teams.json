@@ -622,6 +622,9 @@
     }
   },
   "package": {
+    "logicalPurpose": "Original logical purpose",
+    "requiredInput": "Required tool input schema",
+    "resourceDetails": "Candidate description and input schema",
     "import": "Import workflow package",
     "export": "Export workflow JSON",
     "scope": "Single-layer workflows only. Packages install definitions and reviewed local bindings. Plugins and services are configured separately; no scripts run during import.",

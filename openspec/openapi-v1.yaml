@@ -9910,6 +9910,22 @@ components:
           type: array
           maxItems: 20
           title: Capabilities
+        logical_slots:
+          items:
+            type: string
+          type: array
+          maxItems: 500
+          title: Logical Slots
+        description:
+          type: string
+          title: Description
+          default: ''
+        input_schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Input Schema
       additionalProperties: false
       type: object
       required:
@@ -9917,7 +9933,6 @@ components:
       - kind
       title: PackageDependency
       description: A logical resource requirement; fingerprints contain no local identity.
-
     PackageRole:
       properties:
         role_id:
@@ -9937,6 +9952,7 @@ components:
           - role
           - persona
           - profile
+          - task
           title: Prompt Source
         dependencies:
           items:
@@ -9953,8 +9969,8 @@ components:
       - prompt_source
       - dependencies
       title: PackageRole
-      description: Fixed role content with an explicit description of included prompt origin.
-
+      description: Fixed role content with an explicit description of included prompt
+        origin.
     WorkflowImportRequest:
       properties:
         package:

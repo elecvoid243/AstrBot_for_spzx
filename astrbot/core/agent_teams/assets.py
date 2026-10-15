@@ -262,6 +262,8 @@ class RoleAssetService:
                 {
                     "id": tool.name,
                     "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
                     "enabled": tool.active,
                     "persona_restricted": not tool_mgr.is_builtin_tool(tool.name),
                     "enabled_profiles": enabled_profiles,
@@ -285,6 +287,7 @@ class RoleAssetService:
                     {
                         "id": skill.name,
                         "name": skill.name,
+                        "description": skill.description,
                         "enabled": skill.active,
                         "enabled_profiles": [],
                     },
@@ -303,7 +306,13 @@ class RoleAssetService:
                 resource["enabled_profiles"].append(profile_id)
         catalog["skills"] = [skills_by_name[name] for name in sorted(skills_by_name)]
         for kb in await core.kb_manager.list_kbs():
-            catalog["knowledge_bases"].append({"id": kb.kb_id, "name": kb.kb_name})
+            catalog["knowledge_bases"].append(
+                {
+                    "id": kb.kb_id,
+                    "name": kb.kb_name,
+                    "description": kb.description or "",
+                }
+            )
         return catalog
 
     async def resolve_role(

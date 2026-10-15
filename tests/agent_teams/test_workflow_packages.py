@@ -101,6 +101,47 @@ async def test_export_makes_inherited_persona_prompt_visible_without_knowledge_c
 
 
 @pytest.mark.asyncio
+async def test_export_accepts_roles_completed_by_actual_task_overrides(workflow_env):
+    env = workflow_env
+    role = await env.roles.save_role("alice", {
+        "definition": {"name": "Task-defined responsibility", "tools": [], "skills": [], "knowledge_bases": []},
+        "installation": {"bindings": {"model": "model-a"}},
+    })
+    asset = await env.service.save_asset("alice", {"definition": {
+        "name": "Task prompt", "role_id": role["role_id"], "role_version": 1,
+        "task": "Write evidence", "overrides": {"prompt": "Actual task responsibility."},
+    }})
+    assert (await env.service.check_readiness("alice", asset["asset_id"], 1))["ready"] is True
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    assert package["roles"][0]["definition"]["prompt"] == "Actual task responsibility."
+    assert package["roles"][0]["prompt_source"] == "task"
+    assert package["definition"]["overrides"]["prompt"] == "Actual task responsibility."
+
+
+@pytest.mark.asyncio
+async def test_dependencies_keep_logical_purpose_and_reject_incompatible_tool_contracts(workflow_env):
+    env = workflow_env
+    schema = {"type": "object", "properties": {"company": {"type": "string"}}, "required": ["company"]}
+    env.inventory["tools"] = [{"id": "private-financial-tool", "description": "Search approved company financial filings", "input_schema": schema}]
+    role = await env.roles.save_role("alice", {
+        "definition": {"name": "Financial researcher", "prompt": "Review filings", "tools": ["financial-filings-search"]},
+        "installation": {"bindings": {"model": "model-a", "financial-filings-search": "private-financial-tool"}},
+    })
+    asset = await env.service.save_asset("alice", {"definition": {"name": "Filings", "role_id": role["role_id"], "role_version": 1, "task": "Review evidence"}})
+    package = await env.service.export_asset("alice", asset["asset_id"], 1)
+    dependency = next(dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "tools")
+    assert dependency["logical_slots"] == ["financial-filings-search"]
+    assert dependency["description"] == "Search approved company financial filings"
+    assert dependency["input_schema"] == schema
+    assert "private-financial-tool" not in json.dumps(package)
+    env.inventory["tools"] = [{"id": "weather", "description": "Weather only", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}]
+    key = f"{role['role_id']}:1"
+    preview = await env.service.preview_import("bob", {"package": package, "installations": {key: {"bindings": {"model": "model-a", "tools_1": "weather"}}}})
+    assert preview["ready"] is False
+    assert next(dep for dep in preview["roles"][0]["dependencies"] if dep["kind"] == "tools")["candidates"] == []
+
+
+@pytest.mark.asyncio
 async def test_different_instance_previews_unique_compatible_resources_before_install(
     workflow_env, tmp_path
 ):
@@ -307,6 +348,48 @@ async def test_confirmation_failure_leaves_no_partial_installation_and_retry_suc
         "alice", {"package": package, "save_pending": True}
     )
     assert installed["existing"] is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_confirmation_persists_bindings_after_pending_import(workflow_env):
+    env = workflow_env
+    package = await env.service.export_asset("alice", env.asset["asset_id"], 1)
+    observed, release = asyncio.Event(), asyncio.Event()
+    blocked = False
+
+    async def inventory():
+        nonlocal blocked
+        if asyncio.current_task().get_name() == "ready-import" and not blocked:
+            blocked = True
+            observed.set()
+            await release.wait()
+        return env.inventory
+
+    roles = RoleAssetService(env.db, catalog_loader=inventory)
+    service = WorkflowService(env.db, roles)
+    key = f"{package['roles'][0]['role_id']}:1"
+    proposed = {"profile_id": "default", "bindings": {"model": "model-a"}}
+    confirmation = asyncio.create_task(service.import_asset("bob", {
+        "package": package, "installations": {key: proposed},
+    }), name="ready-import")
+    try:
+        await asyncio.wait_for(observed.wait(), 5)
+        pending = await service.import_asset("bob", {"package": package, "save_pending": True})
+        assert pending["ready"] is False
+        release.set()
+        confirmed = await asyncio.wait_for(confirmation, 5)
+        assert confirmed["existing"] is True
+        assert confirmed["ready"] is True
+        assert confirmed["asset"]["asset_id"] == pending["asset"]["asset_id"]
+        assert (await service.check_readiness("bob", confirmed["asset"]["asset_id"], 1))["ready"] is True
+        assert len((await service.list_assets("bob"))["assets"]) == 1
+        saved_roles = (await roles.list_roles("bob"))["roles"]
+        assert len(saved_roles) == 1
+        assert saved_roles[0]["installation"] == proposed
+    finally:
+        release.set()
+        await confirmation
+        await service.shutdown()
 
 
 @pytest.mark.asyncio

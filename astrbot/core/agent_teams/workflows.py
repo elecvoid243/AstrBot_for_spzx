@@ -73,6 +73,7 @@ from astrbot.core.db.po import (
     AgentRoleVersion,
     AgentWorkflowArtifact,
     AgentWorkflowAttempt,
+    AgentWorkflowChatDelivery,
     AgentWorkflowCheckpoint,
     AgentWorkflowControl,
     AgentWorkflowEvent,
@@ -881,6 +882,9 @@ class WorkflowService:
         self._tasks: set[asyncio.Task] = set()
         self._executions: dict[str, asyncio.Task] = {}
         self._closing = False
+        from astrbot.core.agent_teams.chat import WorkflowChat
+
+        self.chat = WorkflowChat(self)
 
     async def save_asset(
         self, username: str, payload: dict, asset_id: str | None = None
@@ -2891,13 +2895,16 @@ class WorkflowService:
             "ready": preview["ready"],
         }
 
-    async def start_run(self, username: str, asset_id: str, payload: dict) -> dict:
+    async def start_run(
+        self, username: str, asset_id: str, payload: dict, *, chat: dict | None = None
+    ) -> dict:
         """Persist all execution identities and the effective snapshot before dispatch.
 
         Args:
-            username: Actual initiating owner.
+            username: Authenticated asset owner retaining Dashboard control.
             asset_id: Saved asset identity.
             payload: Pinned version, text inputs and source.
+            chat: Trusted platform identity verified by the explicit chat entry.
 
         Returns:
             The new independent run's persisted snapshot.
@@ -2919,6 +2926,16 @@ class WorkflowService:
                     for e in exc.errors()
                 ],
             ) from exc
+        if chat is not None:
+            if (
+                chat["asset_id"] != asset_id
+                or chat["version"] != request.version
+                or chat["caller"]["source"] != request.source
+            ):
+                raise RoleAssetError(
+                    "Chat invocation does not match its grant", status=403
+                )
+            await self.chat.require_access(chat, username)
         asset = await self.get_asset(username, asset_id, request.version)
         definition = asset["definition"]
         input_refs = [ref.model_dump() for ref in request.input_artifacts]
@@ -2945,8 +2962,10 @@ class WorkflowService:
         if fields:
             raise RoleAssetError("Invalid run inputs", fields)
         if "tasks" in definition or definition.get("kind") == "autonomous":
-            return await self._start_graph(username, asset, request)
+            return await self._start_graph(username, asset, request, chat=chat)
         frozen = await self._freeze_member(username, definition, asset=asset)
+        if chat is not None:
+            self.chat.prepare(frozen, chat)
         effective = frozen["effective"]
         member = frozen["member"]
         session_id = member["session_id"]
@@ -2960,7 +2979,7 @@ class WorkflowService:
             "inputs": request.inputs,
             "input_artifacts": input_refs,
             "source": request.source,
-            "initiator": username,
+            "initiator": frozen.get("initiator", username),
             "task": definition["task"].format_map(request.inputs),
             "member": member,
         }
@@ -3001,6 +3020,8 @@ class WorkflowService:
                     state=state,
                 )
             )
+            if chat is not None:
+                session.add(AgentWorkflowChatDelivery(run_id=run_id))
             session.add(
                 AgentWorkflowEvent(
                     run_id=run_id,
@@ -4634,6 +4655,8 @@ class WorkflowService:
                     session.add(row)
                 await session.commit()
             if permitted:
+                if "chat" in row.snapshot:
+                    await self.chat.require_access(row.snapshot["chat"], username)
                 await self.roles.validate_frozen_role(row.snapshot["role"])
                 return
             await asyncio.sleep(0.1)
@@ -5123,7 +5146,12 @@ class WorkflowService:
         }
 
     async def _start_graph(
-        self, username: str, asset: dict, request: WorkflowStartRequest
+        self,
+        username: str,
+        asset: dict,
+        request: WorkflowStartRequest,
+        *,
+        chat: dict | None = None,
     ) -> dict:
         """Freeze all referenced resources before atomically starting a root scope.
 
@@ -5131,6 +5159,7 @@ class WorkflowService:
             username: Authenticated owner.
             asset: Saved immutable asset version.
             request: Validated launch inputs and source.
+            chat: Verified platform caller, when launched from explicit chat.
 
         Returns:
             Persisted run and its initial tasks.
@@ -5139,6 +5168,8 @@ class WorkflowService:
             RoleAssetError: A pinned definition, limit or resource is unavailable.
         """
         frozen = await self._freeze_graph(username, asset, request)
+        if chat is not None:
+            self.chat.prepare(frozen, chat)
         max_depth = frozen["definition"].get("max_depth", 3)
         for child in frozen["child_assets"].values():
             for member in [
@@ -5511,6 +5542,8 @@ class WorkflowService:
             run_id=run_id, owner_username=username, snapshot=snapshot
         )
         await self._check_member_limits(session, new_scope)
+        if parent_task is None and "chat" in snapshot:
+            session.add(AgentWorkflowChatDelivery(run_id=run_id))
         session.add(
             AgentWorkflowRun(
                 run_id=run_id,
@@ -5618,7 +5651,8 @@ class WorkflowService:
                         "inputs": snapshot["inputs"],
                         "input_artifacts": snapshot["input_artifacts"],
                         "source": snapshot["source"],
-                        "initiator": username,
+                        "initiator": snapshot.get("initiator", username),
+                        **({"chat": snapshot["chat"]} if "chat" in snapshot else {}),
                         "task": task.task,
                     },
                     state={
@@ -6423,7 +6457,12 @@ class WorkflowService:
                                 else {}
                             ),
                             "source": root.snapshot["source"],
-                            "initiator": username,
+                            "initiator": root.snapshot.get("initiator", username),
+                            **(
+                                {"chat": root.snapshot["chat"]}
+                                if "chat" in root.snapshot
+                                else {}
+                            ),
                             "task": literal_task,
                         },
                         state={
@@ -9006,7 +9045,7 @@ class WorkflowService:
         self._executions[run_id] = current_task
         try:
             await self._await_execution_permission(username, run_id, execution_id)
-            ports = self.ports_factory(username)
+            ports = self.ports_factory(snapshot.get("initiator", username))
 
             async def accept(payload: dict) -> None:
                 """Persist the submission for this authorized attempt.
@@ -9312,7 +9351,7 @@ class WorkflowService:
                     member=member,
                     run_id=run_id,
                     team_id=snapshot["asset_id"],
-                    username=username,
+                    username=snapshot.get("initiator", username),
                     turn_id=state["attempt_id"],
                     node_id=snapshot.get("node_id", state["task_id"]),
                     record_process=record,
@@ -9346,6 +9385,7 @@ class WorkflowService:
                         "message_id": state["message_id"],
                         "profile_snapshot": snapshot["profile"],
                         "persona_snapshot": snapshot["persona"],
+                        "caller": snapshot.get("chat", {}).get("caller"),
                     },
                 ),
             )

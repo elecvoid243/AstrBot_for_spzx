@@ -63,6 +63,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "dag_inherited_role",
         "auto_inherited_role",
         "v2_role",
+        "v2_chat_role",
         "v2_graph_role",
         "v2_plain_role",
         "v2_failing_role",
@@ -103,6 +104,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     research["agent_runner"]["config"]["model"]["provider_id"] = "research-model"
     research["agent_runner"]["config"]["persona"]["persona_id"] = "researcher"
     research["test_profile"] = "research"
+    if mode == "v2_chat_role":
+        research["admins_id"] = ["12345", "platform:qq-main:12345", "alice"]
+        await acm.ucr.update_route("qq-main:FriendMessage:12345", "research")
     if mode == "v2_failing_role":
         research["agent_runner"]["config"]["model"]["fallback_provider_ids"] = [
             "default-model"
@@ -317,6 +321,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 mode
                 in (
                     "v2_role",
+                    "v2_chat_role",
                     "v2_hidden_role",
                     "v2_no_thinking_role",
                     "v2_process_failure_role",
@@ -358,7 +363,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                                 {
                                     "persona": "Use verified research evidence."
                                     in prompt,
-                                    "hook": "profile=research;sender=alice;role=member"
+                                    "hook": (
+                                        "profile=research;sender=platform:qq-main:12345;role=member"
+                                        if mode == "v2_chat_role"
+                                        else "profile=research;sender=alice;role=member"
+                                    )
                                     in prompt,
                                     "skill": "Alpha research skill" in prompt,
                                     "knowledge": "Verified research knowledge"
@@ -709,7 +718,30 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     )
                     definition["edges"].append({"source": "first", "target": "second"})
                 asset = await service.save_asset("alice", {"definition": definition})
-            run = await service.start_run("alice", asset["asset_id"], {"version": 1})
+            if mode == "v2_chat_role":
+                from astrbot.core.agent_teams.chat import ChatCaller
+
+                caller = ChatCaller(
+                    platform_id="qq-main",
+                    sender_id="12345",
+                    source="qq-main:FriendMessage:12345",
+                    profile_id="research",
+                )
+                await service.chat.save_access(
+                    "alice",
+                    asset["asset_id"],
+                    {
+                        **caller.model_dump(exclude={"source"}),
+                        "source": caller.source,
+                        "version": 1,
+                    },
+                )
+                accepted = await service.chat.invoke(caller, asset["asset_id"], {})
+                run = await service.get_run("alice", accepted["run_id"])
+            else:
+                run = await service.start_run(
+                    "alice", asset["asset_id"], {"version": 1}
+                )
             for _ in range(1000):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
@@ -732,7 +764,12 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 )
                 assert json.loads(result["tasks"]["second"]["text"])["persona"] is True
                 return
-            if mode in {"v2_role", "v2_hidden_role", "v2_no_thinking_role"}:
+            if mode in {
+                "v2_role",
+                "v2_chat_role",
+                "v2_hidden_role",
+                "v2_no_thinking_role",
+            }:
                 assert current["status"] == "completed", current
                 responses = [
                     record

@@ -61,6 +61,10 @@ class EventBus:
                     binding.source_umo = event.unified_msg_origin
                     event.unified_msg_origin = binding.umo
                     event.set_extra("agent_team_execution", binding)
+                    if binding.caller is not None:
+                        event.role = "member"
+                        event.set_extra("_api_key_allow_admin_role", False)
+                        event.set_extra("asset_caller", binding.caller)
                     if binding.config_id:
                         scheduler = self.pipeline_scheduler_mapping.get(
                             binding.config_id

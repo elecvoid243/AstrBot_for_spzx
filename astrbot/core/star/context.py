@@ -48,6 +48,7 @@ from .star_handler import EventType, StarHandlerMetadata, star_handlers_registry
 logger = logging.getLogger("astrbot")
 
 if TYPE_CHECKING:
+    from astrbot.core.agent_teams.workflows import WorkflowService
     from astrbot.core.cron.manager import CronJobManager
 
 WebApiHandler = Callable[..., Awaitable[Any]]
@@ -167,6 +168,7 @@ class Context:
         self.cron_manager = cron_manager
         """Cron job manager, initialized by core lifecycle."""
         self.subagent_orchestrator = subagent_orchestrator
+        self.workflow_service: WorkflowService | None = None
 
     async def llm_generate(
         self,

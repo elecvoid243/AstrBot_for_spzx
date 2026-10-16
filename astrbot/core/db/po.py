@@ -247,6 +247,28 @@ class AgentWorkflowVersion(TimestampMixin, SQLModel, table=True):
     definition: dict = Field(sa_type=JSON)
 
 
+class AgentWorkflowChatAccess(SQLModel, table=True):
+    """Explicit local access to one fixed asset version for a platform caller."""
+
+    __tablename__: str = "agent_workflow_chat_access"  # pyright: ignore[reportIncompatibleVariableOverride]
+    asset_id: str = Field(primary_key=True)
+    platform_id: str = Field(primary_key=True)
+    sender_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    version: int
+    profile_id: str
+    source: str
+
+
+class AgentWorkflowChatDelivery(SQLModel, table=True):
+    """Durable delivery cursor; platform messages can be retried after restart."""
+
+    __tablename__: str = "agent_workflow_chat_deliveries"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    delivered: list[str] = Field(default_factory=list, sa_type=JSON)
+    finished: bool = False
+
+
 class AgentWorkflowPackage(SQLModel, table=True):
     """Imported identity and content recorded in the installation transaction."""
 

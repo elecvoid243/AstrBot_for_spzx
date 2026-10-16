@@ -1,4 +1,18 @@
 {
+  "chatAccess": {
+    "title": "Chat access",
+    "scope": "Open this fixed version and its final result to an exact platform sender and source conversation. Every reachable role must use that source configuration profile. Process, thinking and tool records remain in the authenticated run details.",
+    "identityHelp": "Ask the caller to send /asset whoami in the intended conversation. Copy its platform_id, sender_id, source and profile_id below. For groups, this explicitly allows the final result to be visible in that group.",
+    "platform": "Platform instance ID",
+    "sender": "Sender ID",
+    "source": "Source conversation (UMO)",
+    "profile": "Source profile ID",
+    "save": "Open this version",
+    "existing": "Opened callers",
+    "empty": "No platform callers have access.",
+    "revoke": "Revoke access",
+    "invoke": "Send /asset <name or ID> | {\"input\":\"value\"}. Ambiguous names and missing inputs are clarified before execution. Use /asset status <run ID> to reconnect to a saved run."
+  },
   "page": {
     "title": "Agent Teams",
     "beta": "Beta",

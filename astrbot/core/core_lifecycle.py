@@ -286,6 +286,7 @@ class AstrBotCoreLifecycle:
         self.workflow_service = WorkflowService(
             self.db, RoleAssetService(self.db, self)
         )
+        self.star_context.workflow_service = self.workflow_service
         await self.workflow_service.boot_sweep()
 
         # 记录启动时间
@@ -334,6 +335,29 @@ class AstrBotCoreLifecycle:
             *diagnostic_tasks,
             *(extra_tasks if extra_tasks else []),
         ]
+        if hasattr(self, "workflow_service"):
+            from astrbot.core.message.message_event_result import MessageChain
+
+            async def send_asset_notice(caller, text: str) -> bool:
+                """Use the existing platform adapter for durable source delivery.
+
+                Args:
+                    caller: Verified platform identity and delivery conversation.
+                    text: Safe notice or final result.
+
+                Returns:
+                    Whether a matching platform accepted the message.
+                """
+                return await self.star_context.send_message(
+                    caller.source, MessageChain().message(text)
+                )
+
+            tasks_.append(
+                asyncio.create_task(
+                    self.workflow_service.chat.run_delivery(send_asset_notice),
+                    name="asset_chat_delivery",
+                )
+            )
         if cron_task:
             tasks_.append(cron_task)
         if temp_dir_cleaner_task:

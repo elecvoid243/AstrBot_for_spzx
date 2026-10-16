@@ -1,0 +1,8 @@
+# Explicit chat asset invocation
+
+- Add `/asset` for explicit team and workflow invocation, exact-name/ID selection, required-input clarification and root-run status/results. Ordinary chat keeps its existing behavior.
+- Add **Workflow Assets → Chat access** to open a fixed version to a platform instance, sender, source conversation and source profile, or revoke that access. The grant also explicitly identifies the final-result delivery audience. It is local configuration and is excluded from portable packages.
+- Reuse the existing asset, execution, human-request and run-detail services. Preserve the actual platform initiator; synthetic turns do not inherit Dashboard administrator roles. Recheck grants and source routing at external execution boundaries and before result release.
+- Return acceptance, human-input notices and final results through persistent delivery cursors. Keep process, thinking, tools, child results and unapproved artifacts behind the existing Dashboard permissions.
+- Entry mapping: chat callers previously needed the owner's **Workflow Assets → Start Run** action; they can now use an explicitly opened asset through `/asset`. Human requests continue at **Independent Runs → Run details → Human requests**. Incoming run links also select **Independent Runs** when the asset page is already open.
+- Update the HTTP/OpenAPI contract, generated frontend client and English/Chinese instructions and screenshots. Notification transport remains subject to duplicate delivery if a process dies after the platform accepts a message but before its receipt is committed.

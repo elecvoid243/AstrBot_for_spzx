@@ -8,9 +8,40 @@ import type {
   WorkflowRetryRequest,
   HumanAnswerRequest,
   WorkflowImportRequest,
+  ChatAccessRequest,
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async chatAccess(assetId: string): Promise<{ grants: ChatAccessRequest[] }> {
+    return (
+      await httpClient.get(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/chat_access`,
+      )
+    ).data.data;
+  },
+  async saveChatAccess(assetId: string, payload: ChatAccessRequest) {
+    return (
+      await httpClient.put(
+        `/api/v1/workflow_assets/${encodeURIComponent(assetId)}/chat_access`,
+        payload,
+      )
+    ).data.data;
+  },
+  async revokeChatAccess(
+    assetId: string,
+    platformId: string,
+    senderId: string,
+  ) {
+    return (
+      await httpClient.delete(
+        `/api/v1/workflow_assets/${encodeURIComponent(
+          assetId,
+        )}/chat_access/${encodeURIComponent(platformId)}/${encodeURIComponent(
+          senderId,
+        )}`,
+      )
+    ).data.data;
+  },
   async exportPackage(assetId: string, version: number) {
     return (
       await httpClient.get(

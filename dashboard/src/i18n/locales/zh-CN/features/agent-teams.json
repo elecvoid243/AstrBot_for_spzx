@@ -1,4 +1,18 @@
 {
+  "chatAccess": {
+    "title": "聊天访问",
+    "scope": "向指定平台发送者和来源会话开放此固定版本及最终结果。所有可达角色必须使用来源配置档案。运行过程、思考和工具记录仍在需要登录的运行详情中查看。",
+    "identityHelp": "请调用者在目标会话发送 /asset whoami，将返回的 platform_id、sender_id、source 和 profile_id 填入下方。群聊授权明确允许最终结果在该群中可见。",
+    "platform": "平台实例 ID",
+    "sender": "发送者 ID",
+    "source": "来源会话（UMO）",
+    "profile": "来源配置档案 ID",
+    "save": "开放此版本",
+    "existing": "已开放的调用者",
+    "empty": "尚未向平台调用者开放。",
+    "revoke": "撤销访问",
+    "invoke": "发送 /asset <名称或 ID> | {\"输入名\":\"值\"}。名称歧义、缺少输入时会先澄清。使用 /asset status <运行 ID> 重新连接已保存的运行。"
+  },
   "page": {
     "title": "Agent 团队",
     "beta": "Beta",

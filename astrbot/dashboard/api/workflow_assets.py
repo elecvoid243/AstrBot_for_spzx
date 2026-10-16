@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.chat import ChatAccessRequest
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     HumanAnswerRequest,
@@ -34,6 +35,87 @@ def get_workflow_service(request: Request) -> WorkflowService:
         Shared workflow asset and run service.
     """
     return request.app.state.services.workflow_assets
+
+
+@router.get("/workflow_assets/{asset_id}/chat_access")
+async def list_chat_access(
+    asset_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """List the asset owner's explicit local platform grants.
+
+    Args:
+        asset_id: Owned asset identity.
+        username: Authenticated Dashboard owner.
+        service: Shared application service.
+
+    Returns:
+        Local chat grants or an ownership error.
+    """
+    try:
+        return ok(await service.chat.list_access(username, asset_id))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.put("/workflow_assets/{asset_id}/chat_access")
+async def save_chat_access(
+    asset_id: str,
+    payload: ChatAccessRequest,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Open one fixed version and result conversation to an exact platform sender.
+
+    Args:
+        asset_id: Owned asset identity.
+        payload: Caller, source conversation, source profile and fixed version.
+        username: Authenticated Dashboard owner.
+        service: Shared application service.
+
+    Returns:
+        Saved local grant or an ownership/validation error.
+    """
+    try:
+        return ok(
+            await service.chat.save_access(username, asset_id, payload.model_dump())
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.delete("/workflow_assets/{asset_id}/chat_access/{platform_id}/{sender_id}")
+async def revoke_chat_access(
+    asset_id: str,
+    platform_id: str,
+    sender_id: str,
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Revoke subsequent platform execution and result delivery.
+
+    Args:
+        asset_id: Owned asset identity.
+        platform_id: Exact platform instance.
+        sender_id: Exact sender on that instance.
+        username: Authenticated Dashboard owner.
+        service: Shared application service.
+
+    Returns:
+        Empty success or an ownership error.
+    """
+    try:
+        await service.chat.revoke_access(username, asset_id, platform_id, sender_id)
+        return ok({})
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
 
 
 @router.get("/workflow_assets")

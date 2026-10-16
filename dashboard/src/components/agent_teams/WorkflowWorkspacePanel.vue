@@ -86,9 +86,13 @@
         <v-card-actions class="flex-wrap">
           <v-btn
             variant="text"
-            @click="exportWorkflow(asset)"
-            >{{ tm("package.export") }}</v-btn
+            data-testid="open-chat-access"
+            @click="chatAccessAsset = asset"
+            >{{ tm("chatAccess.title") }}</v-btn
           >
+          <v-btn variant="text" @click="exportWorkflow(asset)">{{
+            tm("package.export")
+          }}</v-btn>
           <v-btn
             variant="text"
             @click="
@@ -721,6 +725,13 @@
       :exported-package="exportedPackage"
       @installed="refresh"
     />
+    <WorkflowChatAccessDialog
+      v-if="chatAccessAsset"
+      :key="`${chatAccessAsset.asset_id}:${chatAccessAsset.version}`"
+      :asset="chatAccessAsset"
+      :model-value="true"
+      @update:model-value="chatAccessAsset = null"
+    />
   </section>
 </template>
 
@@ -733,6 +744,7 @@ import { useModuleI18n } from "@/i18n/composables";
 import { extractApiError } from "@/utils/extractApiError";
 import WorkflowGraphCanvas from "./WorkflowGraphCanvas.vue";
 import WorkflowPackageDialog from "./WorkflowPackageDialog.vue";
+import WorkflowChatAccessDialog from "./WorkflowChatAccessDialog.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import RunUsagePanel from "./RunUsagePanel.vue";
 import AutonomousTeamDialog from "./AutonomousTeamDialog.vue";
@@ -757,6 +769,7 @@ const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const chatAccessAsset = ref<any>(null);
 const packageDialog = ref(false);
 const exportedPackage = ref<WorkflowPackage | null>(null);
 

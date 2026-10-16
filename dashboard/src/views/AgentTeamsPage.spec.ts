@@ -28,7 +28,12 @@ const runMocks = vi.hoisted(() => ({ openRun: vi.fn() }));
 const removeMemberApiMock = vi.hoisted(() => vi.fn());
 
 const toastMocks = vi.hoisted(() => ({ error: vi.fn() }));
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
+const routeMock = vi.hoisted(() => ({ route: null as any }));
+vi.mock('vue-router', async () => {
+  const { reactive } = await vi.importActual<typeof import('vue')>('vue');
+  routeMock.route = reactive({ query: {} });
+  return { useRoute: () => routeMock.route };
+});
 
 vi.mock('@/composables/useAgentTeams', async () => {
   const { computed, ref } = await vi.importActual<typeof import('vue')>('vue');
@@ -223,6 +228,19 @@ function mountSidebar(props: Record<string, unknown> = {}) {
 }
 
 describe('AgentTeamsPage', () => {
+  it('opens an incoming chat run link while the assets panel is already mounted', async () => {
+    const wrapper = mountPage();
+    try {
+      await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '工作流资产')!.trigger('click');
+      expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('assets');
+      routeMock.route.query = { workflow_run: 'chat-run' };
+      await nextTick();
+      expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('runs');
+    } finally {
+      wrapper.unmount();
+      routeMock.route.query = {};
+    }
+  });
   it('renders the header title, beta chip and both team names', () => {
     const wrapper = mountPage();
     expect(wrapper.find('.dashboard-title').text()).toBe('Agent 团队');

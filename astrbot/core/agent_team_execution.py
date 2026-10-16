@@ -50,7 +50,10 @@ class NodeExecutionBinding:
     umo: str
     """The unified message origin the token is scoped to."""
     owner_username: str
-    """The username that owns the run (authorization boundary)."""
+    """Authenticated transport sender; explicit chat uses its platform principal.
+
+    Persistence ownership stays in the shared run service's bound callbacks.
+    """
     config_id: str | None
     """The config profile id whose PipelineScheduler should execute the turn."""
     persona_id: str | None = None
@@ -77,6 +80,8 @@ class NodeExecutionBinding:
     """Original transport source before routing to the member's conversation."""
     profile_snapshot: dict | None = None
     """Frozen v2 pipeline settings; absent for legacy team invocations."""
+    caller: dict | None = None
+    """Actual platform initiator, separate from the synthetic member transport."""
     persona_snapshot: dict | None = None
     """Frozen persona content; current authorization is checked before dispatch."""
     conversation_id: str | None = None
@@ -231,6 +236,7 @@ async def execute_team_turn(
         turn_id=turn_id,
         message_id=execution.get("message_id"),
         profile_snapshot=execution.get("profile_snapshot"),
+        caller=execution.get("caller"),
         persona_snapshot=execution.get("persona_snapshot"),
         conversation_id=member.get("conversation_id"),
         record_process=record_process,

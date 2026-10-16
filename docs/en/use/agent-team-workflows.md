@@ -46,6 +46,30 @@ The existing **Workflow Assets → Edit Asset / Start Run** entries remain. **Ex
 
 ![Actual full report and approval after nested execution](/images/agent-nested-package-run-en.jpg)
 
+## Explicit invocation from ordinary chat
+
+In the intended platform conversation, send `/asset whoami`. It returns the actual platform instance ID, sender ID, source conversation (UMO) and source profile ID. A display name or a sender ID that matches a Dashboard account does not link those identities.
+
+An asset owner opens **Agent Teams → Workflow Assets → Chat access**, copies those four values, and chooses **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
+
+![Actual fixed-version chat access configuration](/images/agent-chat-access-en.jpg)
+
+Use `/asset list` to see accessible names, IDs, pinned versions and required input names. Invoke an asset explicitly, for example:
+
+```text
+/asset Research report | {"topic":"wind energy"}
+```
+
+Use the asset ID when a name is ambiguous. If required input is missing, supply the named fields in the next explicit command; no run starts until the selection and inputs are valid. Ordinary chat does not automatically choose an asset. `/asset status <run ID>` reconnects to the accepted root run in the same authorized source conversation.
+
+The source receives acceptance, a notice when human input is needed, and the final contracted result. Long results are sent in text parts. Notices include the run ID and the `/#/agent-teams?workflow_run=...` path under this instance's WebUI address. The link opens **Independent Runs** and the existing run. It requires the asset owner's Dashboard login; the chat grant does not create a Dashboard account or grant access to process, thinking or tool details. The owner can answer the same persistent human request in WebUI when the platform has no controls.
+
+![A chat-originated run uses the existing persistent human request](/images/agent-chat-todo-en.jpg)
+
+![The completed result in the existing run details](/images/agent-chat-result-en.jpg)
+
+Chat invocation records the platform-qualified initiator and source while the asset owner retains Dashboard control of the delegated run. Its synthetic member turns remain ordinary members, including when IDs match an administrator. Only the root run's completed result is returned to chat; child results and unapproved versions cannot be read through chat status. Restart resumes saved notification cursors and existing human requests. A crash between platform acceptance and saving its receipt can repeat a message; it does not start another asset run.
+
 ## Autonomous teams
 
 Choose **Workflow Assets → New Autonomous Team**. Enter the **Team name**, choose the **Coordinator role** and its pinned version, then select **Allowed role templates** and pin each version. Set **Maximum members** (including the coordinator), **Maximum concurrent tasks** and **Maximum member tasks**. Role instance and concurrency limits also apply. An optional **Final version approval question** requires approval of the coordinator's exact final artifact before the run can complete. **Output contract (JSON Schema)** applies to that final result; leaving it empty uses the standard text contract.

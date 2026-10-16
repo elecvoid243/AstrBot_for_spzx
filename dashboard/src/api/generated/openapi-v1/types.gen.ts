@@ -145,6 +145,17 @@ export type BotRegistrationRequest = {
 
 export type action = 'start' | 'poll';
 
+/**
+ * A deliberate local grant; importing an asset never grants access.
+ */
+export type ChatAccessRequest = {
+    platform_id: string;
+    sender_id: string;
+    version: number;
+    profile_id: string;
+    source: string;
+};
+
 export type ChatChunkUploadRequest = {
     upload_id: string;
     chunk_index: number;
@@ -5073,6 +5084,39 @@ export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
 
 export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetData = {
+    path: {
+        asset_id: string;
+    };
+};
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetResponse = (unknown);
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetError = (HTTPValidationError);
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutData = {
+    body: ChatAccessRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutResponse = (unknown);
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutError = (HTTPValidationError);
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteData = {
+    path: {
+        asset_id: string;
+        platform_id: string;
+        sender_id: string;
+    };
+};
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteResponse = (unknown);
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteError = (HTTPValidationError);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
     body: WorkflowStartRequest;

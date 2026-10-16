@@ -134,6 +134,9 @@ const confirmDialog = useConfirmDialog();
 
 const route = useRoute();
 const tab = ref(route.query.workflow_run ? 'runs' : 'editor');
+watch(() => route.query.workflow_run, (runId) => {
+  if (typeof runId === 'string' && runId) tab.value = 'runs';
+});
 // Workflow preselected for the monitor by the editor's 保存并运行 handoff.
 const presetWorkflowId = ref('');
 const showCreateDialog = ref(false);

@@ -6422,6 +6422,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/chat_access:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Chat Access
+      description: "List the asset owner's explicit local platform grants.\n\nArgs:\n\
+        \    asset_id: Owned asset identity.\n    username: Authenticated Dashboard\
+        \ owner.\n    service: Shared application service.\n\nReturns:\n    Local chat\
+        \ grants or an ownership error."
+      operationId: list_chat_access_api_v1_workflow_assets__asset_id__chat_access_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Agent Teams workflows
+      summary: Save Chat Access
+      description: "Open one fixed version and result conversation to an exact platform\
+        \ sender.\n\nArgs:\n    asset_id: Owned asset identity.\n    payload: Caller,\
+        \ source conversation, source profile and fixed version.\n    username: Authenticated\
+        \ Dashboard owner.\n    service: Shared application service.\n\nReturns:\n \
+        \   Saved local grant or an ownership/validation error."
+      operationId: save_chat_access_api_v1_workflow_assets__asset_id__chat_access_put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatAccessRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/chat_access/{platform_id}/{sender_id}:
+    delete:
+      tags:
+      - Agent Teams workflows
+      summary: Revoke Chat Access
+      description: "Revoke subsequent platform execution and result delivery.\n\nArgs:\n\
+        \    asset_id: Owned asset identity.\n    platform_id: Exact platform instance.\n\
+        \    sender_id: Exact sender on that instance.\n    username: Authenticated\
+        \ Dashboard owner.\n    service: Shared application service.\n\nReturns:\n \
+        \   Empty success or an ownership error."
+      operationId: revoke_chat_access_api_v1_workflow_assets__asset_id__chat_access__platform_id___sender_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: platform_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Platform Id
+      - name: sender_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Sender Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_assets/{asset_id}/runs:
     post:
       tags:
@@ -9511,6 +9617,42 @@ components:
       - input_policy
       title: WorkflowRetryRequest
       description: Explicit new attempt using the failed attempt's exact frozen inputs.
+    ChatAccessRequest:
+      properties:
+        platform_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Platform Id
+        sender_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Sender Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        profile_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Profile Id
+        source:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - platform_id
+      - sender_id
+      - version
+      - profile_id
+      - source
+      title: ChatAccessRequest
+      description: A deliberate local grant; importing an asset never grants access.
     WorkflowStartRequest:
       properties:
         version:

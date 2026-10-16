@@ -1,4 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils";
+import { reactive } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChatWorkflowRunPage from "./ChatWorkflowRunPage.vue";
 
@@ -11,8 +12,9 @@ const api = vi.hoisted(() => ({
   file: vi.fn(),
 }));
 vi.mock("@/api/chatRun", () => ({ chatRunApi: api }));
+const testRoute = reactive({ query: { workflow_run: "root-run" } });
 vi.mock("vue-router", () => ({
-  useRoute: () => ({ query: { workflow_run: "root-run" } }),
+  useRoute: () => testRoute,
 }));
 vi.mock("@/i18n/composables", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/i18n/composables")>()),
@@ -48,6 +50,7 @@ const stubs = {
 describe("source-confirmed run details", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    testRoute.query.workflow_run = "root-run";
   });
   it("connects this browser and answers the same persistent question without a Dashboard login", async () => {
     const todo = {
@@ -139,6 +142,76 @@ describe("source-confirmed run details", () => {
     } finally {
       wrapper.unmount();
       localStorage.removeItem("token");
+    }
+  });
+  it("connects the next run while an answer to the previous run is still pending", async () => {
+    api.connection.mockImplementation(async (runId: string) => ({
+      session_id: "session-" + runId,
+      token: "secret",
+      command: "/asset connect " + runId,
+      expires_at: 2000000000,
+    }));
+    api.status.mockResolvedValue({ confirmed: true });
+    api.run.mockImplementation(async (runId: string) => ({
+      run_id: runId,
+      status: "running",
+      control_status: "active",
+      result: null,
+      todos: [
+        {
+          todo_id: "todo-" + runId,
+          kind: "question",
+          question: "Region for " + runId,
+          constraints: { choices: ["Asia", "Europe"] },
+          artifact_ref: null,
+          status: "pending",
+          response: null,
+        },
+      ],
+    }));
+    let finishAnswer: ((value: unknown) => void) | undefined;
+    api.answer.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishAnswer = resolve;
+        }),
+    );
+    const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-testid="human-answer"]').setValue("Asia");
+      await wrapper.get('[data-testid="human-submit"]').trigger("click");
+      expect(api.answer).toHaveBeenCalledWith(
+        "root-run",
+        "session-root-run.secret",
+        "todo-root-run",
+        expect.any(Object),
+      );
+      testRoute.query.workflow_run = "next-run";
+      await flushPromises();
+      expect(api.connection).toHaveBeenCalledWith("next-run");
+      expect(
+        wrapper.get('[data-testid="chat-refresh"]').attributes("disabled"),
+      ).toBeUndefined();
+      expect(api.run).toHaveBeenCalledWith(
+        "next-run",
+        "session-next-run.secret",
+      );
+      finishAnswer?.({
+        run_id: "root-run",
+        status: "completed",
+        result: { text: "Old result" },
+        todos: [],
+      });
+      await flushPromises();
+      expect(wrapper.text()).toContain("Region for next-run");
+      expect(wrapper.text()).not.toContain("Old result");
+      await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+      expect(
+        wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+      ).toBeUndefined();
+    } finally {
+      wrapper.unmount();
     }
   });
 });

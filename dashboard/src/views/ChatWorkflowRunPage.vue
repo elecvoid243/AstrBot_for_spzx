@@ -120,6 +120,7 @@ async function connect() {
   clearTimeout(timer);
   connection.value = null;
   run.value = null;
+  busy.value = false;
   error.value = "";
   if (!runId.value) {
     error.value = tm("chatRun.missing");

@@ -16,8 +16,17 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
     AiocqhttpAdapter,
 )
+from astrbot.core.platform.sources.discord.discord_platform_adapter import (
+    DiscordPlatformAdapter,
+)
 from astrbot.core.platform.sources.misskey.misskey_adapter import MisskeyPlatformAdapter
+from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import (
+    QQOfficialPlatformAdapter,
+)
 from astrbot.core.platform.sources.satori.satori_adapter import SatoriPlatformAdapter
+from astrbot.core.platform.sources.slack.slack_adapter import SlackAdapter
+from astrbot.core.platform.sources.webchat import webchat_adapter
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
 from astrbot.core.platform.sources.wecom_ai_bot.wecomai_adapter import WecomAIBotAdapter
 from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
     WecomAIBotMessageEvent,
@@ -28,6 +37,185 @@ from astrbot.core.platform.sources.wecom_ai_bot.wecomai_webhook import (
 )
 from astrbot.core.star.context import Context
 from tests.agent_teams.test_chat_invocations import chat_env as chat_env
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "discord",
+        "discord_no_channel",
+        "slack",
+        "misskey",
+        "misskey_api_error",
+        "webchat",
+    ],
+)
+async def test_strict_source_delivery_rejects_adapter_no_send_paths(
+    tmp_path, monkeypatch, kind
+):
+    """Keep adapter refusal distinct from its legacy ordinary-chat return value.
+
+    Args:
+        tmp_path: Isolated attachment storage.
+        monkeypatch: Controls only the external persistence boundary.
+        kind: Adapter with a known unavailable transport or persistence path.
+    """
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("EXTERNAL_BOUNDARY_UNAVAILABLE")
+
+    async def missing_channel(*args):
+        return None
+
+    if kind.startswith("discord"):
+        adapter = object.__new__(DiscordPlatformAdapter)
+        adapter.config = {"id": "instance"}
+        adapter.bot_self_id = "9999"
+        adapter.client = SimpleNamespace(
+            user=SimpleNamespace(display_name="Bot")
+            if kind == "discord_no_channel"
+            else None,
+            get_channel=lambda channel_id: None,
+            fetch_channel=missing_channel,
+        )
+    elif kind == "slack":
+        adapter = object.__new__(SlackAdapter)
+        adapter.metadata = PlatformMetadata(kind, "test", "instance")
+        adapter.web_client = SimpleNamespace(chat_postMessage=unavailable)
+    elif kind.startswith("misskey"):
+        adapter = object.__new__(MisskeyPlatformAdapter)
+        adapter.config = {"id": "instance"}
+        adapter.api = (
+            SimpleNamespace(send_message=unavailable)
+            if kind == "misskey_api_error"
+            else None
+        )
+        adapter._user_cache = {}
+        adapter.max_message_length = 3000
+        adapter.enable_file_upload = False
+    else:
+        adapter = object.__new__(webchat_adapter.WebChatAdapter)
+        adapter.metadata = PlatformMetadata(kind, "test", "instance")
+        adapter._webchat_queue_mgr = WebChatQueueMgr()
+        adapter.attachments_dir = tmp_path
+        monkeypatch.setattr(
+            webchat_adapter,
+            "db_helper",
+            SimpleNamespace(
+                insert_attachment=unavailable,
+                insert_platform_message_history=unavailable,
+            ),
+        )
+    context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[adapter]),
+        get_config=lambda **kwargs: {},
+    )
+    source = (
+        "instance:OtherMessage:chat%user-a"
+        if kind.startswith("misskey")
+        else "instance:FriendMessage:123"
+    )
+    assert not await Context.send_message(
+        context,
+        source,
+        MessageChain().message("SAFE_FINAL"),
+        require_exact_source=True,
+    )
+    assert await Context.send_message(
+        context, source, MessageChain().message("LEGACY_ORDINARY_CHAT")
+    )
+
+
+@pytest.mark.asyncio
+async def test_cold_qq_preserves_notifications_until_its_source_recovers(chat_env):
+    """Recover both notices after rebuilding the service and native QQ cache.
+
+    Args:
+        chat_env: Actual shared service, SQLite and asset definitions.
+    """
+    from astrbot.core.agent_teams.workflows import WorkflowService
+
+    service, _, _, _ = chat_env
+    caller = ChatCaller(
+        platform_id="qq-cold",
+        sender_id="user-a",
+        source="qq-cold:GroupMessage:group42",
+        profile_id="default",
+    )
+    asset = await service.save_asset(
+        "operator",
+        {
+            "definition": {
+                "name": "Source receipt",
+                "tasks": [
+                    {
+                        "id": "question",
+                        "name": "Question",
+                        "human": {"kind": "question", "question": "Ready?"},
+                    }
+                ],
+            }
+        },
+    )
+    await service.chat.save_access(
+        "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}
+    )
+    accepted = await service.chat.invoke(caller, asset["asset_id"], {})
+    run = await service.get_run("operator", accepted["run_id"])
+    await service.answer_todo(
+        "operator",
+        run["run_id"],
+        run["todos"][0]["todo_id"],
+        {
+            "request_id": "answer",
+            "action": "answer",
+            "answer": "QQ_FINAL_RESULT",
+        },
+    )
+    await service.shutdown()
+    reopened = WorkflowService(
+        service.db, service.roles, ports_factory=service.ports_factory
+    )
+    outbound = []
+
+    async def external_send(**payload):
+        outbound.append(payload)
+        return {"id": "external-response"}
+
+    adapter = object.__new__(QQOfficialPlatformAdapter)
+    adapter.config = {"id": "qq-cold"}
+    adapter._session_last_message_id = {}
+    adapter._session_scene = {}
+    adapter._allow_group_proactive_send = True
+    adapter.use_markdown_default = False
+    adapter.client = SimpleNamespace(
+        api=SimpleNamespace(post_group_message=external_send)
+    )
+    context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[adapter]),
+        get_config=lambda **kwargs: {},
+    )
+
+    async def background(actual, text):
+        return await Context.send_message(
+            context,
+            actual.source,
+            MessageChain().message(text),
+            require_exact_source=True,
+        )
+
+    try:
+        assert await reopened.chat.deliver_pending(background) == 0
+        assert outbound == []
+        adapter.remember_session_scene("group42", "group")
+        assert await background(caller, "POSITIVE_SOURCE_CONTROL")
+        assert len(outbound) == 1 and outbound[0]["group_openid"] == "group42"
+        assert await reopened.chat.deliver_pending(background) == 2
+        assert len(outbound) == 3
+        assert "QQ_FINAL_RESULT" in str(outbound[-1])
+    finally:
+        await reopened.shutdown()
 
 
 @pytest.mark.asyncio

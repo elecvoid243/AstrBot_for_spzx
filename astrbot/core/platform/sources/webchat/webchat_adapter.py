@@ -83,7 +83,7 @@ class WebChatAdapter(Platform):
         self,
         session: MessageSesion,
         message_chain: MessageChain,
-    ) -> None:
+    ) -> bool:
         conversation_id = _extract_conversation_id(session.session_id)
         active_request_ids = self._webchat_queue_mgr.list_back_request_ids(
             conversation_id
@@ -96,6 +96,7 @@ class WebChatAdapter(Platform):
         if not target_request_ids:
             # No active streams to consume this proactive message.
             # Persist directly and return to avoid creating an unused queue.
+            accepted = True
             try:
                 await self._save_proactive_message(conversation_id, message_chain)
             except Exception as e:
@@ -103,8 +104,9 @@ class WebChatAdapter(Platform):
                     f"[WebChatAdapter] Failed to save proactive message: {e}",
                     exc_info=True,
                 )
+                accepted = False
             await super().send_by_session(session, message_chain)
-            return
+            return accepted
 
         for request_id in target_request_ids:
             # Proactive messages have their own broadcast + persistence path;
@@ -121,6 +123,7 @@ class WebChatAdapter(Platform):
         # If only passive subscription queues exist for this conversation,
         # keep a proactive save as a fallback since they are not tied to
         # the normal streaming persistence path.
+        accepted = True
         if not stream_request_ids:
             try:
                 await self._save_proactive_message(conversation_id, message_chain)
@@ -129,8 +132,10 @@ class WebChatAdapter(Platform):
                     f"[WebChatAdapter] Failed to save proactive message: {e}",
                     exc_info=True,
                 )
+                accepted = False
 
         await super().send_by_session(session, message_chain)
+        return accepted
 
     async def _save_proactive_message(
         self,

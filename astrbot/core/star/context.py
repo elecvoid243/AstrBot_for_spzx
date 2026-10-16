@@ -692,7 +692,8 @@ class Context:
             session: Conversation from event.session or event.unified_msg_origin.
             message_chain: Message content.
             require_exact_source: Refuse adapters whose proactive API loses the
-                original audience or account instead of selecting a fallback.
+                original audience or account instead of selecting a fallback,
+                and retain notifications when an adapter explicitly declines.
 
         Returns:
             True after a matching adapter accepts the send. False when no
@@ -722,7 +723,9 @@ class Context:
                 ):
                     # These sources need event state absent from a saved UMO.
                     return False
-                await platform.send_by_session(session, message_chain)
+                accepted = await platform.send_by_session(session, message_chain)
+                if require_exact_source and accepted is False:
+                    return False
                 settings = self.get_config(umo=str(session)).get(
                     "provider_ltm_settings",
                     {},

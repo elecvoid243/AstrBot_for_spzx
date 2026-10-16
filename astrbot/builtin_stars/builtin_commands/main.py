@@ -94,10 +94,12 @@ class Main(star.Star):
                 True after the original response channel accepted the message.
             """
             if wecom_event is not None:
-                await wecom_event.send(event.plain_result(text), source_only=True)
+                accepted = await wecom_event.send(
+                    event.plain_result(text), source_only=True
+                )
             else:
-                await event.send(event.plain_result(text))
-            return True
+                accepted = await event.send(event.plain_result(text))
+            return accepted is not False
 
         context = cast(star.Context, self.context)
         service = context.workflow_service

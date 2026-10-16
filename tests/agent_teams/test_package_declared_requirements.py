@@ -11,6 +11,7 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("local_version", [False, True])
 @pytest.mark.parametrize(
     "requirement",
     [
@@ -23,7 +24,7 @@ from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
     ],
 )
 async def test_recomposed_import_enforces_declared_requirements(
-    workflow_env, tmp_path, requirement
+    workflow_env, tmp_path, requirement, local_version
 ):
     """Keep imported contracts when a local parent is transferred to a new store.
 
@@ -31,6 +32,7 @@ async def test_recomposed_import_enforces_declared_requirements(
         workflow_env: Public persistent services and a mutable external catalog.
         tmp_path: Isolated directory for the independent receiving store.
         requirement: Portable compatibility requirement absent or changed locally.
+        local_version: Reference a renamed local version of the imported child.
     """
     env = workflow_env
     schema = {
@@ -102,8 +104,18 @@ async def test_recomposed_import_enforces_declared_requirements(
         )
     installed = await env.service.import_asset("bob", {"package": package})
     child = installed["asset"]
+    selected = child
     original = await env.service.export_asset("bob", child["asset_id"], 1)
     assert (await env.service.check_readiness("bob", child["asset_id"], 1))["ready"]
+    if local_version:
+        selected = await env.service.save_asset(
+            "bob",
+            {
+                "definition": {**child["definition"], "name": "Renamed local child"},
+                "expected_version": 1,
+            },
+            child["asset_id"],
+        )
     coordinator = await env.roles.save_role(
         "bob",
         {
@@ -127,7 +139,7 @@ async def test_recomposed_import_enforces_declared_requirements(
                 "allowed_workflows": [
                     {
                         "asset_id": child["asset_id"],
-                        "version": 1,
+                        "version": selected["version"],
                         "result_task_id": "result",
                     }
                 ],
@@ -187,6 +199,392 @@ async def test_recomposed_import_enforces_declared_requirements(
         assert (await env.service.get_asset("bob", child["asset_id"], 1))[
             "definition"
         ] == child["definition"]
+    finally:
+        await receiver.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrap", [False, True])
+async def test_recomposition_keeps_task_logical_choices(workflow_env, tmp_path, wrap):
+    """Keep distinct task choices when one machine binds both to the same tool.
+
+    Args:
+        workflow_env: Public asset services and the exporting resource catalog.
+        tmp_path: Independent receiving machine's persistent directory.
+        wrap: Export through a newly authored parent rather than directly.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    env.inventory["tools"] = [
+        {"id": "alice-a", "fingerprint": "portable-tool", "capabilities": ["a"]},
+        {"id": "alice-b", "fingerprint": "portable-tool", "capabilities": ["b"]},
+    ]
+    inventory = copy.deepcopy(env.inventory)
+    inventory["models"][0]["id"] = "carol-model"
+    inventory["tools"][0]["id"] = "carol-a"
+    inventory["tools"][1]["id"] = "carol-b"
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared evidence role",
+                "prompt": "Use the selected source",
+                "tools": [],
+                "max_instances": 2,
+                "max_parallel": 2,
+            },
+            "installation": {
+                "bindings": {"model": "model-a", "alpha": "alice-a", "beta": "alice-b"}
+            },
+        },
+    )
+    graph = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Separate evidence choices",
+                "tasks": [
+                    {
+                        "id": name,
+                        "name": name,
+                        "member": name,
+                        "task": name,
+                        "role_id": role["role_id"],
+                        "role_version": 1,
+                        "overrides": {"tools": [slot]},
+                    }
+                    for name, slot in [("a", "alpha"), ("b", "beta")]
+                ],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", graph["asset_id"], 1)
+    for dependency in package["roles"][0]["dependencies"]:
+        if dependency["kind"] == "tools":
+            dependency["capabilities"] = [
+                "a" if "alpha" in dependency["logical_slots"] else "b"
+            ]
+    env.inventory["tools"] = [
+        {
+            "id": "bob-combined",
+            "fingerprint": "portable-tool",
+            "capabilities": ["a", "b"],
+        }
+    ]
+    imported = await env.service.import_asset("bob", {"package": package})
+    entry = imported["asset"]
+    if wrap:
+        coordinator = await env.roles.save_role(
+            "bob",
+            {
+                "definition": {
+                    "name": "Coordinator",
+                    "prompt": "Call the graph",
+                    "tools": [],
+                },
+                "installation": {"bindings": {"model": "model-a"}},
+            },
+        )
+        reference = {"role_id": coordinator["role_id"], "role_version": 1}
+        entry = await env.service.save_asset(
+            "bob",
+            {
+                "definition": {
+                    "kind": "autonomous",
+                    "name": "Local wrapper",
+                    "coordinator": reference,
+                    "allowed_roles": [reference],
+                    "allowed_workflows": [
+                        {
+                            "asset_id": entry["asset_id"],
+                            "version": 1,
+                            "result_task_id": "b",
+                        }
+                    ],
+                }
+            },
+        )
+    exported = await env.service.export_asset("bob", entry["asset_id"], 1)
+
+    async def catalog():
+        """Return two independently compatible receiving tools.
+
+        Returns:
+            A catalog whose tools separately satisfy the two declared capabilities.
+        """
+        return inventory
+
+    db = SQLiteDatabase(str(tmp_path / "receiver.sqlite"))
+    roles = RoleAssetService(db, catalog_loader=catalog)
+    receiver = WorkflowService(db, roles)
+    try:
+        transferred = await receiver.import_asset("carol", {"package": exported})
+        assert transferred["ready"]
+        current = transferred["asset"]
+        if wrap:
+            child = current["definition"]["allowed_workflows"][0]
+            current = await receiver.get_asset(
+                "carol", child["asset_id"], child["version"]
+            )
+        selections = {}
+        for task in current["definition"]["tasks"]:
+            selected_role = await roles.get_role(
+                "carol", task["role_id"], task["role_version"]
+            )
+            preview = await roles.preview_role(selected_role, task["overrides"])
+            selections[task["id"]] = preview["effective"]["tools"]
+        assert selections == {"a": ["carol-a"], "b": ["carol-b"]}
+        assert (
+            await receiver.check_readiness("carol", transferred["asset"]["asset_id"], 1)
+        )["ready"]
+    finally:
+        await receiver.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_local_task_edit_omits_unselected_task_requirement(
+    workflow_env, tmp_path
+):
+    """Transfer a local version that no longer selects an imported task tool.
+
+    Args:
+        workflow_env: Public services and the exporting machine's resources.
+        tmp_path: Independent receiving store without the old task tool.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    env.inventory["tools"] = [
+        {
+            "id": "local-search",
+            "fingerprint": "portable-search",
+            "capabilities": ["search"],
+        }
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Task evidence",
+                "prompt": "Read evidence",
+                "tools": [],
+            },
+            "installation": {
+                "bindings": {"model": "model-a", "search": "local-search"}
+            },
+        },
+    )
+    source = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Optional task evidence",
+                "task": "Read evidence",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "overrides": {"tools": ["search"]},
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", source["asset_id"], 1)
+    next(dep for dep in package["roles"][0]["dependencies"] if dep["kind"] == "tools")[
+        "capabilities"
+    ] = ["search"]
+    imported = await env.service.import_asset("bob", {"package": package})
+    child = imported["asset"]
+    changed = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {**child["definition"], "overrides": {"tools": []}},
+            "expected_version": 1,
+        },
+        child["asset_id"],
+    )
+    exported = await env.service.export_asset(
+        "bob", child["asset_id"], changed["version"]
+    )
+    inventory = copy.deepcopy(env.inventory)
+    inventory["models"][0]["id"] = "carol-model"
+    inventory["tools"] = []
+
+    async def catalog():
+        """Return the receiver's model and no search tool.
+
+        Returns:
+            Resources sufficient for the edited version's current selections.
+        """
+        return inventory
+
+    db = SQLiteDatabase(str(tmp_path / "receiver.sqlite"))
+    receiver = WorkflowService(db, RoleAssetService(db, catalog_loader=catalog))
+    try:
+        assert not (await receiver.preview_import("old", {"package": package}))["ready"]
+        installed = await receiver.import_asset("carol", {"package": exported})
+        assert installed["ready"]
+        assert (
+            await receiver.check_readiness("carol", installed["asset"]["asset_id"], 1)
+        )["ready"]
+        assert await env.service.export_asset("bob", child["asset_id"], 1) == package
+        assert (await env.service.get_asset("bob", child["asset_id"], 1))[
+            "definition"
+        ] == child["definition"]
+    finally:
+        await receiver.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("optional_field", ["fingerprint", "input_schema"])
+async def test_recomposition_preserves_unspecified_constraints(
+    workflow_env, tmp_path, optional_field
+):
+    """Accept a compatible receiver choice when the source omits a restriction.
+
+    Args:
+        workflow_env: Public source services and mutable external resources.
+        tmp_path: Independent receiving store directory.
+        optional_field: Portable model or tool constraint explicitly left unset.
+    """
+    env = workflow_env
+    env.inventory["models"] = [
+        {"id": "leaf-a", "fingerprint": "provider-a", "capabilities": ["image"]},
+        {"id": "coordinator-a", "fingerprint": "portable-coordinator"},
+    ]
+    env.inventory["tools"] = [
+        {
+            "id": "tool-a",
+            "fingerprint": "portable-tool",
+            "input_schema": {"type": "object", "required": ["query"]},
+        }
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Optional leaf",
+                "prompt": "Read evidence",
+                "tools": ["search"] if optional_field == "input_schema" else [],
+                "model_capabilities": ["image"],
+            },
+            "installation": {"bindings": {"model": "leaf-a", "search": "tool-a"}},
+        },
+    )
+    leaf = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Optional leaf",
+                "task": "Read",
+                "role_id": role["role_id"],
+                "role_version": 1,
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", leaf["asset_id"], 1)
+    declaration = next(
+        dep
+        for dep in package["roles"][0]["dependencies"]
+        if dep["kind"] == ("models" if optional_field == "fingerprint" else "tools")
+    )
+    declaration[optional_field] = None
+    choices = {
+        f"{role['role_id']}:{role['version']}": {
+            "profile_id": "default",
+            "bindings": {
+                dep["slot"]: "leaf-a" if dep["kind"] == "models" else "tool-a"
+                for dep in role["dependencies"]
+                if dep["kind"] != "profiles"
+            },
+        }
+        for role in package["roles"]
+    }
+    imported = await env.service.import_asset(
+        "bob", {"package": package, "installations": choices}
+    )
+    coordinator = await env.roles.save_role(
+        "bob",
+        {
+            "definition": {
+                "name": "Optional coordinator",
+                "prompt": "Call the leaf",
+                "tools": [],
+            },
+            "installation": {"bindings": {"model": "coordinator-a"}},
+        },
+    )
+    reference = {"role_id": coordinator["role_id"], "role_version": 1}
+    parent = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Optional wrapper",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": imported["asset"]["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    wrapped = await env.service.export_asset("bob", parent["asset_id"], 1)
+    inventory = copy.deepcopy(env.inventory)
+    inventory["profiles"][0]["id"] = "receiver-profile"
+    inventory["models"][0]["id"] = "leaf-b"
+    if optional_field == "fingerprint":
+        inventory["models"][0]["fingerprint"] = "provider-b"
+    inventory["models"][1]["id"] = "coordinator-b"
+    inventory["tools"][0].update(id="tool-b", input_schema={"type": "object"})
+
+    async def catalog():
+        """Return a compatible receiving catalog with different optional metadata.
+
+        Returns:
+            Model capabilities and tool identity that satisfy the source contract.
+        """
+        return inventory
+
+    db = SQLiteDatabase(str(tmp_path / "receiver.sqlite"))
+    receiver = WorkflowService(db, RoleAssetService(db, catalog_loader=catalog))
+    try:
+        for owner, exported in [("direct", package), ("wrapped", wrapped)]:
+            selected = {
+                f"{role['role_id']}:{role['version']}": {
+                    "profile_id": "receiver-profile",
+                    "bindings": {
+                        dep["slot"]: (
+                            "leaf-b"
+                            if role["definition"]["name"] == "Optional leaf"
+                            else "coordinator-b"
+                        )
+                        if dep["kind"] == "models"
+                        else "tool-b"
+                        for dep in role["dependencies"]
+                        if dep["kind"] != "profiles"
+                    },
+                }
+                for role in exported["roles"]
+            }
+            preview = await receiver.preview_import(
+                owner, {"package": exported, "installations": selected}
+            )
+            assert preview["ready"]
+            installed = await receiver.import_asset(
+                owner, {"package": exported, "installations": selected}
+            )
+            assert installed["ready"]
+            assert (
+                await receiver.check_readiness(owner, installed["asset"]["asset_id"], 1)
+            )["ready"]
+        assert (
+            await env.service.export_asset("bob", imported["asset"]["asset_id"], 1)
+            == package
+        )
     finally:
         await receiver.shutdown()
         await db.engine.dispose()

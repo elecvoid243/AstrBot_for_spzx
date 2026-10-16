@@ -1355,13 +1355,6 @@ class WorkflowService:
                     )
                 )
         definition = included[(asset_id, asset["version"])]["definition"]
-        imported_origins = {
-            f"{record.package_id}:{record.version}": (
-                f"{record.asset_id}:{record.installed_version}"
-            )
-            for record in installed_packages
-            if (record.asset_id, record.installed_version) in included
-        }
         tasks = []
         task_origins = {}
         for current in included.values():
@@ -1390,8 +1383,42 @@ class WorkflowService:
             portable = copy.deepcopy(role["definition"])
             portable["persona_slot"] = None
             portable["model_slot"] = "model"
-            dependencies = []
+            declarations = {}
+            for record in installed_packages:
+                source_key = next(
+                    (
+                        key
+                        for key, identity in record.role_ids.items()
+                        if identity == role_id
+                    ),
+                    None,
+                )
+                if source_key is None:
+                    continue
+                source_package = WorkflowPackage.model_validate(record.package)
+                source_role = next(
+                    item
+                    for item in source_package.roles
+                    if f"{item.role_id}:{item.version}" == source_key
+                )
+                # Installations share a local role only for identical manifests.
+                declarations = {
+                    item["slot"]: item
+                    for item in source_package.role_content(source_role)["dependencies"]
+                }
+                break
+            dependencies = {}
+            for slot, declared in declarations.items():
+                uses = declared.get("uses")
+                if uses is None or "role" in uses:
+                    dependency = copy.deepcopy(declared)
+                    if uses is not None:
+                        dependency["uses"] = {"role": uses["role"][:]}
+                        dependency["logical_slots"] = uses["role"][:]
+                    dependencies[slot] = dependency
+            reserved_slots = set(declarations)
             resource_slots: dict[tuple[str, str], str] = {}
+            base_configuration = copy.deepcopy(role["definition"])
             contexts = []
             for task in tasks:
                 if (task.get("role_id"), task.get("role_version")) == (
@@ -1429,15 +1456,16 @@ class WorkflowService:
                         baseline["issues"],
                     )
                 role = baseline
-            contexts.insert(0, (portable, role, role["definition"], "role"))
+                base_configuration.update(defaults)
+            contexts.insert(0, (portable, role, base_configuration, "role"))
             profile = next(
                 p
                 for p in catalog["profiles"]
                 if p["id"] == role["installation"]["profile_id"]
             )
             runner_type = profile.get("runner_type", "local")
-            dependencies.append(
-                {
+            if not any(dep["kind"] == "profiles" for dep in dependencies.values()):
+                dependencies["profile"] = {
                     "slot": "profile",
                     "kind": "profiles",
                     "runner_type": runner_type,
@@ -1447,7 +1475,7 @@ class WorkflowService:
                     "capabilities": portable["runner_capabilities"],
                     "uses": {"role": []},
                 }
-            )
+                reserved_slots.add("profile")
             for target, preview, original_config, origin in contexts:
                 effective = preview["effective"]
                 for field in (
@@ -1470,213 +1498,118 @@ class WorkflowService:
                     ("skills", effective["skills"]),
                     ("knowledge_bases", effective["knowledge_bases"]),
                 ):
+                    if field == "models":
+                        logical_references = (
+                            [base_configuration["model_slot"]] if values else []
+                        )
+                    else:
+                        logical_references = original_config.get(field)
+                        if logical_references is None:
+                            logical_references = base_configuration.get(field)
+                    selections = zip(
+                        logical_references
+                        if logical_references is not None
+                        else [None] * len(values),
+                        values,
+                        strict=True,
+                    )
                     slots = []
-                    for resource_id in values:
-                        key = (field, resource_id)
-                        if key not in resource_slots:
-                            slot = (
-                                "model"
-                                if field == "models"
-                                else f"{field}_{1 + sum(k[0] == field for k in resource_slots)}"
+                    for reference, resource_id in selections:
+                        declared = declarations.get(reference)
+                        if declared is not None and declared["kind"] != field:
+                            declared = None
+                        if declared is None and reference is not None:
+                            matches = [
+                                item
+                                for item in declarations.values()
+                                if item["kind"] == field
+                                and (
+                                    field == "models"
+                                    or reference in item["logical_slots"]
+                                )
+                            ]
+                            if len(matches) > 1:
+                                raise RoleAssetError(
+                                    "Dependency choices have ambiguous source provenance"
+                                )
+                            declared = matches[0] if matches else None
+                        if declared is not None:
+                            slot = declared["slot"]
+                            if slot not in dependencies:
+                                # Preserve every declared field, including None.
+                                dependencies[slot] = copy.deepcopy(declared)
+                                dependencies[slot]["uses"] = {}
+                                dependencies[slot]["logical_slots"] = []
+                        else:
+                            key = (
+                                field,
+                                f"logical:{reference}"
+                                if reference is not None
+                                else f"resource:{resource_id}",
                             )
-                            resource_slots[key] = slot
+                            slot = resource_slots.get(key)
+                            if slot is None:
+                                index = 0
+                                slot = "model" if field == "models" else f"{field}_1"
+                                while slot in reserved_slots:
+                                    index += 1
+                                    slot = f"{field}_{index}"
+                                reserved_slots.add(slot)
+                                resource_slots[key] = slot
+                        if slot not in dependencies:
                             resource = next(
                                 r for r in catalog[field] if r["id"] == resource_id
                             )
-                            dependencies.append(
-                                {
-                                    "slot": slot,
-                                    "kind": field,
-                                    "fingerprint": resource.get("fingerprint"),
-                                    "capabilities": portable["model_capabilities"]
-                                    if field == "models"
-                                    else [],
-                                    "runner_type": None,
-                                    "logical_slots": [],
-                                    "uses": {},
-                                    "description": resource.get("description") or "",
-                                    "display_name": resource.get("name", "")
-                                    if field == "knowledge_bases"
-                                    and resource.get("name") != resource_id
-                                    else "",
-                                    "input_schema": resource.get("input_schema")
-                                    if field == "tools"
-                                    else None,
-                                }
-                            )
-                        dependency = next(
-                            dep
-                            for dep in dependencies
-                            if dep["slot"] == resource_slots[key]
-                        )
-                        declared = (
-                            [original_config.get("model_slot", "model")]
-                            if field == "models"
-                            else original_config.get(field) or []
-                        )
-                        aliases = dependency["uses"].setdefault(origin, [])
-                        for logical_slot in declared:
-                            if (
-                                preview["installation"]["bindings"].get(logical_slot)
-                                == resource_id
-                                and logical_slot not in dependency["logical_slots"]
-                            ):
-                                dependency["logical_slots"].append(logical_slot)
-                            if (
-                                preview["installation"]["bindings"].get(logical_slot)
-                                == resource_id
-                                and logical_slot not in aliases
-                            ):
-                                aliases.append(logical_slot)
-                        slots.append(resource_slots[key])
+                            dependencies[slot] = {
+                                "slot": slot,
+                                "kind": field,
+                                "fingerprint": resource.get("fingerprint"),
+                                "capabilities": portable["model_capabilities"]
+                                if field == "models"
+                                else [],
+                                "runner_type": None,
+                                "logical_slots": [],
+                                "uses": {},
+                                "description": resource.get("description") or "",
+                                "display_name": resource.get("name", "")
+                                if field == "knowledge_bases"
+                                and resource.get("name") != resource_id
+                                else "",
+                                "input_schema": resource.get("input_schema")
+                                if field == "tools"
+                                else None,
+                            }
+                        dependency = dependencies[slot]
+                        if dependency.get("uses") is not None:
+                            # Current logical selections carry the contract across
+                            # local asset versions without reviving unused tasks.
+                            aliases = [reference] if reference is not None else []
+                            if declared is not None:
+                                aliases = declared["logical_slots"]
+                                if (
+                                    origin == "role"
+                                    and declared.get("uses") is not None
+                                    and "role" in declared["uses"]
+                                ):
+                                    aliases = declared["uses"]["role"]
+                            current_aliases = dependency["uses"].setdefault(origin, [])
+                            for alias in aliases:
+                                if alias not in current_aliases:
+                                    current_aliases.append(alias)
+                                if alias not in dependency["logical_slots"]:
+                                    dependency["logical_slots"].append(alias)
+                        slots.append(slot)
+                    if field == "models" and slots:
+                        portable["model_slot"] = slots[0]
                     if field != "models":
                         target[field] = slots
-            # Local selections cannot reconstruct the imported portable contract.
-            # Retain global declarations and only the included task provenance.
-            for record in installed_packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in record.role_ids.items()
-                        if identity == role_id
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                source_package = WorkflowPackage.model_validate(record.package)
-                source_role = next(
-                    item
-                    for item in source_package.roles
-                    if f"{item.role_id}:{item.version}" == source_key
-                )
-                for declared in source_package.role_content(source_role)[
-                    "dependencies"
-                ]:
-                    uses = declared.get("uses")
-                    if uses is not None:
-                        uses = {
-                            "role"
-                            if origin == "role"
-                            else imported_origins[origin]: aliases
-                            for origin, aliases in uses.items()
-                            if origin == "role" or origin in imported_origins
-                        }
-                        if not uses:
-                            continue
-                        declared["uses"] = uses
-                        declared["logical_slots"] = sorted(
-                            {alias for aliases in uses.values() for alias in aliases}
-                        )
-                    kind = declared["kind"]
-                    resource_id = role["installation"]["bindings"].get(declared["slot"])
-                    target_slot = (
-                        "profile"
-                        if kind == "profiles"
-                        else resource_slots.get((kind, resource_id))
-                    )
-                    existing = next(
-                        (item for item in dependencies if item["slot"] == target_slot),
-                        None,
-                    )
-                    if (
-                        uses is not None
-                        and "role" not in uses
-                        and kind not in {"profiles", "models"}
-                    ):
-                        # A task-only contract must not strengthen another context.
-                        scoped = next(
-                            (
-                                item
-                                for item in dependencies
-                                if {
-                                    key: value
-                                    for key, value in item.items()
-                                    if key != "slot"
-                                }
-                                == {
-                                    key: value
-                                    for key, value in declared.items()
-                                    if key != "slot"
-                                }
-                            ),
-                            None,
-                        )
-                        if scoped is None:
-                            slot = declared["slot"]
-                            index = len(dependencies)
-                            while any(item["slot"] == slot for item in dependencies):
-                                index += 1
-                                slot = f"{kind}_declared_{index}"
-                            scoped = {**declared, "slot": slot}
-                            dependencies.append(scoped)
-                        for target, _, _, origin in contexts:
-                            if origin in uses and target_slot in (
-                                target.get(kind) or []
-                            ):
-                                target[kind] = [
-                                    scoped["slot"] if slot == target_slot else slot
-                                    for slot in target[kind]
-                                ]
-                        if existing is not None and existing.get("uses") is not None:
-                            for origin in uses:
-                                if not any(
-                                    context_origin == origin
-                                    and target_slot in (target.get(kind) or [])
-                                    for target, _, _, context_origin in contexts
-                                ):
-                                    existing["uses"].pop(origin, None)
-                        continue
-                    if existing is None:
-                        existing = next(
-                            (
-                                item
-                                for item in dependencies
-                                if all(
-                                    item.get(field) == value
-                                    for field, value in declared.items()
-                                    if field != "slot"
-                                )
-                            ),
-                            None,
-                        )
-                    if existing is None:
-                        slot = declared["slot"]
-                        index = len(dependencies)
-                        while any(item["slot"] == slot for item in dependencies):
-                            index += 1
-                            slot = f"{kind}_declared_{index}"
-                        existing = {**declared, "slot": slot}
-                        dependencies.append(existing)
-                        if resource_id is not None:
-                            resource_slots[(kind, resource_id)] = slot
-                    else:
-                        for field in ("fingerprint", "runner_type", "input_schema"):
-                            if declared.get(field) is not None:
-                                existing[field] = copy.deepcopy(declared[field])
-                        existing["capabilities"] = sorted(
-                            set(existing.get("capabilities", []))
-                            | set(declared["capabilities"])
-                        )
-                        existing["logical_slots"] = sorted(
-                            set(existing.get("logical_slots", []))
-                            | set(declared["logical_slots"])
-                        )
-                        if uses is None or existing.get("uses") is None:
-                            existing.pop("uses", None)
-                        else:
-                            for origin, aliases in uses.items():
-                                existing["uses"][origin] = sorted(
-                                    set(existing["uses"].get(origin, [])) | set(aliases)
-                                )
-            dependencies = [item for item in dependencies if item.get("uses") != {}]
             portable_roles.append(
                 {
                     "role_id": role_id,
                     "version": role_version,
                     "definition": portable,
                     "prompt_source": role["sources"]["prompt"].split(":", 1)[0],
-                    "dependencies": dependencies,
+                    "dependencies": list(dependencies.values()),
                 }
             )
         package = WorkflowPackage.model_validate(

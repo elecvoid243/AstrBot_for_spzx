@@ -1296,18 +1296,25 @@ class WorkflowService:
         """
         asset = await self.get_asset(username, asset_id, version)
         async with self.db.get_db() as session:
-            original = (
+            installed_packages = (
                 (
                     await session.execute(
                         select(AgentWorkflowPackage).where(
                             AgentWorkflowPackage.owner_username == username,
-                            AgentWorkflowPackage.asset_id == asset_id,
-                            AgentWorkflowPackage.installed_version == asset["version"],
                         )
                     )
                 )
                 .scalars()
-                .first()
+                .all()
+            )
+            original = next(
+                (
+                    record
+                    for record in installed_packages
+                    if (record.asset_id, record.installed_version)
+                    == (asset_id, asset["version"])
+                ),
+                None,
             )
             if original is not None:
                 return copy.deepcopy(original.package)
@@ -1348,6 +1355,13 @@ class WorkflowService:
                     )
                 )
         definition = included[(asset_id, asset["version"])]["definition"]
+        imported_origins = {
+            f"{record.package_id}:{record.version}": (
+                f"{record.asset_id}:{record.installed_version}"
+            )
+            for record in installed_packages
+            if (record.asset_id, record.installed_version) in included
+        }
         tasks = []
         task_origins = {}
         for current in included.values():
@@ -1517,6 +1531,145 @@ class WorkflowService:
                         slots.append(resource_slots[key])
                     if field != "models":
                         target[field] = slots
+            # Local selections cannot reconstruct the imported portable contract.
+            # Retain global declarations and only the included task provenance.
+            for record in installed_packages:
+                source_key = next(
+                    (
+                        key
+                        for key, identity in record.role_ids.items()
+                        if identity == role_id
+                    ),
+                    None,
+                )
+                if source_key is None:
+                    continue
+                source_package = WorkflowPackage.model_validate(record.package)
+                source_role = next(
+                    item
+                    for item in source_package.roles
+                    if f"{item.role_id}:{item.version}" == source_key
+                )
+                for declared in source_package.role_content(source_role)[
+                    "dependencies"
+                ]:
+                    uses = declared.get("uses")
+                    if uses is not None:
+                        uses = {
+                            "role"
+                            if origin == "role"
+                            else imported_origins[origin]: aliases
+                            for origin, aliases in uses.items()
+                            if origin == "role" or origin in imported_origins
+                        }
+                        if not uses:
+                            continue
+                        declared["uses"] = uses
+                        declared["logical_slots"] = sorted(
+                            {alias for aliases in uses.values() for alias in aliases}
+                        )
+                    kind = declared["kind"]
+                    resource_id = role["installation"]["bindings"].get(declared["slot"])
+                    target_slot = (
+                        "profile"
+                        if kind == "profiles"
+                        else resource_slots.get((kind, resource_id))
+                    )
+                    existing = next(
+                        (item for item in dependencies if item["slot"] == target_slot),
+                        None,
+                    )
+                    if (
+                        uses is not None
+                        and "role" not in uses
+                        and kind not in {"profiles", "models"}
+                    ):
+                        # A task-only contract must not strengthen another context.
+                        scoped = next(
+                            (
+                                item
+                                for item in dependencies
+                                if {
+                                    key: value
+                                    for key, value in item.items()
+                                    if key != "slot"
+                                }
+                                == {
+                                    key: value
+                                    for key, value in declared.items()
+                                    if key != "slot"
+                                }
+                            ),
+                            None,
+                        )
+                        if scoped is None:
+                            slot = declared["slot"]
+                            index = len(dependencies)
+                            while any(item["slot"] == slot for item in dependencies):
+                                index += 1
+                                slot = f"{kind}_declared_{index}"
+                            scoped = {**declared, "slot": slot}
+                            dependencies.append(scoped)
+                        for target, _, _, origin in contexts:
+                            if origin in uses and target_slot in (
+                                target.get(kind) or []
+                            ):
+                                target[kind] = [
+                                    scoped["slot"] if slot == target_slot else slot
+                                    for slot in target[kind]
+                                ]
+                        if existing is not None and existing.get("uses") is not None:
+                            for origin in uses:
+                                if not any(
+                                    context_origin == origin
+                                    and target_slot in (target.get(kind) or [])
+                                    for target, _, _, context_origin in contexts
+                                ):
+                                    existing["uses"].pop(origin, None)
+                        continue
+                    if existing is None:
+                        existing = next(
+                            (
+                                item
+                                for item in dependencies
+                                if all(
+                                    item.get(field) == value
+                                    for field, value in declared.items()
+                                    if field != "slot"
+                                )
+                            ),
+                            None,
+                        )
+                    if existing is None:
+                        slot = declared["slot"]
+                        index = len(dependencies)
+                        while any(item["slot"] == slot for item in dependencies):
+                            index += 1
+                            slot = f"{kind}_declared_{index}"
+                        existing = {**declared, "slot": slot}
+                        dependencies.append(existing)
+                        if resource_id is not None:
+                            resource_slots[(kind, resource_id)] = slot
+                    else:
+                        for field in ("fingerprint", "runner_type", "input_schema"):
+                            if declared.get(field) is not None:
+                                existing[field] = copy.deepcopy(declared[field])
+                        existing["capabilities"] = sorted(
+                            set(existing.get("capabilities", []))
+                            | set(declared["capabilities"])
+                        )
+                        existing["logical_slots"] = sorted(
+                            set(existing.get("logical_slots", []))
+                            | set(declared["logical_slots"])
+                        )
+                        if uses is None or existing.get("uses") is None:
+                            existing.pop("uses", None)
+                        else:
+                            for origin, aliases in uses.items():
+                                existing["uses"][origin] = sorted(
+                                    set(existing["uses"].get(origin, [])) | set(aliases)
+                                )
+            dependencies = [item for item in dependencies if item.get("uses") != {}]
             portable_roles.append(
                 {
                     "role_id": role_id,

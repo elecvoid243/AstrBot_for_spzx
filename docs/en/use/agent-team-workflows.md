@@ -52,7 +52,6 @@ In the intended platform conversation, send `/asset whoami`. It returns the actu
 
 An asset owner opens **Agent Teams → Workflow Assets → Chat access**, copies those four values, and chooses **Open this version**. The grant pins the displayed asset version and allows its final result to be delivered to that exact conversation. A group conversation grant therefore explicitly allows the result to be visible in that group. Every reachable role, allowed team member and nested workflow must use the source profile; existing model/persona pools and tool, skill and knowledge-base restrictions still apply. Importing a package does not open it to chat callers. Use **Revoke access** to stop subsequent external work and result delivery; already delivered work remains recorded.
 
-![Actual fixed-version chat access configuration](/images/agent-chat-access-en.jpg)
 
 Use `/asset list` to see accessible names, IDs, pinned versions and required input names. Invoke an asset explicitly, for example:
 
@@ -67,6 +66,8 @@ The source receives acceptance, a notice when human input is needed, and the fin
 The connection is limited to this run and lasts 30 minutes. After expiry, a page refresh or a server restart, reconnect and confirm again to continue the same run and todo; this does not launch the asset again. Revocation or a source-profile change also invalidates access through existing connections. Approval previews are limited to the exact version named by that request and files declared by that version; other child artifacts, versions, export and editing remain unavailable. Owner process, thinking, tool records and resource configuration are not shared.
 
 Entry mapping: chat notices now use the restricted initiator entry `/#/asset-run?workflow_run=...` instead of `/#/agent-teams?workflow_run=...`. The latter remains the owner's full **Independent Runs** detail page after Dashboard login. For an old message containing a run ID, send `/asset status <run ID>` from the original authorized source to obtain the new entry.
+
+After completion, use **Preview File** to read a final text file in this page or **Download File** to retrieve its complete bytes with the original filename. Binary files use the download action. The list includes only files declared by the immutable result version actually published by this root run, including results without an approval request. New owner revisions, unrelated child files and files from other runs are excluded. The same source confirmation and live grant checks apply to each file request.
 
 ![The initiator confirms this browser from the original source](/images/agent-chat-source-connect-en.jpg)
 

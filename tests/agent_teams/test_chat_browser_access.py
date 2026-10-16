@@ -201,6 +201,7 @@ async def test_initiator_connects_through_returned_entry_and_answers_original_to
         "detail_path",
         "todos",
         "control_status",
+        "result_files",
     }
     assert data["todos"][0]["todo_id"] == original_todo
     assert data["todos"][0]["question"] == "Which region?"
@@ -328,6 +329,9 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
     denied_status = 401 if change == "expiry" else 403
     assert (await client.get(path, headers=headers)).status_code == denied_status
     assert (
+        await client.get(path + "/result/files/unknown", headers=headers)
+    ).status_code == denied_status
+    assert (
         await client.post(
             path + "/todos/" + todo["todo_id"] + "/answer",
             headers=headers,
@@ -337,6 +341,8 @@ async def test_confirmed_browser_loses_read_and_answer_access_after_source_chang
     original = await service.get_run("operator", run["run_id"])
     assert original["todos"][0]["todo_id"] == todo["todo_id"]
     assert original["todos"][0]["status"] == "pending"
+    if change == "profile":
+        await preferences.close()
 
 
 @pytest.mark.asyncio

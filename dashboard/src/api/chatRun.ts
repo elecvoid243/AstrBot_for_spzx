@@ -17,6 +17,15 @@ export interface ChatRunView {
   control_status: string;
   result: unknown;
   todos: any[];
+  result_files: ChatResultFile[];
+}
+
+export interface ChatResultFile {
+  file_id: string;
+  filename: string;
+  media_type: string;
+  artifact_id: string;
+  version: number;
 }
 
 export const chatRunApi = {
@@ -94,6 +103,23 @@ export const chatRunApi = {
       )}/artifact/files/${encodeURIComponent(fileId)}`,
       {
         headers: { "X-AstrBot-Chat-Session": credential },
+        responseType: "blob",
+      },
+    );
+  },
+  async resultFile(
+    runId: string,
+    credential: string,
+    fileId: string,
+    download: boolean,
+  ) {
+    return client.get<Blob>(
+      `/api/v1/workflow_chat_runs/${encodeURIComponent(
+        runId,
+      )}/result/files/${encodeURIComponent(fileId)}`,
+      {
+        headers: { "X-AstrBot-Chat-Session": credential },
+        params: { download },
         responseType: "blob",
       },
     );

@@ -247,6 +247,39 @@ class WorkflowChat:
             owner, ref["artifact_id"], ref["version"]
         )
 
+    async def read_browser_result_file(
+        self, caller: ChatCaller, run_id: str, file_id: str
+    ) -> dict:
+        """Read a file from the exact completed result published to this caller.
+
+        Args:
+            caller: Confirmed initiator in its currently authorized source.
+            run_id: Original completed invocation root.
+            file_id: File declared by a published immutable result version.
+
+        Returns:
+            Complete file bytes and safe metadata from the shared artifact service.
+
+        Raises:
+            RoleAssetError: The source, result, exact version or file is inaccessible.
+        """
+        projection = await self.get_run(caller, run_id, include_todos=True)
+        published = next(
+            (file for file in projection["result_files"] if file["file_id"] == file_id),
+            None,
+        )
+        if published is None:
+            raise RoleAssetError("Final result file not found", status=404)
+        async with self.service.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None:
+                raise RoleAssetError("Run not found", status=404)
+            owner = row.owner_username
+        # Both preview and download honor the shared exact-version approval rule.
+        return await self.service.get_file(
+            owner, published["artifact_id"], published["version"], file_id
+        )
+
     async def save_access(self, username: str, asset_id: str, payload: dict) -> dict:
         """Open a fixed asset version to an exact platform instance and sender.
 
@@ -545,7 +578,8 @@ class WorkflowChat:
         Args:
             caller: Actual caller in the authorized result delivery conversation.
             run_id: Previously accepted root run.
-            include_todos: Include only explicit human prompts for a confirmed browser.
+            include_todos: Include explicit human prompts and published file references
+                for a confirmed browser.
 
         Returns:
             Status, final result and the existing authenticated WebUI detail path.
@@ -590,6 +624,42 @@ class WorkflowChat:
                 }
                 for todo in run.get("todos", [])
             ]
+            result_files = {}
+            if run["status"] == "completed":
+                published = (
+                    [(run["result_ref"], run["result"])]
+                    if run.get("result_ref")
+                    else [
+                        (task["result_ref"], run["result"]["tasks"][task["node_id"]])
+                        for task in run.get("tasks", [])
+                        if task.get("result_ref")
+                        and task["node_id"] in run["result"].get("tasks", {})
+                    ]
+                )
+                for reference, content in published:
+                    approvals = [
+                        todo
+                        for todo in run.get("todos", [])
+                        if todo["kind"] == "approval"
+                        and todo.get("artifact_ref", {}).get("artifact_id")
+                        == reference["artifact_id"]
+                    ]
+                    if approvals and not any(
+                        todo["status"] == "approved"
+                        and todo["artifact_ref"] == reference
+                        for todo in approvals
+                    ):
+                        continue
+                    artifact = await self.service.read_artifact(
+                        row.owner_username,
+                        reference["artifact_id"],
+                        reference["version"],
+                    )
+                    if artifact["content"] != content:
+                        continue
+                    for file in artifact["files"]:
+                        result_files.setdefault(file["file_id"], {**file, **reference})
+            projection["result_files"] = list(result_files.values())
         return projection
 
     async def deliver_pending(

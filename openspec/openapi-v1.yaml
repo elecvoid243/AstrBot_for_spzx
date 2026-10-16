@@ -6532,6 +6532,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/result/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Chat Result File
+      description: "Preview or download a file explicitly published in the completed\
+        \ root result.\n\nArgs:\n    run_id: Original completed chat invocation.\n \
+        \   file_id: File declared by the exact published result version.\n    download:\
+        \ Use an attachment response instead of an inline preview.\n    credential:\
+        \ Browser-only session confirmed through the original source.\n    service:\
+        \ Shared application service.\n\nReturns:\n    Scoped final file bytes without\
+        \ arbitrary artifact or owner access."
+      operationId: get_chat_result_file_api_v1_workflow_chat_runs__run_id__result_files__file_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_assets:
     get:
       tags:

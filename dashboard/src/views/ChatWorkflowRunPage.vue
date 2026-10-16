@@ -75,6 +75,37 @@
             <pre class="chat-result" data-testid="chat-final-result">{{
               JSON.stringify(run.result, null, 2)
             }}</pre>
+            <div
+              v-for="file in run.result_files"
+              :key="file.file_id"
+              class="mt-3"
+              data-testid="chat-result-file"
+            >
+              <p>{{ file.filename }} · v{{ file.version }}</p>
+              <v-btn
+                variant="text"
+                :disabled="fileBusy"
+                data-testid="chat-result-preview"
+                @click="readResultFile(file, false)"
+                >{{ tm("v2.previewFile") }}</v-btn
+              >
+              <v-btn
+                variant="tonal"
+                :disabled="fileBusy"
+                data-testid="chat-result-download"
+                @click="readResultFile(file, true)"
+                >{{ tm("v2.downloadFile") }}</v-btn
+              >
+            </div>
+            <pre
+              v-if="fileText"
+              class="chat-result mt-3"
+              data-testid="chat-file-preview"
+              >{{ fileText }}</pre
+            >
+            <p v-if="binaryPreview" class="mt-3">
+              {{ tm("chatRun.binaryFile") }}
+            </p>
           </template>
         </template>
       </v-card-text>
@@ -89,6 +120,7 @@ import {
   chatRunApi,
   type ChatRunConnection,
   type ChatRunView,
+  type ChatResultFile,
 } from "@/api/chatRun";
 import type { HumanAnswerRequest } from "@/api/generated/openapi-v1";
 import WorkflowHumanTodo from "@/components/agent_teams/WorkflowHumanTodo.vue";
@@ -111,6 +143,10 @@ const run = ref<ChatRunView | null>(null);
 const error = ref("");
 const connecting = ref(false);
 const busy = ref(false);
+const fileBusy = ref(false);
+const fileText = ref("");
+const binaryPreview = ref(false);
+const fileUrls: string[] = [];
 let epoch = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
@@ -121,6 +157,9 @@ async function connect() {
   connection.value = null;
   run.value = null;
   busy.value = false;
+  fileBusy.value = false;
+  fileText.value = "";
+  binaryPreview.value = false;
   error.value = "";
   if (!runId.value) {
     error.value = tm("chatRun.missing");
@@ -204,6 +243,42 @@ async function submit(todoId: string, payload: HumanAnswerRequest) {
   }
 }
 
+async function readResultFile(file: ChatResultFile, download: boolean) {
+  if (fileBusy.value || !connection.value) return;
+  const current = epoch;
+  fileBusy.value = true;
+  error.value = "";
+  fileText.value = "";
+  binaryPreview.value = false;
+  try {
+    const response = await chatRunApi.resultFile(
+      runId.value,
+      credential.value,
+      file.file_id,
+      download,
+    );
+    if (current !== epoch || disposed) return;
+    if (download) {
+      const url = URL.createObjectURL(response.data);
+      fileUrls.push(url);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.filename;
+      link.click();
+    } else if (response.data.type.startsWith("text/")) {
+      const text = await response.data.text();
+      if (current === epoch && !disposed) fileText.value = text;
+    } else {
+      binaryPreview.value = true;
+    }
+  } catch (err) {
+    if (current === epoch && !disposed)
+      error.value = extractApiError(err, tm("chatRun.failed")).message;
+  } finally {
+    if (current === epoch && !disposed) fileBusy.value = false;
+  }
+}
+
 watch(
   runId,
   () => {
@@ -215,6 +290,7 @@ onUnmounted(() => {
   disposed = true;
   epoch++;
   clearTimeout(timer);
+  fileUrls.forEach((url) => URL.revokeObjectURL(url));
 });
 </script>
 

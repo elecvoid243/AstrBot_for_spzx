@@ -1,5 +1,6 @@
 {
   "chatRun": {
+    "binaryFile": "Use Download File to open this file with a local application.",
     "title": "Chat run",
     "scope": "Confirm this browser from the original chat to view this run, answer its human requests and read its final result. Owner process, thinking and tool records are not shared.",
     "confirm": "The initiating sender must send this command in the same conversation used to start the run. Keep this browser open.",

@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   answer: vi.fn(),
   preview: vi.fn(),
   file: vi.fn(),
+  resultFile: vi.fn(),
 }));
 vi.mock("@/api/chatRun", () => ({ chatRunApi: api }));
 const testRoute = reactive({ query: { workflow_run: "root-run" } });
@@ -214,4 +215,84 @@ describe("source-confirmed run details", () => {
       wrapper.unmount();
     }
   });
+  it.each(["text/plain", "text/html"])(
+    "previews %s as text and downloads the published file without an approval todo",
+    async (type) => {
+      const content =
+        "<script>window.finalInjected = true</script>COMPLETE_FINAL_FILE_CONTENT";
+      api.connection.mockResolvedValue({
+        session_id: "nonce",
+        token: "browser-secret",
+        command: "/asset connect nonce",
+        expires_at: 2000000000,
+      });
+      api.status.mockResolvedValue({ confirmed: true });
+      api.run.mockResolvedValue({
+        run_id: "root-run",
+        status: "completed",
+        control_status: "active",
+        result: {
+          text: "The report is attached.",
+          files: [{ file_id: "published" }],
+        },
+        todos: [],
+        result_files: [
+          {
+            file_id: "published",
+            filename: "final-report.txt",
+            media_type: type,
+            artifact_id: "root-run",
+            version: 1,
+          },
+        ],
+      });
+      const blob = new Blob([content], { type });
+      api.resultFile.mockResolvedValue({ data: blob });
+      const createUrl = vi
+        .spyOn(URL, "createObjectURL")
+        .mockReturnValue("blob:final-result");
+      const names: string[] = [];
+      const download = vi
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(function (this: HTMLAnchorElement) {
+          names.push(this.download);
+        });
+      const wrapper = mount(ChatWorkflowRunPage, { global: { stubs } });
+      try {
+        await flushPromises();
+        expect(wrapper.find('[data-testid="human-todo"]').exists()).toBe(false);
+        await wrapper
+          .get('[data-testid="chat-result-preview"]')
+          .trigger("click");
+        await flushPromises();
+        expect(api.resultFile).toHaveBeenLastCalledWith(
+          "root-run",
+          "nonce.browser-secret",
+          "published",
+          false,
+        );
+        expect(
+          wrapper.get('[data-testid="chat-file-preview"]').text(),
+        ).toContain(content);
+        expect(wrapper.find("script").exists()).toBe(false);
+        expect(wrapper.find("iframe").exists()).toBe(false);
+        await wrapper
+          .get('[data-testid="chat-result-download"]')
+          .trigger("click");
+        await flushPromises();
+        expect(api.resultFile).toHaveBeenLastCalledWith(
+          "root-run",
+          "nonce.browser-secret",
+          "published",
+          true,
+        );
+        expect(createUrl).toHaveBeenCalledWith(blob);
+        expect(names).toEqual(["final-report.txt"]);
+      } finally {
+        wrapper.unmount();
+        download.mockRestore();
+        createUrl.mockRestore();
+      }
+    },
+  );
 });

@@ -212,6 +212,57 @@ async def preview_chat_approval_file(
         return JSONResponse(error(str(exc)), status_code=exc.status)
 
 
+@router.get(
+    "/workflow_chat_runs/{run_id}/result/files/{file_id}",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        }
+    },
+)
+async def get_chat_result_file(
+    run_id: str,
+    file_id: str,
+    download: bool = True,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview or download a file explicitly published in the completed root result.
+
+    Args:
+        run_id: Original completed chat invocation.
+        file_id: File declared by the exact published result version.
+        download: Use an attachment response instead of an inline preview.
+        credential: Browser-only session confirmed through the original source.
+        service: Shared application service.
+
+    Returns:
+        Scoped final file bytes without arbitrary artifact or owner access.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        assert caller is not None
+        file = await service.chat.read_browser_result_file(caller, run_id, file_id)
+        disposition = "attachment" if download else "inline"
+        return Response(
+            file["content"],
+            media_type=file["media_type"],
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "Content-Disposition": f"{disposition}; filename*=UTF-8''"
+                + quote(file["filename"], safe=""),
+            },
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
+
+
 @router.get("/workflow_assets/{asset_id}/chat_access")
 async def list_chat_access(
     asset_id: str,

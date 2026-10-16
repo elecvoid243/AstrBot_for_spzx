@@ -5111,6 +5111,20 @@ export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifact
 
 export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (HTTPValidationError);
 
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData = {
+    path: {
+        file_id: string;
+        run_id: string;
+    };
+    query?: {
+        download?: boolean;
+    };
+};
+
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetResponse = ((Blob | File));
+
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (HTTPValidationError);
+
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetError = unknown;

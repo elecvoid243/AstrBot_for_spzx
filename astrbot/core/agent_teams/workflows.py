@@ -4760,7 +4760,7 @@ class WorkflowService:
         asset: dict,
         request: WorkflowStartRequest,
         nesting_depth: int = 0,
-        depth_limit: int = 20,
+        depth_limit: int | None = None,
     ) -> dict:
         """Resolve a complete graph and its pinned child resources before any write.
 
@@ -4769,7 +4769,8 @@ class WorkflowService:
             asset: Exact saved asset version.
             request: Declared inputs and source for this scope.
             nesting_depth: Reference traversal bounded by the supported nesting ceiling.
-            depth_limit: Effective ancestor and caller ceiling for this reference path.
+            depth_limit: Imported-entry ancestor and caller ceiling. Ordinary local
+                entries retain their existing checks at the runtime call boundary.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
@@ -4777,7 +4778,24 @@ class WorkflowService:
         Raises:
             RoleAssetError: A definition, contract, resource, depth or instance limit fails.
         """
-        if nesting_depth > min(depth_limit, 20):
+        if nesting_depth > 20:
+            raise RoleAssetError("Nested references exceed the supported depth limit")
+        if nesting_depth == 0:
+            async with self.db.get_db() as session:
+                imported = (
+                    await session.execute(
+                        select(AgentWorkflowPackage.asset_id)
+                        .where(
+                            AgentWorkflowPackage.owner_username == username,
+                            AgentWorkflowPackage.asset_id == asset["asset_id"],
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            if imported is not None:
+                # Local edits keep the imported entry's closure readiness contract.
+                depth_limit = 20
+        if depth_limit is not None and nesting_depth > depth_limit:
             raise RoleAssetError("Nested references exceed the declared depth limit")
         team = (
             asset["definition"]
@@ -4895,7 +4913,7 @@ class WorkflowService:
                 )
         for frozen in [*members.values(), *allowed_roles.values()]:
             limit = frozen["effective"].get("max_depth")
-            if limit is not None and nesting_depth > limit:
+            if depth_limit is not None and limit is not None and nesting_depth > limit:
                 raise RoleAssetError(
                     "Nested member exceeds the effective role depth limit",
                     [
@@ -4946,7 +4964,9 @@ class WorkflowService:
                 child,
                 WorkflowStartRequest(version=task.team.version, source=request.source),
                 nesting_depth + 1,
-                min(depth_limit, definition.max_depth),
+                min(depth_limit, definition.max_depth)
+                if depth_limit is not None
+                else None,
             )
         allowed_workflows = {}
         for ref in team.get("allowed_workflows", []) if team else []:
@@ -4962,7 +4982,9 @@ class WorkflowService:
                     depth_limit,
                     definition.max_depth,
                     members["coordinator"]["effective"].get("max_depth") or 20,
-                ),
+                )
+                if depth_limit is not None
+                else None,
             )
             if not any(
                 task["id"] == ref["result_task_id"]

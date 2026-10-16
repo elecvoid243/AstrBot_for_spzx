@@ -391,7 +391,7 @@ class WorkflowPackage(PackageAsset):
         results = []
         for identity, asset in definitions.items():
             included, roles = set(), set()
-            checked_depths: dict[tuple[str, int], int] = {}
+            checked_depths: dict[tuple[str, int, int], int] = {}
             pending: list[tuple[tuple[str, int], tuple[tuple[str, int], ...], int]] = [
                 (identity, (), 20)
             ]
@@ -451,10 +451,11 @@ class WorkflowPackage(PackageAsset):
                         ):
                             # Only the coordinator calls the declared child workflows.
                             limit = min(limit, role_limit)
-                remaining = limit - len(ancestors)
-                if checked_depths.get(key, 21) <= remaining:
+                # Descendant role limits also depend on absolute placement.
+                depth_context = (key[0], key[1], len(ancestors))
+                if checked_depths.get(depth_context, 21) <= limit:
                     continue
-                checked_depths[key] = remaining
+                checked_depths[depth_context] = limit
                 included.add(key)
                 for ref in refs:
                     pending.append(
@@ -2167,25 +2168,59 @@ class WorkflowService:
                         ],
                         status=409,
                     )
-                matching = next(
-                    (
-                        (original, identity)
-                        for original, identity, manifest in known_roles[key]
-                        if manifest == package.role_content(role)
-                    ),
-                    None,
-                )
-                if matching is None:
-                    continue
-                original, identity = matching
-                local = await session.get(AgentRoleInstallation, (identity, 1))
-                if local is None:
-                    raise RoleAssetError(
-                        "Existing package installation is incomplete", status=409
+                saved_installations[key] = []
+                for content in contents:
+                    variant = WorkflowPackage.model_validate(content)
+                    member = next(
+                        (
+                            item
+                            for item in variant.roles
+                            if (item.role_id, item.version)
+                            == (role.role_id, role.version)
+                        ),
+                        None,
                     )
-                saved_installations[key] = role.remap_installation(
-                    original, RoleInstallation.model_validate(local.installation)
-                )
+                    if member is None:
+                        continue
+                    record = records.get((variant.asset_id, variant.version))
+                    matching = next(
+                        (
+                            (original, identity)
+                            for original, identity, manifest in known_roles[key]
+                            if (record is not None and identity == record.role_ids[key])
+                            or (
+                                record is None
+                                and manifest == variant.role_content(member)
+                            )
+                        ),
+                        None,
+                    )
+                    if matching is None:
+                        continue
+                    original, identity = matching
+                    local = await session.get(AgentRoleInstallation, (identity, 1))
+                    if local is None:
+                        raise RoleAssetError(
+                            "Existing package installation is incomplete", status=409
+                        )
+                    installation = member.remap_installation(
+                        original, RoleInstallation.model_validate(local.installation)
+                    )
+                    # Transport slot names as values to recover the canonical
+                    # correspondence using the same provenance rules as import.
+                    slots = member.remap_installation(
+                        role,
+                        RoleInstallation(
+                            bindings={
+                                dependency.slot: dependency.slot
+                                for dependency in role.dependencies
+                                if dependency.kind != "profiles"
+                            },
+                        ),
+                    ).bindings
+                    saved_installations[key].append(
+                        (variant, member, installation, slots)
+                    )
         catalog = await self.roles.get_resources()
         previews, issues = [], []
         for role_index, role in enumerate(package.roles):
@@ -2193,9 +2228,83 @@ class WorkflowService:
             proposed, role_issues = await self._preview_package_role(
                 package,
                 role,
-                request.installations.get(key) or saved_installations.get(key),
+                request.installations.get(key),
                 catalog,
             )
+            explicit = key in request.installations
+            variants = saved_installations.get(key, [])
+            if variants and not explicit:
+                automatic = {
+                    dependency["slot"]
+                    for dependency in proposed["dependencies"]
+                    if dependency["automatic"]
+                }
+                for dependency in proposed["dependencies"]:
+                    choices = set()
+                    for _, _, installation, slots in variants:
+                        if dependency["kind"] == "profiles":
+                            choices.add(installation.profile_id)
+                        else:
+                            choices.update(
+                                installation.bindings.get(slot)
+                                for slot, canonical in slots.items()
+                                if canonical == dependency["slot"]
+                            )
+                    choices &= {
+                        candidate["id"] for candidate in dependency["candidates"]
+                    }
+                    if len(choices) == 1:
+                        chosen = choices.pop()
+                        if dependency["kind"] == "profiles":
+                            proposed["installation"]["profile_id"] = chosen
+                        else:
+                            proposed["installation"]["bindings"][dependency["slot"]] = (
+                                chosen
+                            )
+                        automatic.discard(dependency["slot"])
+                    elif len(choices) > 1:
+                        issues.append(
+                            {
+                                "path": f"roles.{key}.{dependency['slot']}",
+                                "code": "CONFIRMATION_REQUIRED",
+                                "message": "Reused installations have different compatible choices; confirm a shared binding",
+                            }
+                        )
+                proposed, role_issues = await self._preview_package_role(
+                    package,
+                    role,
+                    RoleInstallation.model_validate(proposed["installation"]),
+                    catalog,
+                )
+                for dependency in proposed["dependencies"]:
+                    dependency["automatic"] = dependency["slot"] in automatic
+            # The entry review validates every context with the shared proposal.
+            # Preserve compatible local choices until a deliberate rebind.
+            for variant, member, saved, _ in variants:
+                installation = member.remap_installation(
+                    role, RoleInstallation.model_validate(proposed["installation"])
+                )
+                if not explicit:
+                    retained, _ = await self._preview_package_role(
+                        variant, member, saved, catalog
+                    )
+                    for dependency in retained["dependencies"]:
+                        selected = (
+                            installation.profile_id
+                            if dependency["kind"] == "profiles"
+                            else installation.bindings.get(dependency["slot"])
+                        )
+                        if (
+                            dependency["status"] == "matched"
+                            and dependency["selected"] != selected
+                        ):
+                            issues.append(
+                                {
+                                    "path": f"assets.{variant.asset_id}:{variant.version}.roles.{key}.{dependency['slot']}",
+                                    "code": "CONFIRMATION_REQUIRED",
+                                    "message": "Confirm changing the compatible binding retained by this reused installation",
+                                }
+                            )
             previews.append(proposed)
             issues.extend(role_issues)
             if role.definition.max_depth is None:
@@ -2418,7 +2527,9 @@ class WorkflowService:
                             known_roles.setdefault(key, []).append(
                                 (role, identity, current_package.role_content(role))
                             )
-                        elif key in payload.get("installations", {}):
+                        elif preview["ready"] or key in payload.get(
+                            "installations", {}
+                        ):
                             local = await session.get(
                                 AgentRoleInstallation, (identity, 1)
                             )
@@ -2433,6 +2544,21 @@ class WorkflowService:
                                 raise RoleAssetError(
                                     "Existing package installation is incomplete",
                                     status=409,
+                                )
+                            if not preview["ready"]:
+                                # The dialog copies unresolved proposals too.
+                                # Omitted choices must not erase saved bindings.
+                                saved = RoleInstallation.model_validate(
+                                    local.installation
+                                )
+                                installation = RoleInstallation(
+                                    profile_id=saved.profile_id
+                                    if installation.profile_id == "__unconfigured__"
+                                    else installation.profile_id,
+                                    bindings={
+                                        **saved.bindings,
+                                        **installation.bindings,
+                                    },
                                 )
                             local.installation = installation.model_dump()
                         role_ids[key] = identity

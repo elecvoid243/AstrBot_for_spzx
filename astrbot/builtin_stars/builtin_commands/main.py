@@ -132,6 +132,11 @@ class Main(star.Star):
                 await send_source(
                     caller, json.dumps(caller.model_dump(), ensure_ascii=False)
                 )
+            elif request.startswith("connect "):
+                connection = await service.chat.confirm_browser(
+                    caller, request.removeprefix("connect ").strip()
+                )
+                await send_source(caller, json.dumps(connection, ensure_ascii=False))
             elif request.startswith("status "):
                 run_id = request.removeprefix("status ").strip()
                 await service.chat.get_run(caller, run_id)

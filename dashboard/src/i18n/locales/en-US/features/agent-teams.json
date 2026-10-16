@@ -1,7 +1,19 @@
 {
+  "chatRun": {
+    "title": "Chat run",
+    "scope": "Confirm this browser from the original chat to view this run, answer its human requests and read its final result. Owner process, thinking and tool records are not shared.",
+    "confirm": "The initiating sender must send this command in the same conversation used to start the run. Keep this browser open.",
+    "expiry": "This connection lasts 30 minutes. After expiry or a server restart, reconnect here to continue the same run.",
+    "connect": "Connect this browser",
+    "refresh": "Check connection / refresh",
+    "status": "Run status",
+    "result": "Final result",
+    "missing": "Open the run link returned by /asset.",
+    "failed": "Could not access this chat run. Reconnect and confirm from the original chat."
+  },
   "chatAccess": {
     "title": "Chat access",
-    "scope": "Open this fixed version and its final result to an exact platform sender and source conversation. Every reachable role must use that source configuration profile. Process, thinking and tool records remain in the authenticated run details.",
+    "scope": "Open this fixed version, its human requests and final result to an exact platform sender and source conversation. Every reachable role must use that source configuration profile. Process, thinking and tool records remain private to the asset owner.",
     "identityHelp": "Ask the caller to send /asset whoami in the intended conversation. Copy its platform_id, sender_id, source and profile_id below. For groups, this explicitly allows the final result to be visible in that group.",
     "platform": "Platform instance ID",
     "sender": "Sender ID",

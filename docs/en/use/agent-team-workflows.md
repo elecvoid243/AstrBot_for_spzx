@@ -62,11 +62,17 @@ Use `/asset list` to see accessible names, IDs, pinned versions and required inp
 
 Use the asset ID when a name is ambiguous. If required input is missing, supply the named fields in the next explicit command; no run starts until the selection and inputs are valid. Ordinary chat does not automatically choose an asset. `/asset status <run ID>` reconnects to the accepted root run in the same authorized source conversation.
 
-The source receives acceptance, a notice when human input is needed, and the final contracted result. Long results are sent in text parts. Notices include the run ID and the `/#/agent-teams?workflow_run=...` path under this instance's WebUI address. The link opens **Independent Runs** and the existing run. It requires the asset owner's Dashboard login; the chat grant does not create a Dashboard account or grant access to process, thinking or tool details. The owner can answer the same persistent human request in WebUI when the platform has no controls.
+The source receives acceptance, a notice when human input is needed, and the final contracted result. Long results are sent in text parts. Notices include the run ID and `/#/asset-run?workflow_run=...` under this instance's WebUI address. This opens **Chat run**. The page displays `/asset connect <connection code>`. The actual initiator must send that command in the original conversation while keeping the browser open. Once confirmed, the initiator can view this run, answer its existing persistent human requests and read the final result without a Dashboard account. A group-visible link or connection code does not authenticate another group member as the initiator.
 
-![A chat-originated run uses the existing persistent human request](/images/agent-chat-todo-en.jpg)
+The connection is limited to this run and lasts 30 minutes. After expiry, a page refresh or a server restart, reconnect and confirm again to continue the same run and todo; this does not launch the asset again. Revocation or a source-profile change also invalidates access through existing connections. Approval previews are limited to the exact version named by that request and files declared by that version; other child artifacts, versions, export and editing remain unavailable. Owner process, thinking, tool records and resource configuration are not shared.
 
-![The completed result in the existing run details](/images/agent-chat-result-en.jpg)
+Entry mapping: chat notices now use the restricted initiator entry `/#/asset-run?workflow_run=...` instead of `/#/agent-teams?workflow_run=...`. The latter remains the owner's full **Independent Runs** detail page after Dashboard login. For an old message containing a run ID, send `/asset status <run ID>` from the original authorized source to obtain the new entry.
+
+![The initiator confirms this browser from the original source](/images/agent-chat-source-connect-en.jpg)
+
+![The confirmed browser answers the existing persistent request](/images/agent-chat-source-question-en.jpg)
+
+![The original run completes after reconnecting across a process restart](/images/agent-chat-source-result-en.jpg)
 
 Chat invocation records the platform-qualified initiator and source while the asset owner retains Dashboard control of the delegated run. Its synthetic member turns remain ordinary members, including when IDs match an administrator. Only the root run's completed result is returned to chat; child results and unapproved versions cannot be read through chat status. Restart resumes saved notification cursors and existing human requests. A crash between platform acceptance and saving its receipt can repeat a message; it does not start another asset run.
 

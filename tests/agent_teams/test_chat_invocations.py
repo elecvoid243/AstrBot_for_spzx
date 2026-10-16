@@ -14,15 +14,17 @@ from astrbot.dashboard.services.agent_team_ports import TeamPorts
 
 
 @pytest_asyncio.fixture
-async def chat_env(tmp_path):
+async def chat_env(tmp_path, monkeypatch):
     """Provide real services and a controlled external execution boundary.
 
     Args:
         tmp_path: Isolated database storage.
+        monkeypatch: Disables optional telemetry outside the controlled boundary.
 
     Yields:
         Shared service, saved role, actual caller and external observations.
     """
+    monkeypatch.setenv("ASTRBOT_DISABLE_METRICS", "1")
     db = SQLiteDatabase(str(tmp_path / "chat.db"))
 
     async def catalog():

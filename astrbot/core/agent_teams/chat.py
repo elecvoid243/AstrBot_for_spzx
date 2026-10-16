@@ -1,7 +1,11 @@
 """Explicit platform access and delivery over the shared asset/run service."""
 
 import asyncio
+import hashlib
+import hmac
 import json
+import secrets
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -15,6 +19,7 @@ from astrbot.core.db.po import (
     AgentWorkflowChatAccess,
     AgentWorkflowChatDelivery,
     AgentWorkflowRun,
+    AgentWorkflowTodo,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +68,184 @@ class WorkflowChat:
         self.service = service
         self._delivery_lock = asyncio.Lock()
         self._live_senders: dict[str, Callable[[ChatCaller, str], Awaitable[bool]]] = {}
+        self._browser_sessions: dict[str, dict] = {}
+
+    async def open_browser(self, run_id: str) -> dict:
+        """Create a short-lived browser challenge without granting run access.
+
+        Args:
+            run_id: Root chat invocation selected by its returned detail link.
+
+        Returns:
+            Browser-only credential and command to confirm in the original chat.
+
+        Raises:
+            RoleAssetError: The chat run is unavailable or too many challenges exist.
+        """
+        async with self.service.db.get_db() as session:
+            run = await session.get(AgentWorkflowRun, run_id)
+            if (
+                run is None
+                or run.snapshot.get("parent_run_id") is not None
+                or not run.snapshot.get("chat")
+            ):
+                raise RoleAssetError("Run not found", status=404)
+        now = time.time()
+        self._browser_sessions = {
+            key: value
+            for key, value in self._browser_sessions.items()
+            if value["expires_at"] > now
+        }
+        if len(self._browser_sessions) >= 1024:
+            raise RoleAssetError(
+                "Too many browser connections; try again later", status=429
+            )
+        session_id = secrets.token_hex(16)
+        token = secrets.token_urlsafe(32)
+        expires_at = now + 1800
+        self._browser_sessions[session_id] = {
+            "run_id": run_id,
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "expires_at": expires_at,
+            "caller": None,
+        }
+        return {
+            "session_id": session_id,
+            "token": token,
+            "expires_at": expires_at,
+            "command": "/asset connect " + session_id,
+        }
+
+    async def confirm_browser(self, caller: ChatCaller, session_id: str) -> dict:
+        """Bind a browser only after the initiating sender confirms its challenge.
+
+        Args:
+            caller: Actual platform event identity, source and current profile.
+            session_id: Non-secret challenge displayed in that browser.
+
+        Returns:
+            Confirmation for the same persisted root run.
+
+        Raises:
+            RoleAssetError: The challenge expired or this source cannot access the run.
+        """
+        connection = self._browser_sessions.get(session_id)
+        if connection is None or connection["expires_at"] <= time.time():
+            raise RoleAssetError(
+                "Browser connection expired; open the run link again", status=401
+            )
+        projection = await self.get_run(caller, connection["run_id"])
+        connection["caller"] = caller.model_dump()
+        return {
+            "status": "connected",
+            "run_id": projection["run_id"],
+            "detail_path": projection["detail_path"],
+        }
+
+    async def authenticate_browser(
+        self, run_id: str, credential: str, *, allow_pending: bool = False
+    ) -> ChatCaller | None:
+        """Check the browser secret and recheck the current source grant.
+
+        Args:
+            run_id: Root run addressed by the HTTP endpoint.
+            credential: Browser-only session ID and secret, absent from chat links.
+            allow_pending: Permit polling confirmation without revealing run content.
+
+        Returns:
+            The confirmed source caller, or None for an unconfirmed challenge.
+
+        Raises:
+            RoleAssetError: Authentication, confirmation, run scope or grant fails.
+        """
+        session_id, separator, token = credential.partition(".")
+        connection = self._browser_sessions.get(session_id)
+        if (
+            not separator
+            or not token
+            or connection is None
+            or connection["expires_at"] <= time.time()
+            or not hmac.compare_digest(
+                connection["token_hash"], hashlib.sha256(token.encode()).hexdigest()
+            )
+        ):
+            raise RoleAssetError("Browser connection required", status=401)
+        if connection["run_id"] != run_id:
+            raise RoleAssetError("Run not found", status=404)
+        if connection["caller"] is None:
+            if allow_pending:
+                return None
+            raise RoleAssetError(
+                "Confirm this browser in the original chat", status=403
+            )
+        caller = ChatCaller.model_validate(connection["caller"])
+        await self.get_run(caller, run_id)
+        return caller
+
+    async def answer_browser_todo(
+        self, caller: ChatCaller, run_id: str, todo_id: str, payload: dict
+    ) -> dict:
+        """Answer the existing persistent request through the shared run service.
+
+        Args:
+            caller: Confirmed source caller, never a Dashboard owner identity.
+            run_id: Caller-owned invocation scope.
+            todo_id: Existing request in that root run.
+            payload: Shared validated human answer or explicit version decision.
+
+        Returns:
+            Restricted progress after saving the answer to the original request.
+
+        Raises:
+            RoleAssetError: Source access, request scope or answer validation fails.
+        """
+        await self.get_run(caller, run_id)
+        async with self.service.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            if row is None:
+                raise RoleAssetError("Run not found", status=404)
+            owner = row.owner_username
+        await self.service.answer_todo(owner, run_id, todo_id, payload)
+        return await self.get_run(caller, run_id, include_todos=True)
+
+    async def read_browser_artifact(
+        self, caller: ChatCaller, run_id: str, todo_id: str, file_id: str | None = None
+    ) -> dict:
+        """Preview only the immutable version explicitly requested for review.
+
+        Args:
+            caller: Confirmed initiator in its currently authorized source.
+            run_id: Original invocation root.
+            todo_id: Approval request in that root, selecting its exact version.
+            file_id: Optional file declared by that exact artifact version.
+
+        Returns:
+            Contracted review content or preview file bytes, without execution data.
+
+        Raises:
+            RoleAssetError: The source, request or pinned artifact is inaccessible.
+        """
+        await self.get_run(caller, run_id)
+        async with self.service.db.get_db() as session:
+            row = await session.get(AgentWorkflowRun, run_id)
+            todo = await session.get(AgentWorkflowTodo, todo_id)
+            if (
+                row is None
+                or todo is None
+                or todo.root_run_id != run_id
+                or todo.data["kind"] != "approval"
+                or not todo.data.get("artifact_ref")
+            ):
+                raise RoleAssetError("Approval request not found", status=404)
+            owner = row.owner_username
+            ref = todo.data["artifact_ref"]
+        if file_id is not None:
+            return await self.service.get_file(
+                owner, ref["artifact_id"], ref["version"], file_id, download=False
+            )
+        return await self.service.read_artifact(
+            owner, ref["artifact_id"], ref["version"]
+        )
 
     async def save_access(self, username: str, asset_id: str, payload: dict) -> dict:
         """Open a fixed asset version to an exact platform instance and sender.
@@ -259,7 +442,7 @@ class WorkflowChat:
         return {
             "status": "accepted",
             "run_id": run["run_id"],
-            "detail_path": "/#/agent-teams?workflow_run=" + run["run_id"],
+            "detail_path": "/#/asset-run?workflow_run=" + run["run_id"],
         }
 
     def prepare(self, frozen: dict, chat: dict) -> None:
@@ -354,12 +537,15 @@ class WorkflowChat:
         ):
             raise RoleAssetError("The caller's source profile has changed", status=403)
 
-    async def get_run(self, caller: ChatCaller, run_id: str) -> dict:
+    async def get_run(
+        self, caller: ChatCaller, run_id: str, *, include_todos: bool = False
+    ) -> dict:
         """Read the caller's final result without exposing execution internals.
 
         Args:
             caller: Actual caller in the authorized result delivery conversation.
             run_id: Previously accepted root run.
+            include_todos: Include only explicit human prompts for a confirmed browser.
 
         Returns:
             Status, final result and the existing authenticated WebUI detail path.
@@ -377,12 +563,34 @@ class WorkflowChat:
                 raise RoleAssetError("Run not found", status=404)
         await self.require_access(row.snapshot["chat"], row.owner_username)
         run = await self.service.get_run(row.owner_username, run_id)
-        return {
+        projection = {
             "run_id": run_id,
             "status": run["status"],
             "result": run["result"] if run["status"] == "completed" else None,
-            "detail_path": "/#/agent-teams?workflow_run=" + run_id,
+            "detail_path": "/#/asset-run?workflow_run=" + run_id,
         }
+        if include_todos:
+            projection["control_status"] = run.get("control", {}).get(
+                "status", "active"
+            )
+            projection["todos"] = [
+                {
+                    **{
+                        key: todo[key]
+                        for key in (
+                            "todo_id",
+                            "kind",
+                            "question",
+                            "constraints",
+                            "artifact_ref",
+                            "status",
+                        )
+                    },
+                    "response": None,
+                }
+                for todo in run.get("todos", [])
+            ]
+        return projection
 
     async def deliver_pending(
         self,

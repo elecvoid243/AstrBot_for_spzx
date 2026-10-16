@@ -6312,6 +6312,226 @@ paths:
           type: integer
           minimum: 1
 
+  /api/v1/workflow_chat_runs/{run_id}/connection:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Open Chat Browser
+      description: "Create an unconfirmed browser challenge with no Dashboard authorization.\n\
+        \nArgs:\n    run_id: Existing chat invocation root.\n    service: Shared application\
+        \ service.\n\nReturns:\n    A browser credential and source confirmation command,\
+        \ without run content."
+      operationId: open_chat_browser_api_v1_workflow_chat_runs__run_id__connection_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Chat Browser Status
+      description: "Poll source confirmation using the browser-only secret.\n\nArgs:\n\
+        \    run_id: Root run to which this connection is restricted.\n    credential:\
+        \ Browser-only session confirmed through the original source.\n    service:\
+        \ Shared application service.\n\nReturns:\n    Confirmation state without private\
+        \ execution data."
+      operationId: chat_browser_status_api_v1_workflow_chat_runs__run_id__connection_get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Chat Run
+      description: "Read the confirmed initiator's restricted view of the original run.\n\
+        \nArgs:\n    run_id: Root chat invocation.\n    credential: Browser-only session\
+        \ confirmed through the original source.\n    service: Shared application service.\n\
+        \nReturns:\n    Safe status, final result and explicit human prompts from the\
+        \ same run."
+      operationId: get_chat_run_api_v1_workflow_chat_runs__run_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/answer:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Answer Chat Todo
+      description: "Save a source-authenticated answer to the existing persistent request.\n\
+        \nArgs:\n    run_id: Root chat invocation.\n    todo_id: Existing request in\
+        \ that root.\n    credential: Browser-only session confirmed through the original\
+        \ source.\n    payload: Shared validated answer or explicit version decision.\n\
+        \    service: Shared application service.\n\nReturns:\n    Restricted progress\
+        \ after the shared service accepts the answer."
+      operationId: answer_chat_todo_api_v1_workflow_chat_runs__run_id__todos__todo_id__answer_post
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanAnswerRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Chat Approval
+      description: "Preview only the version selected by this initiator's approval request.\n\
+        \nArgs:\n    run_id: Original invocation root.\n    todo_id: Existing approval\
+        \ request selecting the artifact version.\n    credential: Browser-only session\
+        \ confirmed through the original source.\n    service: Shared application service.\n\
+        \nReturns:\n    The requested review content without arbitrary artifact access."
+      operationId: preview_chat_approval_api_v1_workflow_chat_runs__run_id__todos__todo_id__artifact_get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Chat Approval File
+      description: "Preview a file declared by the exact requested approval version.\n\
+        \nArgs:\n    run_id: Original invocation root.\n    todo_id: Existing approval\
+        \ request selecting the artifact version.\n    file_id: Managed file declared\
+        \ by that exact version.\n    credential: Browser-only session confirmed through\
+        \ the original source.\n    service: Shared application service.\n\nReturns:\n\
+        \    Restricted preview bytes; this route grants no export or download action."
+      operationId: preview_chat_approval_file_api_v1_workflow_chat_runs__run_id__todos__todo_id__artifact_files__file_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workflow_assets:
     get:
       tags:
@@ -7194,6 +7414,12 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
+    ChatBrowserSession:
+      type: apiKey
+      description: Browser-only credential confirmed by the initiating sender in the original
+        chat.
+      in: header
+      name: X-AstrBot-Chat-Session
     ApiKeyAuth:
       type: apiKey
       in: header

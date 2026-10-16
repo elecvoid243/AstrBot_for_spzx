@@ -1,21 +1,26 @@
 const AuthRoutes = {
-  path: '/auth',
-  component: () => import('@/layouts/blank/BlankLayout.vue'),
+  path: "/auth",
+  component: () => import("@/layouts/blank/BlankLayout.vue"),
   meta: {
-    requiresAuth: false
+    requiresAuth: false,
   },
   children: [
     {
-      name: 'Login',
-      path: '/auth/login',
-      component: () => import('@/views/authentication/auth/LoginPage.vue')
+      name: "ChatWorkflowRun",
+      path: "/asset-run",
+      component: () => import("@/views/ChatWorkflowRunPage.vue"),
     },
     {
-      name: 'Setup',
-      path: '/auth/setup',
-      component: () => import('@/views/authentication/auth/SetupPage.vue')
-    }
-  ]
+      name: "Login",
+      path: "/auth/login",
+      component: () => import("@/views/authentication/auth/LoginPage.vue"),
+    },
+    {
+      name: "Setup",
+      path: "/auth/setup",
+      component: () => import("@/views/authentication/auth/SetupPage.vue"),
+    },
+  ],
 };
 
 export default AuthRoutes;

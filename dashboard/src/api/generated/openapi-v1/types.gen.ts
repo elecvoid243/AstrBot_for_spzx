@@ -5046,6 +5046,71 @@ export type ResolveRoleAssetResponse = (SuccessEnvelope);
 
 export type ResolveRoleAssetError = (unknown);
 
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = (unknown);
+
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostError = (HTTPValidationError);
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetResponse = (unknown);
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (HTTPValidationError);
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetResponse = (unknown);
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (HTTPValidationError);
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = {
+    body: HumanAnswerRequest;
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetData = {
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetResponse = (unknown);
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (HTTPValidationError);
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetData = {
+    path: {
+        file_id: string;
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetResponse = (unknown);
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (HTTPValidationError);
+
 export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
 
 export type ListAssetsApiV1WorkflowAssetsGetError = unknown;

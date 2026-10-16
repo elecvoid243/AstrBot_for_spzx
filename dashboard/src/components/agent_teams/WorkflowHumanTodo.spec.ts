@@ -37,6 +37,35 @@ const todo = {
 };
 
 describe("persistent human request handling", () => {
+  it("uses the scoped review loader and hides owner export actions", async () => {
+    api.artifact.mockClear();
+    const previewLoader = vi
+      .fn()
+      .mockResolvedValue({ content: { text: "Pinned review v1" }, files: [] });
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: {
+        todo,
+        busy: false,
+        paused: false,
+        cancelled: false,
+        restricted: true,
+        previewLoader,
+      },
+      global: { stubs },
+    });
+    try {
+      await wrapper.get('[data-testid="human-preview"]').trigger("click");
+      await flushPromises();
+      expect(previewLoader).toHaveBeenCalledWith("todo");
+      expect(api.artifact).not.toHaveBeenCalled();
+      expect(wrapper.text()).toContain("Pinned review v1");
+      expect(wrapper.text()).not.toContain(" · task");
+      await wrapper.setProps({ todo: { ...todo, status: "approved" } });
+      expect(wrapper.find('[data-testid="human-export"]').exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it.each(["text/html", "application/octet-stream"])(
     "previews untrusted %s files without opening an executable page",
     async (type) => {

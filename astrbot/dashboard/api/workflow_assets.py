@@ -2,8 +2,9 @@
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Security
 from fastapi.responses import JSONResponse, Response
+from fastapi.security import APIKeyHeader
 
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatAccessRequest
@@ -23,6 +24,12 @@ from astrbot.dashboard.responses import error, ok
 from .auth import require_dashboard_user
 
 router = APIRouter(tags=["Agent Teams workflows"])
+chat_browser_header = APIKeyHeader(
+    name="X-AstrBot-Chat-Session",
+    scheme_name="ChatBrowserSession",
+    auto_error=False,
+    description="Browser-only credential confirmed by the initiating sender in the original chat.",
+)
 
 
 def get_workflow_service(request: Request) -> WorkflowService:
@@ -35,6 +42,174 @@ def get_workflow_service(request: Request) -> WorkflowService:
         Shared workflow asset and run service.
     """
     return request.app.state.services.workflow_assets
+
+
+@router.post("/workflow_chat_runs/{run_id}/connection")
+async def open_chat_browser(
+    run_id: str, service: WorkflowService = Depends(get_workflow_service)
+):
+    """Create an unconfirmed browser challenge with no Dashboard authorization.
+
+    Args:
+        run_id: Existing chat invocation root.
+        service: Shared application service.
+
+    Returns:
+        A browser credential and source confirmation command, without run content.
+    """
+    try:
+        return ok(await service.chat.open_browser(run_id))
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
+
+
+@router.get("/workflow_chat_runs/{run_id}/connection")
+async def chat_browser_status(
+    run_id: str,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Poll source confirmation using the browser-only secret.
+
+    Args:
+        run_id: Root run to which this connection is restricted.
+        credential: Browser-only session confirmed through the original source.
+        service: Shared application service.
+
+    Returns:
+        Confirmation state without private execution data.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(
+            run_id, credential or "", allow_pending=True
+        )
+        return ok({"confirmed": caller is not None})
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
+
+
+@router.get("/workflow_chat_runs/{run_id}")
+async def get_chat_run(
+    run_id: str,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Read the confirmed initiator's restricted view of the original run.
+
+    Args:
+        run_id: Root chat invocation.
+        credential: Browser-only session confirmed through the original source.
+        service: Shared application service.
+
+    Returns:
+        Safe status, final result and explicit human prompts from the same run.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        assert caller is not None
+        return ok(await service.chat.get_run(caller, run_id, include_todos=True))
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
+
+
+@router.post("/workflow_chat_runs/{run_id}/todos/{todo_id}/answer")
+async def answer_chat_todo(
+    run_id: str,
+    todo_id: str,
+    payload: HumanAnswerRequest,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Save a source-authenticated answer to the existing persistent request.
+
+    Args:
+        run_id: Root chat invocation.
+        todo_id: Existing request in that root.
+        credential: Browser-only session confirmed through the original source.
+        payload: Shared validated answer or explicit version decision.
+        service: Shared application service.
+
+    Returns:
+        Restricted progress after the shared service accepts the answer.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        assert caller is not None
+        return ok(
+            await service.chat.answer_browser_todo(
+                caller, run_id, todo_id, payload.model_dump()
+            )
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact")
+async def preview_chat_approval(
+    run_id: str,
+    todo_id: str,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview only the version selected by this initiator's approval request.
+
+    Args:
+        run_id: Original invocation root.
+        todo_id: Existing approval request selecting the artifact version.
+        credential: Browser-only session confirmed through the original source.
+        service: Shared application service.
+
+    Returns:
+        The requested review content without arbitrary artifact access.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        assert caller is not None
+        return ok(await service.chat.read_browser_artifact(caller, run_id, todo_id))
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
+
+
+@router.get("/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact/files/{file_id}")
+async def preview_chat_approval_file(
+    run_id: str,
+    todo_id: str,
+    file_id: str,
+    credential: str | None = Security(chat_browser_header),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Preview a file declared by the exact requested approval version.
+
+    Args:
+        run_id: Original invocation root.
+        todo_id: Existing approval request selecting the artifact version.
+        file_id: Managed file declared by that exact version.
+        credential: Browser-only session confirmed through the original source.
+        service: Shared application service.
+
+    Returns:
+        Restricted preview bytes; this route grants no export or download action.
+    """
+    try:
+        caller = await service.chat.authenticate_browser(run_id, credential or "")
+        assert caller is not None
+        file = await service.chat.read_browser_artifact(
+            caller, run_id, todo_id, file_id
+        )
+        return Response(
+            file["content"],
+            media_type=file["media_type"],
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "Content-Disposition": "inline; filename*=UTF-8''"
+                + quote(file["filename"], safe=""),
+            },
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(error(str(exc)), status_code=exc.status)
 
 
 @router.get("/workflow_assets/{asset_id}/chat_access")

@@ -3,7 +3,8 @@
     <v-card-text>
       <strong>{{ todo.question }}</strong>
       <p class="text-caption mt-2">
-        {{ tm(`human.status.${todo.status}`) }} · {{ todo.task_run_id }}
+        {{ tm(`human.status.${todo.status}`)
+        }}<span v-if="!restricted"> · {{ todo.task_run_id }}</span>
       </p>
       <p v-if="paused && todo.status === 'answered'" class="mt-2">
         {{ tm("human.savedWaiting") }}
@@ -42,7 +43,7 @@
             >{{ tm("v2.previewFile") }} · {{ file.filename }}</v-btn
           >
         </div>
-        <template v-if="todo.status === 'approved'">
+        <template v-if="todo.status === 'approved' && !restricted">
           <v-btn
             variant="tonal"
             :loading="exporting"
@@ -149,6 +150,9 @@ const props = defineProps<{
   paused: boolean;
   cancelled: boolean;
   busy: boolean;
+  restricted?: boolean;
+  previewLoader?: (todoId: string) => Promise<any>;
+  fileLoader?: (todoId: string, fileId: string) => Promise<{ data: Blob }>;
 }>();
 const emit = defineEmits<{
   (event: "submit", todoId: string, payload: HumanAnswerRequest): void;
@@ -200,10 +204,12 @@ async function readPreview() {
   reading.value = true;
   error.value = "";
   try {
-    const artifact = await workflowAssetsApi.artifact(
-      props.todo.artifact_ref.artifact_id,
-      props.todo.artifact_ref.version,
-    );
+    const artifact = props.previewLoader
+      ? await props.previewLoader(props.todo.todo_id)
+      : await workflowAssetsApi.artifact(
+          props.todo.artifact_ref.artifact_id,
+          props.todo.artifact_ref.version,
+        );
     if (!disposed) preview.value = artifact;
   } catch (err) {
     if (!disposed)
@@ -243,12 +249,14 @@ async function exportVersion() {
 async function readFile(fileId: string, download: boolean) {
   const read = download ? null : ++fileRead;
   try {
-    const response = await workflowAssetsApi.file(
-      props.todo.artifact_ref.artifact_id,
-      props.todo.artifact_ref.version,
-      fileId,
-      download,
-    );
+    const response = props.fileLoader
+      ? await props.fileLoader(props.todo.todo_id, fileId)
+      : await workflowAssetsApi.file(
+          props.todo.artifact_ref.artifact_id,
+          props.todo.artifact_ref.version,
+          fileId,
+          download,
+        );
     if (disposed || (!download && read !== fileRead)) return;
     if (download) {
       const url = URL.createObjectURL(response.data);

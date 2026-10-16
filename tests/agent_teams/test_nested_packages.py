@@ -492,7 +492,19 @@ async def test_actual_storage_failure_rolls_back_whole_nested_install(
     before_roles = await env.roles.list_roles("bob")
 
     def fail_save(conn, cursor, statement, parameters, context, executemany):
-        """Inject a real SQL execution failure at the persistence boundary."""
+        """Inject a real SQL execution failure at the persistence boundary.
+
+        Args:
+            conn: SQLAlchemy connection issuing the statement.
+            cursor: DBAPI cursor selected for this execution.
+            statement: SQL statement about to execute.
+            parameters: Bound parameters passed to the cursor.
+            context: SQLAlchemy execution context.
+            executemany: Whether multiple parameter sets are being executed.
+
+        Raises:
+            RuntimeError: Package persistence is attempted.
+        """
         if statement.lower().startswith("insert into agentworkflowpackage"):
             raise RuntimeError("Controlled package storage failure")
 
@@ -621,7 +633,19 @@ async def test_unrelated_integrity_failure_is_not_treated_as_concurrent_confirma
     injected = False
 
     def fail_once(conn, cursor, statement, parameters, context, executemany):
-        """Inject one storage constraint error without a competing confirmation."""
+        """Inject one storage constraint error without a competing confirmation.
+
+        Args:
+            conn: SQLAlchemy connection issuing the statement.
+            cursor: DBAPI cursor selected for this execution.
+            statement: SQL statement about to execute.
+            parameters: Bound parameters passed to the cursor.
+            context: SQLAlchemy execution context.
+            executemany: Whether multiple parameter sets are being executed.
+
+        Raises:
+            IntegrityError: The first package persistence attempt is executed.
+        """
         nonlocal injected
         if not injected and statement.lower().startswith(
             "insert into agentworkflowpackage"

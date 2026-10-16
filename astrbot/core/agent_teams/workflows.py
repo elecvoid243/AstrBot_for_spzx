@@ -1825,6 +1825,8 @@ class WorkflowService:
         role: PackageRole,
         explicit: RoleInstallation | None,
         catalog: dict,
+        *,
+        validate_tasks: bool = True,
     ) -> tuple[dict, list[dict]]:
         """Apply the same declared resource constraints at preview and launch.
 
@@ -1833,6 +1835,8 @@ class WorkflowService:
             role: Included role whose full dependency surface must be ready.
             explicit: Saved or deliberately proposed local installation.
             catalog: Current local resources, without performing installation.
+            validate_tasks: Check portable task overrides and graph limits during
+                import. Launch validates its selected local definition separately.
 
         Returns:
             Grouped role preview and all dependency or permission issues.
@@ -1841,20 +1845,23 @@ class WorkflowService:
             RoleAssetError: Bindings contain undeclared package slots.
         """
         tasks = []
-        for index, definition in enumerate(
-            [package.definition, *[asset.definition for asset in package.assets]]
-        ):
-            prefix = "definition" if index == 0 else f"assets.{index - 1}.definition"
-            tasks.extend(
-                (task, definition, prefix)
-                for task in (
-                    [definition.coordinator, *definition.allowed_roles]
-                    if isinstance(definition, AutonomousDefinition)
-                    else definition.tasks
-                    if isinstance(definition, GraphDefinition)
-                    else [definition]
+        if validate_tasks:
+            for index, definition in enumerate(
+                [package.definition, *[asset.definition for asset in package.assets]]
+            ):
+                prefix = (
+                    "definition" if index == 0 else f"assets.{index - 1}.definition"
                 )
-            )
+                tasks.extend(
+                    (task, definition, prefix)
+                    for task in (
+                        [definition.coordinator, *definition.allowed_roles]
+                        if isinstance(definition, AutonomousDefinition)
+                        else definition.tasks
+                        if isinstance(definition, GraphDefinition)
+                        else [definition]
+                    )
+                )
         issues: list[dict] = []
         key = f"{role.role_id}:{role.version}"
         installation = {"profile_id": "__unconfigured__", "bindings": {}}
@@ -2870,11 +2877,13 @@ class WorkflowService:
                 )
                 # Task overrides cannot discard an installed package's declared
                 # constraints. Check current resources before creating a snapshot.
+                # Launch applies usage limits to its selected local definition.
                 _, issues = await self._preview_package_role(
                     package,
                     source_role,
                     RoleInstallation.model_validate(role["installation"]),
                     catalog,
+                    validate_tasks=False,
                 )
                 if issues:
                     raise RoleAssetError("Package dependencies are not ready", issues)

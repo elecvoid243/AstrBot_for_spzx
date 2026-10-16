@@ -10,8 +10,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import pytest
 import psutil
+import pytest
 
 
 @pytest.fixture
@@ -71,10 +71,9 @@ def nested_model_endpoint(tmp_path):
                             "asset_id": child["asset_id"],
                             "version": child["version"],
                             "name": "Read complete evidence",
-                            "inputs": {
-                                key: "portable evidence"
-                                for key in child["required_inputs"]
-                            },
+                            "inputs": dict.fromkeys(
+                                child["required_inputs"], "portable evidence"
+                            ),
                         },
                     )
                 else:
@@ -190,7 +189,12 @@ def nested_model_endpoint(tmp_path):
             self.wfile.write(data)
 
         def log_message(self, format, *args):
-            """Keep transport logs in the structured external ledger."""
+            """Keep transport logs in the structured external ledger.
+
+            Args:
+                format: Unused HTTP server log format string.
+                *args: Unused values for the server's log format.
+            """
 
     port_file = tmp_path / "model-port"
     port = int(port_file.read_text(encoding="utf-8")) if port_file.exists() else 0

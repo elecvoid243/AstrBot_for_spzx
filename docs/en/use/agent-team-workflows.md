@@ -69,6 +69,8 @@ Entry mapping: chat notices now use the restricted initiator entry `/#/asset-run
 
 After completion, use **Preview File** to read a final text file in this page or **Download File** to retrieve its complete bytes with the original filename. Binary files use the download action. The list includes only files declared by the immutable result version actually published by this root run, including results without an approval request. New owner revisions, unrelated child files and files from other runs are excluded. The same source confirmation and live grant checks apply to each file request.
 
+![The actual initiating browser previews and downloads a completed final file](/images/agent-chat-final-file-en.jpg)
+
 ![The initiator confirms this browser from the original source](/images/agent-chat-source-connect-en.jpg)
 
 ![The confirmed browser answers the existing persistent request](/images/agent-chat-source-question-en.jpg)

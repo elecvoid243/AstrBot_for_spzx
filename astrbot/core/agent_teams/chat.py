@@ -672,6 +672,8 @@ class WorkflowChat:
                         await self.get_run(caller, row.run_id)
                         sender = self._live_senders.get(row.run_id, send)
                         if not await sender(caller, text):
+                            # A declined live response must not mask the exact-source sender.
+                            self._live_senders.pop(row.run_id, None)
                             break
                         count += 1
                         delivery.delivered = [*delivery.delivered, key]

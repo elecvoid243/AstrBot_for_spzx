@@ -8,7 +8,7 @@ import json
 import mimetypes
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from string import Formatter
 from typing import Literal, cast
@@ -1278,6 +1278,228 @@ class WorkflowService:
             ]
         }
 
+    async def _asset_closure(
+        self, username: str, asset: dict, *, asset_limit: int | None = None
+    ) -> dict:
+        """Read an authorized fixed asset closure for export and execution.
+
+        Args:
+            username: Owner used for every pinned reference lookup.
+            asset: Authorized saved entry returned by get_asset.
+            asset_limit: Optional package export ceiling; execution keeps its limits.
+
+        Returns:
+            Independent asset copies keyed by local identity and version.
+
+        Raises:
+            RoleAssetError: A reference is missing, cyclic, too deep or too large.
+        """
+        included = {}
+        pending: list[tuple[dict, tuple[tuple[str, int], ...]]] = [(asset, ())]
+        while pending:
+            current, ancestors = pending.pop()
+            key = (current["asset_id"], current["version"])
+            if key in ancestors or len(ancestors) > 20:
+                raise RoleAssetError(
+                    "Nested references contain a cycle or exceed the depth limit"
+                )
+            if key in included:
+                continue
+            if asset_limit is not None and len(included) >= asset_limit:
+                raise RoleAssetError("Package exceeds the supported asset limit")
+            current = {
+                field: copy.deepcopy(current[field])
+                for field in ("asset_id", "version", "definition")
+            }
+            included[key] = current
+            content = current["definition"]
+            references = [
+                *content.get("allowed_workflows", []),
+                *[
+                    task["team"]
+                    for task in content.get("tasks", [])
+                    if task.get("team")
+                ],
+            ]
+            for reference in references:
+                pending.append(
+                    (
+                        await self.get_asset(
+                            username, reference["asset_id"], reference["version"]
+                        ),
+                        (*ancestors, key),
+                    )
+                )
+        return included
+
+    @staticmethod
+    def _resolve_role_contract(
+        role: dict, assets: dict, packages: Sequence[AgentWorkflowPackage]
+    ) -> tuple[dict, dict]:
+        """Resolve declarations using the actual fixed asset and role selections.
+
+        Args:
+            role: Authorized local role version and its current definition.
+            assets: Authorized closure returned by _asset_closure.
+            packages: Immutable imported manifests belonging to the same owner.
+
+        Returns:
+            Original slot declarations and the applicable portable dependencies.
+
+        Raises:
+            RoleAssetError: A selected logical alias has ambiguous provenance.
+        """
+        source_record = next(
+            (
+                record
+                for record in packages
+                if role["role_id"] in record.role_ids.values()
+            ),
+            None,
+        )
+        if source_record is None:
+            return {}, {}
+        source_key = next(
+            key
+            for key, identity in source_record.role_ids.items()
+            if identity == role["role_id"]
+        )
+        source_package = WorkflowPackage.model_validate(source_record.package)
+        source_role = next(
+            item
+            for item in source_package.roles
+            if f"{item.role_id}:{item.version}" == source_key
+        )
+        declarations = {
+            item["slot"]: item
+            for item in source_package.role_content(source_role)["dependencies"]
+        }
+        selections = {}
+        contexts = []
+        for source_asset in [source_package, *source_package.assets, *assets.values()]:
+            content = (
+                source_asset["definition"]
+                if isinstance(source_asset, dict)
+                else source_asset.definition.model_dump()
+            )
+            members = (
+                [content["coordinator"], *content["allowed_roles"]]
+                if content.get("kind") == "autonomous"
+                else content.get("tasks", [content])
+            )
+            if isinstance(source_asset, dict):
+                origin = f"{source_asset['asset_id']}:{source_asset['version']}"
+                contexts.extend(
+                    (origin, member.get("overrides", {}))
+                    for member in members
+                    if (member.get("role_id"), member.get("role_version"))
+                    == (role["role_id"], role["version"])
+                )
+                continue
+            origin = f"{source_asset.asset_id}:{source_asset.version}"
+            selections[origin] = set()
+            for member in members:
+                if (member.get("role_id"), member.get("role_version")) != (
+                    source_role.role_id,
+                    source_role.version,
+                ):
+                    continue
+                for field in ("tools", "skills", "knowledge_bases"):
+                    selected = member.get("overrides", {}).get(field)
+                    if selected is None:
+                        selected = getattr(source_role.definition, field)
+                    selections[origin].update(selected or [])
+        current_origins = {origin for origin, _ in contexts}
+        origins = {}
+        for current in assets.values():
+            current_origin = f"{current['asset_id']}:{current['version']}"
+            # Exact imports retain their fixed scope. Local edits use the selected
+            # role variant when it occurs in this asset, rather than import order.
+            original = next(
+                (
+                    record
+                    for record in packages
+                    if (record.asset_id, record.installed_version)
+                    == (current["asset_id"], current["version"])
+                ),
+                None,
+            )
+            if original is None:
+                original = max(
+                    (
+                        record
+                        for record in packages
+                        if record.asset_id == current["asset_id"]
+                        and record.installed_version <= current["version"]
+                        and (
+                            current_origin not in current_origins
+                            or role["role_id"] in record.role_ids.values()
+                        )
+                    ),
+                    key=lambda record: record.installed_version,
+                    default=None,
+                )
+            if original is not None:
+                origins.setdefault(
+                    f"{original.package_id}:{original.version}", []
+                ).append(current_origin)
+        dependencies = {}
+        for slot, declared in declarations.items():
+            uses = declared.get("uses")
+            retained = {}
+            if uses is not None:
+                for origin, aliases in uses.items():
+                    if origin == "role":
+                        retained[origin] = aliases[:]
+                    elif slot not in selections.get(origin, set()):
+                        for current_origin in origins.get(origin, []):
+                            retained[current_origin] = aliases[:]
+            if uses is None or retained:
+                dependencies[slot] = copy.deepcopy(declared)
+                if uses is not None:
+                    dependencies[slot]["uses"] = retained
+        for origin, configuration in [("role", role["definition"]), *contexts]:
+            for kind in ("tools", "skills", "knowledge_bases"):
+                references = configuration.get(kind)
+                if references is None and origin != "role":
+                    references = role["definition"].get(kind)
+                for reference in references or []:
+                    declared = declarations.get(reference)
+                    if declared is None or declared["kind"] != kind:
+                        matches = [
+                            item
+                            for item in declarations.values()
+                            if item["kind"] == kind
+                            and reference in item["logical_slots"]
+                        ]
+                        if len(matches) > 1:
+                            raise RoleAssetError(
+                                "Dependency choices have ambiguous source provenance"
+                            )
+                        declared = matches[0] if matches else None
+                    if declared is None or declared.get("uses") is None:
+                        continue
+                    slot = declared["slot"]
+                    if slot not in dependencies:
+                        dependencies[slot] = {**copy.deepcopy(declared), "uses": {}}
+                    aliases = (
+                        declared["uses"].get("role", declared["logical_slots"])
+                        if origin == "role"
+                        else declared["logical_slots"]
+                    )
+                    retained = dependencies[slot]["uses"].setdefault(origin, [])
+                    retained.extend(alias for alias in aliases if alias not in retained)
+        for dependency in dependencies.values():
+            if dependency.get("uses") is not None:
+                dependency["logical_slots"] = sorted(
+                    {
+                        alias
+                        for aliases in dependency["uses"].values()
+                        for alias in aliases
+                    }
+                )
+        return declarations, dependencies
+
     async def export_asset(
         self, username: str, asset_id: str, version: int | None = None
     ) -> dict:
@@ -1318,60 +1540,8 @@ class WorkflowService:
             )
             if original is not None:
                 return copy.deepcopy(original.package)
-        included = {}
-        pending: list[tuple[dict, tuple[tuple[str, int], ...]]] = [(asset, ())]
-        while pending:
-            current, ancestors = pending.pop()
-            key = (current["asset_id"], current["version"])
-            if key in ancestors or len(ancestors) > 20:
-                raise RoleAssetError(
-                    "Nested references contain a cycle or exceed the depth limit"
-                )
-            if key in included:
-                continue
-            if len(included) >= 100:
-                raise RoleAssetError("Package exceeds the supported asset limit")
-            current = {
-                field: copy.deepcopy(current[field])
-                for field in ("asset_id", "version", "definition")
-            }
-            included[key] = current
-            content = current["definition"]
-            references = [
-                *content.get("allowed_workflows", []),
-                *[
-                    task["team"]
-                    for task in content.get("tasks", [])
-                    if task.get("team")
-                ],
-            ]
-            for reference in references:
-                pending.append(
-                    (
-                        await self.get_asset(
-                            username, reference["asset_id"], reference["version"]
-                        ),
-                        (*ancestors, key),
-                    )
-                )
+        included = await self._asset_closure(username, asset, asset_limit=100)
         definition = included[(asset_id, asset["version"])]["definition"]
-        installed_origins = {}
-        # Local edits inherit the nearest imported version's scoped prerequisites.
-        for current in included.values():
-            original = max(
-                (
-                    record
-                    for record in installed_packages
-                    if current["asset_id"] == record.asset_id
-                    and record.installed_version <= current["version"]
-                ),
-                key=lambda record: record.installed_version,
-                default=None,
-            )
-            if original is not None:
-                installed_origins.setdefault(
-                    f"{original.package_id}:{original.version}", []
-                ).append(f"{current['asset_id']}:{current['version']}")
         tasks = []
         task_origins = {}
         for current in included.values():
@@ -1400,76 +1570,9 @@ class WorkflowService:
             portable = copy.deepcopy(role["definition"])
             portable["persona_slot"] = None
             portable["model_slot"] = "model"
-            declarations = {}
-            source_selections = {}
-            for record in installed_packages:
-                source_key = next(
-                    (
-                        key
-                        for key, identity in record.role_ids.items()
-                        if identity == role_id
-                    ),
-                    None,
-                )
-                if source_key is None:
-                    continue
-                source_package = WorkflowPackage.model_validate(record.package)
-                source_role = next(
-                    item
-                    for item in source_package.roles
-                    if f"{item.role_id}:{item.version}" == source_key
-                )
-                # Installations share a local role only for identical manifests.
-                declarations = {
-                    item["slot"]: item
-                    for item in source_package.role_content(source_role)["dependencies"]
-                }
-                for source_asset in [source_package, *source_package.assets]:
-                    content = source_asset.definition.model_dump()
-                    members = (
-                        [content["coordinator"], *content["allowed_roles"]]
-                        if content.get("kind") == "autonomous"
-                        else content.get("tasks", [content])
-                    )
-                    origin = f"{source_asset.asset_id}:{source_asset.version}"
-                    source_selections[origin] = set()
-                    for member in members:
-                        if (member.get("role_id"), member.get("role_version")) != (
-                            source_role.role_id,
-                            source_role.version,
-                        ):
-                            continue
-                        for field in ("tools", "skills", "knowledge_bases"):
-                            selected = member.get("overrides", {}).get(field)
-                            if selected is None:
-                                selected = getattr(source_role.definition, field)
-                            source_selections[origin].update(selected or [])
-                break
-            dependencies = {}
-            for slot, declared in declarations.items():
-                uses = declared.get("uses")
-                retained_uses = {}
-                if uses is not None:
-                    for origin, aliases in uses.items():
-                        if origin == "role":
-                            retained_uses[origin] = aliases[:]
-                        elif slot not in source_selections.get(origin, set()):
-                            # Explicit prerequisites are not execution choices.
-                            # Keep their declared scope in included local versions.
-                            for current_origin in installed_origins.get(origin, []):
-                                retained_uses[current_origin] = aliases[:]
-                if uses is None or retained_uses:
-                    dependency = copy.deepcopy(declared)
-                    if uses is not None:
-                        dependency["uses"] = retained_uses
-                        dependency["logical_slots"] = sorted(
-                            {
-                                alias
-                                for aliases in retained_uses.values()
-                                for alias in aliases
-                            }
-                        )
-                    dependencies[slot] = dependency
+            declarations, dependencies = self._resolve_role_contract(
+                role, included, installed_packages
+            )
             reserved_slots = set(declarations)
             resource_slots: dict[tuple[str, str], str] = {}
             base_configuration = copy.deepcopy(role["definition"])
@@ -1589,11 +1692,6 @@ class WorkflowService:
                             declared = matches[0] if matches else None
                         if declared is not None:
                             slot = declared["slot"]
-                            if slot not in dependencies:
-                                # Preserve every declared field, including None.
-                                dependencies[slot] = copy.deepcopy(declared)
-                                dependencies[slot]["uses"] = {}
-                                dependencies[slot]["logical_slots"] = []
                         else:
                             key = (
                                 field,
@@ -1634,18 +1732,8 @@ class WorkflowService:
                                 else None,
                             }
                         dependency = dependencies[slot]
-                        if dependency.get("uses") is not None:
-                            # Current logical selections carry the contract across
-                            # local asset versions without reviving unused tasks.
+                        if declared is None and dependency.get("uses") is not None:
                             aliases = [reference] if reference is not None else []
-                            if declared is not None:
-                                aliases = declared["logical_slots"]
-                                if (
-                                    origin == "role"
-                                    and declared.get("uses") is not None
-                                    and "role" in declared["uses"]
-                                ):
-                                    aliases = declared["uses"]["role"]
                             current_aliases = dependency["uses"].setdefault(origin, [])
                             for alias in aliases:
                                 if alias not in current_aliases:
@@ -2858,7 +2946,7 @@ class WorkflowService:
             raise RoleAssetError("Invalid run inputs", fields)
         if "tasks" in definition or definition.get("kind") == "autonomous":
             return await self._start_graph(username, asset, request)
-        frozen = await self._freeze_member(username, definition)
+        frozen = await self._freeze_member(username, definition, asset=asset)
         effective = frozen["effective"]
         member = frozen["member"]
         session_id = member["session_id"]
@@ -2926,12 +3014,15 @@ class WorkflowService:
         task.add_done_callback(self._tasks.discard)
         return await self.get_run(username, run_id)
 
-    async def _freeze_member(self, username: str, definition: dict) -> dict:
+    async def _freeze_member(
+        self, username: str, definition: dict, *, asset: dict
+    ) -> dict:
         """Freeze role capabilities and create an isolated member identity.
 
         Args:
             username: Actual initiating owner.
             definition: Task with a pinned role and explicit overrides.
+            asset: Authorized fixed asset supplying the actual contract context.
 
         Returns:
             Frozen role, effective settings, safe profile, persona and member.
@@ -2998,6 +3089,15 @@ class WorkflowService:
                     .scalars()
                     .all()
                 )
+            closure = (
+                await self._asset_closure(username, asset)
+                if any(
+                    role["role_id"] in record.role_ids.values() for record in packages
+                )
+                else {}
+            )
+            _, dependencies = self._resolve_role_contract(role, closure, packages)
+            role["package_dependencies"] = copy.deepcopy(list(dependencies.values()))
             for record in packages:
                 source_key = next(
                     (
@@ -3015,13 +3115,22 @@ class WorkflowService:
                     for item in package.roles
                     if f"{item.role_id}:{item.version}" == source_key
                 )
-                # Task overrides cannot discard an installed package's declared
-                # constraints. Check current resources before creating a snapshot.
-                # Launch applies usage limits to its selected local definition.
+                source_role.dependencies = [
+                    PackageDependency.model_validate(dependency)
+                    for dependency in dependencies.values()
+                ]
+                installation = RoleInstallation.model_validate(role["installation"])
+                installation.bindings = {
+                    slot: value
+                    for slot, value in installation.bindings.items()
+                    if slot in dependencies
+                }
+                # Apply the resolved resource contract before snapshot creation.
+                # Launch validates usage limits on the selected local definition.
                 _, issues = await self._preview_package_role(
                     package,
                     source_role,
-                    RoleInstallation.model_validate(role["installation"]),
+                    installation,
                     catalog,
                     validate_tasks=False,
                 )
@@ -3090,7 +3199,7 @@ class WorkflowService:
                     *frozen.get("allowed_roles", {}).values(),
                 ]
             else:
-                members = [await self._freeze_member(username, definition)]
+                members = [await self._freeze_member(username, definition, asset=asset)]
         except RoleAssetError as exc:
             return {
                 "ready": False,
@@ -5096,7 +5205,7 @@ class WorkflowService:
         allowed_roles = {}
         if team:
             for role in team["allowed_roles"]:
-                frozen = await self._freeze_member(username, role)
+                frozen = await self._freeze_member(username, role, asset=asset)
                 frozen.pop("member")
                 allowed_roles[role["role_id"]] = frozen
             definition = GraphDefinition.model_validate(
@@ -5168,7 +5277,7 @@ class WorkflowService:
             assert task.role_id is not None
             if task.member not in members:
                 frozen = await self._freeze_member(
-                    username, task.model_dump(exclude_none=True)
+                    username, task.model_dump(exclude_none=True), asset=asset
                 )
                 if (
                     team

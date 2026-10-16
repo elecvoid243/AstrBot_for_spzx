@@ -1,5 +1,6 @@
 """Preserve declared compatibility when recomposing imported nested assets."""
 
+import asyncio
 import copy
 
 import pytest
@@ -442,6 +443,7 @@ async def test_local_task_edit_omits_unselected_task_requirement(
         ("tools", "rename"),
         ("tools", "remove_selected"),
         ("tools", "import_upgrade"),
+        ("tools", "restore_role"),
         ("skills", None),
         ("knowledge_bases", None),
     ],
@@ -455,7 +457,7 @@ async def test_recomposition_preserves_scoped_prerequisites(
         workflow_env: Public source services and external resource inventory.
         tmp_path: Separate receiving SQLite directory.
         kind: Resource kind required without appearing in execution selections.
-        local_edit: Local rename, selected-tool removal, or a new import contract.
+        local_edit: Local edit, import upgrade, or restoration of an older role contract.
     """
     env = workflow_env
     env.inventory["models"][0]["fingerprint"] = "portable-model"
@@ -516,7 +518,7 @@ async def test_recomposition_preserves_scoped_prerequisites(
     assert (await env.service.check_readiness("bob", child["asset_id"], 1))["ready"]
     original = await env.service.export_asset("bob", child["asset_id"], 1)
     selected = child
-    if local_edit == "import_upgrade":
+    if local_edit in {"import_upgrade", "restore_role"}:
         upgraded = copy.deepcopy(package)
         upgraded["version"] = 2
         upgraded["roles"][0]["dependencies"] = [
@@ -527,6 +529,19 @@ async def test_recomposition_preserves_scoped_prerequisites(
         selected = (await env.service.import_asset("bob", {"package": upgraded}))[
             "asset"
         ]
+        if local_edit == "restore_role":
+            newer_role = selected["definition"]["role_id"]
+            selected = await env.service.save_asset(
+                "bob",
+                {
+                    "definition": {**child["definition"], "name": "Restored contract"},
+                    "expected_version": selected["version"],
+                },
+                child["asset_id"],
+            )
+            assert selected["version"] == 3
+            assert selected["definition"]["role_id"] == child["definition"]["role_id"]
+            assert selected["definition"]["role_id"] != newer_role
     elif local_edit is not None:
         definition = {**child["definition"], "name": "Edited local leaf"}
         if local_edit == "remove_selected":
@@ -569,6 +584,49 @@ async def test_recomposition_preserves_scoped_prerequisites(
         },
     )
     wrapped = await env.service.export_asset("bob", parent["asset_id"], 1)
+    if local_edit in {"restore_role", "import_upgrade"}:
+        assert (
+            await env.service.check_readiness(
+                "bob", selected["asset_id"], selected["version"]
+            )
+        )["ready"]
+        available = env.inventory[kind]
+        env.inventory[kind] = [
+            resource for resource in available if resource["id"] != "prerequisite-a"
+        ]
+        try:
+            expected_ready = local_edit == "import_upgrade"
+            assert (
+                await env.service.check_readiness(
+                    "bob", selected["asset_id"], selected["version"]
+                )
+            )["ready"] is expected_ready
+            assert (await env.service.check_readiness("bob", parent["asset_id"], 1))[
+                "ready"
+            ] is expected_ready
+            assert not (await env.service.check_readiness("bob", child["asset_id"], 1))[
+                "ready"
+            ]
+            if expected_ready:
+                launched = await env.service.start_run(
+                    "bob",
+                    parent["asset_id"],
+                    {"version": 1, "inputs": {"goal": "Read evidence"}},
+                )
+                for _ in range(200):
+                    finished = await env.service.get_run("bob", launched["run_id"])
+                    if finished["status"] != "running":
+                        break
+                    await asyncio.sleep(0.01)
+                assert finished["status"] == "completed", finished
+            else:
+                with pytest.raises(RoleAssetError):
+                    await env.service.start_run(
+                        "bob", selected["asset_id"], {"version": selected["version"]}
+                    )
+                assert (await env.service.list_runs("bob"))["runs"] == []
+        finally:
+            env.inventory[kind] = available
     inventory = copy.deepcopy(env.inventory)
     inventory["profiles"][0]["id"] = "carol-profile"
     inventory["models"][0]["id"] = "carol-model"
@@ -588,7 +646,11 @@ async def test_recomposition_preserves_scoped_prerequisites(
         return inventory
 
     db = SQLiteDatabase(str(tmp_path / "receiver.sqlite"))
-    receiver = WorkflowService(db, RoleAssetService(db, catalog_loader=catalog))
+    receiver = WorkflowService(
+        db,
+        RoleAssetService(db, catalog_loader=catalog),
+        ports_factory=env.service.ports_factory,
+    )
     try:
         assert not (await receiver.preview_import("direct", {"package": original}))[
             "ready"
@@ -610,6 +672,18 @@ async def test_recomposition_preserves_scoped_prerequisites(
         assert (
             await receiver.check_readiness("carol", installed["asset"]["asset_id"], 1)
         )["ready"]
+        if local_edit == "import_upgrade":
+            launched = await receiver.start_run(
+                "carol",
+                installed["asset"]["asset_id"],
+                {"version": 1, "inputs": {"goal": "Read evidence"}},
+            )
+            for _ in range(200):
+                finished = await receiver.get_run("carol", launched["run_id"])
+                if finished["status"] != "running":
+                    break
+                await asyncio.sleep(0.01)
+            assert finished["status"] == "completed", finished
         assert await env.service.export_asset("bob", child["asset_id"], 1) == original
         assert (await env.service.get_asset("bob", child["asset_id"], 1))[
             "definition"

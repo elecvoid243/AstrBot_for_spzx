@@ -347,7 +347,9 @@ class RoleAssetService:
         """Check current resources against frozen bindings and immutable requirements.
 
         Args:
-            role: Pinned role definition, installation and effective configuration.
+            role: Pinned definition, bindings, effective configuration and resolved
+                package dependencies. Legacy snapshots omit the dependency field
+                and retain their original database-based contract checks.
 
         Raises:
             RoleAssetError: A frozen binding is unavailable or incompatible.
@@ -436,7 +438,10 @@ class RoleAssetService:
                             "message": "Bound model no longer declares the required capabilities",
                         }
                     )
-        if role.get("role_id"):
+        dependencies = role.get("package_dependencies")
+        # New snapshots carry their resolved contract. Legacy snapshots retain
+        # the original database-based requirements and frozen binding identities.
+        if dependencies is None and role.get("role_id"):
             async with self.db.get_db() as session:
                 origin = await session.get(AgentRoleVersion, (role["role_id"], 1))
                 packages = (
@@ -453,6 +458,7 @@ class RoleAssetService:
                     if origin is not None
                     else []
                 )
+            dependencies = []
             for package in packages:
                 source_key = next(
                     (
@@ -469,64 +475,53 @@ class RoleAssetService:
                     for included in package.package["roles"]
                     if f"{included['role_id']}:{included['version']}" == source_key
                 )
-                # Imported definitions and their package requirements are immutable.
-                # Read only those requirements; installations may have been rebound
-                # since this attempt froze its own local resource identities.
-                for dependency in source["dependencies"]:
-                    kind, slot = dependency["kind"], dependency["slot"]
-                    identity = (
-                        profile_id
-                        if kind == "profiles"
-                        else role["installation"]["bindings"].get(slot)
-                    )
-                    matches = [r for r in catalog[kind] if r["id"] == identity]
-                    resource = matches[0] if len(matches) == 1 else {}
-                    fingerprint = resource.get("fingerprint")
-                    if kind == "profiles":
-                        fingerprint = (
-                            "astrbot.local.v1" if runner["type"] == "local" else None
-                        )
-                    pool = profile.get(
-                        "provider_pool" if kind == "models" else "persona_pool", ["*"]
-                    )
-                    if (
-                        not resource
-                        or not resource.get("enabled", True)
-                        or profile_id
-                        not in resource.get("enabled_profiles", [profile_id])
-                        or kind in ("models", "personas")
-                        and "*" not in pool
-                        and identity not in pool
-                        or kind in ("tools", "skills")
-                        and persona.get(kind) is not None
-                        and identity not in persona[kind]
-                        and (
-                            kind == "skills" or resource.get("persona_restricted", True)
-                        )
-                        or kind == "profiles"
-                        and runner["type"] != dependency["runner_type"]
-                        or dependency["fingerprint"]
-                        and fingerprint != dependency["fingerprint"]
-                        or dependency["input_schema"] is not None
-                        and resource.get("input_schema") != dependency["input_schema"]
-                        or not set(dependency["capabilities"]).issubset(
-                            runner["capabilities"]
-                            if kind == "profiles"
-                            else resource.get("capabilities", [])
-                        )
-                    ):
-                        issues.append(
-                            {
-                                "path": "installation."
-                                + (
-                                    "profile_id"
-                                    if kind == "profiles"
-                                    else f"bindings.{slot}"
-                                ),
-                                "code": "INCOMPATIBLE",
-                                "message": f"Frozen package dependency is unavailable or incompatible: {slot}",
-                            }
-                        )
+                dependencies.extend(source["dependencies"])
+        for dependency in dependencies or []:
+            kind, slot = dependency["kind"], dependency["slot"]
+            identity = (
+                profile_id
+                if kind == "profiles"
+                else role["installation"]["bindings"].get(slot)
+            )
+            matches = [r for r in catalog[kind] if r["id"] == identity]
+            resource = matches[0] if len(matches) == 1 else {}
+            fingerprint = resource.get("fingerprint")
+            if kind == "profiles":
+                fingerprint = "astrbot.local.v1" if runner["type"] == "local" else None
+            pool = profile.get(
+                "provider_pool" if kind == "models" else "persona_pool", ["*"]
+            )
+            if (
+                not resource
+                or not resource.get("enabled", True)
+                or profile_id not in resource.get("enabled_profiles", [profile_id])
+                or kind in ("models", "personas")
+                and "*" not in pool
+                and identity not in pool
+                or kind in ("tools", "skills")
+                and persona.get(kind) is not None
+                and identity not in persona[kind]
+                and (kind == "skills" or resource.get("persona_restricted", True))
+                or kind == "profiles"
+                and runner["type"] != dependency["runner_type"]
+                or dependency["fingerprint"]
+                and fingerprint != dependency["fingerprint"]
+                or dependency["input_schema"] is not None
+                and resource.get("input_schema") != dependency["input_schema"]
+                or not set(dependency["capabilities"]).issubset(
+                    runner["capabilities"]
+                    if kind == "profiles"
+                    else resource.get("capabilities", [])
+                )
+            ):
+                issues.append(
+                    {
+                        "path": "installation."
+                        + ("profile_id" if kind == "profiles" else f"bindings.{slot}"),
+                        "code": "INCOMPATIBLE",
+                        "message": f"Frozen package dependency is unavailable or incompatible: {slot}",
+                    }
+                )
         if issues:
             raise RoleAssetError("Frozen resources are no longer available", issues)
 

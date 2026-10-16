@@ -1354,3 +1354,431 @@ async def test_nested_preview_checks_distinct_effective_member_instances(
             "bob", installed["asset"]["asset_id"], installed["asset"]["version"]
         )
     )["ready"] is ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "limit", "ready"),
+    [
+        ("role", 1, False),
+        ("role", 2, True),
+        ("override", 1, False),
+        ("graph", 1, False),
+    ],
+)
+async def test_package_checks_terminal_role_depth(nested_package, target, limit, ready):
+    """Check the current terminal role before admitting a nested package.
+
+    Args:
+        nested_package: Real services and an exported team/leaf closure.
+        target: Role default, task override or graph member holding the limit.
+        limit: Maximum absolute depth permitted by the terminal member.
+        ready: Whether the depth-two placement is executable.
+    """
+    env, package = nested_package
+    team = {
+        key: copy.deepcopy(package[key])
+        for key in ("asset_id", "version", "definition")
+    }
+    leaf = package["assets"][0]
+    leaf_role = next(
+        role
+        for role in package["roles"]
+        if role["role_id"] == leaf["definition"]["role_id"]
+    )
+    package["asset_id"] = "outer-depth-workflow"
+    package["definition"] = {
+        "name": "Outer depth workflow",
+        "required_inputs": ["goal"],
+        "max_depth": 6,
+        "tasks": [
+            {
+                "id": "team",
+                "name": "Team",
+                "team": {"asset_id": team["asset_id"], "version": 1},
+                "inputs": {"goal": {"input": "goal"}},
+            }
+        ],
+    }
+    package["assets"].insert(0, team)
+    leaf_role["definition"]["max_depth"] = limit if target == "role" else 6
+    leaf["definition"]["overrides"]["max_depth"] = None if target == "role" else limit
+    if target == "graph":
+        leaf["definition"] = {
+            "name": "Terminal graph",
+            "max_depth": 6,
+            "tasks": [
+                {
+                    "id": "result",
+                    "member": "leaf",
+                    **{
+                        key: value
+                        for key, value in leaf["definition"].items()
+                        if key not in {"required_inputs", "limits"}
+                    },
+                }
+            ],
+        }
+    payload = {"package": package}
+    if not ready:
+        with pytest.raises(RoleAssetError, match="depth limit"):
+            await env.service.preview_import("bob", payload)
+        with pytest.raises(RoleAssetError, match="depth limit"):
+            await env.service.import_asset("bob", {**payload, "save_pending": True})
+        assert (await env.service.list_assets("bob"))["assets"] == []
+        assert (await env.roles.list_roles("bob"))["roles"] == []
+    else:
+        assert (await env.service.preview_import("bob", payload))["ready"]
+        installed = await env.service.import_asset("bob", payload)
+        assert installed["ready"]
+        assert (
+            await env.service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+        )["ready"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile_limit", "task_limit", "target", "ready"),
+    [
+        (1, None, "leaf", False),
+        (2, None, "leaf", True),
+        (1, 2, "leaf", True),
+        (1, None, "coordinator", False),
+    ],
+)
+async def test_package_inherits_depth_without_blocking_standalone_child(
+    nested_package, profile_limit, task_limit, target, ready
+):
+    """Apply selected-profile depth at the parent entry without leaking context.
+
+    Args:
+        nested_package: Public services and independently transferable child.
+        profile_limit: Selected profile's inherited depth allowance.
+        task_limit: Explicit override or null inheritance at the chosen context.
+        target: Leaf member or coordinator whose calls inherit the depth limit.
+        ready: Expected readiness of the depth-two parent entry.
+    """
+    env, package = nested_package
+    team = {
+        key: copy.deepcopy(package[key])
+        for key in ("asset_id", "version", "definition")
+    }
+    leaf = package["assets"][0]
+    leaf_role = next(
+        role
+        for role in package["roles"]
+        if role["role_id"] == leaf["definition"]["role_id"]
+    )
+    package["asset_id"] = "inherited-depth-workflow"
+    package["definition"] = {
+        "name": "Inherited depth workflow",
+        "required_inputs": ["goal"],
+        "max_depth": 6,
+        "tasks": [
+            {
+                "id": "team",
+                "name": "Team",
+                "team": {"asset_id": team["asset_id"], "version": 1},
+                "inputs": {"goal": {"input": "goal"}},
+            }
+        ],
+    }
+    package["assets"].insert(0, team)
+    env.inventory["profiles"][0]["max_depth"] = profile_limit
+    if target == "leaf":
+        leaf_role["definition"]["max_depth"] = None
+        leaf["definition"]["overrides"]["max_depth"] = task_limit
+    else:
+        coordinator_id = team["definition"]["coordinator"]["role_id"]
+        next(role for role in package["roles"] if role["role_id"] == coordinator_id)[
+            "definition"
+        ]["max_depth"] = None
+        for context in [
+            team["definition"]["coordinator"],
+            *team["definition"]["allowed_roles"],
+        ]:
+            context["overrides"]["max_depth"] = None
+    preview = await env.service.preview_import("bob", {"package": package})
+    assert preview["ready"] is ready
+    if not ready:
+        assert any(issue["code"] == "LIMIT" for issue in preview["issues"])
+        with pytest.raises(RoleAssetError, match="Configure package dependencies"):
+            await env.service.import_asset("bob", {"package": package})
+        assert (await env.service.list_assets("bob"))["assets"] == []
+    installed = await env.service.import_asset(
+        "bob", {"package": preview["package"], "save_pending": not ready}
+    )
+    assert installed["ready"] is ready
+    assert (
+        await env.service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+    )["ready"] is ready
+    if not ready:
+        with pytest.raises(RoleAssetError, match="depth limit"):
+            await env.service.start_run(
+                "bob",
+                installed["asset"]["asset_id"],
+                {"version": 1, "inputs": {"goal": "Check the complete closure"}},
+            )
+        assert (await env.service.list_runs("bob"))["runs"] == []
+        renamed = copy.deepcopy(installed["asset"]["definition"])
+        renamed["name"] += " renamed"
+        local_version = await env.service.save_asset(
+            "bob",
+            {"definition": renamed, "expected_version": 1},
+            installed["asset"]["asset_id"],
+        )
+        assert local_version["version"] == 2
+        assert not (
+            await env.service.check_readiness("bob", local_version["asset_id"], 2)
+        )["ready"]
+        with pytest.raises(RoleAssetError, match="depth limit"):
+            await env.service.start_run(
+                "bob",
+                local_version["asset_id"],
+                {"version": 2, "inputs": {"goal": "Check edited ancestry"}},
+            )
+        assert (await env.service.list_runs("bob"))["runs"] == []
+    local_assets = (await env.service.list_assets("bob"))["assets"]
+    for child in local_assets:
+        if child["asset_id"] != installed["asset"]["asset_id"]:
+            assert (await env.service.check_readiness("bob", child["asset_id"], 1))[
+                "ready"
+            ]
+    assert (
+        await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
+    ) == preview["package"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("short_first", [True, False])
+async def test_shared_terminal_depth_checks_every_path(nested_package, short_first):
+    """Do not memoize a shallow valid visit over a deeper invalid placement.
+
+    Args:
+        nested_package: Public services and a shared terminal workflow.
+        short_first: Whether the stricter short branch is visited first.
+    """
+    env, package = nested_package
+    leaf = package["assets"][0]
+    leaf_role = next(
+        role
+        for role in package["roles"]
+        if role["role_id"] == leaf["definition"]["role_id"]
+    )
+    leaf_role["definition"]["max_depth"] = 3
+    leaf["definition"]["overrides"]["max_depth"] = 3
+    template = copy.deepcopy(package["definition"])
+    template["max_depth"] = 6
+    for context in [template["coordinator"], *template["allowed_roles"]]:
+        context["overrides"]["max_depth"] = 6
+    coordinator_id = template["coordinator"]["role_id"]
+    next(role for role in package["roles"] if role["role_id"] == coordinator_id)[
+        "definition"
+    ]["max_depth"] = 6
+    package["definition"] = copy.deepcopy(template)
+    choices = [
+        {"asset_id": name, "version": 1, "result_task_id": "team"}
+        for name in ["long-graph", "short-graph"]
+    ]
+    package["definition"]["allowed_workflows"] = (
+        choices if short_first else list(reversed(choices))
+    )
+    for team_id, child_id, return_task in [
+        ("short-team", leaf["asset_id"], "result"),
+        ("first-team", "deep-graph", "team"),
+        ("second-team", leaf["asset_id"], "result"),
+    ]:
+        definition = copy.deepcopy(template)
+        definition["name"] = team_id
+        definition["allowed_workflows"] = [
+            {"asset_id": child_id, "version": 1, "result_task_id": return_task}
+        ]
+        package["assets"].append(
+            {"asset_id": team_id, "version": 1, "definition": definition}
+        )
+    for graph_id, team_id, limit in [
+        ("short-graph", "short-team", 3),
+        ("long-graph", "first-team", 6),
+        ("deep-graph", "second-team", 6),
+    ]:
+        package["assets"].append(
+            {
+                "asset_id": graph_id,
+                "version": 1,
+                "definition": {
+                    "name": graph_id,
+                    "required_inputs": ["goal"],
+                    "max_depth": limit,
+                    "tasks": [
+                        {
+                            "id": "team",
+                            "name": "Team",
+                            "team": {"asset_id": team_id, "version": 1},
+                            "inputs": {"goal": {"input": "goal"}},
+                        }
+                    ],
+                },
+            }
+        )
+    with pytest.raises(RoleAssetError, match="depth limit"):
+        await env.service.preview_import("bob", {"package": package})
+    assert (await env.service.list_assets("bob"))["assets"] == []
+    assert (await env.roles.list_roles("bob"))["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_export_rejects_terminal_override_below_reference_depth(workflow_env):
+    """Reject the same terminal override when exporting ordinary local assets.
+
+    Args:
+        workflow_env: Public service boundary with versioned local definitions.
+    """
+    env = workflow_env
+    leaf = await env.service.save_asset(
+        "alice",
+        {
+            "expected_version": 1,
+            "definition": {
+                **env.asset["definition"],
+                "overrides": {**env.asset["definition"]["overrides"], "max_depth": 1},
+            },
+        },
+        env.asset["asset_id"],
+    )
+    reference = {"role_id": env.role["role_id"], "role_version": 1}
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Depth team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": leaf["asset_id"],
+                        "version": 2,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    graph = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Export depth parent",
+                "required_inputs": ["goal"],
+                "tasks": [
+                    {
+                        "id": "team",
+                        "name": "Team",
+                        "team": {"asset_id": team["asset_id"], "version": 1},
+                        "inputs": {"goal": {"input": "goal"}},
+                    }
+                ],
+            }
+        },
+    )
+    with pytest.raises(RoleAssetError, match="depth limit"):
+        await env.service.export_asset("alice", graph["asset_id"], 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location", ["allowed_role", "graph_member"])
+async def test_optional_member_depth_does_not_restrict_coordinator_calls(
+    workflow_env, location
+):
+    """Keep an unrelated worker's limit out of the coordinator's child path.
+
+    Args:
+        workflow_env: Public services with a saved leaf and compatible resources.
+        location: Allowed worker or an independent task in the outer graph.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    worker = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Optional shallow worker",
+                "prompt": "Read independent evidence",
+                "tools": [],
+                "skills": [],
+                "knowledge_bases": [],
+                "max_depth": 1,
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    reference = {"role_id": env.role["role_id"], "role_version": 1}
+    optional = {"role_id": worker["role_id"], "role_version": 1}
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Independent worker team",
+                "max_depth": 6,
+                "coordinator": reference,
+                "allowed_roles": [reference, optional]
+                if location == "allowed_role"
+                else [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": env.asset["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    tasks = [
+        {
+            "id": "team",
+            "name": "Team",
+            "team": {"asset_id": team["asset_id"], "version": 1},
+            "inputs": {"goal": {"input": "goal"}},
+        }
+    ]
+    if location == "graph_member":
+        tasks.append(
+            {
+                "id": "independent",
+                "name": "Independent worker",
+                "member": "worker",
+                "task": "Read independent evidence",
+                **optional,
+            }
+        )
+    parent = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Independent worker parent",
+                "required_inputs": ["goal"],
+                "max_depth": 6,
+                "tasks": tasks,
+            }
+        },
+    )
+    assert (await env.service.check_readiness("alice", parent["asset_id"], 1))["ready"]
+    package = await env.service.export_asset("alice", parent["asset_id"], 1)
+    assert (
+        next(role for role in package["roles"] if role["role_id"] == worker["role_id"])[
+            "definition"
+        ]["max_depth"]
+        == 1
+    )
+    assert (await env.service.preview_import("bob", {"package": package}))["ready"]
+    installed = await env.service.import_asset("bob", {"package": package})
+    assert installed["ready"]
+    assert (
+        await env.service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+    )["ready"]
+    assert (
+        await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
+        == package
+    )

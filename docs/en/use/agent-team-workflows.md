@@ -24,6 +24,8 @@ If a package pins another version of its own entry asset, installation keeps tha
 
 Dependency selections stay with the reviewed package until you edit or replace its JSON. Preview checks loop iterations and distinct member counts against the effective role settings, including inherited values from the selected local profile. Choose a compatible profile or correct the source asset when a limit blocks installation.
 
+Every included member's own depth limit is checked at its reference depth, including terminal members and shared children reached by different paths. Nullable depth limits inherit the selected local profile. The coordinator's limit also bounds its declared child calls; other members retain their own placement limits. Readiness and new launches validate the current definition's full closure, including after local edits. A parent saved pending configuration remains blocked until its closure is ready; an independently valid child can still run from its own entry.
+
 An incompatibility found after a model response or at a tool/usage boundary remains a resource block with details of the affected binding. A genuine checkpoint or accounting storage failure still stops dependent work. After restoring the original resource, **Continue same attempt** reuses a complete saved response, including a streamed OpenAI response. **Retry failed task** creates a new Attempt and retains the blocked history.
 
 ![Actual source drift after process restart blocks normal launch](/images/agent-workflow-package-drift-en.jpg)

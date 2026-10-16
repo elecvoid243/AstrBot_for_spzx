@@ -414,11 +414,6 @@ class WorkflowPackage(PackageAsset):
                     raise RoleAssetError(
                         "Nested references exceed the declared depth limit"
                     )
-                remaining = depth_limit - len(ancestors)
-                if checked_depths.get(key, 21) <= remaining:
-                    continue
-                checked_depths[key] = remaining
-                included.add(key)
                 definition = definitions[key].definition
                 if isinstance(definition, AutonomousDefinition):
                     contexts = [definition.coordinator, *definition.allowed_roles]
@@ -446,7 +441,21 @@ class WorkflowPackage(PackageAsset):
                         role.definition.max_depth if role else None
                     )
                     if role_limit is not None:
-                        limit = min(limit, role_limit)
+                        if len(ancestors) > role_limit:
+                            raise RoleAssetError(
+                                "Nested member exceeds the declared role depth limit"
+                            )
+                        if (
+                            isinstance(definition, AutonomousDefinition)
+                            and context is definition.coordinator
+                        ):
+                            # Only the coordinator calls the declared child workflows.
+                            limit = min(limit, role_limit)
+                remaining = limit - len(ancestors)
+                if checked_depths.get(key, 21) <= remaining:
+                    continue
+                checked_depths[key] = remaining
+                included.add(key)
                 for ref in refs:
                     pending.append(
                         ((ref.asset_id, ref.version), (*ancestors, key), limit)
@@ -2179,7 +2188,7 @@ class WorkflowService:
                 )
         catalog = await self.roles.get_resources()
         previews, issues = [], []
-        for role in package.roles:
+        for role_index, role in enumerate(package.roles):
             key = f"{role.role_id}:{role.version}"
             proposed, role_issues = await self._preview_package_role(
                 package,
@@ -2189,6 +2198,28 @@ class WorkflowService:
             )
             previews.append(proposed)
             issues.extend(role_issues)
+            if role.definition.max_depth is None:
+                resolved = await self.roles.preview_role(
+                    {
+                        "definition": role.definition.model_dump(),
+                        "installation": proposed["installation"],
+                    }
+                )
+                # Resolve inherited depth without changing the reviewed package.
+                checked = package.model_copy(deep=True)
+                checked.roles[role_index].definition.max_depth = resolved[
+                    "effective"
+                ].get("max_depth")
+                try:
+                    checked.asset_packages()
+                except RoleAssetError as exc:
+                    issues.append(
+                        {
+                            "path": f"roles.{key}.definition.max_depth",
+                            "code": "LIMIT",
+                            "message": str(exc),
+                        }
+                    )
         return {
             "package": normalized,
             "digest": assets[0]["digest"],
@@ -4729,6 +4760,7 @@ class WorkflowService:
         asset: dict,
         request: WorkflowStartRequest,
         nesting_depth: int = 0,
+        depth_limit: int = 20,
     ) -> dict:
         """Resolve a complete graph and its pinned child resources before any write.
 
@@ -4737,15 +4769,16 @@ class WorkflowService:
             asset: Exact saved asset version.
             request: Declared inputs and source for this scope.
             nesting_depth: Reference traversal bounded by the supported nesting ceiling.
+            depth_limit: Effective ancestor and caller ceiling for this reference path.
 
         Returns:
             Frozen scope template; member identities are assigned at scope creation.
 
         Raises:
-            RoleAssetError: A definition, contract, resource or instance limit fails.
+            RoleAssetError: A definition, contract, resource, depth or instance limit fails.
         """
-        if nesting_depth > 20:
-            raise RoleAssetError("Nested references exceed the supported depth limit")
+        if nesting_depth > min(depth_limit, 20):
+            raise RoleAssetError("Nested references exceed the declared depth limit")
         team = (
             asset["definition"]
             if asset["definition"].get("kind") == "autonomous"
@@ -4860,6 +4893,19 @@ class WorkflowService:
                         }
                     ],
                 )
+        for frozen in [*members.values(), *allowed_roles.values()]:
+            limit = frozen["effective"].get("max_depth")
+            if limit is not None and nesting_depth > limit:
+                raise RoleAssetError(
+                    "Nested member exceeds the effective role depth limit",
+                    [
+                        {
+                            "path": "definition",
+                            "code": "LIMIT",
+                            "message": f"Role {frozen['role']['role_id']} permits depth {limit}",
+                        }
+                    ],
+                )
         for index, loop in enumerate(definition.loops):
             for task in definition.tasks:
                 if (
@@ -4900,6 +4946,7 @@ class WorkflowService:
                 child,
                 WorkflowStartRequest(version=task.team.version, source=request.source),
                 nesting_depth + 1,
+                min(depth_limit, definition.max_depth),
             )
         allowed_workflows = {}
         for ref in team.get("allowed_workflows", []) if team else []:
@@ -4911,6 +4958,11 @@ class WorkflowService:
                 child,
                 WorkflowStartRequest(version=ref["version"], source=request.source),
                 nesting_depth + 1,
+                min(
+                    depth_limit,
+                    definition.max_depth,
+                    members["coordinator"]["effective"].get("max_depth") or 20,
+                ),
             )
             if not any(
                 task["id"] == ref["result_task_id"]

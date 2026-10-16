@@ -32,7 +32,14 @@ const routeMock = vi.hoisted(() => ({ route: null as any }));
 vi.mock('vue-router', async () => {
   const { reactive } = await vi.importActual<typeof import('vue')>('vue');
   routeMock.route = reactive({ query: {} });
-  return { useRoute: () => routeMock.route };
+  return {
+    useRoute: () => routeMock.route,
+    useRouter: () => ({
+      replace: async ({ query }: { query: Record<string, unknown> }) => {
+        routeMock.route.query = query;
+      },
+    }),
+  };
 });
 
 vi.mock('@/composables/useAgentTeams', async () => {
@@ -233,6 +240,10 @@ describe('AgentTeamsPage', () => {
     try {
       await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '工作流资产')!.trigger('click');
       expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('assets');
+      routeMock.route.query = { workflow_run: 'chat-run' };
+      await nextTick();
+      expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('runs');
+      await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '工作流资产')!.trigger('click');
       routeMock.route.query = { workflow_run: 'chat-run' };
       await nextTick();
       expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('runs');

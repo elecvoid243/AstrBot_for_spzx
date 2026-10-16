@@ -101,7 +101,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
 import MemberAddDialog from '@/components/agent_teams/MemberAddDialog.vue';
@@ -133,9 +133,18 @@ const { openRun } = useAgentTeamsRun();
 const confirmDialog = useConfirmDialog();
 
 const route = useRoute();
+const router = useRouter();
 const tab = ref(route.query.workflow_run ? 'runs' : 'editor');
 watch(() => route.query.workflow_run, (runId) => {
   if (typeof runId === 'string' && runId) tab.value = 'runs';
+});
+watch(tab, (selected, previous) => {
+  // Keep the same incoming run link usable after browsing another panel.
+  if (previous === 'runs' && selected !== 'runs' && route.query.workflow_run) {
+    const query = { ...route.query };
+    delete query.workflow_run;
+    void router.replace({ query });
+  }
 });
 // Workflow preselected for the monitor by the editor's 保存并运行 handoff.
 const presetWorkflowId = ref('');

@@ -435,6 +435,191 @@ async def test_local_task_edit_omits_unselected_task_requirement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "local_edit"),
+    [
+        ("tools", None),
+        ("tools", "rename"),
+        ("tools", "remove_selected"),
+        ("tools", "import_upgrade"),
+        ("skills", None),
+        ("knowledge_bases", None),
+    ],
+)
+async def test_recomposition_preserves_scoped_prerequisites(
+    workflow_env, tmp_path, kind, local_edit
+):
+    """Keep declared prerequisites independently of executable resource choices.
+
+    Args:
+        workflow_env: Public source services and external resource inventory.
+        tmp_path: Separate receiving SQLite directory.
+        kind: Resource kind required without appearing in execution selections.
+        local_edit: Local rename, selected-tool removal, or a new import contract.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    env.inventory[kind] = [
+        {
+            "id": "selected-a",
+            "fingerprint": "portable-selected",
+            "name": "Selected source",
+        },
+        {
+            "id": "prerequisite-a",
+            "fingerprint": "portable-prerequisite",
+            "name": "Evidence source",
+            "capabilities": ["evidence"],
+        },
+    ]
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Evidence reader",
+                "prompt": "Read evidence",
+                "tools": [],
+                "skills": [],
+                "knowledge_bases": [],
+            },
+            "installation": {"bindings": {"model": "model-a", "chosen": "selected-a"}},
+        },
+    )
+    source = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Evidence leaf",
+                "task": "Read evidence",
+                "role_id": role["role_id"],
+                "role_version": 1,
+                "overrides": {kind: ["chosen"]}
+                if local_edit == "remove_selected"
+                else {},
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", source["asset_id"], 1)
+    package["format_version"] = 2
+    package["roles"][0]["dependencies"].append(
+        {
+            "slot": "evidence_prerequisite",
+            "kind": kind,
+            "fingerprint": "portable-prerequisite",
+            "capabilities": ["evidence"],
+            "logical_slots": ["evidence_source"],
+            "uses": {f"{source['asset_id']}:1": ["evidence_source"]},
+        }
+    )
+    imported = await env.service.import_asset("bob", {"package": package})
+    child = imported["asset"]
+    assert (await env.service.check_readiness("bob", child["asset_id"], 1))["ready"]
+    original = await env.service.export_asset("bob", child["asset_id"], 1)
+    selected = child
+    if local_edit == "import_upgrade":
+        upgraded = copy.deepcopy(package)
+        upgraded["version"] = 2
+        upgraded["roles"][0]["dependencies"] = [
+            dependency
+            for dependency in upgraded["roles"][0]["dependencies"]
+            if dependency["slot"] != "evidence_prerequisite"
+        ]
+        selected = (await env.service.import_asset("bob", {"package": upgraded}))[
+            "asset"
+        ]
+    elif local_edit is not None:
+        definition = {**child["definition"], "name": "Edited local leaf"}
+        if local_edit == "remove_selected":
+            definition["overrides"] = {**definition["overrides"], kind: []}
+        selected = await env.service.save_asset(
+            "bob", {"definition": definition, "expected_version": 1}, child["asset_id"]
+        )
+    coordinator = await env.roles.save_role(
+        "bob",
+        {
+            "definition": {
+                "name": "Coordinator",
+                "prompt": "Call the leaf",
+                "tools": [],
+                "skills": [],
+                "knowledge_bases": [],
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    reference = {"role_id": coordinator["role_id"], "role_version": 1}
+    if local_edit == "import_upgrade":
+        reference = {"role_id": child["definition"]["role_id"], "role_version": 1}
+    parent = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Evidence wrapper",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": child["asset_id"],
+                        "version": selected["version"],
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    wrapped = await env.service.export_asset("bob", parent["asset_id"], 1)
+    inventory = copy.deepcopy(env.inventory)
+    inventory["profiles"][0]["id"] = "carol-profile"
+    inventory["models"][0]["id"] = "carol-model"
+    prerequisite = {**inventory[kind][1], "id": "carol-prerequisite"}
+    inventory[kind] = (
+        [{**inventory[kind][0], "id": "carol-selected"}]
+        if local_edit != "remove_selected"
+        else []
+    )
+
+    async def catalog():
+        """Return the independent receiver's currently available resources.
+
+        Returns:
+            Catalog with the prerequisite initially absent.
+        """
+        return inventory
+
+    db = SQLiteDatabase(str(tmp_path / "receiver.sqlite"))
+    receiver = WorkflowService(db, RoleAssetService(db, catalog_loader=catalog))
+    try:
+        assert not (await receiver.preview_import("direct", {"package": original}))[
+            "ready"
+        ]
+        if local_edit != "import_upgrade":
+            assert not (await receiver.preview_import("carol", {"package": wrapped}))[
+                "ready"
+            ]
+            with pytest.raises(RoleAssetError):
+                await receiver.import_asset("carol", {"package": wrapped})
+            assert (await receiver.list_assets("carol"))["assets"] == []
+            inventory[kind].append(prerequisite)
+        else:
+            assert (await receiver.preview_import("carol", {"package": wrapped}))[
+                "ready"
+            ]
+        installed = await receiver.import_asset("carol", {"package": wrapped})
+        assert installed["ready"]
+        assert (
+            await receiver.check_readiness("carol", installed["asset"]["asset_id"], 1)
+        )["ready"]
+        assert await env.service.export_asset("bob", child["asset_id"], 1) == original
+        assert (await env.service.get_asset("bob", child["asset_id"], 1))[
+            "definition"
+        ] == child["definition"]
+    finally:
+        await receiver.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("optional_field", ["fingerprint", "input_schema"])
 async def test_recomposition_preserves_unspecified_constraints(
     workflow_env, tmp_path, optional_field

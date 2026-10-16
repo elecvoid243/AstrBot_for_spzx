@@ -1355,6 +1355,23 @@ class WorkflowService:
                     )
                 )
         definition = included[(asset_id, asset["version"])]["definition"]
+        installed_origins = {}
+        # Local edits inherit the nearest imported version's scoped prerequisites.
+        for current in included.values():
+            original = max(
+                (
+                    record
+                    for record in installed_packages
+                    if current["asset_id"] == record.asset_id
+                    and record.installed_version <= current["version"]
+                ),
+                key=lambda record: record.installed_version,
+                default=None,
+            )
+            if original is not None:
+                installed_origins.setdefault(
+                    f"{original.package_id}:{original.version}", []
+                ).append(f"{current['asset_id']}:{current['version']}")
         tasks = []
         task_origins = {}
         for current in included.values():
@@ -1384,6 +1401,7 @@ class WorkflowService:
             portable["persona_slot"] = None
             portable["model_slot"] = "model"
             declarations = {}
+            source_selections = {}
             for record in installed_packages:
                 source_key = next(
                     (
@@ -1406,15 +1424,51 @@ class WorkflowService:
                     item["slot"]: item
                     for item in source_package.role_content(source_role)["dependencies"]
                 }
+                for source_asset in [source_package, *source_package.assets]:
+                    content = source_asset.definition.model_dump()
+                    members = (
+                        [content["coordinator"], *content["allowed_roles"]]
+                        if content.get("kind") == "autonomous"
+                        else content.get("tasks", [content])
+                    )
+                    origin = f"{source_asset.asset_id}:{source_asset.version}"
+                    source_selections[origin] = set()
+                    for member in members:
+                        if (member.get("role_id"), member.get("role_version")) != (
+                            source_role.role_id,
+                            source_role.version,
+                        ):
+                            continue
+                        for field in ("tools", "skills", "knowledge_bases"):
+                            selected = member.get("overrides", {}).get(field)
+                            if selected is None:
+                                selected = getattr(source_role.definition, field)
+                            source_selections[origin].update(selected or [])
                 break
             dependencies = {}
             for slot, declared in declarations.items():
                 uses = declared.get("uses")
-                if uses is None or "role" in uses:
+                retained_uses = {}
+                if uses is not None:
+                    for origin, aliases in uses.items():
+                        if origin == "role":
+                            retained_uses[origin] = aliases[:]
+                        elif slot not in source_selections.get(origin, set()):
+                            # Explicit prerequisites are not execution choices.
+                            # Keep their declared scope in included local versions.
+                            for current_origin in installed_origins.get(origin, []):
+                                retained_uses[current_origin] = aliases[:]
+                if uses is None or retained_uses:
                     dependency = copy.deepcopy(declared)
                     if uses is not None:
-                        dependency["uses"] = {"role": uses["role"][:]}
-                        dependency["logical_slots"] = uses["role"][:]
+                        dependency["uses"] = retained_uses
+                        dependency["logical_slots"] = sorted(
+                            {
+                                alias
+                                for aliases in retained_uses.values()
+                                for alias in aliases
+                            }
+                        )
                     dependencies[slot] = dependency
             reserved_slots = set(declarations)
             resource_slots: dict[tuple[str, str], str] = {}

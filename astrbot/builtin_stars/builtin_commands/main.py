@@ -52,10 +52,33 @@ class Main(star.Star):
         """
         if event.get_extra("agent_team_execution") is not None:
             return
+
+        async def send_source(actual: ChatCaller | None, text: str) -> bool:
+            """Keep explicit asset output on this event's original response.
+
+            Args:
+                actual: Caller verified against the saved grant, when available.
+                text: Safe status, clarification or final result projection.
+
+            Returns:
+                True after the original response channel accepted the message.
+            """
+            if event.get_platform_name() == "wecom_ai_bot":
+                from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
+                    WecomAIBotMessageEvent,
+                )
+
+                await cast(WecomAIBotMessageEvent, event).send(
+                    event.plain_result(text), source_only=True
+                )
+            else:
+                await event.send(event.plain_result(text))
+            return True
+
         context = cast(star.Context, self.context)
         service = context.workflow_service
         if service is None:
-            await event.send(event.plain_result("Asset invocation is unavailable."))
+            await send_source(None, "Asset invocation is unavailable.")
             event.stop_event()
             return
         try:
@@ -74,29 +97,14 @@ class Main(star.Star):
                 command_parts[1].strip() if len(command_parts) > 1 else ""
             )
 
-            async def send_source(actual: ChatCaller, text: str) -> bool:
-                """Use this verified event for retained source delivery.
-
-                Args:
-                    actual: Caller verified against the saved grant.
-                    text: Safe status or final result projection.
-
-                Returns:
-                    True after the platform accepted this message.
-                """
-                await event.send(event.plain_result(text))
-                return True
-
             if not request or request == "list":
                 offered = await service.chat.list_assets(caller)
                 text = 'Usage: /asset <name or ID> | {"input":"value"}\n'
                 text += json.dumps(offered, ensure_ascii=False)
-                await event.send(event.plain_result(text))
+                await send_source(caller, text)
             elif request == "whoami":
-                await event.send(
-                    event.plain_result(
-                        json.dumps(caller.model_dump(), ensure_ascii=False)
-                    )
+                await send_source(
+                    caller, json.dumps(caller.model_dump(), ensure_ascii=False)
                 )
             elif request.startswith("status "):
                 run_id = request.removeprefix("status ").strip()
@@ -107,9 +115,7 @@ class Main(star.Star):
                     projection = await service.chat.get_run(caller, run_id)
                     text = json.dumps(projection, ensure_ascii=False)
                     for offset in range(0, len(text), 1500):
-                        await event.send(
-                            event.plain_result(text[offset : offset + 1500])
-                        )
+                        await send_source(caller, text[offset : offset + 1500])
             else:
                 selector, separator, raw_inputs = request.partition("|")
                 inputs = json.loads(raw_inputs) if separator else {}
@@ -121,11 +127,9 @@ class Main(star.Star):
                 if response["status"] == "accepted":
                     await service.chat.deliver_pending(send_source, response["run_id"])
                 else:
-                    await event.send(
-                        event.plain_result(json.dumps(response, ensure_ascii=False))
-                    )
+                    await send_source(caller, json.dumps(response, ensure_ascii=False))
         except (RoleAssetError, ValueError, ValidationError) as exc:
-            await event.send(event.plain_result(str(exc)))
+            await send_source(None, str(exc))
         event.stop_event()
 
     @filter.permission_type(filter.PermissionType.ADMIN)

@@ -349,7 +349,9 @@ class AstrBotCoreLifecycle:
                     Whether a matching platform accepted the message.
                 """
                 return await self.star_context.send_message(
-                    caller.source, MessageChain().message(text)
+                    caller.source,
+                    MessageChain().message(text),
+                    require_exact_source=True,
                 )
 
             tasks_.append(

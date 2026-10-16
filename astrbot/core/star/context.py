@@ -683,22 +683,27 @@ class Context:
         self,
         session: str | MessageSesion,
         message_chain: MessageChain,
+        *,
+        require_exact_source: bool = False,
     ) -> bool:
-        """根据 session(unified_msg_origin) 主动发送消息。
+        """Send through the existing adapter for a configured conversation.
 
         Args:
-            session: 消息会话。通过 event.session 或者 event.unified_msg_origin 获取。
-            message_chain: 消息链。
+            session: Conversation from event.session or event.unified_msg_origin.
+            message_chain: Message content.
+            require_exact_source: Refuse adapters whose proactive API loses the
+                original audience or account instead of selecting a fallback.
 
         Returns:
-            是否找到匹配的平台。
+            True after a matching adapter accepts the send. False when no
+            adapter matches or a required exact source cannot be preserved.
 
         Raises:
-            ValueError: session 字符串不合法时抛出。
+            ValueError: The serialized conversation is invalid.
 
         Note:
-            当 session 为字符串时，会尝试解析为 MessageSession 对象。(类名为MessageSesion是因为历史遗留拼写错误)
-            qq_official(QQ 官方 API 平台) 不支持此方法。
+            Strings are parsed into the historical MessageSesion type.
+            Adapter-specific proactive messaging restrictions still apply.
         """
         if isinstance(session, str):
             try:
@@ -708,6 +713,15 @@ class Context:
 
         for platform in self.platform_manager.platform_insts:
             if platform.meta().id == session.platform_name:
+                if require_exact_source and (
+                    platform.meta().name in {"wecom_ai_bot", "satori"}
+                    or (
+                        platform.meta().name == "misskey"
+                        and not session.session_id.startswith(("chat%", "room%"))
+                    )
+                ):
+                    # These sources need event state absent from a saved UMO.
+                    return False
                 await platform.send_by_session(session, message_chain)
                 settings = self.get_config(umo=str(session)).get(
                     "provider_ltm_settings",

@@ -558,6 +558,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     chat = FakeChatService()
     lifecycle = SimpleNamespace(
         conversation_manager=conversations,
+        platform_manager=SimpleNamespace(platform_insts=[adapter]),
         provider_manager=providers,
         persona_mgr=personas,
         astrbot_config_mgr=acm,

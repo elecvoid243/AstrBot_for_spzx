@@ -147,8 +147,19 @@ class WecomAIBotMessageEvent(AstrMessageEvent):
         result = "".join(plain_parts)
         return result.strip() if strip_result else result
 
-    async def send(self, message: MessageChain | None) -> None:
-        """发送消息"""
+    async def send(
+        self, message: MessageChain | None, *, source_only: bool = False
+    ) -> None:
+        """Send a reply through the original response or configured webhook.
+
+        Args:
+            message: Message to send.
+            source_only: Exclude the global webhook and require a live original
+                response, even when ordinary replies use webhook-only mode.
+
+        Raises:
+            RuntimeError: A required original response is no longer available.
+        """
         if message is None:
             return
         raw = self.message_obj.raw_message
@@ -161,6 +172,18 @@ class WecomAIBotMessageEvent(AstrMessageEvent):
             "connection_mode"
         )
         req_id = pending_response.get("callback_params", {}).get("req_id")
+        if source_only and (
+            not pending_response
+            or (
+                connection_mode == "long_connection"
+                and (
+                    not self.long_connection_sender
+                    or not isinstance(req_id, str)
+                    or not req_id
+                )
+            )
+        ):
+            raise RuntimeError("The original WeCom response is no longer available")
 
         if (
             connection_mode == "long_connection"
@@ -168,19 +191,24 @@ class WecomAIBotMessageEvent(AstrMessageEvent):
             and isinstance(req_id, str)
             and req_id
         ):
-            if self.only_use_webhook_url_to_send and self.webhook_client and message:
+            if (
+                not source_only
+                and self.only_use_webhook_url_to_send
+                and self.webhook_client
+                and message
+            ):
                 await self.webhook_client.send_message_chain(message)
                 await super().send(MessageChain([]))
                 return
 
-            if self.webhook_client and message:
+            if not source_only and self.webhook_client and message:
                 await self.webhook_client.send_message_chain(
                     message,
                     unsupported_only=True,
                 )
 
             content = self._extract_plain_text_from_chain(message)
-            await self.long_connection_sender(
+            accepted = await self.long_connection_sender(
                 req_id,
                 {
                     "msgtype": "stream",
@@ -191,16 +219,23 @@ class WecomAIBotMessageEvent(AstrMessageEvent):
                     },
                 },
             )
+            if source_only and not accepted:
+                raise RuntimeError("The original WeCom connection rejected the reply")
             await super().send(MessageChain([]))
             return
 
-        if self.only_use_webhook_url_to_send and self.webhook_client and message:
+        if (
+            not source_only
+            and self.only_use_webhook_url_to_send
+            and self.webhook_client
+            and message
+        ):
             await self.webhook_client.send_message_chain(message)
             await self._mark_stream_complete(stream_id)
             await super().send(MessageChain([]))
             return
 
-        if self.webhook_client and message:
+        if not source_only and self.webhook_client and message:
             await self.webhook_client.send_message_chain(
                 message,
                 unsupported_only=True,

@@ -70,6 +70,10 @@ The source receives acceptance, a notice when human input is needed, and the fin
 
 Chat invocation records the platform-qualified initiator and source while the asset owner retains Dashboard control of the delegated run. Its synthetic member turns remain ordinary members, including when IDs match an administrator. Only the root run's completed result is returned to chat; child results and unapproved versions cannot be read through chat status. Restart resumes saved notification cursors and existing human requests. A crash between platform acceptance and saving its receipt can repeat a message; it does not start another asset run.
 
+The source must identify one audience and account. Satori conversations and Misskey note conversations are currently unavailable for asset invocation because their saved source identity does not preserve that distinction. Misskey direct chats and rooms remain supported. Use a dedicated supported conversation or ask the owner to start the asset in WebUI instead.
+
+WeCom AI Bot asset replies use the original response channel, including when ordinary replies use webhook-only mode. Asset notices never use its global group webhook. After that response expires or the process restarts, send `/asset status <run ID>` from the same authorized conversation to receive pending notices and results through a fresh response. Pending messages are retained when an exact source channel is unavailable.
+
 ## Autonomous teams
 
 Choose **Workflow Assets → New Autonomous Team**. Enter the **Team name**, choose the **Coordinator role** and its pinned version, then select **Allowed role templates** and pin each version. Set **Maximum members** (including the coordinator), **Maximum concurrent tasks** and **Maximum member tasks**. Role instance and concurrency limits also apply. An optional **Final version approval question** requires approval of the coordinator's exact final artifact before the run can complete. **Output contract (JSON Schema)** applies to that final result; leaving it empty uses the standard text contract.

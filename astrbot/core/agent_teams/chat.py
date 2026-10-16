@@ -117,6 +117,17 @@ class WorkflowChat:
             )
         assets = []
         for grant in grants:
+            try:
+                await self.require_access(
+                    {
+                        "caller": caller.model_dump(),
+                        "asset_id": grant.asset_id,
+                        "version": grant.version,
+                    },
+                    grant.owner_username,
+                )
+            except RoleAssetError:
+                continue
             asset = await self.service.get_asset(
                 grant.owner_username, grant.asset_id, grant.version
             )
@@ -314,6 +325,28 @@ class WorkflowChat:
         ):
             raise RoleAssetError("Chat access is no longer available", status=403)
         core = self.service.roles.core_lifecycle
+        if core is not None:
+            platform = next(
+                (
+                    item
+                    for item in core.platform_manager.platform_insts
+                    if item.meta().id == caller.platform_id
+                ),
+                None,
+            )
+            if platform is not None and (
+                platform.meta().name == "satori"
+                or (
+                    platform.meta().name == "misskey"
+                    and not caller.source.split(":", 2)[-1].startswith(
+                        ("chat%", "room%")
+                    )
+                )
+            ):
+                raise RoleAssetError(
+                    "This platform source does not identify a unique audience or account",
+                    status=403,
+                )
         if (
             core is not None
             and core.astrbot_config_mgr.get_conf_info(caller.source)["id"]

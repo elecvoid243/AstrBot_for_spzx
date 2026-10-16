@@ -182,6 +182,10 @@ class WecomAIBotMessageEvent(AstrMessageEvent):
                     or not req_id
                 )
             )
+            or (
+                connection_mode != "long_connection"
+                and not pending_response.get("source_response_available")
+            )
         ):
             raise RuntimeError("The original WeCom response is no longer available")
 

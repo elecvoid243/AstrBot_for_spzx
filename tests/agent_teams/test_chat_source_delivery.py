@@ -1,7 +1,10 @@
 """Explicit asset output must retain the actual platform audience."""
 
+import asyncio
+import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from astrbot.core.agent_teams.assets import RoleAssetError
@@ -158,9 +161,7 @@ async def test_exact_background_delivery_preserves_onebot_private_destination():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "connection", ["webhook", "long_connection", "long_connection_reject"]
-)
+@pytest.mark.parametrize("connection", ["long_connection", "long_connection_reject"])
 async def test_wecom_asset_reply_uses_original_response_and_reconnects_after_expiry(
     chat_env, connection
 ):
@@ -188,7 +189,7 @@ async def test_wecom_asset_reply_uses_original_response_and_reconnects_after_exp
 
     webhook.send_payload = webhook_post
     queue = WecomAIQueueMgr()
-    connection_mode = "webhook" if connection == "webhook" else "long_connection"
+    connection_mode = "long_connection"
     queue.set_pending_response(
         "original", {"connection_mode": connection_mode, "req_id": "private-a"}
     )
@@ -274,13 +275,169 @@ async def test_wecom_asset_reply_uses_original_response_and_reconnects_after_exp
     )
     await command.asset(fresh, "status " + run["run_id"])
     assert webhook_sent == []
-    if connection_mode == "long_connection":
-        assert source_sent[-1][0] == "private-a-fresh"
-        assert "PRIVATE_FINAL" in str(source_sent[-1])
-    else:
-        assert "PRIVATE_FINAL" in str(
-            queue.get_or_create_back_queue("fresh").get_nowait()
-        )
+    assert source_sent[-1][0] == "private-a-fresh"
+    assert "PRIVATE_FINAL" in str(source_sent[-1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["native", "webhook_only", "no_initial_response"])
+async def test_wecom_http_asset_notices_require_an_advertised_response_stream(
+    chat_env, mode
+):
+    """Receive asset notices through real encrypted HTTP stream responses.
+
+    Args:
+        chat_env: Actual shared asset and human-request persistence.
+        mode: A native response, webhook-only delivery, or no initial stream.
+    """
+    from astrbot.builtin_stars.builtin_commands.main import Main
+
+    service, _, _, _ = chat_env
+    adapter = WecomAIBotAdapter(
+        {
+            "id": "wecom-http",
+            "port": 0,
+            "token": "test-token",
+            "encoding_aes_key": "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+            "msg_push_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=OTHER_GROUP",
+            "only_use_webhook_url_to_send": mode == "webhook_only",
+            "wecomaibot_init_respond_text": ""
+            if mode == "no_initial_response"
+            else "Processing",
+        },
+        {},
+        asyncio.Queue(),
+    )
+    webhook_sent = []
+
+    async def webhook_post(payload):
+        webhook_sent.append(payload)
+
+    adapter.webhook_client.send_payload = webhook_post
+    context = SimpleNamespace(
+        workflow_service=service,
+        astrbot_config_mgr=SimpleNamespace(
+            get_conf_info=lambda source: {"id": "default"}
+        ),
+    )
+    command = Main(context)
+    asset = await service.save_asset(
+        "operator",
+        {
+            "definition": {
+                "name": "Private",
+                "tasks": [
+                    {
+                        "id": "answer",
+                        "name": "Answer",
+                        "human": {"kind": "question", "question": "Private?"},
+                    }
+                ],
+            }
+        },
+    )
+    inbound = {
+        "msgtype": "text",
+        "msgid": "asset",
+        "from": {"userid": "12345"},
+        "chattype": "single",
+        "text": {"content": "/asset " + asset["asset_id"]},
+    }
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=adapter.server.get_app()),
+            base_url="http://wecom-test",
+        ) as client:
+
+            async def callback(payload):
+                """Send and decrypt one real platform HTTP callback.
+
+                Args:
+                    payload: Incoming user message or stream poll.
+
+                Returns:
+                    The decrypted response, or None for an unadvertised stream.
+                """
+                encrypted = await adapter.api_client.encrypt_message(
+                    json.dumps(payload), "1234", "1234567890"
+                )
+                envelope = json.loads(encrypted)
+                response = await client.post(
+                    "/webhook/wecom-ai-bot",
+                    content=encrypted,
+                    params={
+                        "msg_signature": envelope["msgsignature"],
+                        "nonce": "1234",
+                        "timestamp": "1234567890",
+                    },
+                )
+                assert response.status_code == 200
+                if response.text == "success":
+                    return None
+                returned = response.json()
+                code, decoded = await adapter.api_client.decrypt_message(
+                    response.content,
+                    returned["msgsignature"],
+                    returned["timestamp"],
+                    returned["nonce"],
+                )
+                assert code == 0
+                return decoded
+
+            advertised = await callback(inbound)
+            stream = next(iter(adapter.queue_mgr.queues))
+            queued = adapter.queue_mgr.queues[stream].get_nowait()
+            event = adapter.create_event(await adapter.convert_message(queued))
+            caller = ChatCaller(
+                platform_id=event.get_platform_id(),
+                sender_id=event.get_sender_id(),
+                source=event.unified_msg_origin,
+                profile_id="default",
+            )
+            await service.chat.save_access(
+                "operator", asset["asset_id"], {**caller.model_dump(), "version": 1}
+            )
+            await command.asset(event, asset["asset_id"])
+            if mode != "native":
+                assert advertised is None
+                assert (await service.list_runs("operator"))["runs"] == []
+                assert webhook_sent == []
+                with pytest.raises(RuntimeError, match="original WeCom response"):
+                    await event.send(event.plain_result("PRIVATE"), source_only=True)
+                return
+            assert advertised["stream"]["id"] == stream
+            acceptance = await callback({"msgtype": "stream", "stream": {"id": stream}})
+            assert "Accepted" in acceptance["stream"]["content"]
+            run = (await service.list_runs("operator"))["runs"][0]
+            run = await service.get_run("operator", run["run_id"])
+            adapter.queue_mgr.remove_queues(stream)
+            await service.answer_todo(
+                "operator",
+                run["run_id"],
+                run["todos"][0]["todo_id"],
+                {
+                    "request_id": "answer",
+                    "action": "answer",
+                    "answer": "PRIVATE_HTTP_FINAL",
+                },
+            )
+            status = {
+                **inbound,
+                "msgid": "status",
+                "text": {"content": "/asset status " + run["run_id"]},
+            }
+            fresh_response = await callback(status)
+            fresh_stream = fresh_response["stream"]["id"]
+            queued = adapter.queue_mgr.queues[fresh_stream].get_nowait()
+            fresh_event = adapter.create_event(await adapter.convert_message(queued))
+            await command.asset(fresh_event, "status " + run["run_id"])
+            final = await callback(
+                {"msgtype": "stream", "stream": {"id": fresh_stream}}
+            )
+            assert "PRIVATE_HTTP_FINAL" in final["stream"]["content"]
+            assert webhook_sent == []
+    finally:
+        await adapter.terminate()
 
 
 @pytest.mark.asyncio

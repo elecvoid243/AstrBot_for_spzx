@@ -3,7 +3,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from astrbot.api import star
+from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatCaller
@@ -53,6 +53,36 @@ class Main(star.Star):
         if event.get_extra("agent_team_execution") is not None:
             return
 
+        wecom_event = None
+        if event.get_platform_name() == "wecom_ai_bot":
+            from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
+                WecomAIBotMessageEvent,
+            )
+
+            wecom_event = cast(WecomAIBotMessageEvent, event)
+            raw = wecom_event.message_obj.raw_message
+            stream_id = (
+                raw.get("stream_id", wecom_event.session_id)
+                if isinstance(raw, dict)
+                else wecom_event.session_id
+            )
+            pending = wecom_event.queue_mgr.get_pending_response(stream_id) or {}
+            callback = pending.get("callback_params", {})
+            if callback.get("connection_mode") == "long_connection":
+                available = (
+                    bool(wecom_event.long_connection_sender)
+                    and isinstance(callback.get("req_id"), str)
+                    and bool(callback["req_id"])
+                )
+            else:
+                available = bool(pending.get("source_response_available"))
+            if not available:
+                logger.warning(
+                    "Asset invocation requires an available original WeCom response"
+                )
+                event.stop_event()
+                return
+
         async def send_source(actual: ChatCaller | None, text: str) -> bool:
             """Keep explicit asset output on this event's original response.
 
@@ -63,14 +93,8 @@ class Main(star.Star):
             Returns:
                 True after the original response channel accepted the message.
             """
-            if event.get_platform_name() == "wecom_ai_bot":
-                from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
-                    WecomAIBotMessageEvent,
-                )
-
-                await cast(WecomAIBotMessageEvent, event).send(
-                    event.plain_result(text), source_only=True
-                )
+            if wecom_event is not None:
+                await wecom_event.send(event.plain_result(text), source_only=True)
             else:
                 await event.send(event.plain_result(text))
             return True

@@ -72,7 +72,7 @@ Chat invocation records the platform-qualified initiator and source while the as
 
 The source must identify one audience and account. Satori conversations and Misskey note conversations are currently unavailable for asset invocation because their saved source identity does not preserve that distinction. Misskey direct chats and rooms remain supported. Use a dedicated supported conversation or ask the owner to start the asset in WebUI instead.
 
-WeCom AI Bot asset replies use the original response channel, including when ordinary replies use webhook-only mode. Asset notices never use its global group webhook. After that response expires or the process restarts, send `/asset status <run ID>` from the same authorized conversation to receive pending notices and results through a fresh response. Pending messages are retained when an exact source channel is unavailable.
+WeCom AI Bot asset replies require an available original response channel. HTTP callback mode requires webhook-only delivery to be disabled and a nonempty initial response text so the platform receives a pollable stream; otherwise `/asset` does not create a run. Long-connection replies can use the original request even when ordinary replies use webhook-only mode. Asset notices never use the global group webhook. After an original response expires or the process restarts, send `/asset status <run ID>` from the same authorized conversation with an available response channel to retrieve pending notices and results. Pending messages are retained when an exact source channel is unavailable.
 
 ## Autonomous teams
 

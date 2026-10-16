@@ -3825,7 +3825,8 @@ class WorkflowService:
             Durable receipt and the permitted single-call output cap.
 
         Raises:
-            RoleAssetError: Invalid identity, stale ownership or exhausted limits.
+            RoleAssetError: Invalid identity, stale ownership, paused admission or
+                exhausted limits.
         """
         try:
             request = UsageStart.model_validate(payload)
@@ -3841,6 +3842,21 @@ class WorkflowService:
                 await session.refresh(row)
                 await self._require_execution_owner(session, run_id, execution_id)
                 await self._check_member_limits(session, row)
+                if (
+                    control.status == "paused"
+                    and row.state.get("attempt_id") == attempt_id
+                ):
+                    raise RoleAssetError(
+                        "Execution cannot admit another call",
+                        [
+                            {
+                                "path": "control.status",
+                                "code": "PAUSED",
+                                "message": "Continue the run before reserving another call",
+                            }
+                        ],
+                        status=409,
+                    )
                 if (
                     control.status != "active"
                     or row.state.get("attempt_id") != attempt_id
@@ -8856,6 +8872,11 @@ class WorkflowService:
                             username, run_id, state["attempt_id"], execution_id, payload
                         )
                     except Exception as exc:
+                        if isinstance(exc, RoleAssetError) and any(
+                            field.get("code") == "PAUSED" for field in exc.fields
+                        ):
+                            # Pause can win after admission but before reservation.
+                            continue
                         checkpoint_error = str(exc)
                         raise CheckpointRecoveryError(str(exc)) from exc
                     if not receipt.get("waiting"):

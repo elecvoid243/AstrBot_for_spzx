@@ -112,3 +112,49 @@ describe("parseFileReviewComments", () => {
     expect(parseFileReviewComments(bare)).toBeNull();
   });
 });
+
+// Regression (2026-10-18): formatForLLM pads line numbers to width 4, so a
+// single-digit number is preceded by four spaces (1 separator + 3 padding).
+// The old `{0,3}` regex silently dropped those lines, leaving the quoted
+// diff empty for comments on lines 1-9.
+describe("single-digit line numbers", () => {
+  it("parses a hunk whose commented line is a single digit", () => {
+    const block = [
+      "[File review comments]",
+      "`src/small.py` (in diff hunk @@ -1,2 +1,2 @@):",
+      "````",
+      "@@ -1,2 +1,2 @@",
+      hunkLine(1, " ", "alpha"),
+      hunkLine(2, "+", "ALPHA", true),
+      "````",
+      "Comments:",
+      "  - line 2: single digit",
+    ].join("\n");
+
+    const parsed = parseFileReviewComments(block);
+    expect(parsed).not.toBeNull();
+    const hunk = parsed!.files[0];
+    expect(hunk.lines.filter((l) => !l.hunkHeader)).toHaveLength(2);
+    expect(hunk.lines.find((l) => l.no === 2)?.anchor).toBe(true);
+    expect(hunk.comments).toEqual([{ line: 2, text: "single digit" }]);
+  });
+
+  it("parses a window whose commented line is a single digit", () => {
+    const block = [
+      "[File review comments]",
+      "`src/small.py` line 3:",
+      "````",
+      winLine(2, "beta"),
+      winLine(3, "gamma", true),
+      commentLine("single digit window", true),
+      "````",
+    ].join("\n");
+
+    const parsed = parseFileReviewComments(block);
+    expect(parsed).not.toBeNull();
+    const lines = parsed!.files[0].lines;
+    expect(lines).toHaveLength(2);
+    expect(lines[1].anchor).toBe(true);
+    expect(lines[1].comment).toBe("single digit window");
+  });
+});

@@ -68,10 +68,10 @@ const BLOCK_MARKER = "[File review comments]";
 const FENCE = /^`{4}\s*$/;
 const WIN_HEADER = /^`(.+?)` lines? (\d+)(?:-(\d+))?:\s*$/;
 const HUNK_HEADER = /^`(.+?)` \(in diff hunk (.+)\):\s*$/;
-// "  " + marker + " " + padded number + " │ " + content
-const WIN_CODE = /^ {2}([> ]) {0,3}(\d+) │ (.*)$/;
+// "  " + marker + up to 4 spaces (padStart(4) + separator) + number + " │ "
+const WIN_CODE = /^ {2}([> ]) {0,4}(\d+) │ (.*)$/;
 // same shape but the first content char is the diff prefix (+/-/space)
-const HUNK_CODE = /^ {2}([> ]) {0,3}(\d+) │ ([+\- ])(.*)$/;
+const HUNK_CODE = /^ {2}([> ]) {0,4}(\d+) │ ([+\- ])(.*)$/;
 // 9 spaces + "│ " comment gutter (aligned with the code lines' "│")
 const COMMENT_START = /^\s{9}│ Comment: (.*)$/;
 const COMMENT_CONT = /^\s{9}│ (.*)$/;

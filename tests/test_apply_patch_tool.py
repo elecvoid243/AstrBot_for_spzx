@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -261,3 +262,49 @@ async def test_strict_indent_false_allows_tab_replacement(workspace):
     )
     assert "Applied patch" in result
     assert "\treturn 2" in target.read_text(encoding="utf-8")
+
+
+# ── history / rollback (2026-10-18) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_history_and_rollback(workspace):
+    target = workspace / "a.txt"
+    target.write_text("v1\n", encoding="utf-8")
+    await ApplyPatchTool().call(_context(), patch="*** Update File: a.txt\n-v1\n+v2\n")
+    history = await ApplyPatchTool().call(_context(), path="a.txt", list_history=True)
+    assert "Edit history for" in history
+    backup_id = re.search(r"\[([0-9T_]+)\]", history).group(1)
+
+    rolled = await ApplyPatchTool().call(_context(), path="a.txt", backup_id=backup_id)
+    assert "Successfully rolled back" in rolled
+    assert target.read_text(encoding="utf-8") == "v1\n"
+
+
+@pytest.mark.asyncio
+async def test_history_mode_validation(workspace):
+    (workspace / "a.txt").write_text("x\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch="*** Update File: a.txt\n-x\n+y\n",
+        path="a.txt",
+        list_history=True,
+    )
+    assert "exactly one mode" in result
+
+
+@pytest.mark.asyncio
+async def test_history_requires_path(workspace):
+    result = await ApplyPatchTool().call(_context(), list_history=True)
+    assert "`path` is required" in result
+
+
+@pytest.mark.asyncio
+async def test_list_history_allowed_in_readonly_mode(workspace):
+    target = workspace / "a.txt"
+    target.write_text("v1\n", encoding="utf-8")
+    await ApplyPatchTool().call(_context(), patch="*** Update File: a.txt\n-v1\n+v2\n")
+    result = await ApplyPatchTool().call(
+        _context(mode="readonly"), path="a.txt", list_history=True
+    )
+    assert "Edit history for" in result

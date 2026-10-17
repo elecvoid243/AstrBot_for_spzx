@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import locale
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,8 @@ from astrbot.core.tools.computer_tools.util import (
     workspace_root_for_context,
 )
 from astrbot.core.tools.registry import builtin_tool
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_encoding(name: str) -> tuple[str, bool]:
@@ -129,6 +132,20 @@ class ApplyPatchTool(FunctionTool):
             "type": "object",
             "properties": {
                 "patch": {"type": "string", "description": "Patch text."},
+                "path": {
+                    "type": "string",
+                    "description": "File path for history or rollback.",
+                },
+                "list_history": {
+                    "type": "boolean",
+                    "description": "List backups for `path`.",
+                    "default": False,
+                },
+                "backup_id": {
+                    "type": "string",
+                    "description": "Rollback `path` to this backup id.",
+                    "default": "",
+                },
                 "dry_run": {
                     "type": "boolean",
                     "description": "Preview only; never write.",
@@ -150,26 +167,40 @@ class ApplyPatchTool(FunctionTool):
                     "default": True,
                 },
             },
-            "required": ["patch"],
         }
     )
 
     async def call(
         self,
         context: ContextWrapper,
-        patch: str,
+        patch: str = "",
+        path: str = "",
+        list_history: bool = False,
+        backup_id: str = "",
         dry_run: bool = False,
         confirm: bool = False,
         encoding: str = "utf-8",
         strict_indent: bool = True,
     ) -> ToolExecResult:
-        if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
-            return _READONLY_WRITE_ERROR
+        patch = (patch or "").strip()
+        has_patch = bool(patch)
+        has_history = bool(list_history)
+        has_rollback = bool(backup_id)
+        if sum([has_patch, has_history, has_rollback]) != 1:
+            return (
+                "Error: provide exactly one mode: `patch`, "
+                "`path` + `list_history=true`, or `path` + `backup_id`."
+            )
+        if (has_history or has_rollback) and not path:
+            return "Error: `path` is required for history and rollback modes."
+        if has_patch and (path or list_history or backup_id):
+            return "Error: `patch` cannot be combined with history/rollback parameters."
 
-        try:
-            codec, bom_for_new = normalize_encoding(encoding)
-        except LookupError:
-            return f"Error: unknown encoding: {encoding}"
+        # Listing history is read-only; applying a patch or rolling back writes.
+        if not has_history and (
+            fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY
+        ):
+            return _READONLY_WRITE_ERROR
 
         local_env = is_local_runtime(context)
         restricted, extra_roots = await _write_guard(context)
@@ -177,6 +208,30 @@ class ApplyPatchTool(FunctionTool):
         workspace_root = (
             await workspace_root_for_context(context) if local_env else None
         )
+
+        if has_history or has_rollback:
+            try:
+                real_path = _normalize_rw_path(
+                    path,
+                    restricted=restricted,
+                    local_env=local_env,
+                    umo=umo,
+                    write=has_rollback,
+                    current_workspace_root=workspace_root,
+                    extra_write_roots=extra_roots,
+                )
+            except (ValueError, PermissionError) as exc:
+                return f"Error: {exc}"
+            if has_history:
+                return await self._list_history(real_path)
+            return await self._rollback_to_backup(
+                real_path, backup_id, context=context, local_env=local_env
+            )
+
+        try:
+            codec, bom_for_new = normalize_encoding(encoding)
+        except LookupError:
+            return f"Error: unknown encoding: {encoding}"
 
         try:
             entries = parse_patch(patch)
@@ -261,6 +316,99 @@ class ApplyPatchTool(FunctionTool):
             context=context,
             local_env=local_env,
             sb=sb,
+        )
+
+    @staticmethod
+    async def _list_history(real_path: str) -> str:
+        history = get_history_manager()
+        backups = await asyncio.to_thread(history.list_backups, real_path)
+        if not backups:
+            return f"No edit history found for: {real_path}"
+
+        lines = [f"Edit history for: {real_path}", ""]
+        for i, entry in enumerate(backups):
+            marker = " ← latest" if i == 0 else ""
+            lines.append(
+                f"  [{entry.id}]  {entry.timestamp}  ({entry.size} bytes){marker}"
+            )
+            if entry.diff_preview:
+                preview = entry.diff_preview.strip()
+                if preview:
+                    for preview_line in preview.split("\n")[:3]:
+                        lines.append(f"    {preview_line}")
+        lines.append("")
+        lines.append(
+            f"Total: {len(backups)} backup(s). "
+            "Use backup_id to rollback to a specific version."
+        )
+        return "\n".join(lines)
+
+    async def _rollback_to_backup(
+        self, real_path: str, backup_id: str, *, context, local_env: bool
+    ) -> str:
+        if local_env:
+
+            async def read_current() -> bytes | None:
+                return await asyncio.to_thread(self._read_optional, real_path)
+
+            async def write_bytes(data: bytes) -> None:
+                await asyncio.to_thread(_write_file_bytes, real_path, data)
+
+            runtime = "local"
+        else:
+            sb = await get_booter(
+                context.context.context,
+                str(context.context.event.unified_msg_origin),
+            )
+
+            async def read_current() -> bytes | None:
+                try:
+                    return await _sandbox_read_bytes(sb, real_path)
+                except OSError:
+                    return None
+
+            async def write_bytes(data: bytes) -> None:
+                await _sandbox_write_bytes(sb, real_path, data, create_parents=True)
+
+            runtime = "sandbox"
+
+        history = get_history_manager()
+        try:
+            entry, backup_bytes = await asyncio.to_thread(
+                history.read_backup, real_path, backup_id
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return f"Error: {exc}"
+
+        lock = get_file_lock(real_path)
+        async with lock:
+            snapshot_id = ""
+            current = await read_current()
+            if current is not None:
+                try:
+                    snapshot = await asyncio.to_thread(
+                        history.save_backup,
+                        real_path,
+                        current,
+                        runtime=runtime,
+                        diff_preview="[pre-rollback snapshot]",
+                    )
+                    snapshot_id = snapshot.id
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to save pre-rollback snapshot for %s: %s",
+                        real_path,
+                        exc,
+                    )
+            try:
+                await write_bytes(backup_bytes)
+            except Exception as exc:
+                return f"Error: {exc}"
+            _record_changed_file(context, real_path, "rollback", runtime, snapshot_id)
+
+        return (
+            f"Successfully rolled back {real_path} to backup "
+            f"{entry.id} ({entry.timestamp}, {entry.size} bytes)."
         )
 
     @staticmethod

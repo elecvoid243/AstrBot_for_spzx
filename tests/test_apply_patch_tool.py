@@ -248,3 +248,16 @@ async def test_gbk_update_roundtrip(workspace):
     )
     assert "Applied patch" in result
     assert target.read_bytes() == "新值\n".encode("gbk")
+
+
+@pytest.mark.asyncio
+async def test_strict_indent_false_allows_tab_replacement(workspace):
+    target = workspace / "a.py"
+    target.write_text("def f():\n    return 1\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch="*** Update File: a.py\n-    return 1\n+\treturn 2\n",
+        strict_indent=False,
+    )
+    assert "Applied patch" in result
+    assert "\treturn 2" in target.read_text(encoding="utf-8")

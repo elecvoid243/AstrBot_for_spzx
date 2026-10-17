@@ -336,3 +336,18 @@ def test_plan_delete_gbk_file_does_not_decode_as_utf8():
     files = parse_patch("*** Delete File: a.txt\n")
     plan = plan_patch(files, lambda p: "中文\n".encode("gbk"), encoding="gbk")
     assert plan.files[0].kind == "delete"
+
+
+# ── strict_indent (2026-10-18) ───────────────────────────────────
+
+
+def test_apply_strict_indent_false_allows_style_change():
+    hunk = Hunk(old_lines=["    return 1"], new_lines=["\treturn 2"])
+    out = apply_hunks_to_text("def f():\n    return 1\n", [hunk], strict_indent=False)
+    assert "\treturn 2" in out
+
+
+def test_apply_strict_indent_true_still_rejects():
+    hunk = Hunk(old_lines=["    return 1"], new_lines=["\treturn 2"])
+    with pytest.raises(ValueError, match="indentation style"):
+        apply_hunks_to_text("def f():\n    return 1\n", [hunk])

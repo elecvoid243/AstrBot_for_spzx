@@ -324,7 +324,13 @@ def _find_exact_ladder(text: str, old: str, start: int) -> tuple[int, str] | Non
     return None
 
 
-def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int]:
+def _apply_one(
+    text: str,
+    hunk: Hunk,
+    cursor: int,
+    index: int,
+    strict_indent: bool = True,
+) -> tuple[str, int]:
     if hunk.context is not None:
         anchor = _find_exact_ladder(text, hunk.context, cursor)
         if anchor is None:
@@ -352,7 +358,14 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
         if stripped.endswith(old_text):
             idx = len(stripped) - len(old_text)
             if idx >= cursor:
-                adjusted = adjusted_replacement(text, idx, old_text, old_text, new_text)
+                adjusted = adjusted_replacement(
+                    text,
+                    idx,
+                    old_text,
+                    old_text,
+                    new_text,
+                    strict_indent=strict_indent,
+                )
                 return (
                     text[:idx] + adjusted + text[idx + len(old_text) :],
                     idx + len(adjusted),
@@ -374,12 +387,16 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
         )
 
     idx, matched = found
-    adjusted = adjusted_replacement(text, idx, old_text, matched, new_text)
+    adjusted = adjusted_replacement(
+        text, idx, old_text, matched, new_text, strict_indent=strict_indent
+    )
     insertion = text[:idx] + adjusted + text[idx + len(matched) :]
     return insertion, idx + len(adjusted)
 
 
-def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
+def apply_hunks_to_text(
+    text: str, hunks: list[Hunk], *, strict_indent: bool = True
+) -> str:
     """Apply hunks to LF-normalized text with a monotonically advancing cursor.
 
     Args:
@@ -394,7 +411,9 @@ def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
     """
     cursor = 0
     for index, hunk in enumerate(hunks):
-        text, cursor = _apply_one(text, hunk, cursor, index)
+        text, cursor = _apply_one(
+            text, hunk, cursor, index, strict_indent=strict_indent
+        )
     return text
 
 
@@ -486,6 +505,7 @@ def plan_patch(
     *,
     encoding: str = "utf-8",
     bom_for_new: bool = False,
+    strict_indent: bool = True,
 ) -> PatchPlan:
     """Compute new contents and destructive flags without touching disk.
 
@@ -525,7 +545,10 @@ def plan_patch(
             old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
             try:
                 new_text, _occurrences = apply_replace_all_to_text(
-                    old_text, entry.old_lines, entry.new_lines
+                    old_text,
+                    entry.old_lines,
+                    entry.new_lines,
+                    strict_indent=strict_indent,
                 )
             except ValueError as exc:
                 raise PatchParseError(f"{entry.path}: {exc}") from exc
@@ -534,7 +557,9 @@ def plan_patch(
         else:
             old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
             try:
-                new_text = apply_hunks_to_text(old_text, entry.hunks)
+                new_text = apply_hunks_to_text(
+                    old_text, entry.hunks, strict_indent=strict_indent
+                )
             except HunkApplyError as exc:
                 raise PatchParseError(f"{entry.path}: {exc}") from exc
             new_bytes = encode_text_bytes(new_text, eol, has_bom, encoding)

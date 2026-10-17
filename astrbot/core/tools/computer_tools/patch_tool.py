@@ -139,6 +139,16 @@ class ApplyPatchTool(FunctionTool):
                     "description": "Required for destructive changes.",
                     "default": False,
                 },
+                "encoding": {
+                    "type": "string",
+                    "description": "Text encoding for patched files.",
+                    "default": "utf-8",
+                },
+                "strict_indent": {
+                    "type": "boolean",
+                    "description": "Keep the file's indentation on fuzzy matches.",
+                    "default": True,
+                },
             },
             "required": ["patch"],
         }
@@ -151,6 +161,7 @@ class ApplyPatchTool(FunctionTool):
         dry_run: bool = False,
         confirm: bool = False,
         encoding: str = "utf-8",
+        strict_indent: bool = True,
     ) -> ToolExecResult:
         if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
             return _READONLY_WRITE_ERROR
@@ -217,7 +228,13 @@ class ApplyPatchTool(FunctionTool):
             return cache.get(resolved.get(path, path))
 
         try:
-            plan = plan_patch(entries, read, encoding=codec, bom_for_new=bom_for_new)
+            plan = plan_patch(
+                entries,
+                read,
+                encoding=codec,
+                bom_for_new=bom_for_new,
+                strict_indent=strict_indent,
+            )
         except (PatchParseError, ValueError) as exc:
             return f"Error: patch cannot be applied: {exc}"
 

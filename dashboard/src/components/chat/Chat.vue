@@ -2404,6 +2404,10 @@ function getCurrentThinkingEffort(): ThinkingEffort {
 }
 
 provide("isDark", isDark);
+// Scroll coordinator for in-message cards: a card that folds asks the panel to
+// centre it (see centerInMessagesPanel) instead of writing scrollTop itself,
+// so stick-to-bottom and the reading anchor stay in one owner.
+provide("centerInMessagesPanel", centerInMessagesPanel);
 
 async function scrollToMessageFromQuery() {
   const idxStr = route.query.scrollToIndex as string | undefined;
@@ -4462,6 +4466,37 @@ function scrollRowToCenter(row: HTMLElement, animate = true) {
 }
 
 /**
+ * Centre an element that lives inside the messages panel, then hold it there.
+ *
+ * In-message cards that can fold (the subagent run block) call this after
+ * collapsing. The fold shrinks the document under the reader, so the browser
+ * clamps scrollTop to the shorter range and the card ends up wherever the
+ * clamp left it — the reader loses the place they were reading. Landing the
+ * card in the middle hands that place back, and the card flashes so it can be
+ * named among its neighbours.
+ *
+ * Follow-the-bottom is switched off for the same reason a search jump
+ * switches it off: the reader is locating a spot in the history, not
+ * following the tail. The reading anchor is dropped as well — it may point
+ * inside the subtree that just folded.
+ *
+ * @param element: Card element rendered inside the messages panel.
+ * @returns True when this panel owns the element and the landing started;
+ *   false for cards rendered by another scroll owner (a thread panel or the
+ *   standalone web chat), which then scroll their own container.
+ */
+function centerInMessagesPanel(element: HTMLElement | null): boolean {
+  const container = messagesContainer.value;
+  if (!element || !container?.contains(element)) return false;
+  setStickToBottom(currSessionId.value, false);
+  readingViewportAnchor = null;
+  runJumpLanding((panel) =>
+    element.isConnected ? centerScrollTopFor(panel, element) : null,
+  );
+  return true;
+}
+
+/**
  * Bring the row whose absolute `data-message-index` is target to the centre and
  * hold it there while the freshly inserted rows settle (see
  * `scrollRowToCenter`).
@@ -5498,6 +5533,15 @@ function preserveReadingAnchor() {
     range.setEnd(anchor.target, offset + 1);
     rect = range.getBoundingClientRect();
   } else rect = anchor.target.getBoundingClientRect();
+  // A folded card hides its body with display:none, and an anchor left inside
+  // it reports an all-zero rect. Measuring from a point that is no longer
+  // rendered can pull the panel to the very top of the loaded history (a small
+  // remaining range turns the computed offset negative and it clamps to 0),
+  // so drop the stale anchor and pick a visible one instead.
+  if (rect.width === 0 && rect.height === 0) {
+    captureReadingAnchor();
+    return;
+  }
   const top = Math.max(0, container.scrollTop);
   const max = Math.max(0, container.scrollHeight - container.clientHeight);
   // Exclude range clamping from user movement. Layout displacement and the

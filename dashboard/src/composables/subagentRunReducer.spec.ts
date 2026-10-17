@@ -3,6 +3,7 @@
 // Plan: docs/superpowers/plans/2026-07-26-subagent-chatui-progress.md (Task 5)
 // Leaf-module unit tests, runnable from a bare node runner (vitest).
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { flushPromises, mount, type DOMWrapper } from "@vue/test-utils";
 import {
   applySubAgentEvent,
@@ -503,6 +504,71 @@ describe("SubAgentRunBlock rendering order", () => {
     await wrapper.find(".subagent-run-header").trigger("click");
 
     expect(wrapper.find(".subagent-collapse-fab").exists()).toBe(true);
+  });
+});
+
+describe("SubAgentRunBlock collapse locate", () => {
+  const runningPart = {
+    type: "subagent_run",
+    subagent_run_id: "sa_locate",
+    agent_name: "researcher",
+    status: "running",
+    input_preview: "task",
+    text: "partial answer",
+    reasoning: "",
+    tool_calls: [],
+    execution_time: null,
+  };
+
+  it("centres the folded card and flashes it for 1.5 s", async () => {
+    const center = vi.fn((_element: HTMLElement) => true);
+    const wrapper = mount(SubAgentRunBlock, {
+      props: { part: runningPart, isDark: false },
+      global: {
+        provide: { centerInMessagesPanel: center },
+        stubs: {
+          VIcon: { template: "<i><slot /></i>" },
+          VExpandTransition: { template: "<div><slot /></div>" },
+          MarkdownMessagePart: true,
+          ReasoningTimeline: true,
+        },
+      },
+    });
+
+    vi.useFakeTimers();
+    try {
+      await wrapper.find(".subagent-run-header").trigger("click");
+      await wrapper.find(".subagent-collapse-fab").trigger("click");
+      await nextTick();
+
+      // The landing waits for the fold to settle: centring earlier measures
+      // the still-expanded card.
+      expect(center).not.toHaveBeenCalled();
+      expect(wrapper.find(".subagent-run-block").classes()).not.toContain(
+        "is-locating",
+      );
+
+      vi.advanceTimersByTime(400);
+      await nextTick();
+      expect(center).toHaveBeenCalledTimes(1);
+      expect(center.mock.calls[0][0]).toBe(
+        wrapper.find(".subagent-run-block").element,
+      );
+      // The flash names the card as the landing starts, not while the fold is
+      // still collapsing under the cursor.
+      await nextTick();
+      expect(wrapper.find(".subagent-run-block").classes()).toContain(
+        "is-locating",
+      );
+
+      vi.advanceTimersByTime(1500);
+      await nextTick();
+      expect(wrapper.find(".subagent-run-block").classes()).not.toContain(
+        "is-locating",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -1,5 +1,9 @@
 <template>
-  <div class="subagent-run-block" :class="{ 'is-dark': isDark }">
+  <div
+    ref="rootEl"
+    class="subagent-run-block"
+    :class="{ 'is-dark': isDark, 'is-locating': locating }"
+  >
     <button class="subagent-run-header" type="button" @click="toggleExpanded">
       <span class="status-dot" :class="`status-${statusClass}`" />
       <v-icon size="18" class="agent-icon">mdi-robot-outline</v-icon>
@@ -144,7 +148,7 @@
       type="button"
       :title="tm('subagentCollapse.hint')"
       :aria-label="tm('subagentCollapse.hint')"
-      @click="expanded = false"
+      @click="collapseAndLocate"
     >
       <v-icon size="16">mdi-chevron-up</v-icon>
     </button>
@@ -158,7 +162,7 @@
 // Collapsible block rendering one `subagent_run` message part (live stream
 // or persisted history). Reuses ReasoningBlock / MarkdownMessagePart /
 // ToolCallCard for visual consistency with the main agent output.
-import { computed, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { postSubagentFollowUp } from "@/api/generated/openapi-v1";
 import ReasoningTimeline from "@/components/chat/message_list_comps/ReasoningTimeline.vue";
@@ -183,10 +187,27 @@ const props = defineProps({
 
 const { tm } = useModuleI18n("features/chat");
 
+const rootEl = ref(null);
+
+// ChatUI's messages panel owns every scroll decision (stick-to-bottom, the
+// reading anchor, search jumps). A card that folds asks it to centre the card
+// through this hook; renderers without a panel (thread panel, standalone web
+// chat) provide nothing and fall back to scrolling their own container.
+const centerInMessagesPanel = inject("centerInMessagesPanel", null);
+
 // Folded by default — a streaming subagent run can grow far past the
 // viewport, so the user opts into the detail via the header and folds it
 // back with the sticky button. The card never auto-expands or auto-folds.
 const expanded = ref(false);
+
+// Locate affordance state. Folding a tall card shrinks the document under the
+// reader, so the fold button also asks to be re-centred and flashes the card
+// for 1.5 s — the reader pressed it from somewhere deep inside the card and
+// has no other cue for where that card went.
+const locating = ref(false);
+let locatingTimer = null;
+let foldSettleTimer = null;
+let foldSettleCleanup = null;
 
 // A finished run should not keep its execution timeline open behind the
 // result, so fold that inner section once the run stops running. The card
@@ -202,7 +223,132 @@ watch(
 );
 
 function toggleExpanded() {
+  // A header click takes the card's position back under the user's control;
+  // a landing still waiting on the fold would otherwise move the viewport
+  // after they re-opened the card.
+  cancelFoldWait();
   expanded.value = !expanded.value;
+  if (expanded.value) {
+    // Re-opening makes the locate flash meaningless — it would light up the
+    // whole expanded body instead of naming a folded card.
+    window.clearTimeout(locatingTimer);
+    locating.value = false;
+  }
+}
+
+/**
+ * Fold the card, then bring it back to the middle of the chat panel and flash
+ * it. The flash starts with the landing: while the card is still folded away
+ * under the reader's cursor there is nothing to see — the pulse is what names
+ * the folded card once it arrives.
+ */
+function collapseAndLocate() {
+  const body = rootEl.value?.querySelector(".subagent-run-body");
+  expanded.value = false;
+  whenFoldSettled(body, () => {
+    centerCard();
+    flashLocating();
+  });
+}
+
+/**
+ * Run `callback` once the expand transition has finished shrinking the body.
+ *
+ * Centring any earlier measures the still-expanded card: the fold is a height
+ * transition, so the offset that centres the card keeps moving until it ends.
+ *
+ * @param body: Collapsing body element, or null when it never rendered.
+ * @param callback: Runs exactly once — on transitionend, or after a bound wait
+ *   when no CSS transition applies (reduced motion, overridden durations).
+ */
+function whenFoldSettled(body, callback) {
+  cancelFoldWait();
+  if (!body) {
+    callback();
+    return;
+  }
+  const finish = () => {
+    cancelFoldWait();
+    callback();
+  };
+  const onTransitionEnd = (event) => {
+    if (event.target === body && event.propertyName === "height") finish();
+  };
+  body.addEventListener("transitionend", onTransitionEnd);
+  foldSettleCleanup = () =>
+    body.removeEventListener("transitionend", onTransitionEnd);
+  foldSettleTimer = window.setTimeout(finish, 400);
+}
+
+/** Stop waiting for the fold; the card keeps whatever scroll it has. */
+function cancelFoldWait() {
+  window.clearTimeout(foldSettleTimer);
+  foldSettleTimer = null;
+  if (foldSettleCleanup) {
+    foldSettleCleanup();
+    foldSettleCleanup = null;
+  }
+}
+
+/** Restart the 1.5 s locate flash, including when the button is pressed twice. */
+function flashLocating() {
+  window.clearTimeout(locatingTimer);
+  // Drop the class for one paint so re-adding it restarts the animation
+  // instead of being a no-op on an element that still carries it.
+  locating.value = false;
+  void nextTick(() => {
+    locating.value = true;
+    locatingTimer = window.setTimeout(() => {
+      locating.value = false;
+    }, 1500);
+  });
+}
+
+/** Centre this card: the chat panel's coordinator when present, else locally. */
+function centerCard() {
+  const element = rootEl.value;
+  if (!element) return;
+  if (
+    typeof centerInMessagesPanel === "function" &&
+    centerInMessagesPanel(element)
+  ) {
+    return;
+  }
+  // No coordinator, or one that does not own this card (a thread panel beside
+  // the main conversation): scroll the card's own container.
+  const container = scrollParentOf(element);
+  if (!container) return;
+  const containerRect = container.getBoundingClientRect();
+  const cardRect = element.getBoundingClientRect();
+  const centered =
+    container.scrollTop +
+    (cardRect.top + cardRect.height / 2) -
+    (containerRect.top + container.clientHeight / 2);
+  container.scrollTo({
+    top: Math.max(
+      0,
+      Math.min(centered, container.scrollHeight - container.clientHeight),
+    ),
+    behavior: "smooth",
+  });
+}
+
+/**
+ * Closest ancestor that scrolls vertically — the messages panel in the chat
+ * page, `.standalone-messages` in the standalone web chat.
+ *
+ * @param element: Element to walk up from.
+ * @returns The scrolling ancestor, or null when only the page scrolls.
+ */
+function scrollParentOf(element) {
+  let node = element.parentElement;
+  while (node && node !== document.body) {
+    if (/^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY)) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
 }
 
 const taskExpanded = ref(false);
@@ -333,6 +479,11 @@ const activityParts = computed(() => {
   }
   return parts;
 });
+
+onBeforeUnmount(() => {
+  window.clearTimeout(locatingTimer);
+  cancelFoldWait();
+});
 </script>
 
 <style scoped>
@@ -349,6 +500,35 @@ const activityParts = computed(() => {
 
 .subagent-run-block.is-dark {
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Locate flash: the fold button re-centres the card, then three 0.5 s pulses
+   (1.5 s in total) name the spot instead of leaving the reader to guess which
+   of the surrounding cards just closed. Only the background and an outside
+   ring animate, so the resting border (and its dark-mode variant) is left
+   exactly as it is. */
+.subagent-run-block.is-locating {
+  animation: subagent-locate-flash 0.5s ease-in-out 3;
+}
+
+@keyframes subagent-locate-flash {
+  0%,
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 0 rgba(var(--v-theme-primary), 0);
+  }
+  50% {
+    background-color: rgba(var(--v-theme-primary), 0.1);
+    box-shadow: 0 0 0 3px rgba(var(--v-theme-primary), 0.22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-run-block.is-locating {
+    animation: none;
+    background-color: rgba(var(--v-theme-primary), 0.1);
+    box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.3);
+  }
 }
 
 .subagent-run-header {

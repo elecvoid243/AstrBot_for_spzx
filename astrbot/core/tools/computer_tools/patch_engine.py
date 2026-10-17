@@ -15,6 +15,7 @@ from .edit_engine import (
     decode_text_bytes,
     encode_text_bytes,
     find_match_at_or_after,
+    validate_indent_style,
 )
 
 _BEGIN = "*** Begin Patch"
@@ -296,6 +297,7 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
     new_text = "\n".join(hunk.new_lines)
 
     if not hunk.old_lines:
+        validate_indent_style(text, new_text)
         if hunk.context is not None:
             insertion = text[:cursor] + new_text + "\n" + text[cursor:]
             return insertion, cursor + len(new_text) + 1

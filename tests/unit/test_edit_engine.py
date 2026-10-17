@@ -143,3 +143,15 @@ def test_decode_encode_roundtrip_without_bom():
     original = b"a\r\nb\r\n"
     text, eol, has_bom = decode_text_bytes(original)
     assert encode_text_bytes(text, eol, has_bom) == original
+
+
+def test_robust_replace_strict_rejects_style_switch():
+    with pytest.raises(ValueError, match="indentation style"):
+        robust_replace("    x = 1\n", "    x = 1", "\ty = 2")
+
+
+def test_robust_replace_non_strict_allows_style_switch():
+    content, _ = robust_replace(
+        "    x = 1\n", "    x = 1", "\ty = 2", strict_indent=False
+    )
+    assert "\ty = 2" in content

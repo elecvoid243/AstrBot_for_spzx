@@ -194,3 +194,24 @@ def test_plan_preserves_crlf_and_bom():
     files = parse_patch("*** Update File: a.txt\n-a\n+b\n")
     plan = plan_patch(files, lambda p: b"\xef\xbb\xbfa\r\n")
     assert plan.files[0].new_bytes == b"\xef\xbb\xbfb\r\n"
+
+
+def test_apply_rejects_tab_in_new_when_file_uses_spaces():
+    hunk = Hunk(old_lines=["    return 1"], new_lines=["\treturn 2"])
+    with pytest.raises(ValueError, match="indentation style"):
+        apply_hunks_to_text("def f():\n    return 1\n", [hunk])
+
+
+def test_apply_rejects_tab_when_unindented_context_hides_common_indent():
+    hunk = Hunk(
+        old_lines=["def f():", "    return 1"],
+        new_lines=["def f():", "\treturn 2"],
+    )
+    with pytest.raises(ValueError, match="indentation style"):
+        apply_hunks_to_text("def f():\n    return 1\n", [hunk])
+
+
+def test_apply_rejects_tab_insertion_into_spaces_file():
+    hunk = Hunk(context="def f():", new_lines=["\tpass"])
+    with pytest.raises(ValueError, match="indentation style"):
+        apply_hunks_to_text("def f():\n    return 1\n", [hunk])

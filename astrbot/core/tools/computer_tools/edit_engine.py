@@ -595,6 +595,47 @@ def _indent_styles_conflict(left: str, right: str) -> bool:
     return bool(left_style and right_style and left_style != right_style)
 
 
+def _indent_styles_in(text: str) -> set[str]:
+    """Return the indentation styles used by indented, non-empty lines."""
+    styles: set[str] = set()
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        style = _indent_style(_get_leading_whitespace(line))
+        if style in ("spaces", "tabs"):
+            styles.add(style)
+    return styles
+
+
+def validate_indent_style(file_block: str, replacement: str) -> None:
+    """Reject a replacement that switches the file's indentation style.
+
+    A single-tab line in a spaces file is valid Python, so AST validation
+    cannot catch it. This check compares the styles of indented lines in the
+    matched file block with the adjusted replacement text.
+
+    Args:
+        file_block: The exact block found in the file.
+        replacement: The indent-adjusted replacement text.
+
+    Raises:
+        ValueError: If the file uses one style and the replacement uses the
+            other, or mixes both.
+    """
+    file_styles = _indent_styles_in(file_block)
+    if len(file_styles) != 1:
+        return
+    replacement_styles = _indent_styles_in(replacement)
+    if replacement_styles and replacement_styles != file_styles:
+        file_style = next(iter(file_styles))
+        replacement_style = "/".join(sorted(replacement_styles))
+        raise ValueError(
+            "Replacement uses a different indentation style than the file "
+            f"(file: {file_style}, replacement: {replacement_style}). "
+            "Rewrite it with the file's indentation."
+        )
+
+
 def _adjust_replacement_indent(
     new_string: str,
     old_string: str,
@@ -783,7 +824,7 @@ def adjusted_replacement(
     strict_indent: bool = True,
 ) -> str:
     """Return ``new_string`` reconciled with the matched block's indentation."""
-    return _adjust_replacement_indent(
+    adjusted = _adjust_replacement_indent(
         new_string,
         old_string,
         matched,
@@ -791,6 +832,9 @@ def adjusted_replacement(
         idx,
         strict_indent=strict_indent,
     )
+    if strict_indent:
+        validate_indent_style(matched, adjusted)
+    return adjusted
 
 
 def replace_match_at(

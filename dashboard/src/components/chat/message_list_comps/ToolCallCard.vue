@@ -68,19 +68,37 @@
       </div>
 
       <!-- ── Result ────────────────────────────────────────── -->
-      <!-- apply_patch: header + concatenated unified diff -->
+      <!-- apply_patch: one DiffPreview per file so every block carries its path -->
       <div
-        v-if="applyPatchDisplay?.diff"
+        v-if="applyPatchFiles.length"
         class="tool-call-detail-row"
       >
         <span class="detail-label">Result:</span>
-        <DiffPreview
-          :content="applyPatchDisplay.diff"
-          :summary="applyPatchDisplay.summary"
-          :is-dark="isDark"
-          :max-lines="25"
-          :collapsible="false"
-        />
+        <div class="apply-patch-result">
+          <div v-if="applyPatchSummary" class="apply-patch-summary">
+            {{ applyPatchSummary }}
+          </div>
+          <template v-for="file in applyPatchFiles" :key="file.filePath">
+            <DiffPreview
+              v-if="file.diff"
+              :content="file.diff"
+              :file-path="file.renamedFrom
+                ? `${file.renamedFrom} -> ${file.filePath}`
+                : file.filePath"
+              :summary="''"
+              :is-dark="isDark"
+              :max-lines="25"
+              :collapsible="true"
+            />
+            <div v-else class="apply-patch-file-row">
+              <v-icon size="14">mdi-delete-outline</v-icon>
+              <span class="apply-patch-file-path">{{ file.filePath }}</span>
+              <span v-if="file.renamedFrom" class="apply-patch-file-note">
+                {{ tm("fileChange.renamedFrom", { path: file.renamedFrom }) }}
+              </span>
+            </div>
+          </template>
+        </div>
       </div>
 
       <div
@@ -117,7 +135,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { parseFileEditResult, parseApplyPatchArgs, parseApplyPatchDisplay, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
+import { parseFileEditResult, parseApplyPatchArgs, parseApplyPatchDisplay, parseApplyPatchResult, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
 import ToolResultView from "./ToolResultView.vue";
 import CopyableText from "./__shared__/CopyableText.vue";
@@ -201,11 +219,15 @@ const isApplyPatchTool = computed(
   () => String(props.toolCall.name || "") === APPLY_PATCH_TOOL_NAME,
 );
 
-const applyPatchDisplay = computed(() =>
-  isApplyPatchTool.value
-    ? parseApplyPatchDisplay(props.toolCall.result ?? "")
-    : null,
-);
+const applyPatchSummary = computed(() => {
+  if (!isApplyPatchTool.value) return "";
+  return parseApplyPatchDisplay(props.toolCall.result ?? "")?.summary ?? "";
+});
+
+const applyPatchFiles = computed(() => {
+  if (!isApplyPatchTool.value) return [];
+  return parseApplyPatchResult(props.toolCall.result ?? "");
+});
 
 const argEntries = computed(() => {
   const args = props.toolCall.args;
@@ -426,6 +448,41 @@ onUnmounted(() => {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.8);
   word-break: break-all;
+}
+
+/* ── apply_patch result: per-file diff blocks ────────────────── */
+
+.apply-patch-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.apply-patch-summary {
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.apply-patch-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+
+.apply-patch-file-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.apply-patch-file-note {
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 /* ── Args table ─────────────────────────────────────────────── */

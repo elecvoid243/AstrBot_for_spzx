@@ -56,6 +56,7 @@ from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
 from astrbot.core.tools.computer_tools import (
     AnnotateExecutionTool,
+    ApplyPatchTool,
     BrowserBatchExecTool,
     BrowserExecTool,
     CreateSkillCandidateTool,
@@ -498,6 +499,7 @@ def _apply_local_env_tools(
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileReadTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileWriteTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileEditTool))
+    req.func_tool.add_tool(tool_mgr.get_builtin_tool(ApplyPatchTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileRemoveTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
     cfg = plugin_context.get_config(umo=umo)

@@ -43,6 +43,7 @@ from astrbot.core.subagent_manager import (
     SubAgentStatus,
 )
 from astrbot.core.tools.computer_tools import (
+    ApplyPatchTool,
     CuaKeyboardTypeTool,
     CuaMouseClickTool,
     CuaScreenshotTool,
@@ -387,6 +388,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
             write_tool = tool_mgr.get_builtin_tool(FileWriteTool)
             edit_tool = tool_mgr.get_builtin_tool(FileEditTool)
+            patch_tool = tool_mgr.get_builtin_tool(ApplyPatchTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
             tools = {
                 shell_tool.name: shell_tool,
@@ -396,6 +398,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 read_tool.name: read_tool,
                 write_tool.name: write_tool,
                 edit_tool.name: edit_tool,
+                patch_tool.name: patch_tool,
                 grep_tool.name: grep_tool,
             }
             if booter == "cua":
@@ -417,6 +420,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
             write_tool = tool_mgr.get_builtin_tool(FileWriteTool)
             edit_tool = tool_mgr.get_builtin_tool(FileEditTool)
+            patch_tool = tool_mgr.get_builtin_tool(ApplyPatchTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
             return {
                 shell_tool.name: shell_tool,
@@ -425,6 +429,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                 read_tool.name: read_tool,
                 write_tool.name: write_tool,
                 edit_tool.name: edit_tool,
+                patch_tool.name: patch_tool,
                 grep_tool.name: grep_tool,
             }
         return {}

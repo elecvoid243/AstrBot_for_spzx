@@ -238,3 +238,17 @@ def test_hunk_error_message_includes_file_and_hunk_number():
     message = str(exc.value)
     assert "a.txt" in message
     assert "hunk #1" in message
+
+
+def test_apply_hints_missing_at_at_when_first_line_exists():
+    hunk = Hunk(old_lines=["old", "never"], new_lines=["new", "x"])
+    with pytest.raises(HunkApplyError) as exc:
+        apply_hunks_to_text("old\n", [hunk])
+    assert "separate them with '@@'" in str(exc.value)
+
+
+def test_apply_has_no_at_hint_when_first_line_is_also_missing():
+    hunk = Hunk(old_lines=["zzz", "yyy"], new_lines=["x"])
+    with pytest.raises(HunkApplyError) as exc:
+        apply_hunks_to_text("old\n", [hunk])
+    assert "separate them with '@@'" not in str(exc.value)

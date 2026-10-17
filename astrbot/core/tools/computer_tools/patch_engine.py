@@ -332,7 +332,15 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
         found = find_match_at_or_after(text, old_text, cursor)
     if found is None:
         first_line = hunk.old_lines[0] if hunk.old_lines else ""
-        raise HunkApplyError(f"context not found: {first_line!r}", hunk_index=index)
+        hint = ""
+        if (
+            len(hunk.old_lines) > 1
+            and _find_exact_ladder(text, first_line, cursor) is not None
+        ):
+            hint = "; if these are separate edits, separate them with '@@'"
+        raise HunkApplyError(
+            f"context not found: {first_line!r}{hint}", hunk_index=index
+        )
 
     idx, matched = found
     adjusted = adjusted_replacement(text, idx, old_text, matched, new_text)

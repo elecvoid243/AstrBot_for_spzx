@@ -54,6 +54,24 @@ def file_tool_names(mode: str) -> tuple[str, ...]:
     return _PATCH_TOOLS if mode == FILE_TOOL_MODE_PATCH else _LEGACY_TOOLS
 
 
+def file_tool_classes() -> dict[str, type]:
+    """Return name -> tool class for the file write tools.
+
+    Imported lazily to avoid a module-load cycle with ``computer_tools``.
+    """
+    from astrbot.core.tools.computer_tools import (
+        ApplyPatchTool,
+        FileEditTool,
+        FileWriteTool,
+    )
+
+    return {
+        "astrbot_file_write_tool": FileWriteTool,
+        "astrbot_file_edit_tool": FileEditTool,
+        "astrbot_apply_patch": ApplyPatchTool,
+    }
+
+
 def file_tool_allowed(name: str, mode: str) -> bool:
     """Whether a tool name is visible in ``mode``.
 

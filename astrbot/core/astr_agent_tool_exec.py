@@ -59,6 +59,7 @@ from astrbot.core.tools.computer_tools import (
 from astrbot.core.tools.file_tool_mode import (
     FILE_TOOL_MODE_LEGACY,
     file_tool_allowed,
+    file_tool_classes,
     file_tool_names,
     resolve_file_tool_mode,
 )
@@ -392,7 +393,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
             file_tools = {
-                name: tool_mgr.get_builtin_tool(name) for name in file_tool_names(mode)
+                name: tool_mgr.get_builtin_tool(file_tool_classes()[name])
+                for name in file_tool_names(mode)
             }
             tools = {
                 shell_tool.name: shell_tool,
@@ -422,7 +424,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
             file_tools = {
-                name: tool_mgr.get_builtin_tool(name) for name in file_tool_names(mode)
+                name: tool_mgr.get_builtin_tool(file_tool_classes()[name])
+                for name in file_tool_names(mode)
             }
             return {
                 shell_tool.name: shell_tool,

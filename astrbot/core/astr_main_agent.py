@@ -85,6 +85,7 @@ from astrbot.core.tools.computer_tools import (
 )
 from astrbot.core.tools.cron_tools import FutureTaskTool
 from astrbot.core.tools.file_tool_mode import (
+    file_tool_classes,
     file_tool_names,
     resolve_file_tool_mode,
 )
@@ -501,7 +502,9 @@ def _apply_local_env_tools(
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(LocalPythonTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileReadTool))
     for tool_name in file_tool_names(mode):
-        req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_name))
+        req.func_tool.add_tool(
+            tool_mgr.get_builtin_tool(file_tool_classes()[tool_name])
+        )
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileRemoveTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
     shell_type = str(
@@ -1410,7 +1413,9 @@ def _apply_sandbox_tools(
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileDownloadTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileReadTool))
     for tool_name in file_tool_names(mode):
-        req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_name))
+        req.func_tool.add_tool(
+            tool_mgr.get_builtin_tool(file_tool_classes()[tool_name])
+        )
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
     if booter == "shipyard_neo":
         # Neo-specific path rule: filesystem tools operate relative to sandbox

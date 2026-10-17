@@ -70,6 +70,45 @@ def _convert_to_line_ending(text: str, ending: Literal["\n", "\r\n"]) -> str:
     return text.replace("\n", "\r\n")
 
 
+def decode_text_bytes(
+    raw_bytes: bytes, encoding: str = "utf-8"
+) -> tuple[str, str, bool]:
+    """Decode file bytes into LF-normalized text, eol, and BOM flag.
+
+    Args:
+        raw_bytes: Raw file bytes.
+        encoding: Text encoding used for decoding.
+
+    Returns:
+        A tuple of (LF-normalized text, detected eol, has_bom).
+    """
+    has_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
+    if has_bom:
+        raw_bytes = raw_bytes[3:]
+    text = raw_bytes.decode(encoding)
+    eol = _detect_line_ending(text)
+    return _normalize_line_endings(text), eol, has_bom
+
+
+def encode_text_bytes(
+    text: str, eol: str, has_bom: bool, encoding: str = "utf-8"
+) -> bytes:
+    """Encode LF-normalized text with the original eol and BOM.
+
+    Args:
+        text: LF-normalized text.
+        eol: Target line ending, ``"\\n"`` or ``"\\r\\n"``.
+        has_bom: Whether to prepend a UTF-8 BOM.
+        encoding: Text encoding used for encoding.
+
+    Returns:
+        Encoded bytes.
+    """
+    output = _convert_to_line_ending(text, "\r\n") if eol == "\r\n" else text
+    prefix = b"\xef\xbb\xbf" if has_bom else b""
+    return prefix + output.encode(encoding)
+
+
 # ---------------------------------------------------------------------------
 # Levenshtein distance (for BlockAnchorReplacer)
 # ---------------------------------------------------------------------------
@@ -899,12 +938,14 @@ def bytes_edit_file(
     Raises:
         ValueError: If old_string cannot be found or is not unique.
     """
-    has_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
-    if has_bom:
-        raw_bytes = raw_bytes[3:]
-
-    old_content = raw_bytes.decode(encoding)
-    original_ending = _detect_line_ending(old_content)
+    normalized_content, original_ending, has_bom = decode_text_bytes(
+        raw_bytes, encoding
+    )
+    old_content = (
+        _convert_to_line_ending(normalized_content, "\r\n")
+        if original_ending == "\r\n"
+        else normalized_content
+    )
 
     # Normalize for matching: ONLY normalize actual CRLF line endings.
     # Escape sequence handling (\n vs actual newline, \t vs tab, etc.)
@@ -912,11 +953,8 @@ def bytes_edit_file(
     normalized_old = _normalize_line_endings(old_string)
     normalized_new = _normalize_line_endings(new_string)
 
-    # Normalize file content to LF for matching (replacers work on LF)
-    normalized_content = _normalize_line_endings(old_content)
-
     # Perform replacement
-    new_content, replacements = robust_replace(
+    new_content_lf, replacements = robust_replace(
         normalized_content,
         normalized_old,
         normalized_new,
@@ -924,15 +962,14 @@ def bytes_edit_file(
         strict_indent=strict_indent,
     )
 
-    # Convert back to original line endings
-    if original_ending == "\r\n":
-        new_content = _convert_to_line_ending(new_content, "\r\n")
+    # Convert back to original line endings for the result payload
+    new_content = (
+        _convert_to_line_ending(new_content_lf, "\r\n")
+        if original_ending == "\r\n"
+        else new_content_lf
+    )
 
-    # Re-add BOM if present
-    write_bytes = b""
-    if has_bom:
-        write_bytes += b"\xef\xbb\xbf"
-    write_bytes += new_content.encode(encoding)
+    write_bytes = encode_text_bytes(new_content_lf, original_ending, has_bom, encoding)
 
     # Generate unified diff
     diff = build_unified_diff("", old_content, new_content)

@@ -7,6 +7,8 @@ import pytest
 from astrbot.core.tools.computer_tools.edit_engine import (
     adjusted_replacement,
     bytes_edit_file,
+    decode_text_bytes,
+    encode_text_bytes,
     find_match_at_or_after,
     iter_match_positions,
     replace_match_at,
@@ -124,3 +126,20 @@ def test_bytes_edit_file_reports_contents_and_diff():
     assert result.old_content == "a\nb\n"
     assert result.new_content == "a\nB\n"
     assert "+B" in result.diff
+
+
+def test_decode_text_bytes_strips_bom_and_normalizes_crlf():
+    text, eol, has_bom = decode_text_bytes(b"\xef\xbb\xbfa\r\nb\r\n")
+    assert text == "a\nb\n"
+    assert eol == "\r\n"
+    assert has_bom is True
+
+
+def test_encode_text_bytes_restores_crlf_and_bom():
+    assert encode_text_bytes("a\nb\n", "\r\n", True) == b"\xef\xbb\xbfa\r\nb\r\n"
+
+
+def test_decode_encode_roundtrip_without_bom():
+    original = b"a\r\nb\r\n"
+    text, eol, has_bom = decode_text_bytes(original)
+    assert encode_text_bytes(text, eol, has_bom) == original

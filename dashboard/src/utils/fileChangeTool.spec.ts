@@ -13,6 +13,7 @@ import {
   fileChangeTone,
   isFileChangeToolName,
   parseApplyPatchArgs,
+  parseApplyPatchDisplay,
   parseApplyPatchResult,
   parseFileChangesPayload,
   parseFileEditResult,
@@ -595,5 +596,27 @@ describe("collectFileChanges with apply_patch", () => {
     ]);
     expect(changes).toHaveLength(4);
     expect(changes.every((c) => c.status === "error")).toBe(true);
+  });
+});
+
+describe("parseApplyPatchDisplay", () => {
+  it("splits the header from the concatenated diff", () => {
+    const parsed = parseApplyPatchDisplay(APPLY_PATCH_RESULT);
+    expect(parsed?.summary).toBe("Applied patch: 4 files changed (+5 -2)");
+    expect(parsed?.diff).toContain("--- src/a.py");
+    expect(parsed?.diff).toContain("+after");
+    expect(parsed?.diff).not.toContain("UPDATE src/a.py");
+  });
+
+  it("returns null for non-success results", () => {
+    expect(
+      parseApplyPatchDisplay("Dry run: no files were written."),
+    ).toBeNull();
+    expect(parseApplyPatchDisplay("Error: invalid patch")).toBeNull();
+    expect(
+      parseApplyPatchDisplay(
+        "This patch contains destructive changes and was NOT applied.",
+      ),
+    ).toBeNull();
   });
 });

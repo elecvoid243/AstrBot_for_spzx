@@ -145,6 +145,34 @@ function countDiffAdds(diff: string): number {
     return count;
 }
 
+export interface ApplyPatchDisplayParts {
+    /** Header line, e.g. "Applied patch: 2 files changed (+2 -1)". */
+    summary: string;
+    /** Concatenated unified diff (everything after the file list). */
+    diff: string;
+}
+
+/**
+ * Split an apply_patch success result into its header and diff body.
+ *
+ * Returns null for non-success results (dry run, confirmation gate, error),
+ * so ToolCallCard keeps rendering those as plain text.
+ */
+export function parseApplyPatchDisplay(
+    raw: string,
+): ApplyPatchDisplayParts | null {
+    const lines = (raw ?? "").split("\n");
+    const headerIndex = lines.findIndex((line) =>
+        APPLY_PATCH_HEADER_RE.test(line),
+    );
+    if (headerIndex < 0) return null;
+
+    let cursor = headerIndex + 1;
+    while (cursor < lines.length && lines[cursor].trim()) cursor++;
+    const diff = lines.slice(cursor + 1).join("\n").trim();
+    return { summary: lines[headerIndex], diff };
+}
+
 /**
  * Parse an `astrbot_apply_patch` result into one entry per file.
  *

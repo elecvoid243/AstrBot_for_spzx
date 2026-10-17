@@ -68,8 +68,23 @@
       </div>
 
       <!-- ── Result ────────────────────────────────────────── -->
+      <!-- apply_patch: header + concatenated unified diff -->
       <div
-        v-if="isEditTool && editToolDiff"
+        v-if="applyPatchDisplay?.diff"
+        class="tool-call-detail-row"
+      >
+        <span class="detail-label">Result:</span>
+        <DiffPreview
+          :content="applyPatchDisplay.diff"
+          :summary="applyPatchDisplay.summary"
+          :is-dark="isDark"
+          :max-lines="25"
+          :collapsible="false"
+        />
+      </div>
+
+      <div
+        v-else-if="isEditTool && editToolDiff"
         class="tool-call-detail-row"
       >
         <span class="detail-label">Result:</span>
@@ -102,7 +117,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { parseFileEditResult, parseApplyPatchArgs, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
+import { parseFileEditResult, parseApplyPatchArgs, parseApplyPatchDisplay, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
 import ToolResultView from "./ToolResultView.vue";
 import CopyableText from "./__shared__/CopyableText.vue";
@@ -184,6 +199,12 @@ const expandedArgs = reactive({});
 
 const isApplyPatchTool = computed(
   () => String(props.toolCall.name || "") === APPLY_PATCH_TOOL_NAME,
+);
+
+const applyPatchDisplay = computed(() =>
+  isApplyPatchTool.value
+    ? parseApplyPatchDisplay(props.toolCall.result ?? "")
+    : null,
 );
 
 const argEntries = computed(() => {

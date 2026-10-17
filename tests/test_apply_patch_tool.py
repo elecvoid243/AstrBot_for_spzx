@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,7 @@ import pytest
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.tools.computer_tools import fs as fs_tools
+from astrbot.core.tools.computer_tools import patch_tool as patch_tool_module
 from astrbot.core.tools.computer_tools import util as computer_util
 from astrbot.core.tools.computer_tools.patch_tool import ApplyPatchTool
 
@@ -99,3 +101,72 @@ async def test_path_escape_rejected(workspace):
         patch="*** Update File: ../outside.txt\n-a\n+b\n",
     )
     assert "denied" in result.lower() or "restricted" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_commit_writes_update(workspace):
+    target = workspace / "a.txt"
+    target.write_text("old\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(), patch="*** Update File: a.txt\n-old\n+new\n"
+    )
+    assert "Applied patch" in result
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
+@pytest.mark.asyncio
+async def test_commit_add_and_delete(workspace):
+    doomed = workspace / "old.txt"
+    doomed.write_text("bye\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch=("*** Add File: new.txt\n+hi\n*** Delete File: old.txt\n"),
+        confirm=True,
+    )
+    assert "Applied patch" in result
+    assert (workspace / "new.txt").read_text(encoding="utf-8") == "hi\n"
+    assert not doomed.exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_second_write_rolls_back_first(workspace, monkeypatch):
+    first = workspace / "a.txt"
+    second = workspace / "b.txt"
+    first.write_text("a\n", encoding="utf-8")
+    second.write_text("b\n", encoding="utf-8")
+
+    original_write = patch_tool_module._write_file_bytes
+
+    def flaky_write(path, data):
+        if Path(path) == second:
+            raise OSError("disk full")
+        return original_write(path, data)
+
+    monkeypatch.setattr(patch_tool_module, "_write_file_bytes", flaky_write)
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch=("*** Update File: a.txt\n-a\n+A\n*** Update File: b.txt\n-b\n+B\n"),
+    )
+    assert "No files were modified" in result
+    assert first.read_text(encoding="utf-8") == "a\n"
+    assert second.read_text(encoding="utf-8") == "b\n"
+
+
+@pytest.mark.asyncio
+async def test_changed_since_plan_aborts(workspace, monkeypatch):
+    target = workspace / "a.txt"
+    target.write_text("old\n", encoding="utf-8")
+
+    original_plan = patch_tool_module.plan_patch
+
+    def plan_then_mutate(entries, read):
+        result = original_plan(entries, read)
+        target.write_text("externally changed\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(patch_tool_module, "plan_patch", plan_then_mutate)
+    result = await ApplyPatchTool().call(
+        _context(), patch="*** Update File: a.txt\n-old\n+new\n"
+    )
+    assert "changed since plan" in result
+    assert target.read_text(encoding="utf-8") == "externally changed\n"

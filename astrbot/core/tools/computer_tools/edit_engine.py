@@ -681,6 +681,96 @@ def _adjust_replacement_indent(
 
 
 # ---------------------------------------------------------------------------
+# Reusable match primitives
+# ---------------------------------------------------------------------------
+
+
+def iter_match_positions(content: str, old_string: str) -> Iterator[tuple[int, str]]:
+    """Yield (position, matched_text) for the first replacer tier that matches.
+
+    The replacer chain order is preserved: once a tier yields at least one
+    match, lower tiers are not consulted. Positions are de-duplicated and
+    non-overlapping, matching ``robust_replace`` semantics.
+    """
+    for replacer in _REPLACERS:
+        matches = list(replacer(content, old_string))
+        if not matches:
+            continue
+        positions: list[tuple[int, str]] = []
+        for match in matches:
+            cursor = 0
+            while True:
+                idx = content.find(match, cursor)
+                if idx == -1:
+                    break
+                if not any(pos <= idx < pos + len(m) for pos, m in positions):
+                    positions.append((idx, match))
+                cursor = idx + 1
+        if positions:
+            yield from positions
+            return
+
+
+def find_match_at_or_after(
+    content: str, old_string: str, start: int
+) -> tuple[int, str] | None:
+    """Return the first match at or after ``start``, honoring replacer tiers.
+
+    Unlike ``robust_replace`` this allows duplicate matches; the caller is
+    responsible for advancing a cursor so later hunks hit later occurrences.
+    """
+    for replacer in _REPLACERS:
+        matches = list(replacer(content, old_string))
+        if not matches:
+            continue
+        candidates: list[tuple[int, str]] = []
+        for match in matches:
+            idx = content.find(match, start)
+            while idx != -1:
+                candidates.append((idx, match))
+                idx = content.find(match, idx + 1)
+        if candidates:
+            return min(candidates, key=lambda item: item[0])
+    return None
+
+
+def adjusted_replacement(
+    content: str,
+    idx: int,
+    old_string: str,
+    matched: str,
+    new_string: str,
+    *,
+    strict_indent: bool = True,
+) -> str:
+    """Return ``new_string`` reconciled with the matched block's indentation."""
+    return _adjust_replacement_indent(
+        new_string,
+        old_string,
+        matched,
+        content,
+        idx,
+        strict_indent=strict_indent,
+    )
+
+
+def replace_match_at(
+    content: str,
+    idx: int,
+    old_string: str,
+    matched: str,
+    new_string: str,
+    *,
+    strict_indent: bool = True,
+) -> str:
+    """Replace one known match with indent-adjusted text."""
+    adjusted = adjusted_replacement(
+        content, idx, old_string, matched, new_string, strict_indent=strict_indent
+    )
+    return content[:idx] + adjusted + content[idx + len(matched) :]
+
+
+# ---------------------------------------------------------------------------
 # Core replace function
 # ---------------------------------------------------------------------------
 
@@ -720,78 +810,45 @@ def robust_replace(
             "No changes to apply: old_string and new_string are identical."
         )
 
-    not_found = True
-
-    for replacer in _REPLACERS:
-        matches = list(replacer(content, old_string))
-        if not matches:
-            continue
-
-        # Collect all unique match positions
-        match_positions: list[tuple[int, str]] = []
-        for match in matches:
-            start = 0
-            while True:
-                idx = content.find(match, start)
-                if idx == -1:
-                    break
-                # Avoid duplicate positions from overlapping matches
-                if not any(pos <= idx < pos + len(m) for pos, m in match_positions):
-                    match_positions.append((idx, match))
-                start = idx + 1
-
-        if not match_positions:
-            continue
-
-        not_found = False
-
-        if replace_all:
-            # Replace all occurrences, from end to start to preserve indices
-            new_content = content
-            replacements = 0
-            for idx, match in sorted(match_positions, key=lambda x: x[0], reverse=True):
-                adjusted_new = _adjust_replacement_indent(
-                    new_string,
-                    old_string,
-                    match,
-                    content,
-                    idx,
-                    strict_indent=strict_indent,
-                )
-                new_content = (
-                    new_content[:idx] + adjusted_new + new_content[idx + len(match) :]
-                )
-                replacements += 1
-            return new_content, replacements
-
-        # Single replacement mode: require exactly one match
-        if len(match_positions) == 1:
-            idx, match = match_positions[0]
-            adjusted_new = _adjust_replacement_indent(
-                new_string,
-                old_string,
-                match,
-                content,
-                idx,
-                strict_indent=strict_indent,
-            )
-            return content[:idx] + adjusted_new + content[idx + len(match) :], 1
-
-        raise ValueError(
-            "Found multiple matches for oldString. Provide more surrounding context "
-            "to make the match unique, or use replace_all=True to change every "
-            "instance."
-        )
-
-    if not_found:
+    positions = list(iter_match_positions(content, old_string))
+    if not positions:
         raise ValueError(
             "Could not find oldString in the file. It must match exactly, "
             "including whitespace, indentation, and line endings. "
             "Try providing more surrounding context to make the match unique."
         )
+
+    if replace_all:
+        new_content = content
+        for idx, match in sorted(positions, key=lambda item: item[0], reverse=True):
+            new_content = replace_match_at(
+                new_content,
+                idx,
+                old_string,
+                match,
+                new_string,
+                strict_indent=strict_indent,
+            )
+        return new_content, len(positions)
+
+    if len(positions) == 1:
+        idx, match = positions[0]
+        return (
+            replace_match_at(
+                content,
+                idx,
+                old_string,
+                match,
+                new_string,
+                strict_indent=strict_indent,
+            ),
+            1,
+        )
+
     raise ValueError(
         "Found multiple matches for oldString. Provide more surrounding context "
-        "to make the match unique, or use replace_all=True to change every instance."
+        "to make the match unique, or use replace_all=True to change every "
+        "instance."
     )
 
 

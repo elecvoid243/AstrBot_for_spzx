@@ -80,10 +80,17 @@ def find_match_at_or_after(
 ) -> tuple[int, str] | None:
     """按 replacer 链顺序，返回 start 之后（含）的第一个匹配。"""
 
-def replace_match_at(
-    content: str, idx: int, matched: str, new_string: str, *, strict_indent: bool = True
+def adjusted_replacement(
+    content: str, idx: int, old_string: str, matched: str, new_string: str,
+    *, strict_indent: bool = True,
 ) -> str:
-    """在指定位置替换，复用 _adjust_replacement_indent 的缩进处理。"""
+    """返回按匹配位置调整过缩进的替换文本。"""
+
+def replace_match_at(
+    content: str, idx: int, old_string: str, matched: str, new_string: str,
+    *, strict_indent: bool = True,
+) -> str:
+    """在指定位置替换，内部复用 adjusted_replacement。"""
 ```
 
 `robust_replace()` 改为基于这三个原语的薄封装，**对外签名、返回值与异常信息完全不变**；
@@ -124,7 +131,7 @@ def replace_match_at(
 
 | 操作 | 语义 | 破坏性 |
 |---|---|---|
-| `Add File` | 新文件；`+` 行以 `\n` 连接；父目录不存在则创建 | 目标已存在 → 需要 `confirm` |
+| `Add File` | 新文件；`+` 行以 `\n` 连接并在末尾补一个 `\n`；父目录不存在则创建 | 目标已存在 → 需要 `confirm` |
 | `Update File` | 在游标上按 hunk 顺序应用 | 否 |
 | `Update File` + `Move to` | 先在源内容上应用 hunk，再写到目标路径并删除源 | 目标已存在 → 需要 `confirm` |
 | `Delete File` | 备份后删除源文件 | **总是**需要 `confirm` |

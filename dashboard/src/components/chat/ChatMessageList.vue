@@ -42,7 +42,9 @@
       >
         <!-- 2026-10-08 (elecvoid243): LLM request injection trail. Fixed-width
              rail so the marker never shifts the message layout; it stays empty
-             for turns without injections and hides on narrow screens. -->
+             for turns without injections and hides on narrow screens.
+             2026-10-17: the same rail hosts the turn-activity mark, so the
+             waiting/streaming spinner needs no extra column either. -->
         <div
           v-if="!isUserMessage(msg) && !isBranchDivider(msg)"
           class="message-rail"
@@ -78,6 +80,10 @@
             </template>
             <span>{{ injectionTooltip(msg) }}</span>
           </v-tooltip>
+          <!-- After the injection marker: that control keeps its single slot
+               at the top of the rail, so a historical row with injections
+               never shifts when a live turn settles and the mark fades. -->
+          <GenerationIndicator :state="generationState(msg, msgIndex)" />
         </div>
 
         <div class="message-stack">
@@ -194,7 +200,13 @@
               @mouseup="handleMouseUp($event, msg)"
             >
               <div v-if="messageContent(msg).isLoading" class="loading-message">
-                <span>{{ tm("message.loading") }}</span>
+                <!-- The rail is hidden below 560 px: keep the wait spinner
+                     next to its label there so the phone layout still shows
+                     that a reply is coming. -->
+                <GenerationIndicator class="loading-marker" state="waiting" />
+                <ThinkingIndicator>{{
+                  tm("message.loading")
+                }}</ThinkingIndicator>
               </div>
 
               <template v-else-if="isEditingMessage(msg)">
@@ -646,6 +658,8 @@ import { fileApi } from "@/api/v1";
 import RegenerateMenu, {
   type RegenerateModelSelection,
 } from "@/components/chat/RegenerateMenu.vue";
+import GenerationIndicator from "@/components/chat/GenerationIndicator.vue";
+import ThinkingIndicator from "@/components/chat/ThinkingIndicator.vue";
 import ThreadedMarkdownMessagePart from "@/components/chat/ThreadedMarkdownMessagePart.vue";
 import ReasoningBlock from "@/components/chat/message_list_comps/ReasoningBlock.vue";
 import FileChangeSummaryCard from "@/components/chat/message_list_comps/FileChangeSummaryCard.vue";
@@ -1221,6 +1235,27 @@ function isMessageStreaming(message: ChatRecord, messageIndex: number) {
     !isUserMessage(message) &&
     messageIndex === props.messages.length - 1
   );
+}
+
+/**
+ * Activity state of one assistant turn, consumed by the rail mark.
+ *
+ * Waiting is the pre-token gap (the row exists with only its loading line);
+ * streaming is the live last row once text arrives. Everything else — history,
+ * user rows, a finished turn — is idle, which renders the mark invisible while
+ * keeping its rail slot.
+ *
+ * @param message: Row being rendered.
+ * @param messageIndex: Index inside the loaded window.
+ * @returns `waiting`, `streaming`, or `done`.
+ */
+function generationState(
+  message: ChatRecord,
+  messageIndex: number,
+): "waiting" | "streaming" | "done" {
+  if (isUserMessage(message)) return "done";
+  if (messageContent(message).isLoading) return "waiting";
+  return isMessageStreaming(message, messageIndex) ? "streaming" : "done";
 }
 
 function isEditingMessage(message: ChatRecord) {
@@ -2281,14 +2316,20 @@ function formatDuration(seconds: number) {
 
 /* 2026-10-08 (elecvoid243): LLM request injection trail. The rail is a fixed
    20px column so rows never shift. The marker is an outline icon control
-   (variant A): a visible boundary + glyph at rest, ink-filled while open. */
+   (variant A): a visible boundary + glyph at rest, ink-filled while open.
+   2026-10-17: the rail also carries the turn-activity mark, so it stacks its
+   children instead of laying them out in a row. The top offset starts the
+   stack on the bubble's first line instead of the row's edge — 10 px bubble
+   padding plus the reasoning block's 6 px margin — so the 18 px mark sits on
+   the same optical line as the text (a plain first line lands 1–2 px off). */
 .message-rail {
   flex: 0 0 20px;
   width: 20px;
   display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding-top: 2px;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 16px;
 }
 
 .injection-marker {
@@ -2330,9 +2371,32 @@ function formatDuration(seconds: number) {
   outline-offset: 1px;
 }
 
+/* Waiting row: the rail owns the orbit mark on desktop, so this inline copy is
+   only the narrow-screen fallback (see the media query below). The compound
+   selector outranks the indicator's own root rule, whose order in the bundle
+   is not ours to rely on. */
+.loading-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loading-message .loading-marker {
+  display: none;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 560px) {
   .message-rail {
     display: none;
+  }
+
+  /* Without the rail the wait spinner moves next to its label, so the phone
+     layout still shows that a reply is on the way. */
+  .loading-message .loading-marker {
+    display: block;
   }
 }
 

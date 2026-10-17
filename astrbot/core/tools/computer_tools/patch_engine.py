@@ -16,6 +16,7 @@ from .edit_engine import (
     decode_text_bytes,
     encode_text_bytes,
     find_match_at_or_after,
+    robust_replace,
     validate_indent_style,
 )
 
@@ -25,6 +26,7 @@ _ADD = "*** Add File:"
 _DELETE = "*** Delete File:"
 _UPDATE = "*** Update File:"
 _MOVE = "*** Move to:"
+_REPLACE_ALL = "*** Replace All:"
 _EOF = "*** End of File"
 _FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\s*$")
 
@@ -43,11 +45,13 @@ class Hunk:
 class FilePatch:
     """One file section of a patch."""
 
-    kind: Literal["add", "update", "delete"]
+    kind: Literal["add", "update", "delete", "replace_all"]
     path: str
     move_to: str | None = None
     hunks: list[Hunk] = field(default_factory=list)
     add_lines: list[str] = field(default_factory=list)
+    old_lines: list[str] = field(default_factory=list)
+    new_lines: list[str] = field(default_factory=list)
 
 
 class PatchParseError(ValueError):
@@ -115,7 +119,7 @@ def parse_patch(text: str) -> list[FilePatch]:
                 continue
             if not stripped or _FENCE_RE.match(stripped):
                 continue
-            if stripped.startswith((_ADD, _UPDATE, _DELETE)):
+            if stripped.startswith((_ADD, _UPDATE, _DELETE, _REPLACE_ALL)):
                 in_patch = True
             else:
                 continue
@@ -160,6 +164,17 @@ def parse_patch(text: str) -> list[FilePatch]:
             current = FilePatch(kind="update", path=path)
             files.append(current)
             continue
+        if stripped.startswith(_REPLACE_ALL):
+            finish_hunk()
+            path = _marker_value(stripped, _REPLACE_ALL)
+            if not path:
+                fail("Replace All requires a path", index)
+            if path in seen_paths:
+                fail(f"duplicate path: {path}", index)
+            seen_paths.add(path)
+            current = FilePatch(kind="replace_all", path=path)
+            files.append(current)
+            continue
         if stripped.startswith(_MOVE):
             if current is None or current.kind != "update":
                 fail("Move to must follow Update File", index)
@@ -184,6 +199,18 @@ def parse_patch(text: str) -> list[FilePatch]:
         if current.kind == "delete":
             if stripped:
                 fail("Delete File takes no content", index)
+            continue
+        if current.kind == "replace_all":
+            if line == "":
+                continue
+            if stripped.startswith("@@"):
+                fail("Replace All does not accept @@ anchors", index)
+            if line.startswith("+"):
+                current.new_lines.append(line[1:])
+            elif line.startswith("-"):
+                current.old_lines.append(line[1:])
+            else:
+                fail("Replace All lines must start with '+' or '-'", index)
             continue
 
         if stripped.startswith("@@"):
@@ -217,6 +244,10 @@ def parse_patch(text: str) -> list[FilePatch]:
             raise PatchParseError(f"Add File {entry.path!r} has no content")
         if entry.kind == "update" and not entry.hunks:
             raise PatchParseError(f"Update File {entry.path!r} has no hunks")
+        if entry.kind == "replace_all" and (not entry.old_lines or not entry.new_lines):
+            raise PatchParseError(
+                f"Replace All {entry.path!r} needs both - lines and + lines"
+            )
     return files
 
 
@@ -365,6 +396,36 @@ def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
     for index, hunk in enumerate(hunks):
         text, cursor = _apply_one(text, hunk, cursor, index)
     return text
+
+
+def apply_replace_all_to_text(
+    text: str,
+    old_lines: list[str],
+    new_lines: list[str],
+    *,
+    strict_indent: bool = True,
+) -> tuple[str, int]:
+    """Replace every occurrence of the old block.
+
+    Args:
+        text: LF-normalized file content.
+        old_lines: Lines to find.
+        new_lines: Replacement lines.
+        strict_indent: Passed through to ``robust_replace``.
+
+    Returns:
+        A tuple of (new text, occurrence count).
+
+    Raises:
+        ValueError: If the block is absent or equals the replacement.
+    """
+    return robust_replace(
+        text,
+        "\n".join(old_lines),
+        "\n".join(new_lines),
+        replace_all=True,
+        strict_indent=strict_indent,
+    )
 
 
 @dataclass

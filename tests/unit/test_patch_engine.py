@@ -9,6 +9,7 @@ from astrbot.core.tools.computer_tools.patch_engine import (
     HunkApplyError,
     PatchParseError,
     apply_hunks_to_text,
+    apply_replace_all_to_text,
     parse_patch,
     plan_patch,
 )
@@ -252,3 +253,48 @@ def test_apply_has_no_at_hint_when_first_line_is_also_missing():
     with pytest.raises(HunkApplyError) as exc:
         apply_hunks_to_text("old\n", [hunk])
     assert "separate them with '@@'" not in str(exc.value)
+
+
+# ── Replace All (2026-10-18) ─────────────────────────────────────
+
+
+def test_parse_replace_all_section():
+    files = parse_patch("*** Replace All: a.py\n-old\n-old2\n+new\n+new2\n")
+    assert files[0].kind == "replace_all"
+    assert files[0].old_lines == ["old", "old2"]
+    assert files[0].new_lines == ["new", "new2"]
+
+
+def test_parse_rejects_replace_all_with_anchor():
+    with pytest.raises(PatchParseError, match="Replace All"):
+        parse_patch("*** Replace All: a.py\n@@ head\n-old\n+new\n")
+
+
+def test_parse_rejects_update_and_replace_all_same_path():
+    with pytest.raises(PatchParseError, match="duplicate path"):
+        parse_patch("*** Update File: a.py\n-a\n+b\n*** Replace All: a.py\n-c\n+d\n")
+
+
+def test_parse_rejects_replace_all_without_new_lines():
+    with pytest.raises(PatchParseError, match="Replace All"):
+        parse_patch("*** Replace All: a.py\n-old\n")
+
+
+def test_replace_all_replaces_every_occurrence():
+    out, count = apply_replace_all_to_text(
+        "x = 1\nx = 1\nx = 1\n", ["x = 1"], ["x = 2"]
+    )
+    assert count == 3
+    assert out == "x = 2\nx = 2\nx = 2\n"
+
+
+def test_replace_all_zero_matches_raises():
+    with pytest.raises(ValueError, match="Could not find"):
+        apply_replace_all_to_text("a\n", ["zzz"], ["b"])
+
+
+def test_replace_all_respects_strict_indent_false():
+    out, _ = apply_replace_all_to_text(
+        "    x = 1\n", ["    x = 1"], ["\ty = 2"], strict_indent=False
+    )
+    assert "\ty = 2" in out

@@ -298,3 +298,20 @@ def test_replace_all_respects_strict_indent_false():
         "    x = 1\n", ["    x = 1"], ["\ty = 2"], strict_indent=False
     )
     assert "\ty = 2" in out
+
+
+def test_plan_replace_all_counts_and_diff():
+    files = parse_patch("*** Replace All: a.txt\n-x\n+X\n")
+    plan = plan_patch(files, lambda p: b"x\nx\n")
+    item = plan.files[0]
+    assert item.kind == "replace_all"
+    assert item.new_bytes == b"X\nX\n"
+    assert item.added == 2
+    assert item.removed == 2
+    assert "+X" in item.diff
+
+
+def test_plan_replace_all_requires_existing_file():
+    files = parse_patch("*** Replace All: a.txt\n-x\n+X\n")
+    with pytest.raises(PatchParseError, match="does not exist"):
+        plan_patch(files, lambda p: None)

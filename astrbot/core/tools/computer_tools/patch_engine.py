@@ -498,7 +498,7 @@ def plan_patch(
     plans: list[FilePlan] = []
     for entry in patches:
         original = read(entry.path)
-        if entry.kind in ("update", "delete") and original is None:
+        if entry.kind in ("update", "delete", "replace_all") and original is None:
             raise PatchParseError(f"file does not exist: {entry.path}")
 
         target_original = read(entry.move_to) if entry.move_to is not None else None
@@ -516,6 +516,16 @@ def plan_patch(
                 old_text = decode_text_bytes(original)[0]
             new_bytes = ("\n".join(entry.add_lines) + "\n").encode("utf-8")
             new_text = new_bytes.decode("utf-8")
+            _validate_python(entry.path, old_text, new_text)
+        elif entry.kind == "replace_all":
+            old_text, eol, has_bom = decode_text_bytes(original or b"")
+            try:
+                new_text, _occurrences = apply_replace_all_to_text(
+                    old_text, entry.old_lines, entry.new_lines
+                )
+            except ValueError as exc:
+                raise PatchParseError(f"{entry.path}: {exc}") from exc
+            new_bytes = encode_text_bytes(new_text, eol, has_bom)
             _validate_python(entry.path, old_text, new_text)
         else:
             old_text, eol, has_bom = decode_text_bytes(original or b"")

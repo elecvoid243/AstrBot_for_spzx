@@ -85,6 +85,12 @@ describe("ToolCallCard apply_patch result", () => {
     expect(rows[0].text()).toContain("C:\\w\\d.txt");
   });
 
+  it("marks the delete row with the red modifier", () => {
+    const wrapper = mountCard(PATCH_RESULT);
+    const row = wrapper.find(".apply-patch-file-row");
+    expect(row.classes()).toContain("apply-patch-file-row--remove");
+  });
+
   it("keeps plain text rendering for dry-run results", () => {
     const wrapper = mountCard(
       "Dry run: no files were written. 1 files, +1 -1\nUPDATE C:\\w\\a.txt\n",

@@ -90,7 +90,11 @@
               :max-lines="25"
               :collapsible="true"
             />
-            <div v-else class="apply-patch-file-row">
+            <div
+              v-else
+              class="apply-patch-file-row"
+              :class="{ 'apply-patch-file-row--remove': file.kind === 'remove' }"
+            >
               <v-icon size="14">mdi-delete-outline</v-icon>
               <span class="apply-patch-file-path">{{ file.filePath }}</span>
               <span v-if="file.renamedFrom" class="apply-patch-file-note">
@@ -455,8 +459,14 @@ onUnmounted(() => {
 .apply-patch-result {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+}
+
+/* DiffPreview ships with `margin: 4px 0`; the stack gap already separates
+   the blocks, so drop it to keep the tool card compact. */
+.apply-patch-result :deep(.diff-preview) {
+  margin: 0;
 }
 
 .apply-patch-summary {
@@ -479,6 +489,17 @@ onUnmounted(() => {
 .apply-patch-file-path {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Delete rows mirror the red tone used by FileChangeCard removals. */
+.apply-patch-file-row--remove {
+  border-color: rgba(207, 34, 46, 0.35);
+  background: rgba(207, 34, 46, 0.07);
+  color: rgb(207, 34, 46);
+}
+
+.apply-patch-file-row--remove .apply-patch-file-note {
+  color: rgba(207, 34, 46, 0.7);
 }
 
 .apply-patch-file-note {

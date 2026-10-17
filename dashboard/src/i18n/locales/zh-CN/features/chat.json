@@ -1940,15 +1940,30 @@
       "pathBar": {
         "label": "文档目录",
         "editHint": "点击修改路径",
-        "resetTitle": "恢复为默认 docs/",
+        "resetTitle": "恢复为默认(项目根)",
         "goUpTitle": "返回上一级",
         "invalidPath": "路径无效:必须是项目内的相对路径",
         "storageWarning": "浏览器存储不可用,本次会话结束后保存将失效"
       },
       "presets": {
-        "label": "快捷目录",
+        "label": "快捷跳转",
         "notFound": "目标不存在:{path}",
-        "checkFailed": "无法访问目标:{path}"
+        "checkFailed": "无法访问目标:{path}",
+        "edit": "配置快捷跳转",
+        "dialogTitle": "配置快捷跳转",
+        "dialogHint": "仅对当前项目生效,保存在浏览器本地存储中。路径相对项目根目录;文件项会跳到所在目录并直接打开该文件。",
+        "labelField": "名称",
+        "pathField": "路径(相对项目根)",
+        "kindDir": "目录",
+        "kindFile": "文件",
+        "add": "添加一项",
+        "remove": "删除",
+        "empty": "还没有快捷项。",
+        "invalidPath": "路径无效:{path}",
+        "duplicatePath": "路径重复:{path}",
+        "saveFailed": "保存失败:浏览器本地存储不可用",
+        "restoreDefaults": "恢复默认",
+        "save": "保存"
       },
       "pane": {
         "collapseTree": "隐藏目录",

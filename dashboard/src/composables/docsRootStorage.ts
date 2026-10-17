@@ -1,8 +1,14 @@
 // Author: elecvoid243, 2026-07-12
 // Spec: docs/superpowers/specs/2026-07-11-document-manager-design.md §3.4
 //
-// Pure-TS helpers for persisting the per-UMO docs root path in
-// localStorage. No Vue imports — testable with node:test.
+// Pure-TS localStorage helpers for the document manager:
+//   1. the per-UMO docs root path (§3.4 below), and
+//   2. the per-project quick-path chips ("快捷跳转", 2026-10-17).
+// Both live here (instead of a second module) so preset paths are
+// validated by the same `isValidDocsRoot` invariants and so the whole
+// file stays import-free — `node --test` can load it directly, which
+// it cannot do for a module that imports a sibling `.ts` file.
+// No Vue imports — testable with node:test.
 //
 // The backend (POST/PATCH/DELETE /spcode/docs) does not persist
 // docsRoot; this file is the only source of truth for the path the
@@ -12,7 +18,13 @@
 
 export const DOCS_ROOT_STORAGE_KEY =
   "astrbot.spcode.documentManager.docsPathByUmo";
-export const DEFAULT_DOCS_ROOT = "docs";
+/** 2026-10-17 (elecvoid243): the default root is now the PROJECT
+ *  root ("."), not "docs". Not every repository keeps its Markdown
+ *  under `docs/`, and starting at the project root lets the user
+ *  click into whichever folder actually exists instead of staring at
+ *  an empty/erroring tree. The quick-path chips ("快捷跳转") are the
+ *  opt-in shortcut for projects that DO have a docs folder. */
+export const DEFAULT_DOCS_ROOT = ".";
 
 /** Minimal subset of the Storage interface so tests can inject
  *  a fake without touching the real `localStorage` global. */
@@ -174,4 +186,157 @@ export function saveDocsRoot(
   } catch {
     return { ok: false, reason: "storage_unavailable" };
   }
+}
+
+export const DOC_PRESETS_STORAGE_KEY =
+  "astrbot.spcode.documentManager.docPresetsByProject";
+
+/** Upper bound of chips rendered in the toolbar. The row wraps, so
+ *  this is a UX bound rather than a hard technical limit. */
+export const MAX_DOC_PRESETS = 12;
+
+export type DocPresetKind = "dir" | "file";
+
+/** One quick-path chip.
+ *
+ *  `path` is ALWAYS project-relative (POSIX separators, no leading
+ *  "./", no trailing slash). `kind` decides what a click does:
+ *  "dir" switches the docs root, "file" roots the manager at the
+ *  file's parent directory and opens it. */
+export interface DocPreset {
+  label: string;
+  kind: DocPresetKind;
+  path: string;
+}
+
+/** Starting list for projects that never customized their chips.
+ *  Deliberately mirrors the old hard-coded list so existing users
+ *  see no change until they edit something. */
+export const DEFAULT_DOC_PRESETS: readonly DocPreset[] = [
+  { label: "AGENTS.md", kind: "file", path: "AGENTS.md" },
+  { label: "README.md", kind: "file", path: "README.md" },
+  { label: "specs", kind: "dir", path: "docs/superpowers/specs" },
+  { label: "plans", kind: "dir", path: "docs/superpowers/plans" },
+  { label: "changelogs", kind: "dir", path: "changelogs" },
+];
+
+/** Normalize a project root into a stable storage bucket key.
+ *  Lowercased because Windows paths are case-insensitive and the
+ *  same repo must not split into two buckets when the backend
+ *  reports `F:/repo` one day and `f:\repo` the next. */
+export function projectStorageKey(root: string | null | undefined): string {
+  return (root ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+/** Clean + validate one raw preset (typically loaded from JSON or
+ *  typed into the dialog). Returns `null` when the entry cannot be
+ *  used, so callers can drop it (load) or surface an error (save). */
+export function normalizePreset(raw: unknown): DocPreset | null {
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as Partial<Record<keyof DocPreset, unknown>>;
+  const kind =
+    entry.kind === "file" ? "file" : entry.kind === "dir" ? "dir" : null;
+  if (!kind) return null;
+  const path = coerceDocsRoot(String(entry.path ?? "")).replace(/^\.\//, "");
+  if (!isValidDocsRoot(path)) return null;
+  const labelRaw = String(entry.label ?? "").trim();
+  const label = (labelRaw || path.split("/").pop() || path).slice(0, 40);
+  return { label, kind, path };
+}
+
+function sanitizePresets(raw: unknown): DocPreset[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DocPreset[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const preset = normalizePreset(item);
+    if (!preset || seen.has(preset.path)) continue;
+    seen.add(preset.path);
+    out.push(preset);
+    if (out.length >= MAX_DOC_PRESETS) break;
+  }
+  return out;
+}
+
+/** Load the chips for `projectKey`. Returns the defaults when the
+ *  project has no stored entry yet (or the payload is corrupt).
+ *  An explicitly stored EMPTY array is honored — the user is allowed
+ *  to delete every chip. */
+export function loadDocPresets(
+  projectKey: string | null | undefined,
+  backend: StorageBackend = defaultBackend(),
+): DocPreset[] {
+  const key = projectStorageKey(projectKey);
+  let raw: string | null = null;
+  try {
+    raw = backend.getItem(DOC_PRESETS_STORAGE_KEY);
+  } catch {
+    return DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  }
+  if (!raw) return DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  let map: Record<string, unknown> | null = null;
+  try {
+    map = JSON.parse(raw);
+  } catch {
+    return DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  }
+  if (!map || typeof map !== "object" || Array.isArray(map)) {
+    return DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  }
+  const stored = map[key];
+  if (!Array.isArray(stored)) return DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  return sanitizePresets(stored);
+}
+
+export type SaveDocPresetsResult =
+  | { ok: true; presets: DocPreset[] }
+  | { ok: false; reason: "invalid_path" | "too_many" | "storage_unavailable" };
+
+/** Persist `presets` for `projectKey`. Every entry is re-validated
+ *  here so a caller bug can never write an escaping path into
+ *  localStorage. */
+export function saveDocPresets(
+  projectKey: string | null | undefined,
+  presets: readonly DocPreset[],
+  backend: StorageBackend = defaultBackend(),
+): SaveDocPresetsResult {
+  if (presets.length > MAX_DOC_PRESETS) {
+    return { ok: false, reason: "too_many" };
+  }
+  const cleaned: DocPreset[] = [];
+  const seen = new Set<string>();
+  for (const raw of presets) {
+    const preset = normalizePreset(raw);
+    if (!preset || seen.has(preset.path)) {
+      return { ok: false, reason: "invalid_path" };
+    }
+    seen.add(preset.path);
+    cleaned.push(preset);
+  }
+  const key = projectStorageKey(projectKey);
+  let map: Record<string, unknown> = {};
+  try {
+    const raw = backend.getItem(DOC_PRESETS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        map = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // Treat unreadable storage as an empty map; the write below is
+    // the operation that actually matters (and can still fail).
+    map = {};
+  }
+  map[key] = cleaned;
+  try {
+    backend.setItem(DOC_PRESETS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    return { ok: false, reason: "storage_unavailable" };
+  }
+  return { ok: true, presets: cleaned };
 }

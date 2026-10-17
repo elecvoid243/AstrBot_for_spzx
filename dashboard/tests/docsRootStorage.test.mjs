@@ -52,7 +52,7 @@ test("loadDocsRoot: returns default when key missing", async () => {
     setItem: (k, v) => { store[k] = String(v); },
     removeItem: (k) => { delete store[k]; },
   });
-  assert.equal(loadDocsRoot("umo-1"), "docs");
+  assert.equal(loadDocsRoot("umo-1"), ".");
 });
 
 test("loadDocsRoot: returns default when umo not in map", async () => {
@@ -63,7 +63,7 @@ test("loadDocsRoot: returns default when umo not in map", async () => {
     setItem: (k, v) => { store[k] = String(v); },
     removeItem: (k) => { delete store[k]; },
   });
-  assert.equal(loadDocsRoot("umo-1"), "docs");
+  assert.equal(loadDocsRoot("umo-1"), ".");
 });
 
 test("loadDocsRoot: returns persisted path for umo", async () => {
@@ -80,7 +80,7 @@ test("loadDocsRoot: returns persisted path for umo", async () => {
 test("loadDocsRoot: handles localStorage exception", async () => {
   const { __setStorageBackend } = await import("../src/composables/docsRootStorage.ts");
   __setStorageBackend({ getItem: () => { throw new Error("quota"); }, setItem: () => {}, removeItem: () => {} });
-  assert.equal(loadDocsRoot("umo-1"), "docs");
+  assert.equal(loadDocsRoot("umo-1"), ".");
 });
 
 test("saveDocsRoot: writes to storage keyed by umo", async () => {
@@ -118,8 +118,10 @@ test("saveDocsRoot: returns ok=false on storage exception", async () => {
   assert.equal(r.reason, "storage_unavailable");
 });
 
-test("DEFAULT_DOCS_ROOT is 'docs'", () => {
-  assert.equal(DEFAULT_DOCS_ROOT, "docs");
+test("DEFAULT_DOCS_ROOT is the project-root sentinel", () => {
+  // 2026-10-17: the docs view now boots at the project root instead of
+  // assuming every repository keeps its Markdown under docs/.
+  assert.equal(DEFAULT_DOCS_ROOT, ".");
 });
 
 test("isValidDocsRoot: accepts project-root sentinel and hidden subdirs", () => {

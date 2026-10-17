@@ -42,6 +42,12 @@ import {
   coerceDocsRoot,
   isValidDocsRoot,
   isProjectRootDocs,
+  DEFAULT_DOC_PRESETS,
+  MAX_DOC_PRESETS,
+  loadDocPresets,
+  normalizePreset,
+  saveDocPresets,
+  type DocPreset,
 } from "@/composables/docsRootStorage";
 import { projectRelativeFromDoc } from "@/composables/pathUtils";
 import type { UseSpcodeGitLog } from "@/composables/useSpcodeGitLog";
@@ -743,35 +749,66 @@ onBeforeUnmount(() => {
   }
 });
 
-// ── Preset quick paths (2026-07-17 docs-presets) ─────────────────
+// ── Configurable quick paths (2026-10-17) ────────────────────────
 // One-click shortcuts rendered next to the DocumentPathBar. Two
 // kinds:
 //   - "dir":  switch docsRoot to the directory (same as typing it
 //             into the path bar — validated + persisted).
-//   - "file": switch docsRoot to the project root (".") AND select
-//             the file so it opens directly.
+//   - "file": switch docsRoot to the file's parent directory AND
+//             select the file so it opens directly.
+// The list used to be the hard-coded five-path DOC_PRESETS constant,
+// which only fit repositories mirroring AstrBot's own docs layout.
+// It is now editable in the UI and persisted per project root (see
+// docsRootStorage.ts), falling back to DEFAULT_DOC_PRESETS.
 // Existence is probed per click via the stateless /spcode/file-browser
 // endpoint (the same one the tree + preview use); a missing target
 // shows a transient notice and does NOT navigate.
-interface DocPreset {
-  label: string;
-  kind: "dir" | "file";
-  /** Project-relative POSIX path (file presets live at the root). */
-  path: string;
-}
-const DOC_PRESETS: readonly DocPreset[] = [
-  { label: "AGENTS.md", kind: "file", path: "AGENTS.md" },
-  { label: "README.md", kind: "file", path: "README.md" },
-  { label: "specs", kind: "dir", path: "docs/superpowers/specs" },
-  { label: "plans", kind: "dir", path: "docs/superpowers/plans" },
-  { label: "changelogs", kind: "dir", path: "changelogs" },
-];
+const docPresets = ref<DocPreset[]>(DEFAULT_DOC_PRESETS.map((p) => ({ ...p })));
+
+/** Project identity used to bucket the chips. The loaded project's
+ *  directory wins so all worktrees of one repo share the same list
+ *  (presets are project-relative paths, which are worktree-agnostic);
+ *  the browsed root is only a fallback for the window before the
+ *  project status arrives. */
+const presetProjectKey = computed<string | null>(
+  () => spcodeStatus.status.value.directory || props.projectRoot,
+);
 
 const presetNotice = ref<string | null>(null);
 let presetNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 /** Path of the preset currently being probed; disables that button
  *  so a slow filesystem doesn't collect duplicate clicks. */
 const presetChecking = ref<string | null>(null);
+
+// Preset editor dialog state. The draft is a deep-enough copy (one
+// level: {label, kind, path}) so canceling never mutates the live
+// chips, and saving only commits after every row validates.
+const presetDialogOpen = ref(false);
+const presetDraft = ref<DocPreset[]>([]);
+const presetDialogError = ref<string | null>(null);
+const presetKindItems = computed(() => [
+  {
+    title: tm("spcodeProjectLoad.documentManager.presets.kindDir"),
+    value: "dir",
+  },
+  {
+    title: tm("spcodeProjectLoad.documentManager.presets.kindFile"),
+    value: "file",
+  },
+]);
+
+function loadPresetsForProject(): void {
+  docPresets.value = loadDocPresets(presetProjectKey.value);
+}
+
+/** Split a project-relative preset path into its dir / file parts.
+ *  Declared once here because both the active-state check and the
+ *  click handler need the same split. */
+function splitPresetPath(path: string): { dir: string; file: string } {
+  const idx = path.lastIndexOf("/");
+  if (idx < 0) return { dir: ".", file: path };
+  return { dir: path.slice(0, idx) || ".", file: path.slice(idx + 1) };
+}
 
 function showPresetNotice(message: string): void {
   presetNotice.value = message;
@@ -783,11 +820,12 @@ function showPresetNotice(message: string): void {
 }
 
 /** Active-state for the preset chip: dir presets are active when
- *  they ARE the docs root; file presets when the project root is
- *  the docs root and the file itself is selected. */
+ *  they ARE the docs root; file presets when their parent directory
+ *  is the docs root and the file itself is selected. */
 function isPresetActive(p: DocPreset): boolean {
   if (p.kind === "dir") return docsRoot.value === p.path;
-  return isProjectRootDocs(docsRoot.value) && selectedDoc.value === p.path;
+  const { dir, file } = splitPresetPath(p.path);
+  return docsRoot.value === dir && selectedDoc.value === file;
 }
 
 async function onPresetClick(p: DocPreset): Promise<void> {
@@ -841,15 +879,76 @@ async function onPresetClick(p: DocPreset): Promise<void> {
     onPathChange(p.path); // validates + persists + clears selection
     return;
   }
-  // File preset: root the manager at the project root and open the
-  // file directly (mirrors onTreeSelect's state resets).
-  onPathChange(".");
-  selectedDoc.value = p.path;
+  // File preset: root the manager at the file's parent directory and
+  // open the file directly (mirrors onTreeSelect's state resets).
+  const { dir, file } = splitPresetPath(p.path);
+  onPathChange(dir);
+  selectedDoc.value = file;
   viewMode.value = "rendered";
   selectedRevision.value = null;
   editMode.value = false;
   editBuffer.value = "";
   saveError.value = null;
+}
+
+function openPresetDialog(): void {
+  presetDraft.value = docPresets.value.map((p) => ({ ...p }));
+  presetDialogError.value = null;
+  presetDialogOpen.value = true;
+}
+
+function resetPresetDraft(): void {
+  presetDraft.value = DEFAULT_DOC_PRESETS.map((p) => ({ ...p }));
+  presetDialogError.value = null;
+}
+
+function removePresetDraftRow(index: number): void {
+  presetDraft.value.splice(index, 1);
+  presetDialogError.value = null;
+}
+
+function addPresetDraftRow(): void {
+  if (presetDraft.value.length >= MAX_DOC_PRESETS) return;
+  presetDraft.value.push({ label: "", kind: "dir", path: "" });
+  presetDialogError.value = null;
+}
+
+function onPresetSave(): void {
+  // Normalize every row before writing: blank labels inherit the
+  // path's basename, "./x" collapses to "x", duplicates are rejected
+  // so two chips can never point at the same target.
+  const cleaned: DocPreset[] = [];
+  const seen = new Set<string>();
+  for (const raw of presetDraft.value) {
+    const preset = normalizePreset(raw);
+    if (!preset) {
+      presetDialogError.value = tm(
+        "spcodeProjectLoad.documentManager.presets.invalidPath",
+        { path: String(raw.path ?? "") },
+      );
+      return;
+    }
+    if (seen.has(preset.path)) {
+      presetDialogError.value = tm(
+        "spcodeProjectLoad.documentManager.presets.duplicatePath",
+        { path: preset.path },
+      );
+      return;
+    }
+    seen.add(preset.path);
+    cleaned.push(preset);
+  }
+  const result = saveDocPresets(presetProjectKey.value, cleaned);
+  if (!result.ok) {
+    presetDialogError.value = tm(
+      "spcodeProjectLoad.documentManager.presets.saveFailed",
+    );
+    return;
+  }
+  docPresets.value = result.presets;
+  presetDialogError.value = null;
+  presetDialogOpen.value = false;
+  presetNotice.value = null;
 }
 
 onBeforeUnmount(() => {
@@ -907,6 +1006,14 @@ function hydrate() {
 
 onMounted(hydrate);
 watch(() => props.umo, hydrate);
+
+// 2026-10-17 quick-paths-per-project: chips are stored against the
+// PROJECT identity (not the umo), so the same repository shows the
+// same shortcuts from any chat and from any of its worktrees, while
+// a different project gets its own list. `immediate` covers the
+// mount-time load; the watcher covers project/worktree switches and
+// the moment the project status reports its directory.
+watch(presetProjectKey, loadPresetsForProject, { immediate: true });
 
 function onPathChange(newPath: string) {
   const cleaned = coerceDocsRoot(newPath);
@@ -1538,18 +1645,20 @@ onBeforeUnmount(() => {
           :default-path="DEFAULT_DOCS_ROOT"
           @path-change="onPathChange"
         />
-        <!-- 2026-07-17 docs-presets: one-click quick paths. dir
-             presets switch the docs root; file presets root the
-             manager at the project root and open the file directly.
-             A missing target shows a transient notice (below) and
-             does NOT navigate. -->
+        <!-- 2026-07-17 docs-presets / 2026-10-17 configurable: one-
+             click quick paths. dir presets switch the docs root;
+             file presets root the manager at the file's parent dir
+             and open it directly. The list is user-editable and
+             persisted per project (docsRootStorage.ts); a missing
+             target shows a transient notice (below) and does NOT
+             navigate. -->
         <div
           class="document-manager__presets"
           role="group"
           :aria-label="tm('spcodeProjectLoad.documentManager.presets.label')"
         >
           <button
-            v-for="p in DOC_PRESETS"
+            v-for="p in docPresets"
             :key="p.path"
             type="button"
             class="document-manager__preset-btn"
@@ -1566,6 +1675,15 @@ onBeforeUnmount(() => {
             {{ p.label }}
           </button>
         </div>
+        <button
+          type="button"
+          class="document-manager__preset-config"
+          :title="tm('spcodeProjectLoad.documentManager.presets.edit')"
+          :aria-label="tm('spcodeProjectLoad.documentManager.presets.edit')"
+          @click="openPresetDialog"
+        >
+          <v-icon size="14">mdi-tune-variant</v-icon>
+        </button>
         <!-- 2026-07-18 file-area fullscreen (elecvoid243): re-add the
              toggle that drives the long-dormant isFullscreen/Teleport
              machinery below (the button was dropped in an earlier
@@ -2256,6 +2374,99 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
+      <!-- 2026-10-17 quick-path editor (elecvoid243): the chips in
+           the path row used to be a hard-coded list; this dialog
+           makes them per-project editable + persisted. Rows are
+           validated on save (normalizePreset) so an empty/duplicate
+           or escaping path never reaches localStorage. -->
+      <v-dialog v-model="presetDialogOpen" max-width="620">
+        <v-card>
+          <v-card-title class="text-h3 pa-4 pb-0 pl-6">
+            {{ tm("spcodeProjectLoad.documentManager.presets.dialogTitle") }}
+          </v-card-title>
+          <v-card-text class="pt-4">
+            <p class="text-body-2 text-medium-emphasis mb-4">
+              {{ tm("spcodeProjectLoad.documentManager.presets.dialogHint") }}
+            </p>
+            <div
+              v-for="(p, i) in presetDraft"
+              :key="i"
+              class="document-manager__preset-row"
+            >
+              <v-text-field
+                v-model="p.label"
+                density="compact"
+                variant="outlined"
+                hide-details
+                :label="
+                  tm('spcodeProjectLoad.documentManager.presets.labelField')
+                "
+              />
+              <v-select
+                v-model="p.kind"
+                density="compact"
+                variant="outlined"
+                hide-details
+                :items="presetKindItems"
+              />
+              <v-text-field
+                v-model="p.path"
+                density="compact"
+                variant="outlined"
+                hide-details
+                spellcheck="false"
+                :label="
+                  tm('spcodeProjectLoad.documentManager.presets.pathField')
+                "
+              />
+              <v-btn
+                icon="mdi-delete-outline"
+                size="small"
+                variant="text"
+                :aria-label="
+                  tm('spcodeProjectLoad.documentManager.presets.remove')
+                "
+                :title="tm('spcodeProjectLoad.documentManager.presets.remove')"
+                @click="removePresetDraftRow(i)"
+              />
+            </div>
+            <p
+              v-if="!presetDraft.length"
+              class="text-body-2 text-medium-emphasis"
+            >
+              {{ tm("spcodeProjectLoad.documentManager.presets.empty") }}
+            </p>
+            <v-btn
+              class="mt-2"
+              variant="text"
+              size="small"
+              prepend-icon="mdi-plus"
+              :disabled="presetDraft.length >= MAX_DOC_PRESETS"
+              @click="addPresetDraftRow"
+            >
+              {{ tm("spcodeProjectLoad.documentManager.presets.add") }}
+            </v-btn>
+            <p v-if="presetDialogError" class="text-error text-body-2 mt-2">
+              {{ presetDialogError }}
+            </p>
+          </v-card-text>
+          <v-card-actions class="pa-4 pt-0">
+            <v-btn variant="text" @click="resetPresetDraft">
+              {{
+                tm("spcodeProjectLoad.documentManager.presets.restoreDefaults")
+              }}
+            </v-btn>
+            <v-spacer />
+            <v-btn variant="text" @click="presetDialogOpen = false">
+              {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
+            </v-btn>
+            <v-btn variant="tonal" color="primary" @click="onPresetSave">
+              {{ tm("spcodeProjectLoad.documentManager.presets.save") }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
       <!-- 2026-07-20 recent-docs: clear-confirm dialog. Same copy
            and layout as the FileBrowserView's identical dialog so
            the user sees a consistent confirmation across both
@@ -2655,6 +2866,35 @@ onBeforeUnmount(() => {
 .document-manager__preset-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* 2026-10-17 quick-path editor entry point: same visual weight as a
+   chip, but square/icon-only so it never competes with the labels.
+   Sits just outside .document-manager__presets so it stays visible
+   even when the chip row wraps. */
+.document-manager__preset-config {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: pointer;
+}
+.document-manager__preset-config:hover {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  color: rgb(var(--v-theme-primary));
+}
+/* Editor row: name | kind | path | delete. The path field takes the
+   remaining width so long directories stay readable. */
+.document-manager__preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px minmax(0, 1.8fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 /* 2026-07-18: pin the re-added fullscreen toggle to the right edge
    of the path row. Replaces the old labeled __fullscreen-btn styles,

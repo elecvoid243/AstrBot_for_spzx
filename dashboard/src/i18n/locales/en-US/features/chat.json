@@ -1907,7 +1907,7 @@
       "pathBar": {
         "label": "Docs root",
         "editHint": "Click to edit path",
-        "resetTitle": "Reset to default docs/",
+        "resetTitle": "Reset to project root",
         "goUpTitle": "Go up one level",
         "invalidPath": "Invalid path: must be a project-relative path",
         "storageWarning": "Browser storage is unavailable; settings will not persist after this session"
@@ -1915,7 +1915,22 @@
       "presets": {
         "label": "Quick paths",
         "notFound": "Target not found: {path}",
-        "checkFailed": "Could not access target: {path}"
+        "checkFailed": "Could not access target: {path}",
+        "edit": "Configure quick paths",
+        "dialogTitle": "Configure quick paths",
+        "dialogHint": "Saved in this browser for the current project only. Paths are relative to the project root; a file entry opens its parent folder and previews the file.",
+        "labelField": "Name",
+        "pathField": "Path (relative to project root)",
+        "kindDir": "Folder",
+        "kindFile": "File",
+        "add": "Add entry",
+        "remove": "Remove",
+        "empty": "No quick paths yet.",
+        "invalidPath": "Invalid path: {path}",
+        "duplicatePath": "Duplicate path: {path}",
+        "saveFailed": "Save failed: browser storage is unavailable",
+        "restoreDefaults": "Restore defaults",
+        "save": "Save"
       },
       "pane": {
         "collapseTree": "Hide tree",

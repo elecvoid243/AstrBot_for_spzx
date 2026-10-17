@@ -481,7 +481,11 @@ def _validate_python(path: str, old_text: str, new_text: str) -> None:
 
 
 def plan_patch(
-    patches: list[FilePatch], read: Callable[[str], bytes | None]
+    patches: list[FilePatch],
+    read: Callable[[str], bytes | None],
+    *,
+    encoding: str = "utf-8",
+    bom_for_new: bool = False,
 ) -> PatchPlan:
     """Compute new contents and destructive flags without touching disk.
 
@@ -509,31 +513,31 @@ def plan_patch(
 
         if entry.kind == "delete":
             destructive_reason = "delete"
-            old_text = decode_text_bytes(original or b"")[0]
+            old_text = decode_text_bytes(original or b"", encoding)[0]
         elif entry.kind == "add":
             if original is not None:
                 destructive_reason = "overwrite_add"
-                old_text = decode_text_bytes(original)[0]
-            new_bytes = ("\n".join(entry.add_lines) + "\n").encode("utf-8")
-            new_text = new_bytes.decode("utf-8")
+                old_text = decode_text_bytes(original, encoding)[0]
+            new_text = "\n".join(entry.add_lines) + "\n"
+            new_bytes = encode_text_bytes(new_text, "\n", bom_for_new, encoding)
             _validate_python(entry.path, old_text, new_text)
         elif entry.kind == "replace_all":
-            old_text, eol, has_bom = decode_text_bytes(original or b"")
+            old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
             try:
                 new_text, _occurrences = apply_replace_all_to_text(
                     old_text, entry.old_lines, entry.new_lines
                 )
             except ValueError as exc:
                 raise PatchParseError(f"{entry.path}: {exc}") from exc
-            new_bytes = encode_text_bytes(new_text, eol, has_bom)
+            new_bytes = encode_text_bytes(new_text, eol, has_bom, encoding)
             _validate_python(entry.path, old_text, new_text)
         else:
-            old_text, eol, has_bom = decode_text_bytes(original or b"")
+            old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
             try:
                 new_text = apply_hunks_to_text(old_text, entry.hunks)
             except HunkApplyError as exc:
                 raise PatchParseError(f"{entry.path}: {exc}") from exc
-            new_bytes = encode_text_bytes(new_text, eol, has_bom)
+            new_bytes = encode_text_bytes(new_text, eol, has_bom, encoding)
             _validate_python(entry.move_to or entry.path, old_text, new_text)
             if entry.move_to is not None and target_original is not None:
                 destructive_reason = "overwrite_move_target"

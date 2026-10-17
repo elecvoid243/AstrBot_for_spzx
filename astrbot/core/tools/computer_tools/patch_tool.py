@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
+import locale
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +36,34 @@ from astrbot.core.tools.computer_tools.util import (
     workspace_root_for_context,
 )
 from astrbot.core.tools.registry import builtin_tool
+
+
+def normalize_encoding(name: str) -> tuple[str, bool]:
+    """Return (codec, bom_for_new_files).
+
+    Args:
+        name: User-provided encoding alias.
+
+    Returns:
+        A codec name plus whether new files should start with a UTF-8 BOM.
+
+    Raises:
+        LookupError: If the name is not a known Python codec.
+    """
+    raw = (name or "utf-8").strip().lower().replace("_", "-")
+    if raw in ("utf-8", "utf8"):
+        return "utf-8", False
+    compact = raw.replace(" ", "-")
+    if compact in ("utf-8-bom", "utf-8-sig", "utf8-bom", "utf8-sig"):
+        return "utf-8", True
+    if raw == "ansi":
+        if sys.platform == "win32":
+            import ctypes
+
+            return f"cp{ctypes.windll.kernel32.GetACP()}", False
+        return locale.getpreferredencoding(False) or "utf-8", False
+    codecs.lookup(raw)
+    return raw, False
 
 
 def _write_file_bytes(path: str, data: bytes) -> None:
@@ -119,9 +150,15 @@ class ApplyPatchTool(FunctionTool):
         patch: str,
         dry_run: bool = False,
         confirm: bool = False,
+        encoding: str = "utf-8",
     ) -> ToolExecResult:
         if fs_access.get_mode(context) is fs_access.FileAccessMode.READONLY:
             return _READONLY_WRITE_ERROR
+
+        try:
+            codec, bom_for_new = normalize_encoding(encoding)
+        except LookupError:
+            return f"Error: unknown encoding: {encoding}"
 
         local_env = is_local_runtime(context)
         restricted, extra_roots = await _write_guard(context)
@@ -180,7 +217,7 @@ class ApplyPatchTool(FunctionTool):
             return cache.get(resolved.get(path, path))
 
         try:
-            plan = plan_patch(entries, read)
+            plan = plan_patch(entries, read, encoding=codec, bom_for_new=bom_for_new)
         except (PatchParseError, ValueError) as exc:
             return f"Error: patch cannot be applied: {exc}"
 

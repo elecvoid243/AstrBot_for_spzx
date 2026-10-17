@@ -159,8 +159,8 @@ async def test_changed_since_plan_aborts(workspace, monkeypatch):
 
     original_plan = patch_tool_module.plan_patch
 
-    def plan_then_mutate(entries, read):
-        result = original_plan(entries, read)
+    def plan_then_mutate(entries, read, **kwargs):
+        result = original_plan(entries, read, **kwargs)
         target.write_text("externally changed\n", encoding="utf-8")
         return result
 
@@ -222,3 +222,29 @@ async def test_hunk_failure_reports_file_and_hunk_number(workspace):
     )
     assert "a.txt" in result
     assert "hunk #2" in result
+
+
+@pytest.mark.asyncio
+async def test_invalid_encoding_writes_nothing(workspace):
+    target = workspace / "a.txt"
+    target.write_text("old\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch="*** Update File: a.txt\n-old\n+new\n",
+        encoding="no-such-codec",
+    )
+    assert "encoding" in result.lower()
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+@pytest.mark.asyncio
+async def test_gbk_update_roundtrip(workspace):
+    target = workspace / "gbk.txt"
+    target.write_bytes("旧值\n".encode("gbk"))
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch="*** Update File: gbk.txt\n-旧值\n+新值\n",
+        encoding="gbk",
+    )
+    assert "Applied patch" in result
+    assert target.read_bytes() == "新值\n".encode("gbk")

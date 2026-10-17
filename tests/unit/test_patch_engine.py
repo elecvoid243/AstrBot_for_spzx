@@ -315,3 +315,24 @@ def test_plan_replace_all_requires_existing_file():
     files = parse_patch("*** Replace All: a.txt\n-x\n+X\n")
     with pytest.raises(PatchParseError, match="does not exist"):
         plan_patch(files, lambda p: None)
+
+
+# ── encoding (2026-10-18) ────────────────────────────────────────
+
+
+def test_plan_updates_gbk_file():
+    files = parse_patch("*** Update File: a.txt\n-old\n+new\n")
+    plan = plan_patch(files, lambda p: "old\n".encode("gbk"), encoding="gbk")
+    assert plan.files[0].new_bytes == "new\n".encode("gbk")
+
+
+def test_plan_new_file_utf8_sig_has_bom():
+    files = parse_patch("*** Add File: a.txt\n+x\n")
+    plan = plan_patch(files, lambda p: None, encoding="utf-8", bom_for_new=True)
+    assert plan.files[0].new_bytes == b"\xef\xbb\xbfx\n"
+
+
+def test_plan_delete_gbk_file_does_not_decode_as_utf8():
+    files = parse_patch("*** Delete File: a.txt\n")
+    plan = plan_patch(files, lambda p: "中文\n".encode("gbk"), encoding="gbk")
+    assert plan.files[0].kind == "delete"

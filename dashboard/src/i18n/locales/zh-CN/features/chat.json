@@ -255,7 +255,9 @@
     "openFailed": "打开文件失败：{message}",
     "openFolder": "打开文件夹",
     "folderOpened": "已打开 {name} 所在文件夹",
-    "folderOpenFailed": "打开文件夹失败：{message}"
+    "folderOpenFailed": "打开文件夹失败：{message}",
+    "renamedFrom": "重命名自 {path}",
+    "patchFiles": "涉及 {count} 个文件"
   },
   "fileChanges": {
     "title": "{count} 个文件已更改",

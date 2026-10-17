@@ -70,6 +70,45 @@ def _convert_to_line_ending(text: str, ending: Literal["\n", "\r\n"]) -> str:
     return text.replace("\n", "\r\n")
 
 
+def decode_text_bytes(
+    raw_bytes: bytes, encoding: str = "utf-8"
+) -> tuple[str, str, bool]:
+    """Decode file bytes into LF-normalized text, eol, and BOM flag.
+
+    Args:
+        raw_bytes: Raw file bytes.
+        encoding: Text encoding used for decoding.
+
+    Returns:
+        A tuple of (LF-normalized text, detected eol, has_bom).
+    """
+    has_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
+    if has_bom:
+        raw_bytes = raw_bytes[3:]
+    text = raw_bytes.decode(encoding)
+    eol = _detect_line_ending(text)
+    return _normalize_line_endings(text), eol, has_bom
+
+
+def encode_text_bytes(
+    text: str, eol: str, has_bom: bool, encoding: str = "utf-8"
+) -> bytes:
+    """Encode LF-normalized text with the original eol and BOM.
+
+    Args:
+        text: LF-normalized text.
+        eol: Target line ending, ``"\\n"`` or ``"\\r\\n"``.
+        has_bom: Whether to prepend a UTF-8 BOM.
+        encoding: Text encoding used for encoding.
+
+    Returns:
+        Encoded bytes.
+    """
+    output = _convert_to_line_ending(text, "\r\n") if eol == "\r\n" else text
+    prefix = b"\xef\xbb\xbf" if has_bom else b""
+    return prefix + output.encode(encoding)
+
+
 # ---------------------------------------------------------------------------
 # Levenshtein distance (for BlockAnchorReplacer)
 # ---------------------------------------------------------------------------
@@ -556,6 +595,47 @@ def _indent_styles_conflict(left: str, right: str) -> bool:
     return bool(left_style and right_style and left_style != right_style)
 
 
+def _indent_styles_in(text: str) -> set[str]:
+    """Return the indentation styles used by indented, non-empty lines."""
+    styles: set[str] = set()
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        style = _indent_style(_get_leading_whitespace(line))
+        if style in ("spaces", "tabs"):
+            styles.add(style)
+    return styles
+
+
+def validate_indent_style(file_block: str, replacement: str) -> None:
+    """Reject a replacement that switches the file's indentation style.
+
+    A single-tab line in a spaces file is valid Python, so AST validation
+    cannot catch it. This check compares the styles of indented lines in the
+    matched file block with the adjusted replacement text.
+
+    Args:
+        file_block: The exact block found in the file.
+        replacement: The indent-adjusted replacement text.
+
+    Raises:
+        ValueError: If the file uses one style and the replacement uses the
+            other, or mixes both.
+    """
+    file_styles = _indent_styles_in(file_block)
+    if len(file_styles) != 1:
+        return
+    replacement_styles = _indent_styles_in(replacement)
+    if replacement_styles and replacement_styles != file_styles:
+        file_style = next(iter(file_styles))
+        replacement_style = "/".join(sorted(replacement_styles))
+        raise ValueError(
+            "Replacement uses a different indentation style than the file "
+            f"(file: {file_style}, replacement: {replacement_style}). "
+            "Rewrite it with the file's indentation."
+        )
+
+
 def _adjust_replacement_indent(
     new_string: str,
     old_string: str,
@@ -681,6 +761,99 @@ def _adjust_replacement_indent(
 
 
 # ---------------------------------------------------------------------------
+# Reusable match primitives
+# ---------------------------------------------------------------------------
+
+
+def iter_match_positions(content: str, old_string: str) -> Iterator[tuple[int, str]]:
+    """Yield (position, matched_text) for the first replacer tier that matches.
+
+    The replacer chain order is preserved: once a tier yields at least one
+    match, lower tiers are not consulted. Positions are de-duplicated and
+    non-overlapping, matching ``robust_replace`` semantics.
+    """
+    for replacer in _REPLACERS:
+        matches = list(replacer(content, old_string))
+        if not matches:
+            continue
+        positions: list[tuple[int, str]] = []
+        for match in matches:
+            cursor = 0
+            while True:
+                idx = content.find(match, cursor)
+                if idx == -1:
+                    break
+                if not any(pos <= idx < pos + len(m) for pos, m in positions):
+                    positions.append((idx, match))
+                cursor = idx + 1
+        if positions:
+            yield from positions
+            return
+
+
+def find_match_at_or_after(
+    content: str, old_string: str, start: int
+) -> tuple[int, str] | None:
+    """Return the first match at or after ``start``, honoring replacer tiers.
+
+    Unlike ``robust_replace`` this allows duplicate matches; the caller is
+    responsible for advancing a cursor so later hunks hit later occurrences.
+    """
+    for replacer in _REPLACERS:
+        matches = list(replacer(content, old_string))
+        if not matches:
+            continue
+        candidates: list[tuple[int, str]] = []
+        for match in matches:
+            idx = content.find(match, start)
+            while idx != -1:
+                candidates.append((idx, match))
+                idx = content.find(match, idx + 1)
+        if candidates:
+            return min(candidates, key=lambda item: item[0])
+    return None
+
+
+def adjusted_replacement(
+    content: str,
+    idx: int,
+    old_string: str,
+    matched: str,
+    new_string: str,
+    *,
+    strict_indent: bool = True,
+) -> str:
+    """Return ``new_string`` reconciled with the matched block's indentation."""
+    adjusted = _adjust_replacement_indent(
+        new_string,
+        old_string,
+        matched,
+        content,
+        idx,
+        strict_indent=strict_indent,
+    )
+    if strict_indent:
+        validate_indent_style(matched, adjusted)
+    return adjusted
+
+
+def replace_match_at(
+    content: str,
+    idx: int,
+    old_string: str,
+    matched: str,
+    new_string: str,
+    *,
+    strict_indent: bool = True,
+) -> str:
+    """Replace one known match with indent-adjusted text."""
+    adjusted = adjusted_replacement(
+        content, idx, old_string, matched, new_string, strict_indent=strict_indent
+    )
+    return content[:idx] + adjusted + content[idx + len(matched) :]
+
+
+# ---------------------------------------------------------------------------
 # Core replace function
 # ---------------------------------------------------------------------------
 
@@ -720,78 +893,45 @@ def robust_replace(
             "No changes to apply: old_string and new_string are identical."
         )
 
-    not_found = True
-
-    for replacer in _REPLACERS:
-        matches = list(replacer(content, old_string))
-        if not matches:
-            continue
-
-        # Collect all unique match positions
-        match_positions: list[tuple[int, str]] = []
-        for match in matches:
-            start = 0
-            while True:
-                idx = content.find(match, start)
-                if idx == -1:
-                    break
-                # Avoid duplicate positions from overlapping matches
-                if not any(pos <= idx < pos + len(m) for pos, m in match_positions):
-                    match_positions.append((idx, match))
-                start = idx + 1
-
-        if not match_positions:
-            continue
-
-        not_found = False
-
-        if replace_all:
-            # Replace all occurrences, from end to start to preserve indices
-            new_content = content
-            replacements = 0
-            for idx, match in sorted(match_positions, key=lambda x: x[0], reverse=True):
-                adjusted_new = _adjust_replacement_indent(
-                    new_string,
-                    old_string,
-                    match,
-                    content,
-                    idx,
-                    strict_indent=strict_indent,
-                )
-                new_content = (
-                    new_content[:idx] + adjusted_new + new_content[idx + len(match) :]
-                )
-                replacements += 1
-            return new_content, replacements
-
-        # Single replacement mode: require exactly one match
-        if len(match_positions) == 1:
-            idx, match = match_positions[0]
-            adjusted_new = _adjust_replacement_indent(
-                new_string,
-                old_string,
-                match,
-                content,
-                idx,
-                strict_indent=strict_indent,
-            )
-            return content[:idx] + adjusted_new + content[idx + len(match) :], 1
-
-        raise ValueError(
-            "Found multiple matches for oldString. Provide more surrounding context "
-            "to make the match unique, or use replace_all=True to change every "
-            "instance."
-        )
-
-    if not_found:
+    positions = list(iter_match_positions(content, old_string))
+    if not positions:
         raise ValueError(
             "Could not find oldString in the file. It must match exactly, "
             "including whitespace, indentation, and line endings. "
             "Try providing more surrounding context to make the match unique."
         )
+
+    if replace_all:
+        new_content = content
+        for idx, match in sorted(positions, key=lambda item: item[0], reverse=True):
+            new_content = replace_match_at(
+                new_content,
+                idx,
+                old_string,
+                match,
+                new_string,
+                strict_indent=strict_indent,
+            )
+        return new_content, len(positions)
+
+    if len(positions) == 1:
+        idx, match = positions[0]
+        return (
+            replace_match_at(
+                content,
+                idx,
+                old_string,
+                match,
+                new_string,
+                strict_indent=strict_indent,
+            ),
+            1,
+        )
+
     raise ValueError(
         "Found multiple matches for oldString. Provide more surrounding context "
-        "to make the match unique, or use replace_all=True to change every instance."
+        "to make the match unique, or use replace_all=True to change every "
+        "instance."
     )
 
 
@@ -842,12 +982,14 @@ def bytes_edit_file(
     Raises:
         ValueError: If old_string cannot be found or is not unique.
     """
-    has_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
-    if has_bom:
-        raw_bytes = raw_bytes[3:]
-
-    old_content = raw_bytes.decode(encoding)
-    original_ending = _detect_line_ending(old_content)
+    normalized_content, original_ending, has_bom = decode_text_bytes(
+        raw_bytes, encoding
+    )
+    old_content = (
+        _convert_to_line_ending(normalized_content, "\r\n")
+        if original_ending == "\r\n"
+        else normalized_content
+    )
 
     # Normalize for matching: ONLY normalize actual CRLF line endings.
     # Escape sequence handling (\n vs actual newline, \t vs tab, etc.)
@@ -855,11 +997,8 @@ def bytes_edit_file(
     normalized_old = _normalize_line_endings(old_string)
     normalized_new = _normalize_line_endings(new_string)
 
-    # Normalize file content to LF for matching (replacers work on LF)
-    normalized_content = _normalize_line_endings(old_content)
-
     # Perform replacement
-    new_content, replacements = robust_replace(
+    new_content_lf, replacements = robust_replace(
         normalized_content,
         normalized_old,
         normalized_new,
@@ -867,15 +1006,14 @@ def bytes_edit_file(
         strict_indent=strict_indent,
     )
 
-    # Convert back to original line endings
-    if original_ending == "\r\n":
-        new_content = _convert_to_line_ending(new_content, "\r\n")
+    # Convert back to original line endings for the result payload
+    new_content = (
+        _convert_to_line_ending(new_content_lf, "\r\n")
+        if original_ending == "\r\n"
+        else new_content_lf
+    )
 
-    # Re-add BOM if present
-    write_bytes = b""
-    if has_bom:
-        write_bytes += b"\xef\xbb\xbf"
-    write_bytes += new_content.encode(encoding)
+    write_bytes = encode_text_bytes(new_content_lf, original_ending, has_bom, encoding)
 
     # Generate unified diff
     diff = build_unified_diff("", old_content, new_content)

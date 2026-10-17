@@ -12,6 +12,7 @@ from .fs import (
     FileWriteTool,
     GrepTool,
 )
+from .patch_tool import ApplyPatchTool
 from .python import LocalPythonTool, PythonTool
 from .shell import ExecuteShellTool, LocalExecuteShellTool, ShellSessionTool
 from .shipyard_neo import (
@@ -34,6 +35,7 @@ from .util import check_admin_permission, normalize_umo_for_workspace
 
 __all__ = [
     "AnnotateExecutionTool",
+    "ApplyPatchTool",
     "BrowserBatchExecTool",
     "BrowserExecTool",
     "CreateSkillCandidateTool",

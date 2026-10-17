@@ -249,7 +249,9 @@
     "openFailed": "Не удалось открыть файл: {message}",
     "openFolder": "Открыть папку",
     "folderOpened": "Открыта папка с файлом {name}",
-    "folderOpenFailed": "Не удалось открыть папку: {message}"
+    "folderOpenFailed": "Не удалось открыть папку: {message}",
+    "renamedFrom": "Переименовано из {path}",
+    "patchFiles": "затрагивает файлов: {count}"
   },
   "fileChanges": {
     "title": "Изменено файлов: {count}",

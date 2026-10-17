@@ -102,7 +102,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
-import { parseFileEditResult } from "@/utils/fileChangeTool";
+import { parseFileEditResult, parseApplyPatchArgs, APPLY_PATCH_TOOL_NAME } from "@/utils/fileChangeTool";
 import DiffPreview from "./DiffPreview.vue";
 import ToolResultView from "./ToolResultView.vue";
 import CopyableText from "./__shared__/CopyableText.vue";
@@ -147,6 +147,7 @@ const toolCallIcon = computed(() => {
   if (name === "astrbot_file_read_tool") return "mdi-file-document-outline";
   if (name === "astrbot_file_write_tool") return "mdi-content-save-outline";
   if (name === "astrbot_file_edit_tool") return "mdi-file-document-edit-outline";
+  if (name === APPLY_PATCH_TOOL_NAME) return "mdi-file-document-multiple-outline";
   if (name === "astrbot_grep_tool") return "mdi-magnify";
   if (name === "astrbot_execute_shell") return "mdi-console-line";
   // 2026-08-11 shell_session: action-aware icon (poll/write/list/…)
@@ -181,19 +182,31 @@ const maxVisibleArgs = 5;
 const showAllArgs = ref(false);
 const expandedArgs = reactive({});
 
+const isApplyPatchTool = computed(
+  () => String(props.toolCall.name || "") === APPLY_PATCH_TOOL_NAME,
+);
+
 const argEntries = computed(() => {
   const args = props.toolCall.args;
   if (!args || typeof args !== "object") return [];
   return Object.entries(args).map(([key, value], index) => {
     const raw = value === null || value === undefined ? "—" : String(value);
-    const long = raw.length > 60;
+    const patchSections =
+      isApplyPatchTool.value && key === "patch"
+        ? parseApplyPatchArgs(args).length
+        : 0;
+    const long = patchSections === 0 && raw.length > 60;
     const isExpanded = !!expandedArgs[index];
     return {
       key,
       raw,
       long,
       icon: argIcon(key),
-      display: long && !isExpanded ? raw.slice(0, 60) : raw,
+      display: patchSections
+        ? tm("fileChange.patchFiles", { count: patchSections })
+        : long && !isExpanded
+          ? raw.slice(0, 60)
+          : raw,
     };
   });
 });

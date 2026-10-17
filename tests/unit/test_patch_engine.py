@@ -223,3 +223,18 @@ def test_apply_matches_near_end_of_large_file():
     out = apply_hunks_to_text(text, [hunk])
     assert "line_19998 = 0" in out
     assert out.count("line_19998 = 0") == 1
+
+
+def test_parse_error_message_includes_line_number():
+    with pytest.raises(PatchParseError) as exc:
+        parse_patch("*** Update File: a.txt\n?bad\n")
+    assert "(line 2)" in str(exc.value)
+
+
+def test_hunk_error_message_includes_file_and_hunk_number():
+    files = parse_patch("*** Update File: a.txt\n-zzz\n+y\n")
+    with pytest.raises(PatchParseError) as exc:
+        plan_patch(files, lambda p: b"old\n")
+    message = str(exc.value)
+    assert "a.txt" in message
+    assert "hunk #1" in message

@@ -57,6 +57,12 @@ class PatchParseError(ValueError):
         super().__init__(message)
         self.line_number = line_number
 
+    def __str__(self) -> str:
+        message = super().__str__()
+        if self.line_number is not None:
+            return f"{message} (line {self.line_number})"
+        return message
+
 
 def _marker_value(line: str, marker: str) -> str:
     return line[len(marker) :].strip()
@@ -243,6 +249,9 @@ class HunkApplyError(ValueError):
     def __init__(self, message: str, hunk_index: int) -> None:
         super().__init__(message)
         self.hunk_index = hunk_index
+
+    def __str__(self) -> str:
+        return f"{super().__str__()} (hunk #{self.hunk_index + 1})"
 
 
 def _line_starts(text: str) -> list[int]:
@@ -441,7 +450,10 @@ def plan_patch(
             _validate_python(entry.path, old_text, new_text)
         else:
             old_text, eol, has_bom = decode_text_bytes(original or b"")
-            new_text = apply_hunks_to_text(old_text, entry.hunks)
+            try:
+                new_text = apply_hunks_to_text(old_text, entry.hunks)
+            except HunkApplyError as exc:
+                raise PatchParseError(f"{entry.path}: {exc}") from exc
             new_bytes = encode_text_bytes(new_text, eol, has_bom)
             _validate_python(entry.move_to or entry.path, old_text, new_text)
             if entry.move_to is not None and target_original is not None:

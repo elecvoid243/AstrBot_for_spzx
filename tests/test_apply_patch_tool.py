@@ -203,3 +203,22 @@ async def test_sandbox_update_uses_remote_io(monkeypatch):
     )
     assert "Applied patch" in result
     assert writes == [("/remote/a.txt", b"new\n", True)]
+
+
+@pytest.mark.asyncio
+async def test_parse_error_reports_line_number(workspace):
+    result = await ApplyPatchTool().call(
+        _context(), patch="*** Update File: a.txt\n?bad\n"
+    )
+    assert "(line 2)" in result
+
+
+@pytest.mark.asyncio
+async def test_hunk_failure_reports_file_and_hunk_number(workspace):
+    (workspace / "a.txt").write_text("old\n", encoding="utf-8")
+    result = await ApplyPatchTool().call(
+        _context(),
+        patch=("*** Update File: a.txt\n-old\n+new\n@@ never\n-never\n+x\n"),
+    )
+    assert "a.txt" in result
+    assert "hunk #2" in result

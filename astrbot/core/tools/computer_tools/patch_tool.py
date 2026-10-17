@@ -112,10 +112,10 @@ class ApplyPatchTool(FunctionTool):
 
     name: str = "astrbot_apply_patch"
     description: str = (
-        "Apply a multi-file patch. Use for structural edits (add, delete, move) "
-        "or changes spanning several files; for a single small edit prefer "
-        "`astrbot_file_edit_tool`.\n\n"
-        "Format:\n"
+        "Apply file changes. Three mutually exclusive modes:\n\n"
+        "1) Patch (`patch`): multi-file edits with add / update / delete / move. "
+        "Context lines must be copied from the file; hunks apply top-to-bottom. "
+        "Destructive changes (delete, overwrite) need `confirm=true`.\n"
         "*** Begin Patch\n"
         "*** Update File: path\n"
         "-old line\n"
@@ -124,8 +124,16 @@ class ApplyPatchTool(FunctionTool):
         "+content\n"
         "*** Delete File: path\n"
         "*** End Patch\n\n"
-        "Context lines must be copied from the file. Destructive changes "
-        "(delete, overwrite) are not applied unless `confirm=true`."
+        "2) Replace all (a `*** Replace All:` section): replace every occurrence "
+        "in one file.\n"
+        "*** Replace All: path\n"
+        "-old block\n"
+        "+new block\n\n"
+        "3) History: `path` + `list_history=true` lists backups; "
+        "`path` + `backup_id` rolls the file back to that version.\n\n"
+        "Options: `encoding` (default utf-8; utf-8-sig, gbk, ansi), "
+        "`strict_indent` (default true keeps the file's indentation on fuzzy "
+        "matches), `dry_run=true` previews without writing."
     )
     parameters: dict = field(
         default_factory=lambda: {

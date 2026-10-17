@@ -308,3 +308,15 @@ async def test_list_history_allowed_in_readonly_mode(workspace):
         _context(mode="readonly"), path="a.txt", list_history=True
     )
     assert "Edit history for" in result
+
+
+def test_description_documents_all_modes():
+    desc = ApplyPatchTool().description
+    for needle in (
+        "Replace All",
+        "list_history",
+        "backup_id",
+        "encoding",
+        "strict_indent",
+    ):
+        assert needle in desc

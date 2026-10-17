@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .edit_engine import adjusted_replacement, find_match_at_or_after
+
 _BEGIN = "*** Begin Patch"
 _END = "*** End Patch"
 _ADD = "*** Add File:"
@@ -197,3 +199,138 @@ def parse_patch(text: str) -> list[FilePatch]:
         if entry.kind == "update" and not entry.hunks:
             raise PatchParseError(f"Update File {entry.path!r} has no hunks")
     return files
+
+
+_UNICODE_MAP = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u00a0": " ",
+        "\u3000": " ",
+    }
+)
+
+
+class HunkApplyError(ValueError):
+    """Raised when a hunk cannot be located or applied."""
+
+    def __init__(self, message: str, hunk_index: int) -> None:
+        super().__init__(message)
+        self.hunk_index = hunk_index
+
+
+def _line_starts(text: str) -> list[int]:
+    starts = [0]
+    for idx, char in enumerate(text):
+        if char == "\n":
+            starts.append(idx + 1)
+    return starts
+
+
+def _lines_equal(candidate: list[str], expected: list[str], tier: int) -> bool:
+    if tier == 0:
+        return candidate == expected
+    if tier == 1:
+        return [line.rstrip() for line in candidate] == [
+            line.rstrip() for line in expected
+        ]
+    if tier == 2:
+        return [line.strip() for line in candidate] == [
+            line.strip() for line in expected
+        ]
+    return [line.strip().translate(_UNICODE_MAP) for line in candidate] == [
+        line.strip().translate(_UNICODE_MAP) for line in expected
+    ]
+
+
+def _find_exact_ladder(text: str, old: str, start: int) -> tuple[int, str] | None:
+    """Try exact, rstrip, trim, then unicode-normalized line matching."""
+    expected = old.split("\n")
+    for tier in range(4):
+        for pos in _line_starts(text):
+            if pos < start:
+                continue
+            candidate = text[pos:].split("\n")[: len(expected)]
+            if len(candidate) < len(expected):
+                continue
+            if _lines_equal(candidate, expected, tier):
+                return pos, "\n".join(candidate)
+    return None
+
+
+def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int]:
+    if hunk.context is not None:
+        anchor = _find_exact_ladder(text, hunk.context, cursor)
+        if anchor is None:
+            raise HunkApplyError(
+                f"anchor not found: {hunk.context!r}", hunk_index=index
+            )
+        cursor = anchor[0] + len(anchor[1])
+        if cursor < len(text) and text[cursor] == "\n":
+            cursor += 1
+
+    new_text = "\n".join(hunk.new_lines)
+
+    if not hunk.old_lines:
+        if hunk.context is not None:
+            insertion = text[:cursor] + new_text + "\n" + text[cursor:]
+            return insertion, cursor + len(new_text) + 1
+        suffix = "" if text.endswith("\n") or not text else "\n"
+        insertion = text + suffix + new_text + "\n"
+        return insertion, len(insertion)
+
+    old_text = "\n".join(hunk.old_lines)
+    if hunk.is_end_of_file:
+        stripped = text.rstrip("\n")
+        if stripped.endswith(old_text):
+            idx = len(stripped) - len(old_text)
+            if idx >= cursor:
+                adjusted = adjusted_replacement(text, idx, old_text, old_text, new_text)
+                return (
+                    text[:idx] + adjusted + text[idx + len(old_text) :],
+                    idx + len(adjusted),
+                )
+
+    found = _find_exact_ladder(text, old_text, cursor)
+    if found is None:
+        found = find_match_at_or_after(text, old_text, cursor)
+    if found is None:
+        first_line = hunk.old_lines[0] if hunk.old_lines else ""
+        raise HunkApplyError(f"context not found: {first_line!r}", hunk_index=index)
+
+    idx, matched = found
+    adjusted = adjusted_replacement(text, idx, old_text, matched, new_text)
+    insertion = text[:idx] + adjusted + text[idx + len(matched) :]
+    return insertion, idx + len(adjusted)
+
+
+def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
+    """Apply hunks to LF-normalized text with a monotonically advancing cursor.
+
+    Args:
+        text: LF-normalized file content.
+        hunks: Hunks in file order.
+
+    Returns:
+        The patched text.
+
+    Raises:
+        HunkApplyError: If a hunk cannot be located.
+    """
+    cursor = 0
+    for index, hunk in enumerate(hunks):
+        text, cursor = _apply_one(text, hunk, cursor, index)
+    return text

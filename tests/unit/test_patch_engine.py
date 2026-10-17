@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from astrbot.core.tools.computer_tools.patch_engine import (
+    Hunk,
+    HunkApplyError,
     PatchParseError,
+    apply_hunks_to_text,
     parse_patch,
 )
 
@@ -96,3 +99,54 @@ def test_parse_end_of_file_marker():
 """
     hunks = parse_patch(patch)[0].hunks
     assert hunks[0].is_end_of_file is True
+
+
+def test_apply_exact_update():
+    assert (
+        apply_hunks_to_text("a\nb\nc\n", [Hunk(old_lines=["b"], new_lines=["B"])])
+        == "a\nB\nc\n"
+    )
+
+
+def test_apply_context_anchor_moves_cursor():
+    text = "def foo():\n    x = 1\ndef bar():\n    x = 1\n"
+    hunk = Hunk(context="def bar():", old_lines=["    x = 1"], new_lines=["    x = 2"])
+    assert apply_hunks_to_text(text, [hunk]) == (
+        "def foo():\n    x = 1\ndef bar():\n    x = 2\n"
+    )
+
+
+def test_apply_repeated_hunks_hit_successive_occurrences():
+    hunks = [
+        Hunk(old_lines=["x = 1"], new_lines=["x = 2"]),
+        Hunk(old_lines=["x = 1"], new_lines=["x = 3"]),
+    ]
+    assert apply_hunks_to_text("x = 1\nx = 1\n", hunks) == "x = 2\nx = 3\n"
+
+
+def test_apply_falls_back_to_fuzzy_indentation():
+    hunk = Hunk(old_lines=["        return 1"], new_lines=["return 2"])
+    assert apply_hunks_to_text("def f():\n    return 1\n", [hunk]) == (
+        "def f():\n    return 2\n"
+    )
+
+
+def test_apply_end_of_file_marker():
+    hunk = Hunk(old_lines=["last"], new_lines=["second"], is_end_of_file=True)
+    assert apply_hunks_to_text("a\nlast\n", [hunk]) == "a\nsecond\n"
+
+
+def test_apply_insert_with_context():
+    hunk = Hunk(context="a", old_lines=[], new_lines=["middle"])
+    assert apply_hunks_to_text("a\nb\n", [hunk]) == "a\nmiddle\nb\n"
+
+
+def test_apply_insert_without_context_appends():
+    assert apply_hunks_to_text("a\n", [Hunk(new_lines=["b"])]) == "a\nb\n"
+
+
+def test_apply_raises_with_hunk_index():
+    with pytest.raises(HunkApplyError) as exc:
+        apply_hunks_to_text("a\n", [Hunk(old_lines=["zzz"], new_lines=["b"])])
+    assert exc.value.hunk_index == 0
+    assert "context not found" in str(exc.value)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.computer.computer_client import get_booter
 from astrbot.core.tools import fs_access
 from astrbot.core.tools.computer_tools.edit_engine import get_file_lock
 from astrbot.core.tools.computer_tools.edit_history import get_history_manager
@@ -18,6 +19,8 @@ from astrbot.core.tools.computer_tools.fs import (
     _normalize_rw_path,
     _read_file_bytes,
     _record_changed_file,
+    _sandbox_read_bytes,
+    _sandbox_write_bytes,
     _write_guard,
 )
 from astrbot.core.tools.computer_tools.patch_engine import (
@@ -42,6 +45,30 @@ def _write_file_bytes(path: str, data: bytes) -> None:
 def _remove_file(path: str) -> None:
     """Remove a file."""
     Path(path).unlink()
+
+
+async def _sandbox_remove_file(sb, path: str) -> None:
+    """Remove a file inside the sandbox via sb.python.exec.
+
+    Args:
+        sb: Sandbox booter.
+        path: Remote file path.
+
+    Raises:
+        OSError: On removal failure.
+    """
+    code = (
+        "import os, sys\n"
+        f"path = {path!r}\n"
+        "try:\n"
+        "    os.remove(path)\n"
+        "except Exception as e:\n"
+        "    print('ERROR:' + str(e), end='', file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+    )
+    result = await sb.python.exec(code, timeout=30)
+    if not result.get("success", False):
+        raise OSError(f"Failed to remove sandbox file: {path}")
 
 
 @builtin_tool(config={"provider_settings.computer_use_runtime": ("local", "sandbox")})
@@ -133,12 +160,24 @@ class ApplyPatchTool(FunctionTool):
         except (ValueError, PermissionError) as exc:
             return f"Error: {exc}"
 
+        cache: dict[str, bytes | None] = {}
+        sb = None
+        if local_env:
+            for real in set(resolved.values()):
+                try:
+                    cache[real] = await asyncio.to_thread(_read_file_bytes, real)
+                except FileNotFoundError:
+                    cache[real] = None
+        else:
+            sb = await get_booter(context.context.context, umo)
+            for real in set(resolved.values()):
+                try:
+                    cache[real] = await _sandbox_read_bytes(sb, real)
+                except OSError:
+                    cache[real] = None
+
         def read(path: str) -> bytes | None:
-            real = resolved.get(path, path)
-            try:
-                return _read_file_bytes(real)
-            except FileNotFoundError:
-                return None
+            return cache.get(resolved.get(path, path))
 
         try:
             plan = plan_patch(entries, read)
@@ -162,7 +201,13 @@ class ApplyPatchTool(FunctionTool):
             return self._confirmation(plan)
         if dry_run:
             return self._preview(plan)
-        return await self._commit(plan, resolved, context=context, local_env=local_env)
+        return await self._commit(
+            plan,
+            resolved,
+            context=context,
+            local_env=local_env,
+            sb=sb,
+        )
 
     @staticmethod
     def _confirmation(plan) -> str:
@@ -190,18 +235,34 @@ class ApplyPatchTool(FunctionTool):
             lines.extend(["", body[:40000]])
         return "\n".join(lines)
 
-    async def _commit(self, plan, resolved, *, context, local_env) -> str:
-        if not local_env:
-            return "Error: sandbox runtime is not supported yet"
+    async def _commit(self, plan, resolved, *, context, local_env, sb) -> str:
+        if local_env:
 
-        async def read_at(path: str) -> bytes | None:
-            return await asyncio.to_thread(self._read_optional, path)
+            async def read_at(path: str) -> bytes | None:
+                return await asyncio.to_thread(self._read_optional, path)
 
-        async def write_at(path: str, data: bytes) -> None:
-            await asyncio.to_thread(_write_file_bytes, path, data)
+            async def write_at(path: str, data: bytes) -> None:
+                await asyncio.to_thread(_write_file_bytes, path, data)
 
-        async def remove_at(path: str) -> None:
-            await asyncio.to_thread(_remove_file, path)
+            async def remove_at(path: str) -> None:
+                await asyncio.to_thread(_remove_file, path)
+
+            runtime = "local"
+        else:
+
+            async def read_at(path: str) -> bytes | None:
+                try:
+                    return await _sandbox_read_bytes(sb, path)
+                except OSError:
+                    return None
+
+            async def write_at(path: str, data: bytes) -> None:
+                await _sandbox_write_bytes(sb, path, data, create_parents=True)
+
+            async def remove_at(path: str) -> None:
+                await _sandbox_remove_file(sb, path)
+
+            runtime = "sandbox"
 
         writes = []
         moves = []
@@ -246,7 +307,7 @@ class ApplyPatchTool(FunctionTool):
                 backup_id = ""
                 if item.original is not None:
                     entry = await asyncio.to_thread(
-                        history.save_backup, real, item.original, runtime="local"
+                        history.save_backup, real, item.original, runtime=runtime
                     )
                     backup_id = entry.id
                 await write_at(real, item.new_bytes or b"")
@@ -255,33 +316,42 @@ class ApplyPatchTool(FunctionTool):
                     context,
                     real,
                     "created" if item.original is None else "edit",
-                    "local",
+                    runtime,
                     backup_id,
                 )
             for item, src, dst in moves:
                 backup_id = ""
                 if item.target_original is not None:
                     entry = await asyncio.to_thread(
-                        history.save_backup, dst, item.target_original, runtime="local"
+                        history.save_backup,
+                        dst,
+                        item.target_original,
+                        runtime=runtime,
                     )
                     backup_id = entry.id
                 await write_at(dst, item.new_bytes or b"")
                 committed.append((dst, item.target_original))
-                _record_changed_file(context, dst, "write", "local", backup_id)
+                _record_changed_file(context, dst, "write", runtime, backup_id)
             for item, real in deletes:
                 entry = await asyncio.to_thread(
-                    history.save_backup, real, item.original or b"", runtime="local"
+                    history.save_backup,
+                    real,
+                    item.original or b"",
+                    runtime=runtime,
                 )
                 await remove_at(real)
                 committed.append((real, item.original))
-                _record_changed_file(context, real, "remove", "local", entry.id)
+                _record_changed_file(context, real, "remove", runtime, entry.id)
             for item, src, _ in moves:
                 entry = await asyncio.to_thread(
-                    history.save_backup, src, item.original or b"", runtime="local"
+                    history.save_backup,
+                    src,
+                    item.original or b"",
+                    runtime=runtime,
                 )
                 await remove_at(src)
                 committed.append((src, item.original))
-                _record_changed_file(context, src, "remove", "local", entry.id)
+                _record_changed_file(context, src, "remove", runtime, entry.id)
 
             return self._success(plan)
         except Exception as exc:

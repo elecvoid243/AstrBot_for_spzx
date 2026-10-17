@@ -638,17 +638,33 @@ async def _sandbox_read_bytes(sb, path: str) -> bytes:
     return base64.b64decode(b64_text)
 
 
-async def _sandbox_write_bytes(sb, path: str, data: bytes) -> None:
+async def _sandbox_write_bytes(
+    sb, path: str, data: bytes, *, create_parents: bool = False
+) -> None:
     """Write raw bytes to a file inside the sandbox via sb.python.exec.
 
-    Raises IOError on write failure.
+    Args:
+        sb: Sandbox booter.
+        path: Remote file path.
+        data: Raw bytes to write.
+        create_parents: Create missing parent directories before writing.
+
+    Raises:
+        OSError: On write failure.
     """
     b64_data = base64.b64encode(data).decode()
+    mkdir_block = ""
+    if create_parents:
+        mkdir_block = (
+            "    import os\n"
+            "    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)\n"
+        )
     code = (
         "import base64 as _b64, sys\n"
         f"path = {path!r}\n"
         f"b64 = {b64_data!r}\n"
         "try:\n"
+        f"{mkdir_block}"
         "    _raw = _b64.b64decode(b64)\n"
         "    with open(path, 'wb') as _f:\n"
         "        _f.write(_raw)\n"

@@ -170,3 +170,36 @@ async def test_changed_since_plan_aborts(workspace, monkeypatch):
     )
     assert "changed since plan" in result
     assert target.read_text(encoding="utf-8") == "externally changed\n"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_update_uses_remote_io(monkeypatch):
+    writes = []
+
+    class FakeBooter:
+        pass
+
+    async def fake_read(sb, path):
+        return b"old\n"
+
+    async def fake_write(sb, path, data, *, create_parents=False):
+        writes.append((path, data, create_parents))
+
+    async def fake_remove(sb, path):
+        writes.append((path, None, False))
+
+    monkeypatch.setattr(patch_tool_module, "_sandbox_read_bytes", fake_read)
+    monkeypatch.setattr(patch_tool_module, "_sandbox_write_bytes", fake_write)
+    monkeypatch.setattr(patch_tool_module, "_sandbox_remove_file", fake_remove)
+    monkeypatch.setattr(
+        patch_tool_module,
+        "get_booter",
+        AsyncMock(return_value=FakeBooter()),
+    )
+
+    result = await ApplyPatchTool().call(
+        _context(runtime="sandbox"),
+        patch="*** Update File: /remote/a.txt\n-old\n+new\n",
+    )
+    assert "Applied patch" in result
+    assert writes == [("/remote/a.txt", b"new\n", True)]

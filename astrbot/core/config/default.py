@@ -231,6 +231,7 @@ DEFAULT_CONFIG = {
             "add_cron_tools": True,
         },
         "computer_use_runtime": "none",
+        "file_tool_mode": "legacy",
         "computer_use_local_shell": "auto",
         "computer_use_local_permissions": get_local_permission_defaults(),
         "computer_use_require_admin": True,
@@ -3998,6 +3999,16 @@ CONFIG_METADATA_3 = {
                             "第三方沙箱环境",
                         ],
                         "hint": "选择 Computer Use 运行环境。",
+                    },
+                    "provider_settings.file_tool_mode": {
+                        "description": "文件写入工具组",
+                        "type": "string",
+                        "options": ["legacy", "patch"],
+                        "labels": [
+                            "经典（file_write + file_edit）",
+                            "补丁（apply_patch）",
+                        ],
+                        "hint": "两组工具互斥。切换后下一条消息生效；补丁模式下的覆盖写需要 confirm=true。",
                     },
                     "provider_settings.computer_use_local_shell": {
                         "description": "本地 Shell 类型",

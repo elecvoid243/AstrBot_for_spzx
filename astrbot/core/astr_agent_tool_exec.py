@@ -43,21 +43,24 @@ from astrbot.core.subagent_manager import (
     SubAgentStatus,
 )
 from astrbot.core.tools.computer_tools import (
-    ApplyPatchTool,
     CuaKeyboardTypeTool,
     CuaMouseClickTool,
     CuaScreenshotTool,
     ExecuteShellTool,
     FileDownloadTool,
-    FileEditTool,
     FileReadTool,
     FileUploadTool,
-    FileWriteTool,
     GrepTool,
     LocalExecuteShellTool,
     LocalPythonTool,
     PythonTool,
     ShellSessionTool,
+)
+from astrbot.core.tools.file_tool_mode import (
+    FILE_TOOL_MODE_LEGACY,
+    file_tool_allowed,
+    file_tool_names,
+    resolve_file_tool_mode,
 )
 from astrbot.core.tools.message_tools import SendMessageToUserTool
 from astrbot.core.utils.active_event_registry import active_event_registry
@@ -378,6 +381,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         runtime: str,
         tool_mgr,
         booter: str | None = None,
+        mode: str = FILE_TOOL_MODE_LEGACY,
     ) -> dict[str, FunctionTool]:
         booter = "" if booter is None else str(booter).lower()
         if runtime == "sandbox":
@@ -386,20 +390,18 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             upload_tool = tool_mgr.get_builtin_tool(FileUploadTool)
             download_tool = tool_mgr.get_builtin_tool(FileDownloadTool)
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
-            write_tool = tool_mgr.get_builtin_tool(FileWriteTool)
-            edit_tool = tool_mgr.get_builtin_tool(FileEditTool)
-            patch_tool = tool_mgr.get_builtin_tool(ApplyPatchTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
+            file_tools = {
+                name: tool_mgr.get_builtin_tool(name) for name in file_tool_names(mode)
+            }
             tools = {
                 shell_tool.name: shell_tool,
                 python_tool.name: python_tool,
                 upload_tool.name: upload_tool,
                 download_tool.name: download_tool,
                 read_tool.name: read_tool,
-                write_tool.name: write_tool,
-                edit_tool.name: edit_tool,
-                patch_tool.name: patch_tool,
                 grep_tool.name: grep_tool,
+                **file_tools,
             }
             if booter == "cua":
                 screenshot_tool = tool_mgr.get_builtin_tool(CuaScreenshotTool)
@@ -418,19 +420,17 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             shell_session_tool = tool_mgr.get_builtin_tool(ShellSessionTool)
             python_tool = tool_mgr.get_builtin_tool(LocalPythonTool)
             read_tool = tool_mgr.get_builtin_tool(FileReadTool)
-            write_tool = tool_mgr.get_builtin_tool(FileWriteTool)
-            edit_tool = tool_mgr.get_builtin_tool(FileEditTool)
-            patch_tool = tool_mgr.get_builtin_tool(ApplyPatchTool)
             grep_tool = tool_mgr.get_builtin_tool(GrepTool)
+            file_tools = {
+                name: tool_mgr.get_builtin_tool(name) for name in file_tool_names(mode)
+            }
             return {
                 shell_tool.name: shell_tool,
                 shell_session_tool.name: shell_session_tool,
                 python_tool.name: python_tool,
                 read_tool.name: read_tool,
-                write_tool.name: write_tool,
-                edit_tool.name: edit_tool,
-                patch_tool.name: patch_tool,
                 grep_tool.name: grep_tool,
+                **file_tools,
             }
         return {}
 
@@ -444,6 +444,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         event = run_context.context.event
         cfg = ctx.get_config(umo=event.unified_msg_origin)
         provider_settings = cfg.get("provider_settings", {})
+        mode = resolve_file_tool_mode(provider_settings)
         runtime = str(provider_settings.get("computer_use_runtime", "none"))
         tool_mgr = (
             ctx.get_llm_tool_manager()
@@ -454,6 +455,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             runtime,
             tool_mgr,
             provider_settings.get("sandbox", {}).get("booter"),
+            mode=mode,
         )
 
         # Keep persona semantics aligned with the main agent: tools=None means
@@ -480,6 +482,8 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         toolset = ToolSet()
         for tool_name_or_obj in tools:
             if isinstance(tool_name_or_obj, str):
+                if not file_tool_allowed(tool_name_or_obj, mode):
+                    continue
                 registered_tool = llm_tools.get_func(tool_name_or_obj)
                 if registered_tool and registered_tool.active:
                     toolset.add_tool(registered_tool)

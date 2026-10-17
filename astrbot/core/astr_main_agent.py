@@ -56,7 +56,6 @@ from astrbot.core.subagent_manager import SubAgentManager
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
 from astrbot.core.tools.computer_tools import (
     AnnotateExecutionTool,
-    ApplyPatchTool,
     BrowserBatchExecTool,
     BrowserExecTool,
     CreateSkillCandidateTool,
@@ -67,11 +66,9 @@ from astrbot.core.tools.computer_tools import (
     EvaluateSkillCandidateTool,
     ExecuteShellTool,
     FileDownloadTool,
-    FileEditTool,
     FileReadTool,
     FileRemoveTool,
     FileUploadTool,
-    FileWriteTool,
     GetExecutionHistoryTool,
     GetSkillPayloadTool,
     GrepTool,
@@ -87,6 +84,10 @@ from astrbot.core.tools.computer_tools import (
     SyncSkillReleaseTool,
 )
 from astrbot.core.tools.cron_tools import FutureTaskTool
+from astrbot.core.tools.file_tool_mode import (
+    file_tool_names,
+    resolve_file_tool_mode,
+)
 from astrbot.core.tools.knowledge_base_tools import (
     KnowledgeBaseQueryTool,
     retrieve_knowledge_base,
@@ -493,16 +494,16 @@ def _apply_local_env_tools(
     if req.func_tool is None:
         req.func_tool = ToolSet()
     tool_mgr = plugin_context.get_llm_tool_manager()
+    cfg = plugin_context.get_config(umo=umo)
+    mode = resolve_file_tool_mode(cfg.get("provider_settings", {}))
     req.func_tool.add_tool(LocalExecuteShellTool())
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(ShellSessionTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(LocalPythonTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileReadTool))
-    req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileWriteTool))
-    req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileEditTool))
-    req.func_tool.add_tool(tool_mgr.get_builtin_tool(ApplyPatchTool))
+    for tool_name in file_tool_names(mode):
+        req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_name))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileRemoveTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
-    cfg = plugin_context.get_config(umo=umo)
     shell_type = str(
         cfg.get("provider_settings", {}).get("computer_use_local_shell", "auto")
     )
@@ -1402,13 +1403,14 @@ def _apply_sandbox_tools(
         os.environ["SHIPYARD_ACCESS_TOKEN"] = at
 
     tool_mgr = llm_tools
+    mode = resolve_file_tool_mode(config.provider_settings)
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(ExecuteShellTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(PythonTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileUploadTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileDownloadTool))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileReadTool))
-    req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileWriteTool))
-    req.func_tool.add_tool(tool_mgr.get_builtin_tool(FileEditTool))
+    for tool_name in file_tool_names(mode):
+        req.func_tool.add_tool(tool_mgr.get_builtin_tool(tool_name))
     req.func_tool.add_tool(tool_mgr.get_builtin_tool(GrepTool))
     if booter == "shipyard_neo":
         # Neo-specific path rule: filesystem tools operate relative to sandbox

@@ -10,6 +10,7 @@ from astrbot.core.tools.computer_tools.patch_engine import (
     PatchParseError,
     apply_hunks_to_text,
     parse_patch,
+    plan_patch,
 )
 
 
@@ -150,3 +151,46 @@ def test_apply_raises_with_hunk_index():
         apply_hunks_to_text("a\n", [Hunk(old_lines=["zzz"], new_lines=["b"])])
     assert exc.value.hunk_index == 0
     assert "context not found" in str(exc.value)
+
+
+def test_plan_update_counts_and_diff():
+    files = parse_patch("*** Update File: a.py\n-x = 1\n+x = 2\n+y = 3\n")
+    plan = plan_patch(files, lambda p: b"x = 1\n")
+    assert plan.files[0].new_bytes == b"x = 2\ny = 3\n"
+    assert plan.added == 2
+    assert plan.removed == 1
+    assert "+x = 2" in plan.files[0].diff
+
+
+def test_plan_add_over_existing_is_destructive():
+    plan = plan_patch(parse_patch("*** Add File: a.txt\n+x\n"), lambda p: b"old\n")
+    assert plan.files[0].destructive_reason == "overwrite_add"
+
+
+def test_plan_delete_is_destructive():
+    plan = plan_patch(parse_patch("*** Delete File: a.txt\n"), lambda p: b"old\n")
+    assert plan.files[0].destructive_reason == "delete"
+
+
+def test_plan_move_to_existing_is_destructive():
+    files = parse_patch("*** Update File: a.txt\n*** Move to: b.txt\n-old\n+new\n")
+    plan = plan_patch(files, lambda p: b"old\n" if p in ("a.txt", "b.txt") else None)
+    assert plan.files[0].destructive_reason == "overwrite_move_target"
+    assert plan.files[0].target_original == b"old\n"
+
+
+def test_plan_rejects_missing_update_target():
+    with pytest.raises(PatchParseError, match="does not exist"):
+        plan_patch(parse_patch("*** Update File: a.txt\n-x\n+y\n"), lambda p: None)
+
+
+def test_plan_rejects_python_syntax_regression():
+    files = parse_patch("*** Update File: a.py\n-def f():\n-    return 1\n+def f(:\n")
+    with pytest.raises(PatchParseError, match="Python syntax"):
+        plan_patch(files, lambda p: b"def f():\n    return 1\n")
+
+
+def test_plan_preserves_crlf_and_bom():
+    files = parse_patch("*** Update File: a.txt\n-a\n+b\n")
+    plan = plan_patch(files, lambda p: b"\xef\xbb\xbfa\r\n")
+    assert plan.files[0].new_bytes == b"\xef\xbb\xbfb\r\n"

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import ast
+import difflib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .edit_engine import adjusted_replacement, find_match_at_or_after
+from .edit_engine import (
+    adjusted_replacement,
+    build_unified_diff,
+    decode_text_bytes,
+    encode_text_bytes,
+    find_match_at_or_after,
+)
 
 _BEGIN = "*** Begin Patch"
 _END = "*** End Patch"
@@ -158,6 +167,8 @@ def parse_patch(text: str) -> list[FilePatch]:
         if current is None:
             fail("content outside a file section", index)
         if current.kind == "add":
+            if line == "":
+                continue
             if not stripped.startswith("+"):
                 fail("Add File lines must start with '+'", index)
             current.add_lines.append(line[1:])
@@ -334,3 +345,128 @@ def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
     for index, hunk in enumerate(hunks):
         text, cursor = _apply_one(text, hunk, cursor, index)
     return text
+
+
+@dataclass
+class FilePlan:
+    """Computed outcome for one file in a patch."""
+
+    path: str
+    kind: str
+    original: bytes | None
+    target_original: bytes | None
+    new_bytes: bytes | None
+    move_to: str | None
+    destructive_reason: str | None
+    diff: str
+    added: int
+    removed: int
+
+
+@dataclass
+class PatchPlan:
+    """Computed outcome for a whole patch."""
+
+    files: list[FilePlan]
+    destructive: list[FilePlan]
+    added: int
+    removed: int
+
+
+def _count_changes(old: str, new: str) -> tuple[int, int]:
+    added = removed = 0
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm=""):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return added, removed
+
+
+def _validate_python(path: str, old_text: str, new_text: str) -> None:
+    if not path.lower().endswith(".py"):
+        return
+    try:
+        ast.parse(old_text)
+    except SyntaxError:
+        return
+    try:
+        ast.parse(new_text)
+    except SyntaxError as exc:
+        raise PatchParseError(
+            f"Python syntax error after patch in {path}: "
+            f"line {exc.lineno}, column {exc.offset}: {exc.msg}"
+        ) from exc
+
+
+def plan_patch(
+    patches: list[FilePatch], read: Callable[[str], bytes | None]
+) -> PatchPlan:
+    """Compute new contents and destructive flags without touching disk.
+
+    Args:
+        patches: Parsed file sections.
+        read: Callback returning file bytes, or ``None`` when absent.
+
+    Returns:
+        A plan describing every file, destructive operations, and line counts.
+
+    Raises:
+        PatchParseError: If a target is missing or produces invalid Python.
+    """
+    plans: list[FilePlan] = []
+    for entry in patches:
+        original = read(entry.path)
+        if entry.kind in ("update", "delete") and original is None:
+            raise PatchParseError(f"file does not exist: {entry.path}")
+
+        target_original = read(entry.move_to) if entry.move_to is not None else None
+        new_bytes: bytes | None = None
+        new_text = ""
+        old_text = ""
+        destructive_reason: str | None = None
+
+        if entry.kind == "delete":
+            destructive_reason = "delete"
+            old_text = decode_text_bytes(original or b"")[0]
+        elif entry.kind == "add":
+            if original is not None:
+                destructive_reason = "overwrite_add"
+                old_text = decode_text_bytes(original)[0]
+            new_bytes = ("\n".join(entry.add_lines) + "\n").encode("utf-8")
+            new_text = new_bytes.decode("utf-8")
+            _validate_python(entry.path, old_text, new_text)
+        else:
+            old_text, eol, has_bom = decode_text_bytes(original or b"")
+            new_text = apply_hunks_to_text(old_text, entry.hunks)
+            new_bytes = encode_text_bytes(new_text, eol, has_bom)
+            _validate_python(entry.move_to or entry.path, old_text, new_text)
+            if entry.move_to is not None and target_original is not None:
+                destructive_reason = "overwrite_move_target"
+
+        added = removed = 0
+        diff = ""
+        if new_bytes is not None:
+            added, removed = _count_changes(old_text, new_text)
+            diff = build_unified_diff(entry.path, old_text, new_text)
+        plans.append(
+            FilePlan(
+                path=entry.path,
+                kind=entry.kind,
+                original=original,
+                target_original=target_original,
+                new_bytes=new_bytes,
+                move_to=entry.move_to,
+                destructive_reason=destructive_reason,
+                diff=diff,
+                added=added,
+                removed=removed,
+            )
+        )
+
+    return PatchPlan(
+        files=plans,
+        destructive=[plan for plan in plans if plan.destructive_reason],
+        added=sum(plan.added for plan in plans),
+        removed=sum(plan.removed for plan in plans),
+    )

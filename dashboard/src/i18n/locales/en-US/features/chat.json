@@ -255,7 +255,9 @@
     "openFailed": "Failed to open file: {message}",
     "openFolder": "Open containing folder",
     "folderOpened": "Opened the folder containing {name}",
-    "folderOpenFailed": "Failed to open folder: {message}"
+    "folderOpenFailed": "Failed to open folder: {message}",
+    "renamedFrom": "Renamed from {path}",
+    "patchFiles": "touches {count} files"
   },
   "fileChanges": {
     "title": "{count} files changed",

@@ -12,6 +12,8 @@ import {
   fileBasename,
   fileChangeTone,
   isFileChangeToolName,
+  parseApplyPatchArgs,
+  parseApplyPatchResult,
   parseFileChangesPayload,
   parseFileEditResult,
   stripWriteEncodingMarker,
@@ -413,5 +415,185 @@ describe("parseFileChangesPayload", () => {
     expect(parseFileChangesPayload({ files: [{ kind: "edit" }] })).toEqual([]);
     expect(parseFileChangesPayload("garbage")).toEqual([]);
     expect(parseFileChangesPayload(null)).toEqual([]);
+  });
+});
+
+// ── apply_patch (2026-10-17) ─────────────────────────────────────
+
+const APPLY_PATCH_RESULT = [
+  "Applied patch: 4 files changed (+5 -2)",
+  "UPDATE src/a.py",
+  "ADD src/b.py",
+  "UPDATE src/old.py -> src/new.py",
+  "DELETE src/obsolete.py",
+  "",
+  "--- src/a.py",
+  "+++ src/a.py",
+  "@@ -1,2 +1,2 @@",
+  "-old",
+  "+new",
+  "--- src/b.py",
+  "+++ src/b.py",
+  "@@ -0,0 +1,2 @@",
+  "+hello",
+  "+world",
+  "--- src/old.py",
+  "+++ src/old.py",
+  "@@ -1 +1 @@",
+  "-before",
+  "+after",
+].join("\n");
+
+const APPLY_PATCH_ARGS = {
+  patch: [
+    "*** Begin Patch",
+    "*** Update File: src/a.py",
+    "-old",
+    "+new",
+    "*** Add File: src/b.py",
+    "+hello",
+    "*** Update File: src/old.py",
+    "*** Move to: src/new.py",
+    "-before",
+    "+after",
+    "*** Delete File: src/obsolete.py",
+    "*** End Patch",
+  ].join("\n"),
+};
+
+describe("parseApplyPatchResult", () => {
+  it("parses update/add/move/delete with per-file stats", () => {
+    const files = parseApplyPatchResult(APPLY_PATCH_RESULT);
+    expect(files).toHaveLength(4);
+
+    expect(files[0]).toMatchObject({
+      kind: "edit",
+      filePath: "src/a.py",
+      adds: 1,
+      dels: 1,
+    });
+    expect(files[0].diff).toContain("-old");
+    expect(files[0].diff).not.toContain("src/b.py");
+
+    expect(files[1]).toMatchObject({
+      kind: "write",
+      filePath: "src/b.py",
+      lineCount: 2,
+    });
+
+    expect(files[2]).toMatchObject({
+      kind: "write",
+      filePath: "src/new.py",
+      renamedFrom: "src/old.py",
+    });
+
+    expect(files[3]).toMatchObject({
+      kind: "remove",
+      filePath: "src/obsolete.py",
+      diff: "",
+    });
+  });
+
+  it("returns an empty list when the result has no header", () => {
+    expect(parseApplyPatchResult("Error: invalid patch: bad line")).toEqual([]);
+    expect(parseApplyPatchResult("")).toEqual([]);
+  });
+
+  it("does not split on content lines that look like diff headers", () => {
+    const result = [
+      "Applied patch: 1 files changed (+1 -0)",
+      "ADD notes.md",
+      "",
+      "--- notes.md",
+      "+++ notes.md",
+      "@@ -0,0 +1,1 @@",
+      "+--- not a header",
+    ].join("\n");
+    const files = parseApplyPatchResult(result);
+    expect(files).toHaveLength(1);
+    expect(files[0].diff).toContain("+--- not a header");
+  });
+});
+
+describe("parseApplyPatchArgs", () => {
+  it("lists target files while the call is still running", () => {
+    const files = parseApplyPatchArgs(APPLY_PATCH_ARGS);
+    expect(files.map((f) => [f.kind, f.filePath, f.renamedFrom])).toEqual([
+      ["edit", "src/a.py", undefined],
+      ["write", "src/b.py", undefined],
+      ["write", "src/new.py", "src/old.py"],
+      ["remove", "src/obsolete.py", undefined],
+    ]);
+  });
+
+  it("deduplicates paths and tolerates missing patch text", () => {
+    const dup = {
+      patch: "*** Update File: a.txt\n-a\n+b\n*** Update File: a.txt\n-c\n+d\n",
+    };
+    expect(parseApplyPatchArgs(dup)).toHaveLength(1);
+    expect(parseApplyPatchArgs({})).toEqual([]);
+  });
+});
+
+describe("collectFileChanges with apply_patch", () => {
+  it("emits one entry per file sharing the callId", () => {
+    const changes = collectFileChanges([
+      {
+        type: "tool_call",
+        tool_calls: [
+          {
+            id: "patch-1",
+            name: "astrbot_apply_patch",
+            args: APPLY_PATCH_ARGS,
+            result: APPLY_PATCH_RESULT,
+            finished_ts: 3,
+          },
+        ],
+      },
+    ]);
+    expect(changes).toHaveLength(4);
+    expect(changes.every((c) => c.callId === "patch-1")).toBe(true);
+    expect(changes.every((c) => c.status === "done")).toBe(true);
+    expect(changes[0].diffStat).toEqual({ adds: 1, dels: 1 });
+    expect(changes[1].lineCount).toBe(2);
+    expect(changes[2].renamedFrom).toBe("src/old.py");
+    expect(changes[3].kind).toBe("remove");
+  });
+
+  it("lists attempted files while running", () => {
+    const changes = collectFileChanges([
+      {
+        type: "tool_call",
+        tool_calls: [
+          {
+            id: "patch-2",
+            name: "astrbot_apply_patch",
+            args: APPLY_PATCH_ARGS,
+            finished_ts: undefined,
+          },
+        ],
+      },
+    ]);
+    expect(changes).toHaveLength(4);
+    expect(changes.every((c) => c.status === "running")).toBe(true);
+  });
+
+  it("falls back to args and marks the call as error when the patch failed", () => {
+    const changes = collectFileChanges([
+      {
+        type: "tool_call",
+        tool_calls: [
+          {
+            id: "patch-3",
+            name: "astrbot_apply_patch",
+            args: APPLY_PATCH_ARGS,
+            result: "Error: patch cannot be applied: a.py: context not found",
+            finished_ts: 4,
+          },
+        ],
+      },
+    ]);
+    expect(changes).toHaveLength(4);
+    expect(changes.every((c) => c.status === "error")).toBe(true);
   });
 });

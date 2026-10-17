@@ -319,3 +319,85 @@ describe("FileChangeCard", () => {
     expect(mocks.openLocalFile).not.toHaveBeenCalled();
   });
 });
+
+// ── apply_patch (2026-10-17) ─────────────────────────────────────
+
+const APPLY_PATCH_EDIT_ENTRY: FileChangeEntry = {
+  callId: "p1",
+  kind: "edit",
+  filePath: "src/a.py",
+  status: "done",
+  diffStat: { adds: 1, dels: 1 },
+  lineCount: null,
+  diff: "--- src/a.py\n+++ src/a.py\n@@ -1 +1 @@\n-old\n+new",
+  summary: "UPDATE src/a.py",
+  tool: {
+    id: "p1",
+    name: "astrbot_apply_patch",
+    args: { patch: "*** Update File: src/a.py\n-old\n+new\n" },
+    result: "Applied patch: 1 files changed (+1 -1)\nUPDATE src/a.py\n",
+    finished_ts: 3,
+  },
+};
+
+const APPLY_PATCH_MOVE_ENTRY: FileChangeEntry = {
+  callId: "p2",
+  kind: "write",
+  filePath: "src/new.py",
+  status: "done",
+  diffStat: null,
+  lineCount: null,
+  diff: "",
+  renamedFrom: "src/old.py",
+  tool: {
+    id: "p2",
+    name: "astrbot_apply_patch",
+    args: { patch: "*** Update File: src/old.py\n*** Move to: src/new.py\n" },
+    result: "Applied patch: 1 files changed (+0 -0)\nUPDATE src/old.py -> src/new.py\n",
+    finished_ts: 3,
+  },
+};
+
+const APPLY_PATCH_REMOVE_ENTRY: FileChangeEntry = {
+  callId: "p3",
+  kind: "remove",
+  filePath: "src/old.py",
+  status: "done",
+  diffStat: null,
+  lineCount: null,
+  diff: "",
+  tool: {
+    id: "p3",
+    name: "astrbot_apply_patch",
+    args: { patch: "*** Delete File: src/old.py\n" },
+    result: "Applied patch: 1 files changed (+0 -0)\nDELETE src/old.py\n",
+    finished_ts: 3,
+  },
+};
+
+describe("FileChangeCard apply_patch", () => {
+  it("uses the entry diff instead of reparsing the result", async () => {
+    const wrapper = mountCard(APPLY_PATCH_EDIT_ENTRY);
+    await wrapper.find(".file-change-card-header").trigger("click");
+    const diff = wrapper.findComponent(STUBS.DiffPreview);
+    expect(diff.exists()).toBe(true);
+    expect(diff.props("content")).toBe(APPLY_PATCH_EDIT_ENTRY.diff);
+    expect(diff.props("summary")).toBe("UPDATE src/a.py");
+  });
+
+  it("shows the rename source for a move without a diff", async () => {
+    const wrapper = mountCard(APPLY_PATCH_MOVE_ENTRY);
+    await wrapper.find(".file-change-card-header").trigger("click");
+    expect(wrapper.text()).toContain("src/old.py");
+    expect(wrapper.findComponent(STUBS.DiffPreview).exists()).toBe(false);
+  });
+});
+
+describe("FileChangeCard apply_patch removal", () => {
+  it("shows only the path, not the whole patch result", async () => {
+    const wrapper = mountCard(APPLY_PATCH_REMOVE_ENTRY);
+    await wrapper.find(".file-change-card-header").trigger("click");
+    expect(wrapper.text()).toContain("src/old.py");
+    expect(wrapper.text()).not.toContain("Applied patch:");
+  });
+});

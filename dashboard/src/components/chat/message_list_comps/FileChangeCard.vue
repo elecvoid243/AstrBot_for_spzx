@@ -102,6 +102,20 @@
       <!-- error -->
       <pre v-else-if="entry.status === 'error'" class="file-change-error">{{ errorText }}</pre>
 
+      <!-- apply_patch: per-file unified diff (Update / Add / Move) -->
+      <DiffPreview
+        v-else-if="entry.diff"
+        :content="entry.diff"
+        :file-path="entry.filePath"
+        :summary="entry.summary ?? ''"
+        :is-dark="isDark"
+        :max-lines="25"
+        :collapsible="false"
+      />
+
+      <!-- apply_patch Move without content changes -->
+      <pre v-else-if="entry.renamedFrom" class="file-change-remove-note">{{ tm("fileChange.renamedFrom", { path: entry.renamedFrom }) }}</pre>
+
       <!-- edit: standard diff preview -->
       <DiffPreview
         v-else-if="entry.kind === 'edit'"
@@ -114,7 +128,7 @@
       />
 
       <!-- remove: no content to show — just the outcome text -->
-      <pre v-else-if="entry.kind === 'remove'" class="file-change-remove-note">{{ toolResult || entry.filePath }}</pre>
+      <pre v-else-if="entry.kind === 'remove'" class="file-change-remove-note">{{ entry.diff !== undefined ? entry.filePath : (toolResult || entry.filePath) }}</pre>
 
       <!-- write: the content passed to the write tool -->
       <CopyableText
@@ -225,7 +239,18 @@ const toolResult = computed(() => {
   return typeof r === "string" ? r : "";
 });
 
-const editParsed = computed(() => parseFileEditResult(toolResult.value));
+const editParsed = computed(() => {
+  if (props.entry.diff !== undefined) {
+    return {
+      cleanResult: toolResult.value,
+      notice: null,
+      diff: props.entry.diff,
+      filePath: props.entry.filePath,
+      summary: props.entry.summary ?? "",
+    };
+  }
+  return parseFileEditResult(toolResult.value);
+});
 
 const errorText = computed(() =>
   props.entry.kind === "edit"

@@ -889,6 +889,7 @@ const DEFAULT_INHERENT = [
   'astrbot_file_read_tool',
   'astrbot_file_write_tool',
   'astrbot_file_edit_tool',
+  'astrbot_apply_patch',
   'astrbot_grep_tool',
   'astrbot_file_remove'
 ]

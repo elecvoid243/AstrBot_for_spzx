@@ -19,6 +19,7 @@ import { findSystemNoticeIndex } from "@/utils/systemNotice";
 
 export const FILE_EDIT_TOOL_NAME = "astrbot_file_edit_tool";
 export const FILE_WRITE_TOOL_NAME = "astrbot_file_write_tool";
+export const APPLY_PATCH_TOOL_NAME = "astrbot_apply_patch";
 
 /** 2026-08-11: file-removal tool names. The suffixed form is the
  *  documented name; the bare form appears in some runtimes. */
@@ -32,6 +33,7 @@ export function isFileChangeToolName(name: string): boolean {
     return (
         name === FILE_EDIT_TOOL_NAME ||
         name === FILE_WRITE_TOOL_NAME ||
+        name === APPLY_PATCH_TOOL_NAME ||
         FILE_REMOVE_TOOL_NAMES.has(name)
     );
 }
@@ -100,6 +102,196 @@ export interface DiffStat {
     dels: number;
 }
 
+export interface ApplyPatchFileEntry {
+    kind: FileChangeKind;
+    filePath: string;
+    renamedFrom?: string;
+    diff: string;
+    adds: number;
+    dels: number;
+    lineCount: number | null;
+}
+
+const APPLY_PATCH_HEADER_RE = /^Applied patch:\s+\d+\s+files?\s+changed/i;
+const APPLY_PATCH_FILE_RE = /^(UPDATE|ADD|DELETE)\s+(.+?)(?:\s+->\s+(.+))?$/;
+
+/** Split a concatenated multi-file unified diff by `--- path` / `+++ path`. */
+function splitPatchDiff(text: string): Map<string, string> {
+    const lines = text.split("\n");
+    const sections = new Map<string, string[]>();
+    let current: string[] | null = null;
+    for (let i = 0; i < lines.length; i++) {
+        const minus = lines[i].match(/^--- (.+)$/);
+        if (minus && lines[i + 1]?.startsWith("+++ ")) {
+            const plusPath = lines[i + 1].slice(4).trim();
+            if (plusPath === minus[1].trim()) {
+                current = [lines[i], lines[i + 1]];
+                sections.set(minus[1].trim(), current);
+                i += 1;
+                continue;
+            }
+        }
+        current?.push(lines[i]);
+    }
+    return new Map([...sections].map(([path, body]) => [path, body.join("\n")]));
+}
+
+function countDiffAdds(diff: string): number {
+    let count = 0;
+    for (const line of (diff ?? "").split("\n")) {
+        if (line.startsWith("+++")) continue;
+        if (line.startsWith("+")) count++;
+    }
+    return count;
+}
+
+/**
+ * Parse an `astrbot_apply_patch` result into one entry per file.
+ *
+ * The backend prints a header, a file list, a blank line, then the
+ * concatenated unified diff. A result without the header is an error and
+ * yields an empty list (callers fall back to the args parse).
+ */
+export function parseApplyPatchResult(raw: string): ApplyPatchFileEntry[] {
+    const lines = (raw ?? "").split("\n");
+    const headerIndex = lines.findIndex((line) =>
+        APPLY_PATCH_HEADER_RE.test(line),
+    );
+    if (headerIndex < 0) return [];
+
+    const specs: Array<{
+        token: "UPDATE" | "ADD" | "DELETE";
+        path: string;
+        moveTo?: string;
+    }> = [];
+    let cursor = headerIndex + 1;
+    for (; cursor < lines.length; cursor++) {
+        const line = lines[cursor];
+        if (!line.trim()) break;
+        const match = line.match(APPLY_PATCH_FILE_RE);
+        if (!match) continue;
+        specs.push({
+            token: match[1] as "UPDATE" | "ADD" | "DELETE",
+            path: match[2].trim(),
+            moveTo: match[3]?.trim(),
+        });
+    }
+
+    const sections = splitPatchDiff(lines.slice(cursor + 1).join("\n"));
+    return specs.map((spec) => {
+        const diff = sections.get(spec.path) ?? "";
+        const stat = computeDiffStat(diff);
+        if (spec.moveTo) {
+            return {
+                kind: "write",
+                filePath: spec.moveTo,
+                renamedFrom: spec.path,
+                diff,
+                adds: stat.adds,
+                dels: stat.dels,
+                lineCount: null,
+            };
+        }
+        if (spec.token === "ADD") {
+            return {
+                kind: "write",
+                filePath: spec.path,
+                diff,
+                adds: stat.adds,
+                dels: 0,
+                lineCount: countDiffAdds(diff),
+            };
+        }
+        if (spec.token === "DELETE") {
+            return {
+                kind: "remove",
+                filePath: spec.path,
+                diff: "",
+                adds: 0,
+                dels: 0,
+                lineCount: null,
+            };
+        }
+        return {
+            kind: "edit",
+            filePath: spec.path,
+            diff,
+            adds: stat.adds,
+            dels: stat.dels,
+            lineCount: null,
+        };
+    });
+}
+
+/**
+ * Parse the `patch` argument to list target files while the call runs.
+ *
+ * Mirrors the backend's lenient grammar: `*** Add/Update/Delete File:` and
+ * `*** Move to:` markers. Diffs are empty until the real result arrives.
+ */
+export function parseApplyPatchArgs(
+    args: Record<string, unknown>,
+): ApplyPatchFileEntry[] {
+    const patch = typeof args.patch === "string" ? args.patch : "";
+    if (!patch.trim()) return [];
+
+    const specs: Array<{
+        token: "UPDATE" | "ADD" | "DELETE";
+        path: string;
+        moveTo?: string;
+    }> = [];
+    let pendingUpdate: (typeof specs)[number] | null = null;
+    for (const rawLine of patch.split("\n")) {
+        const line = rawLine.trim();
+        const add = line.match(/^\*\*\* Add File:\s*(.+)$/);
+        if (add) {
+            specs.push({ token: "ADD", path: add[1].trim() });
+            pendingUpdate = null;
+            continue;
+        }
+        const del = line.match(/^\*\*\* Delete File:\s*(.+)$/);
+        if (del) {
+            specs.push({ token: "DELETE", path: del[1].trim() });
+            pendingUpdate = null;
+            continue;
+        }
+        const update = line.match(/^\*\*\* Update File:\s*(.+)$/);
+        if (update) {
+            pendingUpdate = { token: "UPDATE", path: update[1].trim() };
+            specs.push(pendingUpdate);
+            continue;
+        }
+        const move = line.match(/^\*\*\* Move to:\s*(.+)$/);
+        if (move && pendingUpdate) {
+            pendingUpdate.moveTo = move[1].trim();
+        }
+    }
+
+    const seen = new Set<string>();
+    const entries: ApplyPatchFileEntry[] = [];
+    for (const spec of specs) {
+        const filePath = spec.moveTo ?? spec.path;
+        if (seen.has(filePath)) continue;
+        seen.add(filePath);
+        const kind =
+            spec.moveTo || spec.token === "ADD"
+                ? "write"
+                : spec.token === "DELETE"
+                  ? "remove"
+                  : "edit";
+        entries.push({
+            kind,
+            filePath,
+            renamedFrom: spec.moveTo ? spec.path : undefined,
+            diff: "",
+            adds: 0,
+            dels: 0,
+            lineCount: null,
+        });
+    }
+    return entries;
+}
+
 /** Count +/- lines in a unified diff, excluding +++/--- file headers. */
 export function computeDiffStat(diffText: string): DiffStat {
     let adds = 0;
@@ -160,6 +352,12 @@ export interface FileChangeEntry {
     diffStat: DiffStat | null;
     /** write only: line count of the written content (args.content). */
     lineCount: number | null;
+    /** apply_patch only: this file's unified diff section. */
+    diff?: string;
+    /** apply_patch only: DiffPreview summary (e.g. "UPDATE src/a.py"). */
+    summary?: string;
+    /** apply_patch Move only: the source path. */
+    renamedFrom?: string;
     /** The raw (loosely typed) tool call object for card rendering. */
     tool: Record<string, unknown>;
 }
@@ -224,7 +422,36 @@ export function collectFileChanges(
                 tool: call,
             };
 
-            if (name === FILE_EDIT_TOOL_NAME) {
+            if (name === APPLY_PATCH_TOOL_NAME) {
+                const finished = !running && result.trim().length > 0;
+                const parsedResult = finished
+                    ? parseApplyPatchResult(result)
+                    : [];
+                // A failed patch has no `Applied patch:` header; fall back
+                // to the args parse so attempted files still show up with
+                // status=error.
+                const files = parsedResult.length
+                    ? parsedResult
+                    : parseApplyPatchArgs(args);
+                for (const file of files) {
+                    entries.push({
+                        ...base,
+                        kind: file.kind,
+                        filePath: file.filePath,
+                        diffStat:
+                            file.kind === "edit"
+                                ? { adds: file.adds, dels: file.dels }
+                                : null,
+                        lineCount: file.lineCount,
+                        diff: file.diff,
+                        summary:
+                            file.kind === "edit"
+                                ? `UPDATE ${file.renamedFrom ?? file.filePath}`
+                                : undefined,
+                        renamedFrom: file.renamedFrom,
+                    });
+                }
+            } else if (name === FILE_EDIT_TOOL_NAME) {
                 const parsed = parseFileEditResult(result);
                 entries.push({
                     ...base,

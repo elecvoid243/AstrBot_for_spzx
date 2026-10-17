@@ -215,3 +215,11 @@ def test_apply_rejects_tab_insertion_into_spaces_file():
     hunk = Hunk(context="def f():", new_lines=["\tpass"])
     with pytest.raises(ValueError, match="indentation style"):
         apply_hunks_to_text("def f():\n    return 1\n", [hunk])
+
+
+def test_apply_matches_near_end_of_large_file():
+    text = "".join(f"line_{i} = {i}\n" for i in range(20000))
+    hunk = Hunk(old_lines=["line_19998 = 19998"], new_lines=["line_19998 = 0"])
+    out = apply_hunks_to_text(text, [hunk])
+    assert "line_19998 = 0" in out
+    assert out.count("line_19998 = 0") == 1

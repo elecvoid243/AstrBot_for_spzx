@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import difflib
 import re
+from bisect import bisect_left
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -271,15 +272,15 @@ def _lines_equal(candidate: list[str], expected: list[str], tier: int) -> bool:
 def _find_exact_ladder(text: str, old: str, start: int) -> tuple[int, str] | None:
     """Try exact, rstrip, trim, then unicode-normalized line matching."""
     expected = old.split("\n")
+    lines = text.split("\n")
+    offsets = _line_starts(text)
+    start_index = bisect_left(offsets, start)
+    last_index = len(lines) - len(expected)
     for tier in range(4):
-        for pos in _line_starts(text):
-            if pos < start:
-                continue
-            candidate = text[pos:].split("\n")[: len(expected)]
-            if len(candidate) < len(expected):
-                continue
+        for index in range(start_index, last_index + 1):
+            candidate = lines[index : index + len(expected)]
             if _lines_equal(candidate, expected, tier):
-                return pos, "\n".join(candidate)
+                return offsets[index], "\n".join(candidate)
     return None
 
 

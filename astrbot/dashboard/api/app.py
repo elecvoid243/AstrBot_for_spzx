@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
@@ -170,25 +169,12 @@ def create_dashboard_asgi_app(
     jwt_secret: str,
     static_folder: str | None = None,
 ) -> FastAPI:
-    @asynccontextmanager
-    async def _lifespan(app: FastAPI):
-        """Run startup maintenance before the dashboard serves requests."""
-        # Agent Teams: mark stale runs interrupted after a restart so the
-        # panel can offer resume (spec §6.5). Guarded so startup never
-        # fails on it.
-        try:
-            await services.agent_team_runs.boot_sweep()
-        except Exception:  # noqa: BLE001
-            logger.warning("agent team boot sweep failed", exc_info=True)
-        yield
-
     app = FastAPI(
         title="AstrBot OpenAPI",
         version="1.0.0",
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
         docs_url=f"{API_V1_PREFIX}/docs",
         redoc_url=f"{API_V1_PREFIX}/redoc",
-        lifespan=_lifespan,
     )
     # Compress JS/CSS and other sizable responses; Starlette's GZipMiddleware
     # skips text/event-stream, so SSE endpoints are unaffected.

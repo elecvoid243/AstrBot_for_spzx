@@ -222,6 +222,10 @@ def test_original_owner_must_finish_before_the_shared_default_entry_can_run(
                             and scenario.endswith("loss"),
                         }
                     )
+        legacy_requests = [item for item in requests if "team_finish" in item["tools"]]
+        # A normal no-dispatch pause saves no new round; resuming its owner
+        # must still make another real provider call before explicitly stopping.
+        assert len(legacy_requests) >= (2 if scenario.endswith("loss") else 3)
         if scenario.endswith("loss"):
             before = json.loads(
                 (tmp_path / "before-loss.json").read_text(encoding="utf-8")

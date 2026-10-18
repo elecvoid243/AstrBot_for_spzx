@@ -1,4 +1,4 @@
-"""Boot sweep + hot resume semantics (spec §6.5)."""
+"""Read-only legacy history and original-owner pause semantics."""
 
 import asyncio
 
@@ -19,9 +19,21 @@ from tests.agent_teams.test_agent_team_service import (
 
 
 @pytest.mark.asyncio
-async def test_boot_sweep_marks_stale_runs_interrupted(tmp_path):
+async def test_history_preserves_saved_status_while_projecting_owner_loss(tmp_path):
+    """Preserve original records when repeated public reads report interruption.
+
+    Args:
+        tmp_path: Isolated persistent history database.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
-    await db.initialize()
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="Original team",
+        coordinator_member_id="lead",
+        config={},
+        members=[],
+    )
     for run_id, status in (("r1", "running"), ("r2", "paused"), ("r3", "completed")):
         await db.create_agent_team_run(
             run_id=run_id,
@@ -34,11 +46,21 @@ async def test_boot_sweep_marks_stale_runs_interrupted(tmp_path):
             node_states={},
             rounds=[],
         )
-    svc = AgentTeamRunService(db=db, chat_service=FakeChatService())
-    assert await svc.boot_sweep() == 2
-    assert (await db.get_agent_team_run("r1")).status == "interrupted"
-    assert (await db.get_agent_team_run("r2")).status == "interrupted"
-    assert (await db.get_agent_team_run("r3")).status == "completed"
+    svc = AgentTeamRunService(db=db, chat_service=None)
+    try:
+        for run_id, status in (
+            ("r1", "running"),
+            ("r2", "paused"),
+            ("r3", "completed"),
+        ):
+            before = await svc.get_history_run("alice", run_id)
+            assert before["status"] == status
+            assert before["history_status"] == (
+                "interrupted" if status in {"running", "paused"} else status
+            )
+            assert await svc.get_history_run("alice", run_id) == before
+    finally:
+        await db.engine.dispose()
 
 
 @pytest.mark.asyncio

@@ -1537,21 +1537,6 @@ class AgentTeamRunService:
         self._runners: dict[str, DAGRunner | AutoOrchestrator] = {}
         self._buses: dict[str, RunEventBus] = {}
 
-    async def boot_sweep(self) -> int:
-        """Mark stale runs interrupted at startup (spec §6.5).
-
-        In-memory runners do not survive a restart; rows still marked
-        running/paused cannot make progress and must surface as
-        `interrupted` so the panel offers resume.
-
-        Returns:
-            Number of rows transitioned to `interrupted`.
-        """
-        stale = await self.db.get_agent_team_runs_by_status(["running", "paused"])
-        for row in stale:
-            await self.db.update_agent_team_run(row.run_id, status="interrupted")
-        return len(stale)
-
     async def resume_run(self, username: str, run_id: str) -> dict:
         """Continue a paused legacy run only while its original owner remains.
 

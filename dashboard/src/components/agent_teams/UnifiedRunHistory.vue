@@ -58,7 +58,18 @@
                       : "legacyHistory.run",
                   )
                 }}
-                · {{ statusText(record.status, record.engine) }}</span
+                ·
+                {{
+                  record.status === "saved"
+                    ? tm("legacyHistory.saved")
+                    : tm(
+                        `${
+                          record.engine === "legacy"
+                            ? "monitor.status"
+                            : "v2.states"
+                        }.${record.status}`,
+                      )
+                }}</span
               >
             </div>
             <p class="history-text">{{ record.goal }}</p>
@@ -102,7 +113,7 @@
         <template v-if="selected.run">
           <h3 class="text-h6 mt-3">{{ selected.run.team_name }}</h3>
           <p class="my-2">
-            {{ statusText(selected.run.history_status, "legacy") }}
+            {{ tm(`monitor.status.${selected.run.history_status}`) }}
           </p>
           <v-alert
             v-if="selected.run.execution_active"
@@ -291,13 +302,6 @@ const busy = ref(false);
 const error = ref("");
 let selection = 0;
 let disposed = false;
-
-function statusText(status: string, engine: string) {
-  if (status === "saved") return tm("legacyHistory.saved");
-  return tm(
-    `${engine === "legacy" ? "monitor.status" : "v2.states"}.${status}`,
-  );
-}
 
 async function loadPage(offset: number) {
   if (loading.value) return;

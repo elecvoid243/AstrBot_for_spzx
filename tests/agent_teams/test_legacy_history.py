@@ -281,7 +281,9 @@ async def test_unified_history_pages_owned_old_and_new_sources_without_convertin
         {"kind": "v2_run", "id": new["run_id"]},
     ]
     assert pages[0]["status"] == "interrupted"
-    assert (await db.get_agent_team_run("old-run")).status == "running"
+    assert (await history.get_record("alice", "legacy_run", "old-run"))["run"][
+        "status"
+    ] == "running"
     detail = await history.get_record("alice", "v2_run", new["run_id"])
     assert detail["run"]["snapshot"]["asset_id"] == asset["asset_id"]
     assert (await history.list_records("bob"))["records"] == []

@@ -320,6 +320,11 @@
           "hint": "エージェントにアクセスを許可する環境です。",
           "labels": ["環境を使用しない", "ローカルコンピューター", "外部サンドボックス"]
         },
+        "file_tool_mode": {
+          "description": "ファイル書き込みツールグループ",
+          "hint": "2 つのグループは排他です。切り替えは次のメッセージから有効になります。パッチモードでの上書きには confirm=true が必要です。",
+          "labels": ["レガシー（file_write + file_edit）", "パッチ（apply_patch）"]
+        },
         "computer_use_local_shell": {
           "description": "ローカルシェル",
           "hint": "Windows のみ有効。auto は Git Bash、pwsh、powershell.exe の順に検出し、明示的に選択したシェルが未インストールの場合は auto にフォールバックします。",

@@ -248,6 +248,11 @@
           "hint": "允许 Agent 访问的环境。",
           "labels": ["不允许任何环境", "本机环境", "第三方沙箱环境"]
         },
+        "file_tool_mode": {
+          "description": "文件写入工具组",
+          "hint": "两组工具互斥。切换后下一条消息生效；补丁模式下的覆盖写需要 confirm=true。",
+          "labels": ["经典（file_write + file_edit）", "补丁（apply_patch）"]
+        },
         "computer_use_local_shell": {
           "description": "本地 Shell 类型",
           "hint": "仅 Windows 生效。auto 依次探测 Git Bash、pwsh、powershell.exe；显式选择但未安装时回退到 auto。",

@@ -232,6 +232,11 @@
           "hint": "Environment the Agent is allowed to access.",
           "labels": ["No environment", "Local machine", "Third-party sandbox"]
         },
+        "file_tool_mode": {
+          "description": "File write tool group",
+          "hint": "The two groups are mutually exclusive. Changes take effect on the next message; overwriting in patch mode requires confirm=true.",
+          "labels": ["Legacy (file_write + file_edit)", "Patch (apply_patch)"]
+        },
         "computer_use_local_shell": {
           "description": "Local Shell",
           "hint": "Windows only. auto probes Git Bash, then pwsh, then powershell.exe; an explicit choice that is not installed falls back to auto.",

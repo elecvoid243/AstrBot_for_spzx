@@ -46,6 +46,27 @@ describe("useFileComments old-side comments (spec 2026-08-13)", () => {
     expect(c!.side).toBe("old");
   });
 
+  it("shares comments across slash style and Windows drive-letter case", () => {
+    // 2026-10-18: the Git changes page passes an absolute path, while the
+    // chat summary/file browser can spell the same path with the other
+    // separator or drive-letter case. All surfaces must hit one list.
+    const c = store.addCommentWithContext({
+      filePath: "F:\\repo\\a.py",
+      line: 1,
+      text: "共享评论",
+      context: {
+        lineContent: "x",
+        contextBefore: null,
+        contextAfter: null,
+      },
+    });
+
+    expect(c).not.toBeNull();
+    expect(c!.filePath).toBe("f:/repo/a.py");
+    expect(store.commentsForFile("f:/repo/a.py")).toHaveLength(1);
+    expect(store.commentsForFile("F:\\repo\\a.py")).toHaveLength(1);
+  });
+
   it("omits the side field (defaults to new) when not provided", () => {
     const c = store.addCommentWithContext({
       filePath: "/p/a.py",

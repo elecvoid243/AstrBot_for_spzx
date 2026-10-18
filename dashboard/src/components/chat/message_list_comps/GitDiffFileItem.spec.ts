@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { nextTick } from "vue";
+import { nextTick, ref } from "vue";
 
 vi.mock("@/composables/useSpcodeProjectStatus", () => ({
   useSpcodeProjectStatus: () => ({
@@ -82,6 +82,7 @@ const stubs = {
       "content",
       "baseContent",
       "filePath",
+      "commentPath",
       "overlayMode",
       "overlayLoading",
       "overlayUnavailable",
@@ -92,7 +93,8 @@ const stubs = {
       ":data-overlay-mode='String(overlayMode)' " +
       ":data-overlay-loading='String(overlayLoading)' " +
       ":data-overlay-unavailable='overlayUnavailable' " +
-      ":data-overlay-supported='String(overlaySupported)' />",
+      ":data-overlay-supported='String(overlaySupported)' " +
+      ":data-comment-path='commentPath' />",
   },
   "v-icon": { template: "<i />" },
 };
@@ -124,6 +126,22 @@ describe("GitDiffFileItem overlay mode state machine", () => {
     const w = mountItem();
     expect(w.find('[data-testid="overlay-toggle"]').exists()).toBe(false);
     expect(w.find(".git-diff-file-item__overlay-toggle").exists()).toBe(false);
+  });
+
+  it("hands the absolute path to the comment store", () => {
+    // Git 变更页的行路径是仓库相对路径;评论必须用绝对路径作 key,
+    // 才能与文件浏览器/聊天汇总共享同一份评论列表。
+    const w = mount(GitDiffFileItem as any, {
+      props: { file: makeFile(), expanded: true, isDark: false },
+      global: {
+        stubs,
+        provide: { openOnDiskRoot: ref("F:\\repo") },
+      },
+    });
+
+    expect(w.find(".dp").attributes("data-comment-path")).toBe(
+      "F:\\repo\\src\\a.ts",
+    );
   });
 
   it("hands the requested mode down and lazily fetches the HEAD blob", async () => {

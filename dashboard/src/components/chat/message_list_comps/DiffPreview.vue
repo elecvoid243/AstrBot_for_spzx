@@ -491,7 +491,7 @@
           :line-content="editorContext?.lineContent ?? null"
           :context-before="editorContext?.contextBefore ?? null"
           :context-after="editorContext?.contextAfter ?? null"
-          :file-path="filePath"
+          :file-path="effectiveCommentPath"
           @save="onSaveComment"
           @cancel="closeEditor"
           @delete="onDeleteComment"
@@ -1012,7 +1012,7 @@
                 :line-content="editorContext?.lineContent ?? null"
                 :context-before="editorContext?.contextBefore ?? null"
                 :context-after="editorContext?.contextAfter ?? null"
-                :file-path="filePath"
+                :file-path="effectiveCommentPath"
                 @save="onSaveComment"
                 @cancel="closeEditor"
                 @delete="onDeleteComment"
@@ -1095,6 +1095,14 @@ const props = withDefaults(
   defineProps<{
     content: string;
     filePath?: string;
+    /**
+     * 2026-10-18 (elecvoid243): partition key for inline comments.
+     * Defaults to `filePath`. The Git changes rows pass the file's
+     * absolute path here so their comments are shared with the file
+     * browser and the chat summary, while `filePath` stays repo-relative
+     * for the discard patch header.
+     */
+    commentPath?: string;
     summary?: string;
     /**
      * 2026-10-06 range-compare overlay: 提供时进入「全文件 + diff 叠加」
@@ -1163,6 +1171,7 @@ const props = withDefaults(
   }>(),
   {
     filePath: "",
+    commentPath: "",
     summary: "",
     baseContent: "",
     overlayMode: false,
@@ -1678,11 +1687,16 @@ const activeEditCommentId = ref<string | null>(null);
 const editorContext = ref<LineContext | null>(null);
 const editorInitialText = ref<string>("");
 
-/** Effective opt-in: must be enabled AND a filePath must be set.
- *  filePath is empty for markdown ```diff``` blocks, so the comment
- *  UI silently disappears there. */
+/** Canonical partition/display path for inline comments. */
+const effectiveCommentPath = computed(
+  () => props.commentPath || props.filePath,
+);
+
+/** Effective opt-in: must be enabled AND a comment path must be set.
+ *  It is empty for markdown ```diff``` blocks, so the comment UI
+ *  silently disappears there. */
 const isCommentable = computed<boolean>(
-  () => props.commentable !== false && props.filePath.length > 0,
+  () => props.commentable !== false && effectiveCommentPath.value.length > 0,
 );
 
 /** Resolved comment list: prefer the parent-supplied `props.comments`,
@@ -1692,7 +1706,7 @@ const isCommentable = computed<boolean>(
 const visibleComments = computed<FileComment[]>(() => {
   if (props.comments.length > 0) return props.comments;
   if (!isCommentable.value) return [];
-  return fileComments.commentsForFile(props.filePath);
+  return fileComments.commentsForFile(effectiveCommentPath.value);
 });
 
 /** newNo → existing comment (new-side only, 2026-08-13). First-wins:
@@ -1941,7 +1955,7 @@ function onSaveComment(payload: {
       contextAfter: null,
     };
     fileComments.addCommentWithContext({
-      filePath: props.filePath,
+      filePath: effectiveCommentPath.value,
       line: payload.line,
       text: payload.text,
       context: ctx,
@@ -2015,7 +2029,7 @@ function onSplitRowLeave(): void {
  *  editor's line number is for a different file, so keeping it open
  *  would be confusing. */
 watch(
-  () => props.filePath,
+  () => [props.filePath, props.commentPath],
   () => {
     closeEditor();
   },

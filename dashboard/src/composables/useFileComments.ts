@@ -17,7 +17,8 @@ import { reactive, computed } from "vue";
 export interface FileComment {
   /** UUID, stable across edits/deletes. */
   id: string;
-  /** Absolute path. Comments are partitioned by this. */
+  /** Absolute path, canonicalised by commentPathKey (slashes / drive case).
+   *  Comments are partitioned by this. */
   filePath: string;
   /** 1-based line number at comment time. May drift if file is edited. */
   line: number;
@@ -168,6 +169,23 @@ function newId(): string {
 }
 
 /**
+ * 2026-10-18 (elecvoid243): canonical partition key for comments.
+ *
+ * The same file can reach the store as a repo-relative path from the Git
+ * changes diff, an OS-native absolute path from the file browser, or a
+ * path with the other slash style. Canonicalising separators (and the
+ * Windows drive letter, which is case-insensitive) lets every review
+ * surface share one comment list. POSIX path case is preserved.
+ */
+function commentPathKey(filePath: string): string {
+  let key = filePath.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\//.test(key)) {
+    key = key[0].toLowerCase() + key.slice(1);
+  }
+  return key;
+}
+
+/**
  * In-memory comment store + content cache for the file-browser.
  *
  *   comments[filePath] = FileComment[]
@@ -216,7 +234,7 @@ function createFileComments() {
 
   /** Register a file's current full content. Idempotent. */
   function registerFileContent(filePath: string, content: string): void {
-    contentCache[filePath] = content;
+    contentCache[commentPathKey(filePath)] = content;
   }
 
   /** Add a comment, freezing lineContent / contextBefore / contextAfter
@@ -231,7 +249,8 @@ function createFileComments() {
     text: string;
     diffHunk?: DiffHunkContext;
   }): FileComment | null {
-    const content = contentCache[input.filePath];
+    if (!input.filePath) return null;
+    const content = contentCache[commentPathKey(input.filePath)];
     if (content === undefined) return null;
     const ctx = extractLineContext(content, input.line);
     if (ctx === null) return null;
@@ -274,9 +293,10 @@ function createFileComments() {
     if (!filePath) return null;
     if (!Number.isInteger(line) || line < 1) return null;
     if (text.trim() === "") return null;
+    const key = commentPathKey(filePath);
     const comment: FileComment = {
       id: newId(),
-      filePath,
+      filePath: key,
       line,
       ...(side ? { side } : {}),
       lineContent: context.lineContent,
@@ -287,7 +307,7 @@ function createFileComments() {
       updatedAt: Date.now(),
       diffHunk,
     };
-    (comments[filePath] ??= []).push(comment);
+    (comments[key] ??= []).push(comment);
     return comment;
   }
 
@@ -307,9 +327,10 @@ function createFileComments() {
     selection: string;
     text: string;
   }): FileComment | null {
-    const content = contentCache[input.filePath];
-    if (content === undefined) return null;
     if (!input.filePath) return null;
+    const key = commentPathKey(input.filePath);
+    const content = contentCache[key];
+    if (content === undefined) return null;
     if (!Number.isInteger(input.startLine) || input.startLine < 1) return null;
     if (!Number.isInteger(input.endLine) || input.endLine < input.startLine) {
       return null;
@@ -323,7 +344,7 @@ function createFileComments() {
     );
     const comment: FileComment = {
       id: newId(),
-      filePath: input.filePath,
+      filePath: key,
       line: input.startLine,
       endLine: input.endLine,
       selection: input.selection,
@@ -334,7 +355,7 @@ function createFileComments() {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    (comments[input.filePath] ??= []).push(comment);
+    (comments[key] ??= []).push(comment);
     return comment;
   }
 
@@ -378,7 +399,7 @@ function createFileComments() {
 
   /** Comments for a specific file in the current session. */
   function commentsForFile(filePath: string): FileComment[] {
-    return comments[filePath] ?? [];
+    return comments[commentPathKey(filePath)] ?? [];
   }
 
   /** All comments grouped by filePath, with each group sorted by line
@@ -680,7 +701,7 @@ function createFileComments() {
    * ±CONTEXT_LINES around a commented line.
    */
   function getFileContent(filePath: string): string | undefined {
-    return contentCache[filePath];
+    return contentCache[commentPathKey(filePath)];
   }
 
   return {

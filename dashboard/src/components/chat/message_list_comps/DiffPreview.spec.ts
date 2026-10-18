@@ -462,6 +462,41 @@ describe("DiffPreview del-line comments (old side, spec 2026-08-13)", () => {
     expect(vm.activeEditLine).toBe(1);
   });
 
+  it("uses commentPath as the inline-comment store key when provided", async () => {
+    const w = mount(DiffPreview, {
+      props: {
+        content: DEL_DIFF,
+        filePath: "a.txt",
+        commentPath: "F:\\repo\\a.txt",
+        maxLines: 30,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    const vm = w.vm as unknown as {
+      onSaveComment: (payload: {
+        text: string;
+        commentId: string | null;
+        line: number;
+      }) => void;
+    };
+
+    await w.find(".diff-line.del").trigger("mouseenter");
+    await w.find(".diff-line.del .diff-comment-add").trigger("click");
+    vm.onSaveComment({ text: "共享评论", commentId: null, line: 1 });
+    await nextTick();
+
+    // Written under the absolute path...
+    expect(
+      useFileComments().commentsForFile("F:\\repo\\a.txt"),
+    ).toHaveLength(1);
+    // ...not under the repo-relative display/discard path.
+    expect(useFileComments().commentsForFile("a.txt")).toHaveLength(0);
+    // ...and the row reads it back through the same key.
+    expect(w.find(".diff-line.del .diff-comment-indicator").exists()).toBe(
+      true,
+    );
+  });
+
   it("unified: saving a del-row comment stores side=old + del-line content", async () => {
     const w = mountDelDiff();
     const vm = w.vm as unknown as {

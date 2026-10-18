@@ -249,6 +249,20 @@ const openOnDiskAbsPath = computed(() => {
   return absoluteFromSelectedDoc(root, ".", props.file.path);
 });
 
+/**
+ * 2026-10-18 (elecvoid243): comment partition key. The diff keeps the
+ * repo-relative `file.path` (the discard patch header needs it), but
+ * comments use the absolute path so the Git changes page shares them
+ * with the file browser and the chat summary card. GitDiffSidebar
+ * provides the worktree root; without it, fall back to the row path.
+ */
+const commentPath = computed(() => {
+  const root = openOnDiskRoot?.value;
+  return root
+    ? absoluteFromSelectedDoc(root, ".", props.file.path)
+    : props.file.path;
+});
+
 // 2026-08-27 open-folder: unlike on-disk (hidden once the file is
 // gone), the containing folder survives a deletion, so this stays
 // available for "D" rows — the backend reveals the parent folder.
@@ -511,14 +525,15 @@ function rowKey(): string {
           :overlay-loading="overlayLoading"
           :overlay-unavailable="overlayUnavailable"
           :overlay-supported="true"
-        :file-path="file.path"
-        :collapsible="false"
-        :is-dark="isDark"
-        :on-discard-hunk="onDiscardHunk"
-        :discarding-hunks="discardingHunks"
-        :discard-key-prefix="file.path"
-        :discardable="discardable"
-        :scope="scope"
+          :file-path="file.path"
+          :comment-path="commentPath"
+          :collapsible="false"
+          :is-dark="isDark"
+          :on-discard-hunk="onDiscardHunk"
+          :discarding-hunks="discardingHunks"
+          :discard-key-prefix="file.path"
+          :discardable="discardable"
+          :scope="scope"
         />
       </template>
       <!-- Fallback: content not yet fetched (or file is too large /

@@ -811,7 +811,7 @@
                  survive the fullscreen toggle, and full-screen +
                  folded hunks give a "scannable overview of hunks"
                  mode not available elsewhere. -->
-            <template v-else>
+            <template v-else-if="!overlayActive">
               <div
                 v-for="(hunk, hi) in splitHunks"
                 :key="hi"

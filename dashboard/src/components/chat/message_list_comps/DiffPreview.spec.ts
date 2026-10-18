@@ -120,6 +120,37 @@ describe("DiffPreview fullscreen expansion", () => {
     expect(vm.collapsedOverflow).toBe(0);
   });
 
+  it("does not append a split patch body after the overlay in fullscreen", async () => {
+    // Regression: the fullscreen split branch used a bare `v-else`, so with
+    // overlayActive true the unified `v-if` was false and the split body
+    // rendered *after* the overlay — the original + diff followed by a
+    // second diff. The inline view was already correct.
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content: "@@ -2,3 +2,4 @@\n l2\n-l3\n+L3\n+L3x\n l4",
+        baseContent: "l1\nl2\nl3\nl4\nl5",
+        filePath: "sample.txt",
+        overlayMode: true,
+        overlaySupported: true,
+        maxLines: 30,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    const vm = wrapper.vm as unknown as DiffPreviewInternals;
+
+    vm.enterFullscreen();
+    await nextTick();
+
+    const overlays = document.body.querySelectorAll(".diff-fullscreen-overlay");
+    const overlay = overlays[overlays.length - 1] as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(overlay.querySelectorAll(".overlay-body").length).toBe(1);
+    expect(overlay.querySelectorAll(".diff-hunk").length).toBe(0);
+    expect(overlay.querySelectorAll(".hunk-header").length).toBe(0);
+
+    wrapper.unmount();
+  });
+
   it("fullscreen overlay does not render the inline 'show more' button", async () => {
     const wrapper = mountDiff();
     const vm = wrapper.vm as unknown as DiffPreviewInternals;
@@ -716,6 +747,15 @@ describe("overlay mode (baseContent provided)", () => {
     expect(classes[3]).toContain("add"); // L3
     expect(classes[4]).toContain("add"); // L3x
     expect(classes[5]).toContain("ctx"); // l4
+  });
+
+  it("renders the overlay body only, without a second patch body", () => {
+    // Regression: the overlay must replace the unified/split body, not be
+    // followed by another copy of the diff after the base file ends.
+    const wrapper = mountOverlay({ overlayMode: true });
+    expect(wrapper.findAll(".overlay-body")).toHaveLength(1);
+    expect(wrapper.findAll(".diff-hunk")).toHaveLength(0);
+    expect(wrapper.findAll(".hunk-header")).toHaveLength(0);
   });
 
   it("shows base line numbers on ctx/del rows, blank on add rows", () => {

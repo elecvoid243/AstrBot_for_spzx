@@ -238,12 +238,12 @@ describe('AgentTeamsPage', () => {
   it('opens an incoming chat run link while the assets panel is already mounted', async () => {
     const wrapper = mountPage();
     try {
-      await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '工作流资产')!.trigger('click');
+      await wrapper.findAll('.workbench-navigation button').find((button) => button.text() === '资产')!.trigger('click');
       expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('assets');
       routeMock.route.query = { workflow_run: 'chat-run' };
       await nextTick();
       expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('runs');
-      await wrapper.findAll('.tab-stub').find((tab) => tab.text() === '工作流资产')!.trigger('click');
+      await wrapper.findAll('.workbench-navigation button').find((button) => button.text() === '资产')!.trigger('click');
       routeMock.route.query = { workflow_run: 'chat-run' };
       await nextTick();
       expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('runs');
@@ -263,7 +263,7 @@ describe('AgentTeamsPage', () => {
   it('renders role templates alongside the existing team panels', () => {
     const wrapper = mountPage();
     const labels = wrapper.findAll('.tab-stub').map((tab) => tab.text());
-    expect(labels).toEqual(['工作流资产', '独立运行', '角色模板', '工作流编排', '运行监控', '历史', '成员']);
+    expect(labels).toEqual(['团队', '工作流', '角色模板', '工作流编排', '成员', '运行监控', '历史']);
   });
 
   it('opens reusable role templates independently of a team selection', async () => {
@@ -273,9 +273,9 @@ describe('AgentTeamsPage', () => {
     expect(wrapper.find('.agent-teams-panel-editor').exists()).toBe(false);
   });
 
-  it('shows the editor panel by default and swaps panels when a tab is clicked', async () => {
+  it('opens versioned assets by default and keeps the previous monitor reachable', async () => {
     const wrapper = mountPage();
-    expect(wrapper.find('.agent-teams-panel-editor').exists()).toBe(true);
+    expect(wrapper.get('.workflow-workspace-stub').attributes('mode')).toBe('assets');
     expect(wrapper.find('.agent-teams-panel-monitor').exists()).toBe(false);
 
     const monitorTab = wrapper

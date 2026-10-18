@@ -45,7 +45,6 @@
         >{{ tm(`v2.states.${run.status}`) }}</v-chip
       >
     </div>
-    <RunUsagePanel :run="run" />
     <div class="run-columns">
       <v-card variant="outlined" class="run-progress">
         <v-card-title
@@ -172,6 +171,10 @@
         </v-card>
       </aside>
     </div>
+    <details class="mt-4" :open="!!run.usage?.stops?.length">
+      <summary>{{ tm("usage.title") }}</summary>
+      <RunUsagePanel :run="run" />
+    </details>
     <WorkflowLoopHistory :run="run" @select="$emit('select', $event)" />
     <details
       v-for="scope in run.scopes ?? []"

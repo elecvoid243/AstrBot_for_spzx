@@ -1,5 +1,7 @@
 <template>
   <v-dialog
+    class="workbench-dialog"
+    scrollable
     :model-value="modelValue"
     max-width="900"
     :persistent="installing"
@@ -255,7 +257,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   (event: "update:modelValue", value: boolean): void;
-  (event: "installed"): void;
+  (event: "installed", directory: "teams" | "workflows"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const content = ref("");
@@ -363,7 +365,12 @@ async function install(savePending: boolean) {
       installations: installations.value,
       save_pending: savePending,
     });
-    emit("installed");
+    emit(
+      "installed",
+      preview.value.package.definition.kind === "autonomous"
+        ? "teams"
+        : "workflows",
+    );
     emit("update:modelValue", false);
   } catch (cause) {
     const failure = extractApiError(cause, tm("errors.operationFailed"));

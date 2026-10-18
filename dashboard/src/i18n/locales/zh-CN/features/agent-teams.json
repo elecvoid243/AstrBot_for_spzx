@@ -684,5 +684,25 @@
       "missing": "缺失或不兼容",
       "confirmation_required": "需要审查并选择"
     }
+  },
+  "workbench": {
+    "intro": "设计可复用资产，从每次运行的固定快照追踪到最终产物。",
+    "navigation": "Agent 团队工作台",
+    "assets": "资产",
+    "runs": "运行",
+    "teams": "团队",
+    "workflows": "工作流",
+    "active": "进行中",
+    "pending": "待处理",
+    "history": "历史",
+    "all": "全部运行",
+    "legacy": "旧版团队工作区",
+    "legacyHint": "原团队侧栏、工作流编排、成员、运行监控和历史保留于此。它们的定义和运行与版本化资产分开管理。",
+    "snapshotHint": "本次运行的固定快照。编辑资产或角色模板只影响后续新运行。",
+    "emptyFilter": "此分类暂无运行。可切换分类，或从资产发起运行。",
+    "teamIntro": "可复用自主团队、允许使用的角色与本机依赖。",
+    "workflowIntro": "版本化单任务与画布工作流。在此编辑定义，在运行中查看固定快照。",
+    "legacyAssets": "团队 / 工作流 / 角色模板",
+    "template": "角色模板"
   }
 }

@@ -116,6 +116,111 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("finds active, waiting and historical runs without editing their definitions", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    api.runs.mockResolvedValue({
+      runs: [
+        runOverview,
+        {
+          ...runOverview,
+          run_id: "blocked-run",
+          status: "blocked",
+          snapshot: {
+            ...runOverview.snapshot,
+            definition: { name: "Missing model" },
+          },
+        },
+        {
+          ...runOverview,
+          run_id: "done-run",
+          status: "completed",
+          snapshot: {
+            ...runOverview.snapshot,
+            definition: { name: "Historical report" },
+          },
+        },
+        {
+          ...runOverview,
+          run_id: "waiting-run",
+          todos: [{ status: "pending" }],
+          snapshot: {
+            ...runOverview.snapshot,
+            definition: { name: "Waiting for approval" },
+          },
+        },
+      ],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "runs" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="runs-active"]').trigger("click");
+    expect(wrapper.get(".workflow-run-list").text()).toContain("Report");
+    expect(wrapper.get(".workflow-run-list").text()).not.toContain(
+      "Historical report",
+    );
+    await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+    expect(wrapper.get(".workflow-run-list").text()).toContain("Missing model");
+    expect(wrapper.get(".workflow-run-list").text()).toContain(
+      "Waiting for approval",
+    );
+    expect(wrapper.get(".workflow-run-list").text()).not.toContain(
+      "Historical report",
+    );
+    await wrapper.get('[data-testid="runs-history"]').trigger("click");
+    expect(wrapper.get(".workflow-run-list").text()).toContain(
+      "Historical report",
+    );
+    expect(wrapper.get(".workflow-run-list").text()).not.toContain(
+      "Missing model",
+    );
+    await wrapper.get(".workflow-run-list button").trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="run-detail"]').text()).toContain(
+      "workbench.snapshotHint",
+    );
+    expect(
+      wrapper.get('[data-testid="run-detail"]').find("textarea").exists(),
+    ).toBe(false);
+    wrapper.unmount();
+  });
+  it("keeps teams and workflows in their own asset directories", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/", component: slotStub }],
+    });
+    await router.push("/");
+    api.list.mockResolvedValue({
+      assets: [
+        asset,
+        {
+          ...asset,
+          asset_id: "team-1",
+          definition: {
+            name: "Research team",
+            kind: "autonomous",
+            allowed_roles: [],
+          },
+        },
+      ],
+    });
+    const wrapper = mount(WorkflowWorkspacePanel, {
+      props: { mode: "assets", assetKind: "teams" },
+      global: { plugins: [router], stubs },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Research team");
+    expect(wrapper.text()).not.toContain("Report · v1");
+    await wrapper.setProps({ assetKind: "workflows" });
+    expect(wrapper.text()).toContain("Report · v1");
+    expect(wrapper.text()).not.toContain("Research team");
+    wrapper.unmount();
+  });
   it("navigates from a nested coordinator through its call to the child task", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

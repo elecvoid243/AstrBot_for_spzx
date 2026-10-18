@@ -23,6 +23,13 @@
       <v-card v-for="role in roles" :key="role.role_id" variant="outlined">
         <v-card-text>
           <h3 class="role-name text-h6">{{ role.definition.name }}</h3>
+          <v-chip
+            size="x-small"
+            variant="outlined"
+            class="my-2"
+            prepend-icon="mdi-account-outline"
+            >{{ tm("workbench.template") }}</v-chip
+          >
           <p class="text-caption">
             {{ tm("roles.version") }} {{ role.version }}
           </p>
@@ -68,7 +75,13 @@
       </v-card>
     </div>
 
-    <v-dialog v-model="dialog" max-width="1100" scrollable :fullscreen="mobile">
+    <v-dialog
+      v-model="dialog"
+      class="workbench-dialog"
+      max-width="1100"
+      scrollable
+      :fullscreen="mobile"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           currentId ? tm("roles.edit") : tm("roles.create")

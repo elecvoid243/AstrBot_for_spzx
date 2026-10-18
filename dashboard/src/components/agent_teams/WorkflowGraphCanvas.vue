@@ -521,7 +521,12 @@ const selectingTeam = ref(false);
 const readingTeams = ref(false);
 let teamSelectionRequest = 0;
 let teamReadRequest = 0;
-const narrow = window.matchMedia?.("(max-width: 1000px)").matches ?? false;
+const widthQuery = window.matchMedia?.("(max-width: 1000px)");
+const narrow = ref(widthQuery?.matches ?? false);
+const updateWidth = (event: MediaQueryListEvent) => {
+  narrow.value = event.matches;
+};
+widthQuery?.addEventListener?.("change", updateWidth);
 const history = ref<string[]>([JSON.stringify(draft.value)]);
 const historyIndex = ref(0);
 const selectedTask = computed(() =>
@@ -543,6 +548,7 @@ watch(
   { flush: "sync" },
 );
 onBeforeUnmount(() => {
+  widthQuery?.removeEventListener?.("change", updateWidth);
   teamSelectionRequest++;
   teamReadRequest++;
 });
@@ -1116,7 +1122,7 @@ function layout() {
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1);
 }
 .graph-edge-picker {
-  min-width: 230px;
+  min-width: min(230px, 100%);
   max-width: 320px;
 }
 .graph-columns {

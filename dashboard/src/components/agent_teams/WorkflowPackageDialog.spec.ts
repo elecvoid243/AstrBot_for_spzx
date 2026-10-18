@@ -40,6 +40,38 @@ const stubs = {
 };
 
 describe("workflow package review", () => {
+  it.each(["teams", "workflows"] as const)(
+    "returns the %s directory after installing a package",
+    async (directory) => {
+      const portable = {
+        asset_id: "entry",
+        version: 1,
+        definition: {
+          name: "Imported entry",
+          ...(directory === "teams" ? { kind: "autonomous" } : {}),
+        },
+      };
+      api.previewImport.mockResolvedValueOnce({
+        package: portable,
+        roles: [],
+        assets: [],
+        ready: true,
+        issues: [],
+      });
+      api.importPackage.mockResolvedValueOnce({ existing: false });
+      const wrapper = mount(WorkflowPackageDialog, {
+        props: { modelValue: true },
+        global: { stubs },
+      });
+      await wrapper.find("textarea").setValue(JSON.stringify(portable));
+      await wrapper.get('[data-testid="preview-package"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="confirm-package"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("installed")).toEqual([[directory]]);
+      wrapper.unmount();
+    },
+  );
   it("keeps reviewed slots with local choices and resets them for edited content", async () => {
     const raw = {
       asset_id: "source",

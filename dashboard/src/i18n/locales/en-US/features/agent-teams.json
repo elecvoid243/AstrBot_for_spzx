@@ -684,5 +684,25 @@
       "missing": "Missing or incompatible",
       "confirmation_required": "Review and choose"
     }
+  },
+  "workbench": {
+    "intro": "Design reusable assets. Follow each run from its fixed snapshot to the final result.",
+    "navigation": "Agent Teams workspace",
+    "assets": "Assets",
+    "runs": "Runs",
+    "teams": "Teams",
+    "workflows": "Workflows",
+    "active": "In progress",
+    "pending": "Needs attention",
+    "history": "History",
+    "all": "All runs",
+    "legacy": "Previous team workspace",
+    "legacyHint": "Previous team sidebar, Workflow Editor, Members, Run Monitor and History remain here. These definitions and runs are separate from versioned assets.",
+    "snapshotHint": "Fixed run snapshot. Editing an asset or role template only affects future runs.",
+    "emptyFilter": "No runs in this view. Choose another view or start a run from Assets.",
+    "teamIntro": "Reusable autonomous teams, their allowed roles and local dependencies.",
+    "workflowIntro": "Versioned single-task and canvas workflows. Edit definitions here; inspect fixed snapshots in Runs.",
+    "legacyAssets": "Teams / Workflows / Role templates",
+    "template": "Role template"
   }
 }

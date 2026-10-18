@@ -1,5 +1,7 @@
 <template>
   <v-dialog
+    class="workbench-dialog"
+    scrollable
     :model-value="modelValue"
     max-width="760"
     :persistent="busy"

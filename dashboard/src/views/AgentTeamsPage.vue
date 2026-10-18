@@ -3,93 +3,144 @@
     <v-container fluid class="dashboard-shell pa-4 pa-md-6">
       <div class="dashboard-header">
         <div class="dashboard-header-main">
-          <div class="d-flex align-center flex-wrap" style="gap: 8px;">
-            <h1 class="dashboard-title">{{ tm('page.title') }}</h1>
-            <v-chip size="x-small" color="orange-darken-2" variant="tonal" label>
-              {{ tm('page.beta') }}
-            </v-chip>
+          <div class="d-flex align-center flex-wrap ga-2">
+            <h1 class="dashboard-title">{{ tm("page.title") }}</h1>
+            <v-chip size="x-small" color="primary" variant="tonal" label>{{
+              tm("page.beta")
+            }}</v-chip>
+          </div>
+          <p class="dashboard-subtitle">{{ tm("workbench.intro") }}</p>
+        </div>
+      </div>
+      <nav
+        class="workbench-navigation"
+        :aria-label="tm('workbench.navigation')"
+      >
+        <v-btn
+          :variant="tab !== 'runs' ? 'tonal' : 'text'"
+          color="primary"
+          prepend-icon="mdi-folder-outline"
+          @click="tab = 'assets'"
+          >{{ tm("workbench.assets") }}</v-btn
+        >
+        <v-btn
+          :variant="tab === 'runs' ? 'tonal' : 'text'"
+          color="primary"
+          prepend-icon="mdi-play-circle-outline"
+          @click="tab = 'runs'"
+          >{{ tm("workbench.runs") }}</v-btn
+        >
+      </nav>
+      <section class="workbench-content" :aria-label="tm(tab === 'runs' ? 'workbench.runs' : 'workbench.assets')">
+        <div v-show="tab === 'assets'" class="workbench-asset-navigation">
+        <v-tabs
+          v-model="assetTab"
+          :mandatory="false"
+          color="primary"
+          density="comfortable"
+          show-arrows
+        >
+          <v-tab value="teams">{{ tm("workbench.teams") }}</v-tab>
+          <v-tab value="assets">{{ tm("workbench.workflows") }}</v-tab>
+          <v-tab value="roles">{{ tm("roles.title") }}</v-tab>
+        </v-tabs>
+        </div>
+        <div class="workbench-panel">
+          <WorkflowWorkspacePanel
+            v-if="tab === 'assets' && assetTab !== 'roles'"
+            :key="assetTab"
+            mode="assets"
+            :asset-kind="assetTab === 'teams' ? 'teams' : 'workflows'"
+            @started="tab = 'runs'"
+            @installed="assetTab = $event === 'teams' ? 'teams' : 'assets'"
+          />
+          <WorkflowWorkspacePanel v-else-if="tab === 'runs'" mode="runs" />
+          <RoleTemplatesPanel v-else-if="tab === 'assets' && assetTab === 'roles'" />
+        </div>
+      </section>
+      <details
+        class="workbench-legacy mt-6"
+        :open="legacyOpen"
+        @toggle="legacyOpen = ($event.target as HTMLDetailsElement).open"
+      >
+        <summary>{{ tm("workbench.legacy") }}</summary>
+        <p class="text-body-2 text-medium-emphasis my-3">
+          {{ tm("workbench.legacyHint") }}
+        </p>
+        <v-btn variant="text" prepend-icon="mdi-refresh" @click="refresh">{{
+          tm("page.refresh")
+        }}</v-btn>
+        <div class="agent-teams-body">
+          <AgentTeamsSidebar
+            class="agent-teams-sidebar"
+            :teams="teams"
+            :selected-team-id="selectedTeamId"
+            :selected-team="selectedTeam"
+            @select="selectTeam"
+            @create="onCreate"
+            @edit="onEditTeam"
+            @add-member="onAddMember"
+            @remove-member="onRemoveMember"
+          />
+          <div class="agent-teams-main">
+            <v-tabs
+              v-model="legacyTab"
+              @update:model-value="legacyOpen = true"
+              :mandatory="false"
+              color="primary"
+              density="comfortable"
+              show-arrows
+            >
+              <v-tab value="editor">{{ tm("tabs.editor") }}</v-tab>
+              <v-tab value="members">{{ tm("tabs.members") }}</v-tab>
+              <v-tab value="monitor">{{ tm("tabs.monitor") }}</v-tab>
+              <v-tab value="history">{{ tm("tabs.history") }}</v-tab>
+            </v-tabs>
+            <section
+              v-if="legacyOpen && legacyTab === 'editor'"
+              class="agent-teams-panel-editor mt-4"
+            >
+              <WorkflowEditor
+                :team="selectedTeam"
+                :workflows="workflows"
+                @save-and-run="onSaveAndRun"
+              />
+            </section>
+            <section
+              v-if="legacyOpen && legacyTab === 'members'"
+              class="agent-teams-panel-members mt-4"
+            >
+              <MemberConfigPanel
+                v-if="selectedTeam"
+                :team="selectedTeam"
+                @update-team="onTeamMembersUpdated"
+              />
+              <div v-else class="members-empty">{{ tm("members.noTeam") }}</div>
+            </section>
+            <section
+              v-if="legacyOpen && legacyTab === 'monitor'"
+              class="agent-teams-panel-monitor mt-4"
+            >
+              <RunMonitor
+                :team="selectedTeam"
+                :initial-run="pendingRun"
+                :preset-workflow-id="presetWorkflowId"
+              />
+            </section>
+            <section
+              v-if="legacyOpen && legacyTab === 'history'"
+              class="agent-teams-panel-history mt-4"
+            >
+              <RunsHistory :team="selectedTeam" @open="onOpenRun" />
+            </section>
           </div>
         </div>
-
-        <div class="dashboard-header-actions">
-          <v-btn variant="text" color="primary" prepend-icon="mdi-refresh" @click="refresh">
-            {{ tm('page.refresh') }}
-          </v-btn>
-        </div>
-      </div>
-
-      <div class="agent-teams-body">
-        <AgentTeamsSidebar
-          class="agent-teams-sidebar"
-          :teams="teams"
-          :selected-team-id="selectedTeamId"
-          :selected-team="selectedTeam"
-          @select="selectTeam"
-          @create="onCreate"
-          @edit="onEditTeam"
-          @add-member="onAddMember"
-          @remove-member="onRemoveMember"
-        />
-
-        <div class="agent-teams-main">
-          <v-tabs v-model="tab" color="primary" density="comfortable">
-            <v-tab value="assets">{{ tm('v2.assets') }}</v-tab>
-            <v-tab value="runs">{{ tm('v2.runs') }}</v-tab>
-            <v-tab value="roles">{{ tm('roles.title') }}</v-tab>
-            <v-tab value="editor">{{ tm('tabs.editor') }}</v-tab>
-            <v-tab value="monitor">{{ tm('tabs.monitor') }}</v-tab>
-            <v-tab value="history">{{ tm('tabs.history') }}</v-tab>
-            <v-tab value="members">{{ tm('tabs.members') }}</v-tab>
-          </v-tabs>
-
-          <v-window v-model="tab" class="mt-4">
-            <v-window-item value="assets">
-              <WorkflowWorkspacePanel v-if="tab === 'assets'" mode="assets" @started="tab = 'runs'" />
-            </v-window-item>
-            <v-window-item value="runs">
-              <WorkflowWorkspacePanel v-if="tab === 'runs'" mode="runs" />
-            </v-window-item>
-            <v-window-item value="roles">
-              <RoleTemplatesPanel v-if="tab === 'roles'" />
-            </v-window-item>
-            <v-window-item value="editor">
-              <section v-if="tab === 'editor'" class="agent-teams-panel-editor">
-                <WorkflowEditor
-                  :team="selectedTeam"
-                  :workflows="workflows"
-                  @save-and-run="onSaveAndRun"
-                />
-              </section>
-            </v-window-item>
-            <v-window-item value="monitor">
-              <section v-if="tab === 'monitor'" class="agent-teams-panel-monitor">
-                <RunMonitor
-                  :team="selectedTeam"
-                  :initial-run="pendingRun"
-                  :preset-workflow-id="presetWorkflowId"
-                />
-              </section>
-            </v-window-item>
-            <v-window-item value="history">
-              <section v-if="tab === 'history'" class="agent-teams-panel-history">
-                <RunsHistory :team="selectedTeam" @open="onOpenRun" />
-              </section>
-            </v-window-item>
-            <v-window-item value="members">
-              <section v-if="tab === 'members'" class="agent-teams-panel-members">
-                <MemberConfigPanel
-                  v-if="selectedTeam"
-                  :team="selectedTeam"
-                  @update-team="onTeamMembersUpdated"
-                />
-                <div v-else class="members-empty">{{ tm('members.noTeam') }}</div>
-              </section>
-            </v-window-item>
-          </v-window>
-        </div>
-      </div>
-
-      <TeamCreateDialog v-model="showCreateDialog" :team="editingTeam" @saved="onTeamSaved" />
+      </details>
+      <TeamCreateDialog
+        v-model="showCreateDialog"
+        :team="editingTeam"
+        @saved="onTeamSaved"
+      />
       <MemberAddDialog
         v-model="showMemberDialog"
         :team-id="selectedTeam?.team_id ?? ''"
@@ -101,6 +152,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
+import '@/styles/agent-teams-workbench.css';
 import { useRoute, useRouter } from 'vue-router';
 import { agentTeamsApi } from '@/api/v1';
 import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
@@ -134,7 +186,10 @@ const confirmDialog = useConfirmDialog();
 
 const route = useRoute();
 const router = useRouter();
-const tab = ref(route.query.workflow_run ? 'runs' : 'editor');
+const tab = ref<'assets' | 'runs'>(route.query.workflow_run ? 'runs' : 'assets');
+const assetTab = ref('assets');
+const legacyTab = ref('editor');
+const legacyOpen = ref(false);
 watch(() => route.query.workflow_run, (runId) => {
   if (typeof runId === 'string' && runId) tab.value = 'runs';
 });
@@ -146,7 +201,7 @@ watch(tab, (selected, previous) => {
     void router.replace({ query });
   }
 });
-// Workflow preselected for the monitor by the editor's 保存并运行 handoff.
+// Workflow preselected for the monitor by the legacy editor's save-and-run handoff.
 const presetWorkflowId = ref('');
 const showCreateDialog = ref(false);
 // Team handed to TeamCreateDialog: null = create mode, a team = edit mode
@@ -246,18 +301,20 @@ async function onRemoveMember(memberId: string) {
 function onOpenRun(runId: string, row: any) {
   pendingRun.value = row ?? null;
   void openRun(runId, row);
-  tab.value = 'monitor';
+  legacyTab.value = 'monitor';
+  legacyOpen.value = true;
 }
 
 /**
- * Hand a freshly saved workflow to the monitor tab (editor 保存并运行).
+ * Hand a freshly saved workflow to the monitor tab (legacy editor save-and-run).
  *
  * Only the tab switch and the workflow preselection happen here — the user
- * still types the goal and presses 开始运行, because a run needs an input.
+ * still types the goal and presses Start Run, because a run needs an input.
  */
 function onSaveAndRun(workflowId: string) {
   presetWorkflowId.value = workflowId;
-  tab.value = 'monitor';
+  legacyTab.value = 'monitor';
+  legacyOpen.value = true;
 }
 
 // Reload the workflows whenever the selected team changes so the editor's

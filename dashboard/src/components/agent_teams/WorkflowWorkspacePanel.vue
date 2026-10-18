@@ -1,7 +1,17 @@
 <template>
-  <section>
+  <section class="workflow-workspace">
     <div class="d-flex flex-wrap align-center ga-2 mb-4">
-      <h2 class="text-h5">{{ tm(`v2.${mode}`) }}</h2>
+      <h2 class="text-h5">
+        {{
+          tm(
+            mode === "runs"
+              ? "workbench.runs"
+              : assetKind === "teams"
+              ? "workbench.teams"
+              : "workbench.workflows",
+          )
+        }}
+      </h2>
       <v-spacer />
       <v-btn
         v-if="mode === 'assets'"
@@ -13,7 +23,7 @@
         >{{ tm("package.import") }}</v-btn
       >
       <v-btn
-        v-if="mode === 'assets'"
+        v-if="mode === 'assets' && assetKind !== 'workflows'"
         variant="tonal"
         color="primary"
         data-testid="create-autonomous-team"
@@ -21,7 +31,7 @@
         >{{ tm("autonomous.create") }}</v-btn
       >
       <v-btn
-        v-if="mode === 'assets'"
+        v-if="mode === 'assets' && assetKind !== 'teams'"
         variant="tonal"
         color="primary"
         @click="editGraph(null)"
@@ -34,7 +44,7 @@
         >{{ tm("page.refresh") }}</v-btn
       >
       <v-btn
-        v-if="mode === 'assets'"
+        v-if="mode === 'assets' && assetKind !== 'teams'"
         variant="tonal"
         color="primary"
         @click="edit(null)"
@@ -49,14 +59,27 @@
       role="alert"
       >{{ error }}</v-alert
     >
-    <p class="text-body-2 mb-4">{{ tm("v2.scope") }}</p>
+    <p class="text-body-2 text-medium-emphasis mb-4">
+      {{
+        tm(
+          mode === "runs"
+            ? "v2.scope"
+            : assetKind === "teams"
+            ? "workbench.teamIntro"
+            : "workbench.workflowIntro",
+        )
+      }}
+    </p>
 
     <template v-if="mode === 'assets'">
-      <v-alert v-if="!assets.length && !loading" type="info" variant="tonal">{{
-        tm("v2.emptyAssets")
-      }}</v-alert>
+      <v-alert
+        v-if="!visibleAssets.length && !loading"
+        type="info"
+        variant="tonal"
+        >{{ tm("v2.emptyAssets") }}</v-alert
+      >
       <v-card
-        v-for="asset in assets"
+        v-for="asset in visibleAssets"
         :key="asset.asset_id"
         class="mb-3"
         variant="outlined"
@@ -112,15 +135,38 @@
     </template>
 
     <template v-else>
+      <nav
+        class="d-flex flex-wrap ga-2 mb-4"
+        :aria-label="tm('workbench.runs')"
+      >
+        <v-btn
+          v-for="view in ['all', 'active', 'pending', 'history'] as const"
+          :key="view"
+          :data-testid="`runs-${view}`"
+          :variant="runView === view ? 'tonal' : 'text'"
+          :aria-pressed="runView === view"
+          color="primary"
+          @click="runView = view"
+          >{{ tm(`workbench.${view}`) }}</v-btn
+        >
+      </nav>
       <v-alert v-if="!runs.length && !loading" type="info" variant="tonal">{{
         tm("v2.emptyRuns")
       }}</v-alert>
+      <v-alert
+        v-else-if="!visibleRuns.length && !loading"
+        type="info"
+        variant="tonal"
+        class="mb-4"
+        >{{ tm("workbench.emptyFilter") }}</v-alert
+      >
       <details :open="!selectedRun" class="workflow-run-list mb-4">
         <summary class="text-subtitle-1 mb-3">
-          {{ tm("progress.runList") }} · {{ runs.length }}
+          {{ tm("progress.runList") }} · {{ visibleRuns.length }} /
+          {{ runs.length }}
         </summary>
         <v-card
-          v-for="run in runs"
+          v-for="run in visibleRuns"
           :key="run.run_id"
           class="mb-3"
           variant="outlined"
@@ -162,6 +208,13 @@
         data-testid="run-detail"
       >
         <v-card-text>
+          <v-alert
+            type="info"
+            variant="tonal"
+            class="mb-4"
+            icon="mdi-lock-outline"
+            >{{ tm("workbench.snapshotHint") }}</v-alert
+          >
           <WorkflowRunProgress
             :run="selectedRun"
             :selected-task="selectedTaskNode"
@@ -334,10 +387,10 @@
             class="my-3"
             >{{ detailRun.state.reason }}</v-alert
           >
-          <RunUsagePanel
-            v-if="detailRun.run_id !== selectedRun.run_id"
-            :run="detailRun"
-          />
+          <details v-if="detailRun.run_id !== selectedRun.run_id" class="my-3">
+            <summary>{{ tm("usage.title") }}</summary>
+            <RunUsagePanel :run="detailRun" />
+          </details>
           <p class="text-body-2 text-medium-emphasis mb-3">
             {{ detailRun.snapshot.definition.name }} · {{ tm("v2.result") }}
           </p>
@@ -452,7 +505,13 @@
       :roles="roles"
       @saved="refresh"
     />
-    <v-dialog v-model="graphEditing" max-width="1600" :persistent="saving">
+    <v-dialog
+      class="workbench-dialog"
+      scrollable
+      v-model="graphEditing"
+      max-width="1600"
+      :persistent="saving"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("graph.canvas")
@@ -492,10 +551,13 @@
               style="max-width: 220px"
             />
           </div>
-          <RunLimitsForm
-            v-model="graphForm.limits"
-            @validation="graphUsageInvalid = $event"
-          />
+          <details :open="graphUsageInvalid" class="mb-3">
+            <summary class="text-subtitle-1">{{ tm("usage.limits") }}</summary>
+            <RunLimitsForm
+              v-model="graphForm.limits"
+              @validation="graphUsageInvalid = $event"
+            />
+          </details>
           <WorkflowGraphCanvas
             v-model:definition="graphForm"
             :roles="roles"
@@ -532,7 +594,13 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="editing" max-width="720" :persistent="saving">
+    <v-dialog
+      class="workbench-dialog"
+      scrollable
+      v-model="editing"
+      max-width="720"
+      :persistent="saving"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("v2.edit")
@@ -595,7 +663,13 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="starting" max-width="600" :persistent="saving">
+    <v-dialog
+      class="workbench-dialog"
+      scrollable
+      v-model="starting"
+      max-width="600"
+      :persistent="saving"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("v2.start")
@@ -665,7 +739,13 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <v-dialog v-model="revising" max-width="720" :persistent="saving">
+    <v-dialog
+      class="workbench-dialog"
+      scrollable
+      v-model="revising"
+      max-width="720"
+      :persistent="saving"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("v2.revise")
@@ -698,7 +778,12 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <v-dialog v-model="previewing" max-width="900">
+    <v-dialog
+      class="workbench-dialog"
+      scrollable
+      v-model="previewing"
+      max-width="900"
+    >
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
           tm("v2.previewFile")
@@ -723,7 +808,10 @@
     <WorkflowPackageDialog
       v-model="packageDialog"
       :exported-package="exportedPackage"
-      @installed="refresh"
+      @installed="
+        refresh();
+        emit('installed', $event);
+      "
     />
     <WorkflowChatAccessDialog
       v-if="chatAccessAsset"
@@ -763,12 +851,26 @@ import type {
   WorkflowPackage,
 } from "@/api/generated/openapi-v1";
 
-const props = defineProps<{ mode: "assets" | "runs" }>();
-const emit = defineEmits<{ (event: "started", runId: string): void }>();
+const props = defineProps<{
+  mode: "assets" | "runs";
+  assetKind?: "teams" | "workflows";
+}>();
+const emit = defineEmits<{
+  (event: "started", runId: string): void;
+  (event: "installed", directory: "teams" | "workflows"): void;
+}>();
 const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
 const router = useRouter();
 const assets = ref<any[]>([]);
+const visibleAssets = computed(() =>
+  assets.value.filter(
+    (asset) =>
+      !props.assetKind ||
+      (asset.definition.kind === "autonomous") ===
+        (props.assetKind === "teams"),
+  ),
+);
 const chatAccessAsset = ref<any>(null);
 const packageDialog = ref(false);
 const exportedPackage = ref<WorkflowPackage | null>(null);
@@ -786,6 +888,30 @@ async function exportWorkflow(asset: any) {
 }
 const roles = ref<any[]>([]);
 const runs = ref<any[]>([]);
+const runView = ref<"all" | "active" | "pending" | "history">("all");
+const visibleRuns = computed(() =>
+  runs.value.filter((run) => {
+    const terminal = ["completed", "cancelled", "skipped"].includes(run.status);
+    if (runView.value === "history")
+      return terminal || ["failed", "interrupted"].includes(run.status);
+    if (runView.value === "active") return !terminal;
+    if (runView.value === "pending")
+      return (
+        !terminal &&
+        ([
+          "blocked",
+          "failed",
+          "interrupted",
+          "paused",
+          "waiting_human",
+        ].includes(run.status) ||
+          run.control?.status === "paused" ||
+          run.progress?.waiting > 0 ||
+          run.todos?.some((todo: any) => todo.status === "pending"))
+      );
+    return true;
+  }),
+);
 const selectedRun = ref<any>(null);
 const runOperations = ref(
   new Map<

@@ -712,7 +712,7 @@
     "preview": "Preview migration",
     "confirm": "Confirm migration",
     "scope": "Copy team and workflow definitions into versioned assets and roles. Read original runs and conversations in Runs → History. Legacy records are read-only there and cannot resume in the new engine. Starting a migrated asset always creates a new run with fresh member contexts.",
-    "active": "These previous runs are still active. Finish or stop them in the previous workspace; migration does not take them over.",
+    "active": "Unfinished legacy records are listed below. Close this preview and use the top legacy run notice in Agent Teams to finish or explicitly stop runs still owned by the original engine. Ownerless records remain read-only history; migration never resumes them.",
     "ready": "Definitions are ready to migrate. No run will start.",
     "pending": "Needs configuration before launch. Review all unresolved definitions and resources.",
     "assets": "Assets to create or reuse",

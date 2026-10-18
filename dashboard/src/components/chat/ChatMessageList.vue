@@ -2319,9 +2319,11 @@ function formatDuration(seconds: number) {
    (variant A): a visible boundary + glyph at rest, ink-filled while open.
    2026-10-17: the rail also carries the turn-activity mark, so it stacks its
    children instead of laying them out in a row. The top offset starts the
-   stack on the bubble's first line instead of the row's edge — 10 px bubble
-   padding plus the reasoning block's 6 px margin — so the 18 px mark sits on
-   the same optical line as the text (a plain first line lands 1–2 px off). */
+   stack on the bubble's first line instead of the row's edge: the bubble's
+   10 px padding plus optical centring in a 26 px line needs 14 px for an
+   18 px mark. The first block's own top margin is zeroed below, so the
+   waiting line, a reasoning header, and plain text all start at that same
+   10 px — one offset keeps the mark on any of them. */
 .message-rail {
   flex: 0 0 20px;
   width: 20px;
@@ -2329,7 +2331,15 @@ function formatDuration(seconds: number) {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding-top: 16px;
+  padding-top: 14px;
+}
+
+/* A block that opens the bubble needs no top margin: the bubble's 10 px
+   padding already separates it from what came before. Dropping it also keeps
+   the rail mark on the same optical line as the first line (see above) —
+   with the 6 px reasoning margin in place that line would sit 6 px lower. */
+.message-bubble :deep(.reasoning-block:first-child) {
+  margin-top: 0;
 }
 
 .injection-marker {

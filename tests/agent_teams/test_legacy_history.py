@@ -50,13 +50,16 @@ async def history_env(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sample", range(12))
 async def test_owned_paused_history_remains_resumable_in_the_original_engine(
     history_env,
+    sample,
 ):
     """Keep a naturally parked legacy run distinct from lost-process history.
 
     Args:
         history_env: Real database and shared public history services.
+        sample: One of twelve predeclared normal-completion observations.
     """
     from astrbot.core.agent_team_tools import AgentTeamToolRegistry
     from astrbot.core.agent_teams.history import RunHistoryService
@@ -68,6 +71,8 @@ async def test_owned_paused_history_remains_resumable_in_the_original_engine(
     coordinator_umo = "webchat:FriendMessage:paused-lead"
     delivered = []
     finish_on_next = False
+    final_response_waiting = asyncio.Event()
+    release_final_response = asyncio.Event()
 
     async def deliver(session_id, text, context=None, **kwargs):
         """Supply an external coordinator response, finishing after public resume.
@@ -101,6 +106,9 @@ async def test_owned_paused_history_remains_resumable_in_the_original_engine(
         Returns:
             Original response text and its empty process-parts collection.
         """
+        if finish_on_next:
+            final_response_waiting.set()
+            await release_final_response.wait()
         return "No dispatch in this model response", []
 
     legacy.ports_factory = lambda username, emit: TeamPorts(
@@ -130,7 +138,9 @@ async def test_owned_paused_history_remains_resumable_in_the_original_engine(
         ],
     )
     run = await legacy.start_run(
-        "alice", "paused-team", {"mode": "auto", "input": "Pause without dispatch"}
+        "alice",
+        "paused-team",
+        {"mode": "auto", "input": f"Pause without dispatch {sample}"},
     )
     run_id = run["run_id"]
     for _ in range(250):
@@ -158,14 +168,37 @@ async def test_owned_paused_history_remains_resumable_in_the_original_engine(
 
     finish_on_next = True
     await legacy.resume_run("alice", run_id)
-    for _ in range(250):
-        record = await history.get_record("alice", "legacy_run", run_id)
-        if record["run"]["status"] == "completed":
-            break
-        await asyncio.sleep(0.02)
+    await asyncio.wait_for(final_response_waiting.wait(), 5)
+
+    async def observe_completion():
+        """Check every public history observation through normal completion.
+
+        Returns:
+            The original durable completed history record.
+        """
+        for _ in range(250):
+            observed = await history.get_record("alice", "legacy_run", run_id)
+            assert observed["run"]["history_status"] != "interrupted"
+            if observed["run"]["status"] == "completed":
+                return observed
+            await asyncio.sleep(0)
+        pytest.fail("The original run did not persist its completion")
+
+    readers = [asyncio.create_task(observe_completion()) for _ in range(3)]
+    await asyncio.sleep(0)
+    release_final_response.set()
+    completed = await asyncio.wait_for(
+        asyncio.gather(*readers, return_exceptions=True), 10
+    )
     assert len(delivered) == 3
-    assert record["run"]["history_status"] == "completed"
-    assert record["run"]["result_summary"] == "Completed after original engine resume"
+    for observed in completed:
+        if isinstance(observed, BaseException):
+            raise observed
+        assert observed["run"]["history_status"] == "completed"
+        assert (
+            observed["run"]["result_summary"]
+            == "Completed after original engine resume"
+        )
 
 
 @pytest.mark.asyncio

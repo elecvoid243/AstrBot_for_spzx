@@ -4,7 +4,7 @@
 - Kept old records in their original stores. Historical interruptions are a reading projection that retains the original saved status. Still-live legacy executions remain live; viewing history does not cancel them or perform the final engine switch.
 - Legacy history cannot resume, retry or supply member input to v2. Migration receipts locate accessible current asset versions through the normal asset service; preparing and starting a new run uses fresh member contexts and existing readiness checks.
 - Updated English/Chinese instructions, navigation mappings and actual WebUI screenshots.
-- Kept original-engine-owned, resumable pauses distinct from historical interruption. Refreshing history also updates the open original detail and selected saved process without closing the detail.
+- Kept original-engine-owned runs, including resumable pauses and normal completion transitions, distinct from historical interruption. Refreshing history also updates the open original detail and selected saved process without closing the detail.
 
 | Previous entry | Unified reading entry |
 | --- | --- |
@@ -16,7 +16,7 @@
 - **运行 → 历史** 统一分页读取新版运行、原始旧运行和旧成员长期会话。旧记录标明旧引擎与只读，原结果、过程来源和已有思考／工具内容均保留。
 - 历史中断仅为读取投影，原始保存状态不改写；查看不会停止仍实际活跃的旧任务，也不执行最终切换。
 - 旧历史不能触发新版继续、重试或成员输入。迁移回执通过公共资产服务定位当前版本，正常输入与就绪确认后发起全新上下文。
-- 原旧引擎仍持有且可继续的暂停运行不误标为历史中断；刷新历史同步更新已打开的原始详情和当前已保存过程，并保留详情展示。
+- 原旧引擎仍持有的运行（包括可继续的暂停及正常完成过渡）不误标为历史中断；刷新历史同步更新已打开的原始详情和当前已保存过程，并保留详情展示。
 
 | 旧入口 | 统一读取入口 |
 | --- | --- |

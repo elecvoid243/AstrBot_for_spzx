@@ -1890,6 +1890,33 @@ class AgentTeamRunService:
         rows = await self.db.get_agent_team_runs_by_team(team_id)
         return {"runs": [_run_to_dict(r) for r in rows]}
 
+    async def get_history_run(self, username: str, run_id: str) -> dict:
+        """Read original persisted history without resuming or changing execution.
+
+        Args:
+            username: Authenticated team owner.
+            run_id: Original legacy run identity.
+
+        Returns:
+            Original run fields and a separate observation of live execution.
+
+        Raises:
+            AgentTeamsServiceError: The run or its team is inaccessible.
+        """
+        row, team = await self._require_run(username, run_id)
+        runner = self._runners.get(run_id)
+        active = bool(runner and runner.task and not runner.task.done())
+        return {
+            **_run_to_dict(row),
+            "team_name": team["name"],
+            "execution_active": active,
+            "history_status": (
+                "interrupted"
+                if row.status in ("running", "paused", "stopping") and not active
+                else row.status
+            ),
+        }
+
     async def pause_run(self, username: str, run_id: str) -> dict:
         await self._require_run(username, run_id)
         runner = self._require_runner(run_id)

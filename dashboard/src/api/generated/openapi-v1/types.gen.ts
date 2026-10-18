@@ -5451,3 +5451,44 @@ export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostData = {
 export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostResponse = (unknown);
 
 export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostError = (HTTPValidationError);
+
+export type ListHistoryApiV1AgentHistoryGetData = {
+    query?: {
+        limit?: number;
+        offset?: number;
+    };
+};
+
+export type ListHistoryApiV1AgentHistoryGetResponse = (unknown);
+
+export type ListHistoryApiV1AgentHistoryGetError = (HTTPValidationError);
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetData = {
+    path: {
+        identity: string;
+        kind: 'v2_run' | 'legacy_run' | 'legacy_conversation';
+    };
+    query?: {
+        limit?: number;
+        offset?: number;
+    };
+};
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetResponse = (unknown);
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetError = (HTTPValidationError);
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetData = {
+    path: {
+        identity: string;
+        member_id: string;
+    };
+    query?: {
+        before_id?: (number | null);
+        limit?: number;
+    };
+};
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetResponse = (unknown);
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetError = (HTTPValidationError);

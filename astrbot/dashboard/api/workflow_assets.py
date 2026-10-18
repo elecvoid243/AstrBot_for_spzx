@@ -1,5 +1,6 @@
 """Minimal v2 asset and persisted run HTTP boundary."""
 
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, Security
@@ -8,6 +9,7 @@ from fastapi.security import APIKeyHeader
 
 from astrbot.core.agent_teams.assets import RoleAssetError
 from astrbot.core.agent_teams.chat import ChatAccessRequest
+from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.workflows import (
     ArtifactRevisionRequest,
     HumanAnswerRequest,
@@ -42,6 +44,101 @@ def get_workflow_service(request: Request) -> WorkflowService:
         Shared workflow asset and run service.
     """
     return request.app.state.services.workflow_assets
+
+
+def get_history_service(request: Request) -> RunHistoryService:
+    """Resolve the shared read-only history service.
+
+    Args:
+        request: Current authenticated HTTP request.
+
+    Returns:
+        Source-aware history queries over the original stores.
+    """
+    return request.app.state.services.run_history
+
+
+@router.get("/agent_history")
+async def list_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    username: str = Depends(require_dashboard_user),
+    service: RunHistoryService = Depends(get_history_service),
+):
+    """Page owned v2 runs, legacy runs and legacy member conversations.
+
+    Args:
+        limit: Maximum records in one page.
+        offset: Number of records already read.
+        username: Actual authenticated Dashboard user.
+        service: Shared history query boundary.
+
+    Returns:
+        Source-labelled overviews without full results or process content.
+    """
+    return ok(await service.list_records(username, limit, offset))
+
+
+@router.get("/agent_history/{kind}/{identity}")
+async def get_history_record(
+    kind: Literal["v2_run", "legacy_run", "legacy_conversation"],
+    identity: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    username: str = Depends(require_dashboard_user),
+    service: RunHistoryService = Depends(get_history_service),
+):
+    """Read an original source without offering legacy execution controls.
+
+    Args:
+        kind: Source discriminator, never inferred from an overlapping ID.
+        identity: Original source identity.
+        offset: First long-term conversation message to read.
+        limit: Maximum long-term messages in one page.
+        username: Actual authenticated Dashboard user.
+        service: Shared history query boundary.
+
+    Returns:
+        Original content and source links, or an ownership error.
+    """
+    try:
+        return ok(await service.get_record(username, kind, identity, offset, limit))
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.get("/agent_history/legacy_run/{identity}/members/{member_id}")
+async def get_history_process(
+    identity: str,
+    member_id: str,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    username: str = Depends(require_dashboard_user),
+    service: RunHistoryService = Depends(get_history_service),
+):
+    """Read original legacy transcript rows, including their stored source IDs.
+
+    Args:
+        identity: Original legacy run identity.
+        member_id: Original member identity in that run.
+        before_id: Exclusive original transcript cursor.
+        limit: Maximum rows in one page.
+        username: Actual authenticated Dashboard user.
+        service: Shared history query boundary.
+
+    Returns:
+        Chronological original rows and an optional older-page cursor.
+    """
+    try:
+        return ok(
+            await service.get_process(username, identity, member_id, before_id, limit)
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
 
 
 @router.post("/workflow_chat_runs/{run_id}/connection")

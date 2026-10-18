@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
 from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.history import RunHistoryService
 from astrbot.core.agent_teams.migration import LegacyMigrationService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
@@ -277,6 +278,9 @@ def create_dashboard_asgi_app(
         busy_checker=services.agent_teams.busy_checker,
         on_member_stop=_stop_member_turn,
         config_checker=lambda cid: cid in core_lifecycle.astrbot_config_mgr.confs,
+    )
+    services.run_history = RunHistoryService(
+        db, services.workflow_assets, services.agent_team_runs
     )
 
     # Kernel goal loop: injected goal turns on webchat sessions register as

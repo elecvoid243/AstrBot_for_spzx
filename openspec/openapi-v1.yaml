@@ -7528,6 +7528,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_history:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List History
+      description: "Page owned v2 runs, legacy runs and legacy member conversations.\n\
+        \nArgs:\n    limit: Maximum records in one page.\n    offset: Number of records\
+        \ already read.\n    username: Actual authenticated Dashboard user.\n    service:\
+        \ Shared history query boundary.\n\nReturns:\n    Source-labelled overviews\
+        \ without full results or process content."
+      operationId: list_history_api_v1_agent_history_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/agent_history/{kind}/{identity}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get History Record
+      description: "Read an original source without offering legacy execution controls.\n\
+        \nArgs:\n    kind: Source discriminator, never inferred from an overlapping\
+        \ ID.\n    identity: Original source identity.\n    offset: First long-term\
+        \ conversation message to read.\n    limit: Maximum long-term messages in one\
+        \ page.\n    username: Actual authenticated Dashboard user.\n    service: Shared\
+        \ history query boundary.\n\nReturns:\n    Original content and source links,\
+        \ or an ownership error."
+      operationId: get_history_record_api_v1_agent_history__kind___identity__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - v2_run
+          - legacy_run
+          - legacy_conversation
+          type: string
+          title: Kind
+      - name: identity
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Identity
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/agent_history/legacy_run/{identity}/members/{member_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get History Process
+      description: "Read original legacy transcript rows, including their stored source\
+        \ IDs.\n\nArgs:\n    identity: Original legacy run identity.\n    member_id:\
+        \ Original member identity in that run.\n    before_id: Exclusive original transcript\
+        \ cursor.\n    limit: Maximum rows in one page.\n    username: Actual authenticated\
+        \ Dashboard user.\n    service: Shared history query boundary.\n\nReturns:\n\
+        \    Chronological original rows and an optional older-page cursor."
+      operationId: get_history_process_api_v1_agent_history_legacy_run__identity__members__member_id__get
+      parameters:
+      - name: identity
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Identity
+      - name: member_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Member Id
+      - name: before_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Before Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
 components:
   securitySchemes:
     ChatBrowserSession:

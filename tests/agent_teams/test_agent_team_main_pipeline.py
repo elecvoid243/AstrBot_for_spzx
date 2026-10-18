@@ -54,6 +54,8 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
     [
         "dag",
         "auto",
+        "dag_history",
+        "auto_history",
         "ordinary",
         "dag_cancel",
         "auto_cancel",
@@ -168,6 +170,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
             )
         )
     model_started = asyncio.Event()
+    history_read = asyncio.Event()
     model_cancelled = asyncio.Event()
     model_requests = []
     migrated_requests = []
@@ -443,6 +446,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         tools_call_args=[args],
                         tools_call_ids=[f"call-{number}"],
                     )
+            elif mode.endswith("_history"):
+                model_started.set()
+                await history_read.wait()
             elif mode.endswith("_cancel"):
                 model_started.set()
                 try:
@@ -1220,6 +1226,28 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 },
             )
             run_id = snapshot["run_id"]
+            if mode.endswith("_history"):
+                from astrbot.core.agent_teams.history import RunHistoryService
+
+                await asyncio.wait_for(model_started.wait(), 10)
+                history = RunHistoryService(
+                    db, WorkflowService(db, RoleAssetService(db)), runs
+                )
+                observed = await history.get_record("alice", "legacy_run", run_id)
+                assert observed["run"]["execution_active"] is True
+                assert observed["run"]["history_status"] == "running"
+                assert observed["read_only"] is True
+                page = await history.list_records("alice")
+                assert (
+                    next(
+                        item
+                        for item in page["records"]
+                        if item["source"]["id"] == run_id
+                    )["status"]
+                    == "running"
+                )
+                assert not model_cancelled.is_set()
+                history_read.set()
             if mode.endswith("_cancel"):
                 await asyncio.wait_for(model_started.wait(), 10)
                 await runs.request_stop_run("alice", run_id)
@@ -1257,6 +1285,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 "other_knowledge": False,
             }
             assert any(part["type"] == "think" for part in replies[0]["parts"])
+            if mode.endswith("_history"):
+                saved = await history.get_process(
+                    "alice", run_id, team["members"][1]["member_id"]
+                )
+                assert saved["messages"] == transcript["messages"]
+                assert (await history.get_record("alice", "legacy_run", run_id))["run"][
+                    "history_status"
+                ] == "completed"
     finally:
         if run_id is not None:
             await runs.request_stop_run("alice", run_id)

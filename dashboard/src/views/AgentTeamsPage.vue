@@ -62,10 +62,20 @@
             :key="`${assetTab}:${assetReload}`"
             mode="assets"
             :asset-kind="assetTab === 'teams' ? 'teams' : 'workflows'"
+            :launch-asset="historyAsset"
+            @located="historyAsset = null"
             @started="tab = 'runs'"
             @installed="assetTab = $event === 'teams' ? 'teams' : 'assets'"
           />
-          <WorkflowWorkspacePanel v-else-if="tab === 'runs'" mode="runs" />
+          <WorkflowWorkspacePanel
+            v-else-if="tab === 'runs'"
+            mode="runs"
+            @locate-asset="
+              historyAsset = $event;
+              assetTab = $event.kind === 'autonomous' ? 'teams' : 'assets';
+              tab = 'assets';
+            "
+          />
           <RoleTemplatesPanel
             v-else-if="tab === 'assets' && assetTab === 'roles'"
           />
@@ -205,6 +215,7 @@ const tab = ref<"assets" | "runs">(
 );
 const assetTab = ref("assets");
 const assetReload = ref(0);
+const historyAsset = ref<{ asset_id: string; version: number } | null>(null);
 const legacyTab = ref("editor");
 const legacyOpen = ref(false);
 watch(

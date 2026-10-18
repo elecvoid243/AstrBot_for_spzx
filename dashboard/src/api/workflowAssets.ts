@@ -12,6 +12,33 @@ import type {
 } from "./generated/openapi-v1";
 
 export const workflowAssetsApi = {
+  async history(offset = 0) {
+    return (
+      await httpClient.get("/api/v1/agent_history", { params: { offset } })
+    ).data.data;
+  },
+  async historyRecord(
+    kind: "legacy_run" | "legacy_conversation" | "v2_run",
+    identity: string,
+    offset = 0,
+  ) {
+    return (
+      await httpClient.get(
+        `/api/v1/agent_history/${kind}/${encodeURIComponent(identity)}`,
+        { params: { offset } },
+      )
+    ).data.data;
+  },
+  async historyProcess(identity: string, memberId: string, beforeId?: number) {
+    return (
+      await httpClient.get(
+        `/api/v1/agent_history/legacy_run/${encodeURIComponent(
+          identity,
+        )}/members/${encodeURIComponent(memberId)}`,
+        { params: { before_id: beforeId } },
+      )
+    ).data.data;
+  },
   async chatAccess(assetId: string): Promise<{ grants: ChatAccessRequest[] }> {
     return (
       await httpClient.get(

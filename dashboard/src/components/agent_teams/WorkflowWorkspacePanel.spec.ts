@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   readiness: vi.fn(),
   runs: vi.fn(),
+  history: vi.fn(),
   run: vi.fn(),
   artifact: vi.fn(),
   revise: vi.fn(),
@@ -173,6 +174,7 @@ describe("single-task workflow workspace", () => {
       "Historical report",
     );
     await wrapper.get('[data-testid="runs-history"]').trigger("click");
+    await flushPromises();
     expect(wrapper.get(".workflow-run-list").text()).toContain(
       "Historical report",
     );
@@ -1764,6 +1766,17 @@ describe("single-task workflow workspace", () => {
       ],
     });
     api.runs.mockResolvedValue({ runs: [runOverview] });
+    api.history.mockResolvedValue({
+      records: [
+        {
+          source: { kind: "v2_run", id: "done-run" },
+          engine: "v2",
+          title: "Historical report",
+          status: "completed",
+        },
+      ],
+      next_offset: null,
+    });
     api.run.mockResolvedValue(run);
   });
   afterEach(() => {

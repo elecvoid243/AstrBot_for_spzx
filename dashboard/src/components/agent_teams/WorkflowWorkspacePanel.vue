@@ -157,17 +157,32 @@
           >{{ tm(`workbench.${view}`) }}</v-btn
         >
       </nav>
-      <v-alert v-if="!runs.length && !loading" type="info" variant="tonal">{{
-        tm("v2.emptyRuns")
-      }}</v-alert>
+      <UnifiedRunHistory
+        v-if="runView === 'history'"
+        @open-run="
+          runView = 'all';
+          openRun($event);
+        "
+        @locate-asset="emit('locateAsset', $event)"
+      />
       <v-alert
-        v-else-if="!visibleRuns.length && !loading"
+        v-if="runView !== 'history' && !runs.length && !loading"
+        type="info"
+        variant="tonal"
+        >{{ tm("v2.emptyRuns") }}</v-alert
+      >
+      <v-alert
+        v-else-if="runView !== 'history' && !visibleRuns.length && !loading"
         type="info"
         variant="tonal"
         class="mb-4"
         >{{ tm("workbench.emptyFilter") }}</v-alert
       >
-      <details :open="!selectedRun" class="workflow-run-list mb-4">
+      <details
+        v-if="runView !== 'history'"
+        :open="!selectedRun"
+        class="workflow-run-list mb-4"
+      >
         <summary class="text-subtitle-1 mb-3">
           {{ tm("progress.runList") }} · {{ visibleRuns.length }} /
           {{ runs.length }}
@@ -209,7 +224,7 @@
         </v-card>
       </details>
       <v-card
-        v-if="selectedRun"
+        v-if="selectedRun && runView !== 'history'"
         variant="outlined"
         class="mt-4"
         data-testid="run-detail"
@@ -836,6 +851,7 @@
 
 <script setup lang="ts">
 import MigrationReview from "./MigrationReview.vue";
+import UnifiedRunHistory from "./UnifiedRunHistory.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";
@@ -866,10 +882,16 @@ import type {
 const props = defineProps<{
   mode: "assets" | "runs";
   assetKind?: "teams" | "workflows";
+  launchAsset?: { asset_id: string; version: number } | null;
 }>();
 const emit = defineEmits<{
   (event: "started", runId: string): void;
   (event: "installed", directory: "teams" | "workflows"): void;
+  (
+    event: "locateAsset",
+    asset: { asset_id: string; version: number; kind: string },
+  ): void;
+  (event: "located"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
@@ -1053,6 +1075,15 @@ async function refresh() {
       assets.value = assetData.assets;
       roles.value = roleData.roles;
       runs.value = runData.runs;
+      if (props.launchAsset) {
+        const asset = await workflowAssetsApi.get(
+          props.launchAsset.asset_id,
+          props.launchAsset.version,
+        );
+        if (disposed || read !== runRead) return;
+        await prepareRun(asset);
+        emit("located");
+      }
     } else {
       const runData = await workflowAssetsApi.runs();
       if (disposed || read !== runRead) return;

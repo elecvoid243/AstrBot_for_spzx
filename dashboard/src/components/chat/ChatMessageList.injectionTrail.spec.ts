@@ -121,9 +121,12 @@ describe("ChatMessageList injection trail", () => {
   it("renders no marker for a message without injections", () => {
     const wrapper = mountList(botRecord("b1"));
     expect(wrapper.find(".injection-marker").exists()).toBe(false);
+    expect(wrapper.find(".message-bubble.bot").classes()).not.toContain(
+      "has-injection",
+    );
   });
 
-  it("renders the rail marker and expands the panel on click", async () => {
+  it("renders the bubble marker and expands the panel on click", async () => {
     const wrapper = mountList(botRecord("b1", INJECTIONS));
 
     const marker = wrapper.find(".injection-marker");
@@ -148,9 +151,24 @@ describe("ChatMessageList injection trail", () => {
     expect(panel.html()).toContain("## 长期记忆");
   });
 
-  it("renders an outline icon control on the rail (variant A)", () => {
+  it("renders an outline icon control at the bubble head", () => {
     const wrapper = mountList(botRecord("b1", INJECTIONS));
-    expect(wrapper.find(".injection-marker-icon").exists()).toBe(true);
+    const bubble = wrapper.find(".message-bubble.bot");
+    expect(bubble.classes()).toContain("has-injection");
+    expect(bubble.find(".injection-marker-icon").exists()).toBe(true);
+    expect(bubble.find(".injection-marker").exists()).toBe(true);
+  });
+
+  it("keeps the activity rail for the generation mark only", () => {
+    // 2026-10-18: the injection marker used to be the rail's first child,
+    // which pushed the 18 px generation mark onto the second line whenever
+    // a turn carried injections. Pin the new ownership: rail = activity
+    // mark, bubble head = injection marker.
+    const wrapper = mountList(botRecord("b1", INJECTIONS));
+    const rail = wrapper.find(".message-rail");
+    expect(rail.exists()).toBe(true);
+    expect(rail.find(".generation-indicator").exists()).toBe(true);
+    expect(rail.find(".injection-marker").exists()).toBe(false);
   });
 
   it("reveals the full text of a change on click, collapsed by default", async () => {
@@ -182,8 +200,8 @@ describe("ChatMessageList injection trail", () => {
     const botBubbleAt = html.indexOf("message-bubble bot");
     expect(panelAt).toBeGreaterThan(-1);
     expect(botBubbleAt).toBeGreaterThan(-1);
-    // The disclosure must sit directly under its rail marker, so a long reply
-    // never separates it from the trigger.
+    // The disclosure sits at the message head, above the reply; the trigger
+    // is the bubble's top-right marker, so a long reply never separates them.
     expect(panelAt).toBeLessThan(botBubbleAt);
   });
 });

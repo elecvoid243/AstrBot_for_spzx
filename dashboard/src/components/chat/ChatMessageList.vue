@@ -44,45 +44,14 @@
              rail so the marker never shifts the message layout; it stays empty
              for turns without injections and hides on narrow screens.
              2026-10-17: the same rail hosts the turn-activity mark, so the
-             waiting/streaming spinner needs no extra column either. -->
+             waiting/streaming spinner needs no extra column either.
+             2026-10-18: the injection marker moved into the bubble header. The
+             rail now holds ONLY the activity mark, so the marker can never
+             push the thinking ring onto the next line. -->
         <div
           v-if="!isUserMessage(msg) && !isBranchDivider(msg)"
           class="message-rail"
         >
-          <v-tooltip
-            v-if="injectionItems(msg).length"
-            location="right"
-            max-width="240"
-          >
-            <template #activator="{ props: injectionTipProps }">
-              <button
-                v-bind="injectionTipProps"
-                type="button"
-                class="injection-marker"
-                :class="{ 'is-open': injectionTrailOpen(msg, msgIndex) }"
-                :aria-expanded="injectionTrailOpen(msg, msgIndex)"
-                :aria-label="injectionTooltip(msg)"
-                @click="toggleInjectionTrail(msg, msgIndex)"
-              >
-                <svg
-                  class="injection-marker-icon"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.2"
-                  stroke-linecap="round"
-                  aria-hidden="true"
-                >
-                  <rect x="2.6" y="3.4" width="10.8" height="9.2" rx="2.2" />
-                  <path d="M8 6.4v3.2M6.4 8h3.2" />
-                </svg>
-              </button>
-            </template>
-            <span>{{ injectionTooltip(msg) }}</span>
-          </v-tooltip>
-          <!-- After the injection marker: that control keeps its single slot
-               at the top of the rail, so a historical row with injections
-               never shifts when a live turn settles and the mark fades. -->
           <GenerationIndicator :state="generationState(msg, msgIndex)" />
         </div>
 
@@ -105,8 +74,9 @@
           </div>
           <template v-else>
             <!-- 2026-10-08 (elecvoid243): the injection panel opens at the
-                 message's head, directly under its rail marker, so a long
-                 reply never separates the disclosure from its trigger. -->
+                 message's head, above the reply, so a long reply never
+                 separates the disclosure from the message it describes.
+                 2026-10-18: the trigger is the bubble's top-right marker. -->
             <LlmRequestInjectionsPanel
               v-if="injectionTrailOpen(msg, msgIndex)"
               :items="injectionItems(msg)"
@@ -196,7 +166,12 @@
             <div
               v-if="shouldShowMessageBubble(msg)"
               class="message-bubble"
-              :class="{ user: isUserMessage(msg), bot: !isUserMessage(msg) }"
+              :class="{
+                user: isUserMessage(msg),
+                bot: !isUserMessage(msg),
+                'has-injection':
+                  !isUserMessage(msg) && injectionItems(msg).length > 0,
+              }"
               @mouseup="handleMouseUp($event, msg)"
             >
               <div v-if="messageContent(msg).isLoading" class="loading-message">
@@ -493,6 +468,52 @@
                   :is-dark="isDark"
                 />
               </template>
+
+              <!-- 2026-10-18 (elecvoid243): the injection marker now sits at
+                   the top-right of the bubble instead of the activity rail.
+                   Keeping it out of the rail means the generation mark always
+                   owns the first line; the bubble reserves right padding for
+                   this control so the first line never runs underneath it.
+                   It is rendered last so the first content block keeps its
+                   `:first-child` margin reset. -->
+              <v-tooltip
+                v-if="!isUserMessage(msg) && injectionItems(msg).length"
+                location="top end"
+                max-width="240"
+              >
+                <template #activator="{ props: injectionTipProps }">
+                  <button
+                    v-bind="injectionTipProps"
+                    type="button"
+                    class="injection-marker"
+                    :class="{ 'is-open': injectionTrailOpen(msg, msgIndex) }"
+                    :aria-expanded="injectionTrailOpen(msg, msgIndex)"
+                    :aria-label="injectionTooltip(msg)"
+                    @mouseup.stop
+                    @click="toggleInjectionTrail(msg, msgIndex)"
+                  >
+                    <svg
+                      class="injection-marker-icon"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linecap="round"
+                      aria-hidden="true"
+                    >
+                      <rect
+                        x="2.6"
+                        y="3.4"
+                        width="10.8"
+                        height="9.2"
+                        rx="2.2"
+                      />
+                      <path d="M8 6.4v3.2M6.4 8h3.2" />
+                    </svg>
+                  </button>
+                </template>
+                <span>{{ injectionTooltip(msg) }}</span>
+              </v-tooltip>
             </div>
 
             <div v-if="showMessageMeta(msg, msgIndex)" class="message-meta">
@@ -2118,6 +2139,7 @@ function formatDuration(seconds: number) {
 }
 
 .message-bubble {
+  position: relative;
   border-radius: 8px;
   padding: 10px 14px;
   line-height: 1.65;
@@ -2136,6 +2158,15 @@ function formatDuration(seconds: number) {
 .message-bubble.bot {
   background: transparent;
   padding-left: 0;
+}
+
+/* 2026-10-18 (elecvoid243): reserve a gutter for the injection marker at the
+   bubble head. It is part of the message, not the activity rail, so it must
+   never overlap the first line; the extra right padding keeps the text clear.
+   The rule is intentionally more specific than the narrow-container
+   `padding-inline: 0` override below. */
+.message-bubble.bot.has-injection {
+  padding-right: 38px;
 }
 
 .plain-content {
@@ -2314,23 +2345,21 @@ function formatDuration(seconds: number) {
   font-size: 12px;
 }
 
-/* 2026-10-08 (elecvoid243): LLM request injection trail. The rail is a fixed
-   20px column so rows never shift. The marker is an outline icon control
-   (variant A): a visible boundary + glyph at rest, ink-filled while open.
-   2026-10-17: the rail also carries the turn-activity mark, so it stacks its
-   children instead of laying them out in a row. The top offset starts the
-   stack on the bubble's first line instead of the row's edge: the bubble's
-   10 px padding plus optical centring in a 26 px line needs 14 px for an
-   18 px mark. The first block's own top margin is zeroed below, so the
-   waiting line, a reasoning header, and plain text all start at that same
-   10 px — one offset keeps the mark on any of them. */
+/* 2026-10-08 (elecvoid243): the rail is a fixed 20 px column so rows never
+   shift. 2026-10-18: it now holds ONLY the turn-activity mark; the injection
+   marker moved to the bubble head, so it can never push the thinking ring
+   onto the next line. The top offset starts the mark on the bubble's first
+   line instead of the row's edge: the bubble's 10 px padding plus optical
+   centring in a 26 px line needs 14 px for an 18 px mark. The first block's
+   own top margin is zeroed below, so the waiting line, a reasoning header,
+   and plain text all start at that same 10 px — one offset keeps the mark on
+   any of them. */
 .message-rail {
   flex: 0 0 20px;
   width: 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
   padding-top: 14px;
 }
 
@@ -2342,7 +2371,15 @@ function formatDuration(seconds: number) {
   margin-top: 0;
 }
 
+/* 2026-10-18 (elecvoid243): the injection marker is a message-head action,
+   not a rail item. It is absolutely positioned over the reserved right
+   gutter so it never participates in vertical layout — the generation mark
+   keeps the first line no matter how many injections a turn has. */
 .injection-marker {
+  position: absolute;
+  top: 13px;
+  right: 12px;
+  z-index: 1;
   width: 20px;
   height: 20px;
   padding: 0;

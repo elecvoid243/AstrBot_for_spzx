@@ -72,6 +72,26 @@ describe("parseFileReviewComments", () => {
     expect(block.files[1].hunkHeader).toBe("@@ -10,6 +10,8 @@");
   });
 
+  it("parses a review block stored with CRLF line endings", () => {
+    // Regression (2026-10-18): the message store on Windows keeps the
+    // appended block as CRLF. The old split("\n") left "\r" on every line,
+    // and the hunk code regexes dropped all content lines — the review card
+    // rendered its header and comments but an empty diff.
+    const block = parseFileReviewComments(SAMPLE.replace(/\n/g, "\r\n"));
+    expect(block).not.toBeNull();
+    expect(block!.files).toHaveLength(2);
+    expect(block!.files[0].lines).toHaveLength(5);
+    expect(block!.files[0].lines.find((l) => l.anchor)?.comment).toContain(
+      "sum(values)",
+    );
+    expect(block!.files[1].lines).toHaveLength(6); // header + 5 rows
+    expect(block!.files[1].lines.find((l) => l.no === 12)?.type).toBe("add");
+    expect(block!.files[1].comments).toHaveLength(2);
+    // LF and CRLF must produce the same model — the normalisation only
+    // removes the line-ending \r, it never changes line structure.
+    expect(block).toEqual(parseFileReviewComments(SAMPLE));
+  });
+
   it("marks the anchored line and captures the inline window comment", () => {
     const win = parseFileReviewComments(SAMPLE)!.files[0];
     const anchor = win.lines.find((l) => l.anchor);

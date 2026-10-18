@@ -90,7 +90,13 @@ const HUNK_HDR_LINE = /^@@.*@@$/;
  */
 export function parseFileReviewComments(raw: string): FileReviewBlock | null {
   if (!raw) return null;
-  const lines = raw.split("\n");
+  // 2026-10-18 (elecvoid243): the block is appended to the outgoing message
+  // and stored with the platform's line endings. On Windows that is CRLF;
+  // splitting on "\n" left a trailing "\r" on every line, and the hunk code
+  // regexes (which end in `$` and use `.` for the content) silently dropped
+  // every line, leaving an empty quoted diff in the review card. Normalise
+  // CRLF / lone CR before parsing.
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n");
   const start = lines.findIndex((l) => l.trim() === BLOCK_MARKER);
   if (start < 0) return null;
 

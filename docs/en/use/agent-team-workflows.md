@@ -24,7 +24,7 @@ After the original owner process is lost, unfinished records are read as **Inter
 
 ## Preview and migrate previous definitions
 
-![Actual migration preview with pending definitions and a previous active run](/images/agent-teams-migration-en.png)
+![Actual migration preview with pending definitions and current legacy run guidance](/images/agent-teams-migration-t25-en.jpg)
 
 1. Open **More Features → Agent Teams → Migrate previous definitions**, select a previous team and choose **Preview migration**. The preview lists its team and saved workflows, generated roles, final effective configuration, inheritance sources, local bindings and old-to-new identities. Expand **Review definitions, layout and identity mapping** to inspect the complete proposal. No assets or member sessions are created by previewing.
 2. Review the listed previous active runs. Use the active legacy run notice at the top of Agent Teams to let them finish, continue an owned pause or explicitly confirm stopping. Migration only copies definitions; it neither stops those runs nor continues them in the new engine. Read previous runs and member conversations in **Runs → History**.

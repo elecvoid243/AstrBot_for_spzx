@@ -701,6 +701,8 @@ class LegacyMigrationService:
         }
         profile_id = config.get("config_id") or "default"
         provider_id = config.get("provider_id")
+        session_issues = []
+        session_source = {}
         core = self.roles.core_lifecycle
         if not config.get("config_id") and core is not None and member.get("umo"):
             profile_id = core.astrbot_config_mgr.get_conf_info(member["umo"]).id
@@ -730,6 +732,86 @@ class LegacyMigrationService:
                 ProviderType.CHAT_COMPLETION, member.get("umo")
             )
             provider_id = provider.meta().id if provider else None
+        if core is not None and member.get("umo"):
+            from astrbot.core import sp
+
+            session_config = (
+                await sp.session_get(member["umo"], "session_service_config", {}) or {}
+            )
+            session_source["service"] = session_config
+            for key in session_config.keys() - {"persona_id"}:
+                session_issues.append(
+                    {
+                        "path": f"legacy_session.{key}",
+                        "code": "UNMAPPABLE",
+                        "message": "Review this legacy session service setting for the new run",
+                    }
+                )
+            plugin_config = await sp.session_get(
+                member["umo"], "session_plugin_config", None
+            )
+            if plugin_config:
+                session_source["plugins"] = plugin_config
+                session_issues.append(
+                    {
+                        "path": "legacy_session.plugins",
+                        "code": "UNMAPPABLE",
+                        "message": "Review legacy session plugin restrictions for the new run",
+                    }
+                )
+            kb_config = await sp.session_get(member["umo"], "kb_config", {}) or {}
+            if config.get("kb_names") is None and kb_config:
+                session_source["knowledge_bases"] = kb_config
+                if "kb_ids" in kb_config:
+                    config["kb_names"] = kb_config["kb_ids"]
+                selected_config = core.astrbot_config_mgr.confs.get(profile_id, {})
+                if kb_config.keys() - {"kb_ids", "top_k"} or kb_config.get(
+                    "top_k", 5
+                ) != selected_config.get("kb_final_top_k", 5):
+                    session_issues.append(
+                        {
+                            "path": "legacy_session.knowledge_bases",
+                            "code": "UNMAPPABLE",
+                            "message": "Review legacy knowledge retrieval settings that differ from the selected profile",
+                        }
+                    )
+        if not config.get("persona_id") and core is not None and member.get("umo"):
+            conversation_id = await core.conversation_manager.get_curr_conversation_id(
+                member["umo"]
+            )
+            conversation = (
+                await core.conversation_manager.get_conversation(
+                    member["umo"], conversation_id
+                )
+                if conversation_id
+                else None
+            )
+            conversation_persona = conversation.persona_id if conversation else None
+            persona_id = session_config.get("persona_id") or conversation_persona
+            special_default = False
+            if persona_id is None:
+                (
+                    persona_id,
+                    _,
+                    _,
+                    special_default,
+                ) = await core.persona_mgr.resolve_selected_persona(
+                    umo=member["umo"],
+                    conversation_persona_id=conversation_persona,
+                    platform_name="webchat",
+                    config_id=profile_id,
+                )
+            if special_default or persona_id == "[%None]":
+                session_issues.append(
+                    {
+                        "path": "legacy_session.persona_id",
+                        "code": "UNMAPPABLE",
+                        "message": f"Review the legacy implicit or disabled persona explicitly: {persona_id}",
+                    }
+                )
+            elif persona_id:
+                # Preserve a missing selected identity instead of resolver fallback.
+                config["persona_id"] = persona_id
         definition = {"name": member["name"]}
         model = next((m for m in catalog["models"] if m["id"] == provider_id), {})
         definition["model_capabilities"] = sorted(
@@ -803,6 +885,7 @@ class LegacyMigrationService:
                 }
             )
         ]
+        unsupported.extend(session_issues)
         for issue in preview["issues"]:
             if (
                 issue["path"] == "installation.profile_id"
@@ -818,7 +901,7 @@ class LegacyMigrationService:
         if unsupported:
             definition["migration"] = {
                 "issues": unsupported,
-                "source": {"execution": config},
+                "source": {"execution": config, "session": session_source},
             }
         frozen = await self.roles.preview_role(
             {"definition": definition, "installation": installation}

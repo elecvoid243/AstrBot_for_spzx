@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import text
 
 from astrbot.core.agent.tool import FunctionTool
-from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
 from astrbot.core.agent_teams.migration import LegacyMigrationService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
@@ -70,6 +70,12 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_graph_migrated_role_preference_role",
         "v2_graph_migrated_role_persona_only_role",
         "v2_graph_migrated_role_edge_role",
+        "v2_graph_migrated_role_session_persona_role",
+        "v2_graph_migrated_role_conversation_persona_role",
+        "v2_graph_migrated_role_implicit_webchat_role",
+        "v2_graph_migrated_role_missing_session_persona_role",
+        "v2_graph_migrated_role_session_kb_role",
+        "v2_graph_migrated_role_pending_session_role",
         "v2_plain_role",
         "v2_failing_role",
         "v2_hidden_role",
@@ -89,6 +95,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
         monkeypatch: Redirects system storage and plugin registration.
         mode: Workflow, autonomous team, or ordinary chat regression.
     """
+    expected_persona_prompt = (
+        "Use saved session persona."
+        if mode.endswith(("_session_persona_role", "_conversation_persona_role"))
+        else "Use verified research evidence."
+    )
     db = SQLiteDatabase(str(tmp_path / "pipeline.db"))
     await db.initialize()
     preferences = SharedPreferences(db)
@@ -231,10 +242,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 raise RuntimeError("Bound model unavailable")
             if mode.startswith("v2_graph_migrated_role"):
                 assert (
-                    str(kwargs.get("contexts", [])).count(
-                        "Use verified research evidence."
-                    )
-                    == 1
+                    str(kwargs.get("contexts", [])).count(expected_persona_prompt) == 1
                 )
                 migrated_requests.append(str(kwargs))
             names = tools.names() if tools else []
@@ -346,6 +354,12 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "v2_graph_migrated_role_preference_role",
                     "v2_graph_migrated_role_persona_only_role",
                     "v2_graph_migrated_role_edge_role",
+                    "v2_graph_migrated_role_session_persona_role",
+                    "v2_graph_migrated_role_conversation_persona_role",
+                    "v2_graph_migrated_role_implicit_webchat_role",
+                    "v2_graph_migrated_role_missing_session_persona_role",
+                    "v2_graph_migrated_role_session_kb_role",
+                    "v2_graph_migrated_role_pending_session_role",
                     "v2_graph_crash_role",
                     "v2_graph_unsafe_role",
                 )
@@ -379,8 +393,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         args = {
                             "text": json.dumps(
                                 {
-                                    "persona": "Use verified research evidence."
-                                    in prompt,
+                                    "persona": expected_persona_prompt in prompt,
                                     "hook": (
                                         "profile=research;sender=platform:qq-main:12345;role=member"
                                         if mode == "v2_chat_role"
@@ -448,7 +461,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 completion_text=json.dumps(
                     {
                         "model": self.provider_config["id"],
-                        "persona": "Use verified research evidence." in prompt,
+                        "persona": expected_persona_prompt in prompt,
                         "skill": "Alpha research skill" in prompt,
                         "other_skill": "Beta excluded skill" in prompt,
                         "hook": "profile=research;sender=alice;role=member" in prompt,
@@ -764,7 +777,15 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                             "provider_id": None,
                             "umo": "webchat:FriendMessage:legacy-writer",
                             "session_id": "legacy-writer",
-                            "persona_id": "researcher",
+                            "persona_id": None
+                            if mode.endswith(
+                                (
+                                    "_session_persona_role",
+                                    "_conversation_persona_role",
+                                    "_implicit_webchat_role",
+                                )
+                            )
+                            else "researcher",
                             "system_prompt": ""
                             if mode.endswith("_persona_only_role")
                             else "Write with evidence.",
@@ -772,7 +793,11 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                                 "config_id": "research",
                                 "tools": [],
                                 "skills": ["alpha"],
-                                "kb_names": ["research-evidence"],
+                                **(
+                                    {}
+                                    if mode.endswith("_session_kb_role")
+                                    else {"kb_names": ["research-evidence"]}
+                                ),
                             },
                         },
                     ],
@@ -813,6 +838,48 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         ProviderType.CHAT_COMPLETION,
                         "webchat:FriendMessage:legacy-writer",
                     )
+                if mode.endswith(
+                    ("_session_persona_role", "_conversation_persona_role")
+                ):
+                    await personas.create_persona(
+                        "session-persona", "Use saved session persona."
+                    )
+                    if mode.endswith("_missing_session_persona_role"):
+                        await preferences.session_put(
+                            "webchat:FriendMessage:legacy-writer",
+                            "session_service_config",
+                            {"persona_id": "missing-session-persona"},
+                        )
+                    elif mode.endswith("_session_persona_role"):
+                        await preferences.session_put(
+                            "webchat:FriendMessage:legacy-writer",
+                            "session_service_config",
+                            {"persona_id": "session-persona"},
+                        )
+                    else:
+                        await conversations.new_conversation(
+                            "webchat:FriendMessage:legacy-writer",
+                            persona_id="session-persona",
+                            content=[
+                                {"role": "user", "content": "Previous private history"}
+                            ],
+                        )
+                if mode.endswith("_implicit_webchat_role"):
+                    research["agent_runner"]["config"]["persona"]["persona_id"] = (
+                        "default"
+                    )
+                if mode.endswith("_session_kb_role"):
+                    await preferences.session_put(
+                        "webchat:FriendMessage:legacy-writer",
+                        "kb_config",
+                        {"kb_ids": []},
+                    )
+                if mode.endswith("_pending_session_role"):
+                    await preferences.session_put(
+                        "webchat:FriendMessage:legacy-writer",
+                        "session_service_config",
+                        {"llm_enabled": False},
+                    )
                 proposal = await migration.preview("alice", "legacy-pipeline")
                 migrated = await migration.confirm(
                     "alice",
@@ -825,6 +892,22 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         "asset_id"
                     ],
                 )
+            if mode.endswith(
+                (
+                    "_implicit_webchat_role",
+                    "_missing_session_persona_role",
+                    "_pending_session_role",
+                )
+            ):
+                assert proposal["issues"]
+                with pytest.raises(RoleAssetError):
+                    await service.start_run(
+                        "alice",
+                        asset["asset_id"],
+                        {"version": 1, "inputs": {"input": "Fresh task"}},
+                    )
+                assert model_requests == []
+                return
             if mode == "v2_chat_role":
                 from astrbot.core.agent_teams.chat import ChatCaller
 
@@ -875,17 +958,18 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                         "first"
                     ]["text"]
                 )
-                assert (
-                    result["persona"]
-                    and result["hook"]
-                    and result["skill"]
-                    and result["knowledge"]
-                )
+                assert result["persona"] and result["hook"] and result["skill"]
+                assert result["knowledge"] is (not mode.endswith("_session_kb_role"))
                 assert (
                     current["tasks"][0]["snapshot"]["member"]["session_id"]
                     != "legacy-writer"
                 )
                 assert "legacy-writer" not in json.dumps(current["snapshot"])
+                assert "Previous private history" not in json.dumps(current)
+                assert all(
+                    "Previous private history" not in request
+                    for request in migrated_requests
+                )
                 if mode.endswith("_edge_role"):
                     consumer = next(
                         task

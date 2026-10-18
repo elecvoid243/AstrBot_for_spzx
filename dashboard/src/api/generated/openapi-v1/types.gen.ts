@@ -4903,10 +4903,6 @@ export type StartAgentTeamRunData = {
     };
 };
 
-export type StartAgentTeamRunResponse = (SuccessEnvelope);
-
-export type StartAgentTeamRunError = (ErrorEnvelope);
-
 export type ListActiveAgentTeamRunsResponse = (SuccessEnvelope);
 
 export type ListActiveAgentTeamRunsError = unknown;
@@ -4929,7 +4925,7 @@ export type ResumeAgentTeamRunData = {
 
 export type ResumeAgentTeamRunResponse = (SuccessEnvelope);
 
-export type ResumeAgentTeamRunError = unknown;
+export type ResumeAgentTeamRunError = (ErrorEnvelope);
 
 export type StopAgentTeamRunData = {
     path: {

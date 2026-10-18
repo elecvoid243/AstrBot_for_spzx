@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from string import Formatter
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from jsonschema import Draft202012Validator, SchemaError
 from mcp.types import CallToolResult, TextContent
@@ -93,6 +93,9 @@ from astrbot.core.db.po import (
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.dashboard.services.agent_team_ports import TeamPorts, build_ports_for_test
+
+if TYPE_CHECKING:
+    from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
 
 
 class WorkflowDefinition(BaseModel):
@@ -872,6 +875,9 @@ class WorkflowService:
         """
         self.db = db
         self.roles = roles
+        # The dashboard attaches its original owner registry when both services
+        # exist. Chat and WebUI then observe the same legacy cutover boundary.
+        self.legacy_runs: AgentTeamRunService | None = None
         self.ports_factory = ports_factory or (
             lambda username: build_ports_for_test(
                 webchat_queue_mgr,
@@ -2916,8 +2922,24 @@ class WorkflowService:
             The new independent run's persisted snapshot.
 
         Raises:
-            RoleAssetError: Invalid inputs or unavailable bound resources.
+            RoleAssetError: Invalid inputs, unavailable bound resources, or
+                owned legacy work that must finish before the default switch.
         """
+        if self.legacy_runs is not None:
+            active = await self.legacy_runs.list_active_runs(username)
+            if active["runs"]:
+                raise RoleAssetError(
+                    "Finish or explicitly stop the owned legacy runs before starting a new asset run",
+                    [
+                        {
+                            "path": "legacy_runs",
+                            "code": "LEGACY_RUN_ACTIVE",
+                            "message": run["run_id"],
+                        }
+                        for run in active["runs"]
+                    ],
+                    status=409,
+                )
         try:
             request = WorkflowStartRequest.model_validate(payload)
         except ValidationError as exc:

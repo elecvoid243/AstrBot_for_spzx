@@ -6013,7 +6013,8 @@ paths:
           $ref: "#/components/responses/Ok"
     post:
       tags: [AgentTeams]
-      summary: Start a run (409 when the team already has an active run)
+      summary: Retired legacy launch; start a versioned asset run
+      deprecated: true
       operationId: startAgentTeamRun
       x-astrbot-scope: chat
       parameters:
@@ -6025,9 +6026,7 @@ paths:
             schema:
               $ref: "#/components/schemas/AgentTeamRunStartPayload"
       responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-        "409":
+        "410":
           $ref: "#/components/responses/Error"
 
   /api/v1/agent_teams/runs/active:
@@ -6055,7 +6054,7 @@ paths:
   /api/v1/agent_teams/runs/{run_id}/resume:
     post:
       tags: [AgentTeams]
-      summary: Resume a paused or interrupted run
+      summary: Continue an owned paused legacy run; lost owners cannot resume
       operationId: resumeAgentTeamRun
       x-astrbot-scope: chat
       parameters:
@@ -6063,6 +6062,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+        "410":
+          $ref: "#/components/responses/Error"
 
   /api/v1/agent_teams/runs/{run_id}/stop:
     post:

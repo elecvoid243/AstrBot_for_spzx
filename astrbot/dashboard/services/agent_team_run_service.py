@@ -1553,20 +1553,20 @@ class AgentTeamRunService:
         return len(stale)
 
     async def resume_run(self, username: str, run_id: str) -> dict:
-        """Resume a paused (in-memory) or interrupted (post-restart) run.
+        """Continue a paused legacy run only while its original owner remains.
 
         Args:
             username: Requesting dashboard user.
             run_id: Persisted run id.
 
         Returns:
-            The snapshot of the resumed (or rebuilt) runner.
+            The snapshot of the original resumed runner.
 
         Raises:
-            AgentTeamsServiceError: On ownership errors or a status that
-                cannot be resumed.
+            AgentTeamsServiceError: On ownership errors, a nonpaused status,
+                or retired history whose original execution owner was lost.
         """
-        row, team = await self._require_run(username, run_id)
+        await self._require_run(username, run_id)
         runner = self._runners.get(run_id)
         if runner is not None:
             if runner.status != "paused":
@@ -1579,80 +1579,10 @@ class AgentTeamRunService:
                 self._start_runner_task(runner)
             return runner.snapshot()
 
-        if row.status not in ("interrupted", "paused"):
-            raise AgentTeamsServiceError(f"运行 '{run_id}' 当前状态不可恢复")
-        config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
-        if row.mode == "auto":
-            # Rebuild from the persisted rounds (next round = len+1). A fresh
-            # orchestrator starts with the no-tool counter at 0, so a
-            # no-dispatch pause gets a fresh chance — flagged so its first
-            # turn injects the stronger no-dispatch reminder.
-            await self.db.update_agent_team_run(run_id, status="running")
-            runner = self._build_orchestrator(
-                run_id=run_id,
-                team=team,
-                config=config,
-                run_input=row.input,
-                username=username,
-                rounds=list(row.rounds or []),
-            )
-            runner._resume_reminder = True
-            self._start_runner_task(runner)
-            return runner.snapshot()
-        # Redo semantics: in-flight nodes at interruption are re-dispatched
-        # from scratch; done/skipped nodes and their results are preserved.
-        node_states = {
-            node_id: (
-                {**state, "status": "pending"}
-                if state["status"] == "running"
-                else state
-            )
-            for node_id, state in (row.node_states or {}).items()
-        }
-        # Deleted-config pre-fail: pending nodes bound to a config profile
-        # that no longer resolves fail right here so a deleted profile
-        # surfaces immediately on resume instead of at dispatch time.
-        prefailed: list[str] = []
-        if self.config_checker is not None:
-            graph_nodes = {
-                n.get("id"): n for n in (row.graph_snapshot or {}).get("nodes", [])
-            }
-            for node_id, state in node_states.items():
-                if state["status"] != "pending":
-                    continue
-                execution = (graph_nodes.get(node_id) or {}).get("execution") or {}
-                config_id = execution.get("config_id")
-                if config_id and not self.config_checker(config_id):
-                    state["status"] = "failed"
-                    state["error"] = "配置档案已删除"
-                    prefailed.append(node_id)
-        await self.db.update_agent_team_run(
-            run_id, status="running", node_states=node_states
+        raise AgentTeamsServiceError(
+            "Legacy history is read-only after its original owner is lost. Start a new asset run.",
+            status=410,
         )
-        runner = self._build_runner(
-            run_id=run_id,
-            team=team,
-            graph=row.graph_snapshot,
-            config=config,
-            run_input=row.input,
-            node_states=node_states,
-            username=username,
-            workflow_id=row.workflow_id,
-        )
-        # Seed the pre-failed nodes onto the fresh bus history: the runner
-        # never executes those nodes, so a monitor attached after the resume
-        # would otherwise never see their failure.
-        for node_id in prefailed:
-            runner._emit(
-                {
-                    "type": "node_status",
-                    "node_id": node_id,
-                    "status": "failed",
-                    "error": node_states[node_id].get("error"),
-                }
-            )
-        self._start_runner_task(runner)
-        return runner.snapshot()
 
     async def start_run(self, username: str, team_id: str, payload: dict) -> dict:
         """Start a DAG or auto run for a team.
@@ -1873,7 +1803,7 @@ class AgentTeamRunService:
     async def list_active_runs(self, username: str) -> dict:
         active = []
         for run_id, runner in list(self._runners.items()):
-            if runner.status not in ("running", "paused"):
+            if runner.status not in ("running", "paused", "stopping"):
                 continue
             row = await self.db.get_agent_team_run(run_id)
             if row is None:

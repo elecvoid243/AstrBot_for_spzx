@@ -45,7 +45,7 @@ def get_run_service(request: Request) -> AgentTeamRunService:
 
 def _handle(e: AgentTeamsServiceError):
     """Map a service error to an HTTP response; run conflicts become 409."""
-    status = 409 if _CONFLICT_MARKER in str(e) else 400
+    status = 409 if _CONFLICT_MARKER in str(e) else e.status
     # Field-level validation problems ride the error envelope as data.fields.
     data = {"fields": e.field_errors} if e.field_errors else None
     return JSONResponse(error(str(e), data), status_code=status)
@@ -289,7 +289,13 @@ async def delete_workflow(
         return _handle(e)
 
 
-@router.post("/agent_teams/{team_id}/runs")
+@router.post(
+    "/agent_teams/{team_id}/runs",
+    deprecated=True,
+    responses={
+        410: {"description": "Legacy launches are retired; start a versioned asset run"}
+    },
+)
 @legacy_router.post("/{team_id}/runs")
 async def start_run(
     team_id: str,
@@ -297,8 +303,25 @@ async def start_run(
     username: str = Depends(_auth_dep),
     service: AgentTeamRunService = Depends(get_run_service),
 ):
+    """Retire both legacy launch URLs while retaining owner-scoped history.
+
+    Args:
+        team_id: Existing legacy definition owned by the authenticated user.
+        request: Original request, retained for the retired route contract.
+        username: Authenticated owner.
+        service: Original legacy service used to enforce ownership.
+
+    Returns:
+        A gone response directing new work to the unified asset entry.
+    """
     try:
-        return ok(await service.start_run(username, team_id, await _json_body(request)))
+        await service.list_team_runs(username, team_id)
+        return JSONResponse(
+            error(
+                "Legacy launches are retired. Migrate the definition and start a new asset run."
+            ),
+            status_code=410,
+        )
     except AgentTeamsServiceError as e:
         return _handle(e)
 

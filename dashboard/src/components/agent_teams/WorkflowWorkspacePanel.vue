@@ -134,9 +134,13 @@
             "
             >{{ tm("v2.edit") }}</v-btn
           >
-          <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
-            tm("v2.start")
-          }}</v-btn>
+          <v-btn
+            variant="tonal"
+            color="primary"
+            :disabled="launchDisabled"
+            @click="prepareRun(asset)"
+            >{{ tm("v2.start") }}</v-btn
+          >
         </v-card-actions>
       </v-card>
     </template>
@@ -758,7 +762,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="checkingReadiness || !readiness?.ready"
+            :disabled="launchDisabled || checkingReadiness || !readiness?.ready"
             @click="start"
             >{{ tm("v2.start") }}</v-btn
           >
@@ -883,6 +887,7 @@ const props = defineProps<{
   mode: "assets" | "runs";
   assetKind?: "teams" | "workflows";
   launchAsset?: { asset_id: string; version: number } | null;
+  launchDisabled?: boolean;
 }>();
 const emit = defineEmits<{
   (event: "started", runId: string): void;
@@ -1302,7 +1307,7 @@ function prepareRun(asset: any) {
 }
 
 async function start() {
-  if (saving.value || !runAsset.value) return;
+  if (props.launchDisabled || saving.value || !runAsset.value) return;
   saving.value = true;
   formError.value = "";
   try {

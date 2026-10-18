@@ -192,7 +192,8 @@
       "stopped": "Stopped",
       "completed": "Completed",
       "failed": "Failed",
-      "interrupted": "Interrupted"
+      "interrupted": "Interrupted",
+      "stopping": "Stopping"
     },
     "node": {
       "pending": "Pending",
@@ -734,7 +735,7 @@
     "longTerm": "Long-term conversation",
     "saved": "Saved conversation",
     "noResume": "Legacy records cannot continue or recover in the v2 engine.",
-    "stillActive": "This task is still executing in the legacy engine. Viewing it does not stop it. Manage it in Previous workspace before the final switch.",
+    "stillActive": "This task still has its original legacy owner, including normally paused runs. Use Finish previous runs before switching at the top of Agent Teams to continue or explicitly stop it.",
     "interrupted": "No live legacy execution remains. This unfinished record is shown as historically interrupted; its original saved status is preserved.",
     "originalStatus": "Original saved status",
     "originalResult": "Original result",
@@ -748,5 +749,13 @@
     "moreRecords": "Load more history",
     "moreMessages": "Load more saved messages",
     "recordList": "History entries"
+  },
+  "cutover": {
+    "title": "Finish previous runs before switching",
+    "pending": "These original legacy runs still have an owner, including normally paused runs. Let them finish, continue a paused run, or explicitly stop them. New asset runs remain blocked until this list is empty. In-flight effects and original history are retained.",
+    "continue": "Continue original run",
+    "stop": "Stop original run",
+    "stopConfirm": "Stop original legacy run {id}? Already completed effects and history are retained. This does not resume it in the new engine.",
+    "ready": "New work uses the versioned asset entry. Previous runs and member conversations are available under Runs → History."
   }
 }

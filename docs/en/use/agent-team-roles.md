@@ -23,9 +23,9 @@ Dify, Coze and DashScope Application receive the frozen role/persona framing as 
 
 | Existing entry | Current entry and purpose |
 | --- | --- |
-| Agent Teams → Members | Previous team workspace retains legacy member configuration and long-lived sessions; no automatic role migration. |
+| Agent Teams → Members | Migrate previous definitions → Assets → Role templates; original long-lived conversations remain read-only under Runs → History. |
 | Creating a reusable role | Agent Teams → Assets → Role templates → New role; templates are independent of legacy teams and members. |
-| Workflow Editor, Run Monitor, History | Legacy entries remain under Previous team workspace; new single-task and dependency workflow assets reference pinned roles and are inspected under Runs. |
+| Workflow Editor, Run Monitor, History | Assets → Workflows references pinned roles; Runs inspects frozen runs and History preserves old records. The top legacy notice only finishes or stops original owned runs. |
 
 See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote binding compatibility.
 
@@ -33,6 +33,6 @@ Previews use current local resources. Historical definitions never silently fall
 
 Previous entry: **Role templates → Assets → Role templates**. Template identity is separate from runtime member state; editing a template does not change the fixed configuration of an existing run.
 
-![Actual role overview and template identity](/images/agent-workbench-roles-en.jpg)
+![Actual role overview and template identity](/images/agent-teams-roles-t25-en.jpg)
 
-![Missing-resource diagnostics in the existing role form](/images/agent-workbench-role-config-en.jpg)
+![Actual role form with effective configuration and inheritance](/images/agent-teams-role-config-t25-en.jpg)

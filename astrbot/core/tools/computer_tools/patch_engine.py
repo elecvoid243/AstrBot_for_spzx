@@ -16,6 +16,7 @@ from .edit_engine import (
     decode_text_bytes,
     encode_text_bytes,
     find_match_at_or_after,
+    robust_replace,
     validate_indent_style,
 )
 
@@ -25,6 +26,7 @@ _ADD = "*** Add File:"
 _DELETE = "*** Delete File:"
 _UPDATE = "*** Update File:"
 _MOVE = "*** Move to:"
+_REPLACE_ALL = "*** Replace All:"
 _EOF = "*** End of File"
 _FENCE_RE = re.compile(r"^```[A-Za-z0-9_-]*\s*$")
 
@@ -43,11 +45,13 @@ class Hunk:
 class FilePatch:
     """One file section of a patch."""
 
-    kind: Literal["add", "update", "delete"]
+    kind: Literal["add", "update", "delete", "replace_all"]
     path: str
     move_to: str | None = None
     hunks: list[Hunk] = field(default_factory=list)
     add_lines: list[str] = field(default_factory=list)
+    old_lines: list[str] = field(default_factory=list)
+    new_lines: list[str] = field(default_factory=list)
 
 
 class PatchParseError(ValueError):
@@ -115,7 +119,7 @@ def parse_patch(text: str) -> list[FilePatch]:
                 continue
             if not stripped or _FENCE_RE.match(stripped):
                 continue
-            if stripped.startswith((_ADD, _UPDATE, _DELETE)):
+            if stripped.startswith((_ADD, _UPDATE, _DELETE, _REPLACE_ALL)):
                 in_patch = True
             else:
                 continue
@@ -160,6 +164,17 @@ def parse_patch(text: str) -> list[FilePatch]:
             current = FilePatch(kind="update", path=path)
             files.append(current)
             continue
+        if stripped.startswith(_REPLACE_ALL):
+            finish_hunk()
+            path = _marker_value(stripped, _REPLACE_ALL)
+            if not path:
+                fail("Replace All requires a path", index)
+            if path in seen_paths:
+                fail(f"duplicate path: {path}", index)
+            seen_paths.add(path)
+            current = FilePatch(kind="replace_all", path=path)
+            files.append(current)
+            continue
         if stripped.startswith(_MOVE):
             if current is None or current.kind != "update":
                 fail("Move to must follow Update File", index)
@@ -184,6 +199,18 @@ def parse_patch(text: str) -> list[FilePatch]:
         if current.kind == "delete":
             if stripped:
                 fail("Delete File takes no content", index)
+            continue
+        if current.kind == "replace_all":
+            if line == "":
+                continue
+            if stripped.startswith("@@"):
+                fail("Replace All does not accept @@ anchors", index)
+            if line.startswith("+"):
+                current.new_lines.append(line[1:])
+            elif line.startswith("-"):
+                current.old_lines.append(line[1:])
+            else:
+                fail("Replace All lines must start with '+' or '-'", index)
             continue
 
         if stripped.startswith("@@"):
@@ -217,6 +244,10 @@ def parse_patch(text: str) -> list[FilePatch]:
             raise PatchParseError(f"Add File {entry.path!r} has no content")
         if entry.kind == "update" and not entry.hunks:
             raise PatchParseError(f"Update File {entry.path!r} has no hunks")
+        if entry.kind == "replace_all" and (not entry.old_lines or not entry.new_lines):
+            raise PatchParseError(
+                f"Replace All {entry.path!r} needs both - lines and + lines"
+            )
     return files
 
 
@@ -293,7 +324,13 @@ def _find_exact_ladder(text: str, old: str, start: int) -> tuple[int, str] | Non
     return None
 
 
-def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int]:
+def _apply_one(
+    text: str,
+    hunk: Hunk,
+    cursor: int,
+    index: int,
+    strict_indent: bool = True,
+) -> tuple[str, int]:
     if hunk.context is not None:
         anchor = _find_exact_ladder(text, hunk.context, cursor)
         if anchor is None:
@@ -321,7 +358,14 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
         if stripped.endswith(old_text):
             idx = len(stripped) - len(old_text)
             if idx >= cursor:
-                adjusted = adjusted_replacement(text, idx, old_text, old_text, new_text)
+                adjusted = adjusted_replacement(
+                    text,
+                    idx,
+                    old_text,
+                    old_text,
+                    new_text,
+                    strict_indent=strict_indent,
+                )
                 return (
                     text[:idx] + adjusted + text[idx + len(old_text) :],
                     idx + len(adjusted),
@@ -343,12 +387,16 @@ def _apply_one(text: str, hunk: Hunk, cursor: int, index: int) -> tuple[str, int
         )
 
     idx, matched = found
-    adjusted = adjusted_replacement(text, idx, old_text, matched, new_text)
+    adjusted = adjusted_replacement(
+        text, idx, old_text, matched, new_text, strict_indent=strict_indent
+    )
     insertion = text[:idx] + adjusted + text[idx + len(matched) :]
     return insertion, idx + len(adjusted)
 
 
-def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
+def apply_hunks_to_text(
+    text: str, hunks: list[Hunk], *, strict_indent: bool = True
+) -> str:
     """Apply hunks to LF-normalized text with a monotonically advancing cursor.
 
     Args:
@@ -363,8 +411,40 @@ def apply_hunks_to_text(text: str, hunks: list[Hunk]) -> str:
     """
     cursor = 0
     for index, hunk in enumerate(hunks):
-        text, cursor = _apply_one(text, hunk, cursor, index)
+        text, cursor = _apply_one(
+            text, hunk, cursor, index, strict_indent=strict_indent
+        )
     return text
+
+
+def apply_replace_all_to_text(
+    text: str,
+    old_lines: list[str],
+    new_lines: list[str],
+    *,
+    strict_indent: bool = True,
+) -> tuple[str, int]:
+    """Replace every occurrence of the old block.
+
+    Args:
+        text: LF-normalized file content.
+        old_lines: Lines to find.
+        new_lines: Replacement lines.
+        strict_indent: Passed through to ``robust_replace``.
+
+    Returns:
+        A tuple of (new text, occurrence count).
+
+    Raises:
+        ValueError: If the block is absent or equals the replacement.
+    """
+    return robust_replace(
+        text,
+        "\n".join(old_lines),
+        "\n".join(new_lines),
+        replace_all=True,
+        strict_indent=strict_indent,
+    )
 
 
 @dataclass
@@ -420,7 +500,12 @@ def _validate_python(path: str, old_text: str, new_text: str) -> None:
 
 
 def plan_patch(
-    patches: list[FilePatch], read: Callable[[str], bytes | None]
+    patches: list[FilePatch],
+    read: Callable[[str], bytes | None],
+    *,
+    encoding: str = "utf-8",
+    bom_for_new: bool = False,
+    strict_indent: bool = True,
 ) -> PatchPlan:
     """Compute new contents and destructive flags without touching disk.
 
@@ -437,7 +522,7 @@ def plan_patch(
     plans: list[FilePlan] = []
     for entry in patches:
         original = read(entry.path)
-        if entry.kind in ("update", "delete") and original is None:
+        if entry.kind in ("update", "delete", "replace_all") and original is None:
             raise PatchParseError(f"file does not exist: {entry.path}")
 
         target_original = read(entry.move_to) if entry.move_to is not None else None
@@ -448,21 +533,36 @@ def plan_patch(
 
         if entry.kind == "delete":
             destructive_reason = "delete"
-            old_text = decode_text_bytes(original or b"")[0]
+            old_text = decode_text_bytes(original or b"", encoding)[0]
         elif entry.kind == "add":
             if original is not None:
                 destructive_reason = "overwrite_add"
-                old_text = decode_text_bytes(original)[0]
-            new_bytes = ("\n".join(entry.add_lines) + "\n").encode("utf-8")
-            new_text = new_bytes.decode("utf-8")
+                old_text = decode_text_bytes(original, encoding)[0]
+            new_text = "\n".join(entry.add_lines) + "\n"
+            new_bytes = encode_text_bytes(new_text, "\n", bom_for_new, encoding)
+            _validate_python(entry.path, old_text, new_text)
+        elif entry.kind == "replace_all":
+            old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
+            try:
+                new_text, _occurrences = apply_replace_all_to_text(
+                    old_text,
+                    entry.old_lines,
+                    entry.new_lines,
+                    strict_indent=strict_indent,
+                )
+            except ValueError as exc:
+                raise PatchParseError(f"{entry.path}: {exc}") from exc
+            new_bytes = encode_text_bytes(new_text, eol, has_bom, encoding)
             _validate_python(entry.path, old_text, new_text)
         else:
-            old_text, eol, has_bom = decode_text_bytes(original or b"")
+            old_text, eol, has_bom = decode_text_bytes(original or b"", encoding)
             try:
-                new_text = apply_hunks_to_text(old_text, entry.hunks)
+                new_text = apply_hunks_to_text(
+                    old_text, entry.hunks, strict_indent=strict_indent
+                )
             except HunkApplyError as exc:
                 raise PatchParseError(f"{entry.path}: {exc}") from exc
-            new_bytes = encode_text_bytes(new_text, eol, has_bom)
+            new_bytes = encode_text_bytes(new_text, eol, has_bom, encoding)
             _validate_python(entry.move_to or entry.path, old_text, new_text)
             if entry.move_to is not None and target_original is not None:
                 destructive_reason = "overwrite_move_target"

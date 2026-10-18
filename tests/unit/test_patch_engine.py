@@ -9,6 +9,7 @@ from astrbot.core.tools.computer_tools.patch_engine import (
     HunkApplyError,
     PatchParseError,
     apply_hunks_to_text,
+    apply_replace_all_to_text,
     parse_patch,
     plan_patch,
 )
@@ -252,3 +253,101 @@ def test_apply_has_no_at_hint_when_first_line_is_also_missing():
     with pytest.raises(HunkApplyError) as exc:
         apply_hunks_to_text("old\n", [hunk])
     assert "separate them with '@@'" not in str(exc.value)
+
+
+# ── Replace All (2026-10-18) ─────────────────────────────────────
+
+
+def test_parse_replace_all_section():
+    files = parse_patch("*** Replace All: a.py\n-old\n-old2\n+new\n+new2\n")
+    assert files[0].kind == "replace_all"
+    assert files[0].old_lines == ["old", "old2"]
+    assert files[0].new_lines == ["new", "new2"]
+
+
+def test_parse_rejects_replace_all_with_anchor():
+    with pytest.raises(PatchParseError, match="Replace All"):
+        parse_patch("*** Replace All: a.py\n@@ head\n-old\n+new\n")
+
+
+def test_parse_rejects_update_and_replace_all_same_path():
+    with pytest.raises(PatchParseError, match="duplicate path"):
+        parse_patch("*** Update File: a.py\n-a\n+b\n*** Replace All: a.py\n-c\n+d\n")
+
+
+def test_parse_rejects_replace_all_without_new_lines():
+    with pytest.raises(PatchParseError, match="Replace All"):
+        parse_patch("*** Replace All: a.py\n-old\n")
+
+
+def test_replace_all_replaces_every_occurrence():
+    out, count = apply_replace_all_to_text(
+        "x = 1\nx = 1\nx = 1\n", ["x = 1"], ["x = 2"]
+    )
+    assert count == 3
+    assert out == "x = 2\nx = 2\nx = 2\n"
+
+
+def test_replace_all_zero_matches_raises():
+    with pytest.raises(ValueError, match="Could not find"):
+        apply_replace_all_to_text("a\n", ["zzz"], ["b"])
+
+
+def test_replace_all_respects_strict_indent_false():
+    out, _ = apply_replace_all_to_text(
+        "    x = 1\n", ["    x = 1"], ["\ty = 2"], strict_indent=False
+    )
+    assert "\ty = 2" in out
+
+
+def test_plan_replace_all_counts_and_diff():
+    files = parse_patch("*** Replace All: a.txt\n-x\n+X\n")
+    plan = plan_patch(files, lambda p: b"x\nx\n")
+    item = plan.files[0]
+    assert item.kind == "replace_all"
+    assert item.new_bytes == b"X\nX\n"
+    assert item.added == 2
+    assert item.removed == 2
+    assert "+X" in item.diff
+
+
+def test_plan_replace_all_requires_existing_file():
+    files = parse_patch("*** Replace All: a.txt\n-x\n+X\n")
+    with pytest.raises(PatchParseError, match="does not exist"):
+        plan_patch(files, lambda p: None)
+
+
+# ── encoding (2026-10-18) ────────────────────────────────────────
+
+
+def test_plan_updates_gbk_file():
+    files = parse_patch("*** Update File: a.txt\n-old\n+new\n")
+    plan = plan_patch(files, lambda p: "old\n".encode("gbk"), encoding="gbk")
+    assert plan.files[0].new_bytes == "new\n".encode("gbk")
+
+
+def test_plan_new_file_utf8_sig_has_bom():
+    files = parse_patch("*** Add File: a.txt\n+x\n")
+    plan = plan_patch(files, lambda p: None, encoding="utf-8", bom_for_new=True)
+    assert plan.files[0].new_bytes == b"\xef\xbb\xbfx\n"
+
+
+def test_plan_delete_gbk_file_does_not_decode_as_utf8():
+    files = parse_patch("*** Delete File: a.txt\n")
+    plan = plan_patch(files, lambda p: "中文\n".encode("gbk"), encoding="gbk")
+    assert plan.files[0].kind == "delete"
+
+
+# ── strict_indent (2026-10-18) ───────────────────────────────────
+
+
+def test_apply_strict_indent_false_allows_style_change():
+    hunk = Hunk(old_lines=["    return 1"], new_lines=["\treturn 2"])
+    out = apply_hunks_to_text("def f():\n    return 1\n", [hunk], strict_indent=False)
+    assert "\treturn 2" in out
+
+
+def test_apply_strict_indent_true_still_rejects():
+    hunk = Hunk(old_lines=["    return 1"], new_lines=["\treturn 2"])
+    with pytest.raises(ValueError, match="indentation style"):
+        apply_hunks_to_text("def f():\n    return 1\n", [hunk])

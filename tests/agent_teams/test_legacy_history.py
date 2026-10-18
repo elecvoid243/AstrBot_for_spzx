@@ -134,13 +134,11 @@ async def test_owned_paused_history_remains_resumable_in_the_original_engine(
     )
     run_id = run["run_id"]
     for _ in range(250):
-        snapshot = await legacy.get_run_snapshot("alice", run_id)
-        pending = [
-            task
-            for task in asyncio.all_tasks()
-            if task.get_name() == f"agent_team_run_{run_id}" and not task.done()
-        ]
-        if snapshot["status"] == "paused" and not pending:
+        observed = await history.get_record("alice", "legacy_run", run_id)
+        if (
+            observed["run"]["status"] == "paused"
+            and not observed["run"]["execution_active"]
+        ):
             break
         await asyncio.sleep(0.02)
     else:

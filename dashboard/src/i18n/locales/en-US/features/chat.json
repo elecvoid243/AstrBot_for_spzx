@@ -652,7 +652,8 @@
     },
     "overlay": {
       "expandLines": "Expand {n} lines",
-      "unavailable": "No base revision is available in this view — overlay unavailable"
+      "unavailable": "No base revision is available in this view — overlay unavailable",
+      "collapse": "Collapse"
     }
   },
   "spcodeProjectLoad": {

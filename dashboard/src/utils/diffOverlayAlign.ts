@@ -11,6 +11,11 @@ export interface OverlayLine {
   kind: "context" | "del" | "add";
   /** context/del 为基准行号(1-based);add 为 null */
   baseLineno: number | null;
+  /**
+   * 变更后文件的 new-side 行号(1-based); context/add 有值, del 为 null。
+   * 叠加视图的评论锚点: context/add 用 new 侧, del 用 old 侧。
+   */
+  newLineno: number | null;
   text: string;
 }
 
@@ -45,6 +50,7 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
       lines: baseLines.map((text, i) => ({
         kind: "context" as const,
         baseLineno: i + 1,
+        newLineno: i + 1,
         text,
       })),
       gaps: [],
@@ -59,18 +65,29 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
     start: number; // 首个 ctx/del 基准行号
     end: number; // 末个 ctx/del 基准行号
     lines: OverlayLine[];
+    /** 该 hunk 结束后,基准行号 → new 行号的累计偏移 */
+    newOffsetAfter: number;
   }
   const segs: HunkSeg[] = [];
   for (const h of hunks) {
     const m = h.header.match(HUNK_HEADER_RE);
     if (!m) return { ok: false, lines: [], gaps: [] };
-    let cursor = parseInt(m[1], 10); // 基准侧起点
+    const oldStart = parseInt(m[1], 10);
+    const oldCount = m[2] ? parseInt(m[2], 10) : 1;
+    const newStart = parseInt(m[3], 10);
+    const newCount = m[4] ? parseInt(m[4], 10) : 1;
+    let cursor = oldStart; // 基准侧起点
     const segLines: OverlayLine[] = [];
     let first = -1;
     let last = -1;
     for (const l of h.lines) {
       if (l.type === "add") {
-        segLines.push({ kind: "add", baseLineno: null, text: l.content });
+        segLines.push({
+          kind: "add",
+          baseLineno: null,
+          newLineno: l.newNo ? Number(l.newNo) : null,
+          text: l.content,
+        });
         continue;
       }
       // ctx / del 都消费一个基准行
@@ -86,6 +103,7 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
       segLines.push({
         kind: l.type === "del" ? "del" : "context",
         baseLineno: cursor,
+        newLineno: l.type === "del" || !l.newNo ? null : Number(l.newNo),
         text,
       });
       if (first < 0) first = cursor;
@@ -93,7 +111,12 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
       cursor++;
     }
     if (first < 0) return { ok: false, lines: [], gaps: [] }; // 纯 add 空 hunk,防御
-    segs.push({ start: first, end: last, lines: segLines });
+    segs.push({
+      start: first,
+      end: last,
+      lines: segLines,
+      newOffsetAfter: newStart + newCount - (oldStart + oldCount),
+    });
   }
 
   // ── 2. 组装:头间隙 + hunk 序列 + 尾间隙 ──
@@ -106,23 +129,34 @@ export function alignOverlay(baseContent: string, patch: string): OverlayResult 
       gaps.push({ afterBaseLineno: after, hiddenCount: hidden });
     }
   }
-  function pushContextRange(fromLine: number, toLine: number): void {
+  function pushContextRange(
+    fromLine: number,
+    toLine: number,
+    newOffset: number,
+  ): void {
     for (let i = fromLine; i <= toLine; i++) {
-      lines.push({ kind: "context", baseLineno: i, text: baseLines[i - 1] });
+      lines.push({
+        kind: "context",
+        baseLineno: i,
+        newLineno: i + newOffset,
+        text: baseLines[i - 1],
+      });
     }
   }
 
+  let newOffset = 0;
   for (const seg of segs) {
     if (seg.start <= covered) return { ok: false, lines: [], gaps: [] }; // 重叠/乱序
     const gapCount = seg.start - covered - 1;
     pushGap(covered, gapCount);
-    pushContextRange(covered + 1, seg.start - 1);
+    pushContextRange(covered + 1, seg.start - 1, newOffset);
     lines.push(...seg.lines);
     covered = seg.end;
+    newOffset = seg.newOffsetAfter;
   }
   const tailCount = baseLines.length - covered;
   pushGap(covered, tailCount);
-  pushContextRange(covered + 1, baseLines.length);
+  pushContextRange(covered + 1, baseLines.length, newOffset);
 
   return { ok: true, lines, gaps };
 }

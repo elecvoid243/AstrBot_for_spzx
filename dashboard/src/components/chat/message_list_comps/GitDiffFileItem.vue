@@ -527,7 +527,6 @@ function rowKey(): string {
           :overlay-supported="true"
           :file-path="file.path"
           :comment-path="commentPath"
-          :collapsible="false"
           :is-dark="isDark"
           :on-discard-hunk="onDiscardHunk"
           :discarding-hunks="discardingHunks"

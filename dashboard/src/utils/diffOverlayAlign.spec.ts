@@ -17,13 +17,28 @@ describe("alignOverlay", () => {
     const r = alignOverlay(base, patch);
     expect(r.ok).toBe(true);
     expect(r.lines).toEqual([
-      { kind: "context", baseLineno: 1, text: "l1" },
-      { kind: "del", baseLineno: 2, text: "l2" },
-      { kind: "add", baseLineno: null, text: "l2a" },
-      { kind: "add", baseLineno: null, text: "l2b" },
-      { kind: "context", baseLineno: 3, text: "l3" },
+      { kind: "context", baseLineno: 1, newLineno: 1, text: "l1" },
+      { kind: "del", baseLineno: 2, newLineno: null, text: "l2" },
+      { kind: "add", baseLineno: null, newLineno: 2, text: "l2a" },
+      { kind: "add", baseLineno: null, newLineno: 3, text: "l2b" },
+      { kind: "context", baseLineno: 3, newLineno: 4, text: "l3" },
     ]);
     expect(r.gaps).toEqual([]);
+  });
+
+  it("tracks new-side line numbers across hunks", () => {
+    const base = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join("\n");
+    const patch = makePatch(5, 1, 5, 2, ["-l5", "+L5", "+L5b"]);
+    const r = alignOverlay(base, patch);
+    expect(r.ok).toBe(true);
+    // One extra line before the tail → base 6 is new 7.
+    expect(r.lines.find((l) => l.baseLineno === 6)?.newLineno).toBe(7);
+    expect(
+      r.lines.find((l) => l.kind === "add" && l.text === "L5")?.newLineno,
+    ).toBe(5);
+    expect(
+      r.lines.find((l) => l.kind === "add" && l.text === "L5b")?.newLineno,
+    ).toBe(6);
   });
 
   it("accepts a patch ending with a newline after the final hunk", () => {
@@ -100,8 +115,8 @@ describe("alignOverlay", () => {
     const r = alignOverlay("l1\nl2\n", "");
     expect(r.ok).toBe(true);
     expect(r.lines).toEqual([
-      { kind: "context", baseLineno: 1, text: "l1" },
-      { kind: "context", baseLineno: 2, text: "l2" },
+      { kind: "context", baseLineno: 1, newLineno: 1, text: "l1" },
+      { kind: "context", baseLineno: 2, newLineno: 2, text: "l2" },
     ]);
     expect(r.gaps).toEqual([]);
   });

@@ -147,6 +147,14 @@ describe("DiffPreview fullscreen expansion", () => {
     expect(overlay.querySelectorAll(".overlay-body").length).toBe(1);
     expect(overlay.querySelectorAll(".diff-hunk").length).toBe(0);
     expect(overlay.querySelectorAll(".hunk-header").length).toBe(0);
+    // The fullscreen copy gets its own sticky collapse FAB.
+    expect(overlay.querySelectorAll(".diff-overlay-collapse-fab").length).toBe(
+      1,
+    );
+    // ...and the same per-line comment gutter as the inline overlay.
+    expect(
+      overlay.querySelectorAll(".overlay-body .diff-line-gutter").length,
+    ).toBeGreaterThan(0);
 
     wrapper.unmount();
   });
@@ -758,6 +766,41 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.findAll(".hunk-header")).toHaveLength(0);
   });
 
+  it("renders a sticky collapse FAB only while the overlay is expanded", () => {
+    const expanded = mountOverlay({ overlayMode: true });
+    const fab = expanded.find(".diff-overlay-collapse-fab");
+    expect(fab.exists()).toBe(true);
+    // Direct child of .diff-preview: sticky positioning resolves against
+    // the chat/sidebar scroll container, not the card.
+    expect(fab.element.parentElement?.classList.contains("diff-preview")).toBe(
+      true,
+    );
+    expect(expanded.find(".overlay-body").exists()).toBe(true);
+
+    const patchOnly = mountOverlay({ overlayMode: false });
+    expect(patchOnly.find(".diff-overlay-collapse-fab").exists()).toBe(false);
+  });
+
+  it("folds the card from the FAB and re-expands from the header", async () => {
+    const wrapper = mountOverlay({ overlayMode: true });
+    const vm = wrapper.vm as unknown as { isCollapsed: boolean };
+
+    await wrapper.find(".diff-overlay-collapse-fab").trigger("click");
+    await nextTick();
+
+    expect(vm.isCollapsed).toBe(true);
+    expect(wrapper.find(".overlay-body").exists()).toBe(false);
+    expect(wrapper.find(".diff-overlay-collapse-fab").exists()).toBe(false);
+    expect(wrapper.find(".diff-header").exists()).toBe(true);
+
+    await wrapper.find(".diff-header").trigger("click");
+    await nextTick();
+
+    expect(vm.isCollapsed).toBe(false);
+    expect(wrapper.find(".overlay-body").exists()).toBe(true);
+    expect(wrapper.find(".diff-overlay-collapse-fab").exists()).toBe(true);
+  });
+
   it("shows base line numbers on ctx/del rows, blank on add rows", () => {
     const wrapper = mountOverlay({ overlayMode: true });
     const rows = wrapper.findAll(".overlay-body .diff-line");
@@ -944,5 +987,114 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.find(".overlay-body").exists()).toBe(false);
     // 普通 patch 视图仍在(hunk header 存在)
     expect(wrapper.find(".hunk-header").exists()).toBe(true);
+  });
+
+  describe("overlay inline comments", () => {
+    beforeEach(() => {
+      useFileComments().clearAll();
+    });
+
+    type OverlayCommentVm = {
+      activeEditLine: number | null;
+      activeEditSide: "new" | "old";
+      editorContext: {
+        lineContent: string;
+        contextBefore: string | null;
+        contextAfter: string | null;
+      } | null;
+      onSaveComment: (payload: {
+        text: string;
+        commentId: string | null;
+        line: number;
+      }) => void;
+    };
+
+    it("offers + on an unchanged context row and anchors it to the new side", async () => {
+      const wrapper = mountOverlay({ overlayMode: true });
+      // l1 is before the hunk — the old renderer only had gutters on rows
+      // that appeared in the diff.
+      const first = wrapper.findAll(".overlay-body .diff-line")[0];
+      expect(first.classes()).toContain("ctx");
+
+      await first.trigger("mouseenter");
+      expect(first.find(".diff-comment-add").exists()).toBe(true);
+      await first.find(".diff-comment-add").trigger("click");
+
+      const vm = wrapper.vm as unknown as OverlayCommentVm;
+      expect(vm.activeEditLine).toBe(1);
+      expect(vm.activeEditSide).toBe("new");
+      expect(vm.editorContext?.lineContent).toBe("l1");
+      expect(vm.editorContext?.contextAfter).toBe("l2");
+
+      vm.onSaveComment({ text: "未改动行也可评论", commentId: null, line: 1 });
+      await nextTick();
+
+      const comments = useFileComments().commentsForFile("sample.txt");
+      expect(comments).toHaveLength(1);
+      expect(comments[0].side).toBe("new");
+      expect(comments[0].line).toBe(1);
+      expect(comments[0].lineContent).toBe("l1");
+      expect(first.classes()).toContain("has-comment");
+      expect(first.find(".diff-comment-indicator").exists()).toBe(true);
+    });
+
+    it("anchors a deleted overlay row to the old side", async () => {
+      const wrapper = mountOverlay({ overlayMode: true });
+      const del = wrapper.find(".overlay-body .diff-line.del");
+      await del.trigger("mouseenter");
+      await del.find(".diff-comment-add").trigger("click");
+
+      const vm = wrapper.vm as unknown as OverlayCommentVm;
+      expect(vm.activeEditLine).toBe(3);
+      expect(vm.activeEditSide).toBe("old");
+      expect(vm.editorContext?.lineContent).toBe("l3");
+
+      vm.onSaveComment({ text: "删掉这行", commentId: null, line: 3 });
+      await nextTick();
+
+      const comments = useFileComments().commentsForFile("sample.txt");
+      expect(comments).toHaveLength(1);
+      expect(comments[0].side).toBe("old");
+      expect(comments[0].line).toBe(3);
+      expect(comments[0].lineContent).toBe("l3");
+    });
+
+    it("anchors a post-hunk context row to its new-side number", async () => {
+      const wrapper = mountOverlay({ overlayMode: true });
+      // l4 follows a hunk that added one line, so its new-side number is 5
+      // while the overlay still displays the base number 4.
+      const l4 = wrapper
+        .findAll(".overlay-body .diff-line")
+        .find((row) => row.text().includes("l4"));
+      expect(l4).toBeTruthy();
+      await l4!.trigger("mouseenter");
+      await l4!.find(".diff-comment-add").trigger("click");
+
+      const vm = wrapper.vm as unknown as OverlayCommentVm;
+      expect(vm.activeEditLine).toBe(5);
+      expect(vm.activeEditSide).toBe("new");
+      expect(vm.editorContext?.lineContent).toBe("l4");
+    });
+
+    it("anchors an added overlay row to the new side", async () => {
+      const wrapper = mountOverlay({ overlayMode: true });
+      const add = wrapper.find(".overlay-body .diff-line.add");
+      await add.trigger("mouseenter");
+      await add.find(".diff-comment-add").trigger("click");
+
+      const vm = wrapper.vm as unknown as OverlayCommentVm;
+      expect(vm.activeEditLine).toBe(3);
+      expect(vm.activeEditSide).toBe("new");
+      expect(vm.editorContext?.lineContent).toBe("L3");
+
+      vm.onSaveComment({ text: "新增行评论", commentId: null, line: 3 });
+      await nextTick();
+
+      const comments = useFileComments().commentsForFile("sample.txt");
+      expect(comments).toHaveLength(1);
+      expect(comments[0].side).toBe("new");
+      expect(comments[0].line).toBe(3);
+      expect(comments[0].lineContent).toBe("L3");
+    });
   });
 });

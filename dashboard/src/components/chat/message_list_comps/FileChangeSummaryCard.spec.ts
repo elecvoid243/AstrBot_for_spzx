@@ -216,6 +216,9 @@ describe("FileChangeSummaryCard overlay wiring", () => {
     // store partition key, so it must match the row path.
     expect(dp.props("commentable")).not.toBe(false);
     expect(dp.props("filePath")).toBe(FILES[0].path);
+    // The overlay FAB collapses the card; the header must stay able to
+    // expand it again.
+    expect(dp.props("collapsible")).not.toBe(false);
   });
 
   it("keeps the slot disabled without a baseline or for created files", async () => {

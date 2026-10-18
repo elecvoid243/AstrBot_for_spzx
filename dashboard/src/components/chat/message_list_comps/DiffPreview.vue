@@ -138,8 +138,41 @@
           <div
             v-else
             class="diff-line"
-            :class="overlayLineClass(row.line)"
+            :class="[
+              overlayLineClass(row.line),
+              {
+                'is-hovered':
+                  isCommentable &&
+                  hoveredOverlayKey === overlayRowKey(row.line),
+                'has-comment':
+                  isCommentable && !!overlayCommentOnLine(row.line),
+              },
+            ]"
+            @mouseenter="onOverlayRowEnter(row.line)"
+            @mouseleave="onOverlayRowLeave"
           >
+            <span v-if="isCommentable" class="diff-line-gutter">
+              <button
+                v-if="overlayGutterAddVisible(row.line)"
+                type="button"
+                class="diff-comment-add"
+                :aria-label="tm('spcodeProjectLoad.fileBrowser.comment.addButtonAria', { line: overlayAnchorLine(row.line) ?? '' })"
+                @click.stop="openOverlayEditor(row.line)"
+              >+</button>
+              <button
+                v-else-if="overlayCommentOnLine(row.line)"
+                type="button"
+                class="diff-comment-indicator"
+                :title="overlayCommentOnLine(row.line)?.text ?? ''"
+                :aria-label="tm('spcodeProjectLoad.fileBrowser.comment.indicatorAria', {
+                  line: overlayAnchorLine(row.line) ?? '',
+                  preview: overlayCommentOnLine(row.line)?.text ?? '',
+                })"
+                @click.stop="openEditEditor(overlayCommentOnLine(row.line)?.id ?? '')"
+              >
+                <v-icon size="12">mdi-comment-text-outline</v-icon>
+              </button>
+            </span>
             <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
             <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
             <span class="line-content" v-html="overlayLineHtml(row.line, row.addIdx)"></span>
@@ -498,6 +531,28 @@
         />
       </div>
     </Teleport>
+
+    <!-- 2026-10-18 (elecvoid243): always-visible collapse affordance for the
+         full-file overlay. The base content can be very long, so the header's
+         chevron scrolls away; this sticky FAB keeps a one-click fold at the
+         bottom edge of the scroll viewport (same pattern as the subagent
+         card). It is only rendered while the overlay body is expanded. -->
+    <button
+      v-if="
+        overlayActive &&
+        !isCollapsed &&
+        !isFullscreen &&
+        activeEditLine === null
+      "
+      type="button"
+      class="diff-overlay-collapse-fab"
+      :title="tm('diffPreview.overlay.collapse')"
+      :aria-label="tm('diffPreview.overlay.collapse')"
+      @mouseup.stop
+      @click.stop="collapseFromOverlay"
+    >
+      <v-icon size="16">mdi-chevron-up</v-icon>
+    </button>
   </div>
 
   <!-- Fullscreen overlay — Teleported to <body> to escape fixed-position
@@ -675,8 +730,41 @@
           <div
             v-else
             class="diff-line"
-            :class="overlayLineClass(row.line)"
+            :class="[
+              overlayLineClass(row.line),
+              {
+                'is-hovered':
+                  isCommentable &&
+                  hoveredOverlayKey === overlayRowKey(row.line),
+                'has-comment':
+                  isCommentable && !!overlayCommentOnLine(row.line),
+              },
+            ]"
+            @mouseenter="onOverlayRowEnter(row.line)"
+            @mouseleave="onOverlayRowLeave"
           >
+            <span v-if="isCommentable" class="diff-line-gutter">
+              <button
+                v-if="overlayGutterAddVisible(row.line)"
+                type="button"
+                class="diff-comment-add"
+                :aria-label="tm('spcodeProjectLoad.fileBrowser.comment.addButtonAria', { line: overlayAnchorLine(row.line) ?? '' })"
+                @click.stop="openOverlayEditor(row.line)"
+              >+</button>
+              <button
+                v-else-if="overlayCommentOnLine(row.line)"
+                type="button"
+                class="diff-comment-indicator"
+                :title="overlayCommentOnLine(row.line)?.text ?? ''"
+                :aria-label="tm('spcodeProjectLoad.fileBrowser.comment.indicatorAria', {
+                  line: overlayAnchorLine(row.line) ?? '',
+                  preview: overlayCommentOnLine(row.line)?.text ?? '',
+                })"
+                @click.stop="openEditEditor(overlayCommentOnLine(row.line)?.id ?? '')"
+              >
+                <v-icon size="12">mdi-comment-text-outline</v-icon>
+              </button>
+            </span>
             <span class="line-number old">{{ row.line.baseLineno ?? "" }}</span>
             <span class="line-prefix">{{ overlayPrefix(row.line.kind) }}</span>
             <span class="line-content" v-html="overlayLineHtml(row.line, row.addIdx)"></span>
@@ -1019,6 +1107,21 @@
               />
             </div>
           </Teleport>
+
+          <!-- Fullscreen copy of the overlay collapse FAB; the closest
+               `.diff-preview` is the fullscreen card, so the scroll landing
+               happens inside `.diff-fullscreen-body`. -->
+          <button
+            v-if="overlayActive && !isCollapsed && activeEditLine === null"
+            type="button"
+            class="diff-overlay-collapse-fab"
+            :title="tm('diffPreview.overlay.collapse')"
+            :aria-label="tm('diffPreview.overlay.collapse')"
+            @mouseup.stop
+            @click.stop="collapseFromOverlay"
+          >
+            <v-icon size="16">mdi-chevron-up</v-icon>
+          </button>
         </div>
       </div>
     </div>
@@ -1285,6 +1388,21 @@ const overlayRows = computed<OverlayRow[]>(() => {
     }
   }
   return rows;
+});
+
+/**
+ * Full post-change file content reconstructed from the overlay rows.
+ * Used to freeze the comment line context for any context/add row, including
+ * lines outside the diff hunks (where the hunk-only `newFileContent` has no
+ * entry). Del rows use `baseContent` instead.
+ */
+const overlayNewFileContent = computed<string>(() => {
+  const r = overlayResult.value;
+  if (!r || !r.ok) return "";
+  return r.lines
+    .filter((l) => l.kind !== "del")
+    .map((l) => l.text)
+    .join("\n");
 });
 
 function overlayPrefix(kind: OverlayLine["kind"]): string {
@@ -1587,6 +1705,25 @@ const toggleCollapsed = () => {
   }
 };
 
+/**
+ * 2026-10-18 (elecvoid243): fold the card from the sticky overlay FAB and
+ * land the now-short header back in the middle of the scroll viewport. The
+ * FAB lives at the bottom of a potentially very long base file, so without
+ * this the reader would be left staring at the content that just vanished.
+ * `collapsible` may be false at the call site; this action is intentionally
+ * always allowed, while the header remains the expand affordance (the
+ * summary/Git-changes call sites enable it for that reason).
+ */
+function collapseFromOverlay(event: MouseEvent): void {
+  const card = (event.currentTarget as HTMLElement | null)?.closest(
+    ".diff-preview",
+  );
+  isCollapsed.value = true;
+  nextTick(() => {
+    card?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  });
+}
+
 // ── Fullscreen state (spec 2026-06-30-diff-fullscreen-design.md §4) ─
 // `isFullscreen` is declared with the other reactive state above
 // (next to `showAllLines`) so `effectiveMaxLines` can include it in
@@ -1676,6 +1813,16 @@ const hoveredUnifiedSide = ref<"new" | "old" | null>(null);
 const hoveredUnifiedHunk = ref<number | null>(null);
 const hoveredSplitRow = ref<number | null>(null);
 const hoveredSplitHunk = ref<number | null>(null);
+/** 2026-10-18: overlay comment hover key ("new:12" / "old:8"). */
+const hoveredOverlayKey = ref<string | null>(null);
+// A file/patch swap invalidates the row identity; drop any stale hover so a
+// new file cannot inherit a "+" chip on a coincidentally matching line.
+watch(
+  () => [props.baseContent, props.content],
+  () => {
+    hoveredOverlayKey.value = null;
+  },
+);
 
 /** Editor state (mirrors FileBrowserFilePreview's pattern). When
  *  `activeEditLine` is non-null the editor is visible at the bottom
@@ -1876,6 +2023,74 @@ function unifiedGutterAddVisible(line: DiffLine, hi: number): boolean {
   return false;
 }
 
+// ── 2026-10-18: overlay comments on every line ─────────────────────
+// The full-file overlay is a distinct rendering surface: it shows unchanged
+// base lines as well as added/deleted lines. Context/add rows anchor to the
+// new file (like unified mode); del rows anchor to the old file. Every row
+// therefore has a stable comment key, not only rows that appear in a hunk.
+
+function overlayAnchorSide(line: OverlayLine): "new" | "old" {
+  return line.kind === "del" ? "old" : "new";
+}
+
+function overlayAnchorLine(line: OverlayLine): number | null {
+  return line.kind === "del" ? line.baseLineno : line.newLineno;
+}
+
+function overlayRowKey(line: OverlayLine): string {
+  const no = overlayAnchorLine(line);
+  return no === null ? "" : `${overlayAnchorSide(line)}:${no}`;
+}
+
+function overlayCommentOnLine(line: OverlayLine): FileComment | undefined {
+  const no = overlayAnchorLine(line);
+  if (no === null) return undefined;
+  return overlayAnchorSide(line) === "old"
+    ? commentsByOldLine.value.get(no)
+    : commentsByNewLine.value.get(no);
+}
+
+function onOverlayRowEnter(line: OverlayLine): void {
+  if (!isCommentable.value) return;
+  hoveredOverlayKey.value = overlayRowKey(line) || null;
+}
+
+function onOverlayRowLeave(): void {
+  hoveredOverlayKey.value = null;
+}
+
+function overlayGutterAddVisible(line: OverlayLine): boolean {
+  if (!isCommentable.value) return false;
+  const key = overlayRowKey(line);
+  return (
+    !!key &&
+    hoveredOverlayKey.value === key &&
+    !overlayCommentOnLine(line)
+  );
+}
+
+/**
+ * Open the comment editor for an overlay row. Unlike `openNewEditor`, the
+ * context source is the full post-change file (reconstructed from the
+ * overlay rows), so unchanged lines outside the hunks still freeze a real
+ * lineContent/context snapshot. Del rows use the base file.
+ */
+function openOverlayEditor(line: OverlayLine): void {
+  const side = overlayAnchorSide(line);
+  const no = overlayAnchorLine(line);
+  if (no === null) return;
+  const source =
+    side === "new" ? overlayNewFileContent.value : props.baseContent;
+  const context =
+    extractLineContext(source, no) ?? {
+      lineContent: line.text,
+      contextBefore: null,
+      contextAfter: null,
+    };
+  // Reuse the existing editor state machine (including the hunk snapshot).
+  openNewEditor(no, side, context);
+}
+
 /** 2026-08-13: the content of a del line by old-side line number.
  *  Spec decision (B): del-line comments do NOT rebuild the old file —
  *  the line's own content comes straight from the hunk; surrounding
@@ -1891,8 +2106,17 @@ function delLineContent(line: number): string {
   return "";
 }
 
-/** Open the editor for a brand-new comment on the given side. */
-function openNewEditor(line: number, side: "new" | "old"): void {
+/** Open the editor for a brand-new comment on the given side.
+ *
+ *  `context` is an optional pre-computed line snapshot. The overlay passes
+ *  one derived from the full post-change file (or the base file for del
+ *  rows); unified/split omit it and keep the existing hunk-derived context.
+ */
+function openNewEditor(
+  line: number,
+  side: "new" | "old",
+  context?: LineContext | null,
+): void {
   activeEditLine.value = line;
   activeEditSide.value = side;
   activeEditCommentId.value = null;
@@ -1901,13 +2125,14 @@ function openNewEditor(line: number, side: "new" | "old"): void {
   // (e.g. a stub diff that only contains del lines). The editor
   // handles a null context gracefully (no preview snippet shown).
   editorContext.value =
-    side === "new"
+    context ??
+    (side === "new"
       ? extractLineContext(newFileContent.value, line)
       : {
           lineContent: delLineContent(line),
           contextBefore: null,
           contextAfter: null,
-        };
+        });
   // Snapshot the surrounding diff hunk so the saved comment can
   // include the patch in the LLM-facing output. Falls back to null
   // when the line isn't in any parseable hunk (very rare: only
@@ -2375,7 +2600,12 @@ const statsDels = computed(() => {
   margin: 4px 0;
   border: 1px solid var(--diff-border);
   border-radius: 8px;
-  overflow: hidden;
+  /* `clip` (not `hidden`) so this card is NOT a scroll container: the
+     sticky overlay-collapse FAB below must resolve against the chat/sidebar
+     scroll container. `hidden` would trap it in the card's own non-scrolling
+     scrollport, so it would never follow the viewport. Same pattern as
+     SubAgentRunBlock. */
+  overflow: clip;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -2498,6 +2728,49 @@ const statsDels = computed(() => {
 
 .overlay-gap:hover {
   background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* 2026-10-18 (elecvoid243): always-visible fold affordance for the full-file
+   overlay. Mirrors the subagent card's FAB: sticky to the bottom edge of the
+   scroll viewport while the card is taller than it, then settles in the
+   card's bottom-right corner. The negative top margin cancels the button's
+   own height so it floats over the content instead of extending the card. */
+.diff-overlay-collapse-fab {
+  position: sticky;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  margin: -28px 10px 0 auto;
+  padding: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
+  border-radius: 50%;
+  background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.diff-overlay-collapse-fab:hover {
+  color: rgb(var(--v-theme-primary));
+  border-color: rgba(var(--v-theme-primary), 0.45);
+}
+
+.diff-overlay-collapse-fab:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.diff-preview.is-dark .diff-overlay-collapse-fab {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
 }
 
 .diff-view-toggle {

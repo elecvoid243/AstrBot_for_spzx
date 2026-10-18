@@ -83,6 +83,7 @@ const stubs = {
       "baseContent",
       "filePath",
       "commentPath",
+      "collapsible",
       "overlayMode",
       "overlayLoading",
       "overlayUnavailable",
@@ -141,6 +142,11 @@ describe("GitDiffFileItem overlay mode state machine", () => {
 
     expect(w.find(".dp").attributes("data-comment-path")).toBe(
       "F:\\repo\\src\\a.ts",
+    );
+    // The overlay FAB collapses the card; do not opt out of the header
+    // re-expand affordance.
+    expect(w.findComponent({ name: "DiffPreview" }).props("collapsible")).not.toBe(
+      false,
     );
   });
 

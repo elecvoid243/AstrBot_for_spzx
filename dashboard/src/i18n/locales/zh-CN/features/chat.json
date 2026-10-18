@@ -652,7 +652,8 @@
     },
     "overlay": {
       "expandLines": "展开 {n} 行",
-      "unavailable": "该视图没有可用的基准原文，无法叠加"
+      "unavailable": "该视图没有可用的基准原文，无法叠加",
+      "collapse": "收起"
     }
   },
   "spcodeProjectLoad": {

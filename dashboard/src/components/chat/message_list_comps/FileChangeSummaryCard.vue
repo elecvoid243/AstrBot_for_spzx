@@ -158,7 +158,6 @@
             :overlay-supported="canOverlay(file)"
             :is-dark="isDark"
             :max-lines="400"
-            :collapsible="false"
           />
         </template>
       </div>
@@ -430,7 +429,11 @@ watch(
   border: 1px solid rgba(var(--v-theme-primary), 0.3);
   border-radius: 10px;
   background: rgba(var(--v-theme-primary), 0.045);
-  overflow: hidden;
+  /* `clip` (not `hidden`) keeps this card from becoming a scroll container,
+     so the diff overlay's sticky collapse FAB resolves against the chat
+     viewport instead of being trapped at the card's bottom. Same pattern as
+     SubAgentRunBlock. */
+  overflow: clip;
   font-size: 13px;
 }
 

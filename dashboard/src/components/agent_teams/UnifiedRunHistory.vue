@@ -305,6 +305,8 @@ let disposed = false;
 
 async function loadPage(offset: number) {
   if (loading.value) return;
+  const read = selection;
+  const record = offset === 0 ? selected.value : null;
   loading.value = true;
   error.value = "";
   try {
@@ -312,6 +314,7 @@ async function loadPage(offset: number) {
     if (disposed) return;
     records.value = offset ? [...records.value, ...page.records] : page.records;
     nextOffset.value = page.next_offset;
+    if (record && read === selection) await open(record, true);
   } catch (cause) {
     if (!disposed)
       error.value = extractApiError(cause, tm("errors.loadFailed")).message;
@@ -320,13 +323,14 @@ async function loadPage(offset: number) {
   }
 }
 
-async function open(record: any) {
+async function open(record: any, refresh = false) {
   if (record.source.kind === "v2_run") {
     emit("openRun", record.source.id);
     return;
   }
+  const member = refresh ? memberId.value : "";
   const read = ++selection;
-  selected.value = null;
+  if (!refresh) selected.value = null;
   messages.value = [];
   memberId.value = "";
   beforeId.value = null;
@@ -337,10 +341,15 @@ async function open(record: any) {
       record.source.kind,
       record.source.id,
     );
-    if (!disposed && read === selection) selected.value = detail;
+    if (!disposed && read === selection) {
+      selected.value = detail;
+      if (member && detail.members?.includes(member)) await loadProcess(member);
+    }
   } catch (cause) {
-    if (!disposed && read === selection)
+    if (!disposed && read === selection) {
+      selected.value = null;
       error.value = extractApiError(cause, tm("errors.loadFailed")).message;
+    }
   } finally {
     if (!disposed && read === selection) busy.value = false;
   }

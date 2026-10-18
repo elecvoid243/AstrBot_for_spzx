@@ -1,5 +1,7 @@
 """Read legacy history through shared services and durable SQLite storage."""
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -45,6 +47,127 @@ async def history_env(tmp_path):
     finally:
         await workflows.shutdown()
         await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_owned_paused_history_remains_resumable_in_the_original_engine(
+    history_env,
+):
+    """Keep a naturally parked legacy run distinct from lost-process history.
+
+    Args:
+        history_env: Real database and shared public history services.
+    """
+    from astrbot.core.agent_team_tools import AgentTeamToolRegistry
+    from astrbot.core.agent_teams.history import RunHistoryService
+    from astrbot.dashboard.services.agent_team_ports import TeamPorts
+
+    db, _, workflows = history_env
+    legacy = AgentTeamRunService(db, None)
+    history = RunHistoryService(db, workflows, legacy)
+    coordinator_umo = "webchat:FriendMessage:paused-lead"
+    delivered = []
+    finish_on_next = False
+
+    async def deliver(session_id, text, context=None, **kwargs):
+        """Supply an external coordinator response, finishing after public resume.
+
+        Args:
+            session_id: Original member session receiving the model request.
+            text: Coordinator prompt supplied by the legacy engine.
+            context: Optional request context supplied by the engine.
+            **kwargs: Other delivery options supplied by the public port.
+
+        Returns:
+            Identity consumed by the corresponding response collection.
+        """
+        delivered.append(session_id)
+        if finish_on_next:
+            tools = AgentTeamToolRegistry.get_tools(coordinator_umo)
+            await next(tool for tool in tools if tool.name == "team_finish").call(
+                None, summary="Completed after original engine resume"
+            )
+        return f"message-{len(delivered)}"
+
+    async def collect(session_id, message_id, member_id=None, **kwargs):
+        """Return a controlled model reply without dispatching a member task.
+
+        Args:
+            session_id: Original member session whose response is collected.
+            message_id: Identity returned by the delivery port.
+            member_id: Optional member association supplied by the engine.
+            **kwargs: Other collection options supplied by the public port.
+
+        Returns:
+            Original response text and its empty process-parts collection.
+        """
+        return "No dispatch in this model response", []
+
+    legacy.ports_factory = lambda username, emit: TeamPorts(
+        deliver, collect, lambda session_id: False, emit
+    )
+    await db.create_agent_team(
+        team_id="paused-team",
+        owner_username="alice",
+        name="Original paused team",
+        coordinator_member_id="lead",
+        config={"max_rounds": 20, "reply_timeout": 5},
+        members=[
+            {
+                "member_id": "lead",
+                "name": "Lead",
+                "session_id": "paused-lead",
+                "umo": coordinator_umo,
+                "system_prompt": "Coordinate",
+            },
+            {
+                "member_id": "writer",
+                "name": "Writer",
+                "session_id": "paused-writer",
+                "umo": "webchat:FriendMessage:paused-writer",
+                "system_prompt": "Write",
+            },
+        ],
+    )
+    run = await legacy.start_run(
+        "alice", "paused-team", {"mode": "auto", "input": "Pause without dispatch"}
+    )
+    run_id = run["run_id"]
+    for _ in range(250):
+        snapshot = await legacy.get_run_snapshot("alice", run_id)
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == f"agent_team_run_{run_id}" and not task.done()
+        ]
+        if snapshot["status"] == "paused" and not pending:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("The original auto run did not naturally park")
+
+    record = await history.get_record("alice", "legacy_run", run_id)
+    assert len(delivered) == 2
+    assert record["read_only"] is True
+    assert record["run"]["status"] == "paused"
+    assert record["run"]["execution_active"] is False
+    assert record["run"]["history_status"] == "paused"
+    assert (await history.list_records("alice"))["records"][0]["status"] == "paused"
+    assert any(
+        item["run_id"] == run_id
+        for item in (await legacy.list_active_runs("alice"))["runs"]
+    )
+
+    finish_on_next = True
+    await legacy.resume_run("alice", run_id)
+    for _ in range(250):
+        record = await history.get_record("alice", "legacy_run", run_id)
+        if record["run"]["status"] == "completed":
+            break
+        await asyncio.sleep(0.02)
+    assert len(delivered) == 3
+    assert record["run"]["history_status"] == "completed"
+    assert record["run"]["result_summary"] == "Completed after original engine resume"
 
 
 @pytest.mark.asyncio

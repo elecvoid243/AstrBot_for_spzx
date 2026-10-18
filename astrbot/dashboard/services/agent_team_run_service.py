@@ -1906,13 +1906,17 @@ class AgentTeamRunService:
         row, team = await self._require_run(username, run_id)
         runner = self._runners.get(run_id)
         active = bool(runner and runner.task and not runner.task.done())
+        # A parked loop can return while its original owner still supports resume.
+        owned_pause = runner is not None and runner.status == "paused"
         return {
             **_run_to_dict(row),
             "team_name": team["name"],
             "execution_active": active,
             "history_status": (
                 "interrupted"
-                if row.status in ("running", "paused", "stopping") and not active
+                if row.status in ("running", "paused", "stopping")
+                and not active
+                and not owned_pause
                 else row.status
             ),
         }

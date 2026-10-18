@@ -703,6 +703,7 @@ class LegacyMigrationService:
         provider_id = config.get("provider_id")
         session_issues = []
         session_source = {}
+        session_config = {}
         core = self.roles.core_lifecycle
         if not config.get("config_id") and core is not None and member.get("umo"):
             profile_id = core.astrbot_config_mgr.get_conf_info(member["umo"]).id

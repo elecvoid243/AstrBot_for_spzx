@@ -33,6 +33,12 @@ const stubs = Object.fromEntries(
   ].map((name) => [name, slotStub]),
 );
 Object.assign(stubs, {
+  "v-checkbox": {
+    props: ["modelValue"],
+    emits: ["update:modelValue"],
+    template:
+      '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+  },
   "v-dialog": {
     props: ["modelValue"],
     template: '<div v-if="modelValue"><slot /></div>',
@@ -62,6 +68,53 @@ Object.assign(stubs, {
 });
 
 describe("reusable role configuration", () => {
+  it("requires review before resolving a migrated role in a new version", async () => {
+    api.list.mockResolvedValue({
+      roles: [
+        {
+          role_id: "migrated",
+          version: 1,
+          versions: [1],
+          definition: {
+            name: "Migrated writer",
+            prompt: "Write evidence.",
+            model_slot: "model",
+            migration: {
+              issues: [
+                {
+                  path: "runner_config.legacy_exit",
+                  code: "UNMAPPABLE",
+                  message: "Review previous exit behavior",
+                },
+              ],
+              source: { execution: { legacy_exit: true } },
+            },
+          },
+          installation: { profile_id: "default", bindings: { model: "model" } },
+        },
+      ],
+    });
+    const panel = mount(RoleTemplatesPanel, { global: { stubs } });
+    await flushPromises();
+    await panel
+      .findAll("button")
+      .find((button) => button.text() === "roles.edit")!
+      .trigger("click");
+    expect(panel.text()).toContain("Review previous exit behavior");
+    expect(
+      panel.get('[data-testid="save-role"]').attributes("disabled"),
+    ).toBeDefined();
+    await panel.get('input[type="checkbox"]').setValue(true);
+    await panel.get('[data-testid="save-role"]').trigger("click");
+    await flushPromises();
+    expect(api.save).toHaveBeenCalledTimes(1);
+    expect(api.save.mock.calls[0][0]).toBe("migrated");
+    expect(api.save.mock.calls[0][1].expected_version).toBe(1);
+    expect(api.save.mock.calls[0][1].definition).not.toHaveProperty(
+      "migration",
+    );
+    panel.unmount();
+  });
   beforeEach(() => {
     vi.resetAllMocks();
     api.list.mockResolvedValue({ roles: [] });

@@ -11,6 +11,14 @@
           </div>
           <p class="dashboard-subtitle">{{ tm("workbench.intro") }}</p>
         </div>
+        <LegacyMigrationDialog
+          :teams="teams"
+          @migrated="
+            tab = 'assets';
+            assetTab = 'teams';
+            assetReload++;
+          "
+        />
       </div>
       <nav
         class="workbench-navigation"
@@ -31,31 +39,36 @@
           >{{ tm("workbench.runs") }}</v-btn
         >
       </nav>
-      <section class="workbench-content" :aria-label="tm(tab === 'runs' ? 'workbench.runs' : 'workbench.assets')">
+      <section
+        class="workbench-content"
+        :aria-label="tm(tab === 'runs' ? 'workbench.runs' : 'workbench.assets')"
+      >
         <div v-show="tab === 'assets'" class="workbench-asset-navigation">
-        <v-tabs
-          v-model="assetTab"
-          :mandatory="false"
-          color="primary"
-          density="comfortable"
-          show-arrows
-        >
-          <v-tab value="teams">{{ tm("workbench.teams") }}</v-tab>
-          <v-tab value="assets">{{ tm("workbench.workflows") }}</v-tab>
-          <v-tab value="roles">{{ tm("roles.title") }}</v-tab>
-        </v-tabs>
+          <v-tabs
+            v-model="assetTab"
+            :mandatory="false"
+            color="primary"
+            density="comfortable"
+            show-arrows
+          >
+            <v-tab value="teams">{{ tm("workbench.teams") }}</v-tab>
+            <v-tab value="assets">{{ tm("workbench.workflows") }}</v-tab>
+            <v-tab value="roles">{{ tm("roles.title") }}</v-tab>
+          </v-tabs>
         </div>
         <div class="workbench-panel">
           <WorkflowWorkspacePanel
             v-if="tab === 'assets' && assetTab !== 'roles'"
-            :key="assetTab"
+            :key="`${assetTab}:${assetReload}`"
             mode="assets"
             :asset-kind="assetTab === 'teams' ? 'teams' : 'workflows'"
             @started="tab = 'runs'"
             @installed="assetTab = $event === 'teams' ? 'teams' : 'assets'"
           />
           <WorkflowWorkspacePanel v-else-if="tab === 'runs'" mode="runs" />
-          <RoleTemplatesPanel v-else-if="tab === 'assets' && assetTab === 'roles'" />
+          <RoleTemplatesPanel
+            v-else-if="tab === 'assets' && assetTab === 'roles'"
+          />
         </div>
       </section>
       <details
@@ -151,27 +164,28 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
-import '@/styles/agent-teams-workbench.css';
-import { useRoute, useRouter } from 'vue-router';
-import { agentTeamsApi } from '@/api/v1';
-import AgentTeamsSidebar from '@/components/agent_teams/AgentTeamsSidebar.vue';
-import MemberAddDialog from '@/components/agent_teams/MemberAddDialog.vue';
-import MemberConfigPanel from '@/components/agent_teams/MemberConfigPanel.vue';
-import RunMonitor from '@/components/agent_teams/RunMonitor.vue';
-import RunsHistory from '@/components/agent_teams/RunsHistory.vue';
-import TeamCreateDialog from '@/components/agent_teams/TeamCreateDialog.vue';
-import WorkflowEditor from '@/components/agent_teams/WorkflowEditor.vue';
-import RoleTemplatesPanel from '@/components/agent_teams/RoleTemplatesPanel.vue';
-import WorkflowWorkspacePanel from '@/components/agent_teams/WorkflowWorkspacePanel.vue';
-import { useAgentTeams } from '@/composables/useAgentTeams';
-import { useAgentTeamsRun } from '@/composables/useAgentTeamsRun';
-import { useModuleI18n } from '@/i18n/composables';
-import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog';
-import { extractApiError } from '@/utils/extractApiError';
-import { useToast } from '@/utils/toast';
+import { onMounted, ref, watch } from "vue";
+import "@/styles/agent-teams-workbench.css";
+import { useRoute, useRouter } from "vue-router";
+import { agentTeamsApi } from "@/api/v1";
+import AgentTeamsSidebar from "@/components/agent_teams/AgentTeamsSidebar.vue";
+import MemberAddDialog from "@/components/agent_teams/MemberAddDialog.vue";
+import MemberConfigPanel from "@/components/agent_teams/MemberConfigPanel.vue";
+import RunMonitor from "@/components/agent_teams/RunMonitor.vue";
+import RunsHistory from "@/components/agent_teams/RunsHistory.vue";
+import TeamCreateDialog from "@/components/agent_teams/TeamCreateDialog.vue";
+import WorkflowEditor from "@/components/agent_teams/WorkflowEditor.vue";
+import RoleTemplatesPanel from "@/components/agent_teams/RoleTemplatesPanel.vue";
+import WorkflowWorkspacePanel from "@/components/agent_teams/WorkflowWorkspacePanel.vue";
+import LegacyMigrationDialog from "@/components/agent_teams/LegacyMigrationDialog.vue";
+import { useAgentTeams } from "@/composables/useAgentTeams";
+import { useAgentTeamsRun } from "@/composables/useAgentTeamsRun";
+import { useModuleI18n } from "@/i18n/composables";
+import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
+import { extractApiError } from "@/utils/extractApiError";
+import { useToast } from "@/utils/toast";
 
-const { tm } = useModuleI18n('features/agent-teams');
+const { tm } = useModuleI18n("features/agent-teams");
 const {
   teams,
   selectedTeamId,
@@ -186,23 +200,29 @@ const confirmDialog = useConfirmDialog();
 
 const route = useRoute();
 const router = useRouter();
-const tab = ref<'assets' | 'runs'>(route.query.workflow_run ? 'runs' : 'assets');
-const assetTab = ref('assets');
-const legacyTab = ref('editor');
+const tab = ref<"assets" | "runs">(
+  route.query.workflow_run ? "runs" : "assets",
+);
+const assetTab = ref("assets");
+const assetReload = ref(0);
+const legacyTab = ref("editor");
 const legacyOpen = ref(false);
-watch(() => route.query.workflow_run, (runId) => {
-  if (typeof runId === 'string' && runId) tab.value = 'runs';
-});
+watch(
+  () => route.query.workflow_run,
+  (runId) => {
+    if (typeof runId === "string" && runId) tab.value = "runs";
+  },
+);
 watch(tab, (selected, previous) => {
   // Keep the same incoming run link usable after browsing another panel.
-  if (previous === 'runs' && selected !== 'runs' && route.query.workflow_run) {
+  if (previous === "runs" && selected !== "runs" && route.query.workflow_run) {
     const query = { ...route.query };
     delete query.workflow_run;
     void router.replace({ query });
   }
 });
 // Workflow preselected for the monitor by the legacy editor's save-and-run handoff.
-const presetWorkflowId = ref('');
+const presetWorkflowId = ref("");
 const showCreateDialog = ref(false);
 // Team handed to TeamCreateDialog: null = create mode, a team = edit mode
 // (the dialog edits name/coordinator/config only). Set by the sidebar's
@@ -270,25 +290,26 @@ async function onRemoveMember(memberId: string) {
   const team = selectedTeam.value;
   if (!team) return;
   const memberName = String(
-    (team.members ?? []).find((m: any) => m.member_id === memberId)?.name ?? memberId,
+    (team.members ?? []).find((m: any) => m.member_id === memberId)?.name ??
+      memberId,
   );
   const ok = await askForConfirmation(
-    tm('members.removeConfirm', { name: memberName }),
+    tm("members.removeConfirm", { name: memberName }),
     confirmDialog,
   );
   if (!ok) return;
   const { error } = useToast();
   try {
     const res = await agentTeamsApi.removeMember(team.team_id, memberId);
-    if (res.data.status === 'error') {
-      error(res.data.message || tm('errors.operationFailed'));
+    if (res.data.status === "error") {
+      error(res.data.message || tm("errors.operationFailed"));
       return;
     }
     await loadTeams();
   } catch (err) {
     // Non-2xx rejections carry the backend's error envelope; surface its
     // message instead of axios's generic "Request failed with status code N".
-    error(extractApiError(err, tm('errors.operationFailed')).message);
+    error(extractApiError(err, tm("errors.operationFailed")).message);
   }
 }
 
@@ -301,7 +322,7 @@ async function onRemoveMember(memberId: string) {
 function onOpenRun(runId: string, row: any) {
   pendingRun.value = row ?? null;
   void openRun(runId, row);
-  legacyTab.value = 'monitor';
+  legacyTab.value = "monitor";
   legacyOpen.value = true;
 }
 
@@ -313,7 +334,7 @@ function onOpenRun(runId: string, row: any) {
  */
 function onSaveAndRun(workflowId: string) {
   presetWorkflowId.value = workflowId;
-  legacyTab.value = 'monitor';
+  legacyTab.value = "monitor";
   legacyOpen.value = true;
 }
 
@@ -333,7 +354,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-@import '@/styles/dashboard-shell.css';
+@import "@/styles/dashboard-shell.css";
 
 .agent-teams-page {
   padding-bottom: 40px;

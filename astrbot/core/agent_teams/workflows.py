@@ -1317,6 +1317,11 @@ class WorkflowService:
             }
             included[key] = current
             content = current["definition"]
+            if content.get("migration", {}).get("issues"):
+                raise RoleAssetError(
+                    "Configure the migrated definition before export",
+                    content["migration"]["issues"],
+                )
             references = [
                 *content.get("allowed_workflows", []),
                 *[
@@ -1572,6 +1577,7 @@ class WorkflowService:
         for role_id, role_version in references:
             role = await self.roles.resolve_role(username, role_id, role_version)
             portable = copy.deepcopy(role["definition"])
+            portable.pop("migration", None)
             portable["persona_slot"] = None
             portable["model_slot"] = "model"
             declarations, dependencies = self._resolve_role_contract(
@@ -2939,6 +2945,11 @@ class WorkflowService:
         asset = await self.get_asset(username, asset_id, request.version)
         definition = asset["definition"]
         input_refs = [ref.model_dump() for ref in request.input_artifacts]
+        if definition.get("migration", {}).get("issues"):
+            raise RoleAssetError(
+                "Configure the migrated definition before launch",
+                definition["migration"]["issues"],
+            )
         for ref in input_refs:
             await self.read_artifact(username, **ref)
         required = definition["required_inputs"]
@@ -5211,6 +5222,11 @@ class WorkflowService:
         """
         if nesting_depth > 20:
             raise RoleAssetError("Nested references exceed the supported depth limit")
+        if asset["definition"].get("migration", {}).get("issues"):
+            raise RoleAssetError(
+                "Configure the migrated definition before launch",
+                asset["definition"]["migration"]["issues"],
+            )
         if nesting_depth == 0:
             async with self.db.get_db() as session:
                 imported = (

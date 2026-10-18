@@ -14,6 +14,23 @@
           error
         }}</v-alert>
         <p class="text-body-2 mb-4">{{ tm("autonomous.explanation") }}</p>
+        <template v-if="asset?.definition.migration?.issues?.length">
+          <v-alert type="warning" variant="tonal" class="mb-3">
+            {{ tm("migration.configure") }}
+            <ul class="pl-5">
+              <li
+                v-for="(issue, index) in asset.definition.migration.issues"
+                :key="index"
+              >
+                {{ issue.path }}: {{ issue.message }}
+              </li>
+            </ul>
+          </v-alert>
+          <v-checkbox
+            v-model="migrationReviewed"
+            :label="tm('migration.reviewed')"
+          />
+        </template>
         <v-text-field
           v-model="form.name"
           :label="tm('autonomous.name')"
@@ -124,7 +141,8 @@
             !form.coordinator.role_id ||
             !form.allowed_roles.length ||
             workflowInvalid ||
-            usageInvalid
+            usageInvalid ||
+            !migrationReviewed
           "
           data-testid="team-save"
           @click="save"
@@ -160,6 +178,7 @@ onBeforeUnmount(() => {
 const approval = ref("");
 const contract = ref("");
 const usageInvalid = ref(false);
+const migrationReviewed = ref(true);
 const allowedIds = ref<string[]>([]);
 const form = ref<AutonomousDefinition>({
   kind: "autonomous",
@@ -188,6 +207,8 @@ watch(
     editGeneration++;
     saving.value = false;
     if (!open) return;
+    migrationReviewed.value =
+      !props.asset?.definition.migration?.issues?.length;
     form.value = props.asset
       ? JSON.parse(JSON.stringify(props.asset.definition))
       : {
@@ -226,7 +247,7 @@ function selectAllowed(identities: string[]) {
 }
 
 async function save() {
-  if (saving.value || usageInvalid.value) return;
+  if (saving.value || usageInvalid.value || !migrationReviewed.value) return;
   const generation = editGeneration;
   const asset = props.asset;
   const current = () =>
@@ -241,6 +262,7 @@ async function save() {
         ? JSON.parse(contract.value)
         : null,
     };
+    Reflect.deleteProperty(definition, "migration");
     await workflowAssetsApi.save(asset?.asset_id ?? null, {
       definition,
       expected_version: asset?.version,

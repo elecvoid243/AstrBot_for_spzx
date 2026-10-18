@@ -655,6 +655,14 @@ export type KnowledgeRetrieveRequest = {
     score_threshold?: number;
 };
 
+/**
+ * Confirm exactly the reviewed definition proposal, optionally pending.
+ */
+export type LegacyMigrationRequest = {
+    preview_token: string;
+    save_pending?: boolean;
+};
+
 export type LoginRequest = {
     username: string;
     password: string;
@@ -703,6 +711,18 @@ export type MessagePart = {
 };
 
 export type type = 'text' | 'plain' | 'image' | 'file' | 'audio' | 'record' | 'video' | 'reply';
+
+/**
+ * Unresolved legacy semantics retained until a reviewed definition version.
+ */
+export type MigrationState = {
+    issues: Array<{
+        [key: string]: unknown;
+    }>;
+    source: {
+        [key: string]: unknown;
+    };
+};
 
 export type ModelScopeSyncRequest = {
     access_token?: string;
@@ -979,6 +999,7 @@ export type ReorderRequest = {
  * Portable role content; resource names refer to logical slots.
  */
 export type RoleDefinition = {
+    migration?: (MigrationState | null);
     prompt?: (string | null);
     tools?: (Array<(string)> | null);
     skills?: (Array<(string)> | null);
@@ -5409,3 +5430,24 @@ export type ImportAssetApiV1WorkflowAssetsImportPostData = {
 export type ImportAssetApiV1WorkflowAssetsImportPostResponse = (unknown);
 
 export type ImportAssetApiV1WorkflowAssetsImportPostError = (HTTPValidationError);
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetData = {
+    path: {
+        team_id: string;
+    };
+};
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetResponse = (unknown);
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetError = (HTTPValidationError);
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostData = {
+    body: LegacyMigrationRequest;
+    path: {
+        team_id: string;
+    };
+};
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostResponse = (unknown);
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostError = (HTTPValidationError);

@@ -7461,6 +7461,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_teams/{team_id}/migration/preview:
+    get:
+      tags:
+      - Agent Teams
+      summary: Preview Legacy Migration
+      description: "Preview definitions, effective roles, mappings and unresolved legacy\
+        \ items.\n\nArgs:\n    team_id: Legacy team owned by the current user.\n   \
+        \ request: Dashboard request carrying shared application services.\n    username:\
+        \ Authenticated owner; migration grants no additional access.\n\nReturns:\n\
+        \    A read-only proposal, active legacy run list and confirmation token."
+      operationId: preview_legacy_migration_api_v1_agent_teams__team_id__migration_preview_get
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Team Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_teams/{team_id}/migration:
+    post:
+      tags:
+      - Agent Teams
+      summary: Confirm Legacy Migration
+      description: "Atomically migrate the reviewed definitions without starting execution.\n\
+        \nArgs:\n    team_id: Legacy team owned by the current user.\n    payload: Reviewed\
+        \ token and explicit pending-save preference.\n    request: Dashboard request\
+        \ carrying shared application services.\n    username: Authenticated legacy\
+        \ and new asset owner.\n\nReturns:\n    Durable old-to-new identities, pending\
+        \ items and reuse status."
+      operationId: confirm_legacy_migration_api_v1_agent_teams__team_id__migration_post
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Team Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegacyMigrationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   securitySchemes:
     ChatBrowserSession:
@@ -7709,6 +7776,41 @@ components:
       schema: { type: string }
 
   schemas:
+    MigrationState:
+      additionalProperties: false
+      description: Unresolved legacy semantics retained until a reviewed definition version.
+      properties:
+        issues:
+          items:
+            additionalProperties: true
+            type: object
+          title: Issues
+          type: array
+        source:
+          additionalProperties: true
+          title: Source
+          type: object
+      required:
+      - issues
+      - source
+      title: MigrationState
+      type: object
+    LegacyMigrationRequest:
+      properties:
+        preview_token:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Preview Token
+        save_pending:
+          type: boolean
+          title: Save Pending
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - preview_token
+      title: LegacyMigrationRequest
+      description: Confirm exactly the reviewed definition proposal, optionally pending.
     RuntimeInfo:
       type: object
       description: The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.
@@ -9166,6 +9268,11 @@ components:
       additionalProperties: false
       description: Portable role content; resource names refer to logical slots.
       properties:
+        migration:
+          anyOf:
+          - $ref: '#/components/schemas/MigrationState'
+          - type: 'null'
+          default: null
         prompt:
           anyOf:
           - maxLength: 100000

@@ -704,5 +704,23 @@
     "workflowIntro": "Versioned single-task and canvas workflows. Edit definitions here; inspect fixed snapshots in Runs.",
     "legacyAssets": "Teams / Workflows / Role templates",
     "template": "Role template"
+  },
+  "migration": {
+    "title": "Migrate previous definitions",
+    "team": "Previous team",
+    "preview": "Preview migration",
+    "confirm": "Confirm migration",
+    "scope": "Copy team and workflow definitions into versioned assets and roles. Previous runs, conversations and history stay in the previous workspace. Unfinished runs cannot resume in the new engine. Starting a migrated asset always creates a new run with fresh member contexts.",
+    "active": "These previous runs are still active. Finish or stop them in the previous workspace; migration does not take them over.",
+    "ready": "Definitions are ready to migrate. No run will start.",
+    "pending": "Needs configuration before launch. Review all unresolved definitions and resources.",
+    "assets": "Assets to create or reuse",
+    "effective": "Final effective configuration",
+    "definitions": "Review definitions, layout and identity mapping",
+    "savePending": "Save pending definitions and bindings; keep unresolved items blocked from execution",
+    "saved": "Definitions migrated. Configure pending items in Assets and Role templates, then start a new task.",
+    "reused": "Existing migrated definitions reused. No duplicate assets or roles were created.",
+    "configure": "Review the original migration issues and configure this new version. Saving a valid reviewed version resolves its migration block; resource readiness is checked again at launch.",
+    "reviewed": "I have reviewed these issues and configured this definition for the new engine"
   }
 }

@@ -87,6 +87,23 @@
           currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
         <v-card-text>
+          <template v-if="definition.migration?.issues?.length">
+            <v-alert type="warning" variant="tonal" class="mb-3">
+              {{ tm("migration.configure") }}
+              <ul class="pl-5">
+                <li
+                  v-for="(issue, index) in definition.migration.issues"
+                  :key="index"
+                >
+                  {{ issue.path }}: {{ issue.message }}
+                </li>
+              </ul>
+            </v-alert>
+            <v-checkbox
+              v-model="migrationReviewed"
+              :label="tm('migration.reviewed')"
+            />
+          </template>
           <v-alert
             v-if="errorMessage"
             type="error"
@@ -376,7 +393,7 @@
             color="primary"
             variant="tonal"
             :loading="saving"
-            :disabled="loading || previewing"
+            :disabled="loading || previewing || !migrationReviewed"
             @click="save"
             >{{ currentId ? tm("roles.saveVersion") : tm("roles.save") }}</v-btn
           >
@@ -413,6 +430,7 @@ const latestVersion = ref<number | null>(null);
 const selectedVersion = ref<number | null>(null);
 const versions = ref<number[]>([]);
 const definition = ref<Record<string, any>>({});
+const migrationReviewed = ref(true);
 const installation = ref<{
   profile_id: string;
   bindings: Record<string, string | null>;
@@ -467,7 +485,7 @@ const saving = ref(false);
 const errorMessage = ref("");
 let editorRevision = 0;
 watch(
-  [definition, installation, modes, promptMode],
+  [definition, installation, modes, promptMode, migrationReviewed],
   () => {
     editorRevision++;
     previewStale.value = true;
@@ -498,6 +516,7 @@ async function load() {
 }
 
 function edit(role?: any) {
+  migrationReviewed.value = !role?.definition.migration?.issues?.length;
   currentId.value = role?.role_id ?? null;
   latestVersion.value = role?.versions?.[0] ?? role?.version ?? null;
   selectedVersion.value = role?.version ?? null;
@@ -547,6 +566,7 @@ function payload() {
     prompt: promptMode.value === "persona" ? null : definition.value.prompt,
   };
   content.persona_slot = content.persona_slot?.trim() || null;
+  if (migrationReviewed.value) delete content.migration;
   for (const field of resourceFields)
     content[field] =
       modes.value[field] === "inherit"
@@ -603,6 +623,7 @@ async function preview() {
 }
 
 async function save() {
+  if (!migrationReviewed.value || saving.value) return;
   saving.value = true;
   errorMessage.value = "";
   try {

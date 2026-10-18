@@ -476,6 +476,16 @@ class AgentTeam(TimestampMixin, SQLModel, table=True):
     config: dict = Field(default_factory=dict, sa_type=JSON)
 
 
+class AgentLegacyMigration(SQLModel, table=True):
+    """Atomic definition migration receipt, including unresolved source drafts."""
+
+    owner_username: str = Field(primary_key=True, max_length=64)
+    team_id: str = Field(primary_key=True, max_length=32)
+    preview_token: str
+    source_digest: str
+    result: dict = Field(sa_type=JSON)
+
+
 class AgentTeamWorkflow(TimestampMixin, SQLModel, table=True):
     """A saved manual-orchestration DAG template bound to one team."""
 

@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
 from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.migration import LegacyMigrationService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
@@ -267,6 +268,9 @@ def create_dashboard_asgi_app(
     services.workflow_assets = getattr(core_lifecycle, "workflow_service", None)
     if services.workflow_assets is None:
         services.workflow_assets = WorkflowService(db, services.role_assets)
+    services.legacy_migration = LegacyMigrationService(
+        db, services.role_assets, services.workflow_assets
+    )
     services.agent_team_runs = AgentTeamRunService(
         db=db,
         chat_service=chat,

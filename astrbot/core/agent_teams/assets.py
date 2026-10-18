@@ -38,6 +38,14 @@ class RoleOverrides(BaseModel):
     max_depth: int | None = Field(default=None, ge=1, le=20)
 
 
+class MigrationState(BaseModel):
+    """Unresolved legacy semantics retained until a reviewed definition version."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    issues: list[dict]
+    source: dict
+
+
 class RoleDefinition(RoleOverrides):
     """Portable role content; resource names refer to logical slots."""
 
@@ -51,6 +59,9 @@ class RoleDefinition(RoleOverrides):
     runner_capabilities: list[
         Literal["internal_checkpoint", "remote_query", "task_tools", "task_result"]
     ] = Field(default_factory=list)
+    migration: MigrationState | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class RoleInstallation(BaseModel):
@@ -569,7 +580,10 @@ class RoleAssetService:
         installation = role["installation"]
         bindings = installation.get("bindings", {})
         catalog = await self.get_resources()
-        issues: list[dict] = []
+        issues: list[dict] = [
+            dict(issue)
+            for issue in (definition.get("migration") or {}).get("issues", [])
+        ]
         sources: dict[str, str] = {}
         effective: dict = {}
         profile_id = installation.get("profile_id", "default")

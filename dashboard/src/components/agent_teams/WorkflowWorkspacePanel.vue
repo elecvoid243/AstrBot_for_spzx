@@ -88,6 +88,13 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
+          <v-alert
+            v-if="asset.definition.migration?.issues?.length"
+            type="warning"
+            variant="tonal"
+            class="mb-3"
+            >{{ tm("migration.pending") }}</v-alert
+          >
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
@@ -517,6 +524,24 @@
           tm("graph.canvas")
         }}</v-card-title>
         <v-card-text>
+          <template v-if="editingAsset?.definition.migration?.issues?.length">
+            <v-alert type="warning" variant="tonal" class="mb-3">
+              {{ tm("migration.configure") }}
+              <ul class="pl-5">
+                <li
+                  v-for="(issue, index) in editingAsset.definition.migration
+                    .issues"
+                  :key="index"
+                >
+                  {{ issue.path }}: {{ issue.message }}
+                </li>
+              </ul>
+            </v-alert>
+            <v-checkbox
+              v-model="migrationReviewed"
+              :label="tm('migration.reviewed')"
+            />
+          </template>
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
@@ -586,7 +611,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="graphInvalid || graphUsageInvalid"
+            :disabled="graphInvalid || graphUsageInvalid || !migrationReviewed"
             @click="saveGraph"
             >{{ tm("v2.save") }}</v-btn
           ></v-card-actions
@@ -947,6 +972,7 @@ const detailRun = computed(
     selectedRun.value,
 );
 const graphEditing = ref(false);
+const migrationReviewed = ref(true);
 const teamEditing = ref(false);
 const graphInvalid = ref(false);
 const usageInvalid = ref(false);
@@ -1109,6 +1135,7 @@ function edit(asset: any) {
 
 function editGraph(asset: any) {
   editingAsset.value = asset;
+  migrationReviewed.value = !asset?.definition.migration?.issues?.length;
   graphForm.value = asset
     ? JSON.parse(JSON.stringify(asset.definition))
     : {
@@ -1131,12 +1158,20 @@ function editTeam(asset: any) {
 }
 
 async function saveGraph() {
-  if (saving.value || graphInvalid.value || graphUsageInvalid.value) return;
+  if (
+    saving.value ||
+    graphInvalid.value ||
+    graphUsageInvalid.value ||
+    !migrationReviewed.value
+  )
+    return;
   saving.value = true;
   formError.value = "";
   try {
+    const definition = JSON.parse(JSON.stringify(graphForm.value));
+    delete definition.migration;
     await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
-      definition: graphForm.value,
+      definition,
       expected_version: editingAsset.value?.version,
     });
     graphEditing.value = false;

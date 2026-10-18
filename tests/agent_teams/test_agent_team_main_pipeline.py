@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.migration import LegacyMigrationService
 from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
@@ -65,6 +66,7 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_role",
         "v2_chat_role",
         "v2_graph_role",
+        "v2_graph_migrated_role",
         "v2_plain_role",
         "v2_failing_role",
         "v2_hidden_role",
@@ -328,6 +330,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "v2_crash_role",
                     "v2_unsafe_role",
                     "v2_graph_role",
+                    "v2_graph_migrated_role",
                     "v2_graph_crash_role",
                     "v2_graph_unsafe_role",
                 )
@@ -719,6 +722,23 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     )
                     definition["edges"].append({"source": "first", "target": "second"})
                 asset = await service.save_asset("alice", {"definition": definition})
+            if mode == "v2_graph_migrated_role":
+                await db.create_agent_team(
+                    team_id="legacy-pipeline", owner_username="alice", name="Legacy pipeline team",
+                    coordinator_member_id="lead", config={}, members=[
+                        {"member_id": "lead", "name": "Lead", "provider_id": "research-model", "system_prompt": "Coordinate."},
+                        {"member_id": "writer", "name": "Writer", "provider_id": None,
+                         "umo": "webchat:FriendMessage:legacy-writer", "session_id": "legacy-writer",
+                         "persona_id": "researcher", "system_prompt": "Write with evidence.",
+                         "runner_config": {"config_id": "research", "tools": [], "skills": ["alpha"], "kb_names": ["research-evidence"]}},
+                    ],
+                )
+                await db.create_agent_team_workflow(workflow_id="legacy-pipeline-flow", team_id="legacy-pipeline", name="Migrated pipeline",
+                    graph={"nodes": [{"id": "first", "member_id": "writer", "task": "Write evidence."}], "edges": []}, layout={"first": {"x": 80, "y": 100}})
+                migration = LegacyMigrationService(db, assets, service)
+                proposal = await migration.preview("alice", "legacy-pipeline")
+                migrated = await migration.confirm("alice", "legacy-pipeline", {"preview_token": proposal["preview_token"], "save_pending": True})
+                asset = await service.get_asset("alice", migrated["mapping"]["workflows"]["legacy-pipeline-flow"]["asset_id"])
             if mode == "v2_chat_role":
                 from astrbot.core.agent_teams.chat import ChatCaller
 
@@ -741,13 +761,21 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 run = await service.get_run("alice", accepted["run_id"])
             else:
                 run = await service.start_run(
-                    "alice", asset["asset_id"], {"version": 1}
+                    "alice", asset["asset_id"], {"version": 1, **({"inputs": {"input": "Fresh migration task"}} if mode == "v2_graph_migrated_role" else {})}
                 )
             for _ in range(1000):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.01)
+            if mode == "v2_graph_migrated_role":
+                assert current["status"] == "completed", current
+                assert model_requests == ["research-model"] * 3
+                result = json.loads((await service.get_result("alice", run["run_id"]))["tasks"]["first"]["text"])
+                assert result["persona"] and result["hook"] and result["skill"] and result["knowledge"]
+                assert current["tasks"][0]["snapshot"]["member"]["session_id"] != "legacy-writer"
+                assert "legacy-writer" not in json.dumps(current["snapshot"])
+                return
             if mode == "v2_graph_role":
                 assert current["status"] == "completed", current
                 assert (

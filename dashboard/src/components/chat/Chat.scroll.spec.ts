@@ -23,6 +23,9 @@ const functions = new Set([
   "loadOlderHistory",
   "captureReadingAnchor",
   "preserveReadingAnchor",
+  "installPendingViewport",
+  "findAnchorRow",
+  "anchorScrollTopFor",
   "shouldStickToBottom",
   "setStickToBottom",
   "scrollToBottom",
@@ -34,8 +37,9 @@ const functions = new Set([
   "endJumpScrollLock",
   "centerScrollTopFor",
   "scrollRowToCenter",
-  "scrollToMessageIndex",
+  "scrollRowToAnchor",
   "jumpToIndex",
+  "jumpToViewport",
 ]);
 const variables = new Set([
   "messagesContainer",
@@ -120,6 +124,7 @@ function scrollHarness() {
   let height = 1600;
   let top = 1200;
   let rowTop = 1200;
+  let rowHeight = 200;
   const writes: number[] = [];
   Object.defineProperties(panel, {
     scrollHeight: { get: () => height },
@@ -136,8 +141,8 @@ function scrollHarness() {
   row.getBoundingClientRect = () =>
     ({
       top: rowTop - top,
-      bottom: rowTop - top + 200,
-      height: 200,
+      bottom: rowTop - top + rowHeight,
+      height: rowHeight,
       width: 600,
     }) as DOMRect;
   const frames = new Map<number, FrameRequestCallback>();
@@ -199,6 +204,14 @@ function scrollHarness() {
       handleMessagesScroll, loadOlderHistory, restoreSessionViewport,
       setStickToBottom, shouldStickToBottom, jumpToIndex, runJumpLanding,
       endJumpLanding, endJumpScrollLock, jumpInProgress,
+      recordViewportAnchor, installPendingViewport,
+      installPendingAnchor: (sessionId) => {
+        pendingViewportSessionId = sessionId;
+        installPendingViewport(sessionId);
+      },
+      setPendingAnchor: (sessionId) => {
+        pendingViewportSessionId = sessionId;
+      },
       getSessionToken: () => viewportSessionToken,
     };
   `,
@@ -221,10 +234,16 @@ function scrollHarness() {
     writes,
     observers,
     mutations,
-    setLayout(values: { height?: number; top?: number; rowTop?: number }) {
+    setLayout(values: {
+      height?: number;
+      top?: number;
+      rowTop?: number;
+      rowHeight?: number;
+    }) {
       height = values.height ?? height;
       top = values.top ?? top;
       rowTop = values.rowTop ?? rowTop;
+      rowHeight = values.rowHeight ?? rowHeight;
     },
     frame() {
       const pending = Array.from(frames.values());
@@ -588,7 +607,11 @@ describe("Chat viewport ownership", () => {
     const h = scrollHarness();
     const token = h.controller.getSessionToken();
     h.controller.setStickToBottom("A", false);
-    h.controller.viewportAnchorBySession.set("A", 0);
+    h.controller.viewportAnchorBySession.set("A", {
+      index: 0,
+      id: null,
+      offset: 100,
+    });
     h.currSessionId.value = "B";
     await h.controller.restoreSessionViewport("A", token);
     expect(h.controller.shouldStickToBottom("B")).toBe(true);
@@ -596,6 +619,91 @@ describe("Chat viewport ownership", () => {
     await h.controller.restoreSessionViewport("A", token);
     h.frame();
     expect(h.writes).toEqual([]);
+  });
+
+  it("restores the point inside the anchor row instead of re-centring the whole row", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    // 400px row under a 400px viewport: its top sits at y=100 and the
+    // viewport centre (y=200) lands 100px into the row.
+    h.setLayout({ top: 600, rowTop: 700, rowHeight: 400 });
+    h.controller.recordViewportAnchor("A");
+    expect(h.controller.viewportAnchorBySession.get("A")).toMatchObject({
+      index: 0,
+      offset: 100,
+    });
+    h.controller.setStickToBottom("A", false);
+    // Fresh window: the same row starts at document 300. Keeping the
+    // remembered point at the centre means scrollTop 200 and the row top at
+    // y=100 — centring the row instead would put it at y=-200.
+    h.setLayout({ top: 0, rowTop: 300 });
+    await h.controller.restoreSessionViewport("A");
+    expect(h.panel.scrollTop).toBe(200);
+    expect(h.row.getBoundingClientRect().top).toBe(100);
+  });
+
+  it("applies a restored viewport before the first animation frame", () => {
+    const h = scrollHarness();
+    h.controller.runJumpLanding(() => 600, false);
+    expect(h.panel.scrollTop).toBe(600);
+    h.frame();
+    expect(h.panel.scrollTop).toBe(600);
+  });
+
+  it("follows the anchor message id when new messages shifted its absolute index", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.row.dataset.messageId = "m-42";
+    h.row.dataset.messageIndex = "5";
+    h.setLayout({ top: 600, rowTop: 700 });
+    h.controller.recordViewportAnchor("A");
+    expect(h.controller.viewportAnchorBySession.get("A")).toMatchObject({
+      index: 5,
+      id: "m-42",
+    });
+    h.controller.setStickToBottom("A", false);
+    // The reload re-keyed the row after two messages arrived while away.
+    h.row.dataset.messageIndex = "7";
+    h.setLayout({ top: 0, rowTop: 300 });
+    await h.controller.restoreSessionViewport("A");
+    expect(h.panel.scrollTop).toBe(200);
+  });
+
+  it("re-applies the pending anchor after an intermediate re-render", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.row.dataset.messageId = "m-42";
+    h.row.dataset.messageIndex = "5";
+    h.setLayout({ top: 600, rowTop: 700 });
+    h.controller.recordViewportAnchor("A");
+    h.controller.setStickToBottom("A", false);
+    // The refreshed window reset scrollTop while the anchor row is still
+    // rendered; the pending install must put the reader back before paint.
+    h.setLayout({ top: 0, rowTop: 300 });
+    h.controller.installPendingAnchor("A");
+    expect(h.panel.scrollTop).toBe(200);
+  });
+
+  it("re-installs the pending anchor from the layout observer before paint", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.row.dataset.messageId = "m-42";
+    h.row.dataset.messageIndex = "5";
+    h.setLayout({ top: 600, rowTop: 700 });
+    h.controller.recordViewportAnchor("A");
+    h.controller.setStickToBottom("A", false);
+    h.controller.setPendingAnchor("A");
+    h.setLayout({ top: 0, rowTop: 300 });
+    h.mutations.at(-1)!.callback([], {} as MutationObserver);
+    expect(h.panel.scrollTop).toBe(200);
+  });
+
+  it("holds a bottom-following conversation at its tail while the window resets", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.setLayout({ top: 0 });
+    h.controller.installPendingAnchor("A");
+    expect(h.panel.scrollTop).toBe(1200);
   });
 
   it("cancels a history jump while paging and lets a new jump own the viewport", async () => {

@@ -32,6 +32,7 @@
         v-show="!isCollapsedInherited(msgIndex)"
         class="message-row"
         :data-message-index="historyOffset + msgIndex"
+        :data-message-id="msg.id"
         :class="[
           isUserMessage(msg) ? 'from-user' : 'from-bot',
           {

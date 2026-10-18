@@ -1515,14 +1515,24 @@ const inputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 // outgoing session's offset. Both the stick-to-bottom intent and the viewport
 // anchor are therefore keyed by session id — see restoreSessionViewport().
 const shouldStickToBottomBySession = new Map<string, boolean>();
-// Anchor: the absolute `data-message-index` of the row under the middle of the
-// viewport. Deliberately not a pixel offset. The history window resets to the
-// newest page on every open (see loadSessionMessages), so on return the same
-// scrollTop describes a shorter document — the assignment clamped, and the
-// viewport stopped at the bottom of the loaded window instead of the position
-// the conversation was left at. An index survives that reset, and re-centring
-// the row it names re-pages whatever the fresh window dropped.
-const viewportAnchorBySession = new Map<string, number>();
+// 2026-10-18 (elecvoid243): anchor = the row under the middle of the viewport
+// plus how far into that row the middle sat. Not a bare scrollTop, because the
+// history window resets to the newest page on every open (see
+// loadSessionMessages): the same offset then describes a shorter document, the
+// assignment clamped, and the viewport stopped at the bottom of the loaded
+// window. `index` survives that reset; `id` keeps the anchor on the same record
+// when messages arrive while the conversation is closed and shift every
+// absolute index; `offset` (pixels from the row's top, negative inside the gap
+// above it) is what re-centring a row used to discard, leaving the restored
+// viewport up to half a row off.
+type ViewportAnchor = {
+  index: number;
+  id: string | null;
+  // null = centre the whole row (marker and search jumps); a number is a
+  // remembered reading point inside the row.
+  offset: number | null;
+};
+const viewportAnchorBySession = new Map<string, ViewportAnchor>();
 // The conversation whose viewport is still being installed ("" when idle).
 // Scroll events in that window still carry the outgoing conversation's
 // geometry, so they must not be recorded against (or auto-page older history
@@ -2618,6 +2628,15 @@ watch(
       updateScrollMarkers();
       markerResizeObserver = new ResizeObserver(() => {
         updateScrollMarkers();
+        // A switch still installing its viewport owns the panel: the fresh
+        // window has just re-rendered (rows dropped or re-keyed), and the
+        // remembered anchor must go back on screen before the browser paints
+        // the clamped offset. restoreSessionViewport() takes over once its
+        // landing starts (jumpInProgress / jumpLandingContainer).
+        if (pendingViewportSessionId) {
+          installPendingViewport(pendingViewportSessionId);
+          return;
+        }
         if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
         else preserveReadingAnchor();
       });
@@ -2627,6 +2646,10 @@ watch(
         // Correct deferred rendering before paint, including changes whose
         // total height cancels out and therefore produces no resize event.
         historyLayoutObserver = new MutationObserver(() => {
+          if (pendingViewportSessionId) {
+            installPendingViewport(pendingViewportSessionId);
+            return;
+          }
           if (!shouldStickToBottom(currSessionId.value))
             preserveReadingAnchor();
         });
@@ -3881,6 +3904,13 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // ("" when it has none) — unsent text never leaks across sessions.
   draft.value = chatDrafts.draftFor(sessionId);
   replyTarget.value = null;
+  // The incoming conversation may still be cached from an earlier visit, so
+  // its rows are already in the panel at this point — only at the outgoing
+  // scrollTop. Install the remembered anchor on this same tick, before the
+  // route change or the history refresh can yield to a paint; otherwise the
+  // reader sees the wrong place first and then a jump (the reported flash).
+  await nextTick();
+  installPendingViewport(sessionId);
   if (pushRoute && route.path !== `${basePath()}/${sessionId}`) {
     await router.push(`${basePath()}/${sessionId}`);
   }
@@ -4342,6 +4372,30 @@ function centerScrollTopFor(container: HTMLElement, row: HTMLElement): number {
 }
 
 /**
+ * Offset that puts a remembered point of `row` at the panel's centre.
+ *
+ * @param container: The scrolling messages panel.
+ * @param row: Row that owned the reading point.
+ * @param offset: Distance from the row's top to that point; negative when the
+ *   point sat in the gap above the row.
+ * @returns The scrollTop that replays the same reading point.
+ */
+function anchorScrollTopFor(
+  container: HTMLElement,
+  row: HTMLElement,
+  offset: number,
+): number {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  return (
+    container.scrollTop +
+    rowRect.top +
+    offset -
+    (containerRect.top + container.clientHeight / 2)
+  );
+}
+
+/**
  * Drive the panel to a live target offset, then hold it there.
  *
  * Two phases share one loop. During the glide the target is recomputed every
@@ -4400,6 +4454,18 @@ function runJumpLanding(
   for (const type of JUMP_LANDING_CANCEL_EVENTS) {
     container.addEventListener(type, jumpLandingOnGesture, { passive: true });
   }
+  // Land a non-animated jump now rather than in the first frame: this is the
+  // path that restores a viewport, and the frame it used to wait for was
+  // exactly the wrong-position flash the reader saw on every session switch.
+  // Reading scrollTop back keeps the echo compared by handleMessagesScroll()
+  // equal to the clamped value (see the declaration note).
+  const apply = (value: number) => {
+    if (Math.abs(container.scrollTop - value) <= 0.5) return;
+    container.scrollTop = value;
+    selfScrollTop = container.scrollTop;
+    lastMessagesScrollTop = container.scrollTop;
+  };
+  if (duration === 0 && props.active) apply(initialTarget);
   const step = () => {
     if (
       token !== jumpLandingToken ||
@@ -4424,11 +4490,7 @@ function runJumpLanding(
       progress < 0.5
         ? 4 * progress * progress * progress
         : 1 - Math.pow(-2 * progress + 2, 3) / 2;
-    container.scrollTop = startTop + (target - startTop) * eased;
-    // Read back: the write is clamped, and the echo compared against later is
-    // the clamped value (see the declaration note).
-    selfScrollTop = container.scrollTop;
-    lastMessagesScrollTop = container.scrollTop;
+    apply(startTop + (target - startTop) * eased);
     if (Math.abs(target - lastTarget) >= 1) {
       lastTarget = target;
       lastChangeAt = now;
@@ -4468,6 +4530,27 @@ function scrollRowToCenter(row: HTMLElement, animate = true) {
 }
 
 /**
+ * Glide a row's remembered point to the centre of the panel, then hold it.
+ *
+ * @param row: Row that owned the reading point, already rendered.
+ * @param offset: Distance from the row's top to that point.
+ * @param animate: Glide to the row; false lands on it immediately, which is
+ *   what a restored viewport wants.
+ */
+function scrollRowToAnchor(
+  row: HTMLElement,
+  offset: number,
+  animate = true,
+) {
+  setStickToBottom(currSessionId.value, false);
+  runJumpLanding(
+    (container) =>
+      row.isConnected ? anchorScrollTopFor(container, row, offset) : null,
+    animate,
+  );
+}
+
+/**
  * Centre an element that lives inside the messages panel, then hold it there.
  *
  * In-message cards that can fold (the subagent run block) call this after
@@ -4499,39 +4582,57 @@ function centerInMessagesPanel(element: HTMLElement | null): boolean {
 }
 
 /**
- * Bring the row whose absolute `data-message-index` is target to the centre and
- * hold it there while the freshly inserted rows settle (see
- * `scrollRowToCenter`).
+ * Find the rendered row a remembered anchor names.
  *
- * @param targetIndex: Absolute history index of the target row.
- * @param animate: Glide across the travel instead of landing on it. False for
- *   viewport restoration, which should be as immediate as the switch allows.
- * @returns True when the row was found and the landing was started.
+ * The id wins over the index: messages arriving while the conversation was
+ * closed shift every absolute index, so the same index then points at an
+ * earlier record. The index is the fallback for rows without an id and for
+ * records that were re-keyed while away.
+ *
+ * @param container: The scrolling messages panel.
+ * @param anchor: Remembered viewport anchor.
+ * @param matchIndex: Whether the index fallback may be used. False while the
+ *   index is known to sit outside the loaded window.
+ * @returns The visible row, or null when it is not rendered.
  */
-function scrollToMessageIndex(targetIndex: number, animate = true) {
-  const row = messagesContainer.value?.querySelector(
-    `[data-message-index="${targetIndex}"]`,
-  ) as HTMLElement | null;
-  if (!row) return false;
-  scrollRowToCenter(row, animate);
-  return true;
+function findAnchorRow(
+  container: HTMLElement,
+  anchor: ViewportAnchor,
+  matchIndex = true,
+): HTMLElement | null {
+  const rows = container.querySelectorAll<HTMLElement>(".message-row");
+  const isVisible = (row: HTMLElement) => {
+    const rect = row.getBoundingClientRect();
+    return rect.width > 0 || rect.height > 0;
+  };
+  if (anchor.id) {
+    for (const row of rows) {
+      if (row.dataset.messageId === anchor.id && isVisible(row)) return row;
+    }
+  }
+  if (!matchIndex) return null;
+  const index = String(anchor.index);
+  for (const row of rows) {
+    if (row.dataset.messageIndex === index && isVisible(row)) return row;
+  }
+  return null;
 }
 
 /**
- * Jump to an absolute history index. When the target sits outside the loaded
- * window, page older history until it is covered, then bring the row to the
- * centre. Both directions wait out an in-flight older-page load first: its
- * prepend re-anchors scrollTop and re-keys the rows, which would otherwise
- * deflect a landing started before it.
+ * Land on a history anchor. When its row sits outside the loaded window, page
+ * older history until it is covered, then bring the row (or the remembered
+ * point inside it) to the centre. Every direction waits out an in-flight
+ * older-page load first: its prepend re-anchors scrollTop and re-keys the rows,
+ * which would otherwise deflect a landing started before it.
  *
- * @param targetIndex: Absolute history index to land on.
+ * @param anchor: Target row, its stable record id, and the point inside it.
  * @param animate: Glide across the travel instead of landing on it. False when
  *   the call restores a viewport rather than answering a navigation request —
  *   switching conversations should feel immediate.
  * @returns True when the target row was found and the landing was started.
  */
-async function jumpToIndex(
-  targetIndex: number,
+async function jumpToViewport(
+  anchor: ViewportAnchor,
   animate = true,
 ): Promise<boolean> {
   const sessionId = currSessionId.value;
@@ -4558,11 +4659,12 @@ async function jumpToIndex(
         await new Promise((r) => setTimeout(r, 120));
         continue;
       }
-      if (targetIndex >= offset) {
-        // Let the post-prepend re-render flush so data-message-index
-        // attributes match the new offsets before querying the row. This
-        // only guarantees the row exists, not that it is laid out —
-        // scrollRowToCenter() is what absorbs the layout that follows.
+      const indexLoaded = anchor.index >= offset;
+      // An index inside the window must be judged against the rendered list,
+      // not the array it is about to become: wait out the pending update.
+      // The id needs the same when the index alone says the row is not loaded,
+      // because arrival of newer messages may have moved the record up.
+      if (indexLoaded || anchor.id) {
         await nextTick();
         if (
           sessionToken !== viewportSessionToken ||
@@ -4570,9 +4672,21 @@ async function jumpToIndex(
         ) {
           return false;
         }
-        scrolled = scrollToMessageIndex(targetIndex, animate);
-        return scrolled;
       }
+      const container = messagesContainer.value;
+      const row = container
+        ? findAnchorRow(container, anchor, indexLoaded)
+        : null;
+      if (row) {
+        if (anchor.offset == null) scrollRowToCenter(row, animate);
+        else scrollRowToAnchor(row, anchor.offset, animate);
+        scrolled = true;
+        return true;
+      }
+      // The index is already inside the loaded window but neither the id nor
+      // the row is on screen (record deleted, branch collapsed): paging older
+      // history cannot reveal it.
+      if (indexLoaded) return false;
       // A page that already failed stays paused: jumping further would only
       // re-request it and bail out of the no-progress check below.
       if (!paging?.hasMore || paging?.error) return false;
@@ -4583,11 +4697,19 @@ async function jumpToIndex(
       ) {
         return false;
       }
+      // Let the prepend re-render flush so the new rows and the re-keyed
+      // data-message-index attributes are visible to the next lookup.
+      await nextTick();
+      if (
+        sessionToken !== viewportSessionToken ||
+        interactionToken !== viewportInteractionToken
+      ) {
+        return false;
+      }
       // No progress (e.g. failed request) — stop instead of spinning.
       if ((historyOffsetBySession[sessionId] ?? 0) >= offset) return false;
     }
-    scrolled = scrollToMessageIndex(targetIndex, animate);
-    return scrolled;
+    return false;
   } finally {
     if (interactionToken === viewportInteractionToken) {
       jumpInProgress.value = false;
@@ -4597,6 +4719,20 @@ async function jumpToIndex(
       if (!scrolled) endJumpScrollLock();
     }
   }
+}
+
+/**
+ * Bring the row whose absolute `data-message-index` is target to the centre.
+ *
+ * @param targetIndex: Absolute history index to land on.
+ * @param animate: Glide across the travel instead of landing on it.
+ * @returns True when the target row was found and the landing was started.
+ */
+function jumpToIndex(targetIndex: number, animate = true): Promise<boolean> {
+  return jumpToViewport(
+    { index: targetIndex, id: null, offset: null },
+    animate,
+  );
 }
 
 function onDotClick(marker: {
@@ -5657,14 +5793,14 @@ function scrollToBottom() {
 }
 
 /**
- * Remember where a conversation is being left: the absolute index of the row
- * under the middle of the viewport.
+ * Remember where a conversation is being left: the row under the middle of the
+ * viewport, and how far into that row the middle sat.
  *
- * An index rather than a pixel offset, because the panel resets to the newest
- * history window on every open — a scrollTop measured before a switch does not
- * describe the same content when the session is reopened (see the anchor note
- * at the declaration). `restoreSessionViewport` replays this by re-centring the
- * row, which re-pages the history the fresh window dropped.
+ * Not a bare scrollTop, because the panel resets to the newest history window on
+ * every open — a scrollTop measured before a switch does not describe the same
+ * content when the session is reopened (see the anchor note at the
+ * declaration). `restoreSessionViewport` replays both parts, which re-pages the
+ * history the fresh window dropped and keeps the exact line the reader left.
  *
  * @param sessionId: Conversation whose viewport is being recorded.
  */
@@ -5676,14 +5812,67 @@ function recordViewportAnchor(sessionId: string) {
   for (const row of container.querySelectorAll<HTMLElement>(".message-row")) {
     const rect = row.getBoundingClientRect();
     // A collapsed branch row reports a zero rect: it cannot anchor anything.
-    if (rect.width === 0 && rect.height === 0) continue;
+    if (rect.height <= 0) continue;
     if (rect.bottom < center) continue;
     const index = Number(row.dataset.messageIndex);
-    if (Number.isFinite(index)) viewportAnchorBySession.set(sessionId, index);
+    if (!Number.isFinite(index)) continue;
+    viewportAnchorBySession.set(sessionId, {
+      index,
+      id: row.dataset.messageId || null,
+      // Negative when the centre fell in the gap above this row; capping at
+      // the row's height keeps a measurement taken mid-reflow sane.
+      offset: Math.min(rect.height, center - rect.top),
+    });
     return;
   }
   // Nothing addressable on screen (empty session, or every row hidden).
   viewportAnchorBySession.delete(sessionId);
+}
+
+/**
+ * Re-apply the incoming conversation's anchor while its window is settling.
+ *
+ * A switch paints several intermediate windows: the cached one, the refreshed
+ * newest page, then whatever older pages the restore has to fetch. The browser
+ * clamps scrollTop on each of them, so without this the reader sees the wrong
+ * place first and a jump afterwards. Bottom-following conversations are held
+ * at their tail; the rest at their remembered row. Called from the layout
+ * observers (before paint) and once directly when the session id flips; the
+ * landing started by restoreSessionViewport() takes over from the first frame
+ * it owns.
+ *
+ * @param sessionId: Conversation whose viewport is still being installed.
+ */
+function installPendingViewport(sessionId: string) {
+  if (
+    sessionId !== currSessionId.value ||
+    pendingViewportSessionId !== sessionId ||
+    jumpInProgress.value ||
+    jumpLandingContainer
+  ) {
+    return;
+  }
+  const container = messagesContainer.value;
+  if (!container) return;
+  const max = Math.max(0, container.scrollHeight - container.clientHeight);
+  let target: number;
+  if (shouldStickToBottom(sessionId)) {
+    // The conversation was left at its tail: hold the newest message on
+    // screen while the cached and then the refreshed window replace each
+    // other, instead of exposing the outgoing session's offset.
+    target = max;
+  } else {
+    const anchor = viewportAnchorBySession.get(sessionId);
+    if (!anchor || anchor.offset == null) return;
+    const row = findAnchorRow(container, anchor);
+    if (!row) return;
+    target = Math.min(max, anchorScrollTopFor(container, row, anchor.offset));
+  }
+  target = Math.max(0, target);
+  if (Math.abs(container.scrollTop - target) <= 0.5) return;
+  container.scrollTop = target;
+  selfScrollTop = container.scrollTop;
+  lastMessagesScrollTop = container.scrollTop;
 }
 
 /**
@@ -5692,9 +5881,9 @@ function recordViewportAnchor(sessionId: string) {
  * The messages panel keeps its DOM node across a switch, so the browser
  * preserves the outgoing session's scrollTop and the incoming one would
  * silently open at that offset. A session that was following the bottom
- * reopens at the bottom; otherwise its anchor row is re-centred through the
- * jump path, which re-pages the history the fresh window dropped and holds the
- * row in place while the rows around it settle.
+ * reopens at the bottom; otherwise the remembered point inside its anchor row
+ * is replayed through the jump path, which re-pages the history the fresh
+ * window dropped and holds the row in place while the rows around it settle.
  *
  * Both landings are deliberately unanimated: this restores a viewport rather
  * than travelling somewhere the user asked for, so it should be over as soon
@@ -5724,8 +5913,8 @@ async function restoreSessionViewport(
     // message" report.
     const running =
       isSessionRunning(sessionId) || hasLiveSystemRecord(sessionId);
-    const anchorIndex = viewportAnchorBySession.get(sessionId);
-    if (shouldStickToBottom(sessionId) || anchorIndex == null || running) {
+    const anchor = viewportAnchorBySession.get(sessionId);
+    if (shouldStickToBottom(sessionId) || anchor == null || running) {
       // No memory (never scrolled, or nothing addressable was on screen):
       // opening at the newest message is the only sane default, and it still
       // beats inheriting the leftover offset of the previous conversation.
@@ -5745,7 +5934,7 @@ async function restoreSessionViewport(
       scrollToBottom();
       return;
     }
-    await jumpToIndex(anchorIndex, false);
+    await jumpToViewport(anchor, false);
   } finally {
     // Released last, so the jump above runs while the panel still holds
     // pre-restore geometry, and only if this restore still owns the gate: a

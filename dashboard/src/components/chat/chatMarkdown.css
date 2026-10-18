@@ -54,3 +54,42 @@
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   opacity: 1;
 }
+
+/*
+ * Mermaid blocks ship their own drag-to-pan, which needs two local fixes.
+ * Author: elecvoid243, 2026-10-18
+ *
+ * 1. The pan listens for mousedown/mousemove on the preview area without
+ *    preventing the default action, so the same gesture also starts a native
+ *    text selection inside the SVG. Dragging past the block selects chat text
+ *    and auto-scrolls the message list. Disable selection on the pan surface;
+ *    the source panel and the header stay selectable.
+ * 2. Fullscreen clones the inline preview DOM, including the `._mermaid`
+ *    inline height measured for the narrow chat column. The modal is wider,
+ *    so the SVG scales beyond that stale height; `contain: content` then clips
+ *    the overflowing ends and panning can never reveal them. Let the clone use
+ *    the modal height and drop the containment so the whole SVG stays
+ *    pan-reachable.
+ */
+.mermaid-preview-area,
+.mermaid-modal-panel {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mermaid-preview-area.fullscreen ._mermaid {
+  height: 100% !important;
+  contain: none;
+  content-visibility: visible;
+}
+
+/*
+ * The fullscreen overlay is painted with Tailwind's `z-50`, while the Vuetify
+ * app bar (chat header) sits around z-index 1000-1200 and the chat's
+ * fullscreen sidebars use 1300 — so the header stays on top of the modal.
+ * Raise the overlay above the app chrome, but keep it below Vuetify dialogs
+ * (2400) so dialogs can still stack above it.
+ */
+.markstream-vue .mermaid-modal-overlay {
+  z-index: 1500;
+}

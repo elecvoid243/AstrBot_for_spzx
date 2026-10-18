@@ -85,12 +85,14 @@ const stubs = {
       "overlayMode",
       "overlayLoading",
       "overlayUnavailable",
+      "overlaySupported",
     ],
     template:
       "<div class='dp' :data-content='content' :data-base='baseContent' " +
       ":data-overlay-mode='String(overlayMode)' " +
       ":data-overlay-loading='String(overlayLoading)' " +
-      ":data-overlay-unavailable='overlayUnavailable' />",
+      ":data-overlay-unavailable='overlayUnavailable' " +
+      ":data-overlay-supported='String(overlaySupported)' />",
   },
   "v-icon": { template: "<i />" },
 };
@@ -128,6 +130,8 @@ describe("GitDiffFileItem overlay mode state machine", () => {
     mockGetData.mockReturnValue(makeBlob("old line\nctx\n"));
     const w = mountItem();
     expect(w.find(".dp").attributes("data-overlay-mode")).toBe("false");
+    // 该调用点能懒取 HEAD blob,第三格必须保持可点。
+    expect(w.find(".dp").attributes("data-overlay-supported")).toBe("true");
 
     // 第三格的事件走 v-model:overlayMode —— 模式仍由本组件持有。
     w.findComponent({ name: "DiffPreview" }).vm.$emit("update:overlayMode", true);

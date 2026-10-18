@@ -189,7 +189,7 @@ describe("DocumentManager range compare wiring", () => {
       template: "<div />",
     },
     DiffPreview: {
-      props: ["content", "baseContent", "commentable"],
+      props: ["content", "baseContent", "overlayMode", "overlaySupported", "commentable"],
       template: "<div />",
     },
   };
@@ -224,8 +224,9 @@ describe("DocumentManager range compare wiring", () => {
     expect(vm.rangeBase).toBe(SHA_A);
     panel.vm.$emit("compare-range", SHA_A, SHA_B);
     await nextTick();
-    // gitLogPath = projectRelativeFromDoc(docsRoot="docs", "a.md") = "docs/a.md"
-    expect(mockFetchDiff).toHaveBeenCalledWith("docs/a.md", SHA_A, SHA_B);
+    // gitLogPath = projectRelativeFromDoc(docsRoot=".", "a.md") = "a.md"
+    // (DEFAULT_DOCS_ROOT is the project root, not /docs.)
+    expect(mockFetchDiff).toHaveBeenCalledWith("a.md", SHA_A, SHA_B);
     expect(vm.compareRange).toEqual({ from: SHA_A, to: SHA_B });
     expect(vm.selectedRevision).toBeNull();
     expect(vm.viewMode).toBe("diff");
@@ -246,6 +247,9 @@ describe("DocumentManager range compare wiring", () => {
     expect(dp.exists()).toBe(true);
     expect(dp.props("content")).toBe(RANGE_FIXTURE.patch);
     expect(dp.props("baseContent")).toBe(RANGE_FIXTURE.baseContent);
+    expect(dp.props("overlaySupported")).toBe(true);
+    // 叠加是第三种模式,不再由 baseContent 存在与否自动接管正文。
+    expect(dp.props("overlayMode")).toBe(false);
     expect(dp.props("commentable")).toBe(false);
   });
 
@@ -287,6 +291,8 @@ describe("DocumentManager range compare wiring", () => {
     w.findComponent(DocumentHistoryPanel).vm.$emit("compare-range", SHA_A, SHA_B);
     await nextTick();
     expect(w.find('[data-testid="range-identical"]').exists()).toBe(true);
+    // 无 hunk 时叠加是唯一能显示全文的视图,默认进入。
+    expect(w.findComponent(DiffPreview).props("overlayMode")).toBe(true);
   });
 
   it("loading state shows placeholder instead of stale content (I3)", async () => {

@@ -651,7 +651,8 @@
       "bulkAria": "Bulk fold controls"
     },
     "overlay": {
-      "expandLines": "Expand {n} lines"
+      "expandLines": "Expand {n} lines",
+      "unavailable": "No base revision is available in this view — overlay unavailable"
     }
   },
   "spcodeProjectLoad": {
@@ -1866,7 +1867,9 @@
         "loading": "Reading the base revision…",
         "disabledNoBase": "No base revision of this file in HEAD — overlay unavailable",
         "disabledError": "Could not read the base revision — overlay unavailable",
-        "disabledTruncated": "Base revision is truncated (file too large) — overlay unavailable"
+        "disabledTruncated": "Base revision is truncated (file too large) — overlay unavailable",
+        "disabledBinary": "Base revision is a binary file — overlay unavailable",
+        "disabledNoHunk": "This commit has no content changes — overlay unavailable"
       },
       "viewRevision": {
         "buttonAria": "Export and open {path} at this commit",

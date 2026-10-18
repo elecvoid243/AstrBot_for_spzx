@@ -63,6 +63,10 @@ legacy_router = APIRouter(
     include_in_schema=False,
 )
 
+# Upper bound for the baseline text returned to the ChatUI diff overlay.
+# Matches the spcode git-file cap so both diff surfaces behave the same.
+_FILE_CHANGE_BASE_MAX_BYTES = 1024 * 1024
+
 
 def get_service(request: Request) -> ChatService:
     return request.app.state.services.chat
@@ -634,6 +638,11 @@ async def chat_file_change_diff(
     ``backup_id`` is empty (files created during the turn), the caller must
     prove knowledge of the content hash recorded at the end of the run —
     otherwise this endpoint would be an arbitrary file-read primitive.
+
+    The baseline text is returned as ``base_content`` when it can back the
+    card's full-file overlay view. The bytes are already read for the diff,
+    so this adds no extra I/O; binary, oversized or truncated-patch cases
+    omit the key and the UI disables the overlay slot.
     """
     raw_path = payload.path.strip()
     if not raw_path:
@@ -665,7 +674,19 @@ async def chat_file_change_diff(
         current_bytes = await asyncio.to_thread(target.read_bytes)
     except OSError as exc:
         return error(f"Failed to read file: {exc}")
-    return ok(render_unified_diff(baseline_bytes, current_bytes, raw_path))
+    result = render_unified_diff(baseline_bytes, current_bytes, raw_path)
+    # A truncated patch cannot drive a faithful overlay: the missing hunks
+    # would silently disappear from the full-file view. Binary baselines have
+    # no line structure either, so both cases omit `base_content` and let the
+    # client disable the slot. NUL probing is done before decoding so a binary
+    # blob is never turned into replacement characters.
+    if (
+        not result["truncated"]
+        and len(baseline_bytes) <= _FILE_CHANGE_BASE_MAX_BYTES
+        and b"\x00" not in baseline_bytes[:8192]
+    ):
+        result["base_content"] = baseline_bytes.decode("utf-8", errors="replace")
+    return ok(result)
 
 
 @router.post("/chat/file-changes/restore")

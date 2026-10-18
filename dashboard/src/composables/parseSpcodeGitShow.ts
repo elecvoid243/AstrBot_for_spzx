@@ -67,6 +67,15 @@ export interface GitShowFileView {
   /** unified diff 文本(含 diff --git / --- / +++ / hunk 头);
    *  null 时 (binary 或 unknown) 渲染 fallback 占位 */
   patch: string | null;
+  /**
+   * 2026-10-18 (elecvoid243): 该 commit 的父版本全文,用于「原文叠加」。
+   * 后端只在存在唯一父提交、且旧侧 blob 是文本时给出;added / root /
+   * merge / binary / oversized 情况为空,叠加格保持禁用。
+   */
+  baseContent: string;
+  baseSize: number;
+  baseBinary: boolean;
+  baseTruncated: boolean;
 }
 
 export interface SpcodeGitShowRawFileView {
@@ -77,6 +86,13 @@ export interface SpcodeGitShowRawFileView {
   deletions: number;
   is_binary: boolean;
   patch: string | null; // unified diff 文本;binary 或 unknown 时为 null
+  // 2026-10-18 (elecvoid243): history overlay base — the parent-side blob
+  // of this commit's diff. Only present when a single parent-side text
+  // blob exists and is usable.
+  base_content?: string;
+  base_size?: number;
+  base_binary?: boolean;
+  base_truncated?: boolean;
 }
 
 // ─── Public types ──────────────────────────────────────────────────
@@ -234,6 +250,10 @@ export function parseSpcodeGitShow(raw: unknown): ParseResult<GitShowData> {
       isBinary: asBoolean(f0.is_binary),
       // binary 或 path 不匹配时后端给 null;空字符串也归一为 null
       patch: asStringOrNull(f0.patch),
+      baseContent: asString(f0.base_content),
+      baseSize: asNumber(f0.base_size),
+      baseBinary: asBoolean(f0.base_binary),
+      baseTruncated: asBoolean(f0.base_truncated),
     };
   }
 

@@ -291,6 +291,8 @@ describe("diff overlay mode slot i18n completeness (2026-10-08)", () => {
     "disabledNoBase",
     "disabledError",
     "disabledTruncated",
+    "disabledBinary",
+    "disabledNoHunk",
   ];
 
   for (const [locale, dict] of localizations) {

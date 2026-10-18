@@ -19,7 +19,7 @@
 // cache, the in-flight controller and the ETag. This keeps the
 // panel testable in isolation and avoids prop-drilling handlers.
 
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useCustomizerStore } from "@/stores/customizer";
 import { useModuleI18n } from "@/i18n/composables";
@@ -73,6 +73,39 @@ const errorReason = computed(() =>
 const okView = computed(() =>
   props.state.kind === "ok" ? props.state.data : null,
 );
+
+/**
+ * 2026-10-18 (elecvoid243): the third diff mode (full-file overlay) is
+ * controlled by DiffPreview. The base text comes from the commit's first
+ * parent, shipped by /spcode/git-show?path= — never from the working tree.
+ * A pure rename has no hunks, so there is nothing to overlay even though a
+ * base blob exists; keep the slot disabled in that case.
+ */
+const overlayMode = ref(false);
+watch([() => props.sha, () => props.path], () => {
+  overlayMode.value = false;
+});
+const hasHunk = computed(() => /^@@ /m.test(okView.value?.patch ?? ""));
+const overlaySupported = computed(
+  () =>
+    okView.value?.status !== "C" &&
+    !!okView.value?.baseContent &&
+    hasHunk.value,
+);
+const overlayUnavailable = computed(() => {
+  const v = okView.value;
+  if (!v) return "";
+  if (v.baseTruncated) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledTruncated");
+  }
+  if (v.baseBinary) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledBinary");
+  }
+  if (v.baseContent && !hasHunk.value) {
+    return tm("spcodeProjectLoad.diffSidebar.overlay.disabledNoHunk");
+  }
+  return "";
+});
 
 // Decide which fallback to show. Binary is its own message; unknown
 // (path not in this ref, e.g. user passed a typo) gets a separate
@@ -151,6 +184,10 @@ const fallbackKind = computed<"binary" | "unknown" | null>(() => {
       <DiffPreview
         :content="okView.patch"
         :file-path="okView.path"
+        :base-content="okView.baseContent"
+        v-model:overlay-mode="overlayMode"
+        :overlay-supported="overlaySupported"
+        :overlay-unavailable="overlayUnavailable"
         :max-lines="200"
         :max-chars="20000"
         :collapsible="true"

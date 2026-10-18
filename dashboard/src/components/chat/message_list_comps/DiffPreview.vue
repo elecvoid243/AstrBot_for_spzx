@@ -70,7 +70,7 @@
             class="diff-view-toggle-btn"
             :class="{ active: overlayMode }"
             :aria-pressed="overlayMode"
-            :disabled="Boolean(overlayUnavailable)"
+            :disabled="Boolean(overlayBlockedReason)"
             :title="overlayTitle"
             @click.stop="toggleOverlay"
           >
@@ -592,7 +592,7 @@
                   class="diff-view-toggle-btn"
                   :class="{ active: overlayMode }"
                   :aria-pressed="overlayMode"
-                  :disabled="Boolean(overlayUnavailable)"
+                  :disabled="Boolean(overlayBlockedReason)"
                   :title="overlayTitle"
                   @click.stop="toggleOverlay"
                 >
@@ -1115,6 +1115,12 @@ const props = withDefaults(
     overlayLoading?: boolean;
     /** 不可用原因(已本地化文案);非空时第三格 disabled 并以它作为 tooltip。 */
     overlayUnavailable?: string;
+    /**
+     * 2026-10-18 (elecvoid243): 该实例是否具备叠加所需的基准来源。
+     * `baseContent` 可能因懒取而在请求前为空，不能单凭它判断能力；
+     * false(默认)时第三格禁用并给出通用原因，避免"可点但无效"。
+     */
+    overlaySupported?: boolean;
     maxLines?: number;
     maxChars?: number;
     collapsible?: boolean;
@@ -1162,6 +1168,7 @@ const props = withDefaults(
     overlayMode: false,
     overlayLoading: false,
     overlayUnavailable: "",
+    overlaySupported: false,
     maxLines: 30,
     maxChars: 2000,
     collapsible: true,
@@ -1190,9 +1197,27 @@ const isCurrentHunkDiscarding = (hi: number): boolean => {
 const overlayResult = computed(() =>
   props.baseContent ? alignOverlay(props.baseContent, props.content) : null,
 );
-/** overlay 仅在对齐成功时激活;失败自动降级普通 patch 渲染 */
+/**
+ * 第三格不可用的原因:父级给的具体原因优先;未声明基准来源时用通用文案。
+ * `overlaySupported` 与 `baseContent` 分开是因为后者可能是懒取的:请求
+ * 回来前为空,但按钮仍应可点(点了才触发取基准)。
+ */
+const overlayBlockedReason = computed(() => {
+  if (props.overlayUnavailable) return props.overlayUnavailable;
+  if (!props.overlaySupported) return tm("diffPreview.overlay.unavailable");
+  return "";
+});
+/**
+ * overlay 仅在对齐成功、用户请求叠加且基准可用时激活;失败自动降级普通
+ * patch 渲染。2026-10-18 (elecvoid243): 之前只看 baseContent,导致传了
+ * 基准的调用点(区间对比)永久停在叠加态,模式组反而失效。
+ */
 const overlayActive = computed(
-  () => overlayResult.value !== null && overlayResult.value.ok,
+  () =>
+    props.overlayMode &&
+    !overlayBlockedReason.value &&
+    overlayResult.value !== null &&
+    overlayResult.value.ok,
 );
 /** 已展开的间隙(afterBaseLineno 集合);文件/patch 变化时重置 */
 const expandedGaps = ref<Set<number>>(new Set());
@@ -1524,7 +1549,7 @@ function setViewMode(mode: ViewMode): void {
 
 function toggleOverlay(): void {
   // 不可用时按钮已 disabled,这里再挡一次是为了键盘/程序化调用。
-  if (props.overlayUnavailable) return;
+  if (overlayBlockedReason.value) return;
   emit("update:overlayMode", !props.overlayMode);
 }
 
@@ -1534,11 +1559,11 @@ const unifiedLabel = computed(() => tm("diffPreview.viewMode.unified"));
 const splitLabel = computed(() => tm("diffPreview.viewMode.split"));
 const viewModeAriaLabel = computed(() => tm("diffPreview.viewMode.ariaLabel"));
 /**
- * 第三格的 tooltip 承载三态:不可用原因 > 基准在途 > 进入/退出叠加。
- * 不可用原因由父级给出(只有它知道是取失败、新文件还是被截断)。
+ * 第三格的 tooltip 承载三态:不可用原因(父级给的具体原因或通用兜底)
+ * > 基准在途 > 进入/退出叠加。
  */
 const overlayTitle = computed(() => {
-  if (props.overlayUnavailable) return props.overlayUnavailable;
+  if (overlayBlockedReason.value) return overlayBlockedReason.value;
   if (props.overlayMode && props.overlayLoading) {
     return tm("spcodeProjectLoad.diffSidebar.overlay.loading");
   }
@@ -2495,6 +2520,19 @@ const statsDels = computed(() => {
 .diff-view-toggle-btn:hover {
   color: rgba(var(--v-theme-on-surface), 0.85);
   background: rgba(127, 127, 127, 0.08);
+}
+
+/* 2026-10-18 (elecvoid243): 没有基准来源时第三格是 disabled 的。浏览器
+   不会自动灰化带自定义配色的原生按钮,这里显式给出不可点外观,避免
+   "看起来可点、点了没反应"。 */
+.diff-view-toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.diff-view-toggle-btn:disabled:hover {
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  background: transparent;
 }
 
 .diff-view-toggle-btn:focus-visible {

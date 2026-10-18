@@ -1284,6 +1284,11 @@ const gitFileDiff = useSpcodeGitFileDiff(computed(() => props.worktree));
 /** 基准 SHA(第一次点选);第二次点选 = to。不做时间序纠正 */
 const rangeBase = ref<string | null>(null);
 const compareRange = ref<{ from: string; to: string } | null>(null);
+/**
+ * 2026-10-18 (elecvoid243): diff 模式组的第三格(全文叠加)由 DiffPreview
+ * 受控;本组件持有意图。unchanged 时默认进叠加,否则默认纯 patch。
+ */
+const overlayMode = ref(false);
 /** 当前比较的已取数据(未取到 / 未比较时为 null) */
 const rangeDiffData = computed(() => {
   const path = gitLogPath.value;
@@ -1311,6 +1316,13 @@ function onCompareRange(from: string, to: string): void {
   viewMode.value = "diff";
   void gitFileDiff.fetchDiff(gitLogPath.value, from, to);
 }
+
+// 退出比较 / 换版本 → 回到纯 patch;unchanged(没有 hunk)默认叠加,
+// 因为叠加是全文件视图唯一能显示内容的模式。用单个 watcher 从
+// compareRange + 数据派生,避免与“进入比较时 reset”互相覆盖。
+watch([compareRange, rangeDiffData], ([range, data]) => {
+  overlayMode.value = Boolean(range && data && data.status === "unchanged");
+});
 
 // 切换文件 → 比较态全部作废(Review Focus #2)
 watch(gitLogPath, (path, prev) => {
@@ -2289,6 +2301,14 @@ onBeforeUnmount(() => {
                         ? rangeDiffData.baseContent
                         : undefined
                       : undefined
+                  "
+                  v-model:overlay-mode="overlayMode"
+                  :overlay-supported="
+                    Boolean(
+                      compareRange &&
+                        rangeDiffData &&
+                        rangeDiffData.status !== 'added',
+                    )
                   "
                   :commentable="false"
                   :is-dark="isDark"

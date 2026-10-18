@@ -510,6 +510,7 @@ function rowKey(): string {
           v-model:overlay-mode="overlayMode"
           :overlay-loading="overlayLoading"
           :overlay-unavailable="overlayUnavailable"
+          :overlay-supported="true"
         :file-path="file.path"
         :collapsible="false"
         :is-dark="isDark"

@@ -40,6 +40,9 @@ async def test_diff_route(seeded, monkeypatch):
     assert data["dels"] == 0
     assert "+v2" in data["diff"]
     assert data["truncated"] is False
+    # 2026-10-18 (elecvoid243): the summary card's overlay needs the
+    # baseline text; the route already holds the bytes.
+    assert data["base_content"] == "v1\n"
 
 
 @pytest.mark.asyncio
@@ -73,6 +76,68 @@ async def test_diff_route_created_with_matching_sha(seeded, monkeypatch):
     # Created files diff against an empty baseline: both lines are additions.
     assert resp["data"]["adds"] == 2
     assert resp["data"]["dels"] == 0
+    assert resp["data"]["base_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_diff_route_omits_binary_base(tmp_path, monkeypatch):
+    """Binary baselines have no line structure → no overlay backbones."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    target = tmp_path / "blob.bin"
+    target.write_bytes(b"\x00\x01OLD")
+    history = EditHistoryManager(base_dir=tmp_path / "hist")
+    entry = history.save_backup(str(target), b"\x00\x01OLD")
+    target.write_bytes(b"\x00\x01NEW")
+    monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
+    payload = chat_api.ChatFileChangeDiffRequest(path=str(target), backup_id=entry.id)
+
+    resp = await chat_api.chat_file_change_diff(payload, None)
+
+    assert resp["status"] == "ok"
+    assert "base_content" not in resp["data"]
+
+
+@pytest.mark.asyncio
+async def test_diff_route_omits_oversized_base(seeded, monkeypatch):
+    """Past the 1 MiB cap the baseline is not shipped to the browser."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    target, history, backup_id = seeded
+    monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
+    monkeypatch.setattr(chat_api, "_FILE_CHANGE_BASE_MAX_BYTES", 2)
+    payload = chat_api.ChatFileChangeDiffRequest(path=str(target), backup_id=backup_id)
+
+    resp = await chat_api.chat_file_change_diff(payload, None)
+
+    assert resp["status"] == "ok"
+    assert "base_content" not in resp["data"]
+
+
+@pytest.mark.asyncio
+async def test_diff_route_omits_base_when_patch_truncated(seeded, monkeypatch):
+    """A truncated patch cannot drive a faithful full-file overlay."""
+    from astrbot.dashboard.api import chat as chat_api
+
+    target, history, backup_id = seeded
+    monkeypatch.setattr(chat_api, "get_history_manager", lambda: history)
+    monkeypatch.setattr(
+        chat_api,
+        "render_unified_diff",
+        lambda *args, **kwargs: {
+            "path": str(target),
+            "diff": "@@ -1 +1 @@",
+            "adds": 1,
+            "dels": 0,
+            "truncated": True,
+        },
+    )
+    payload = chat_api.ChatFileChangeDiffRequest(path=str(target), backup_id=backup_id)
+
+    resp = await chat_api.chat_file_change_diff(payload, None)
+
+    assert resp["status"] == "ok"
+    assert "base_content" not in resp["data"]
 
 
 @pytest.mark.asyncio
@@ -176,9 +241,7 @@ async def test_restore_removed_success(monkeypatch):
         calls.append(path)
         return {"ok": True, "restored_path": path}
 
-    monkeypatch.setattr(
-        chat_api, "restore_from_recycle_bin", fake_restore
-    )
+    monkeypatch.setattr(chat_api, "restore_from_recycle_bin", fake_restore)
     payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="C:/tmp/gone.txt")
 
     resp = await chat_api.chat_file_change_restore_removed(payload, None)
@@ -196,9 +259,7 @@ async def test_restore_removed_not_found(monkeypatch):
     def fake_restore(path, *, recycle_root=None):
         return {"ok": False, "error": "not in recycle bin"}
 
-    monkeypatch.setattr(
-        chat_api, "restore_from_recycle_bin", fake_restore
-    )
+    monkeypatch.setattr(chat_api, "restore_from_recycle_bin", fake_restore)
     payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="C:/tmp/gone.txt")
 
     resp = await chat_api.chat_file_change_restore_removed(payload, None)
@@ -215,9 +276,7 @@ async def test_restore_removed_blank_path(monkeypatch):
     def fail_backend(*args, **kwargs):  # pragma: no cover - must not run
         raise AssertionError("backend must not be called for a blank path")
 
-    monkeypatch.setattr(
-        chat_api, "restore_from_recycle_bin", fail_backend
-    )
+    monkeypatch.setattr(chat_api, "restore_from_recycle_bin", fail_backend)
     payload = chat_api.ChatFileChangeRestoreRemovedRequest(path="   ")
 
     resp = await chat_api.chat_file_change_restore_removed(payload, None)

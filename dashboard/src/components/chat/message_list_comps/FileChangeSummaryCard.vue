@@ -153,6 +153,9 @@
           <DiffPreview
             :content="diffs[file.path].diff"
             :file-path="file.path"
+            :base-content="baseContents[file.path]"
+            v-model:overlay-mode="overlayModes[file.path]"
+            :overlay-supported="canOverlay(file)"
             :is-dark="isDark"
             :max-lines="400"
             :collapsible="false"
@@ -197,6 +200,13 @@ const statusPending = ref(false);
 const diffs = reactive<Record<string, { diff: string; truncated: boolean }>>(
   {},
 );
+/**
+ * 2026-10-18 (elecvoid243): 叠加视图的基准全文来自 /chat/file-changes/diff
+ * (后端已持有该轮 baseline 备份)。没拿到基准的文件,第三格保持禁用。
+ */
+const baseContents = reactive<Record<string, string | undefined>>({});
+/** 每个文件的叠加意图;DiffPreview 受控,这里持有状态。 */
+const overlayModes = reactive<Record<string, boolean>>({});
 const loadingPath = ref("");
 const confirmingPath = ref("");
 const restoringPath = ref("");
@@ -235,6 +245,11 @@ function isReverted(file: FileChangeSummaryFile): boolean {
 
 function canExpand(file: FileChangeSummaryFile): boolean {
   return file.diff_available && !isReverted(file);
+}
+
+/** 叠加需要非空基准原文;created / 空基准没有可叠在下面的旧内容。 */
+function canOverlay(file: FileChangeSummaryFile): boolean {
+  return file.kind !== "created" && !!baseContents[file.path];
 }
 
 /** Removals have no file to open (only the parent folder survives). */
@@ -285,6 +300,11 @@ async function loadDiff(file: FileChangeSummaryFile) {
         diff: envelope.data.diff || "",
         truncated: !!envelope.data.truncated,
       };
+      baseContents[file.path] =
+        typeof envelope.data.base_content === "string"
+          ? envelope.data.base_content
+          : undefined;
+      overlayModes[file.path] = false;
     }
   } catch (error) {
     console.error("file diff request failed:", error);
@@ -359,6 +379,8 @@ async function undoFile(file: FileChangeSummaryFile) {
 
 function markReverted(path: string) {
   delete diffs[path];
+  delete baseContents[path];
+  delete overlayModes[path];
   expanded.delete(path);
   reverted.add(path);
 }

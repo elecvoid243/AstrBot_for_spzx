@@ -19,6 +19,7 @@ import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { nextTick, ref } from "vue";
 import DiffPreview from "./DiffPreview.vue";
 import FileCommentEditor from "./FileCommentEditor.vue";
+import zh from "@/i18n/locales/zh-CN/features/chat.json";
 import { useFileComments } from "@/composables/useFileComments";
 
 const STUB_CHILDREN = {
@@ -662,6 +663,7 @@ describe("overlay mode (baseContent provided)", () => {
         baseContent: BASE,
         filePath: "sample.txt",
         isDark: false,
+        overlaySupported: true,
         ...extra,
       },
       global: { stubs: STUB_CHILDREN },
@@ -669,7 +671,7 @@ describe("overlay mode (baseContent provided)", () => {
   }
 
   it("renders base lines plus inserted adds (full file + overlay)", () => {
-    const wrapper = mountOverlay();
+    const wrapper = mountOverlay({ overlayMode: true });
     const rows = wrapper.findAll(".overlay-body .diff-line");
     // 5 基准行(l3 为 del 行)+ 2 插入行(L3 替换 + L3x 纯新增)= 7
     expect(rows.length).toBe(7);
@@ -682,7 +684,7 @@ describe("overlay mode (baseContent provided)", () => {
   });
 
   it("shows base line numbers on ctx/del rows, blank on add rows", () => {
-    const wrapper = mountOverlay();
+    const wrapper = mountOverlay({ overlayMode: true });
     const rows = wrapper.findAll(".overlay-body .diff-line");
     const num = (i: number) =>
       rows[i].find(".line-number.old").text();
@@ -698,7 +700,14 @@ describe("overlay mode (baseContent provided)", () => {
       "@@ -28,3 +28,3 @@\n l28\n-l29\n+L29\n l30",
     ].join("\n");
     const wrapper = mount(DiffPreview, {
-      props: { content: patch, baseContent: base, filePath: "f", isDark: false },
+      props: {
+        content: patch,
+        baseContent: base,
+        filePath: "f",
+        isDark: false,
+        overlayMode: true,
+        overlaySupported: true,
+      },
       global: { stubs: STUB_CHILDREN },
     });
     const gap = wrapper.find(".overlay-gap");
@@ -732,6 +741,50 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.emitted("update:overlayMode")).toEqual([[true]]);
   });
 
+  it("keeps the patch body until the user asks for the overlay", () => {
+    // 基准已就绪也不等于用户要看叠加:模式组的第一格必须保持 active,
+    // 否则 unified/split 会被 overlayActive 永久压住(区间对比旧行为)。
+    const wrapper = mountOverlay();
+    expect(wrapper.find(".overlay-body").exists()).toBe(false);
+    expect(wrapper.find(".hunk-header").exists()).toBe(true);
+    expect(
+      wrapper.findAll(".diff-view-toggle button")[0].attributes("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("disables the slot when the caller has no base source", async () => {
+    // 工具结果 / Git 历史只拿得到 patch,没有基准原文。第三格必须
+    // 明确置灰并说明原因,而不是可点但毫无反应。
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content: PATCH,
+        filePath: "sample.txt",
+        isDark: false,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    const slot = wrapper.findAll(".diff-view-toggle button")[2];
+
+    expect(slot.attributes("disabled")).toBeDefined();
+    expect(slot.attributes("title")).toBe(
+      zh.diffPreview.overlay.unavailable,
+    );
+
+    await slot.trigger("click");
+    expect(wrapper.emitted("update:overlayMode")).toBeUndefined();
+  });
+
+  it("does not render the overlay body when the base is unusable", () => {
+    // 基准被判不可用后,即使 previously requested 也不能继续显示
+    // 半截叠加;正文回退 patch 与禁用态保持一致。
+    const wrapper = mountOverlay({
+      overlayMode: true,
+      overlayUnavailable: "基准版本读取失败，无法叠加",
+    });
+    expect(wrapper.find(".overlay-body").exists()).toBe(false);
+    expect(wrapper.find(".hunk-header").exists()).toBe(true);
+  });
+
   it("leaving overlay for unified is one dimension, not two switches", async () => {
     const wrapper = mountOverlay({ overlayMode: true });
     await wrapper.findAll(".diff-view-toggle button")[0].trigger("click");
@@ -751,6 +804,7 @@ describe("overlay mode (baseContent provided)", () => {
         isDark: false,
         overlayMode: true,
         overlayLoading: true,
+        overlaySupported: true,
       },
       global: { stubs: STUB_CHILDREN },
     });
@@ -785,6 +839,8 @@ describe("overlay mode (baseContent provided)", () => {
         baseContent: "const a = 1\nconst b = 3\n",
         filePath: "a.ts",
         isDark: false,
+        overlayMode: true,
+        overlaySupported: true,
       },
       global: { stubs: STUB_CHILDREN },
     });
@@ -805,6 +861,8 @@ describe("overlay mode (baseContent provided)", () => {
         baseContent: "l1\nl2\n",
         filePath: "f",
         isDark: false,
+        overlayMode: true,
+        overlaySupported: true,
       },
       global: { stubs: STUB_CHILDREN },
     });

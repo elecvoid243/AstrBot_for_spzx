@@ -318,6 +318,10 @@ test("parseSpcodeGitShow v3.9: file field parses modified (M) text patch", () =>
         deletions: 1,
         is_binary: false,
         patch: "diff --git a/src/auth.py b/src/auth.py\n@@ -1,3 +1,4 @@\n+x\n",
+        base_content: "line1\nline2\n",
+        base_size: 12,
+        base_binary: false,
+        base_truncated: false,
       },
     },
   });
@@ -331,6 +335,64 @@ test("parseSpcodeGitShow v3.9: file field parses modified (M) text patch", () =>
   assert.equal(f.isBinary, false);
   assert.equal(f.oldPath, null);
   assert.match(f.patch, /^diff --git/);
+  assert.equal(f.baseContent, "line1\nline2\n");
+  assert.equal(f.baseSize, 12);
+  assert.equal(f.baseBinary, false);
+  assert.equal(f.baseTruncated, false);
+});
+
+test("parseSpcodeGitShow v3.9: history overlay base flags parse", () => {
+  const r = parseSpcodeGitShow({
+    status: "ok",
+    data: {
+      ...baseData,
+      file: {
+        path: "assets/logo.bin",
+        old_path: null,
+        status: "M",
+        additions: 1,
+        deletions: 1,
+        is_binary: true,
+        patch: null,
+        base_content: "",
+        base_size: 2048,
+        base_binary: true,
+        base_truncated: false,
+      },
+    },
+  });
+  assert.equal(r.kind, "ok");
+  const f = r.snapshot.file;
+  assert.ok(f);
+  assert.equal(f.baseContent, "");
+  assert.equal(f.baseSize, 2048);
+  assert.equal(f.baseBinary, true);
+  assert.equal(f.baseTruncated, false);
+});
+
+test("parseSpcodeGitShow v3.9: absent history base fields default safely", () => {
+  const r = parseSpcodeGitShow({
+    status: "ok",
+    data: {
+      ...baseData,
+      file: {
+        path: "src/added.py",
+        old_path: null,
+        status: "A",
+        additions: 2,
+        deletions: 0,
+        is_binary: false,
+        patch: "diff --git a/src/added.py b/src/added.py\n@@ -0,0 +1,2 @@\n+a\n+b\n",
+      },
+    },
+  });
+  assert.equal(r.kind, "ok");
+  const f = r.snapshot.file;
+  assert.ok(f);
+  assert.equal(f.baseContent, "");
+  assert.equal(f.baseSize, 0);
+  assert.equal(f.baseBinary, false);
+  assert.equal(f.baseTruncated, false);
 });
 
 test("parseSpcodeGitShow v3.9: file field parses binary (patch=null)", () => {

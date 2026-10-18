@@ -145,6 +145,13 @@ const emit = defineEmits<{
 }>();
 const { tm } = useModuleI18n("features/chat");
 
+/**
+ * 2026-10-18 (elecvoid243): range-compare 的 diff 模式组第三格由
+ * DiffPreview 受控;本组件持有意图。unchanged 时默认进叠加(纯文件视图),
+ * 其余默认纯 patch。
+ */
+const overlayMode = ref(false);
+
 // 2026-07-15 workspace-history-parity: the file-level history
 // affordance used to live as an "mdi-history" button in this meta
 // header (2026-07-09). It was removed so the workspace tab matches
@@ -735,6 +742,12 @@ watch(
     if (rev && editMode.value) editMode.value = false;
   },
 );
+
+// 换文件 / 换比较区间 → 回到纯 patch;unchanged(无 hunk)默认叠加,
+// 因为叠加是全文件视图唯一能显示内容的模式。
+watch([currentFilePath, () => props.rangeDiff], ([, range]) => {
+  overlayMode.value = range?.status === "unchanged";
+});
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -1491,6 +1504,8 @@ onBeforeUnmount(() => {
                   ? props.rangeDiff.baseContent
                   : undefined
               "
+              v-model:overlay-mode="overlayMode"
+              :overlay-supported="props.rangeDiff.status !== 'added'"
               :is-dark="isDark"
               :commentable="false"
             />

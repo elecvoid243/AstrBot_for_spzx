@@ -651,7 +651,8 @@
       "bulkAria": "批量折叠控制"
     },
     "overlay": {
-      "expandLines": "展开 {n} 行"
+      "expandLines": "展开 {n} 行",
+      "unavailable": "该视图没有可用的基准原文，无法叠加"
     }
   },
   "spcodeProjectLoad": {
@@ -1899,7 +1900,9 @@
         "loading": "正在读取基准版本…",
         "disabledNoBase": "HEAD 中没有该文件的基准版本，无法叠加",
         "disabledError": "基准版本读取失败，无法叠加",
-        "disabledTruncated": "基准版本过大被截断，无法叠加"
+        "disabledTruncated": "基准版本过大被截断，无法叠加",
+        "disabledBinary": "基准版本是二进制文件，无法叠加",
+        "disabledNoHunk": "该提交没有内容差异，无法叠加"
       },
       "viewRevision": {
         "buttonAria": "导出并打开 {path} 在此提交下的版本",

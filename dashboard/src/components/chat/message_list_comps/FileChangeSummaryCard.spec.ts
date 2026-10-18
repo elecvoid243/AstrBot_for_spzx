@@ -9,7 +9,7 @@
 // Author: elecvoid243 | 2026-09-17
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import FileChangeSummaryCard from "./FileChangeSummaryCard.vue";
 import zh from "@/i18n/locales/zh-CN/features/chat.json";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
@@ -43,7 +43,23 @@ const VBtnStub = {
 const STUBS = {
   "v-btn": VBtnStub,
   "v-progress-circular": { template: "<span class='progress-stub' />" },
-  DiffPreview: { name: "DiffPreview", template: "<div class='diff-stub' />" },
+  DiffPreview: {
+    name: "DiffPreview",
+    props: [
+      "content",
+      "filePath",
+      "baseContent",
+      "overlayMode",
+      "overlaySupported",
+      "isDark",
+      "maxLines",
+      "collapsible",
+      "commentable",
+    ],
+    template:
+      "<div class='diff-stub' :data-base='baseContent' " +
+      ":data-overlay-supported='String(overlaySupported)' />",
+  },
 };
 
 const FILES: FileChangeSummaryFile[] = [
@@ -84,7 +100,10 @@ describe("FileChangeSummaryCard collapse toggle", () => {
       data: { status: "ok", data: { files: [] } },
     });
     mocks.fileChangeDiff.mockResolvedValue({
-      data: { status: "ok", data: { diff: "@@ -1 +1 @@", truncated: false } },
+      data: {
+        status: "ok",
+        data: { diff: "@@ -1 +1 @@", truncated: false, base_content: "old\n" },
+      },
     });
   });
 
@@ -144,6 +163,72 @@ describe("FileChangeSummaryCard collapse toggle", () => {
     expect(wrapper.find(".fcs-body").exists()).toBe(true);
     expect(wrapper.find(".diff-stub").exists()).toBe(true);
     expect(mocks.fileChangeDiff).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("FileChangeSummaryCard overlay wiring", () => {
+  beforeEach(() => {
+    mocks.fileChangeStatus.mockReset();
+    mocks.fileChangeDiff.mockReset();
+    mocks.fileChangeStatus.mockResolvedValue({
+      data: { status: "ok", data: { files: [] } },
+    });
+    mocks.fileChangeDiff.mockResolvedValue({
+      data: {
+        status: "ok",
+        data: {
+          diff: "@@ -1 +1 @@\n-old\n+new",
+          truncated: false,
+          base_content: "old\n",
+        },
+      },
+    });
+  });
+
+  async function expandFirst(): Promise<VueWrapper> {
+    const wrapper = mountCard([FILES[0]]);
+    await flushPromises();
+    await wrapper.find(".fcs-file").trigger("click");
+    await flushPromises();
+    return wrapper;
+  }
+
+  it("feeds the baseline to DiffPreview and accepts its mode requests", async () => {
+    const wrapper = await expandFirst();
+    const dp = wrapper.findComponent({ name: "DiffPreview" });
+
+    expect(dp.props("baseContent")).toBe("old\n");
+    expect(dp.props("overlaySupported")).toBe(true);
+    expect(dp.props("overlayMode")).toBe(false);
+
+    dp.vm.$emit("update:overlayMode", true);
+    await flushPromises();
+
+    expect(dp.props("overlayMode")).toBe(true);
+  });
+
+  it("keeps the slot disabled without a baseline or for created files", async () => {
+    mocks.fileChangeDiff.mockResolvedValue({
+      data: { status: "ok", data: { diff: "@@ -1 +1 @@", truncated: false } },
+    });
+    let wrapper = await expandFirst();
+    let dp = wrapper.findComponent({ name: "DiffPreview" });
+    expect(dp.props("overlaySupported")).toBe(false);
+
+    // Created files legitimately have an empty baseline, but there is no
+    // old content to lay the additions under → no overlay view.
+    mocks.fileChangeDiff.mockResolvedValue({
+      data: {
+        status: "ok",
+        data: { diff: "@@ -0,0 +1 @@\n+new", truncated: false, base_content: "" },
+      },
+    });
+    wrapper = mountCard([{ ...FILES[0], kind: "created" }]);
+    await flushPromises();
+    await wrapper.find(".fcs-file").trigger("click");
+    await flushPromises();
+    dp = wrapper.findComponent({ name: "DiffPreview" });
+    expect(dp.props("overlaySupported")).toBe(false);
   });
 });
 

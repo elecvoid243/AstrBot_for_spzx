@@ -418,6 +418,7 @@ function hasVisibleItemsAfter(items, currentIndex) {
   font-size: 0.75rem;
   color: var(--v-theme-secondaryText);
   margin-top: 2px;
+  white-space: pre-line;
 }
 
 .metadata-key, .property-key {
@@ -490,6 +491,7 @@ function hasVisibleItemsAfter(items, currentIndex) {
   font-size: 0.75rem;
   color: var(--v-theme-secondaryText);
   margin-top: 2px;
+  white-space: pre-line;
 }
 
 .property-hint__content--linked {

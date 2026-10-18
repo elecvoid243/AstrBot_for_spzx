@@ -234,7 +234,7 @@
         },
         "file_tool_mode": {
           "description": "File write tool group",
-          "hint": "The two groups are mutually exclusive. Changes take effect on the next message; overwriting in patch mode requires confirm=true.",
+          "hint": "Legacy: file_write + file_edit, single-file operations\nPatch: apply_patch, batch add/edit/delete/move in one call",
           "labels": ["Legacy (file_write + file_edit)", "Patch (apply_patch)"]
         },
         "computer_use_local_shell": {

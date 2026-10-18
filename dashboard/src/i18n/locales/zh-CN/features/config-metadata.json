@@ -250,7 +250,7 @@
         },
         "file_tool_mode": {
           "description": "文件写入工具组",
-          "hint": "两组工具互斥。切换后下一条消息生效；补丁模式下的覆盖写需要 confirm=true。",
+          "hint": "经典：file_write + file_edit，单文件操作\n补丁：apply_patch，一次批量增删改移",
           "labels": ["经典（file_write + file_edit）", "补丁（apply_patch）"]
         },
         "computer_use_local_shell": {

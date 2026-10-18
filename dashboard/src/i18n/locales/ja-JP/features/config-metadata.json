@@ -322,7 +322,7 @@
         },
         "file_tool_mode": {
           "description": "ファイル書き込みツールグループ",
-          "hint": "2 つのグループは排他です。切り替えは次のメッセージから有効になります。パッチモードでの上書きには confirm=true が必要です。",
+          "hint": "レガシー：file_write + file_edit、単一ファイル操作\nパッチ：apply_patch、1 回で複数ファイルの追加・変更・削除・移動",
           "labels": ["レガシー（file_write + file_edit）", "パッチ（apply_patch）"]
         },
         "computer_use_local_shell": {

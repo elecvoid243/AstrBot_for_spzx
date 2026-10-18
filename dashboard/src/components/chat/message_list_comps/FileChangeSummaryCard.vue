@@ -159,7 +159,6 @@
             :is-dark="isDark"
             :max-lines="400"
             :collapsible="false"
-            :commentable="false"
           />
         </template>
       </div>

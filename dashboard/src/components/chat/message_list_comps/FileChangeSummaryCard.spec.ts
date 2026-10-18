@@ -207,6 +207,17 @@ describe("FileChangeSummaryCard overlay wiring", () => {
     expect(dp.props("overlayMode")).toBe(true);
   });
 
+  it("enables the inline comment gutter on the expanded diff", async () => {
+    const wrapper = await expandFirst();
+    const dp = wrapper.findComponent({ name: "DiffPreview" });
+
+    // The quick-comment gutter is DiffPreview's default; the summary card
+    // must not opt out (it used to pass commentable=false). filePath is the
+    // store partition key, so it must match the row path.
+    expect(dp.props("commentable")).not.toBe(false);
+    expect(dp.props("filePath")).toBe(FILES[0].path);
+  });
+
   it("keeps the slot disabled without a baseline or for created files", async () => {
     mocks.fileChangeDiff.mockResolvedValue({
       data: { status: "ok", data: { diff: "@@ -1 +1 @@", truncated: false } },

@@ -1290,9 +1290,20 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "alice", run_id, team["members"][1]["member_id"]
                 )
                 assert saved["messages"] == transcript["messages"]
-                assert (await history.get_record("alice", "legacy_run", run_id))["run"][
-                    "history_status"
-                ] == "completed"
+                # The runner marks memory completed before its SQLite commit.
+                # Observe persistence through history without allowing a false
+                # interruption during that normal completion window.
+                deadline = asyncio.get_running_loop().time() + 10
+                while True:
+                    saved_run = (
+                        await history.get_record("alice", "legacy_run", run_id)
+                    )["run"]
+                    assert saved_run["history_status"] != "interrupted"
+                    if saved_run["status"] == "completed":
+                        break
+                    assert asyncio.get_running_loop().time() < deadline
+                    await asyncio.sleep(0.01)
+                assert saved_run["history_status"] == "completed"
     finally:
         if run_id is not None:
             await runs.request_stop_run("alice", run_id)

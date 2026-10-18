@@ -8332,6 +8332,12 @@
   },
   "components": {
     "securitySchemes": {
+      "ChatBrowserSession": {
+        "type": "apiKey",
+        "description": "Browser-only credential confirmed by the initiating sender in the original chat.",
+        "in": "header",
+        "name": "X-AstrBot-Chat-Session"
+      },
       "ApiKeyAuth": {
         "type": "apiKey",
         "in": "header",

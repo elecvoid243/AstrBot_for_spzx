@@ -289,16 +289,20 @@ class LegacyMigrationService:
                 # Literal braces are escaped before translating legacy placeholders.
                 task = task.replace("{", "{{").replace("}", "}}")
                 reference_names = {}
-                for reference in re.findall(
-                    r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}", str(node.get("task") or "")
-                ):
-                    name = (
-                        reference
-                        if reference.isidentifier()
-                        else f"legacy_input_{len(reference_names)}"
+                references = dict.fromkeys(
+                    re.findall(
+                        r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}", str(node.get("task") or "")
                     )
-                    reference_names[reference] = name
-                    inputs[name] = (
+                )
+                root_inputs = set(graph.get("required_inputs") or ["input"])
+                # Reserve explicit inputs and every source name before allocating aliases.
+                reserved_names = (
+                    set(inputs)
+                    | root_inputs
+                    | {name for name in references if name.isidentifier()}
+                )
+                for reference in references:
+                    value = (
                         {"input": "input"}
                         if reference == "input"
                         else {
@@ -308,6 +312,18 @@ class LegacyMigrationService:
                             "field": "text",
                         }
                     )
+                    name = reference
+                    if (
+                        not name.isidentifier()
+                        or (name in inputs and inputs[name] != value)
+                        or (name in root_inputs and value != {"input": name})
+                    ):
+                        name = f"legacy_input_{len(reference_names)}"
+                        while name in reserved_names:
+                            name += "_"
+                    reference_names[reference] = name
+                    reserved_names.add(name)
+                    inputs[name] = value
                 task = re.sub(
                     r"\{\{\{\{\s*([A-Za-z0-9_]+)\s*\}\}\}\}",
                     lambda match: "{" + reference_names[match[1]] + "}",
@@ -704,9 +720,11 @@ class LegacyMigrationService:
         session_issues = []
         session_source = {}
         session_config = {}
+        resource_issues = []
+        kb_references_are_ids = False
         core = self.roles.core_lifecycle
         if not config.get("config_id") and core is not None and member.get("umo"):
-            profile_id = core.astrbot_config_mgr.get_conf_info(member["umo"]).id
+            profile_id = core.astrbot_config_mgr.get_conf_info(member["umo"])["id"]
         if not provider_id and core is not None and member.get("umo"):
             from astrbot.core import sp
             from astrbot.core.provider.entities import ProviderType
@@ -765,6 +783,7 @@ class LegacyMigrationService:
                 session_source["knowledge_bases"] = kb_config
                 if "kb_ids" in kb_config:
                     config["kb_names"] = kb_config["kb_ids"]
+                    kb_references_are_ids = True
                 selected_config = core.astrbot_config_mgr.confs.get(profile_id, {})
                 if kb_config.keys() - {"kb_ids", "top_k"} or kb_config.get(
                     "top_k", 5
@@ -813,6 +832,10 @@ class LegacyMigrationService:
             elif persona_id:
                 # Preserve a missing selected identity instead of resolver fallback.
                 config["persona_id"] = persona_id
+        if config.get("kb_names") is None:
+            profiles = [p for p in catalog["profiles"] if p["id"] == profile_id]
+            if len(profiles) == 1:
+                config["kb_names"] = profiles[0].get("knowledge_bases") or []
         definition = {"name": member["name"]}
         model = next((m for m in catalog["models"] if m["id"] == provider_id), {})
         definition["model_capabilities"] = sorted(
@@ -837,13 +860,31 @@ class LegacyMigrationService:
             definition[kind] = []
             for index, reference in enumerate(config[key]):
                 slot = f"{kind}_{index}"
+                definition[kind].append(slot)
+                # Legacy member, node and profile KB settings contain names;
+                # only the persisted session kb_ids setting contains identities.
                 matches = [
                     r
                     for r in catalog[kind]
-                    if r["id"] == reference
-                    or (kind == "knowledge_bases" and r.get("name") == reference)
+                    if (
+                        r.get("name") == reference
+                        if kind == "knowledge_bases" and not kb_references_are_ids
+                        else r["id"] == reference
+                    )
                 ]
-                definition[kind].append(slot)
+                if (
+                    kind == "knowledge_bases"
+                    and not kb_references_are_ids
+                    and len(matches) != 1
+                ):
+                    resource_issues.append(
+                        {
+                            "path": f"legacy_kb_names.{index}",
+                            "code": "AMBIGUOUS" if matches else "MISSING",
+                            "message": f"Legacy knowledge-base name cannot be resolved uniquely: {reference}",
+                        }
+                    )
+                    continue
                 installation["bindings"][slot] = (
                     matches[0]["id"] if len(matches) == 1 else reference
                 )
@@ -887,6 +928,7 @@ class LegacyMigrationService:
             )
         ]
         unsupported.extend(session_issues)
+        unsupported.extend(resource_issues)
         for issue in preview["issues"]:
             if (
                 issue["path"] == "installation.profile_id"

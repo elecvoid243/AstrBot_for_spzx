@@ -1,12 +1,12 @@
 // Author: elecvoid243
 // Date: 2026-10-08
 //
-// Owns the life of the composer's compression chip: the notice is an event,
-// the chip is a transient view of it, and the ring tooltip keeps the numbers
-// reachable after the chip is gone.
+// Owns the life of the composer's compression readout: the notice is an event,
+// the readout is a transient view of it, and the ring tooltip keeps the numbers
+// reachable after the readout is gone.
 //
 // Kept as a composable rather than inline in ChatInput because the timing is
-// the contract here (fresh event → 6s window, duplicate delivery → no restart,
+// the contract here (fresh event → 10s window, duplicate delivery → no restart,
 // leaving the session → gone) and mounting the composer to test it would drag
 // in the whole input surface.
 
@@ -27,11 +27,11 @@ import {
   type ContextCompressionEntry,
 } from "./contextCompressionNotice";
 
-/** How long the chip stays on screen before fading out. */
-const CHIP_HOLD_MS = 6000;
+/** How long the readout stays on screen before fading out. */
+const CHIP_HOLD_MS = 10000;
 
 export interface ContextCompressionChipApi {
-  /** Chip to render; null while the session has no compression to show. */
+  /** Readout to render; null while the session has no compression to show. */
   chip: ComputedRef<ContextCompressionChip | null>;
   /** True while the chip is inside its display window. */
   visible: Ref<boolean>;

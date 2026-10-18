@@ -14,9 +14,7 @@ import type { ContextCompressionEntry } from "./contextCompressionNotice";
 import { useContextCompressionChip } from "./useContextCompressionChip";
 
 const translate = (key: string, params?: Record<string, string | number>) =>
-  key.startsWith("contextCompression.strategy.")
-    ? key
-    : `${key}|${params?.from}|${params?.to}`;
+  params ? `${key}|${Object.values(params).join("|")}` : key;
 
 const ENTRY: ContextCompressionEntry = {
   key: "s1:123456:45123",
@@ -54,19 +52,19 @@ describe("useContextCompressionChip", () => {
     scope.stop();
   });
 
-  it("shows the chip for 6s and keeps the ring line afterwards", async () => {
+  it("shows the readout for 10s and keeps the ring line afterwards", async () => {
     const { source, chip, visible, historyLine, scope } = setup();
 
     source.value = ENTRY;
     await nextTick();
 
     expect(visible.value).toBe(true);
-    expect(chip.value?.label).toBe("123.5k → 45.1k");
+    expect(chip.value?.label).toBe("contextCompression.readout");
     expect(chip.value?.description).toBe(
-      "contextCompression.llm|123.5k|45.1k",
+      "contextCompression.readout · contextCompression.strategy.llm\n123.5k → 45.1k tokens",
     );
 
-    vi.advanceTimersByTime(5999);
+    vi.advanceTimersByTime(9999);
     expect(visible.value).toBe(true);
 
     vi.advanceTimersByTime(1);
@@ -74,7 +72,7 @@ describe("useContextCompressionChip", () => {
     // The numbers stay reachable through the ring tooltip — that is the
     // whole point of the second line.
     expect(historyLine.value).toBe(
-      "contextCompression.lastCompression|123.5k|45.1k",
+      "contextCompression.lastCompression|123.5k|45.1k|contextCompression.strategy.llm",
     );
 
     scope.stop();
@@ -89,7 +87,7 @@ describe("useContextCompressionChip", () => {
 
     source.value = { ...ENTRY };
     await nextTick();
-    vi.advanceTimersByTime(2999);
+    vi.advanceTimersByTime(6999);
     expect(visible.value).toBe(true);
 
     vi.advanceTimersByTime(1);
@@ -111,9 +109,9 @@ describe("useContextCompressionChip", () => {
     };
     await nextTick();
 
-    expect(chip.value?.icon).toBe("mdi-content-cut");
+    expect(chip.value?.delta).toBe("−80%");
     expect(chip.value?.lossy).toBe(true);
-    vi.advanceTimersByTime(5999);
+    vi.advanceTimersByTime(9999);
     expect(visible.value).toBe(true);
     vi.advanceTimersByTime(1);
     expect(visible.value).toBe(false);

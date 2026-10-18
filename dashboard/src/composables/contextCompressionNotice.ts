@@ -8,8 +8,8 @@
 // and the dashboard accumulator deliberately drops it (see
 // `BotMessageAccumulator.add_plain`), so the chat page renders it as a chip
 // next to the composer's token-usage ring instead of a message part. Keeping
-// the wire parsing and the chip composition here leaves the SSE consumers as
-// thin wiring and keeps this logic unit-testable without the API layer.
+// the wire parsing and the readout composition here leaves the SSE consumers
+// as thin wiring and keeps this logic unit-testable without the API layer.
 
 export interface ContextCompressionNotice {
   /** Strategy that produced the result, e.g. `llm_compress`. */
@@ -92,15 +92,15 @@ export interface ContextCompressionEntry {
   notice: ContextCompressionNotice;
 }
 
-/** Chip shown next to the composer's token-usage ring while the notice is live. */
+/** Readout shown next to the composer's token-usage ring while the notice is live. */
 export interface ContextCompressionChip {
-  /** Token delta only: "123.5k → 45.1k". */
+  /** Fixed verdict, e.g. "Context compacted". */
   label: string;
-  /** MDI icon; its shape carries the strategy, not just the colour. */
-  icon: string;
+  /** Relative drop, e.g. "−63%". */
+  delta: string;
   /** True when history was dropped, false when it was merely summarized. */
   lossy: boolean;
-  /** Full sentence, used as the aria-label and the hover tooltip. */
+  /** Two lines for the aria-label and tooltip: verdict + strategy, then tokens. */
   description: string;
 }
 
@@ -124,31 +124,41 @@ function strategyKey(strategy: string): string {
 }
 
 /**
- * Build the composer chip for a compression.
+ * Build the composer readout for a compression.
  *
- * The sentence depends on the strategy: an LLM summary keeps the conversation
- * (compressed), while a truncation drops history, so the two must not read the
- * same. The icon differs by shape as well as colour so the loss survives
- * greyscale and colour blindness.
+ * The verdict is constant so the toolbar never asks the user to parse a
+ * strategy word at a glance; the strategy and the exact token delta stay one
+ * hover away. Brightness and weight carry "history was dropped" instead of a
+ * warning fill, because a compaction is a state, not an error.
  *
  * @param notice Parsed notice.
  * @param translate Module-scoped translation function.
- * @returns Chip label, icon, loss flag and the full description.
+ * @returns Verdict, relative delta, loss flag and the two-line description.
  */
 export function contextCompressionChip(
   notice: ContextCompressionNotice,
   translate: CompressionTranslate,
 ): ContextCompressionChip {
   const lossy = LOSSY_STRATEGIES.has(notice.strategy);
+  const strategy = translate(
+    `contextCompression.strategy.${strategyKey(notice.strategy)}`,
+  );
+  const drop =
+    notice.tokensBefore > 0
+      ? Math.round(
+          ((notice.tokensBefore - notice.tokensAfter) / notice.tokensBefore) *
+            100,
+        )
+      : 0;
 
   return {
-    label: `${formatTokenCount(notice.tokensBefore)} → ${formatTokenCount(notice.tokensAfter)}`,
-    icon: lossy ? "mdi-content-cut" : "mdi-arrow-collapse-vertical",
+    label: translate("contextCompression.readout"),
+    delta: `−${Math.max(0, drop)}%`,
     lossy,
-    description: translate(`contextCompression.${strategyKey(notice.strategy)}`, {
-      from: formatTokenCount(notice.tokensBefore),
-      to: formatTokenCount(notice.tokensAfter),
-    }),
+    description: [
+      `${translate("contextCompression.readout")} · ${strategy}`,
+      `${formatTokenCount(notice.tokensBefore)} → ${formatTokenCount(notice.tokensAfter)} tokens`,
+    ].join("\n"),
   };
 }
 

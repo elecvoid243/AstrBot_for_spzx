@@ -2378,7 +2378,9 @@ const tokenUsageIndicator = computed(() => {
       cacheHitPercent != null
         ? tm("tokenUsage.tooltipWithCache", {
             ...tooltipParams,
-            cachePercent: formatUsagePercent(cacheHitPercent),
+            // Cache hit rate is a measured statistic, so keep 0.01% resolution;
+            // the context percentage above stays coarse (it is an estimate).
+            cachePercent: cacheHitPercent.toFixed(2),
           })
         : tm("tokenUsage.tooltip", tooltipParams),
   };

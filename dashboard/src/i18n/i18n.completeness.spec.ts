@@ -183,10 +183,13 @@ describe("context compression chip i18n completeness (2026-10-08)", () => {
   ];
 
   for (const [locale, dict] of allLocales) {
-    it(`${locale} defines contextCompression.lastCompression + strategy words`, () => {
+    it(`${locale} defines contextCompression.readout + lastCompression + strategy words`, () => {
       const compression = dict.contextCompression as
         | Record<string, unknown>
         | undefined;
+      expect(typeof compression?.readout, `${locale} missing readout`).toBe(
+        "string",
+      );
       expect(
         typeof compression?.lastCompression,
         `${locale} missing contextCompression.lastCompression string`,
@@ -217,7 +220,7 @@ describe("context compression chip i18n completeness (2026-10-08)", () => {
     };
 
     expect(contextCompressionChip(notice, tm).description).toBe(
-      "上下文已压缩 · 123.5k → 45.1k tokens",
+      "上下文已压缩 · 摘要\n123.5k → 45.1k tokens",
     );
     expect(contextCompressionHistoryLine(notice, tm)).toBe(
       "上次压缩：123.5k → 45.1k tokens · 摘要",

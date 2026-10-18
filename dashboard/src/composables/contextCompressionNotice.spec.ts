@@ -70,22 +70,23 @@ describe("contextCompressionNoticeKey", () => {
 });
 
 describe("contextCompressionChip", () => {
-  const translate = (key: string, params?: Record<string, string | number>) =>
-    params ? `${key}|${params.from}|${params.to}` : key;
+  const translate = (key: string) => key;
 
-  it("labels the chip with the token delta and describes a summary neutrally", () => {
+  it("keeps the verdict constant and puts strategy + delta in the tooltip", () => {
     const chip = contextCompressionChip(
       { strategy: "llm_compress", tokensBefore: 123456, tokensAfter: 45123 },
       translate,
     );
 
-    expect(chip.label).toBe("123.5k → 45.1k");
+    expect(chip.label).toBe("contextCompression.readout");
+    expect(chip.delta).toBe("−63%");
     expect(chip.lossy).toBe(false);
-    expect(chip.icon).toBe("mdi-arrow-collapse-vertical");
-    expect(chip.description).toBe("contextCompression.llm|123.5k|45.1k");
+    expect(chip.description).toBe(
+      "contextCompression.readout · contextCompression.strategy.llm\n123.5k → 45.1k tokens",
+    );
   });
 
-  it("gives truncation its own icon shape, so the loss never rests on colour alone", () => {
+  it("marks truncation lossy without changing the verdict", () => {
     for (const strategy of ["truncate_by_turns", "truncate_by_halving"]) {
       const chip = contextCompressionChip(
         { strategy, tokensBefore: 123456, tokensAfter: 45123 },
@@ -93,7 +94,8 @@ describe("contextCompressionChip", () => {
       );
 
       expect(chip.lossy).toBe(true);
-      expect(chip.icon).toBe("mdi-content-cut");
+      expect(chip.label).toBe("contextCompression.readout");
+      expect(chip.description).toContain("contextCompression.strategy.");
     }
   });
 
@@ -104,8 +106,9 @@ describe("contextCompressionChip", () => {
     );
 
     expect(chip.lossy).toBe(false);
-    expect(chip.icon).toBe("mdi-arrow-collapse-vertical");
-    expect(chip.description).toBe("contextCompression.generic|1k|500");
+    expect(chip.description).toBe(
+      "contextCompression.readout · contextCompression.strategy.generic\n1k → 500 tokens",
+    );
   });
 
   it("names the halving fallback as its own event", () => {
@@ -114,7 +117,18 @@ describe("contextCompressionChip", () => {
       translate,
     );
 
-    expect(chip.description).toBe("contextCompression.halving|1k|500");
+    expect(chip.description).toBe(
+      "contextCompression.readout · contextCompression.strategy.halving\n1k → 500 tokens",
+    );
+  });
+
+  it("never reports a negative delta", () => {
+    const chip = contextCompressionChip(
+      { strategy: "llm_compress", tokensBefore: 1000, tokensAfter: 1200 },
+      translate,
+    );
+
+    expect(chip.delta).toBe("−0%");
   });
 });
 

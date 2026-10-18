@@ -146,6 +146,28 @@ test("parseUnifiedDiff assigns hunkIndex based on parse order", () => {
   assert.equal(hunks[0].hunkIndex, 0);
 });
 
+test("parseUnifiedDiff ignores the trailing newline artifact", () => {
+  // A diff delivered by /chat/file-changes/diff ends with a newline.
+  // split("\n") then yields a trailing empty element; treating it as a
+  // context line made the last hunk consume one line past the base file,
+  // so alignOverlay fell back to the plain patch view.
+  const diff = [
+    "--- a/x.txt",
+    "+++ b/x.txt",
+    "@@ -1,2 +1,2 @@",
+    " keep",
+    "-old",
+    "+new",
+    "",
+  ].join("\n");
+  const hunks = parseUnifiedDiff(diff, Infinity);
+  assert.equal(hunks.length, 1);
+  assert.deepEqual(
+    hunks[0].lines.map((line) => `${line.type}:${line.content}`),
+    ["ctx:keep", "del:old", "add:new"],
+  );
+});
+
 test("extractDiffContent unwraps ```diff fences", () => {
   const fenced = "Some preamble\n```diff\n@@ -1 +1 @@\n-x\n+y\n```\nSome trailer";
   const out = extractDiffContent(fenced);

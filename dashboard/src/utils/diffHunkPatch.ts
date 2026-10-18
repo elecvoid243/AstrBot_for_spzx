@@ -57,6 +57,14 @@ export function extractDiffContent(raw: string): string {
 
 export function parseUnifiedDiff(text: string, maxLines: number): DiffHunk[] {
   const lines = text.split("\n");
+  // A diff that ends with a newline yields one trailing empty element.
+  // It is a split artifact, not a body line: an empty line inside a hunk
+  // is represented as " " (space prefix). Keeping it makes the last hunk
+  // consume an extra context line, which pushed alignOverlay past the end
+  // of the base file and rejected the whole overlay.
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
   const hunks: DiffHunk[] = [];
   let currentHunk: DiffHunk | null = null;
   let totalLines = 0;

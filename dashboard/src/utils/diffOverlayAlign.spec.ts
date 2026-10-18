@@ -26,6 +26,21 @@ describe("alignOverlay", () => {
     expect(r.gaps).toEqual([]);
   });
 
+  it("accepts a patch ending with a newline after the final hunk", () => {
+    // Regression: the old parser treated the trailing empty split element
+    // as a context line, consuming one base line past the hunk and making
+    // the whole overlay fall back to the plain patch view.
+    const base = "a\nold\nc\n";
+    const patch = "--- a/x\n+++ b/x\n@@ -2,1 +2,1 @@\n-old\n+new\n";
+    const r = alignOverlay(base, patch);
+    expect(r.ok).toBe(true);
+    expect(r.lines.filter((line) => line.kind !== "add").map((line) => line.text)).toEqual([
+      "a",
+      "old",
+      "c",
+    ]);
+  });
+
   it("two distant hunks produce a gap with hidden count", () => {
     const base = Array.from({ length: 30 }, (_, i) => `l${i + 1}`).join("\n");
     // hunk1 覆盖 l1..l3,hunk2 覆盖 l28..l30 → 间隙 l4..l27 = 24 行

@@ -313,6 +313,20 @@ class LegacyMigrationService:
                     lambda match: "{" + reference_names[match[1]] + "}",
                     task,
                 )
+                # Legacy dependency edges carry predecessor results even without placeholders.
+                for edge in graph.get("edges", []):
+                    if edge.get("to") != node.get("id"):
+                        continue
+                    predecessor = edge.get("from")
+                    if any(
+                        ref.get("task_id") == predecessor for ref in inputs.values()
+                    ):
+                        continue
+                    name = f"legacy_predecessor_{len(inputs)}"
+                    while name in inputs:
+                        name += "_"
+                    inputs[name] = {"task_id": predecessor, "field": "text"}
+                    task += "\n\n[Upstream result]\n{" + name + "}"
                 tasks.append(
                     {
                         "id": node.get("id"),
@@ -690,7 +704,17 @@ class LegacyMigrationService:
         core = self.roles.core_lifecycle
         if not config.get("config_id") and core is not None and member.get("umo"):
             profile_id = core.astrbot_config_mgr.get_conf_info(member["umo"]).id
-        profile = next((p for p in catalog["profiles"] if p["id"] == profile_id), {})
+        if not provider_id and core is not None and member.get("umo"):
+            from astrbot.core import sp
+            from astrbot.core.provider.entities import ProviderType
+
+            # A session selection precedes the profile's model in the legacy pipeline.
+            provider_id = await sp.get_async(
+                "umo",
+                member["umo"],
+                f"provider_perf_{ProviderType.CHAT_COMPLETION.value}",
+                None,
+            )
         if not provider_id and core is not None and config.get("config_id"):
             selected_config = core.astrbot_config_mgr.confs.get(profile_id, {})
             provider_id = (
@@ -740,14 +764,8 @@ class LegacyMigrationService:
                 installation["bindings"][slot] = (
                     matches[0]["id"] if len(matches) == 1 else reference
                 )
-        persona_id = config.get("persona_id") or profile.get("persona_id")
-        persona = next((p for p in catalog["personas"] if p["id"] == persona_id), {})
-        definition["prompt"] = (
-            "\n\n".join(
-                p for p in (persona.get("prompt"), member.get("system_prompt")) if p
-            )
-            or None
-        )
+        # The pinned persona snapshot supplies persona instructions separately.
+        definition["prompt"] = member.get("system_prompt") or ""
         preview = await self.roles.preview_role(
             {"definition": definition, "installation": installation}
         )

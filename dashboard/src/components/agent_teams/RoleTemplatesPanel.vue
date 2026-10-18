@@ -87,23 +87,10 @@
           currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
         <v-card-text>
-          <template v-if="definition.migration?.issues?.length">
-            <v-alert type="warning" variant="tonal" class="mb-3">
-              {{ tm("migration.configure") }}
-              <ul class="pl-5">
-                <li
-                  v-for="(issue, index) in definition.migration.issues"
-                  :key="index"
-                >
-                  {{ issue.path }}: {{ issue.message }}
-                </li>
-              </ul>
-            </v-alert>
-            <v-checkbox
-              v-model="migrationReviewed"
-              :label="tm('migration.reviewed')"
-            />
-          </template>
+          <MigrationReview
+            v-model="migrationReviewed"
+            :issues="definition.migration?.issues"
+          />
           <v-alert
             v-if="errorMessage"
             type="error"
@@ -404,6 +391,7 @@
 </template>
 
 <script setup lang="ts">
+import MigrationReview from "./MigrationReview.vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { roleAssetsApi } from "@/api/roleAssets";

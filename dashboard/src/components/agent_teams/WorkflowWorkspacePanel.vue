@@ -524,24 +524,10 @@
           tm("graph.canvas")
         }}</v-card-title>
         <v-card-text>
-          <template v-if="editingAsset?.definition.migration?.issues?.length">
-            <v-alert type="warning" variant="tonal" class="mb-3">
-              {{ tm("migration.configure") }}
-              <ul class="pl-5">
-                <li
-                  v-for="(issue, index) in editingAsset.definition.migration
-                    .issues"
-                  :key="index"
-                >
-                  {{ issue.path }}: {{ issue.message }}
-                </li>
-              </ul>
-            </v-alert>
-            <v-checkbox
-              v-model="migrationReviewed"
-              :label="tm('migration.reviewed')"
-            />
-          </template>
+          <MigrationReview
+            v-model="migrationReviewed"
+            :issues="editingAsset?.definition.migration?.issues"
+          />
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
@@ -849,6 +835,7 @@
 </template>
 
 <script setup lang="ts">
+import MigrationReview from "./MigrationReview.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { roleAssetsApi } from "@/api/roleAssets";

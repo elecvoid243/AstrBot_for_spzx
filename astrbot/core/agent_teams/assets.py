@@ -830,7 +830,10 @@ class RoleAssetService:
                     )
                 value = resolved
             effective[field], sources[field] = value, source
-        if not str(effective["prompt"] or "").strip():
+        if (
+            not str(effective["prompt"] or "").strip()
+            and not str(persona.get("prompt") or "").strip()
+        ):
             issues.append(
                 {
                     "path": "definition.prompt",

@@ -806,7 +806,7 @@ async def test_profile_persona_and_node_override_are_frozen_into_new_run(tmp_pat
         asset = await workflows.get_asset("alice", identity)
         role = await roles.get_role("alice", asset["definition"]["tasks"][0]["role_id"])
         resolved = await roles.preview_role(role)
-        assert resolved["effective"]["prompt"] == "Review carefully.\n\nCite evidence."
+        assert resolved["effective"]["prompt"] == "Cite evidence."
         assert resolved["effective"]["max_steps"] == 12
         assert resolved["effective"]["context_length"] == 8000
         assert resolved["effective"]["tools"] == ["search"]
@@ -818,6 +818,10 @@ async def test_profile_persona_and_node_override_are_frozen_into_new_run(tmp_pat
         await workflows.shutdown()
         task = first["snapshot"]["definition"]["tasks"][0]
         member = first["snapshot"]["members"][task["member"]]["member"]
+        assert (
+            first["snapshot"]["members"][task["member"]]["persona"]["prompt"]
+            == "Review carefully."
+        )
         assert member["session_id"] != "old-history-session"
         assert "old context" not in json.dumps(first)
         await roles.save_role(
@@ -832,7 +836,7 @@ async def test_profile_persona_and_node_override_are_frozen_into_new_run(tmp_pat
         unchanged = await workflows.get_run("alice", first["run_id"])
         assert (
             unchanged["snapshot"]["members"][task["member"]]["effective"]["prompt"]
-            == "Review carefully.\n\nCite evidence."
+            == "Cite evidence."
         )
         assert (await db.get_agent_team_run("old-active")).status == "running"
         assert (await db.get_agent_team_run("old-active")).graph_snapshot == {

@@ -14,23 +14,10 @@
           error
         }}</v-alert>
         <p class="text-body-2 mb-4">{{ tm("autonomous.explanation") }}</p>
-        <template v-if="asset?.definition.migration?.issues?.length">
-          <v-alert type="warning" variant="tonal" class="mb-3">
-            {{ tm("migration.configure") }}
-            <ul class="pl-5">
-              <li
-                v-for="(issue, index) in asset.definition.migration.issues"
-                :key="index"
-              >
-                {{ issue.path }}: {{ issue.message }}
-              </li>
-            </ul>
-          </v-alert>
-          <v-checkbox
-            v-model="migrationReviewed"
-            :label="tm('migration.reviewed')"
-          />
-        </template>
+        <MigrationReview
+          v-model="migrationReviewed"
+          :issues="asset?.definition.migration?.issues"
+        />
         <v-text-field
           v-model="form.name"
           :label="tm('autonomous.name')"
@@ -154,6 +141,7 @@
 </template>
 
 <script setup lang="ts">
+import MigrationReview from "./MigrationReview.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";

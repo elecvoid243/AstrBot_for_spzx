@@ -67,6 +67,9 @@ from tests.unit.test_knowledge_base_service_contract import FakeEmbeddingProvide
         "v2_chat_role",
         "v2_graph_role",
         "v2_graph_migrated_role",
+        "v2_graph_migrated_role_preference_role",
+        "v2_graph_migrated_role_persona_only_role",
+        "v2_graph_migrated_role_edge_role",
         "v2_plain_role",
         "v2_failing_role",
         "v2_hidden_role",
@@ -156,6 +159,7 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
     model_started = asyncio.Event()
     model_cancelled = asyncio.Event()
     model_requests = []
+    migrated_requests = []
     observed_tool_messages = []
 
     class ScriptedProvider(Provider):
@@ -225,6 +229,14 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 and self.provider_config["id"] == "research-model"
             ):
                 raise RuntimeError("Bound model unavailable")
+            if mode.startswith("v2_graph_migrated_role"):
+                assert (
+                    str(kwargs.get("contexts", [])).count(
+                        "Use verified research evidence."
+                    )
+                    == 1
+                )
+                migrated_requests.append(str(kwargs))
             names = tools.names() if tools else []
             prompt = "\n".join(
                 str(message.get("content", ""))
@@ -331,6 +343,9 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "v2_unsafe_role",
                     "v2_graph_role",
                     "v2_graph_migrated_role",
+                    "v2_graph_migrated_role_preference_role",
+                    "v2_graph_migrated_role_persona_only_role",
+                    "v2_graph_migrated_role_edge_role",
                     "v2_graph_crash_role",
                     "v2_graph_unsafe_role",
                 )
@@ -722,23 +737,94 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     )
                     definition["edges"].append({"source": "first", "target": "second"})
                 asset = await service.save_asset("alice", {"definition": definition})
-            if mode == "v2_graph_migrated_role":
+            if mode.startswith("v2_graph_migrated_role"):
                 await db.create_agent_team(
-                    team_id="legacy-pipeline", owner_username="alice", name="Legacy pipeline team",
-                    coordinator_member_id="lead", config={}, members=[
-                        {"member_id": "lead", "name": "Lead", "provider_id": "research-model", "system_prompt": "Coordinate."},
-                        {"member_id": "writer", "name": "Writer", "provider_id": None,
-                         "umo": "webchat:FriendMessage:legacy-writer", "session_id": "legacy-writer",
-                         "persona_id": "researcher", "system_prompt": "Write with evidence.",
-                         "runner_config": {"config_id": "research", "tools": [], "skills": ["alpha"], "kb_names": ["research-evidence"]}},
+                    team_id="legacy-pipeline",
+                    owner_username="alice",
+                    name="Legacy pipeline team",
+                    coordinator_member_id="lead",
+                    config={},
+                    members=[
+                        {
+                            "member_id": "lead",
+                            "name": "Lead",
+                            "provider_id": "research-model",
+                            "system_prompt": "Coordinate.",
+                            "persona_id": "researcher",
+                            "runner_config": {
+                                "config_id": "research",
+                                "tools": [],
+                                "skills": ["alpha"],
+                                "kb_names": ["research-evidence"],
+                            },
+                        },
+                        {
+                            "member_id": "writer",
+                            "name": "Writer",
+                            "provider_id": None,
+                            "umo": "webchat:FriendMessage:legacy-writer",
+                            "session_id": "legacy-writer",
+                            "persona_id": "researcher",
+                            "system_prompt": ""
+                            if mode.endswith("_persona_only_role")
+                            else "Write with evidence.",
+                            "runner_config": {
+                                "config_id": "research",
+                                "tools": [],
+                                "skills": ["alpha"],
+                                "kb_names": ["research-evidence"],
+                            },
+                        },
                     ],
                 )
-                await db.create_agent_team_workflow(workflow_id="legacy-pipeline-flow", team_id="legacy-pipeline", name="Migrated pipeline",
-                    graph={"nodes": [{"id": "first", "member_id": "writer", "task": "Write evidence."}], "edges": []}, layout={"first": {"x": 80, "y": 100}})
+                await db.create_agent_team_workflow(
+                    workflow_id="legacy-pipeline-flow",
+                    team_id="legacy-pipeline",
+                    name="Migrated pipeline",
+                    graph={
+                        "nodes": [
+                            {
+                                "id": "first",
+                                "member_id": "writer",
+                                "task": "Write evidence.",
+                            }
+                        ]
+                        + (
+                            [
+                                {
+                                    "id": "consumer",
+                                    "member_id": "lead",
+                                    "task": "Consume all predecessor evidence.",
+                                }
+                            ]
+                            if mode.endswith("_edge_role")
+                            else []
+                        ),
+                        "edges": [{"from": "first", "to": "consumer"}]
+                        if mode.endswith("_edge_role")
+                        else [],
+                    },
+                    layout={"first": {"x": 80, "y": 100}},
+                )
                 migration = LegacyMigrationService(db, assets, service)
+                if mode.endswith("_preference_role"):
+                    await providers.set_provider(
+                        "default-model",
+                        ProviderType.CHAT_COMPLETION,
+                        "webchat:FriendMessage:legacy-writer",
+                    )
                 proposal = await migration.preview("alice", "legacy-pipeline")
-                migrated = await migration.confirm("alice", "legacy-pipeline", {"preview_token": proposal["preview_token"], "save_pending": True})
-                asset = await service.get_asset("alice", migrated["mapping"]["workflows"]["legacy-pipeline-flow"]["asset_id"])
+                migrated = await migration.confirm(
+                    "alice",
+                    "legacy-pipeline",
+                    {"preview_token": proposal["preview_token"], "save_pending": True},
+                )
+                asset = await service.get_asset(
+                    "alice",
+                    migrated["mapping"]["workflows"]["legacy-pipeline-flow"][
+                        "asset_id"
+                    ],
+                )
             if mode == "v2_chat_role":
                 from astrbot.core.agent_teams.chat import ChatCaller
 
@@ -761,20 +847,58 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                 run = await service.get_run("alice", accepted["run_id"])
             else:
                 run = await service.start_run(
-                    "alice", asset["asset_id"], {"version": 1, **({"inputs": {"input": "Fresh migration task"}} if mode == "v2_graph_migrated_role" else {})}
+                    "alice",
+                    asset["asset_id"],
+                    {
+                        "version": 1,
+                        **(
+                            {"inputs": {"input": "Fresh migration task"}}
+                            if mode.startswith("v2_graph_migrated_role")
+                            else {}
+                        ),
+                    },
                 )
             for _ in range(1000):
                 current = await service.get_run("alice", run["run_id"])
                 if current["status"] != "running":
                     break
                 await asyncio.sleep(0.01)
-            if mode == "v2_graph_migrated_role":
+            if mode.startswith("v2_graph_migrated_role"):
                 assert current["status"] == "completed", current
-                assert model_requests == ["research-model"] * 3
-                result = json.loads((await service.get_result("alice", run["run_id"]))["tasks"]["first"]["text"])
-                assert result["persona"] and result["hook"] and result["skill"] and result["knowledge"]
-                assert current["tasks"][0]["snapshot"]["member"]["session_id"] != "legacy-writer"
+                assert model_requests == [
+                    "default-model"
+                    if mode.endswith("_preference_role")
+                    else "research-model"
+                ] * (6 if mode.endswith("_edge_role") else 3)
+                result = json.loads(
+                    (await service.get_result("alice", run["run_id"]))["tasks"][
+                        "first"
+                    ]["text"]
+                )
+                assert (
+                    result["persona"]
+                    and result["hook"]
+                    and result["skill"]
+                    and result["knowledge"]
+                )
+                assert (
+                    current["tasks"][0]["snapshot"]["member"]["session_id"]
+                    != "legacy-writer"
+                )
                 assert "legacy-writer" not in json.dumps(current["snapshot"])
+                if mode.endswith("_edge_role"):
+                    consumer = next(
+                        task
+                        for task in current["tasks"]
+                        if task["snapshot"].get("node_id") == "consumer"
+                    )
+                    assert consumer["snapshot"]["input_artifacts"]
+                    first_text = (await service.get_result("alice", run["run_id"]))[
+                        "tasks"
+                    ]["first"]["text"]
+                    assert all(
+                        first_text in request for request in migrated_requests[3:]
+                    )
                 return
             if mode == "v2_graph_role":
                 assert current["status"] == "completed", current

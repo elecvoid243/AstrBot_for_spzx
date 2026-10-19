@@ -267,7 +267,7 @@ async def test_auto_run_member_wave(tmp_path):
     # Member deliveries carry the per-turn team framing with the round number.
     wave_delivery = next(d for d in delivered if d[0] == "conv-1")
     assert wave_delivery[1] == "写初稿"
-    assert wave_delivery[2] == "[团队任务] 来自协调者（第 1 轮）"
+    assert wave_delivery[2] == "你是写手\n\n[团队任务] 来自协调者（第 1 轮）"
     # Reply events are tagged with the executing member's member_id.
     replies = [e for e in bus.history() if e.get("direction") == "reply"]
     assert {e["member_id"] for e in replies if e["member_id"] != "mA"} == {"mB", "mC"}
@@ -355,9 +355,12 @@ async def test_auto_run_member_wave_waits_if_busy(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_auto_run_two_no_tool_rounds_pause(tmp_path):
-    """Two consecutive text-only turns pause the run; resume_run restarts it
-    with a clean no-tool counter."""
+async def test_auto_pause_rejects_rebuild_and_keeps_original_owner_controls(tmp_path):
+    """Keep a natural pause readable without replacing its original engine.
+
+    Args:
+        tmp_path: Isolated database for the original and replacement services.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()
     chat = FakeChatService()
@@ -375,9 +378,25 @@ async def test_auto_run_two_no_tool_rounds_pause(tmp_path):
     registry_log: list = []
     responses = {m["name"]: f"{m['name']}-回复" for m in team["members"]}
 
+    async def turn3(tools):
+        await next(t for t in tools if t.name == "team_dispatch").call(
+            None, assignments=[{"member": "写手", "task": "再试一次"}]
+        )
+
+    async def turn4(tools):
+        await next(t for t in tools if t.name == "team_finish").call(
+            None, summary="这次成功了"
+        )
+
     svc = AgentTeamRunService(db=db, chat_service=chat)
     svc.ports_factory = lambda username, emit: auto_ports(
-        team["members"], coordinator, {}, responses, events, delivered, registry_log
+        team["members"],
+        coordinator,
+        {3: turn3, 4: turn4},
+        responses,
+        events,
+        delivered,
+        registry_log,
     )
     snap = await svc.start_run(
         "alice", team["team_id"], {"mode": "auto", "input": "无人响应的目标"}
@@ -396,47 +415,35 @@ async def test_auto_run_two_no_tool_rounds_pause(tmp_path):
     assert row.status == "paused"
     assert row.rounds == []  # no dispatches, no round entries
 
-    # Post-restart resume (fresh service → runner not in memory): the rebuilt
-    # orchestrator carries the persisted rounds and a reset no-tool counter.
-    events2: list = []
-    delivered2: list = []
-    registry_log2: list = []
-    responses2 = {m["name"]: f"{m['name']}-成果" for m in team["members"]}
-
-    async def turn1(tools):
-        await next(t for t in tools if t.name == "team_dispatch").call(
-            None, assignments=[{"member": "写手", "task": "再试一次"}]
-        )
-
-    async def turn2(tools):
-        await next(t for t in tools if t.name == "team_finish").call(
-            None, summary="这次成功了"
-        )
-
+    # A replacement service can read the saved pause but cannot rebuild it.
     svc2 = AgentTeamRunService(db=db, chat_service=chat)
-    svc2.ports_factory = lambda username, emit: auto_ports(
-        team["members"],
-        coordinator,
-        {1: turn1, 2: turn2},
-        responses2,
-        events2,
-        delivered2,
-        registry_log2,
+    svc2.ports_factory = lambda username, emit: pytest.fail(
+        "Ownerless legacy history must not create execution ports"
     )
-    snap2 = await svc2.resume_run("alice", run_id)
+    before = await svc2.get_history_run("alice", run_id)
+    deliveries_before = len(delivered)
+    with pytest.raises(AgentTeamsServiceError) as retired:
+        await svc2.resume_run("alice", run_id)
+    assert retired.value.status == 410
+    assert await svc2.get_history_run("alice", run_id) == before
+    assert not svc2._runners
+    assert len(delivered) == deliveries_before
+
+    # The original owner still continues the same engine and saved run.
+    snap2 = await svc.resume_run("alice", run_id)
     assert snap2["status"] == "running"
-    runner2 = svc2._runners[run_id]
-    assert runner2._no_tool_rounds == 0  # reset on rebuild
-    await wait_terminal(runner2)
-    await runner2.task
-    assert runner2.status == "completed"
+    assert svc._runners[run_id] is runner
+    await wait_terminal(runner)
+    await runner.task
+    assert runner.status == "completed"
     row2 = await db.get_agent_team_run(run_id)
     assert row2.result_summary == "这次成功了"
     assert len(row2.rounds) == 1
-    # The rebuilt turn's prompt carries the stronger one-shot resume reminder
-    # (the plain counter-based reminder cannot fire after the reset).
-    assert delivered2[0][0] == coordinator["session_id"]
-    assert "without dispatching any tasks" in delivered2[0][1]
+    assert delivered[deliveries_before][0] == coordinator["session_id"]
+    assert (
+        "Reminder: your previous turn did not call team_dispatch"
+        in delivered[deliveries_before][1]
+    )
 
 
 @pytest.mark.asyncio

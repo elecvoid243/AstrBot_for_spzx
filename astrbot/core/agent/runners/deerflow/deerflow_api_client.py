@@ -2,6 +2,7 @@ import codecs
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import quote, unquote, urlsplit
 
 from aiohttp import ClientResponse, ClientSession, ClientTimeout
 
@@ -211,7 +212,25 @@ class DeerFlowAPIClient:
         thread_id: str,
         payload: dict[str, Any],
         timeout: float = 120,
+        capture_identity: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        """Stream events, optionally saving exact run identity before body events.
+
+        Args:
+            thread_id: Original thread receiving this run.
+            payload: Effective run request.
+            timeout: Read-idle timeout in seconds; connection timeouts are capped
+                at the smaller of this value and 30 seconds. Total time is unbounded.
+            capture_identity: Emit metadata parsed from Content-Location before
+                reading the body. A missing header leaves body metadata unchanged.
+
+        Yields:
+            Run identity metadata followed by the original stream events.
+
+        Raises:
+            ValueError: Content-Location does not identify a run in this thread.
+            DeerFlowAPIError: The service rejects the streaming request.
+        """
         session = self._get_session()
         url = f"{self.api_base}/api/langgraph/threads/{thread_id}/runs/stream"
         input_payload = payload.get("input")
@@ -256,8 +275,68 @@ class DeerFlowAPIClient:
                     url=url,
                     thread_id=thread_id,
                 )
+            if capture_identity and (location := resp.headers.get("Content-Location")):
+                parts = urlsplit(location).path.rstrip("/").split("/")
+                if (
+                    len(parts) < 5
+                    or parts[-4] != "threads"
+                    or parts[-2] != "runs"
+                    or unquote(parts[-3]) != thread_id
+                ):
+                    raise ValueError("DeerFlow returned an invalid remote run location")
+                yield {
+                    "event": "metadata",
+                    "data": {"thread_id": thread_id, "run_id": unquote(parts[-1])},
+                }
             async for event in _stream_sse(resp):
                 yield event
+
+    async def get_run(self, identity: dict) -> dict:
+        """Query the exact remote execution, excluding thread state.
+
+        Args:
+            identity: Original thread_id and run_id.
+
+        Returns:
+            Original status, identity and available provider usage.
+        """
+        session = self._get_session()
+        path = f"/api/langgraph/threads/{quote(identity['thread_id'], safe='')}/runs/{quote(identity['run_id'], safe='')}"
+        async with session.get(
+            self.api_base + path,
+            headers=self.headers,
+            proxy=self.proxy,
+            timeout=ClientTimeout(total=20),
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+    async def get_run_messages(
+        self, identity: dict, before_seq: int | None = None
+    ) -> dict:
+        """Read one page of messages belonging to the original run.
+
+        Args:
+            identity: Original thread_id and run_id.
+            before_seq: Exclusive cursor for an older page.
+
+        Returns:
+            Ordered run-owned message envelopes and has_more.
+        """
+        session = self._get_session()
+        path = f"/api/langgraph/threads/{quote(identity['thread_id'], safe='')}/runs/{quote(identity['run_id'], safe='')}/messages"
+        params = {"limit": 200}
+        if before_seq is not None:
+            params["before_seq"] = before_seq
+        async with session.get(
+            self.api_base + path,
+            params=params,
+            headers=self.headers,
+            proxy=self.proxy,
+            timeout=ClientTimeout(total=20),
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
 
     async def close(self) -> None:
         session = self._session

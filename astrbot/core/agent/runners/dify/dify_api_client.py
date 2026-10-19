@@ -101,6 +101,27 @@ class DifyAPIClient:
             async for event in _stream_sse(resp):
                 yield event
 
+    async def get_workflow_run(self, workflow_run_id: str) -> dict[str, Any]:
+        """Query the exact original Workflow or Chatflow execution.
+
+        Args:
+            workflow_run_id: Run identity returned by workflow_started.
+
+        Returns:
+            Original status and workflow outputs, without creating another run.
+
+        Raises:
+            aiohttp.ClientResponseError: The remote query is unavailable.
+        """
+        from urllib.parse import quote
+
+        async with self.session.get(
+            f"{self.api_base}/workflows/run/{quote(workflow_run_id, safe='')}",
+            headers=self.headers,
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
     async def file_upload(
         self,
         user: str,

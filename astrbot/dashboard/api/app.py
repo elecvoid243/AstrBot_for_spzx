@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
@@ -10,6 +9,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from astrbot import logger
 from astrbot.core import DEMO_MODE, LogBroker
+from astrbot.core.agent_teams.assets import RoleAssetService
+from astrbot.core.agent_teams.history import RunHistoryService
+from astrbot.core.agent_teams.migration import LegacyMigrationService
+from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.log import LogManager
@@ -166,25 +169,12 @@ def create_dashboard_asgi_app(
     jwt_secret: str,
     static_folder: str | None = None,
 ) -> FastAPI:
-    @asynccontextmanager
-    async def _lifespan(app: FastAPI):
-        """Run startup maintenance before the dashboard serves requests."""
-        # Agent Teams: mark stale runs interrupted after a restart so the
-        # panel can offer resume (spec §6.5). Guarded so startup never
-        # fails on it.
-        try:
-            await services.agent_team_runs.boot_sweep()
-        except Exception:  # noqa: BLE001
-            logger.warning("agent team boot sweep failed", exc_info=True)
-        yield
-
     app = FastAPI(
         title="AstrBot OpenAPI",
         version="1.0.0",
         openapi_url=f"{API_V1_PREFIX}/openapi.json",
         docs_url=f"{API_V1_PREFIX}/docs",
         redoc_url=f"{API_V1_PREFIX}/redoc",
-        lifespan=_lifespan,
     )
     # Compress JS/CSS and other sizable responses; Starlette's GZipMiddleware
     # skips text/event-stream, so SSE endpoints are unaffected.
@@ -261,12 +251,23 @@ def create_dashboard_asgi_app(
         chat_service=chat,
         busy_checker=lambda session_id: bool(chat.chat_runs_by_session.get(session_id)),
     )
+    services.role_assets = RoleAssetService(db, core_lifecycle)
+    services.workflow_assets = getattr(core_lifecycle, "workflow_service", None)
+    if services.workflow_assets is None:
+        services.workflow_assets = WorkflowService(db, services.role_assets)
+    services.legacy_migration = LegacyMigrationService(
+        db, services.role_assets, services.workflow_assets
+    )
     services.agent_team_runs = AgentTeamRunService(
         db=db,
         chat_service=chat,
         busy_checker=services.agent_teams.busy_checker,
         on_member_stop=_stop_member_turn,
         config_checker=lambda cid: cid in core_lifecycle.astrbot_config_mgr.confs,
+    )
+    services.workflow_assets.legacy_runs = services.agent_team_runs
+    services.run_history = RunHistoryService(
+        db, services.workflow_assets, services.agent_team_runs
     )
 
     # Kernel goal loop: injected goal turns on webchat sessions register as

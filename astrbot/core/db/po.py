@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 
 from deprecated import deprecated
-from sqlalchemy import Column, DateTime, Index, desc
+from sqlalchemy import Column, DateTime, Index, LargeBinary, desc
 from sqlmodel import JSON, Field, SQLModel, Text, UniqueConstraint
 
 
@@ -216,6 +216,246 @@ class CronJob(TimestampMixin, SQLModel, table=True):
     last_error: str | None = Field(default=None, sa_type=Text)
 
 
+class AgentRoleVersion(TimestampMixin, SQLModel, table=True):
+    """Immutable reusable role definitions, independent of member sessions."""
+
+    __tablename__: str = "agent_role_versions"
+
+    role_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    definition: dict = Field(sa_type=JSON)
+
+
+class AgentRoleInstallation(SQLModel, table=True):
+    """Local resource bindings for a specific role version."""
+
+    __tablename__: str = "agent_role_installations"
+
+    role_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    installation: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentWorkflowVersion(TimestampMixin, SQLModel, table=True):
+    """Immutable single-task workflow assets with pinned role references."""
+
+    __tablename__: str = "agent_workflow_versions"
+    asset_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    definition: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowChatAccess(SQLModel, table=True):
+    """Explicit local access to one fixed asset version for a platform caller."""
+
+    __tablename__: str = "agent_workflow_chat_access"  # pyright: ignore[reportIncompatibleVariableOverride]
+    asset_id: str = Field(primary_key=True)
+    platform_id: str = Field(primary_key=True)
+    sender_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    version: int
+    profile_id: str
+    source: str
+
+
+class AgentWorkflowChatDelivery(SQLModel, table=True):
+    """Durable delivery cursor; platform messages can be retried after restart."""
+
+    __tablename__: str = "agent_workflow_chat_deliveries"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    delivered: list[str] = Field(default_factory=list, sa_type=JSON)
+    finished: bool = False
+
+
+class AgentWorkflowPackage(SQLModel, table=True):
+    """Imported identity and content recorded in the installation transaction."""
+
+    owner_username: str = Field(primary_key=True)
+    package_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    asset_id: str = Field(index=True)
+    installed_version: int = Field(default=1)
+    digest: str
+    package: dict = Field(sa_type=JSON)
+    role_ids: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowRun(TimestampMixin, SQLModel, table=True):
+    """Independent v2 runs; one task and attempt are stored atomically."""
+
+    __tablename__: str = "agent_workflow_runs"
+    run_id: str = Field(primary_key=True)
+    owner_username: str = Field(index=True)
+    status: str = Field(default="running", index=True)
+    snapshot: dict = Field(sa_type=JSON)
+    state: dict = Field(default_factory=dict, sa_type=JSON)
+    pending_result: dict | None = Field(
+        default=None, sa_column=Column(JSON(none_as_null=True))
+    )
+    result: dict | None = Field(default=None, sa_column=Column(JSON(none_as_null=True)))
+
+
+class AgentWorkflowSchedule(SQLModel, table=True):
+    """Persisted scheduling revision serializes task claims within one run."""
+
+    __tablename__: str = "agent_workflow_schedules"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    revision: int = 0
+
+
+class AgentWorkflowControl(SQLModel, table=True):
+    """Durable whole-run admission decision and idempotent control requests."""
+
+    __tablename__: str = "agent_workflow_controls"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    status: str = "active"
+    revision: int = 0
+    requests: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentWorkflowTodo(TimestampMixin, SQLModel, table=True):
+    """Frozen human request, durable response and single task consumption."""
+
+    __tablename__: str = "agent_workflow_todos"  # pyright: ignore[reportIncompatibleVariableOverride]
+    todo_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    task_run_id: str = Field(index=True, unique=True)
+    data: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowAttempt(SQLModel, table=True):
+    """Immutable failed attempt evidence retained when explicitly retrying."""
+
+    __tablename__: str = "agent_workflow_attempts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    attempt_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    data: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowArtifact(TimestampMixin, SQLModel, table=True):
+    """Immutable versions of validated task output, with idempotent revisions."""
+
+    __tablename__: str = "agent_workflow_artifacts"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (UniqueConstraint("artifact_id", "submission_id"),)
+    artifact_id: str = Field(primary_key=True)
+    version: int = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    submission_id: str
+    contract: dict | None = Field(default=None, sa_type=JSON)
+    content: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowFile(SQLModel, table=True):
+    """Ready file bytes in system-managed durable storage, without local paths."""
+
+    __tablename__: str = "agent_workflow_files"  # pyright: ignore[reportIncompatibleVariableOverride]
+    file_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    filename: str
+    media_type: str
+    content: bytes = Field(sa_type=LargeBinary)
+
+
+class AgentWorkflowEvent(SQLModel, table=True):
+    """Durable task events committed with the facts they describe."""
+
+    __tablename__: str = "agent_workflow_events"  # pyright: ignore[reportIncompatibleVariableOverride]
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: str = Field(index=True)
+    kind: str
+    data: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentWorkflowMessage(TimestampMixin, SQLModel, table=True):
+    """A scoped member delivery and its atomic context-checkpoint consumption."""
+
+    __tablename__: str = "agent_workflow_messages"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (
+        UniqueConstraint("root_run_id", "sender_member_id", "request_id"),
+    )
+    message_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    scope_id: str
+    sender_member_id: str
+    recipient_member_id: str = Field(index=True)
+    sender_task_run_id: str
+    sender_attempt_id: str
+    request_id: str
+    payload: dict = Field(sa_type=JSON)
+    consumption: dict | None = Field(
+        default=None, sa_column=Column(JSON(none_as_null=True))
+    )
+
+
+class AgentWorkflowProcess(TimestampMixin, SQLModel, table=True):
+    """Complete observed responses/results, independent of execution checkpoints."""
+
+    __tablename__: str = "agent_workflow_process"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    task_id: str
+    attempt_id: str
+    member_id: str
+    kind: str
+    data: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowCheckpoint(SQLModel, table=True):
+    """Latest consistent built-in execution boundary, separate from display history."""
+
+    __tablename__: str = "agent_workflow_checkpoints"  # pyright: ignore[reportIncompatibleVariableOverride]
+    run_id: str = Field(primary_key=True)
+    attempt_id: str
+    phase: str
+    invocation_id: str
+    started_tools: list[str] = Field(default_factory=list, sa_type=JSON)
+    result_submission: bool = False
+    data: dict = Field(sa_type=JSON)
+
+
+class AgentWorkflowToolCall(TimestampMixin, SQLModel, table=True):
+    """Per-call durable intent, result and context position within an attempt."""
+
+    __tablename__: str = "agent_workflow_tool_calls"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    attempt_id: str
+    invocation_id: str
+    call_id: str
+    call_index: int
+    name: str
+    args: dict = Field(sa_type=JSON)
+    status: str = "intent"
+    execution_id: str
+    started_execution_id: str | None = None
+    raw_results: list[dict] = Field(default_factory=list, sa_type=JSON)
+    context_position: int | None = None
+
+
+class AgentWorkflowToolRecovery(SQLModel, table=True):
+    """Declared recovery capability and durable decisions for one original call."""
+
+    __tablename__: str = "agent_workflow_tool_recovery"  # pyright: ignore[reportIncompatibleVariableOverride]
+    record_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    data: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentWorkflowUsage(TimestampMixin, SQLModel, table=True):
+    """Durable delivery receipts; accounting never owns execution state."""
+
+    __tablename__: str = "agent_workflow_usage"  # pyright: ignore[reportIncompatibleVariableOverride]
+    receipt_id: str = Field(primary_key=True)
+    root_run_id: str = Field(index=True)
+    run_id: str = Field(index=True)
+    attempt_id: str
+    invocation_id: str
+    execution_id: str
+    data: dict = Field(sa_type=JSON)
+
+
 class AgentTeam(TimestampMixin, SQLModel, table=True):
     """An Agent Teams team: named members bound to WebChat sessions."""
 
@@ -234,6 +474,16 @@ class AgentTeam(TimestampMixin, SQLModel, table=True):
     members: list = Field(default_factory=list, sa_type=JSON)
     # {failure_policy, reply_timeout, max_rounds, max_parallel, inject_max_length}
     config: dict = Field(default_factory=dict, sa_type=JSON)
+
+
+class AgentLegacyMigration(SQLModel, table=True):
+    """Atomic definition migration receipt, including unresolved source drafts."""
+
+    owner_username: str = Field(primary_key=True, max_length=64)
+    team_id: str = Field(primary_key=True, max_length=32)
+    preview_token: str
+    source_digest: str
+    result: dict = Field(sa_type=JSON)
 
 
 class AgentTeamWorkflow(TimestampMixin, SQLModel, table=True):

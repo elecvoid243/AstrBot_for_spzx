@@ -18,10 +18,21 @@ These paths use the current default sidebar. If you customized it, open `Setting
 | Commands / Command Management | Extensions → Handlers → Command |
 | Standalone MCP / Skills entries | Extensions → MCP Servers / Skills |
 | Custom Rules / Future Tasks / SubAgents | More Features → The corresponding feature |
+| Agent Teams → Members | More Features → Agent Teams → Migrate previous definitions → Assets → Role templates; original conversations remain in Runs → History |
+| Agent Teams → Workflow Editor, Run Monitor | Assets → Workflows → Start Run is the default; New Canvas Workflow opens the versioned editor, and Runs displays frozen snapshots. Resolve owned legacy runs in the top notice first |
+| Workflow Assets → Export workflow JSON / Import workflow package | Assets → Teams / Workflows → Export asset JSON / Import asset package → Validate and preview → Confirm installation; includes exact nested versions and grouped dependencies. Edit Asset / Start Run remain. Upgrades add versions; pending entries cannot run until their dependencies are ready |
+| Legacy members, team definitions and saved workflows → new versioned definitions | Agent Teams → Migrate previous definitions → Preview → Confirm migration → Assets; review pending configuration before starting a fresh run. Read previous runs and long-term member conversations in Runs → History, labelled Legacy engine / Read-only history. Still-live legacy work stays in the previous engine. See [migration steps](./agent-team-workflows.md#preview-and-migrate-previous-definitions) |
+| Previous History / member long-term conversations | Agent Teams → Runs → History → Legacy engine / Read-only history; migrated definitions can prepare a fresh run. The top notice lets original owned runs finish or be explicitly stopped |
+| Legacy autonomous team sidebar / Run Monitor | Versioned autonomous assets: Assets → Teams → New Autonomous Team; Runs → View Run displays dynamic members, task relationships and complete artifacts |
+| Runs → View Run → select task → Continue the same attempt | Compatible remote executors show **Query original remote run**; built-in checkpoint recovery retains **Continue the same attempt**. The action stays in the selected task's details. |
+| New runs only showed waiting reasons | Agent Teams → Assets → Workflows → Edit Asset configures human questions / version approval; Runs → View Run → Human requests handles answers, previews, approvals or rejection and exact-version exports |
 
 Old log, trace, conversation, and statistics URLs still redirect to the corresponding tabs. Agent runners are now saved in each profile; they are no longer created as model providers. See [Agent Runners](./agent-runner.md) for the setup steps.
 
 ## Accessing the Admin Panel
+
+See [Agent Teams role templates](./agent-team-roles.md) for resource bindings, inheritance previews and versioned saving.
+See [Asset and run workspace](./agent-team-workflows.md) for saving, starting and inspecting workflows and task results.
 
 After starting AstrBot, you can access the admin panel by visiting `http://localhost:6185` in your browser.
 
@@ -218,3 +229,5 @@ Modify the `password` in the `dashboard` configuration in the data/cmd_config.js
 
 > [!TIP]
 > For more details, see [FAQ - Forgot Dashboard Password](/en/faq.md#forgot-dashboard-password).
+
+Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Versioned assets are the default; the previous creation and execution workspace is retired. The top notice lists original owned legacy runs, including normal pauses, and blocks new launches until they finish or are explicitly stopped. **Previous History / member long-term conversations → Runs → History** preserves original records. Ownerless unfinished history is shown as interrupted and cannot resume; migrated assets prepare a separate fresh run. See the [asset and run workspace](./agent-team-workflows.md#navigation-and-previous-entry-points) for current screenshots and controls.

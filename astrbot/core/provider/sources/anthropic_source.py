@@ -14,6 +14,10 @@ from anthropic.types.usage import Usage
 from astrbot import logger
 from astrbot.api.provider import Provider
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart
+from astrbot.core.agent_team_execution import (
+    apply_model_output_limit,
+    current_model_usage,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
 from astrbot.core.provider.func_tool_manager import ToolSet
@@ -546,6 +550,8 @@ class ProviderAnthropic(Provider):
         if not isinstance(extra_body, dict):
             # An explicit null or malformed custom body carries nothing to merge.
             extra_body = {}
+        else:
+            extra_body = extra_body.copy()
         # Server-side tools declared in the custom body (e.g. web search on
         # Anthropic-compatible endpoints) must coexist with the registered
         # function tools: extra_body replaces same-named top-level keys,
@@ -567,11 +573,16 @@ class ProviderAnthropic(Provider):
         self._apply_explicit_prompt_cache_breakpoints(payloads)
         self._apply_thinking_config(payloads, llm_params)
         self._sanitize_assistant_messages(payloads)
+        apply_model_output_limit(payloads, "max_tokens", extra_body)
 
         try:
             completion = await retry_provider_request(
                 "Anthropic",
-                lambda: self.client.messages.create(
+                lambda: (
+                    self.client.with_options(max_retries=0)
+                    if current_model_usage.get() is not None
+                    else self.client
+                ).messages.create(
                     **payloads,
                     stream=False,
                     extra_body=extra_body,
@@ -615,7 +626,15 @@ class ProviderAnthropic(Provider):
                 llm_response.tools_call_ids.append(content_block.id)
 
         llm_response.id = completion.id
-        llm_response.usage = self._extract_usage(completion.usage)
+        llm_response.usage = (
+            self._extract_usage(completion.usage)
+            if current_model_usage.get() is None
+            or (
+                getattr(completion.usage, "input_tokens", None) is not None
+                and getattr(completion.usage, "output_tokens", None) is not None
+            )
+            else None
+        )
 
         # Handle cases where completion only contains ThinkingBlock (e.g., MiniMax max_tokens)
         # When stop_reason='max_tokens', the model may return only thinking content
@@ -665,9 +684,13 @@ class ProviderAnthropic(Provider):
         final_tool_calls = []
         id = None
         usage = TokenUsage()
+        usage_input_received = False
+        usage_output_received = False
         extra_body = self.provider_config.get("custom_extra_body") or {}
         if not isinstance(extra_body, dict):
             extra_body = {}
+        else:
+            extra_body = extra_body.copy()
         # See _query: custom server-side tools must not replace the
         # registered function tools, and a name collision overrides
         # instead of duplicating.
@@ -687,10 +710,15 @@ class ProviderAnthropic(Provider):
         self._apply_explicit_prompt_cache_breakpoints(payloads)
         self._apply_thinking_config(payloads, llm_params)
         self._sanitize_assistant_messages(payloads)
+        apply_model_output_limit(payloads, "max_tokens", extra_body)
 
         async with retry_provider_request_context(
             "Anthropic",
-            lambda: self.client.messages.stream(
+            lambda: (
+                self.client.with_options(max_retries=0)
+                if current_model_usage.get() is not None
+                else self.client
+            ).messages.stream(
                 **payloads,
                 extra_body=extra_body,
                 extra_headers=build_conversation_headers(conversation_id),
@@ -703,6 +731,9 @@ class ProviderAnthropic(Provider):
                     # the usage contains input token usage
                     id = event.message.id
                     usage = self._extract_usage(event.message.usage)
+                    usage_input_received = (
+                        getattr(event.message.usage, "input_tokens", None) is not None
+                    )
                 if event.type == "content_block_start":
                     if event.content_block.type == "text":
                         # 文本块开始
@@ -799,6 +830,9 @@ class ProviderAnthropic(Provider):
                         del tool_use_buffer[event.index]
 
                 elif event.type == "message_delta":
+                    usage_output_received = (
+                        getattr(event.usage, "output_tokens", None) is not None
+                    )
                     if event.usage:
                         self._update_usage(usage, event.usage)
 
@@ -807,7 +841,10 @@ class ProviderAnthropic(Provider):
             role="assistant",
             completion_text=final_text,
             is_chunk=False,
-            usage=usage,
+            usage=usage
+            if current_model_usage.get() is None
+            or (usage_input_received and usage_output_received)
+            else None,
             id=id,
             reasoning_content=reasoning_content,
             reasoning_signature=reasoning_signature or None,

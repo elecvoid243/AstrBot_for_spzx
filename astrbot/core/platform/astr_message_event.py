@@ -480,12 +480,15 @@ class AstrMessageEvent(abc.ABC):
 
     """平台适配器"""
 
-    async def send(self, message: MessageChain) -> None:
-        """发送消息到消息平台。
+    async def send(self, message: MessageChain) -> bool | None:
+        """Send a message and allow adapters to report a declined delivery.
 
         Args:
-            message (MessageChain): 消息链，具体使用方式请参考文档。
+            message: Message content.
 
+        Returns:
+            An optional adapter acceptance result; legacy implementations return
+            None. False must not be treated as a successful durable delivery.
         """
         # Leverage BLAKE2 hash function to generate a non-reversible hash of the sender ID for privacy.
         hash_obj = hashlib.blake2b(self.get_sender_id().encode("utf-8"), digest_size=16)

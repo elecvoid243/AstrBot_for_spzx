@@ -8097,7 +8097,8 @@
         "tags": [
           "AgentTeams"
         ],
-        "summary": "Start a run (409 when the team already has an active run)",
+        "summary": "Retired legacy launch; start a versioned asset run",
+        "deprecated": true,
         "operationId": "startAgentTeamRun",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -8116,10 +8117,7 @@
           }
         },
         "responses": {
-          "200": {
-            "$ref": "#/components/responses/Ok"
-          },
-          "409": {
+          "410": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -8168,7 +8166,7 @@
         "tags": [
           "AgentTeams"
         ],
-        "summary": "Resume a paused or interrupted run",
+        "summary": "Continue an owned paused legacy run; lost owners cannot resume",
         "operationId": "resumeAgentTeamRun",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -8179,6 +8177,9 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
           }
         },
         "description": "**Required scope:** `chat`"
@@ -8351,6 +8352,12 @@
   },
   "components": {
     "securitySchemes": {
+      "ChatBrowserSession": {
+        "type": "apiKey",
+        "description": "Browser-only credential confirmed by the initiating sender in the original chat.",
+        "in": "header",
+        "name": "X-AstrBot-Chat-Session"
+      },
       "ApiKeyAuth": {
         "type": "apiKey",
         "in": "header",

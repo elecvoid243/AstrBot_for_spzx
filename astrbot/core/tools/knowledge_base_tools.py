@@ -42,12 +42,27 @@ async def retrieve_knowledge_base(
     umo: str,
     context: Context,
 ) -> str | None:
-    """Retrieve knowledge base context for the given query."""
+    """Retrieve knowledge using the active role or conversation selection.
+
+    Args:
+        query: Search text.
+        umo: Conversation origin.
+        context: Main agent context containing configuration and knowledge bases.
+
+    Returns:
+        Retrieved context, or None when no relevant knowledge is available.
+    """
+    from astrbot.core.agent_team_execution import current_team_execution
+
     kb_mgr = context.kb_manager
     config = context.get_config(umo=umo)
 
     session_config = await sp.session_get(umo, "kb_config", default={})
-    if session_config and "kb_ids" in session_config:
+    execution = current_team_execution.get()
+    if execution and execution.umo == umo and execution.kb_names is not None:
+        kb_names = execution.kb_names
+        top_k = config.get("kb_final_top_k", 5)
+    elif session_config and "kb_ids" in session_config:
         kb_ids = session_config.get("kb_ids", [])
         if not kb_ids:
             logger.info(f"[知识库] 会话 {umo} 已被配置为不使用知识库")

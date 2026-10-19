@@ -6022,7 +6022,8 @@ paths:
           $ref: "#/components/responses/Ok"
     post:
       tags: [AgentTeams]
-      summary: Start a run (409 when the team already has an active run)
+      summary: Retired legacy launch; start a versioned asset run
+      deprecated: true
       operationId: startAgentTeamRun
       x-astrbot-scope: chat
       parameters:
@@ -6034,9 +6035,7 @@ paths:
             schema:
               $ref: "#/components/schemas/AgentTeamRunStartPayload"
       responses:
-        "200":
-          $ref: "#/components/responses/Ok"
-        "409":
+        "410":
           $ref: "#/components/responses/Error"
 
   /api/v1/agent_teams/runs/active:
@@ -6064,7 +6063,7 @@ paths:
   /api/v1/agent_teams/runs/{run_id}/resume:
     post:
       tags: [AgentTeams]
-      summary: Resume a paused or interrupted run
+      summary: Continue an owned paused legacy run; lost owners cannot resume
       operationId: resumeAgentTeamRun
       x-astrbot-scope: chat
       parameters:
@@ -6072,6 +6071,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+        "410":
+          $ref: "#/components/responses/Error"
 
   /api/v1/agent_teams/runs/{run_id}/stop:
     post:
@@ -6163,8 +6164,1549 @@ paths:
               schema:
                 type: string
 
+  /api/v1/agent_roles:
+    get:
+      tags:
+      - AgentTeams
+      summary: List reusable role templates
+      operationId: listRoleAssets
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+    post:
+      tags:
+      - AgentTeams
+      summary: Save a role without creating a member session
+      operationId: createRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+  /api/v1/agent_roles/resources:
+    get:
+      tags:
+      - AgentTeams
+      summary: List local resources without credentials
+      operationId: getRoleResources
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+  /api/v1/agent_roles/preview:
+    post:
+      tags:
+      - AgentTeams
+      summary: Preview effective configuration without saving
+      operationId: previewRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+  /api/v1/agent_roles/{role_id}:
+    get:
+      tags:
+      - AgentTeams
+      summary: Read a pinned or latest role version
+      operationId: getRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+    put:
+      tags:
+      - AgentTeams
+      summary: Append a role version, preserving history
+      operationId: reviseRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/v1/agent_roles/{role_id}/resolve:
+    post:
+      tags:
+      - AgentTeams
+      summary: Resolve a pinned role with optional task overrides
+      operationId: resolveRoleAsset
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          description: Role validation or ownership error
+        '404':
+          description: Role validation or ownership error
+        '409':
+          description: Stale role version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleOverrides'
+      parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: query
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+
+  /api/v1/workflow_chat_runs/{run_id}/connection:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Open Chat Browser
+      description: "Create an unconfirmed browser challenge with no Dashboard authorization.\n\
+        \nArgs:\n    run_id: Existing chat invocation root.\n    service: Shared application\
+        \ service.\n\nReturns:\n    A browser credential and source confirmation command,\
+        \ without run content."
+      operationId: open_chat_browser_api_v1_workflow_chat_runs__run_id__connection_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Chat Browser Status
+      description: "Poll source confirmation using the browser-only secret.\n\nArgs:\n\
+        \    run_id: Root run to which this connection is restricted.\n    credential:\
+        \ Browser-only session confirmed through the original source.\n    service:\
+        \ Shared application service.\n\nReturns:\n    Confirmation state without private\
+        \ execution data."
+      operationId: chat_browser_status_api_v1_workflow_chat_runs__run_id__connection_get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Chat Run
+      description: "Read the confirmed initiator's restricted view of the original run.\n\
+        \nArgs:\n    run_id: Root chat invocation.\n    credential: Browser-only session\
+        \ confirmed through the original source.\n    service: Shared application service.\n\
+        \nReturns:\n    Safe status, final result and explicit human prompts from the\
+        \ same run."
+      operationId: get_chat_run_api_v1_workflow_chat_runs__run_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/answer:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Answer Chat Todo
+      description: "Save a source-authenticated answer to the existing persistent request.\n\
+        \nArgs:\n    run_id: Root chat invocation.\n    todo_id: Existing request in\
+        \ that root.\n    credential: Browser-only session confirmed through the original\
+        \ source.\n    payload: Shared validated answer or explicit version decision.\n\
+        \    service: Shared application service.\n\nReturns:\n    Restricted progress\
+        \ after the shared service accepts the answer."
+      operationId: answer_chat_todo_api_v1_workflow_chat_runs__run_id__todos__todo_id__answer_post
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanAnswerRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Chat Approval
+      description: "Preview only the version selected by this initiator's approval request.\n\
+        \nArgs:\n    run_id: Original invocation root.\n    todo_id: Existing approval\
+        \ request selecting the artifact version.\n    credential: Browser-only session\
+        \ confirmed through the original source.\n    service: Shared application service.\n\
+        \nReturns:\n    The requested review content without arbitrary artifact access."
+      operationId: preview_chat_approval_api_v1_workflow_chat_runs__run_id__todos__todo_id__artifact_get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/todos/{todo_id}/artifact/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Chat Approval File
+      description: "Preview a file declared by the exact requested approval version.\n\
+        \nArgs:\n    run_id: Original invocation root.\n    todo_id: Existing approval\
+        \ request selecting the artifact version.\n    file_id: Managed file declared\
+        \ by that exact version.\n    credential: Browser-only session confirmed through\
+        \ the original source.\n    service: Shared application service.\n\nReturns:\n\
+        \    Restricted preview bytes; this route grants no export or download action."
+      operationId: preview_chat_approval_file_api_v1_workflow_chat_runs__run_id__todos__todo_id__artifact_files__file_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_chat_runs/{run_id}/result/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Chat Result File
+      description: "Preview or download a file explicitly published in the completed\
+        \ root result.\n\nArgs:\n    run_id: Original completed chat invocation.\n \
+        \   file_id: File declared by the exact published result version.\n    download:\
+        \ Use an attachment response instead of an inline preview.\n    credential:\
+        \ Browser-only session confirmed through the original source.\n    service:\
+        \ Shared application service.\n\nReturns:\n    Scoped final file bytes without\
+        \ arbitrary artifact or owner access."
+      operationId: get_chat_result_file_api_v1_workflow_chat_runs__run_id__result_files__file_id__get
+      security:
+      - ChatBrowserSession: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Assets
+      operationId: list_assets_api_v1_workflow_assets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Save Asset
+      operationId: save_asset_api_v1_workflow_assets_post
+      parameters:
+      - name: asset_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowSaveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Asset
+      operationId: get_asset_api_v1_workflow_assets__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Agent Teams workflows
+      summary: Save Asset
+      operationId: save_asset_api_v1_workflow_assets__asset_id__put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowSaveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/chat_access:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Chat Access
+      description: "List the asset owner's explicit local platform grants.\n\nArgs:\n\
+        \    asset_id: Owned asset identity.\n    username: Authenticated Dashboard\
+        \ owner.\n    service: Shared application service.\n\nReturns:\n    Local chat\
+        \ grants or an ownership error."
+      operationId: list_chat_access_api_v1_workflow_assets__asset_id__chat_access_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Agent Teams workflows
+      summary: Save Chat Access
+      description: "Open one fixed version and result conversation to an exact platform\
+        \ sender.\n\nArgs:\n    asset_id: Owned asset identity.\n    payload: Caller,\
+        \ source conversation, source profile and fixed version.\n    username: Authenticated\
+        \ Dashboard owner.\n    service: Shared application service.\n\nReturns:\n \
+        \   Saved local grant or an ownership/validation error."
+      operationId: save_chat_access_api_v1_workflow_assets__asset_id__chat_access_put
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatAccessRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/chat_access/{platform_id}/{sender_id}:
+    delete:
+      tags:
+      - Agent Teams workflows
+      summary: Revoke Chat Access
+      description: "Revoke subsequent platform execution and result delivery.\n\nArgs:\n\
+        \    asset_id: Owned asset identity.\n    platform_id: Exact platform instance.\n\
+        \    sender_id: Exact sender on that instance.\n    username: Authenticated\
+        \ Dashboard owner.\n    service: Shared application service.\n\nReturns:\n \
+        \   Empty success or an ownership error."
+      operationId: revoke_chat_access_api_v1_workflow_assets__asset_id__chat_access__platform_id___sender_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: platform_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Platform Id
+      - name: sender_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Sender Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/runs:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Start Run
+      operationId: start_run_api_v1_workflow_assets__asset_id__runs_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowStartRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Runs
+      description: |-
+        List run overviews without complete configuration, results or process history.
+
+        Args:
+            limit: Maximum number of recent root runs.
+            username: Authenticated owner.
+            service: Shared public run service.
+
+        Returns:
+            Goal previews of at most 200 characters, statuses, task progress, waiting
+            reasons, attempts and artifact entries. Complete input values are omitted.
+            Read a selected run's detail for complete frozen inputs and saved records.
+      operationId: list_runs_api_v1_workflow_runs_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Run
+      description: Complete task details include scoped member messages with sender, recipient, source task and attempt, exact artifact references, and durable consumption context positions. Overview queries omit message content.
+      operationId: get_run_api_v1_workflow_runs__run_id__get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/tool_calls/{record_id}/resolve:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Resolve Tool Call
+      description: "Record an explicit decision with evidence before resuming an uncertain\
+        \ call.\n\nArgs:\n    run_id: Original affected task run.\n    record_id: Durable\
+        \ tool invocation requiring confirmation.\n    payload: Unique decision identity,\
+        \ chosen action, evidence and observed result.\n    username: Authenticated\
+        \ owner of the original task.\n    service: Shared durable run service.\n\n\
+        Returns:\n    Current task detail, preserving the original call and replacement\
+        \ association."
+      operationId: resolve_tool_call_api_v1_workflow_runs__run_id__tool_calls__record_id__resolve_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: record_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Record Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolResolutionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/events:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Events
+      description: "Read committed changes for reconnecting run observers.\n\nArgs:\n\
+        \    run_id: Persisted run or graph identity.\n    after: Last successfully\
+        \ applied event cursor.\n    username: Authenticated owner.\n    service: Shared\
+        \ public run service.\n\nReturns:\n    Changed events with a complete consistent snapshot, or a complete reset\n    snapshot for an expired cursor. An unchanged cursor returns no snapshot\n    without reading saved process history."
+      operationId: get_events_api_v1_workflow_runs__run_id__events_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: After
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/control:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Control Run
+      description: "Persist pause, continue or cancellation for the entire existing\
+        \ run.\n\nArgs:\n    run_id: Root run whose child tasks share admission and\
+        \ cancellation.\n    payload: Idempotent decision and optional observed control\
+        \ revision.\n    username: Authenticated owner.\n    service: Core-owned public\
+        \ run service.\n\nReturns:\n    Persisted control and progress; in-flight external\
+        \ effects are not undone."
+      operationId: control_run_api_v1_workflow_runs__run_id__control_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowControlRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/retry:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Retry Task
+      description: "Explicitly retry a failed task with its original frozen input references.\n\
+        \nArgs:\n    run_id: Failed task within the root run or an existing workflow.\n\
+        \    payload: Idempotent request with the failed attempt and input policy.\n\
+        \    username: Authenticated owner.\n    service: Core-owned public run service.\n\
+        \nReturns:\n    New attempt and preserved failure history; uncertain tools require\
+        \ resolution."
+      operationId: retry_task_api_v1_workflow_runs__run_id__retry_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowRetryRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/recover:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Recover Run
+      description: "Continue the same attempt from saved model and per-tool boundaries.\n\
+        \nArgs:\n    run_id: Interrupted task; no new attempt or iteration is created.\n\
+        \    username: Authenticated owner of the original run.\n    service: Shared\
+        \ public run service.\n\nReturns:\n    Persisted progress with per-call intents, results, context positions and\n\
+        \    execution ownership. Saved results are reused, unstarted calls may run,\n\
+        \    and unknown effects require confirmation. Contracted submissions finish\n\
+        \    through the existing idempotent result protocol."
+      operationId: recover_run_api_v1_workflow_runs__run_id__recover_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/result:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get Result
+      operationId: get_result_api_v1_workflow_runs__run_id__result_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Read Artifact
+      description: "Read complete immutable content for the authenticated owner.\n\nArgs:\n    artifact_id: Stable output identity.\n    version: Exact version to read.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Complete result content or a structured access error."
+      operationId: read_artifact_api_v1_workflow_artifacts__artifact_id__versions__version__get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Revise Artifact
+      description: "Create an explicit version without scheduling downstream work.\n\nArgs:\n    artifact_id: Output identity to revise.\n    payload: Validated revision request envelope.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Exact version reference or structured field errors."
+      operationId: revise_artifact_api_v1_workflow_artifacts__artifact_id__versions_post
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactRevisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/files:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Store File
+      description: "Store a ready file body for submission or an explicit revision.\n\nArgs:\n    run_id: Owning output run.\n    request: Raw complete file body.\n    filename: Display filename, without a local directory.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Stable file metadata or a readiness error."
+      operationId: store_file_api_v1_workflow_runs__run_id__files_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: filename
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+          title: Filename
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}/files/{file_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get File
+      description: "Preview or download a file belonging to a specific committed version.\n\nArgs:\n    artifact_id: Stable output identity.\n    version: Exact committed version.\n    file_id: Managed file reference declared in that version.\n    download: Whether the browser should save the file.\n    username: Authenticated owner.\n    service: Core-owned public service.\n\nReturns:\n    Complete bytes and safe display headers, or an access error."
+      operationId: get_file_api_v1_workflow_artifacts__artifact_id__versions__version__files__file_id__get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Id
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_runs/{run_id}/todos/{todo_id}/answer:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Answer Todo
+      description: "Save a response to a frozen human request, including while paused.\n\
+        \nArgs:\n    run_id: Root run owned by the authenticated user.\n    todo_id:\
+        \ Persistent human request identity.\n    payload: Idempotent answer or approval/rejection\
+        \ with feedback.\n    username: Authenticated owner.\n    service: Shared application\
+        \ service.\n\nReturns:\n    Persisted run with the saved response and its consumption\
+        \ state."
+      operationId: answer_todo_api_v1_workflow_runs__run_id__todos__todo_id__answer_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: todo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Todo Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HumanAnswerRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_artifacts/{artifact_id}/versions/{version}/export:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Export Artifact
+      description: "Read an approved immutable version for delivery.\n\nArgs:\n    artifact_id:\
+        \ Stable artifact identity.\n    version: Exact approved version.\n    username:\
+        \ Authenticated owner.\n    service: Shared application service.\n\nReturns:\n\
+        \    Full approved content and exact file references, or an access error."
+      operationId: export_artifact_api_v1_workflow_artifacts__artifact_id__versions__version__export_get
+      parameters:
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/readiness:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Check Readiness
+      description: "Check required local runner capabilities without creating execution.\n\
+        \nArgs:\n    asset_id: Saved team or workflow identity.\n    version: Pinned\
+        \ definition version, or latest when omitted.\n    username: Authenticated owner.\n\
+        \    service: Shared asset and run service.\n\nReturns:\n    Readiness and field-level\
+        \ blocking reasons used by launch."
+      operationId: check_readiness_api_v1_workflow_assets__asset_id__readiness_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/{asset_id}/export:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Export Asset
+      description: "Download a validated definition package without local installation data.\n\
+        \nArgs:\n    asset_id: Workflow owned by the authenticated user.\n    version: Exact\
+        \ definition version, or latest.\n    username: Authenticated owner.\n    service: Shared\
+        \ public asset service.\n\nReturns:\n    Portable JSON content or field-specific errors."
+      operationId: export_asset_api_v1_workflow_assets__asset_id__export_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      - name: version
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/import/preview:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Preview Import
+      description: "Validate untrusted definitions before showing compatible local candidates.\n\
+        \nArgs:\n    payload: Package and optional deliberate local resource selections.\n \
+        \   username: Authenticated installing owner.\n    service: Shared public asset service.\n\
+        \nReturns:\n    Grouped dependency choices, issues and existing-installation identity."
+      operationId: preview_import_api_v1_workflow_assets_import_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_assets/import:
+    post:
+      tags:
+      - Agent Teams workflows
+      summary: Import Asset
+      description: "Confirm one atomic installation or retain a non-runnable pending asset.\n\
+        \nArgs:\n    payload: Package, reviewed local choices and pending-save preference.\n\
+        \    username: Authenticated installing owner; package content grants no rights.\n \
+        \   service: Shared public asset service.\n\nReturns:\n    The installed or existing\
+        \ workflow without creating any execution."
+      operationId: import_asset_api_v1_workflow_assets_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_teams/{team_id}/migration/preview:
+    get:
+      tags:
+      - Agent Teams
+      summary: Preview Legacy Migration
+      description: "Preview definitions, effective roles, mappings and unresolved legacy\
+        \ items.\n\nArgs:\n    team_id: Legacy team owned by the current user.\n   \
+        \ request: Dashboard request carrying shared application services.\n    username:\
+        \ Authenticated owner; migration grants no additional access.\n\nReturns:\n\
+        \    A read-only proposal, active legacy run list and confirmation token."
+      operationId: preview_legacy_migration_api_v1_agent_teams__team_id__migration_preview_get
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Team Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_teams/{team_id}/migration:
+    post:
+      tags:
+      - Agent Teams
+      summary: Confirm Legacy Migration
+      description: "Atomically migrate the reviewed definitions without starting execution.\n\
+        \nArgs:\n    team_id: Legacy team owned by the current user.\n    payload: Reviewed\
+        \ token and explicit pending-save preference.\n    request: Dashboard request\
+        \ carrying shared application services.\n    username: Authenticated legacy\
+        \ and new asset owner.\n\nReturns:\n    Durable old-to-new identities, pending\
+        \ items and reuse status."
+      operationId: confirm_legacy_migration_api_v1_agent_teams__team_id__migration_post
+      parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Team Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegacyMigrationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent_history:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List History
+      description: "Page owned v2 runs, legacy runs and legacy member conversations.\n\
+        \nArgs:\n    limit: Maximum records in one page.\n    offset: Number of records\
+        \ already read.\n    username: Actual authenticated Dashboard user.\n    service:\
+        \ Shared history query boundary.\n\nReturns:\n    Source-labelled overviews\
+        \ without full results or process content."
+      operationId: list_history_api_v1_agent_history_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/agent_history/{kind}/{identity}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get History Record
+      description: "Read an original source without offering legacy execution controls.\n\
+        \nArgs:\n    kind: Source discriminator, never inferred from an overlapping\
+        \ ID.\n    identity: Original source identity.\n    offset: First long-term\
+        \ conversation message to read.\n    limit: Maximum long-term messages in one\
+        \ page.\n    username: Actual authenticated Dashboard user.\n    service: Shared\
+        \ history query boundary.\n\nReturns:\n    Original content and source links,\
+        \ or an ownership error."
+      operationId: get_history_record_api_v1_agent_history__kind___identity__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - v2_run
+          - legacy_run
+          - legacy_conversation
+          type: string
+          title: Kind
+      - name: identity
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Identity
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
+  /api/v1/agent_history/legacy_run/{identity}/members/{member_id}:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: Get History Process
+      description: "Read original legacy transcript rows, including their stored source\
+        \ IDs.\n\nArgs:\n    identity: Original legacy run identity.\n    member_id:\
+        \ Original member identity in that run.\n    before_id: Exclusive original transcript\
+        \ cursor.\n    limit: Maximum rows in one page.\n    username: Actual authenticated\
+        \ Dashboard user.\n    service: Shared history query boundary.\n\nReturns:\n\
+        \    Chronological original rows and an optional older-page cursor."
+      operationId: get_history_process_api_v1_agent_history_legacy_run__identity__members__member_id__get
+      parameters:
+      - name: identity
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Identity
+      - name: member_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Member Id
+      - name: before_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Before Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - BearerAuth: []
 components:
   securitySchemes:
+    ChatBrowserSession:
+      type: apiKey
+      description: Browser-only credential confirmed by the initiating sender in the original
+        chat.
+      in: header
+      name: X-AstrBot-Chat-Session
     ApiKeyAuth:
       type: apiKey
       in: header
@@ -6405,6 +7947,41 @@ components:
       schema: { type: string }
 
   schemas:
+    MigrationState:
+      additionalProperties: false
+      description: Unresolved legacy semantics retained until a reviewed definition version.
+      properties:
+        issues:
+          items:
+            additionalProperties: true
+            type: object
+          title: Issues
+          type: array
+        source:
+          additionalProperties: true
+          title: Source
+          type: object
+      required:
+      - issues
+      - source
+      title: MigrationState
+      type: object
+    LegacyMigrationRequest:
+      properties:
+        preview_token:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Preview Token
+        save_pending:
+          type: boolean
+          title: Save Pending
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - preview_token
+      title: LegacyMigrationRequest
+      description: Confirm exactly the reviewed definition proposal, optionally pending.
     RuntimeInfo:
       type: object
       description: The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.
@@ -7891,3 +9468,1345 @@ components:
         mode: { type: string, enum: [auto, dag] }
         input: { type: string }
         workflow_id: { type: [string, "null"] }
+
+    RoleDefinition:
+      additionalProperties: false
+      description: Portable role content; resource names refer to logical slots.
+      properties:
+        migration:
+          anyOf:
+          - $ref: '#/components/schemas/MigrationState'
+          - type: 'null'
+          default: null
+        prompt:
+          anyOf:
+          - maxLength: 100000
+            type: string
+          - type: 'null'
+          default: null
+          title: Prompt
+        tools:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Tools
+        skills:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Skills
+        knowledge_bases:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Knowledge Bases
+        max_steps:
+          anyOf:
+          - maximum: 200
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Steps
+        tool_call_timeout:
+          anyOf:
+          - exclusiveMinimum: 0
+            maximum: 3600
+            type: number
+          - type: 'null'
+          default: null
+          title: Tool Call Timeout
+        context_length:
+          anyOf:
+          - maximum: 1000000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Context Length
+        max_instances:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Instances
+        max_parallel:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Parallel
+        max_iterations:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Iterations
+        max_depth:
+          anyOf:
+          - maximum: 20
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Depth
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        description:
+          default: ''
+          maxLength: 2000
+          title: Description
+          type: string
+        model_slot:
+          default: model
+          maxLength: 128
+          minLength: 1
+          title: Model Slot
+          type: string
+        persona_slot:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Persona Slot
+        model_capabilities:
+          items:
+            enum:
+            - tool_use
+            - image
+            - audio
+            type: string
+          title: Model Capabilities
+          type: array
+        runner_capabilities:
+          items:
+            enum:
+            - internal_checkpoint
+            - remote_query
+            - task_tools
+            - task_result
+            type: string
+          title: Runner Capabilities
+          type: array
+      required:
+      - name
+      title: RoleDefinition
+      type: object
+    RoleInstallation:
+      additionalProperties: false
+      description: Machine-local configuration stored separately from the definition.
+      properties:
+        profile_id:
+          default: default
+          maxLength: 128
+          minLength: 1
+          title: Profile Id
+          type: string
+        bindings:
+          additionalProperties:
+            maxLength: 128
+            minLength: 1
+            type: string
+          propertyNames:
+            maxLength: 128
+            minLength: 1
+          title: Bindings
+          type: object
+      title: RoleInstallation
+      type: object
+    RoleSaveRequest:
+      additionalProperties: false
+      description: A complete replacement definition and its local installation.
+      properties:
+        definition:
+          $ref: '#/components/schemas/RoleDefinition'
+        installation:
+          $ref: '#/components/schemas/RoleInstallation'
+        expected_version:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Expected Version
+      required:
+      - definition
+      title: RoleSaveRequest
+      type: object
+    RoleOverrides:
+      additionalProperties: false
+      description: Optional configuration; null inherits and an empty list disables.
+      properties:
+        prompt:
+          anyOf:
+          - maxLength: 100000
+            type: string
+          - type: 'null'
+          default: null
+          title: Prompt
+        tools:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Tools
+        skills:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Skills
+        knowledge_bases:
+          anyOf:
+          - items:
+              maxLength: 128
+              minLength: 1
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Knowledge Bases
+        max_steps:
+          anyOf:
+          - maximum: 200
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Steps
+        tool_call_timeout:
+          anyOf:
+          - exclusiveMinimum: 0
+            maximum: 3600
+            type: number
+          - type: 'null'
+          default: null
+          title: Tool Call Timeout
+        context_length:
+          anyOf:
+          - maximum: 1000000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Context Length
+        max_instances:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Instances
+        max_parallel:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Parallel
+        max_iterations:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Iterations
+        max_depth:
+          anyOf:
+          - maximum: 20
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Depth
+      title: RoleOverrides
+      type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    RunLimits:
+      properties:
+        max_steps:
+          anyOf:
+          - type: integer
+            maximum: 100000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Steps
+        max_members:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Members
+        max_iterations:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Iterations
+        token_budget:
+          anyOf:
+          - type: integer
+            maximum: 1000000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Token Budget
+        max_output_tokens:
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Output Tokens
+      additionalProperties: false
+      type: object
+      title: RunLimits
+      description: Optional whole-scope ceilings; nested scopes also obey their ancestors.
+    WorkflowDefinition:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+        role_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+        role_version:
+          type: integer
+          minimum: 1.0
+          title: Role Version
+        task:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Task
+        required_inputs:
+          items:
+            type: string
+          type: array
+          maxItems: 30
+          title: Required Inputs
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Output Contract
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - role_id
+      - role_version
+      - task
+      title: WorkflowDefinition
+      description: A single task with a pinned role and declared input/output contracts.
+    FieldCondition:
+      additionalProperties: false
+      description: A typed comparison against the source task's validated output.
+      properties:
+        field:
+          maxLength: 256
+          minLength: 1
+          title: Field
+          type: string
+        operator:
+          default: eq
+          enum:
+          - eq
+          - ne
+          - gt
+          - ge
+          - lt
+          - le
+          title: Operator
+          type: string
+        value:
+          anyOf:
+          - type: string
+          - type: boolean
+          - type: integer
+          - type: number
+          - type: 'null'
+          title: Value
+      required:
+      - field
+      - value
+      title: FieldCondition
+      type: object
+    GraphDefinition:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+        required_inputs:
+          items:
+            type: string
+          type: array
+          maxItems: 30
+          title: Required Inputs
+        max_parallel:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Parallel
+          default: 4
+        max_depth:
+          type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Depth
+          default: 3
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
+        tasks:
+          items:
+            $ref: '#/components/schemas/GraphTask'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Tasks
+        edges:
+          items:
+            $ref: '#/components/schemas/GraphEdge'
+          type: array
+          maxItems: 500
+          title: Edges
+        loops:
+          items:
+            $ref: '#/components/schemas/GraphLoop'
+          type: array
+          maxItems: 30
+          title: Loops
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - tasks
+      title: GraphDefinition
+      description: A bounded, versioned workflow graph with persisted editor layout.
+    GraphEdge:
+      additionalProperties: false
+      description: A required dependency, optionally activated by a field condition.
+      properties:
+        source:
+          title: Source
+          type: string
+        target:
+          title: Target
+          type: string
+        condition:
+          anyOf:
+          - $ref: '#/components/schemas/FieldCondition'
+          - type: 'null'
+          default: null
+      required:
+      - source
+      - target
+      title: GraphEdge
+      type: object
+    GraphTask:
+      additionalProperties: false
+      description: A task bound to a named member instance with a fixed role version.
+      properties:
+        id:
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-zA-Z][\w-]*$
+          title: Id
+          type: string
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        member:
+          default: ''
+          maxLength: 128
+          title: Member
+          type: string
+        role_id:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Role Id
+        role_version:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Role Version
+        task:
+          default: ''
+          maxLength: 100000
+          title: Task
+          type: string
+        human:
+          anyOf:
+          - $ref: '#/components/schemas/HumanTask'
+          - type: 'null'
+          default: null
+        team:
+          anyOf:
+          - $ref: '#/components/schemas/TeamCall'
+          - type: 'null'
+          default: null
+        workflow:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowCall'
+          - type: 'null'
+          default: null
+        inputs:
+          additionalProperties:
+            $ref: '#/components/schemas/TaskInput'
+          maxProperties: 30
+          title: Inputs
+          type: object
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Output Contract
+        position:
+          additionalProperties:
+            type: number
+          propertyNames:
+            enum:
+            - x
+            - y
+          title: Position
+          type: object
+      required:
+      - id
+      - name
+      title: GraphTask
+      type: object
+
+    TaskInput:
+      additionalProperties: false
+      description: A declared workflow input or an upstream validated result field.
+      properties:
+        input:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Input
+        task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Task Id
+        field:
+          default: text
+          title: Field
+          type: string
+      title: TaskInput
+      type: object
+    WorkflowSaveRequest:
+      additionalProperties: false
+      description: Create an asset or append an immutable version using optimistic locking.
+      properties:
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
+          title: Definition
+        expected_version:
+          anyOf:
+          - minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Expected Version
+      required:
+      - definition
+      title: WorkflowSaveRequest
+      type: object
+    ToolResolutionRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - retry
+          - confirm_result
+          - confirm_failure
+          - reconcile
+          title: Action
+        evidence:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Evidence
+        result:
+          anyOf:
+          - type: string
+            maxLength: 1000000
+            minLength: 1
+          - type: 'null'
+          title: Result
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      - evidence
+      title: ToolResolutionRequest
+      description: An explicit, evidenced decision about an uncertain external effect.
+    WorkflowControlRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - pause
+          - continue
+          - cancel
+          title: Action
+        expected_revision:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Revision
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      title: WorkflowControlRequest
+      description: Idempotent whole-run decision, optionally conditional on its revision.
+    WorkflowRetryRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        attempt_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Attempt Id
+        input_policy:
+          type: string
+          const: original
+          title: Input Policy
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - attempt_id
+      - input_policy
+      title: WorkflowRetryRequest
+      description: Explicit new attempt using the failed attempt's exact frozen inputs.
+    ChatAccessRequest:
+      properties:
+        platform_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Platform Id
+        sender_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Sender Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        profile_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Profile Id
+        source:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - platform_id
+      - sender_id
+      - version
+      - profile_id
+      - source
+      title: ChatAccessRequest
+      description: A deliberate local grant; importing an asset never grants access.
+    WorkflowStartRequest:
+      properties:
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        inputs:
+          additionalProperties:
+            type: string
+          type: object
+          title: Inputs
+        source:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Source
+          default: dashboard
+        input_artifacts:
+          items:
+            $ref: '#/components/schemas/ArtifactReference'
+          type: array
+          maxItems: 30
+          title: Input Artifacts
+      additionalProperties: false
+      type: object
+      required:
+      - version
+      title: WorkflowStartRequest
+      description: Start a pinned version with explicit inputs and source identity.
+    ArtifactReference:
+      properties:
+        artifact_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Artifact Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+      additionalProperties: false
+      type: object
+      required:
+      - artifact_id
+      - version
+      title: ArtifactReference
+      description: An exact immutable artifact version; latest is never inferred.
+    ArtifactRevisionRequest:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        content:
+          additionalProperties: true
+          type: object
+          title: Content
+      additionalProperties: false
+      type: object
+      required:
+      - expected_version
+      - request_id
+      - content
+      title: ArtifactRevisionRequest
+      description: Explicit, idempotent revision without downstream scheduling effects.
+    HumanTask:
+      properties:
+        kind:
+          type: string
+          enum:
+          - question
+          - approval
+          title: Kind
+        question:
+          type: string
+          maxLength: 100000
+          minLength: 1
+          title: Question
+        choices:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Choices
+        max_length:
+          type: integer
+          maximum: 100000.0
+          minimum: 1.0
+          title: Max Length
+          default: 10000
+        artifact_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Artifact Task Id
+        artifact_version:
+          type: integer
+          minimum: 1.0
+          title: Artifact Version
+          default: 1
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - question
+      title: HumanTask
+      description: A frozen question or approval of one upstream artifact version.
+    HumanAnswerRequest:
+      properties:
+        request_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Request Id
+        action:
+          type: string
+          enum:
+          - answer
+          - approve
+          - reject
+          title: Action
+        answer:
+          anyOf:
+          - type: string
+            maxLength: 100000
+            minLength: 1
+          - type: 'null'
+          title: Answer
+        feedback:
+          anyOf:
+          - type: string
+            maxLength: 100000
+            minLength: 1
+          - type: 'null'
+          title: Feedback
+      additionalProperties: false
+      type: object
+      required:
+      - request_id
+      - action
+      title: HumanAnswerRequest
+      description: Idempotent answer or explicit version decision with rejection feedback.
+    GraphLoop:
+      additionalProperties: false
+      description: A disjoint, finite task group with a typed exit and explicit feedback.
+      properties:
+        id:
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-zA-Z][\w-]*$
+          title: Id
+          type: string
+        name:
+          maxLength: 128
+          minLength: 1
+          title: Name
+          type: string
+        body:
+          items:
+            type: string
+          maxItems: 100
+          minItems: 1
+          title: Body
+          type: array
+        exit_task_id:
+          title: Exit Task Id
+          type: string
+        exit_condition:
+          $ref: '#/components/schemas/FieldCondition'
+        max_iterations:
+          maximum: 100
+          minimum: 1
+          title: Max Iterations
+          type: integer
+        feedback:
+          items:
+            $ref: '#/components/schemas/LoopFeedback'
+          maxItems: 100
+          title: Feedback
+          type: array
+      required:
+      - id
+      - name
+      - body
+      - exit_task_id
+      - exit_condition
+      - max_iterations
+      title: GraphLoop
+      type: object
+    LoopFeedback:
+      additionalProperties: false
+      description: Explicit next-round input from a completed previous-round result.
+      properties:
+        target:
+          title: Target
+          type: string
+        input:
+          title: Input
+          type: string
+        source:
+          title: Source
+          type: string
+        field:
+          default: text
+          title: Field
+          type: string
+      required:
+      - target
+      - input
+      - source
+      title: LoopFeedback
+      type: object
+    TeamRole:
+      additionalProperties: false
+      description: A pinned role permitted by an autonomous asset.
+      properties:
+        role_id:
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+          type: string
+        role_version:
+          minimum: 1
+          title: Role Version
+          type: integer
+        overrides:
+          $ref: '#/components/schemas/RoleOverrides'
+      required:
+      - role_id
+      - role_version
+      title: TeamRole
+      type: object
+    AutonomousDefinition:
+      properties:
+        kind:
+          type: string
+          const: autonomous
+          title: Kind
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Name
+        coordinator:
+          $ref: '#/components/schemas/TeamRole'
+        allowed_roles:
+          items:
+            $ref: '#/components/schemas/TeamRole'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Allowed Roles
+        required_inputs:
+          items:
+            type: string
+          type: array
+          maxItems: 30
+          title: Required Inputs
+        max_members:
+          type: integer
+          maximum: 100.0
+          minimum: 2.0
+          title: Max Members
+          default: 8
+        max_parallel:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Parallel
+          default: 4
+        max_tasks:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Tasks
+          default: 50
+        max_depth:
+          type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Depth
+          default: 3
+        limits:
+          anyOf:
+          - $ref: '#/components/schemas/RunLimits'
+          - type: 'null'
+        allowed_workflows:
+          items:
+            $ref: '#/components/schemas/WorkflowCall'
+          type: array
+          maxItems: 30
+          title: Allowed Workflows
+        output_contract:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Output Contract
+        approval_question:
+          anyOf:
+          - type: string
+            maxLength: 100000
+            minLength: 1
+          - type: 'null'
+          title: Approval Question
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - name
+      - coordinator
+      - allowed_roles
+      title: AutonomousDefinition
+      description: A coordinator and allowed role templates sharing the workflow executor.
+    TeamCall:
+      additionalProperties: false
+      description: An exact autonomous asset version invoked in an independent scope.
+      properties:
+        asset_id:
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+          type: string
+        version:
+          minimum: 1
+          title: Version
+          type: integer
+      required:
+      - asset_id
+      - version
+      title: TeamCall
+      type: object
+
+    WorkflowCall:
+      additionalProperties: false
+      description: An allowed workflow version and the task whose exact result is returned.
+      properties:
+        asset_id:
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+          type: string
+        version:
+          minimum: 1
+          title: Version
+          type: integer
+        result_task_id:
+          maxLength: 128
+          minLength: 1
+          title: Result Task Id
+          type: string
+      required:
+      - asset_id
+      - version
+      - result_task_id
+      title: WorkflowCall
+      type: object
+
+    PackageDependency:
+      properties:
+        slot:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Slot
+        kind:
+          type: string
+          enum:
+          - profiles
+          - models
+          - tools
+          - skills
+          - knowledge_bases
+          title: Kind
+        fingerprint:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Fingerprint
+        runner_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Runner Type
+        capabilities:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Capabilities
+        logical_slots:
+          items:
+            type: string
+          type: array
+          maxItems: 500
+          title: Logical Slots
+        uses:
+          anyOf:
+          - additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+          - type: 'null'
+          title: Uses
+          description: Original aliases used by role defaults or exact asset_id:version
+            contexts; omitted provenance keeps all declared requirements global.
+        description:
+          type: string
+          title: Description
+          default: ''
+        display_name:
+          type: string
+          title: Display Name
+          default: ''
+        input_schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Input Schema
+      additionalProperties: false
+      type: object
+      required:
+      - slot
+      - kind
+      title: PackageDependency
+      description: A logical resource requirement; fingerprints contain no local identity.
+    PackageRole:
+      properties:
+        role_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Role Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          $ref: '#/components/schemas/RoleDefinition'
+        prompt_source:
+          type: string
+          enum:
+          - role
+          - persona
+          - profile
+          - task
+          title: Prompt Source
+        dependencies:
+          items:
+            $ref: '#/components/schemas/PackageDependency'
+          type: array
+          maxItems: 500
+          title: Dependencies
+      additionalProperties: false
+      type: object
+      required:
+      - role_id
+      - version
+      - definition
+      - prompt_source
+      - dependencies
+      title: PackageRole
+      description: Fixed role content with an explicit description of included prompt
+        origin.
+    WorkflowImportRequest:
+      properties:
+        package:
+          $ref: '#/components/schemas/WorkflowPackage'
+        installations:
+          additionalProperties:
+            $ref: '#/components/schemas/RoleInstallation'
+          type: object
+          title: Installations
+        save_pending:
+          type: boolean
+          title: Save Pending
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - package
+      title: WorkflowImportRequest
+      description: Untrusted package and deliberate choices of this machine's resources.
+
+    WorkflowPackage:
+      properties:
+        asset_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
+          title: Definition
+        format:
+          type: string
+          const: astrbot.workflow
+          title: Format
+        format_version:
+          type: integer
+          enum:
+          - 1
+          - 2
+          title: Format Version
+        roles:
+          items:
+            $ref: '#/components/schemas/PackageRole'
+          type: array
+          maxItems: 100
+          title: Roles
+        assets:
+          items:
+            $ref: '#/components/schemas/PackageAsset'
+          type: array
+          maxItems: 100
+          title: Assets
+      additionalProperties: false
+      type: object
+      required:
+      - asset_id
+      - version
+      - definition
+      - format
+      - format_version
+      - roles
+      title: WorkflowPackage
+      description: A self-contained definition closure without local authorization.
+    PackageAsset:
+      properties:
+        asset_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Asset Id
+        version:
+          type: integer
+          minimum: 1.0
+          title: Version
+        definition:
+          anyOf:
+          - $ref: '#/components/schemas/WorkflowDefinition'
+          - $ref: '#/components/schemas/GraphDefinition'
+          - $ref: '#/components/schemas/AutonomousDefinition'
+          title: Definition
+      additionalProperties: false
+      type: object
+      required:
+      - asset_id
+      - version
+      - definition
+      title: PackageAsset
+      description: One exact portable asset version in the entry's reference closure.

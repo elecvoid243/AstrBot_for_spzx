@@ -38,11 +38,15 @@ class AgentTeamsServiceError(Exception):
         message: User-facing error summary.
         field_errors: Optional list of {path, code, message} dicts describing
             field-level validation problems; empty for plain raises.
+        status: HTTP error status for an explicitly retired execution entry.
     """
 
-    def __init__(self, message: str, field_errors: list[dict] | None = None) -> None:
+    def __init__(
+        self, message: str, field_errors: list[dict] | None = None, *, status: int = 400
+    ) -> None:
         super().__init__(message)
         self.field_errors = field_errors or []
+        self.status = status
 
 
 def _new_id(n: int = 8) -> str:

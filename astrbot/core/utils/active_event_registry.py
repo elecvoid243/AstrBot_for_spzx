@@ -139,25 +139,27 @@ class ActiveEventRegistry:
         self,
         umo: str,
         exclude: AstrMessageEvent | None = None,
+        *,
+        message_id: str | None = None,
     ) -> int:
-        """请求停止指定 UMO 的所有活跃事件中的 Agent 运行。
-
-        与 stop_all 不同，这里不会调用 event.stop_event()，
-        因此不会中断事件传播，后续流程（如历史记录保存）仍可继续。
+        """Request agent cancellation while allowing history cleanup to finish.
 
         Args:
-            umo: 统一消息来源标识符。
-            exclude: 需要排除的事件。
+            umo: Unified message origin of the active events.
+            exclude: Event to exclude from cancellation.
+            message_id: Optional message identity limiting cancellation to one turn.
 
         Returns:
-            收到停止请求的事件数量，同一事件只计数一次。
+            Number of distinct events receiving a cancellation request.
         """
         tasks = self._background_tasks.get(umo, {})
         events = set(self._events.get(umo, []))
         events.update(event for task, event in tasks.items() if not task.done())
         count = 0
         for event in events:
-            if event is not exclude:
+            if event is not exclude and (
+                message_id is None or event.message_obj.message_id == message_id
+            ):
                 event.set_extra("agent_stop_requested", True)
                 self.get_background_stop_signal(event).set()
                 callback = self._agent_stop_callbacks.get(event)
@@ -167,6 +169,7 @@ class ActiveEventRegistry:
         for task, event in list(tasks.items()):
             if (
                 event is not exclude
+                and (message_id is None or event.message_obj.message_id == message_id)
                 and not task.done()
                 and task not in self._background_cancel_requested
             ):

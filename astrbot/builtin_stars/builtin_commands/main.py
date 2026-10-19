@@ -1,5 +1,12 @@
-from astrbot.api import star
+import json
+from typing import cast
+
+from pydantic import ValidationError
+
+from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.chat import ChatCaller
 from astrbot.core.star.filter.command import GreedyStr
 
 from .commands import (
@@ -34,6 +41,127 @@ class Main(star.Star):
     async def sid(self, event: AstrMessageEvent) -> None:
         """获取会话 ID 及其他相关信息"""
         await self.sid_c.sid(event)
+
+    @filter.command("asset")
+    async def asset(self, event: AstrMessageEvent, request: GreedyStr) -> None:
+        """Explicitly invoke an opened asset or inspect its returned result.
+
+        Args:
+            event: Actual platform sender and source conversation.
+            request: Asset name/ID followed by optional pipe and JSON text inputs.
+        """
+        if event.get_extra("agent_team_execution") is not None:
+            return
+
+        wecom_event = None
+        if event.get_platform_name() == "wecom_ai_bot":
+            from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
+                WecomAIBotMessageEvent,
+            )
+
+            wecom_event = cast(WecomAIBotMessageEvent, event)
+            raw = wecom_event.message_obj.raw_message
+            stream_id = (
+                raw.get("stream_id", wecom_event.session_id)
+                if isinstance(raw, dict)
+                else wecom_event.session_id
+            )
+            pending = wecom_event.queue_mgr.get_pending_response(stream_id) or {}
+            callback = pending.get("callback_params", {})
+            if callback.get("connection_mode") == "long_connection":
+                available = (
+                    bool(wecom_event.long_connection_sender)
+                    and isinstance(callback.get("req_id"), str)
+                    and bool(callback["req_id"])
+                )
+            else:
+                available = bool(pending.get("source_response_available"))
+            if not available:
+                logger.warning(
+                    "Asset invocation requires an available original WeCom response"
+                )
+                event.stop_event()
+                return
+
+        async def send_source(actual: ChatCaller | None, text: str) -> bool:
+            """Keep explicit asset output on this event's original response.
+
+            Args:
+                actual: Caller verified against the saved grant, when available.
+                text: Safe status, clarification or final result projection.
+
+            Returns:
+                True after the original response channel accepted the message.
+            """
+            if wecom_event is not None:
+                accepted = await wecom_event.send(
+                    event.plain_result(text), source_only=True
+                )
+            else:
+                accepted = await event.send(event.plain_result(text))
+            return accepted is not False
+
+        context = cast(star.Context, self.context)
+        service = context.workflow_service
+        if service is None:
+            await send_source(None, "Asset invocation is unavailable.")
+            event.stop_event()
+            return
+        try:
+            caller = ChatCaller(
+                platform_id=str(event.get_platform_id()),
+                sender_id=str(event.get_sender_id()),
+                source=event.unified_msg_origin,
+                profile_id=context.astrbot_config_mgr.get_conf_info(
+                    event.unified_msg_origin
+                )["id"],
+            )
+            # CommandFilter normalizes whitespace for argument matching. Read
+            # the original event tail so quoted JSON input keeps its exact text.
+            command_parts = event.get_message_str().split(maxsplit=1)
+            request = GreedyStr(
+                command_parts[1].strip() if len(command_parts) > 1 else ""
+            )
+
+            if not request or request == "list":
+                offered = await service.chat.list_assets(caller)
+                text = 'Usage: /asset <name or ID> | {"input":"value"}\n'
+                text += json.dumps(offered, ensure_ascii=False)
+                await send_source(caller, text)
+            elif request == "whoami":
+                await send_source(
+                    caller, json.dumps(caller.model_dump(), ensure_ascii=False)
+                )
+            elif request.startswith("connect "):
+                connection = await service.chat.confirm_browser(
+                    caller, request.removeprefix("connect ").strip()
+                )
+                await send_source(caller, json.dumps(connection, ensure_ascii=False))
+            elif request.startswith("status "):
+                run_id = request.removeprefix("status ").strip()
+                await service.chat.get_run(caller, run_id)
+
+                delivered = await service.chat.deliver_pending(send_source, run_id)
+                if not delivered:
+                    projection = await service.chat.get_run(caller, run_id)
+                    text = json.dumps(projection, ensure_ascii=False)
+                    for offset in range(0, len(text), 1500):
+                        await send_source(caller, text[offset : offset + 1500])
+            else:
+                selector, separator, raw_inputs = request.partition("|")
+                inputs = json.loads(raw_inputs) if separator else {}
+                if not isinstance(inputs, dict) or any(
+                    not isinstance(v, str) for v in inputs.values()
+                ):
+                    raise ValueError("Inputs must be a JSON object of text values")
+                response = await service.chat.invoke(caller, selector.strip(), inputs)
+                if response["status"] == "accepted":
+                    await service.chat.deliver_pending(send_source, response["run_id"])
+                else:
+                    await send_source(caller, json.dumps(response, ensure_ascii=False))
+        except (RoleAssetError, ValueError, ValidationError) as exc:
+            await send_source(None, str(exc))
+        event.stop_event()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("name")

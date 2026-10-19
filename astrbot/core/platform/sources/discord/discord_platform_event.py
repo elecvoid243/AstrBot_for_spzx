@@ -59,7 +59,7 @@ class DiscordPlatformEvent(AstrMessageEvent):
         self.client = client
         self.interaction_followup_webhook = interaction_followup_webhook
 
-    async def send(self, message: MessageChain) -> None:
+    async def send(self, message: MessageChain) -> bool:
         """发送消息到Discord平台"""
         # 解析消息链为 Discord 所需的对象
         try:
@@ -72,7 +72,7 @@ class DiscordPlatformEvent(AstrMessageEvent):
             ) = await self._parse_to_discord(message)
         except Exception as e:
             logger.error(f"[Discord] 解析消息链时失败: {e}", exc_info=True)
-            return
+            return False
 
         kwargs = {}
         if content:
@@ -87,9 +87,10 @@ class DiscordPlatformEvent(AstrMessageEvent):
             kwargs["reference"] = self.client.get_message(int(reference_message_id))
         if not kwargs:
             logger.debug("[Discord] 尝试发送空消息，已忽略。")
-            return
+            return False
 
         # 根据上下文执行发送/回复操作
+        accepted = True
         try:
             # -- 斜杠指令/交互上下文 --
             if self.interaction_followup_webhook:
@@ -99,16 +100,18 @@ class DiscordPlatformEvent(AstrMessageEvent):
             else:
                 channel = await self._get_channel()
                 if not channel:
-                    return
+                    return False
                 if not isinstance(channel, discord.abc.Messageable):
                     logger.error(f"[Discord] 频道 {channel.id} 不是可发送消息的类型")
-                    return
+                    return False
                 await channel.send(**kwargs)
 
         except Exception as e:
             logger.error(f"[Discord] 发送消息时发生未知错误: {e}", exc_info=True)
+            accepted = False
 
         await super().send(message)
+        return accepted
 
     async def send_streaming(
         self, generator: AsyncGenerator[MessageChain, None], use_fallback: bool = False

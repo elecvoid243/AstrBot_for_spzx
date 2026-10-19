@@ -1454,7 +1454,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         tool: FunctionTool,
         run_context: ContextWrapper[AstrAgentContext],
         *,
-        tool_call_timeout: int | None = None,
+        tool_call_timeout: float | None = None,
         **tool_args,
     ):
         event = run_context.context.event
@@ -1486,6 +1486,11 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
             raise ValueError("Tool must have a valid handler or override 'run' method.")
 
         effective_timeout = tool_call_timeout or run_context.tool_call_timeout
+        from astrbot.core.agent_teams.autonomous_tools import TeamManageTool
+
+        waiting_for_members = (
+            isinstance(tool, TeamManageTool) and tool_args.get("action") == "wait"
+        )
         if isinstance(tool, ShellSessionTool) and tool_args.get("action") in {
             "poll",
             "write",
@@ -1505,9 +1510,12 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         )
         async with aclosing(wrapper):
             while True:
+                timeout: float | None = None
                 try:
-                    timeout: int | None = None
-                    if tool.name in run_context.tool_call_timeout_exclude:
+                    if (
+                        tool.name in run_context.tool_call_timeout_exclude
+                        or waiting_for_members
+                    ):
                         # Excluded tools wait indefinitely: they manage their own
                         # waiting (e.g. polling a subagent or waiting for user
                         # input) and always return on their own.
@@ -1547,8 +1555,9 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
                                     )
                         yield None
                 except asyncio.TimeoutError:
+                    timeout_text = f"{timeout:g}" if timeout is not None else "None"
                     raise Exception(
-                        f"tool {tool.name} execution timeout after {timeout} seconds.",
+                        f"tool {tool.name} execution timeout after {timeout_text} seconds.",
                     )
                 except StopAsyncIteration:
                     break

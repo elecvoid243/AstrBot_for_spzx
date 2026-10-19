@@ -6,7 +6,7 @@ from astrbot import logger
 from astrbot.core.provider.entities import LLMResponse
 
 from ..hooks import BaseAgentRunHooks
-from ..response import AgentResponse
+from ..response import AgentResponse, AgentResponseData
 from ..run_context import ContextWrapper, TContext
 
 
@@ -20,6 +20,38 @@ class AgentState(Enum):
 
 
 class BaseAgentRunner(T.Generic[TContext]):
+    agent_hooks: BaseAgentRunHooks[TContext]
+    run_context: ContextWrapper[TContext]
+    streaming: bool
+    final_llm_resp: LLMResponse | None
+
+    async def _finish_recovered_response(
+        self, response: LLMResponse
+    ) -> T.AsyncGenerator[AgentResponse, None]:
+        """Deliver a recovered response through the normal completion hooks.
+
+        Args:
+            response: Complete provider response saved before plugin processing.
+
+        Yields:
+            The effective response after normal hooks, including streaming output.
+        """
+        self.final_llm_resp = response
+        self._transition_state(AgentState.DONE)
+        try:
+            await self.agent_hooks.on_agent_done(self.run_context, response)
+        except Exception as exc:
+            logger.error("Error in on_agent_done hook: %s", exc, exc_info=True)
+        assert response.result_chain is not None
+        if self.streaming:
+            yield AgentResponse(
+                type="streaming_delta",
+                data=AgentResponseData(chain=response.result_chain),
+            )
+        yield AgentResponse(
+            type="llm_result", data=AgentResponseData(chain=response.result_chain)
+        )
+
     @abc.abstractmethod
     async def reset(
         self,

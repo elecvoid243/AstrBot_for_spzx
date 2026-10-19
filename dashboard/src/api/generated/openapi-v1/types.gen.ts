@@ -38,6 +38,46 @@ export type AgentTeamWorkflowPayload = {
     };
 };
 
+/**
+ * An exact immutable artifact version; latest is never inferred.
+ */
+export type ArtifactReference = {
+    artifact_id: string;
+    version: number;
+};
+
+/**
+ * Explicit, idempotent revision without downstream scheduling effects.
+ */
+export type ArtifactRevisionRequest = {
+    expected_version: number;
+    request_id: string;
+    content: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * A coordinator and allowed role templates sharing the workflow executor.
+ */
+export type AutonomousDefinition = {
+    kind: "autonomous";
+    name: string;
+    coordinator: TeamRole;
+    allowed_roles: Array<TeamRole>;
+    required_inputs?: Array<(string)>;
+    max_members?: number;
+    max_parallel?: number;
+    max_tasks?: number;
+    max_depth?: number;
+    limits?: (RunLimits | null);
+    allowed_workflows?: Array<WorkflowCall>;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
+    approval_question?: (string | null);
+};
+
 export type BackupChunkUploadRequest = {
     upload_id: string;
     chunk_index: number;
@@ -104,6 +144,17 @@ export type BotRegistrationRequest = {
 };
 
 export type action = 'start' | 'poll';
+
+/**
+ * A deliberate local grant; importing an asset never grants access.
+ */
+export type ChatAccessRequest = {
+    platform_id: string;
+    sender_id: string;
+    version: number;
+    profile_id: string;
+    source: string;
+};
 
 export type ChatChunkUploadRequest = {
     upload_id: string;
@@ -467,6 +518,17 @@ export type ErrorEnvelope = {
     data?: unknown;
 };
 
+/**
+ * A typed comparison against the source task's validated output.
+ */
+export type FieldCondition = {
+    field: string;
+    operator?: 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+    value: (string | boolean | number | null);
+};
+
+export type operator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
 export type FileUploadRequest = {
     file: (Blob | File);
 };
@@ -474,6 +536,97 @@ export type FileUploadRequest = {
 export type GhproxyTestRequest = {
     proxy_url: string;
 };
+
+/**
+ * A bounded, versioned workflow graph with persisted editor layout.
+ */
+export type GraphDefinition = {
+    name: string;
+    required_inputs?: Array<(string)>;
+    max_parallel?: number;
+    max_depth?: number;
+    limits?: (RunLimits | null);
+    tasks: Array<GraphTask>;
+    edges?: Array<GraphEdge>;
+    loops?: Array<GraphLoop>;
+};
+
+/**
+ * A required dependency, optionally activated by a field condition.
+ */
+export type GraphEdge = {
+    source: string;
+    target: string;
+    condition?: (FieldCondition | null);
+};
+
+/**
+ * A disjoint, finite task group with a typed exit and explicit feedback.
+ */
+export type GraphLoop = {
+    id: string;
+    name: string;
+    body: Array<(string)>;
+    exit_task_id: string;
+    exit_condition: FieldCondition;
+    max_iterations: number;
+    feedback?: Array<LoopFeedback>;
+};
+
+/**
+ * A task bound to a named member instance with a fixed role version.
+ */
+export type GraphTask = {
+    id: string;
+    name: string;
+    member?: string;
+    role_id?: (string | null);
+    role_version?: (number | null);
+    task?: string;
+    human?: (HumanTask | null);
+    team?: (TeamCall | null);
+    workflow?: (WorkflowCall | null);
+    inputs?: {
+        [key: string]: TaskInput;
+    };
+    overrides?: RoleOverrides;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
+    position?: {
+        [key: string]: (number);
+    };
+};
+
+export type HTTPValidationError = {
+    detail?: Array<ValidationError>;
+};
+
+/**
+ * Idempotent answer or explicit version decision with rejection feedback.
+ */
+export type HumanAnswerRequest = {
+    request_id: string;
+    action: 'answer' | 'approve' | 'reject';
+    answer?: (string | null);
+    feedback?: (string | null);
+};
+
+export type action2 = 'answer' | 'approve' | 'reject';
+
+/**
+ * A frozen question or approval of one upstream artifact version.
+ */
+export type HumanTask = {
+    kind: 'question' | 'approval';
+    question: string;
+    choices?: Array<(string)>;
+    max_length?: number;
+    artifact_task_id?: (string | null);
+    artifact_version?: number;
+};
+
+export type kind = 'question' | 'approval';
 
 export type ImMessageRequest = {
     umo: string;
@@ -522,6 +675,14 @@ export type KnowledgeRetrieveRequest = {
     score_threshold?: number;
 };
 
+/**
+ * Confirm exactly the reviewed definition proposal, optionally pending.
+ */
+export type LegacyMigrationRequest = {
+    preview_token: string;
+    save_pending?: boolean;
+};
+
 export type LoginRequest = {
     username: string;
     password: string;
@@ -530,6 +691,16 @@ export type LoginRequest = {
      */
     code?: string;
     trust_device_flag?: boolean;
+};
+
+/**
+ * Explicit next-round input from a completed previous-round result.
+ */
+export type LoopFeedback = {
+    target: string;
+    input: string;
+    source: string;
+    field?: string;
 };
 
 export type McpServerConfig = {
@@ -561,6 +732,18 @@ export type MessagePart = {
 
 export type type = 'text' | 'plain' | 'image' | 'file' | 'audio' | 'record' | 'video' | 'reply';
 
+/**
+ * Unresolved legacy semantics retained until a reviewed definition version.
+ */
+export type MigrationState = {
+    issues: Array<{
+        [key: string]: unknown;
+    }>;
+    source: {
+        [key: string]: unknown;
+    };
+};
+
 export type ModelScopeSyncRequest = {
     access_token?: string;
 };
@@ -578,6 +761,53 @@ export type NeoReleaseActionRequest = {
     release_id: string;
     [key: string]: unknown | string;
 };
+
+/**
+ * One exact portable asset version in the entry's reference closure.
+ */
+export type PackageAsset = {
+    asset_id: string;
+    version: number;
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+};
+
+/**
+ * A logical resource requirement; fingerprints contain no local identity.
+ */
+export type PackageDependency = {
+    slot: string;
+    kind: 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+    fingerprint?: (string | null);
+    runner_type?: (string | null);
+    capabilities?: Array<(string)>;
+    logical_slots?: Array<(string)>;
+    /**
+     * Original aliases used by role defaults or exact asset_id:version contexts; omitted provenance keeps all declared requirements global.
+     */
+    uses?: ({
+    [key: string]: Array<(string)>;
+} | null);
+    description?: string;
+    display_name?: string;
+    input_schema?: ({
+    [key: string]: unknown;
+} | null);
+};
+
+export type kind2 = 'profiles' | 'models' | 'tools' | 'skills' | 'knowledge_bases';
+
+/**
+ * Fixed role content with an explicit description of included prompt origin.
+ */
+export type PackageRole = {
+    role_id: string;
+    version: number;
+    definition: RoleDefinition;
+    prompt_source: 'role' | 'persona' | 'profile' | 'task';
+    dependencies: Array<PackageDependency>;
+};
+
+export type prompt_source = 'role' | 'persona' | 'profile' | 'task';
 
 export type ParameterAttachmentId = string;
 
@@ -786,6 +1016,77 @@ export type ReorderRequest = {
 };
 
 /**
+ * Portable role content; resource names refer to logical slots.
+ */
+export type RoleDefinition = {
+    migration?: (MigrationState | null);
+    prompt?: (string | null);
+    tools?: (Array<(string)> | null);
+    skills?: (Array<(string)> | null);
+    knowledge_bases?: (Array<(string)> | null);
+    max_steps?: (number | null);
+    tool_call_timeout?: (number | null);
+    context_length?: (number | null);
+    max_instances?: (number | null);
+    max_parallel?: (number | null);
+    max_iterations?: (number | null);
+    max_depth?: (number | null);
+    name: string;
+    description?: string;
+    model_slot?: string;
+    persona_slot?: (string | null);
+    model_capabilities?: Array<('tool_use' | 'image' | 'audio')>;
+    runner_capabilities?: Array<('internal_checkpoint' | 'remote_query' | 'task_tools' | 'task_result')>;
+};
+
+/**
+ * Machine-local configuration stored separately from the definition.
+ */
+export type RoleInstallation = {
+    profile_id?: string;
+    bindings?: {
+        [key: string]: (string);
+    };
+};
+
+/**
+ * Optional configuration; null inherits and an empty list disables.
+ */
+export type RoleOverrides = {
+    prompt?: (string | null);
+    tools?: (Array<(string)> | null);
+    skills?: (Array<(string)> | null);
+    knowledge_bases?: (Array<(string)> | null);
+    max_steps?: (number | null);
+    tool_call_timeout?: (number | null);
+    context_length?: (number | null);
+    max_instances?: (number | null);
+    max_parallel?: (number | null);
+    max_iterations?: (number | null);
+    max_depth?: (number | null);
+};
+
+/**
+ * A complete replacement definition and its local installation.
+ */
+export type RoleSaveRequest = {
+    definition: RoleDefinition;
+    installation?: RoleInstallation;
+    expected_version?: (number | null);
+};
+
+/**
+ * Optional whole-scope ceilings; nested scopes also obey their ancestors.
+ */
+export type RunLimits = {
+    max_steps?: (number | null);
+    max_members?: (number | null);
+    max_iterations?: (number | null);
+    token_budget?: (number | null);
+    max_output_tokens?: (number | null);
+};
+
+/**
  * The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.
  */
 export type RuntimeInfo = {
@@ -868,11 +1169,49 @@ export type T2iTemplateRequest = {
     [key: string]: unknown | string;
 };
 
+/**
+ * A declared workflow input or an upstream validated result field.
+ */
+export type TaskInput = {
+    input?: (string | null);
+    task_id?: (string | null);
+    field?: string;
+};
+
+/**
+ * An exact autonomous asset version invoked in an independent scope.
+ */
+export type TeamCall = {
+    asset_id: string;
+    version: number;
+};
+
+/**
+ * A pinned role permitted by an autonomous asset.
+ */
+export type TeamRole = {
+    role_id: string;
+    role_version: number;
+    overrides?: RoleOverrides;
+};
+
 export type ToolPermissionPatch = {
     permission: 'admin' | 'member';
 };
 
 export type permission = 'admin' | 'member';
+
+/**
+ * An explicit, evidenced decision about an uncertain external effect.
+ */
+export type ToolResolutionRequest = {
+    request_id: string;
+    action: 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
+    evidence: string;
+    result?: (string | null);
+};
+
+export type action3 = 'retry' | 'confirm_result' | 'confirm_failure' | 'reconcile';
 
 export type TotpSetupRequest = {
     code?: string;
@@ -927,6 +1266,52 @@ export type UpdateSourcesRequest = {
     dashboard_registry_url_template?: string;
 };
 
+export type ValidationError = {
+    loc: Array<(string | number)>;
+    msg: string;
+    type: string;
+    input?: unknown;
+    ctx?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * An allowed workflow version and the task whose exact result is returned.
+ */
+export type WorkflowCall = {
+    asset_id: string;
+    version: number;
+    result_task_id: string;
+};
+
+/**
+ * Idempotent whole-run decision, optionally conditional on its revision.
+ */
+export type WorkflowControlRequest = {
+    request_id: string;
+    action: 'pause' | 'continue' | 'cancel';
+    expected_revision?: (number | null);
+};
+
+export type action4 = 'pause' | 'continue' | 'cancel';
+
+/**
+ * A single task with a pinned role and declared input/output contracts.
+ */
+export type WorkflowDefinition = {
+    name: string;
+    role_id: string;
+    role_version: number;
+    task: string;
+    required_inputs?: Array<(string)>;
+    overrides?: RoleOverrides;
+    output_contract?: ({
+    [key: string]: unknown;
+} | null);
+    limits?: (RunLimits | null);
+};
+
 export type WorkflowEdge = {
     from: string;
     to: string;
@@ -937,11 +1322,66 @@ export type WorkflowGraph = {
     edges?: Array<WorkflowEdge>;
 };
 
+/**
+ * Untrusted package and deliberate choices of this machine's resources.
+ */
+export type WorkflowImportRequest = {
+    package: WorkflowPackage;
+    installations?: {
+        [key: string]: RoleInstallation;
+    };
+    save_pending?: boolean;
+};
+
 export type WorkflowNode = {
     id: string;
     member_id: string;
     task: string;
     title?: (string) | null;
+};
+
+/**
+ * A self-contained definition closure without local authorization.
+ */
+export type WorkflowPackage = {
+    asset_id: string;
+    version: number;
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    format: "astrbot.workflow";
+    format_version: 1 | 2;
+    roles: Array<PackageRole>;
+    assets?: Array<PackageAsset>;
+};
+
+export type format_version = 1 | 2;
+
+/**
+ * Explicit new attempt using the failed attempt's exact frozen inputs.
+ */
+export type WorkflowRetryRequest = {
+    request_id: string;
+    attempt_id: string;
+    input_policy: "original";
+};
+
+/**
+ * Create an asset or append an immutable version using optimistic locking.
+ */
+export type WorkflowSaveRequest = {
+    definition: (WorkflowDefinition | GraphDefinition | AutonomousDefinition);
+    expected_version?: (number | null);
+};
+
+/**
+ * Start a pinned version with explicit inputs and source identity.
+ */
+export type WorkflowStartRequest = {
+    version: number;
+    inputs?: {
+        [key: string]: (string);
+    };
+    source?: string;
+    input_artifacts?: Array<ArtifactReference>;
 };
 
 export type LoginData = {
@@ -4485,10 +4925,6 @@ export type StartAgentTeamRunData = {
     };
 };
 
-export type StartAgentTeamRunResponse = (SuccessEnvelope);
-
-export type StartAgentTeamRunError = (ErrorEnvelope);
-
 export type ListActiveAgentTeamRunsResponse = (SuccessEnvelope);
 
 export type ListActiveAgentTeamRunsError = unknown;
@@ -4511,7 +4947,7 @@ export type ResumeAgentTeamRunData = {
 
 export type ResumeAgentTeamRunResponse = (SuccessEnvelope);
 
-export type ResumeAgentTeamRunError = unknown;
+export type ResumeAgentTeamRunError = (ErrorEnvelope);
 
 export type StopAgentTeamRunData = {
     path: {
@@ -4586,3 +5022,491 @@ export type StreamAgentTeamRunData = {
 export type StreamAgentTeamRunResponse = (string);
 
 export type StreamAgentTeamRunError = unknown;
+
+export type ListRoleAssetsResponse = (SuccessEnvelope);
+
+export type ListRoleAssetsError = (unknown);
+
+export type CreateRoleAssetData = {
+    body: RoleSaveRequest;
+};
+
+export type CreateRoleAssetResponse = (SuccessEnvelope);
+
+export type CreateRoleAssetError = (unknown);
+
+export type GetRoleResourcesResponse = (SuccessEnvelope);
+
+export type GetRoleResourcesError = (unknown);
+
+export type PreviewRoleAssetData = {
+    body: RoleSaveRequest;
+};
+
+export type PreviewRoleAssetResponse = (SuccessEnvelope);
+
+export type PreviewRoleAssetError = (unknown);
+
+export type GetRoleAssetData = {
+    path: {
+        role_id: string;
+    };
+    query?: {
+        version?: number;
+    };
+};
+
+export type GetRoleAssetResponse = (SuccessEnvelope);
+
+export type GetRoleAssetError = (unknown);
+
+export type ReviseRoleAssetData = {
+    body: RoleSaveRequest;
+    path: {
+        role_id: string;
+    };
+};
+
+export type ReviseRoleAssetResponse = (SuccessEnvelope);
+
+export type ReviseRoleAssetError = (unknown);
+
+export type ResolveRoleAssetData = {
+    body: RoleOverrides;
+    path: {
+        role_id: string;
+    };
+    query: {
+        version: number;
+    };
+};
+
+export type ResolveRoleAssetResponse = (SuccessEnvelope);
+
+export type ResolveRoleAssetError = (unknown);
+
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostResponse = (unknown);
+
+export type OpenChatBrowserApiV1WorkflowChatRunsRunIdConnectionPostError = (HTTPValidationError);
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetResponse = (unknown);
+
+export type ChatBrowserStatusApiV1WorkflowChatRunsRunIdConnectionGetError = (HTTPValidationError);
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetResponse = (unknown);
+
+export type GetChatRunApiV1WorkflowChatRunsRunIdGetError = (HTTPValidationError);
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostData = {
+    body: HumanAnswerRequest;
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
+
+export type AnswerChatTodoApiV1WorkflowChatRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetData = {
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetResponse = (unknown);
+
+export type PreviewChatApprovalApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactGetError = (HTTPValidationError);
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetData = {
+    path: {
+        file_id: string;
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetResponse = (unknown);
+
+export type PreviewChatApprovalFileApiV1WorkflowChatRunsRunIdTodosTodoIdArtifactFilesFileIdGetError = (HTTPValidationError);
+
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetData = {
+    path: {
+        file_id: string;
+        run_id: string;
+    };
+    query?: {
+        download?: boolean;
+    };
+};
+
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetResponse = ((Blob | File));
+
+export type GetChatResultFileApiV1WorkflowChatRunsRunIdResultFilesFileIdGetError = (HTTPValidationError);
+
+export type ListAssetsApiV1WorkflowAssetsGetResponse = (unknown);
+
+export type ListAssetsApiV1WorkflowAssetsGetError = unknown;
+
+export type SaveAssetApiV1WorkflowAssetsPostData = {
+    body: WorkflowSaveRequest;
+    query?: {
+        asset_id?: (string | null);
+    };
+};
+
+export type SaveAssetApiV1WorkflowAssetsPostResponse = (unknown);
+
+export type SaveAssetApiV1WorkflowAssetsPostError = (HTTPValidationError);
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetResponse = (unknown);
+
+export type GetAssetApiV1WorkflowAssetsAssetIdGetError = (HTTPValidationError);
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutData = {
+    body: WorkflowSaveRequest;
+    path: {
+        asset_id: (string | null);
+    };
+};
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutResponse = (unknown);
+
+export type SaveAssetApiV1WorkflowAssetsAssetIdPutError = (HTTPValidationError);
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetData = {
+    path: {
+        asset_id: string;
+    };
+};
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetResponse = (unknown);
+
+export type ListChatAccessApiV1WorkflowAssetsAssetIdChatAccessGetError = (HTTPValidationError);
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutData = {
+    body: ChatAccessRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutResponse = (unknown);
+
+export type SaveChatAccessApiV1WorkflowAssetsAssetIdChatAccessPutError = (HTTPValidationError);
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteData = {
+    path: {
+        asset_id: string;
+        platform_id: string;
+        sender_id: string;
+    };
+};
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteResponse = (unknown);
+
+export type RevokeChatAccessApiV1WorkflowAssetsAssetIdChatAccessPlatformIdSenderIdDeleteError = (HTTPValidationError);
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
+    body: WorkflowStartRequest;
+    path: {
+        asset_id: string;
+    };
+};
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
+
+export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type ListRunsApiV1WorkflowRunsGetData = {
+    query?: {
+        limit?: number;
+    };
+};
+
+export type ListRunsApiV1WorkflowRunsGetResponse = (unknown);
+
+export type ListRunsApiV1WorkflowRunsGetError = (HTTPValidationError);
+
+export type GetRunApiV1WorkflowRunsRunIdGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetRunApiV1WorkflowRunsRunIdGetResponse = (unknown);
+
+export type GetRunApiV1WorkflowRunsRunIdGetError = (HTTPValidationError);
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostData = {
+    body: ToolResolutionRequest;
+    path: {
+        record_id: string;
+        run_id: string;
+    };
+};
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostResponse = (unknown);
+
+export type ResolveToolCallApiV1WorkflowRunsRunIdToolCallsRecordIdResolvePostError = (HTTPValidationError);
+
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetData = {
+    path: {
+        run_id: string;
+    };
+    query?: {
+        after?: number;
+    };
+};
+
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetResponse = (unknown);
+
+export type GetEventsApiV1WorkflowRunsRunIdEventsGetError = (HTTPValidationError);
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostData = {
+    body: WorkflowControlRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostResponse = (unknown);
+
+export type ControlRunApiV1WorkflowRunsRunIdControlPostError = (HTTPValidationError);
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostData = {
+    body: WorkflowRetryRequest;
+    path: {
+        run_id: string;
+    };
+};
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostResponse = (unknown);
+
+export type RetryTaskApiV1WorkflowRunsRunIdRetryPostError = (HTTPValidationError);
+
+export type RecoverRunApiV1WorkflowRunsRunIdRecoverPostData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type RecoverRunApiV1WorkflowRunsRunIdRecoverPostResponse = (unknown);
+
+export type RecoverRunApiV1WorkflowRunsRunIdRecoverPostError = (HTTPValidationError);
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetData = {
+    path: {
+        run_id: string;
+    };
+};
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetResponse = (unknown);
+
+export type GetResultApiV1WorkflowRunsRunIdResultGetError = (HTTPValidationError);
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetData = {
+    path: {
+        artifact_id: string;
+        version: number;
+    };
+};
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetResponse = (unknown);
+
+export type ReadArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionGetError = (HTTPValidationError);
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostData = {
+    body: ArtifactRevisionRequest;
+    path: {
+        artifact_id: string;
+    };
+};
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostResponse = (unknown);
+
+export type ReviseArtifactApiV1WorkflowArtifactsArtifactIdVersionsPostError = (HTTPValidationError);
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostData = {
+    path: {
+        run_id: string;
+    };
+    query: {
+        filename: string;
+    };
+};
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostResponse = (unknown);
+
+export type StoreFileApiV1WorkflowRunsRunIdFilesPostError = (HTTPValidationError);
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetData = {
+    path: {
+        artifact_id: string;
+        file_id: string;
+        version: number;
+    };
+    query?: {
+        download?: boolean;
+    };
+};
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetResponse = (unknown);
+
+export type GetFileApiV1WorkflowArtifactsArtifactIdVersionsVersionFilesFileIdGetError = (HTTPValidationError);
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostData = {
+    body: HumanAnswerRequest;
+    path: {
+        run_id: string;
+        todo_id: string;
+    };
+};
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostResponse = (unknown);
+
+export type AnswerTodoApiV1WorkflowRunsRunIdTodosTodoIdAnswerPostError = (HTTPValidationError);
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetData = {
+    path: {
+        artifact_id: string;
+        version: number;
+    };
+};
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetResponse = (unknown);
+
+export type ExportArtifactApiV1WorkflowArtifactsArtifactIdVersionsVersionExportGetError = (HTTPValidationError);
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetResponse = (unknown);
+
+export type CheckReadinessApiV1WorkflowAssetsAssetIdReadinessGetError = (HTTPValidationError);
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetData = {
+    path: {
+        asset_id: string;
+    };
+    query?: {
+        version?: (number | null);
+    };
+};
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetResponse = (unknown);
+
+export type ExportAssetApiV1WorkflowAssetsAssetIdExportGetError = (HTTPValidationError);
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostData = {
+    body: WorkflowImportRequest;
+};
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostResponse = (unknown);
+
+export type PreviewImportApiV1WorkflowAssetsImportPreviewPostError = (HTTPValidationError);
+
+export type ImportAssetApiV1WorkflowAssetsImportPostData = {
+    body: WorkflowImportRequest;
+};
+
+export type ImportAssetApiV1WorkflowAssetsImportPostResponse = (unknown);
+
+export type ImportAssetApiV1WorkflowAssetsImportPostError = (HTTPValidationError);
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetData = {
+    path: {
+        team_id: string;
+    };
+};
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetResponse = (unknown);
+
+export type PreviewLegacyMigrationApiV1AgentTeamsTeamIdMigrationPreviewGetError = (HTTPValidationError);
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostData = {
+    body: LegacyMigrationRequest;
+    path: {
+        team_id: string;
+    };
+};
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostResponse = (unknown);
+
+export type ConfirmLegacyMigrationApiV1AgentTeamsTeamIdMigrationPostError = (HTTPValidationError);
+
+export type ListHistoryApiV1AgentHistoryGetData = {
+    query?: {
+        limit?: number;
+        offset?: number;
+    };
+};
+
+export type ListHistoryApiV1AgentHistoryGetResponse = (unknown);
+
+export type ListHistoryApiV1AgentHistoryGetError = (HTTPValidationError);
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetData = {
+    path: {
+        identity: string;
+        kind: 'v2_run' | 'legacy_run' | 'legacy_conversation';
+    };
+    query?: {
+        limit?: number;
+        offset?: number;
+    };
+};
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetResponse = (unknown);
+
+export type GetHistoryRecordApiV1AgentHistoryKindIdentityGetError = (HTTPValidationError);
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetData = {
+    path: {
+        identity: string;
+        member_id: string;
+    };
+    query?: {
+        before_id?: (number | null);
+        limit?: number;
+    };
+};
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetResponse = (unknown);
+
+export type GetHistoryProcessApiV1AgentHistoryLegacyRunIdentityMembersMemberIdGetError = (HTTPValidationError);

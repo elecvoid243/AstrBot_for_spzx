@@ -82,12 +82,13 @@ class SlackAdapter(Platform):
         self,
         session: MessageSesion,
         message_chain: MessageChain,
-    ) -> None:
+    ) -> bool:
         blocks, text = await SlackMessageEvent._parse_slack_blocks(
             message_chain=message_chain,
             web_client=self.web_client,
         )
 
+        accepted = True
         try:
             if session.message_type == MessageType.GROUP_MESSAGE:
                 # 发送到频道
@@ -110,8 +111,10 @@ class SlackAdapter(Platform):
                 )
         except Exception as e:
             logger.error(f"Slack 发送消息失败: {e}")
+            accepted = False
 
         await super().send_by_session(session, message_chain)
+        return accepted
 
     async def convert_message(self, event: dict) -> AstrBotMessage:
         logger.debug(f"[slack] RawMessage {event}")

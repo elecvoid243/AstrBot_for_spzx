@@ -955,9 +955,7 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def set_platform_session_starred(
-        self, session_id: str, starred: int
-    ) -> None:
+    async def set_platform_session_starred(self, session_id: str, starred: int) -> None:
         """Set the starred flag of a Platform session without touching it.
 
         Args:

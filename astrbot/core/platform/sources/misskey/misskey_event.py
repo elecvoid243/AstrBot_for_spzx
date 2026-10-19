@@ -40,7 +40,7 @@ class MisskeyPlatformEvent(AstrMessageEvent):
 
         return any(message_trimmed.startswith(prefix) for prefix in system_prefixes)
 
-    async def send(self, message: MessageChain) -> None:
+    async def send(self, message: MessageChain) -> bool:
         """发送消息，使用适配器的完整上传和发送逻辑"""
         try:
             logger.debug(
@@ -72,14 +72,16 @@ class MisskeyPlatformEvent(AstrMessageEvent):
             # 调用适配器的 send_by_session 方法
             if hasattr(self.client, "send_by_session"):
                 logger.debug("[MisskeyEvent] 调用适配器的 send_by_session 方法")
-                await self.client.send_by_session(session, message)
+                accepted = await self.client.send_by_session(session, message)
+                if accepted is False:
+                    return False
             else:
                 # 回退到原来的简化发送逻辑
                 content, has_at = serialize_message_chain(message.chain)
 
                 if not content:
                     logger.debug("[MisskeyEvent] 内容为空，跳过发送")
-                    return
+                    return False
 
                 original_message_id = getattr(self.message_obj, "message_id", None)
                 raw_message = getattr(self.message_obj, "raw_message", {})
@@ -120,11 +122,15 @@ class MisskeyPlatformEvent(AstrMessageEvent):
                 elif hasattr(self.client, "create_note"):
                     logger.debug("[MisskeyEvent] 创建新帖子")
                     await self.client.create_note(content)
+                else:
+                    return False
 
             await super().send(message)
+            return True
 
         except Exception as e:
             logger.error(f"[MisskeyEvent] 发送失败: {e}")
+            return False
 
     async def send_streaming(
         self,

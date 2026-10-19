@@ -37,7 +37,7 @@ def _conversation_id(session_id: str) -> str:
 class TeamPorts:
     """I/O ports for team runners; injected for testability."""
 
-    deliver: Callable[[str, str, str | None, str | None], Awaitable[str]]
+    deliver: Callable[..., Awaitable[str]]
     # Signature: (session_id, text, context=None, execution_token=None).
     # execution_token is internal-only (spec §2.3): the runner-issued token
     # bound to the node's execution binding; the webchat adapter lifts it
@@ -49,10 +49,7 @@ class TeamPorts:
     # The 4th kwarg `on_event` receives the same choice events collect emits
     # (spec §4.5): the run bus is one consumer (reducer/transcript) and the
     # runner's callback is the other (choice-suspension signal).
-    collect: Callable[
-        [str, str, str | None, Callable[[dict], None] | None],
-        Awaitable[tuple[str, list]],
-    ]
+    collect: Callable[..., Awaitable[tuple[str, list]]]
     is_busy: Callable[[str], bool]
     emit: Callable[[dict], None]
     reply_timeout: float = 600.0
@@ -97,9 +94,10 @@ def build_ports_for_test(
         text: str,
         context: str | None = None,
         execution_token: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         cid = _conversation_id(session_id)
-        message_id = uuid.uuid4().hex
+        message_id = message_id or uuid.uuid4().hex
         llm_checkpoint_id = uuid.uuid4().hex
         queue = mgr.get_or_create_queue(cid)
         subscriptions.setdefault(cid, mgr.subscribe_system(cid))

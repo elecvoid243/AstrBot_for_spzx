@@ -180,7 +180,7 @@ class MainAgentBuildConfig:
     """The main agent build configuration.
     Most of the configs can be found in the cmd_config.json"""
 
-    tool_call_timeout: int
+    tool_call_timeout: float
     """The timeout (in seconds) for a tool call.
     When the tool call exceeds this time,
     a timeout error as a tool result will be returned.
@@ -320,8 +320,26 @@ async def _select_provider(
 async def _get_session_conv(
     event: AstrMessageEvent, plugin_context: Context
 ) -> Conversation:
+    """Read the member's pinned context or the ordinary selected conversation.
+
+    Args:
+        event: Current invocation and its optional member context binding.
+        plugin_context: Existing conversation service.
+
+    Returns:
+        The conversation belonging to this invocation.
+
+    Raises:
+        RuntimeError: The pinned member context was deleted or cannot be created.
+    """
     conv_mgr = plugin_context.conversation_manager
     umo = event.unified_msg_origin
+    execution = event.get_extra("agent_team_execution")
+    if conversation_id := getattr(execution, "conversation_id", None):
+        conversation = await conv_mgr.get_conversation(umo, conversation_id)
+        if conversation is None:
+            raise RuntimeError("The bound member conversation is no longer available.")
+        return conversation
     cid = await conv_mgr.get_curr_conversation_id(umo)
     if not cid:
         cid = await conv_mgr.new_conversation(umo, event.get_platform_id())
@@ -635,7 +653,11 @@ async def _ensure_persona_and_skills(
     persona_id = None
     persona = None
     use_webchat_special_default = False
-    if node_persona_id:
+    frozen_persona = getattr(execution, "profile_snapshot", None) is not None
+    if frozen_persona:
+        persona = copy.deepcopy(execution.persona_snapshot)
+        persona_id = node_persona_id
+    elif node_persona_id:
         # Node-level persona override: resolve the persona directly instead of
         # going through the conversation/umo resolution.
         persona = plugin_context.persona_manager.get_persona_v3_by_id(node_persona_id)
@@ -646,7 +668,7 @@ async def _ensure_persona_and_skills(
                 "falling back to conversation persona resolution.",
                 node_persona_id,
             )
-    if persona is None:
+    if persona is None and not frozen_persona:
         (
             persona_id,
             persona,
@@ -1991,8 +2013,8 @@ async def build_main_agent(
         req, quote_image_ref = await collect_initial_request(
             event, plugin_context, config, req=req, quoted_image_refs=quoted_image_refs
         )
-        if req is None:
-            return None
+    if req is None:
+        return None
 
     # Agent collab: per-turn collaborative framing (roster/topic/roles) is
     # injected as a temp extra — visible to the provider this turn only,
@@ -2001,6 +2023,8 @@ async def build_main_agent(
         req.extra_user_content_parts.append(
             TextPart(text=collab_context).mark_as_temp()
         )
+    if team_context := event.get_extra("team_context"):
+        req.extra_user_content_parts.append(TextPart(text=team_context).mark_as_temp())
     cfg = config.provider_settings or plugin_context.get_config(
         umo=event.unified_msg_origin
     ).get("provider_settings", {})
@@ -2141,8 +2165,14 @@ async def build_main_agent(
             )
         )
 
-    fallback_providers = _get_fallback_chat_providers(
-        provider, plugin_context, config.fallback_provider_ids
+    execution = event.get_extra("agent_team_execution")
+    # A v2 workflow must retain its bound model even when that model fails.
+    fallback_providers = (
+        []
+        if getattr(execution, "profile_snapshot", None) is not None
+        else _get_fallback_chat_providers(
+            provider, plugin_context, config.fallback_provider_ids
+        )
     )
     selected_provider = _select_image_chat_provider(provider, req, fallback_providers)
     if selected_provider is not provider:
@@ -2221,6 +2251,14 @@ async def build_main_agent(
         captioned_refs=captioned_refs,
         supports_image=_provider_supports_modality(provider, "image"),
     )
+
+    # Enforce the role allowlist after built-in tools have also been added.
+    execution = event.get_extra("agent_team_execution")
+    allowed_tools = getattr(execution, "tools", None)
+    if allowed_tools is not None and req.func_tool:
+        req.func_tool = ToolSet(
+            tools=[tool for tool in req.func_tool.tools if tool.name in allowed_tools]
+        )
 
     reset_coro = agent_runner.reset(
         provider=provider,

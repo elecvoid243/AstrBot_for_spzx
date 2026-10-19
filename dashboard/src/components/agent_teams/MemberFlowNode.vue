@@ -23,7 +23,7 @@
       <span class="at-node-title">{{ titleText }}</span>
       <span v-if="data.nodeNumber !== undefined" class="at-node-number">#{{ data.nodeNumber }}</span>
       <span v-if="data.status" class="at-node-status" :data-status="data.status">
-        <i class="at-node-status-dot" />{{ statusText }}
+        <i class="at-node-status-dot" />{{ data.statusLabel || statusText }}
       </span>
     </div>
 
@@ -52,7 +52,11 @@
     <p v-if="data.taskPreview" class="at-node-task at-node-task-clamp">{{ data.taskPreview }}</p>
 
     <div class="at-node-footer">
-      <span class="at-node-indegree">{{ tm('editor.inDegree') }} {{ data.inDegree ?? 0 }}</span>
+      <template v-if="data.inputLabel || data.outputLabel">
+        <span class="at-node-indegree">{{ data.inputLabel }}</span>
+        <span class="at-node-indegree">{{ data.outputLabel }}</span>
+      </template>
+      <span v-else class="at-node-indegree">{{ tm('editor.inDegree') }} {{ data.inDegree ?? 0 }}</span>
     </div>
   </div>
 </template>
@@ -74,6 +78,9 @@ export interface MemberFlowNodeData {
   taskPreview?: string;
   /** Monitor run status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'interrupted'. */
   status?: string;
+  statusLabel?: string;
+  inputLabel?: string;
+  outputLabel?: string;
   error?: string;
   configLabel?: string;
   personaLabel?: string;

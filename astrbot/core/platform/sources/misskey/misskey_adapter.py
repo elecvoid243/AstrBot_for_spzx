@@ -190,7 +190,8 @@ class MisskeyPlatformAdapter(Platform):
     ):
         """发送纯文本消息（无文件上传）"""
         if not self.api:
-            return await super().send_by_session(session, message_chain)
+            await super().send_by_session(session, message_chain)
+            return False
 
         if session_id and is_valid_user_session_id(session_id):
             from .misskey_utils import extract_user_id_from_session_id
@@ -204,8 +205,12 @@ class MisskeyPlatformAdapter(Platform):
             room_id = extract_room_id_from_session_id(session_id)
             payload = {"toRoomId": room_id, "text": text}
             await self.api.send_room_message(payload)
+        else:
+            await super().send_by_session(session, message_chain)
+            return False
 
-        return await super().send_by_session(session, message_chain)
+        await super().send_by_session(session, message_chain)
+        return True
 
     def _process_poll_data(
         self,
@@ -373,11 +378,13 @@ class MisskeyPlatformAdapter(Platform):
         self,
         session: MessageSession,
         message_chain: MessageChain,
-    ) -> None:
+    ) -> bool:
         if not self.api:
             logger.error("[Misskey] API 客户端未初始化")
-            return await super().send_by_session(session, message_chain)
+            await super().send_by_session(session, message_chain)
+            return False
 
+        accepted = True
         try:
             session_id = session.session_id
 
@@ -413,7 +420,8 @@ class MisskeyPlatformAdapter(Platform):
             if not text or not text.strip():
                 if not has_file_components:
                     logger.warning("[Misskey] 消息内容为空且无文件组件，跳过发送")
-                    return await super().send_by_session(session, message_chain)
+                    await super().send_by_session(session, message_chain)
+                    return False
                 text = ""
 
             if len(text) > self.max_message_length:
@@ -632,8 +640,10 @@ class MisskeyPlatformAdapter(Platform):
 
         except Exception as e:
             logger.error(f"[Misskey] 发送消息失败: {e}")
+            accepted = False
 
-        return await super().send_by_session(session, message_chain)
+        await super().send_by_session(session, message_chain)
+        return accepted
 
     async def convert_message(self, raw_data: dict[str, Any]) -> AstrBotMessage:
         """将 Misskey 贴文数据转换为 AstrBotMessage 对象"""

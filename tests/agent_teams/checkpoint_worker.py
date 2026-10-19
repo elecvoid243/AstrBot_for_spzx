@@ -11,10 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
-from pytest import MonkeyPatch
-from sqlalchemy import event as sql_event, text
-from sqlalchemy.orm import Session
 from mcp.types import CallToolResult
+from pytest import MonkeyPatch
+from sqlalchemy import event as sql_event
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from astrbot.core.agent.message import ImageURLPart, TextPart
 from astrbot.core.agent.tool import FunctionTool
@@ -24,7 +25,13 @@ from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.config.default import DEFAULT_CONFIG
 from astrbot.core.conversation_mgr import ConversationManager
-from astrbot.core.db.po import AgentWorkflowCheckpoint, AgentWorkflowEvent, AgentWorkflowProcess, AgentWorkflowToolCall, AgentWorkflowUsage
+from astrbot.core.db.po import (
+    AgentWorkflowCheckpoint,
+    AgentWorkflowEvent,
+    AgentWorkflowProcess,
+    AgentWorkflowToolCall,
+    AgentWorkflowUsage,
+)
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.event_bus import EventBus
 from astrbot.core.knowledge_base import kb_mgr
@@ -35,12 +42,21 @@ from astrbot.core.pipeline.scheduler import PipelineScheduler
 from astrbot.core.platform.sources.webchat import webchat_adapter, webchat_event
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import WebChatQueueMgr
 from astrbot.core.provider import Provider
-from astrbot.core.provider.entities import LLMResponse, ProviderMeta, ProviderType, TokenUsage
+from astrbot.core.provider.entities import (
+    LLMResponse,
+    ProviderMeta,
+    ProviderType,
+    TokenUsage,
+)
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot.core.provider.manager import ProviderManager
 from astrbot.core.star.context import Context
 from astrbot.core.star.star import StarMetadata, star_map
-from astrbot.core.star.star_handler import EventType, StarHandlerMetadata, star_handlers_registry
+from astrbot.core.star.star_handler import (
+    EventType,
+    StarHandlerMetadata,
+    star_handlers_registry,
+)
 from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.shared_preferences import SharedPreferences
 from astrbot.dashboard.services.agent_team_ports import build_ports_for_test
@@ -265,7 +281,9 @@ async def run_worker(
             """
             from astrbot.core.agent_team_execution import current_team_execution
             execution = current_team_execution.get()
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(
+                timeout=60 if scenario.startswith("team_deadline_") else 5
+            ) as client:
                 response = await client.post(endpoint + "/model", json={
                     "contexts": [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in kwargs["contexts"]],
                     "tools": kwargs["func_tool"].names() if kwargs["func_tool"] else [], "model": kwargs.get("model"),
@@ -560,6 +578,13 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("team_deadline_"):
+            from tests.agent_teams.team_deadline_worker import run_deadline_scenario
+
+            await run_deadline_scenario(
+                folder, endpoint, action, scenario, service, roles, context, adapter
+            )
+            return
         if scenario.startswith("reverse_") and action != "serve":
             from tests.agent_teams.reverse_scope_worker import run_reverse_scenario
 
@@ -591,10 +616,11 @@ async def run_worker(
             from fastapi.staticfiles import StaticFiles
             from hypercorn.asyncio import serve
             from hypercorn.config import Config
-            from astrbot.dashboard.api.auth import require_dashboard_user
-            from astrbot.dashboard.api.workflow_assets import router as workflow_router
-            from astrbot.dashboard.api.role_assets import router as role_router
+
             from astrbot.dashboard.api.agent_teams import router as team_router
+            from astrbot.dashboard.api.auth import require_dashboard_user
+            from astrbot.dashboard.api.role_assets import router as role_router
+            from astrbot.dashboard.api.workflow_assets import router as workflow_router
             from astrbot.dashboard.services.agent_team_service import AgentTeamService
             from tests.agent_teams.test_agent_team_service import FakeChatService
             await service.boot_sweep()
@@ -619,7 +645,7 @@ async def run_worker(
                     marker = folder / "delay-asset-version.json"
                     if marker.exists():
                         decision = json.loads(marker.read_text(encoding="utf-8"))
-                        if request.url.path.endswith('/' + decision['asset_id']) and request.query_params.get('version') == str(decision['version']):
+                        if request.url.path.endswith("/" + decision["asset_id"]) and request.query_params.get("version") == str(decision["version"]):
                             marker.unlink()
                             (folder / "delayed-http-started.json").write_text(json.dumps(decision), encoding="utf-8")
                             await asyncio.sleep(3)
@@ -639,7 +665,7 @@ async def run_worker(
 
             config = Config()
             config.bind = ["127.0.0.1:6206" if scenario == "reverse_race" else "127.0.0.1:6205" if scenario.startswith("reverse_") else "127.0.0.1:6204" if scenario.startswith("child_") else "127.0.0.1:6202" if scenario.startswith("loop_") else "127.0.0.1:6201" if scenario.startswith("human_") else "127.0.0.1:6199" if scenario == "partial_generator" else "127.0.0.1:6198"]
-            (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__('os').getpid()}), encoding="utf-8")
+            (folder / "preview-ready.json").write_text(json.dumps({"pid": __import__("os").getpid()}), encoding="utf-8")
             await serve(app, config)
             return
         if action == "start":
@@ -895,6 +921,7 @@ async def run_worker(
                         )
                     if scenario == "manual_http":
                         from fastapi import FastAPI
+
                         from astrbot.dashboard.api.auth import require_dashboard_user
                         from astrbot.dashboard.api.workflow_assets import router
                         app = FastAPI()

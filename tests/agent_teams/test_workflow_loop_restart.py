@@ -24,6 +24,12 @@ import pytest
     ],
 )
 def test_iteration_boundary_survives_process_termination(tmp_path, scenario):
+    """Recover real checkpoints while retaining round history and external effects.
+
+    Args:
+        tmp_path: Isolated SQLite and independent external ledger directory.
+        scenario: Iteration, control or saved model/tool boundary to terminate at.
+    """
     requests, effects = [], []
 
     class ExternalService(BaseHTTPRequestHandler):
@@ -88,6 +94,9 @@ def test_iteration_boundary_survives_process_termination(tmp_path, scenario):
                         "tools_call_ids": ["effect-" + identity],
                         "usage": {"input_other": 17, "output": 9},
                     }
+            (tmp_path / "external-ledger.json").write_text(
+                json.dumps({"requests": requests, "effects": effects}), encoding="utf-8"
+            )
             body = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -153,8 +162,18 @@ def test_iteration_boundary_survives_process_termination(tmp_path, scenario):
         assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         after = evidence["after"]
+        assert after["snapshot"] == evidence["before"]["snapshot"]
+        for original, retained in zip(
+            evidence["before"]["loops"][0]["iterations"][0]["tasks"],
+            after["loops"][0]["iterations"][0]["tasks"],
+            strict=True,
+        ):
+            for field in ["run_id", "snapshot", "state", "result", "result_ref", "events"]:
+                assert retained[field] == original[field]
         if scenario == "loop_cancel":
             assert after["control"]["status"] == "cancelled"
+            assert after["loops"][0]["status"] == "cancelled"
+            assert after["loops"][0]["iterations"][0]["status"] == "rejected"
             assert len(effects) == 2 and len(requests) == 6
             assert not after["todos"] and after["result"] is None
             return

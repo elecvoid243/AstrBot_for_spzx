@@ -117,7 +117,7 @@ async def loop_script(workflow_env):
     """
     env = workflow_env
     script = SimpleNamespace(
-        env=env, observations=[], approved_round=2, holds={}, failures=set()
+        env=env, observations=[], approved_round=2, holds={}, failures=set(), started={}
     )
     bindings = {}
 
@@ -159,6 +159,7 @@ async def loop_script(workflow_env):
         saved = bindings[message_id]
         node = saved["snapshot"]["node_id"]
         iteration = saved["snapshot"].get("iteration", 1)
+        script.started.setdefault((node, iteration), asyncio.Event()).set()
         if (node, iteration) in script.holds:
             await script.holds[node, iteration].wait()
         if (node, iteration) in script.failures:
@@ -515,6 +516,11 @@ async def test_skipped_feedback_source_cannot_release_an_unvalidated_next_round(
 
 @pytest.mark.asyncio
 async def test_wait_inside_loop_releases_single_slot_to_independent_branch(loop_script):
+    """Keep a round's human wait intact across whole-run pause and continue.
+
+    Args:
+        loop_script: Real public services with independently controlled execution.
+    """
     env = loop_script.env
     definition = revision_definition(env.role["role_id"])
     question = {
@@ -558,6 +564,29 @@ async def test_wait_inside_loop_releases_single_slot_to_independent_branch(loop_
                 break
             await asyncio.sleep(0.01)
         assert current["loops"][0]["iterations"][-1]["iteration"] == iteration
+        assert len(pending) == 1
+        paused = await env.service.control_run(
+            "alice",
+            run["run_id"],
+            {"request_id": f"pause-wait-{iteration}", "action": "pause"},
+        )
+        await env.service.advance_run("alice", run["run_id"])
+        continued = await env.service.control_run(
+            "alice",
+            run["run_id"],
+            {"request_id": f"continue-wait-{iteration}", "action": "continue"},
+        )
+        assert paused["control"]["status"] == "paused"
+        assert continued["control"]["status"] == "active"
+        assert continued["snapshot"] == run["snapshot"]
+        assert continued["todos"] == paused["todos"] == current["todos"]
+        assert continued["tasks"][0]["status"] == "waiting_human"
+        assert len(continued["loops"][0]["iterations"]) == iteration
+        assert continued["tasks"][0]["snapshot"] == current["tasks"][0]["snapshot"]
+        assert continued["tasks"][0]["state"] == current["tasks"][0]["state"]
+        assert [task["run_id"] for task in continued["tasks"]] == [
+            task["run_id"] for task in current["tasks"]
+        ]
         await env.service.answer_todo(
             "alice",
             run["run_id"],
@@ -665,6 +694,12 @@ async def test_retry_in_second_round_preserves_task_and_frozen_feedback(loop_scr
 async def test_pause_or_cancel_preserves_round_boundary_and_history(
     loop_script, action
 ):
+    """Control an in-flight review at an explicit external execution barrier.
+
+    Args:
+        loop_script: Real scheduling and storage with controlled external responses.
+        action: Whole-run decision after the paused review finishes safely.
+    """
     env = loop_script.env
     loop_script.holds["review", 1] = asyncio.Event()
     asset = await env.service.save_asset(
@@ -675,25 +710,59 @@ async def test_pause_or_cancel_preserves_round_boundary_and_history(
         asset["asset_id"],
         {"version": 1, "inputs": {"draft": "Original", "feedback": "Check"}},
     )
-    for _ in range(200):
-        if len(loop_script.observations) == 2:
-            break
-        await asyncio.sleep(0.01)
-    await env.service.control_run(
+    # Elapsed time cannot establish that the reviewer has actually started.
+    await asyncio.wait_for(
+        loop_script.started.setdefault(("review", 1), asyncio.Event()).wait(), 5
+    )
+    before = await env.service.get_run("alice", run["run_id"])
+    assert [task["status"] for task in before["tasks"]] == [
+        "completed",
+        "running",
+        "pending",
+    ]
+    paused = await env.service.control_run(
         "alice", run["run_id"], {"request_id": "pause", "action": "pause"}
     )
+    assert paused["control"]["status"] == "paused"
+    assert paused["tasks"][1]["status"] == "running"
     loop_script.holds["review", 1].set()
-    await asyncio.sleep(0.1)
-    paused = await env.service.get_run("alice", run["run_id"])
+    for _ in range(200):
+        paused = await env.service.get_run("alice", run["run_id"])
+        if paused["tasks"][1]["status"] == "completed":
+            break
+        await asyncio.sleep(0.01)
+    assert paused["tasks"][1]["status"] == "completed"
     assert len(paused["loops"][0]["iterations"]) == 1
+    assert len(loop_script.observations) == 2
+    assert paused["tasks"][0]["result_ref"] == before["tasks"][0]["result_ref"]
+    assert paused["tasks"][1]["result"] == {
+        "approved": False,
+        "text": "Review 1: add evidence",
+    }
+    parked = await env.service.advance_run("alice", run["run_id"])
+    assert len(parked["loops"][0]["iterations"]) == 1
+    assert [task["status"] for task in parked["tasks"]] == [
+        "completed",
+        "completed",
+        "pending",
+    ]
     assert len(loop_script.observations) == 2
     await env.service.control_run(
         "alice", run["run_id"], {"request_id": action, "action": action}
     )
     finished = await wait_graph(env.service, run["run_id"])
+    assert finished["snapshot"] == before["snapshot"]
+    for original, retained in zip(
+        paused["loops"][0]["iterations"][0]["tasks"],
+        finished["loops"][0]["iterations"][0]["tasks"],
+        strict=True,
+    ):
+        for field in ["run_id", "snapshot", "state", "result", "result_ref", "events"]:
+            assert retained[field] == original[field]
     if action == "continue":
         assert finished["status"] == "completed"
         assert len(finished["loops"][0]["iterations"]) == 2
+        assert len(loop_script.observations) == 5
     else:
         assert finished["control"]["status"] == "cancelled"
         assert finished["loops"][0]["status"] == "cancelled"

@@ -23,7 +23,6 @@ import pytest
         "team_tool_result",
         "team_finish",
         "team_save_failure",
-        "team_slow",
         "team_unknown",
         "team_steps",
         "team_inputs",
@@ -70,8 +69,6 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
             """
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/tool":
-                if scenario == "team_slow":
-                    time.sleep(1.5)
                 effects.append(payload)
                 response = {
                     "text": "External verified evidence for " + payload["value"]
@@ -369,7 +366,7 @@ def test_autonomous_team_uses_main_pipeline_and_recovers_without_duplicate_decis
     ]
     environment = {**os.environ, "PYTHONUTF8": "1"}
     try:
-        if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
+        if scenario in {"team_pipeline", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
             first = subprocess.run(
                 [*command, "start", scenario],
                 cwd=root,

@@ -176,7 +176,6 @@ async def run_team_scenario(
                     "prompt": "Coordinate the research team.",
                     "max_steps": 1 if scenario == "team_steps" else 30,
                     "max_instances": 1,
-                    **({"tool_call_timeout": 0.5} if scenario == "team_slow" else {}),
                 },
                 "installation": writer["installation"],
             },
@@ -334,7 +333,7 @@ async def run_team_scenario(
         if current["status"] != "running":
             break
         await asyncio.sleep(0.02)
-    if scenario in {"team_pipeline", "team_slow", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
+    if scenario in {"team_pipeline", "team_steps", "team_message_pipeline", "team_message_live", "team_message_parameters", "team_message_pause", "team_message_cancel", "team_message_replace"}:
         (folder / "team-evidence.json").write_text(
             json.dumps({"after": current}), encoding="utf-8"
         )

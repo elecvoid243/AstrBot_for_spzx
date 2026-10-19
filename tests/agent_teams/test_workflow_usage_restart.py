@@ -1,20 +1,21 @@
 """Accounting through the real pipeline and independent process termination."""
 
 import json
+from collections import Counter
 
 import pytest
 
-from tests.agent_teams.test_workflow_checkpoint_recovery import (
-    test_saved_model_plan_survives_forced_process_termination as run_crash_scenario,
-)
-from tests.agent_teams.test_workflow_team_restart import (
-    test_workflow_child_scope_survives_real_process_loss as run_child_scenario,
-)
 from tests.agent_teams.test_team_workflow_restart import (
     test_reverse_workflow_survives_actual_process_loss as run_reverse_scenario,
 )
+from tests.agent_teams.test_workflow_checkpoint_recovery import (
+    test_saved_model_plan_survives_forced_process_termination as run_crash_scenario,
+)
 from tests.agent_teams.test_workflow_loop_restart import (
     test_iteration_boundary_survives_process_termination as run_loop_scenario,
+)
+from tests.agent_teams.test_workflow_team_restart import (
+    test_workflow_child_scope_survives_real_process_loss as run_child_scenario,
 )
 
 
@@ -93,12 +94,46 @@ def test_root_ledger_includes_coordinator_nested_scopes_and_historical_rounds(
         )
         # Explicit inputs may be produced by a prior independent root run.
         # Reading its artifact does not transfer that run's historical billing.
-        input_producers = {ref["artifact_id"] for ref in root["snapshot"].get("input_artifacts", [])}
-        assert root["usage"]["model_calls"] == sum(request["run_id"] not in input_producers for request in external["requests"])
-        for scope in root["scopes"]:
-            assert {r["receipt_id"] for r in scope["usage"]["ledger"]} <= {
-                r["receipt_id"] for r in ledger
-            }
+        input_producers = {
+            ref["artifact_id"] for ref in root["snapshot"].get("input_artifacts", [])
+        }
+        deliveries = Counter(
+            request["run_id"]
+            for request in external["requests"]
+            if request["run_id"] not in input_producers
+        )
+        assert (
+            Counter(r["run_id"] for r in ledger if r["kind"] == "model") == deliveries
+        )
+        public_runs = [
+            root,
+            *root["scopes"],
+            *root["tasks"],
+            *[task for scope in root["scopes"] for task in scope["tasks"]],
+        ]
+        for scope in public_runs:
+            subtree = {scope["run_id"]}
+            # Follow public parent references, independent of the accounting ledger.
+            while (
+                descendants := {
+                    run["run_id"]
+                    for run in public_runs
+                    if run["snapshot"].get("parent_run_id") in subtree
+                }
+                - subtree
+            ):
+                subtree.update(descendants)
+            expected = Counter(
+                {key: count for key, count in deliveries.items() if key in subtree}
+            )
+            scope_ledger = scope["usage"]["ledger"]
+            assert len({r["receipt_id"] for r in scope_ledger}) == len(scope_ledger)
+            assert (
+                Counter(r["run_id"] for r in scope_ledger if r["kind"] == "model")
+                == expected
+            )
+            assert scope["usage"]["model_calls"] == sum(expected.values())
+            assert all(r in ledger for r in scope_ledger)
     else:
         assert root["usage"]["model_calls"] == 12
         rounds = root["loops"][0]["iterations"]

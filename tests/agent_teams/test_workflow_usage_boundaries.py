@@ -50,6 +50,8 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     active_models = 0
     peak_models = 0
     recorder_lock = threading.Lock()
+    first_model_started = threading.Event()
+    release_first_model = threading.Event()
 
     class Recorder(BaseHTTPRequestHandler):
         """External effects remain observable after the worker is terminated."""
@@ -203,9 +205,13 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 with recorder_lock:
                     active_models += 1
                     peak_models = max(peak_models, active_models)
-                if scenario in {"usage_parallel", "usage_shared_wait"}:
-                    time.sleep(0.15)
-                requests.append(payload)
+                    requests.append(payload)
+                    first_model = len(requests) == 1
+                if scenario in {"usage_parallel", "usage_shared_wait"} and first_model:
+                    first_model_started.set()
+                    assert release_first_model.wait(45), (
+                        "Quota contention was not observed"
+                    )
                 latest_user = max(
                     i
                     for i, message in enumerate(payload["contexts"])
@@ -323,7 +329,38 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 stdout=log,
                 stderr=subprocess.STDOUT,
             )
+            processes = {"start": {"pid": worker.pid, "command": worker.args}}
             try:
+                if scenario in {"usage_parallel", "usage_shared_wait"}:
+                    assert first_model_started.wait(40), "The first model never started"
+                    deadline = time.monotonic() + 15
+                    waiting_path = tmp_path / "usage-waiting.json"
+                    while not waiting_path.exists():
+                        assert worker.poll() is None
+                        assert time.monotonic() < deadline, (
+                            "No public quota wait snapshot"
+                        )
+                        time.sleep(0.03)
+                    waiting = json.loads(waiting_path.read_text(encoding="utf-8"))
+                    assert any(
+                        event["kind"] == "usage.waiting" for event in waiting["events"]
+                    )
+                    parked = [
+                        task
+                        for task in waiting["tasks"]
+                        if task["state"].get("usage_wait")
+                    ]
+                    assert parked and all(
+                        task["state"]["capacity_released"] for task in parked
+                    )
+                    # The first delivery is still in flight; the competitor has no receipt.
+                    assert len(requests) == active_models == peak_models == 1
+                    assert not effects
+                    assert waiting["usage"]["model_calls"] == 1
+                    assert waiting["usage"]["tokens"]["reported"] is None
+                    assert 15000 < waiting["usage"]["tokens"]["reserved"] <= 20000
+                    assert waiting["usage"]["tokens"]["unknown_calls"] == 1
+                    release_first_model.set()
                 deadline = time.monotonic() + 50
                 while not (tmp_path / "kill-ready.json").exists():
                     assert worker.poll() is None, (tmp_path / "start.log").read_text(
@@ -369,16 +406,35 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 if worker.poll() is None:
                     worker.kill()
                     worker.wait(timeout=10)
-        resumed = subprocess.run(
+                processes["start"]["exit_code"] = worker.returncode
+                (tmp_path / "processes.json").write_text(
+                    json.dumps(processes, indent=2), encoding="utf-8"
+                )
+        resumed = subprocess.Popen(
             [*command, "recover", scenario],
             cwd=root,
             env=environment,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            timeout=60,
         )
-        assert resumed.returncode == 0, resumed.stdout[-20000:] + resumed.stderr
+        try:
+            recovery_log, _ = resumed.communicate(timeout=60)
+        finally:
+            if resumed.poll() is None:
+                resumed.kill()
+                resumed.communicate(timeout=10)
+            processes["recover"] = {
+                "pid": resumed.pid,
+                "command": resumed.args,
+                "exit_code": resumed.returncode,
+            }
+            (tmp_path / "processes.json").write_text(
+                json.dumps(processes, indent=2), encoding="utf-8"
+            )
+        (tmp_path / "recover.log").write_text(recovery_log, encoding="utf-8")
+        assert resumed.returncode == 0, recovery_log[-20000:]
         evidence = json.loads((tmp_path / "recovered.json").read_text(encoding="utf-8"))
         before, after = evidence["before"], evidence["after"]
         assert after["state"].get("attempt_id") == before["state"].get("attempt_id")
@@ -504,6 +560,29 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 assert after["usage"]["tokens"]["reported"] == (
                     108 if scenario == "usage_shared_wait" else 72
                 )
+                assert after["usage"] == before["usage"]
+                assert after["usage"]["tokens"]["reserved"] == 0
+                # Tools have no token report; completed models do not erase that unknown usage.
+                assert after["usage"]["tokens"]["unknown_calls"] == (
+                    6 if scenario == "usage_shared_wait" else 4
+                )
+                assert all(
+                    receipt["quality"] == "reported"
+                    and receipt["reported_tokens"] == 12
+                    for receipt in ledger
+                    if receipt["kind"] == "model"
+                )
+                for task in after["tasks"]:
+                    assert task["usage"]["model_calls"] == 3
+                    assert task["usage"]["tokens"]["reported"] == 36
+                    original = next(
+                        item
+                        for item in waiting["tasks"]
+                        if item["run_id"] == task["run_id"]
+                    )
+                    assert (
+                        task["state"]["attempt_id"] == original["state"]["attempt_id"]
+                    )
                 assert peak_models == 1
                 assert any(
                     event["kind"] == "usage.waiting" for event in after["events"]
@@ -520,5 +599,6 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 )
                 assert after["usage"]["tokens"]["estimated"] > 0
     finally:
+        release_first_model.set()
         server.shutdown()
         server.server_close()

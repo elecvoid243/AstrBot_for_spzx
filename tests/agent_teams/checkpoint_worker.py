@@ -1066,6 +1066,16 @@ async def run_worker(
                 await client.post(endpoint + "/release", json={})
         for _ in range(2000):
             current = await service.get_run("alice", run["run_id"])
+            if (
+                action == "start"
+                and scenario in {"usage_parallel", "usage_shared_wait"}
+                and any(task["state"].get("usage_wait") for task in current["tasks"])
+                and not (folder / "usage-waiting.json").exists()
+            ):
+                # Relay only the public observation while the external model is held.
+                waiting_path = folder / "usage-waiting.tmp"
+                waiting_path.write_text(json.dumps(current), encoding="utf-8")
+                waiting_path.replace(folder / "usage-waiting.json")
             if current["status"] != "running":
                 break
             await asyncio.sleep(0.01)

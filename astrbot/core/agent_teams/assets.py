@@ -17,6 +17,7 @@ from astrbot.core.db.po import (
     AgentRoleVersion,
     AgentWorkflowPackage,
 )
+from astrbot.core.tools.file_tool_mode import file_tool_allowed, resolve_file_tool_mode
 
 SlotName = Annotated[str, Field(min_length=1, max_length=128)]
 
@@ -124,8 +125,14 @@ class RoleAssetService:
         self.core_lifecycle = core_lifecycle
         self.catalog_loader = catalog_loader
 
-    async def get_resources(self) -> dict:
+    async def get_resources(
+        self, *, file_tool_modes: dict[str, str] | None = None
+    ) -> dict:
         """Read the current machine's inventory without exposing credentials.
+
+        Args:
+            file_tool_modes: Frozen behavior modes for selected profiles during
+                recovery validation. Current resource authorization still applies.
 
         Returns:
             Profiles, live models, personas, tools, skills and knowledge bases.
@@ -194,6 +201,9 @@ class RoleAssetService:
                     "knowledge_bases": config.get("kb_names", []),
                     "skills": None,
                     "tools": None,
+                    "file_tool_mode": (file_tool_modes or {}).get(
+                        profile_id, resolve_file_tool_mode(settings)
+                    ),
                 }
             )
         for provider in core.provider_manager.get_insts():
@@ -258,6 +268,21 @@ class RoleAssetService:
                 if statuses
                 else list(core.astrbot_config_mgr.confs)
             )
+            enabled_profiles = [
+                profile_id
+                for profile_id in enabled_profiles
+                if file_tool_allowed(
+                    tool.name,
+                    (file_tool_modes or {}).get(
+                        profile_id,
+                        resolve_file_tool_mode(
+                            core.astrbot_config_mgr.confs[profile_id].get(
+                                "provider_settings", {}
+                            )
+                        ),
+                    ),
+                )
+            ]
             plugin = star_map.get(tool.handler_module_path)
             # Preserve MCP, unowned and reserved tools, as the main pipeline does.
             if plugin and not plugin.reserved and not isinstance(tool, MCPTool):
@@ -354,19 +379,32 @@ class RoleAssetService:
         role = await self.get_role(username, role_id, version)
         return {**role, **await self.preview_role(role, overrides)}
 
-    async def validate_frozen_role(self, role: dict) -> None:
+    async def validate_frozen_role(
+        self, role: dict, profile_snapshot: dict | None = None
+    ) -> None:
         """Check current resources against frozen bindings and immutable requirements.
 
         Args:
             role: Pinned definition, bindings, effective configuration and resolved
                 package dependencies. Legacy snapshots omit the dependency field
                 and retain their original database-based contract checks.
+            profile_snapshot: Original behavior settings. Only the file tool mode
+                affects catalog selection; live runtime and resource permissions
+                cannot be restored by this snapshot.
 
         Raises:
             RoleAssetError: A frozen binding is unavailable or incompatible.
         """
-        catalog = await self.get_resources()
         profile_id = role["installation"]["profile_id"]
+        catalog = await self.get_resources(
+            file_tool_modes={
+                profile_id: resolve_file_tool_mode(
+                    profile_snapshot.get("provider_settings", {})
+                )
+            }
+            if profile_snapshot is not None
+            else None
+        )
         effective = role["effective"]
         profiles = [p for p in catalog["profiles"] if p["id"] == profile_id]
         profile = profiles[0] if len(profiles) == 1 else {}
@@ -791,9 +829,15 @@ class RoleAssetService:
                         or profile_id
                         not in matches[0].get("enabled_profiles", [profile_id])
                     ):
+                        mode_excluded = field == "tools" and not file_tool_allowed(
+                            resource_id or reference,
+                            profile.get("file_tool_mode", "legacy"),
+                        )
                         code = (
                             "AMBIGUOUS"
                             if len(matches) > 1
+                            else "INCOMPATIBLE"
+                            if mode_excluded
                             else "FORBIDDEN"
                             if matches
                             else "MISSING"
@@ -802,7 +846,13 @@ class RoleAssetService:
                             {
                                 "path": path,
                                 "code": code,
-                                "message": f"Resource is unavailable: {resource_id or reference}",
+                                "message": (
+                                    f"Tool {resource_id or reference} is excluded by "
+                                    f"file_tool_mode={profile.get('file_tool_mode', 'legacy')} "
+                                    f"in profile {profile_id}"
+                                    if mode_excluded
+                                    else f"Resource is unavailable: {resource_id or reference}"
+                                ),
                             }
                         )
                     # Invocation allowlists narrow persona capabilities; they do

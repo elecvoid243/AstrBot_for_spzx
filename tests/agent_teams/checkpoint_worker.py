@@ -85,6 +85,13 @@ async def run_worker(
         "computer_use_runtime": "none", "display_reasoning_text": False,
     })
     config["provider_settings"]["file_extract"]["enable"] = False
+    if scenario.startswith("file_mode_"):
+        case = json.loads((folder / "case.json").read_text(encoding="utf-8"))
+        config["provider_settings"].update(
+            case.get("recovery_settings", case["settings"])
+            if action != "start"
+            else case["settings"]
+        )
     if scenario.startswith("overflow"):
         config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
@@ -291,7 +298,7 @@ async def run_worker(
                     "repair_query": "Do not return an empty response." in str(kwargs["contexts"]),
                     **({"llm_params": kwargs.get("llm_params")} if scenario.startswith("usage_") else {}),
                     **({"system_prompt": kwargs.get("system_prompt"), "tool_descriptions": {tool.name: tool.description for tool in kwargs["func_tool"].tools}} if scenario.startswith(("team_", "child_", "reverse_")) else {}),
-                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_")) else {}),
+                    **({"run_id": execution.run_id, "member_id": execution.member_id, "attempt_id": execution.turn_id} if execution and scenario.startswith(("team_message_", "child_", "reverse_", "file_mode_")) else {}),
                 })
                 if action == "start" and scenario in {"request", "control_request"}:
                     from astrbot.core.agent_team_execution import current_team_execution
@@ -347,6 +354,8 @@ async def run_worker(
             request: Effective request built by the main pipeline.
         """
         request.system_prompt += "\nprofile=" + context.get_config().get("test_profile", "")
+        if scenario.startswith("file_mode_"):
+            request.system_prompt += f";sender={event.get_sender_id()};role={event.role}"
         if action == "start" and scenario == "control_capacity":
             child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
             root_id = child["snapshot"]["parent_run_id"]
@@ -439,7 +448,7 @@ async def run_worker(
 
         sql_event.listen(Session, "after_flush", retry_flush)
         sql_event.listen(Session, "after_commit", retry_commit)
-    if action == "start":
+    if action == "start" and not scenario.startswith("file_mode_"):
         if scenario in {"legacy_response", "legacy_upgrade_failure"} or scenario.startswith("overflow_legacy"):
             def before_flush(session, flush_context, instances):
                 """Construct a pre-T08 saved response through the real storage seam.
@@ -578,6 +587,11 @@ async def run_worker(
                 await connection.execute(text("CREATE TRIGGER reject_response_checkpoint BEFORE UPDATE ON agent_workflow_checkpoints WHEN NEW.phase = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool result storage unavailable'); END" if scenario == "tool_save_failure" else "CREATE TRIGGER reject_response_checkpoint BEFORE INSERT ON agent_workflow_process WHEN NEW.kind = 'tool_result' BEGIN SELECT RAISE(ABORT, 'tool observation storage unavailable'); END"))
     dispatch = asyncio.create_task(event_bus.dispatch())
     try:
+        if scenario.startswith("file_mode_"):
+            from tests.agent_teams.file_mode_worker import run_file_mode_scenario
+
+            await run_file_mode_scenario(folder, endpoint, action, service, roles, queue_manager)
+            return
         if scenario.startswith("team_deadline_"):
             from tests.agent_teams.team_deadline_worker import run_deadline_scenario
 

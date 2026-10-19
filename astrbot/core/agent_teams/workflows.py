@@ -4690,7 +4690,9 @@ class WorkflowService:
             if permitted:
                 if "chat" in row.snapshot:
                     await self.chat.require_access(row.snapshot["chat"], username)
-                await self.roles.validate_frozen_role(row.snapshot["role"])
+                await self.roles.validate_frozen_role(
+                    row.snapshot["role"], row.snapshot.get("profile")
+                )
                 return
             await asyncio.sleep(0.1)
 
@@ -5968,7 +5970,9 @@ class WorkflowService:
             sender_id = caller.snapshot["member"]["member_id"]
             if sender_id not in members:
                 raise RoleAssetError("Caller is not a member of this scope", status=403)
-            await self.roles.validate_frozen_role(caller.snapshot["role"])
+            await self.roles.validate_frozen_role(
+                caller.snapshot["role"], caller.snapshot.get("profile")
+            )
             if request.action == "inspect":
                 return {
                     "scope_id": caller.state["scope_id"],
@@ -5990,7 +5994,8 @@ class WorkflowService:
                     "Choose a member in the same scope and nonempty text", status=403
                 )
             await self.roles.validate_frozen_role(
-                members[request.recipient_member_id]["role"]
+                members[request.recipient_member_id]["role"],
+                members[request.recipient_member_id].get("profile"),
             )
             received = (
                 (
@@ -6250,7 +6255,9 @@ class WorkflowService:
                         ],
                     )
                 frozen = copy.deepcopy(root.snapshot["allowed_roles"][request.role_id])
-                await self.roles.validate_frozen_role(frozen["role"])
+                await self.roles.validate_frozen_role(
+                    frozen["role"], frozen.get("profile")
+                )
                 count = sum(
                     item["role"]["role_id"] == request.role_id
                     for item in members.values()
@@ -6410,7 +6417,9 @@ class WorkflowService:
                 else:
                     assert request.name is not None and request.task is not None
                     frozen = members[request.member_id]
-                    await self.roles.validate_frozen_role(frozen["role"])
+                    await self.roles.validate_frozen_role(
+                        frozen["role"], frozen.get("profile")
+                    )
                     # Dispatch text is literal. Graph placeholders are escaped so goals
                     # containing braces cannot accidentally acquire new input bindings.
                     literal_task = request.task.replace("{", "{{").replace("}", "}}")
@@ -7154,7 +7163,7 @@ class WorkflowService:
                                         *frozen.get("allowed_roles", {}).values(),
                                     ]:
                                         await self.roles.validate_frozen_role(
-                                            member["role"]
+                                            member["role"], member.get("profile")
                                         )
                                         if (
                                             member["effective"].get("max_depth")

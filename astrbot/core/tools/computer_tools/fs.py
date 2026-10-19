@@ -57,6 +57,7 @@ from astrbot.api import FunctionTool, logger
 from astrbot.api.event import MessageChain
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
+from astrbot.core.agent_team_execution import current_team_execution
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.computer.computer_client import get_booter
 from astrbot.core.computer.file_read_utils import read_file_tool_result
@@ -184,6 +185,14 @@ def _write_allowed_roots(
 
 
 def _is_restricted_env(context: ContextWrapper[AstrAgentContext]) -> bool:
+    """Check local path restrictions against current invocation authority.
+
+    Args:
+        context: Tool-call context with the original sender identity.
+
+    Returns:
+        Whether local filesystem access must stay within allowed roots.
+    """
     if not is_local_runtime(context):
         return False
     cfg = context.context.context.get_config(
@@ -191,7 +200,12 @@ def _is_restricted_env(context: ContextWrapper[AstrAgentContext]) -> bool:
     )
     provider_settings = cfg.get("provider_settings", {})
     require_admin = provider_settings.get("computer_use_require_admin", True)
-    return require_admin and context.context.event.role != "admin"
+    is_admin = context.context.event.role == "admin"
+    execution = current_team_execution.get()
+    if is_admin and execution is not None and execution.profile_snapshot is not None:
+        # A live profile edit can revoke an already assigned event's admin role.
+        is_admin = context.context.event.get_sender_id() in cfg.get("admins_id", [])
+    return require_admin and not is_admin
 
 
 _READONLY_WRITE_ERROR = (

@@ -19,6 +19,8 @@ File write tools also follow the profile's `provider_settings.file_tool_mode`: `
 
 Existing runs retain their original file tool mode after profile edits and process restarts. Recovery checks the frozen mode against current resource authorization: disabling the runtime or a required tool blocks the affected task. A saved snapshot cannot restore revoked access, and a tool with an unknown outcome still requires reconciliation or confirmation before replay.
 
+File operations also obey the current administrator requirement and administrator IDs, read-only mode, additional write roots and deletion blacklist. These permissions can deny an operation from a saved plan while preserving its original tool group, sender and snapshot. Removing administrator access also constrains a member whose model request is already in progress.
+
 The preview distinguishes internal checkpoints, remote queries and an external call boundary. Remote executors cannot execute AstrBot's local tools, skills or knowledge bases, or enforce local `max_steps`, tool timeout or context-length overrides. Explicit unsupported requirements receive field errors. Autonomous coordinators require local task/team tools. Missing remote credentials are reported against the profile without exposing their values. Unsupported model-level token allowances and output ceilings are rejected; outer call-step limits still apply.
 
 Dify, Coze and DashScope Application receive the frozen role/persona framing as a prefix to the supported task or user input. The remote application's own system instructions remain configured on that service.

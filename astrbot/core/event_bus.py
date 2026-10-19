@@ -109,6 +109,12 @@ class EventBus:
                 frozen_config.__dict__.update(vars(scheduler.ctx.astrbot_config))
                 frozen_config.update(copy.deepcopy(dict(scheduler.ctx.astrbot_config)))
                 frozen_config.update(copy.deepcopy(binding.profile_snapshot))
+                # Waking assigns the event role from the current profile authority.
+                frozen_config["admins_id"] = copy.deepcopy(
+                    self.astrbot_config_mgr.confs[binding.config_id or conf_id].get(
+                        "admins_id", []
+                    )
+                )
                 runner = frozen_config.get("agent_runner", {})
                 if runner.get("runner_type") != "local":
                     live_runner = self.astrbot_config_mgr.confs[

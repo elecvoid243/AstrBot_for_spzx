@@ -177,6 +177,21 @@ class AstrBotConfigManager:
                 config.__dict__.update(vars(original))
                 config.update(copy.deepcopy(dict(original)))
                 config.update(copy.deepcopy(execution.profile_snapshot))
+                # Freeze behavior, but never restore revoked file authorization.
+                config["admins_id"] = copy.deepcopy(original.get("admins_id", []))
+                live_settings = original.get("provider_settings", {})
+                for permission in (
+                    "computer_use_require_admin",
+                    "file_access_default_mode",
+                    "file_access_extra_roots",
+                    "file_remove_blacklist",
+                ):
+                    if permission in live_settings:
+                        config.setdefault("provider_settings", {})[permission] = (
+                            copy.deepcopy(live_settings[permission])
+                        )
+                    else:
+                        config.get("provider_settings", {}).pop(permission, None)
             return config
         if not umo:
             return self.confs["default"]

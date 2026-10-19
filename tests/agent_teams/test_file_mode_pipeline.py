@@ -44,6 +44,12 @@ def file_environment(tmp_path):
             """Respond at an external model or sandbox filesystem boundary."""
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             case = json.loads((tmp_path / "case.json").read_text(encoding="utf-8"))
+            if self.path in {"/python", "/fs"}:
+                effect_before = {
+                    "exists": target.exists(),
+                    "bytes": target.read_bytes().hex() if target.exists() else None,
+                    "mtime_ns": target.stat().st_mtime_ns if target.exists() else None,
+                }
             if self.path == "/python":
                 operations.append({"kind": "python", **payload})
                 result = subprocess.run(
@@ -136,6 +142,11 @@ def file_environment(tmp_path):
                             },
                             "patch",
                         )
+                        if case.get("delete_patch"):
+                            args = {
+                                "patch": f"*** Begin Patch\n*** Delete File: {target.as_posix()}\n*** End Patch",
+                                "confirm": True,
+                            }
                 response = {
                     "role": "tool",
                     "id": "plan-" + call_id,
@@ -157,6 +168,17 @@ def file_environment(tmp_path):
                         "role": "assistant",
                         "completion_text": "No result has been submitted.",
                     }
+            if self.path in {"/python", "/fs"}:
+                operations[-1].update(
+                    before=effect_before,
+                    after={
+                        "exists": target.exists(),
+                        "bytes": target.read_bytes().hex() if target.exists() else None,
+                        "mtime_ns": target.stat().st_mtime_ns
+                        if target.exists()
+                        else None,
+                    },
+                )
             (tmp_path / "external-ledger.json").write_text(
                 json.dumps({"requests": requests, "operations": operations}),
                 encoding="utf-8",
@@ -394,6 +416,27 @@ def test_frozen_file_plan_survives_process_loss_with_current_authorization(
         },
         **({"revoke_tool": expected[0]} if policy == "tool_revoked" else {}),
     }
+    if policy == "admin_tightened":
+        case["recovery_settings"]["computer_use_require_admin"] = True
+    elif policy == "admin_removed":
+        case["settings"]["computer_use_require_admin"] = True
+        case["recovery_settings"]["computer_use_require_admin"] = True
+        case.update(admins=["alice"], recovery_admins=[])
+    elif policy == "readonly":
+        case["recovery_settings"]["file_access_default_mode"] = "readonly"
+    elif policy == "roots_revoked":
+        case["settings"].update(
+            file_access_default_mode="workspace",
+            file_access_extra_roots=[str(tmp_path)],
+        )
+        case["recovery_settings"].update(
+            file_access_default_mode="workspace", file_access_extra_roots=[]
+        )
+    elif policy == "blacklist_added":
+        case["delete_patch"] = True
+        case["recovery_settings"]["file_remove_blacklist"] = [
+            str(file_environment.target)
+        ]
     (tmp_path / "case.json").write_text(json.dumps(case), encoding="utf-8")
     root = Path(__file__).resolve().parents[2]
     command = [
@@ -502,6 +545,33 @@ def test_frozen_file_plan_survives_process_loss_with_current_authorization(
             assert "Original verified persona." in str(request["contexts"])
             assert "sender=alice;role=member" in str(request["contexts"])
             assert "Edited persona." not in str(request["contexts"])
+    elif policy in {
+        "admin_tightened",
+        "admin_removed",
+        "readonly",
+        "roots_revoked",
+        "blacklist_added",
+    }:
+        assert after["status"] == "completed", recovered
+        assert file_environment.target.read_bytes() == content_before
+        assert file_environment.target.stat().st_mtime_ns == modified_before
+        if runtime == "sandbox" and policy == "blacklist_added":
+            # Patch validation may read the target before rejecting deletion.
+            assert all(
+                operation["before"] == operation["after"]
+                for operation in file_environment.operations[len(operations_before) :]
+            )
+        else:
+            assert file_environment.operations == operations_before
+        error_context = str(file_environment.requests[2:]).lower()
+        assert (
+            "write access is restricted" in error_context
+            or "write access is disabled" in error_context
+            or "not allowed" in error_context
+        )
+        for request in file_environment.requests[2:]:
+            assert set(expected).issubset(request["tools"])
+            assert "sender=alice;role=member" in str(request["contexts"])
     else:
         assert file_environment.requests == requests_before
         assert file_environment.operations == operations_before
@@ -526,6 +596,57 @@ def test_frozen_file_plan_survives_process_loss_with_current_authorization(
                 issue["code"] == "UNAVAILABLE" and expected[0] in issue["message"]
                 for issue in after["state"]["issues"]
             )
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("legacy", ["astrbot_file_write_tool", "astrbot_file_edit_tool"]),
+        ("patch", ["astrbot_apply_patch"]),
+    ],
+)
+@pytest.mark.parametrize(
+    "policy", ["admin_tightened", "admin_removed", "readonly", "roots_revoked"]
+)
+def test_recovery_obeys_current_local_file_authorization(
+    tmp_path, file_environment, mode, expected, policy
+):
+    """Current local permissions constrain the original saved file plan.
+
+    Args:
+        tmp_path: Durable data shared across real process termination.
+        file_environment: Independent model and filesystem observations.
+        mode: Original frozen file tool behavior.
+        expected: Original selected file capability group.
+        policy: Current authorization change that must constrain the tool.
+    """
+    test_frozen_file_plan_survives_process_loss_with_current_authorization(
+        tmp_path, file_environment, "local", mode, expected, policy
+    )
+
+
+@pytest.mark.parametrize(
+    "runtime,policy",
+    [
+        ("sandbox", "readonly"),
+        ("local", "blacklist_added"),
+        ("sandbox", "blacklist_added"),
+    ],
+)
+def test_patch_recovery_obeys_current_write_and_delete_authorization(
+    tmp_path, file_environment, runtime, policy
+):
+    """Sandbox write policy and patch deletion restrictions remain current.
+
+    Args:
+        tmp_path: Durable data shared across real process termination.
+        file_environment: Independent model and sandbox filesystem.
+        runtime: Actual local or sandbox dispatch environment.
+        policy: Current write or delete authorization restriction.
+    """
+    test_frozen_file_plan_survives_process_loss_with_current_authorization(
+        tmp_path, file_environment, runtime, "patch", ["astrbot_apply_patch"], policy
+    )
 
 
 @pytest.mark.parametrize("runtime", ["local", "sandbox"])
@@ -569,3 +690,50 @@ def test_empty_role_allowlist_blocks_model_requested_file_effects(
     assert "not found" in str(file_environment.requests).lower()
     assert file_environment.target.read_text(encoding="utf-8") == "before\n"
     assert file_environment.operations == []
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("legacy", ["astrbot_file_write_tool", "astrbot_file_edit_tool"]),
+        ("patch", ["astrbot_apply_patch"]),
+    ],
+)
+def test_current_admin_revocation_constrains_an_inflight_member(
+    tmp_path, file_environment, mode, expected
+):
+    """A live profile edit constrains an already assigned admin event.
+
+    Args:
+        tmp_path: Isolated persisted state and file.
+        file_environment: Independent model and file effect observations.
+        mode: Original file behavior mode.
+        expected: Original selected capability group.
+    """
+    case = {
+        "entry": "workflow",
+        "tools": expected,
+        "exercise": True,
+        "admins": ["alice"],
+        "revoke_admin_during_model": True,
+        "settings": {
+            "computer_use_runtime": "local",
+            "file_tool_mode": mode,
+            "computer_use_require_admin": True,
+        },
+    }
+    original = file_environment.target.read_bytes()
+    original_mtime = file_environment.target.stat().st_mtime_ns
+    (tmp_path / "case.json").write_text(json.dumps(case), encoding="utf-8")
+    asyncio.run(
+        run_worker(tmp_path, file_environment.endpoint, "start", "file_mode_live_admin")
+    )
+    observed = json.loads((tmp_path / "observed.json").read_text(encoding="utf-8"))
+    assert observed["run"]["status"] == "completed", observed["run"]
+    assert file_environment.target.read_bytes() == original
+    assert file_environment.target.stat().st_mtime_ns == original_mtime
+    assert "write access is restricted" in str(file_environment.requests).lower()
+    assert "sender=alice;role=admin" in str(file_environment.requests)
+    assert observed["run"]["snapshot"]["members"]["writer"]["profile"]["admins_id"] == [
+        "alice"
+    ]

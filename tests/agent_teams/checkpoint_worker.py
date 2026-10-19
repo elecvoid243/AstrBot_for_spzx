@@ -92,6 +92,9 @@ async def run_worker(
             if action != "start"
             else case["settings"]
         )
+        config["admins_id"] = case.get(
+            "admins" if action == "start" else "recovery_admins", []
+        )
     if scenario.startswith("overflow"):
         config["provider_settings"]["computer_use_runtime"] = "local"
     config["agent_runner"]["config"]["misc"]["add_cron_tools"] = False
@@ -305,6 +308,9 @@ async def run_worker(
                     (folder / "kill-ready.json").write_text(json.dumps({"run_id": current_team_execution.get().run_id}), encoding="utf-8")
                     await asyncio.Future()
                 data = response.json()
+                if scenario.startswith("file_mode_") and case.get("revoke_admin_during_model"):
+                    # Apply a real profile edit after waking assigned the event role.
+                    acm.confs["default"]["admins_id"] = []
                 if data.get("error"):
                     raise RuntimeError(data["error"])
                 if data.get("usage"):

@@ -1093,9 +1093,12 @@ async def test_runner_config_checker_pass_runs_normally(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
-    """Resuming an interrupted run whose pending node's config profile was
-    deleted surfaces the failure immediately — no turn is dispatched."""
+async def test_ownerless_resume_preserves_history_with_deleted_config(tmp_path):
+    """Reject ownerless execution without rewriting deleted-profile history.
+
+    Args:
+        tmp_path: Isolated database containing the original node results.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()
     members = runner_members()
@@ -1174,21 +1177,20 @@ async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
         rounds=[],
     )
 
-    await run_svc.resume_run("alice", "rres")
-    runner = run_svc._runners["rres"]
-    for _ in range(250):
-        if runner.status in ("completed", "paused", "stopped", "failed"):
-            break
-        await asyncio.sleep(0.02)
-
-    # n2 (re-built pending, cfg-gone) pre-fails before any spawn; n1 stays done.
-    assert runner.node_states["n2"]["status"] == "failed"
-    assert runner.node_states["n2"]["error"] == "配置档案已删除"
-    assert runner.node_states["n1"]["status"] == "done"
+    before = await run_svc.get_history_run("alice", "rres")
+    row_before = await db.get_agent_team_run("rres")
+    with pytest.raises(AgentTeamsServiceError) as retired:
+        await run_svc.resume_run("alice", "rres")
+    assert retired.value.status == 410
+    assert await run_svc.get_history_run("alice", "rres") == before
+    assert not run_svc._runners
     assert delivered == []
     row = await db.get_agent_team_run("rres")
-    assert row.node_states["n2"]["status"] == "failed"
-    assert row.node_states["n2"]["error"] == "配置档案已删除"
+    assert row.status == "interrupted"
+    assert row.node_states == node_states
+    assert row.node_states["n1"]["result"] == "前驱结果"
+    assert row.node_states["n2"]["error"] is None
+    assert row.updated_at == row_before.updated_at
 
 
 # ---------------------------------------------------------------------------

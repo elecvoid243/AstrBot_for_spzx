@@ -63,7 +63,12 @@ async def run_reverse_scenario(
                 )
                 selected |= (
                     isinstance(row, AgentWorkflowCheckpoint)
-                    and scenario in {"reverse_tool_result", "reverse_pause"}
+                    and scenario
+                    in {
+                        "reverse_tool_result",
+                        "reverse_pause",
+                        "reverse_coordinator_first",
+                    }
                     and row.phase == "tool_result"
                     and row.data.get("response", {}).get("id") == "reverse-effect"
                 )
@@ -305,6 +310,19 @@ async def run_reverse_scenario(
         )
         await service.boot_sweep()
         unknown_rejections = []
+        if scenario == "reverse_coordinator_first":
+            coordinator = (await service.get_run("alice", run_id))["tasks"][0]
+            await service.recover_run("alice", coordinator["run_id"])
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                observed = await service.get_run("alice", run_id)
+                if observed["tasks"][0]["status"] == "awaiting_result":
+                    break
+                await asyncio.sleep(0.02)
+            assert observed["tasks"][0]["status"] == "awaiting_result", observed
+            (folder / "parent-before-child.json").write_text(
+                json.dumps(observed), encoding="utf-8"
+            )
         if scenario == "reverse_pause":
             paused = await service.get_run("alice", run_id)
             assert paused["control"]["status"] == "paused"
@@ -316,6 +334,10 @@ async def run_reverse_scenario(
         if scenario == "reverse_human":
             waiting = await service.get_run("alice", run_id)
             assert waiting["todos"][0]["status"] == "pending"
+            assert waiting["todos"] == before["todos"]
+            assert waiting["status"] != "completed"
+            assert waiting["tasks"][1]["status"] == "waiting_child"
+            assert waiting["tasks"][1]["result"] is None
             await service.control_run(
                 "alice",
                 run_id,
@@ -357,9 +379,19 @@ async def run_reverse_scenario(
         for _ in range(1200):
             current = await service.get_run("alice", run_id)
             for task in [
-                *current["tasks"],
                 *(task for scope in current["scopes"] for task in scope["tasks"]),
+                *current["tasks"],
             ]:
+                if (
+                    scenario in {"reverse_tool_result", "reverse_pause"}
+                    and task["node_id"] == "coordinator"
+                    and any(
+                        scope["status"] != "completed" for scope in current["scopes"]
+                    )
+                ):
+                    # This scripted coordinator ends on attention. Complete the
+                    # explicitly requested child recovery before resuming its wait.
+                    continue
                 if (
                     scenario not in {"reverse_unknown", "reverse_cancel"}
                     and task["status"] in {"interrupted", "failed", "blocked"}
@@ -375,12 +407,46 @@ async def run_reverse_scenario(
                 and current["status"] == "blocked"
                 or scenario == "reverse_cancel"
                 and current["status"] == "cancelled"
+                or scenario == "reverse_coordinator_first"
+                and current["scopes"][0]["status"] == "completed"
             ):
                 break
             await asyncio.sleep(0.02)
         for _ in range(3):
             await service.advance_run("alice", run_id)
         current = await service.get_run("alice", run_id)
+        unsubmitted = None
+        recover_rejections = []
+        if scenario == "reverse_coordinator_first":
+            unsubmitted = current
+            assert current["status"] == "blocked"
+            assert current["tasks"][0]["status"] == "awaiting_result"
+            coordinator = current["tasks"][0]
+            try:
+                await service.recover_run("alice", coordinator["run_id"])
+            except RoleAssetError as exc:
+                recover_rejections.append(exc.status)
+            else:
+                raise AssertionError("An unsubmitted result was recovered as success")
+            (folder / "retry-parent.json").write_text(
+                "explicit retry", encoding="utf-8"
+            )
+            await service.retry_task(
+                "alice",
+                coordinator["run_id"],
+                {
+                    "request_id": "retry-unsubmitted-parent",
+                    "attempt_id": coordinator["state"]["attempt_id"],
+                    "input_policy": "original",
+                },
+            )
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                current = await service.get_run("alice", run_id)
+                if current["status"] == "completed":
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
         file_verified = False
         if current["status"] == "completed":
             call = current["tasks"][1]
@@ -444,6 +510,8 @@ async def run_reverse_scenario(
                     "after": current,
                     "unknown_rejections": unknown_rejections,
                     "file_verified": file_verified,
+                    "unsubmitted": unsubmitted,
+                    "recover_rejections": recover_rejections,
                 }
             ),
             encoding="utf-8",

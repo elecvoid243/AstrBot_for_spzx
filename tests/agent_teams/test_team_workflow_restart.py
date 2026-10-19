@@ -25,6 +25,7 @@ import pytest
         "reverse_return_pre",
         "reverse_return_post",
         "reverse_tool_result",
+        "reverse_coordinator_first",
         "reverse_unknown",
         "reverse_pause",
         "reverse_cancel",
@@ -116,7 +117,56 @@ def test_reverse_workflow_survives_actual_process_loss(
                         "usage": {"input_other": 11, "output": 5},
                     }
 
-                if "team_manage" in payload["tools"]:
+                if (
+                    "team_manage" in payload["tools"]
+                    and scenario == "reverse_coordinator_first"
+                    and (tmp_path / "retry-parent.json").exists()
+                ):
+                    # A new Attempt makes new observations; the old blocked wait
+                    # remains immutable evidence in the failed Attempt.
+                    if "reverse-retry-inspect" not in results:
+                        response = call(
+                            "reverse-retry-inspect",
+                            "team_manage",
+                            {"action": "inspect", "request_id": "retry-inspect"},
+                        )
+                    elif "reverse-retry-wait" not in results:
+                        task = next(
+                            task
+                            for task in json.loads(results["reverse-retry-inspect"])[
+                                "tasks"
+                            ]
+                            if task["name"] == "Research saved workflow"
+                        )
+                        response = call(
+                            "reverse-retry-wait",
+                            "team_manage",
+                            {
+                                "action": "wait",
+                                "request_id": "retry-wait",
+                                "task_ids": [task["task_id"]],
+                            },
+                        )
+                    elif "reverse-retry-read" not in results:
+                        task = json.loads(results["reverse-retry-wait"])["tasks"][0]
+                        assert task["status"] == "completed", task
+                        response = call(
+                            "reverse-retry-read",
+                            "read_task_artifact",
+                            task["result_ref"],
+                        )
+                    elif "reverse-retry-submit" not in results:
+                        response = call(
+                            "reverse-retry-submit",
+                            "submit_task_result",
+                            {"text": "Parent delivered"},
+                        )
+                    else:
+                        response = {
+                            "role": "assistant",
+                            "completion_text": "Delivered.",
+                        }
+                elif "team_manage" in payload["tools"]:
                     allowed = json.loads(
                         payload["tool_descriptions"]["team_manage"].split(
                             "Allowed workflows: ", 1
@@ -307,6 +357,7 @@ def test_reverse_workflow_survives_actual_process_loss(
         "ASTRBOT_LOG_LEVEL": "WARNING",
     }
     process = None
+    process_records = []
     try:
         with (tmp_path / "start.log").open("w", encoding="utf-8") as log:
             process = subprocess.Popen(
@@ -334,22 +385,37 @@ def test_reverse_workflow_survives_actual_process_loss(
             if scenario != "reverse_pipeline":
                 process.kill()
             process.wait(timeout=10)
+            process_records.append(
+                {
+                    "action": "start",
+                    "pid": process.pid,
+                    "killed": scenario != "reverse_pipeline",
+                    "exit_code": process.returncode,
+                }
+            )
         if scenario != "reverse_pipeline":
-            recovered = subprocess.run(
+            process = subprocess.Popen(
                 [*command, "recover", scenario],
                 cwd=root,
                 env=environment,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
-                timeout=80,
             )
-            (tmp_path / "recover.log").write_text(
-                recovered.stdout + recovered.stderr, encoding="utf-8"
+            stdout, stderr = process.communicate(timeout=80)
+            process_records.append(
+                {
+                    "action": "recover",
+                    "pid": process.pid,
+                    "exit_code": process.returncode,
+                }
             )
-            assert recovered.returncode == 0, (
-                recovered.stdout[-14000:] + recovered.stderr[-5000:]
-            )
+            (tmp_path / "recover.log").write_text(stdout + stderr, encoding="utf-8")
+            assert process.returncode == 0, stdout[-14000:] + stderr[-5000:]
+        (tmp_path / "processes.json").write_text(
+            json.dumps(process_records), encoding="utf-8"
+        )
         evidence = json.loads(
             (
                 tmp_path
@@ -405,6 +471,9 @@ def test_reverse_workflow_survives_actual_process_loss(
             for scope in [current, *current["scopes"]]
             for task in scope["tasks"]
         ]
+        assert (
+            current["result"] == coordinator["result"] == {"text": "Parent delivered"}
+        )
         assert scope["snapshot"]["asset_version"] == 1
         assert scope["snapshot"]["definition"]["name"].startswith("Fixed research")
         assert all(
@@ -461,6 +530,99 @@ def test_reverse_workflow_survives_actual_process_loss(
                 task["run_id"]: task["state"]["attempt_id"]
                 for task in evidence["before"]["scopes"][0]["tasks"]
             }
+        if "before" in evidence:
+            old = evidence["before"]
+            assert current["snapshot"] == old["snapshot"]
+            assert current["usage"]["model_calls"] >= old["usage"]["model_calls"]
+            assert current["usage"]["steps_used"] >= old["usage"]["steps_used"]
+            assert {item["receipt_id"] for item in old["usage"]["ledger"]} <= {
+                item["receipt_id"] for item in current["usage"]["ledger"]
+            }
+            assert (
+                coordinator["state"]["attempt_id"]
+                == old["tasks"][0]["state"]["attempt_id"]
+            ) is (scenario != "reverse_coordinator_first")
+        for task in [*current["tasks"], *scope["tasks"]]:
+            for records, identity in (
+                (task["process"], "record_id"),
+                (task["tool_calls"], "record_id"),
+                (task["messages"], "message_id"),
+            ):
+                assert len({record[identity] for record in records}) == len(records)
+        if scenario == "reverse_coordinator_first":
+            unsubmitted = evidence["unsubmitted"]
+            original = unsubmitted["tasks"][0]
+            assert unsubmitted["status"] == "blocked"
+            assert original["status"] == "awaiting_result"
+            assert original["result"] is None and original["pending_result"] is None
+            assert unsubmitted["result"] is None
+            assert all(
+                task["status"] == "completed"
+                for task in unsubmitted["scopes"][0]["tasks"]
+            )
+            assert evidence["recover_rejections"] == [409]
+            old_wait = next(
+                call
+                for call in original["tool_calls"]
+                if call["call_id"] == "reverse-wait"
+            )
+            assert (
+                next(
+                    call
+                    for call in coordinator["tool_calls"]
+                    if call["record_id"] == old_wait["record_id"]
+                )
+                == old_wait
+            )
+            blocked = json.loads(old_wait["raw_results"][0]["content"][0]["text"])[
+                "tasks"
+            ][0]
+            assert (
+                blocked["status"] == "blocked"
+                and blocked["result"] is None
+                and blocked["result_ref"] is None
+            )
+            assert not any(
+                call["name"] == "submit_task_result" for call in original["tool_calls"]
+            )
+            final_response = [
+                record["data"]
+                for record in original["process"]
+                if record["kind"] == "model_response"
+            ][-1]
+            assert final_response["role"] == "assistant"
+            assert final_response["text"] == "The workflow needs local attention."
+            assert final_response["tool_calls"] == []
+            assert (
+                coordinator["attempts"][0]["attempt_id"]
+                == original["state"]["attempt_id"]
+            )
+            new_wait = next(
+                call
+                for call in coordinator["tool_calls"]
+                if call["call_id"] == "reverse-retry-wait"
+            )
+            assert new_wait["record_id"] != old_wait["record_id"]
+            assert new_wait["attempt_id"] == coordinator["state"]["attempt_id"]
+            returned = json.loads(new_wait["raw_results"][0]["content"][0]["text"])[
+                "tasks"
+            ][0]
+            assert (
+                returned["status"] == "completed"
+                and returned["result"] == call_task["result"]
+            )
+            first_retry = next(
+                index
+                for index, request in enumerate(requests)
+                if request["run_id"] == coordinator["run_id"]
+                and request["attempt_id"] == coordinator["state"]["attempt_id"]
+            )
+            assert first_retry == 17
+            before_child = json.loads(
+                (tmp_path / "parent-before-child.json").read_text(encoding="utf-8")
+            )
+            assert before_child["tasks"][0]["status"] == "awaiting_result"
+            assert before_child["scopes"][0]["tasks"][0]["status"] == "interrupted"
         if preview:
             subprocess.run(
                 [*command, "serve", scenario], cwd=root, env=environment, check=True

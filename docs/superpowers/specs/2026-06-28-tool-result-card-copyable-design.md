@@ -387,7 +387,7 @@ b) **为 meta-value / output-value / meta-value-dim / session-list-cmd / initial
 />
 ```
 
-> **`v-else class="empty-note"` 分支不受影响**：原本 `parsed.output` 为空时显示 `<span class="empty-note">{{ tm('intaShell.labels.noOutput') }}</span>`，这个分支在 CopyableText 的 `v-if="hasOutput"` 之外，**不经过 CopyableText**，保留原样。
+> **`v-else class="empty-note"` 分支不受影响**：原本 `parsed.output` 为空时显示 <code v-pre>&lt;span class="empty-note"&gt;{{ tm('intaShell.labels.noOutput') }}&lt;/span&gt;</code>，这个分支在 CopyableText 的 `v-if="hasOutput"` 之外，**不经过 CopyableText**，保留原样。
 
 #### 4.3.7 `ToolResultView.vue` — code/result 块 + 新增高价值文件路径
 

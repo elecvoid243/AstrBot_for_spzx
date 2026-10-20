@@ -1630,7 +1630,7 @@ it('shows countdown timer', async () => {
    - `color`：颜色选择器
    
 2. **动态表单**：
-   - 字段可见性条件（`visible_when: "{{field1}} == 'value'"`）
+   - 字段可见性条件（<code v-pre>visible_when: "{{field1}} == 'value'"</code>）
    - 选项动态加载（调用 API 获取选项列表）
    
 3. **审批流增强**：
@@ -1638,7 +1638,7 @@ it('shows countdown timer', async () => {
    - 审批历史记录（谁在什么时间批准/拒绝）
    
 4. **输入预填充**：
-   - 从前驱节点输出预填表单字段（`default_value: "{{prev.output.suggestion}}"`）
+   - 从前驱节点输出预填表单字段（<code v-pre>default_value: "{{prev.output.suggestion}}"</code>）
    
 5. **富文本编辑器**：
    - textarea 升级为 Markdown/WYSIWYG 编辑器

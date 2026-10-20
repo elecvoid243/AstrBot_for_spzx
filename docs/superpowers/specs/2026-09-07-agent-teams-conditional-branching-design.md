@@ -21,7 +21,7 @@ Agent Teams 当前 DAG 编排是**静态无环图**，所有节点按拓扑顺�
 | 决策点 | 结论 |
 |---|---|
 | 输出格式 | Markdown 标记块 ` ```output ... ``` `，内含 JSON（对 LLM 友好） |
-| 条件表达式 | 支持逻辑运算（`&&`/`||`/`!`）+ 比较（`==`/`!=`/`>`等）+ 访问路径（`{{node.output.field}}`） |
+| 条件表达式 | 支持逻辑运算（`&&`/`\|\|`/`!`）+ 比较（`==`/`!=`/`>`等）+ 访问路径（<code v-pre>{{node.output.field}}</code>） |
 | 存储方式 | `node_states[id].structured_output` 独立字段存解析后的 JSON（不混入 `result` 文本） |
 | 混合模式 | 同一节点的出边可混合：有 `condition` 的边求值检查；无 `condition` 的边总是执行 |
 | 错误处理 | 条件表达式语法错误 → run `failed`（编辑器校验 + 运行时终审）；节点输出 JSON 格式错误 → run `paused`（用户可修复） |
@@ -185,18 +185,18 @@ def extract_structured_output(result_text: str) -> tuple[dict | list | None, str
 
 ### 4.1 语法规范
 
-**变量访问**：`{{<node_id>.output.<field>}}`
+**变量访问**：<code v-pre>{{&lt;node_id&gt;.output.&lt;field&gt;}}</code>
 - `<node_id>`：节点 ID（必须是当前节点的前驱）
 - `<field>`：JSON 路径，支持点访问（`a.b.c`）和数组索引（`list[0]`）
 
 **运算符**（优先级从高到低）：
 | 运算符 | 说明 | 示例 |
 |---|---|---|
-| `!` | 逻辑非 | `!{{n1.output.flag}}` |
-| `>` `<` `>=` `<=` | 比较 | `{{n1.output.score}} > 80` |
-| `==` `!=` | 相等 | `{{n1.output.status}} == "success"` |
-| `&&` | 逻辑与 | `{{a.output.x}} > 0 && {{b.output.y}} < 10` |
-| `||` | 逻辑或 | `{{a.output.ok}} || {{b.output.ok}}` |
+| `!` | 逻辑非 | <code v-pre>!{{n1.output.flag}}</code> |
+| `>` `<` `>=` `<=` | 比较 | <code v-pre>{{n1.output.score}} &gt; 80</code> |
+| `==` `!=` | 相等 | <code v-pre>{{n1.output.status}} == "success"</code> |
+| `&&` | 逻辑与 | <code v-pre>{{a.output.x}} &gt; 0 &amp;&amp; {{b.output.y}} &lt; 10</code> |
+| `\|\|` | 逻辑或 | <code v-pre>{{a.output.ok}} &#124;&#124; {{b.output.ok}}</code> |
 
 **字面量**：
 - 布尔：`true` / `false`
@@ -1122,7 +1122,7 @@ components:
 
 **文件**：`tests/agent_teams/test_conditional_branching.py`
 
-```python
+````python
 import pytest
 from astrbot.dashboard.services.agent_team_condition import (
     ConditionEvaluator,
@@ -1252,7 +1252,7 @@ async def test_dag_runner_conditional_branching(build_test_team):
     assert runner.node_states["check"]["structured_output"] == {"approved": True}
     assert runner.node_states["process_a"]["status"] == "done"
     assert runner.node_states["process_b"]["status"] == "skipped"
-```
+````
 
 ### 8.2 前端 vitest
 
@@ -1343,9 +1343,9 @@ it('validates condition syntax on blur', async () => {
 1. **Phase 3: 循环边** — 复用条件求值引擎，增加 `max_iterations` 计数器
 2. **Phase 4: 子工作流** — 子图内部节点的条件边遵循相同语义
 3. **条件表达式增强**：
-   - 内置函数（`length({{n.output.list}})`、`contains({{n.output.text}}, "关键词")`）
-   - 正则匹配（`matches({{n.output.text}}, "^[0-9]+$")`）
-   - 时间比较（`{{n.output.timestamp}} > now() - 3600`）
+   - 内置函数（<code v-pre>length({{n.output.list}})</code>、<code v-pre>contains({{n.output.text}}, "关键词")</code>）
+   - 正则匹配（<code v-pre>matches({{n.output.text}}, "^[0-9]+$")</code>）
+   - 时间比较（<code v-pre>{{n.output.timestamp}} &gt; now() - 3600</code>）
 4. **可视化条件编辑器** — 拖拽式表达式构建器（降低语法门槛）
 
 ## 11. 迁移与兼容性

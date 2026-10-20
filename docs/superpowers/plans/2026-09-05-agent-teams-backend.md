@@ -584,7 +584,7 @@ git commit -m "feat: add agent teams repository methods"
   - `validate_dag(nodes: list[dict], edges: list[dict]) -> dict[str, list[str]]` — returns adjacency `node_id -> [direct successor ids]`; raises `TeamDAGError` on duplicate node id, edge referencing unknown node, or cycle.
   - `topological_layers(nodes: list[dict], edges: list[dict]) -> list[list[str]]` — Kahn layering (independent nodes batched per layer).
   - `downstream_of(node_id: str, edges: list[dict]) -> list[str]` — transitive successors (cascade-skip set).
-  - `render_task(template: str, run_input: str, results: dict[str, str], max_length: int) -> str` — substitutes `{{input}}` and `{{<node_id>}}`; raises `TeamDAGError` on unknown placeholder; tail-truncates substitutions to `max_length`.
+  - `render_task(template: str, run_input: str, results: dict[str, str], max_length: int) -> str` — substitutes <code v-pre>{{input}}</code> and <code v-pre>{{&lt;node_id&gt;}}</code>; raises `TeamDAGError` on unknown placeholder; tail-truncates substitutions to `max_length`.
 
 - [ ] **Step 1: Write the failing test**
 

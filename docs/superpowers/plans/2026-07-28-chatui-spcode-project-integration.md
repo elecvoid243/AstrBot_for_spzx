@@ -1640,7 +1640,7 @@ Expected: dashboard 在 `http://localhost:3000` 启动。
 点击该项目行 → 展开子会话列表（空） → 在 ChatInput 发一条消息（"hi"）→ 等响应。
 
 Expected:
-- 顶部 spcode chip 出现"已加载: <path>"（≤2s）
+- 顶部 spcode chip 出现"已加载: `<path>`"（≤2s）
 - ProjectView 头部状态条变绿
 - 聊天流无 ⏳/❌/✅ 消息（**关键**）
 

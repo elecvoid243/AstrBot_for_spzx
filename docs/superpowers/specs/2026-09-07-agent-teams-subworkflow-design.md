@@ -24,7 +24,7 @@ Agent Teams 工作流逐渐复杂，常见两类需求：
 |---|---|
 | 实现方式 | 子工作流节点（节点类型 `subworkflow`），而非仅 UI 折叠 |
 | 引用机制 | 按 `workflow_id` 引用同团队下的其他工作流 |
-| 输入输出 | 隐式一进一出：`{{input}}` = 父节点输出；子工作流最后完成节点的输出 = 子工作流节点输出 |
+| 输入输出 | 隐式一进一出：<code v-pre>{{input}}</code> = 父节点输出；子工作流最后完成节点的输出 = 子工作流节点输出 |
 | 递归深度 | 最多 3 层嵌套（子 → 孙 → 曾孙），防止栈溢出 |
 | 状态隔离 | 子工作流运行在独立上下文中，不能访问父工作流的节点变量 |
 | 失败传播 | 子工作流节点失败 → 按父工作流的 `failure_policy` 处理 |
@@ -1194,7 +1194,7 @@ it('disables import button until all members mapped', () => {
 1. **创建子工作流**：保存"数据预处理"工作流（2 个节点）
 2. **引用子工作流**：主工作流拖入子工作流节点，选择"数据预处理"
 3. **执行嵌套流**：运行主工作流，观察子工作流节点展开为多个成员执行
-4. **输出传递**：主节点输出 `{x: 1}` → 子工作流 `{{input.x}}` 可访问
+4. **输出传递**：主节点输出 `{x: 1}` → 子工作流 <code v-pre>{{input.x}}</code> 可访问
 5. **导出工作流**：点击导出，下载 JSON 文件
 6. **导入工作流**：新建团队，导入文件，映射成员，成功创建
 7. **循环引用警告**：A 引用 B，B 引用 A → 保存时报错
@@ -1242,7 +1242,7 @@ it('disables import button until all members mapped', () => {
 ## 11. 未来扩展方向
 
 1. **参数化子工作流**：
-   - 显式输入映射：`input_mapping: {param1: "{{parent.output.x}}", param2: "fixed_value"}`
+   - 显式输入映射：<code v-pre>input_mapping: {param1: "{{parent.output.x}}", param2: "fixed_value"}</code>
    - 多输出节点选择：`output_node_id: "specific_node"`
 
 2. **子工作流版本管理**：

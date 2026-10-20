@@ -371,7 +371,7 @@ pnpm lint
 | 多个 dashboard tab 各自维护 | 低 | 各 tab 独立读 localStorage；后端真实状态以 spcode 为准；无需协调 |
 | spcode 改名后菜单项消失 | 低 | 与现有"命令被禁用"行为一致；用户可在 spcode 配置中恢复 |
 | localStorage 数据损坏 | 低 | `try/catch` + `Array.isArray` + 类型守卫 |
-| `wakePrefixes` 多值场景（未来） | 低 | 当前用 `wakePrefixes[0]` + `|| "/"` 兜底；若多值场景出现，可扩展为「按顺序尝试」策略 |
+| `wakePrefixes` 多值场景（未来） | 低 | 当前用 `wakePrefixes[0]` + `\|\| "/"` 兜底；若多值场景出现，可扩展为「按顺序尝试」策略 |
 | **共享浏览器场景**：多用户共用同一台机器浏览 dashboard 时，路径历史在 localStorage 是共享的（不过 history 只在当前用户设备上持久化时才有意义） | 低（v1 接受） | v1 不做 user-scoped 命名空间；如未来多人共用浏览器成为问题，再按 `getStoredDashboardUsername()` 模式加命名空间 |
 | 流式响应中点提交 | 低 | spcode per-umo 状态由 spcode 内部维护；前端不拦截并发，与手动键入行为完全一致 |
 

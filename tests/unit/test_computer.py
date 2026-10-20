@@ -4,6 +4,7 @@ This module tests the ComputerClient, Booter implementations (local, shipyard, b
 filesystem operations, Python execution, shell execution, and security restrictions.
 """
 
+import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -208,7 +209,12 @@ class TestLocalPythonComponent:
         """Test executing simple Python code."""
         python = LocalPythonComponent()
         result = await python.exec("print('hello')")
-        assert result["data"]["output"]["text"] == "hello\n"
+        assert result == {
+            "data": {
+                "output": {"text": f"hello{os.linesep}", "images": []},
+                "error": "",
+            }
+        }
 
     @pytest.mark.asyncio
     async def test_exec_with_error(self):
@@ -216,6 +222,57 @@ class TestLocalPythonComponent:
         python = LocalPythonComponent()
         result = await python.exec("raise ValueError('test error')")
         assert "test error" in result["data"]["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("stdout", "expected_text"),
+        [
+            (b"  first\r\nsecond\n\nend  ", "  first\r\nsecond\n\nend  "),
+            ("你好\r\n\n".encode(), "你好\r\n\n"),
+            (b"no trailing newline", "no trailing newline"),
+        ],
+    )
+    async def test_exec_preserves_stdout(self, stdout, expected_text):
+        """Preserve decoded child bytes, including whitespace and line endings.
+
+        Args:
+            stdout: Bytes written directly to the child's stdout.
+            expected_text: Complete text returned by the public execution API.
+        """
+        result = await LocalPythonComponent().exec(
+            f"import os; os.write(1, {stdout!r})"
+        )
+
+        assert result == {
+            "data": {
+                "output": {"text": expected_text, "images": []},
+                "error": "",
+            }
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("exit_code", "expected_error"), [(0, ""), (7, "错误\r\n")]
+    )
+    async def test_exec_reports_stderr_for_failed_exit(self, exit_code, expected_error):
+        """Expose stderr on failure while preserving stdout for either exit status.
+
+        Args:
+            exit_code: Exit status returned by the child interpreter.
+            expected_error: Complete error text exposed for that exit status.
+        """
+        stderr = "错误\r\n".encode()
+        result = await LocalPythonComponent().exec(
+            "import os, sys; os.write(1, b'out\\r\\n'); "
+            f"os.write(2, {stderr!r}); sys.exit({exit_code})"
+        )
+
+        assert result == {
+            "data": {
+                "output": {"text": "out\r\n", "images": []},
+                "error": expected_error,
+            }
+        }
 
     @pytest.mark.asyncio
     async def test_exec_with_timeout(self):

@@ -99,8 +99,7 @@
                   active: activeSessionId === session.session_id,
                   selection: selectionMode,
                   checked:
-                    selectionMode &&
-                    checkedSessionIds.has(session.session_id),
+                    selectionMode && checkedSessionIds.has(session.session_id),
                   'needs-choice': choiceAttention.hasAttention(
                     session.session_id,
                   ),
@@ -145,11 +144,13 @@
                     $event,
                   )
                 "
-                @dragleave="
-                  onSessionRowDragLeave(project.project_id, $event)
-                "
+                @dragleave="onSessionRowDragLeave(project.project_id, $event)"
                 @drop.prevent="
-                  onSessionRowDrop(project.project_id, session.session_id, $event)
+                  onSessionRowDrop(
+                    project.project_id,
+                    session.session_id,
+                    $event,
+                  )
                 "
               >
                 <v-checkbox-btn
@@ -272,7 +273,11 @@
                     class="project-action-btn"
                     :title="tm('conversation.moreActions')"
                     @click="
-                      openSessionContextMenu(project.project_id, session, $event)
+                      openSessionContextMenu(
+                        project.project_id,
+                        session,
+                        $event,
+                      )
                     "
                   >
                     <MoreHorizontal :size="16" />
@@ -298,6 +303,7 @@
     <!-- 2026-09-14 (elecvoid243): right-click menu on a project session
        row; opened with pointer coordinates from openSessionContextMenu(). -->
     <StyledMenu
+      v-if="sessionContextMenu.session"
       v-model="sessionContextMenu.show"
       :target="sessionContextMenu.target"
       location="end"
@@ -393,7 +399,9 @@
       >
         <template #prepend>
           <MailOpen
-            v-if="sessionHasUnreadMarker(sessionContextMenu.session!.session_id)"
+            v-if="
+              sessionHasUnreadMarker(sessionContextMenu.session!.session_id)
+            "
             :size="16"
           />
           <Mail v-else :size="16" />
@@ -771,7 +779,6 @@ function onSessionRowDrop(
 ) {
   emit("dropOnSession", projectId, sessionId, insertBeforeRow(event));
 }
-
 </script>
 
 <style scoped>

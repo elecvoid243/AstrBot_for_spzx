@@ -571,7 +571,9 @@ def test_frozen_file_plan_survives_process_loss_with_current_authorization(
         )
         for request in file_environment.requests[2:]:
             assert set(expected).issubset(request["tools"])
-            assert "sender=alice;role=member" in str(request["contexts"])
+            # Restored framing retains its original marker; it grants no authority.
+            original_role = "admin" if policy == "admin_removed" else "member"
+            assert f"sender=alice;role={original_role}" in str(request["contexts"])
     else:
         assert file_environment.requests == requests_before
         assert file_environment.operations == operations_before

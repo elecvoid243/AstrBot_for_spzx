@@ -6,6 +6,7 @@ import locale
 import os
 import sys
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -88,6 +89,12 @@ async def test_sandbox_file_download_handles_windows_remote_filename(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
+    """Keep a remote Windows basename within the host's temporary directory.
+
+    Args:
+        monkeypatch: Isolated sandbox transport and temporary directory.
+        tmp_path: Native host filesystem location.
+    """
     temp_root = tmp_path / "temp"
     temp_root.mkdir(parents=True, exist_ok=True)
 
@@ -98,8 +105,8 @@ async def test_sandbox_file_download_handles_windows_remote_filename(
     )
 
     async def _download_file(_remote_path, local_path):
-        assert local_path.endswith("report.txt")
-        assert "\\" not in local_path
+        assert Path(local_path).name.endswith("report.txt")
+        assert Path(local_path).parent == temp_root
 
     booter = SimpleNamespace(download_file=AsyncMock(side_effect=_download_file))
 
@@ -426,6 +433,12 @@ async def test_restricted_local_member_cannot_modify_locally_installed_skill(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
+    """Deny installed skill writes while permitting the member's workspace.
+
+    Args:
+        monkeypatch: Isolated local filesystem and access settings.
+        tmp_path: Separate installed skill and workspace directories.
+    """
     workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
     installed_skill = tmp_path / "skills" / "demo-skill" / "SKILL.md"
     installed_skill.parent.mkdir(parents=True)
@@ -460,7 +473,9 @@ async def test_restricted_local_member_cannot_modify_locally_installed_skill(
     assert "Write access is restricted for this user." in edit_result
     assert "data/skills" not in write_result
     assert installed_skill.read_text(encoding="utf-8") == "# Demo Skill\n"
-    assert workspace_result == f"File written successfully: {workspace_skill}"
+    assert workspace_result == (
+        f"File written successfully: {workspace_skill} (encoding: utf-8)"
+    )
     assert workspace_skill.read_text(encoding="utf-8") == "# Workspace Skill\n"
 
 

@@ -1404,9 +1404,9 @@ class WorkflowService:
             for item in source_package.roles
             if f"{item.role_id}:{item.version}" == source_key
         )
+        # Preserve declarations; coordinator requirements belong to the current closure.
         declarations = {
-            item["slot"]: item
-            for item in source_package.role_content(source_role)["dependencies"]
+            item["slot"]: item for item in source_role.model_dump()["dependencies"]
         }
         selections = {}
         contexts = []

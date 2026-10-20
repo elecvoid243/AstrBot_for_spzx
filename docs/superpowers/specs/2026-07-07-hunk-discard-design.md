@@ -62,7 +62,7 @@
 | 6 | loading state | **每 hunk 独立**（`Set<"file#hunkIndex">`） | 多 hunk 可并行丢弃，互不阻塞；与 `gitStage.isStaging: Ref<Set<string>>` 模式一致 |
 | 7 | 成功后行为 | 自动 refresh 整个 `git-diff` | 简化状态管理（不维护"局部移除"的状态机）；API 校验保证一致性；UI 上该 hunk 消失是预期行为 |
 | 8 | 新文件 / 二进制 | **隐藏按钮** | API 会拒（`untracked_file` / `patch_binary`），不暴露给用户；新文件通过 `isNewFile` prop 判断（已有，GitDiffFileItem 传入），二进制文件由 `file.isBinary` 判定 |
-| 9 | hunk header DOM 变化 | `<button class="hunk-header">` → `<div role="button" tabindex=0>` | 解决 HTML5 button-in-button 禁止问题（参考 `GitDiffFileItem.vue` 注释里提到的 "outer row <button> -> <div role="button" tabindex=0>" 模式，行 4-9）；同时该重构**也为 file-restore 未来按钮**铺路 |
+| 9 | hunk header DOM 变化 | `<button class="hunk-header">` → `<div role="button" tabindex=0>` | 解决 HTML5 button-in-button 禁止问题（参考 `GitDiffFileItem.vue` 注释里提到的 "`outer row <button> -> <div role="button" tabindex=0>`" 模式，行 4-9）；同时该重构**也为 file-restore 未来按钮**铺路 |
 | 10 | patch_text 重建方式 | 在 `DiffPreview` 内新增 `buildHunkPatchText(filePath, hunkIndex)` helper，用 `parseUnifiedDiff(content, Infinity)` 取完整解析；按 `hunk.header` 文本去 full 列表里查找 | 避免 `parsedHunks` 30 行截断导致 patch 不完整；避免逐字段重建引入的 `U+2212` vs `-` 字符 bug；不修改 `parseUnifiedDiff` 主体逻辑 |
 | 11 | 截断 hunk 索引 | 给 `DiffHunk` 接口加 `hunkIndex: number` 字段，记录 full 解析时的索引 | 当 `parsedHunks` 被 `maxLines` 截断时，截断版与 full 版的 hunk 数量与索引一致（`parsedHunks[i].hunkIndex === i`）；cross-reference 稳 |
 | 12 | 确认态 timeout | 3 秒内未再点击 → 自动恢复原状；切 file/切 scope 也清空 | 避免残留"Confirm?"态；setTimeout 句柄存在组件 state 里，onBeforeUnmount 清理 |

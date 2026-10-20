@@ -98,7 +98,7 @@ src
 - **递归数据模型**：`DiffSection` 增加 `children: DiffSection[]` 字段；`files` 与 `children` 二选一占主导（实际上可以同时存在）
 - **递归 UI**：`DiffDirectoryNode.vue` 自渲染 `files`（叶子）+ 递归渲染 `children`（同组件实例）
 - **零事件穿透损耗**：回调 prop 显式列出，不引入 event-bus
-- **KISS**：不引入 reactive map / 复杂状态机；纯函数 + computed + Set<string>
+- **KISS**：不引入 reactive map / 复杂状态机；纯函数 + computed + `Set<string>`
 
 ### 3.2 文件改动清单
 
@@ -748,7 +748,7 @@ provide(PARENT_LABEL_KEY, section.label);  // 子节点拿到的就是自己的�
 | 多级嵌套 | `[{ path: "a/b/c.py" }]` | `[a: { files: [], children: [b: { files: [c.py], children: [] }] }]` |
 | 混合（顶级 + 子目录） | `[{ path: "a/x.py" }, { path: "a/b/y.py" }]` | `[a: { files: [x.py], children: [b: { files: [y.py] }] }]` |
 | 极深嵌套 | `[{ path: "a/b/c/d/e.txt" }]` | 4 层 chain, 最深 files: [e.txt] |
-| `<root>` 标识 | `[{ path: "README.md" }]` | label === "<root>" |
+| `<root>` 标识 | `[{ path: "README.md" }]` | label === "`<root>`" |
 | id 稳定（同输入两调） | run 1 + run 2 | 所有 section.id 字符串相等 |
 | fileCount 仅计直接文件 | nested scenario | `a.fileCount === 0`, `a.children[0].fileCount === 1` |
 | additions / deletions 仅计直接文件 | mixed scenario | `a.additions` === x.py 的 additions, 不含 y.py |

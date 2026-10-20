@@ -15,9 +15,9 @@
 - Python 3.10+; English code/comments; Google docstrings; conventional commits; `ruff format` + `ruff check` clean (backend).
 - Vue 3.3: NO `defineModel`; all UI strings via `useModuleI18n('features/agent-teams')` with exact key parity ×3 locales; tests `*.spec.ts`; pnpm only.
 - Baselines: backend `uv run pytest tests/agent_teams/ -v` = 111 passing; frontend `pnpm exec vitest run` = 907 passing (3 pre-existing `DocumentManager.spec.ts` fullscreen failures); `pnpm build` green. No regressions.
-- **Edge-injection semantics (§3.2)**: only predecessors with `status == "done"` AND non-empty `result` are injected; predecessors explicitly referenced via `{{<node_id>}}` in the template are skipped (no double injection); ALL preds explicitly referenced → no `[上游结果]` block; user task text is never modified on disk; per-result truncation reuses `inject_max_length` with the existing tail-truncation marker; skipped/interrupted preds never injected.
+- **Edge-injection semantics (§3.2)**: only predecessors with `status == "done"` AND non-empty `result` are injected; predecessors explicitly referenced via <code v-pre>{{&lt;node_id&gt;}}</code> in the template are skipped (no double injection); ALL preds explicitly referenced → no `[上游结果]` block; user task text is never modified on disk; per-result truncation reuses `inject_max_length` with the existing tail-truncation marker; skipped/interrupted preds never injected.
 - **Field-error semantics (§3.1 item 3)**: one validation pass collects ALL problems; `field_errors` entries are `{path, code, message}` with paths `name`, `nodes.{id}.task`, `nodes.{id}.member_id`, `nodes.{id}.execution.config_id|persona_id`, `edges`; existing error-message substrings (e.g. `cycle`, `节点绑定的成员不存在`) move into the field `message` values so old assertions migrate; single non-workflow errors keep their current shape (no field_errors).
-- Unconnected `{{<node_id>}}` references (target exists in graph but is not a direct predecessor) are an **editor inline warning only** — never a save blocker, never a runtime error (results of any done node resolve at runtime).
+- Unconnected <code v-pre>{{&lt;node_id&gt;}}</code> references (target exists in graph but is not a direct predecessor) are an **editor inline warning only** — never a save blocker, never a runtime error (results of any done node resolve at runtime).
 - Custom Vue Flow nodes: `nodeTypes` must be non-reactive (module-level `markRaw`); the member node component must render without a Vue Flow provider in tests (handles conditional or stubbed — implementer's choice, documented).
 - Working directory for frontend: `dashboard/`.
 
@@ -85,7 +85,7 @@
   ```
   `self._nodes_by_id = {n["id"]: n for n in graph.get("nodes", [])}` added to `__init__` (check whether `_run_loop` already builds one locally — reuse/consolidate). Auto mode: untouched.
 
-- [ ] **Step 1: failing tests** — dag unit: pred injected with display name; explicitly-referenced pred skipped; all-referenced → no block; pred without result/skipped skipped; per-result truncation marker; block appended after template. Runner integration: 3-node chain (n1→n2→n3), n2 template WITHOUT `{{n1}}` → its delivered task contains `[上游结果]` and n1's result; n3 template WITH `{{n1}}` → n1 NOT re-injected, n2 IS (auto); run completes. → **Step 2: RED** → **Step 3: implement** → **Step 4: GREEN** (full backend suite) → **Step 5: Commit** — `feat: auto-inject predecessor results along agent team workflow edges`
+- [ ] **Step 1: failing tests** — dag unit: pred injected with display name; explicitly-referenced pred skipped; all-referenced → no block; pred without result/skipped skipped; per-result truncation marker; block appended after template. Runner integration: 3-node chain (n1→n2→n3), n2 template WITHOUT <code v-pre>{{n1}}</code> → its delivered task contains `[上游结果]` and n1's result; n3 template WITH <code v-pre>{{n1}}</code> → n1 NOT re-injected, n2 IS (auto); run completes. → **Step 2: RED** → **Step 3: implement** → **Step 4: GREEN** (full backend suite) → **Step 5: Commit** — `feat: auto-inject predecessor results along agent team workflow edges`
 
 ---
 
@@ -122,7 +122,7 @@
 - Drop: canvas wrapper `@dragover.prevent` + `@drop` → resolve member_id from dataTransfer → convert screen→flow coords (`useVueFlow().project` or `screenToFlowCoordinate` — verify in typings; Vue Flow 1.48 has `project` on the flow instance) → `addNode(memberId, position)` (existing addNode logic parameterized with position).
 - Inspector drawer: `v-navigation-drawer location="right"` — persistent (width ~340) when the viewport is wide (`useDisplay().lgAndUp`), temporary overlay otherwise; contains the ENTIRE existing inspector (member select, execution group from Plan 1, task editor) unchanged except placement; opens on node select (existing behavior), closes on deselect.
 - Toolbar: workflow select + inline-editable name + unsaved dot (dirty state exists? if not, derive: current graph != loaded/saved snapshot — implement a lightweight dirty flag) + validation badge (local problem count from existing `bannerMessage` + new unconnected-reference warnings; click → summary list) + 保存 button. NO 撤销/重做 (spec: explicitly not).
-- Unconnected-reference warnings: `unconnectedReferences` moved/duplicated to `dashboard/src/utils/dagCheck.ts` (pure, exported, spec-tested): for the selected node's template, every `{{<id>}}` where id is a graph node but NOT a direct predecessor → warning string `引用了未连接的节点 {id}`; rendered in the inspector under the task editor (local-only, never save-blocking).
+- Unconnected-reference warnings: `unconnectedReferences` moved/duplicated to `dashboard/src/utils/dagCheck.ts` (pure, exported, spec-tested): for the selected node's template, every <code v-pre>{{&lt;id&gt;}}</code> where id is a graph node but NOT a direct predecessor → warning string `引用了未连接的节点 {id}`; rendered in the inspector under the task editor (local-only, never save-blocking).
 
 - [ ] **Step 1: failing specs** — drop adds node at converted position with correct member; member strip dragstart sets data; dirty dot toggles on edit; validation badge counts local problems; drawer opens on select and is temporary on narrow viewport (mock `useDisplay`). → **Step 2: RED** → **Step 3: implement** → **Step 4: GREEN** + `pnpm build` → **Step 5: Commit** — `feat(dashboard): rework agent teams editor into three-column workbench`
 
@@ -132,12 +132,12 @@
 
 **Files:**
 - Modify: `dashboard/src/utils/dagCheck.ts` (+ `unconnectedReferences` if not landed in Task 4 — place it here if Task 4 kept it local; single source of truth in dagCheck, spec-tested)
-- Modify: `dashboard/src/components/agent_teams/WorkflowEditor.vue` (task-editor variable chips: `{{input}}` + one chip per DIRECT predecessor `{{<pred_id>}}` labeled `{{pred_id}} · <title|memberName>`, click inserts at cursor reusing the existing insert logic; server field-error mapping: on save failure with `fields`, banner lists `{path → message}` entries; clicking an entry with path `nodes.{id}.*` selects that node and opens the inspector; local validation errors and server fields coexist, deduped by message)
+- Modify: `dashboard/src/components/agent_teams/WorkflowEditor.vue` (task-editor variable chips: <code v-pre>{{input}}</code> + one chip per DIRECT predecessor <code v-pre>{{&lt;pred_id&gt;}}</code> labeled <code v-pre>{{pred_id}} · &lt;title|memberName&gt;</code>, click inserts at cursor reusing the existing insert logic; server field-error mapping: on save failure with `fields`, banner lists `{path → message}` entries; clicking an entry with path `nodes.{id}.*` selects that node and opens the inspector; local validation errors and server fields coexist, deduped by message)
 - Modify: `dashboard/src/composables/useAgentTeams.ts` — none (lastErrorFields exists from Plan 1)
 - Specs
 
 **Interfaces:**
-- Chips: derive direct predecessors from the current graph edges for the selected node; chips render ABOVE the textarea next to the existing `{{input}}` button.
+- Chips: derive direct predecessors from the current graph edges for the selected node; chips render ABOVE the textarea next to the existing <code v-pre>{{input}}</code> button.
 - Field mapping: path grammar `nodes.{node_id}(.task|.member_id|.execution.config_id|.execution.persona_id)|name|edges` — parse node id, `selectNode(id)`; entries without a node path render non-clickable.
 - Dedupe: server field messages already shown locally (same message text) are not duplicated — compare by message string.
 
@@ -148,7 +148,7 @@
 ### Task 6: Verification pass
 
 - [ ] **Step 1:** backend `uv run pytest tests/agent_teams/ -v` (111 prior + new) + `ruff format . && ruff check .`; frontend `pnpm exec vitest run` (907 prior + new; 3 known DocumentManager failures) + `pnpm build`.
-- [ ] **Step 2:** manual smoke (deferred to the human): draw n1→n2 without any `{{n1}}` — n2 receives n1's full result in `[上游结果]`; save with empty name + empty task + a cycle → banner lists all field problems, clicking each focuses the right node; drag a member onto the canvas → node appears; monitor mode shows member cards with status rings and running-edge animation; minimap/controls present; narrow viewport collapses panels to drawers.
+- [ ] **Step 2:** manual smoke (deferred to the human): draw n1→n2 without any <code v-pre>{{n1}}</code> — n2 receives n1's full result in `[上游结果]`; save with empty name + empty task + a cycle → banner lists all field problems, clicking each focuses the right node; drag a member onto the canvas → node appears; monitor mode shows member cards with status rings and running-edge animation; minimap/controls present; narrow viewport collapses panels to drawers.
 
 ---
 

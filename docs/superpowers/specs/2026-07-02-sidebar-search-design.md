@@ -671,6 +671,8 @@ PATH_UNSAFE_FILTER = "path_unsafe_filter"   # path_filter 越界
 
 注：`_conf_schema.json` 在主项目里有（`astrbot_plugin_spcode_toolkit/_conf_schema.json`）；具体结构以现有 schema 为准。改动需与现有分组风格一致（中文 / `description` / `tip` / `placeholder`）。
 
+</details>
+
 ---
 
 ## 4. 前端架构

@@ -1447,7 +1447,7 @@ function validateEdgeCondition() {
 1. `cd dashboard && pnpm dev`
 2. 打开 Agent Teams 编辑器
 3. 选中一条边
-4. 输入条件表达式 `{{n1.output.x}} > 0`
+4. 输入条件表达式 <code v-pre>{{n1.output.x}} &gt; 0</code>
 5. 失焦时应实时校验并显示错误（如果有）
 
 - [ ] **Step 7: 提交前端条件编辑 UI**
@@ -2212,7 +2212,7 @@ git commit -m "chore: format code and verify all tests pass"
 ### 未修正的已知限制
 
 1. **前端求值器功能受限**：
-   - 仅支持简单比较（`{{var}} COMP_OP literal`）
+   - 仅支持简单比较（<code v-pre>{{var}} COMP_OP literal</code>）
    - 复杂表达式（逻辑运算、括号）在 UI 中显示中性色
    - **理由**：安全性优先，后端做完整求值
 
@@ -2337,7 +2337,7 @@ git commit -m "chore: format code and verify all tests pass"
 ### Known Limitations (Not Fixed)
 
 1. **Frontend Evaluator Limited**:
-   - Only supports simple comparisons (`{{var}} COMP_OP literal`)
+   - Only supports simple comparisons (<code v-pre>{{var}} COMP_OP literal</code>)
    - Complex expressions (logical ops, parentheses) show neutral color in UI
    - Rationale: Security-first; backend does full evaluation
 

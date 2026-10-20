@@ -215,7 +215,7 @@ const showRestoreButton = computed(() => {
 - 取消按钮:`restore.confirmCancel`(`variant="text"`)
 - `persistent`:遮罩点击**不**关闭,强制显式选择(避免被误触跳过)
 - `Esc` 关闭等同取消(由 `<v-dialog>` 默认行为提供;`persistent` 不影响 Esc)
-- 状态:`confirmDialogOpen` (ref<boolean>) + `confirmTargetPath` (ref<string|null>)
+- 状态:`confirmDialogOpen` (`ref<boolean>`) + `confirmTargetPath` (ref<string|null>)
 
 ### 6.4 Snackbar
 

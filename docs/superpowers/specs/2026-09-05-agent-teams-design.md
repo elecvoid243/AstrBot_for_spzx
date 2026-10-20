@@ -112,7 +112,7 @@ Agent Teams 是 **dashboard 服务层子系统**，驱动 core 的 WebChat 会�
 | layout | str(JSON) | `{node_id: {x, y}}` 编辑器画布位置 |
 | created_at / updated_at | str | |
 
-节点约束：`id` 为用户侧唯一字符串（前端生成 `n1..nN`）；`task` 为任务模板，支持 `{{input}}`（运行输入）与 `{{<node_id>}}`（指定前驱节点的完整回复文本）；节点数 ≤20。
+节点约束：`id` 为用户侧唯一字符串（前端生成 `n1..nN`）；`task` 为任务模板，支持 <code v-pre>{{input}}</code>（运行输入）与 <code v-pre>{{&lt;node_id&gt;}}</code>（指定前驱节点的完整回复文本）；节点数 ≤20。
 
 ### 5.3 AgentTeamRun（表 `agent_team_runs`）
 
@@ -160,7 +160,7 @@ Agent Teams 是 **dashboard 服务层子系统**，驱动 core 的 WebChat 会�
 
 1. 冻结 `graph_snapshot`，建 run 行，Kahn 分层。
 2. 就绪集 → 波次执行：`asyncio.gather` 并行派发（`max_parallel` 信号量限流）。每节点：忙等 → 渲染任务模板 → 节点 `running`（落盘）→ emit → deliver → collect → 存 `result`、`done|failed`（落盘）→ 解锁后继。
-3. 模板渲染：`{{input}}` = 运行输入；`{{<node_id>}}` = 该节点 `result` 全文，超 `inject_max_length` 尾部截断；未知占位符 → 渲染错误 → 节点 `failed` → 走失败策略。
+3. 模板渲染：<code v-pre>{{input}}</code> = 运行输入；<code v-pre>{{&lt;node_id&gt;}}</code> = 该节点 `result` 全文，超 `inject_max_length` 尾部截断；未知占位符 → 渲染错误 → 节点 `failed` → 走失败策略。
 4. 失败策略（团队 `config.failure_policy`）：
    - `pause`（默认）：节点 `failed`，run 置 `paused`，emit 暂停事件；API 提供 `retry_node`（同输入重渲染重跑）/ `skip`（标记 `skipped` 后按级联规则跳过全部后继）/ `abort`。
    - `auto_skip`：直接 `failed`→`skipped` 并级联跳过后继，其余分支继续。
@@ -242,7 +242,7 @@ class TeamFinishTool(FunctionTool):
 布局：左侧栏（团队列表 / 成员列表带协调者徽标与模型标签 / 新建入口）+ 主区三 Tab：**工作流编排**、**运行监控**、**历史**。
 
 - **成员创建对话框**：模式二选一——"从人格创建"（persona 下拉 + 名称 + 可选模型覆盖）/"自定义创建"（system_prompt + 模型）；协调者开关（全团唯一，启用时自动替换原协调者）。
-- **Workflow 编辑器**：**Vue Flow**（`@vue-flow/core`）。节点=成员卡；选中节点右侧属性面板编辑任务模板（`{{input}}`/`{{节点}}` 变量快捷插入）；前端即时环检测提示 + 保存时后端终审；画布位置随 `layout` 持久化；成员被删 → 节点红框 + 顶部校验横幅。
+- **Workflow 编辑器**：**Vue Flow**（`@vue-flow/core`）。节点=成员卡；选中节点右侧属性面板编辑任务模板（<code v-pre>{{input}}</code>/<code v-pre>{{节点}}</code> 变量快捷插入）；前端即时环检测提示 + 保存时后端终审；画布位置随 `layout` 持久化；成员被删 → 节点红框 + 顶部校验横幅。
 - **运行监控**：
   - 每成员一窗格：名称/状态角标 + 消息流（本 run 的 `message` 事件按成员过滤，复用 collab transcript 渲染链——`useAgentCollab.ts` 与 `systemStream.ts` 的 chain_type 分发组件抽公共化）。
   - 布局：自适应网格（列数=⌈√n⌉）+ `grid-layout-plus` 拖拽调整大小/位置（localStorage 持久化）+ 点击全屏浮层。

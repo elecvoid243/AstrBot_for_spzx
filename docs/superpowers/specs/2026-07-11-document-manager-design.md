@@ -117,7 +117,7 @@ dashboard/
 | `DocumentEditor.vue` | `<textarea>` (or CodeMirror 6) with save / cancel / copy / delete / rename (stub) buttons | Render Markdown, talk HTTP directly |
 | `MarkdownView.vue` | Take raw Markdown → render HTML; expose copy-code button + heading anchors | Fetch data, manage editing state |
 | `MarkdownPipeline.ts` | Pure factory: `createMarkdownRenderer()` returns a renderer with `render(source, opts)` and `dispose()` | Depend on Vue |
-| `useSpcodeGitFile.ts` | Cache + ETag + dedup for `GET /spcode/git-file?ref=&path=`; key = `<path>|<ref>` | Render anything, fetch listing / history |
+| `useSpcodeGitFile.ts` | Cache + ETag + dedup for `GET /spcode/git-file?ref=&path=`; key = `<path>\|<ref>` | Render anything, fetch listing / history |
 | `useResizableSplit.ts` | Mouse-drag state machine for pane resizing; emits numeric percent | Know about any specific pane content |
 
 ### 3.3 `viewMode` extension
@@ -818,16 +818,16 @@ DocumentManager unmount
 | `docsRoot` invalid (e.g. user typed `../foo`) | Red inline error in `DocumentPathBar`. No write. | User edits again. |
 | `docsRoot` does not exist on disk | Top notice "路径 '{path}' 不存在,5 秒后回到默认", auto-reset to `"docs"` after 5s. | Automatic; user can override. |
 | `docsRoot` empty after listing | Tree shows "该目录下没有 .md 文件". Editor button disabled. | User creates a file or changes path. |
-| Git history fails (`/spcode/git-log`) | History list shows "无法读取历史: <reason>"; other panes unaffected. | User re-selects file or refreshes. |
+| Git history fails (`/spcode/git-log`) | History list shows "无法读取历史: `<reason>`"; other panes unaffected. | User re-selects file or refreshes. |
 | Git historical blob fails | `DocumentHistoryPanel` row shows inline error icon, rest of rows unaffected. | User picks another revision. |
 | CodeMirror 6 fails to load | Editor falls back to `<textarea>` (monospace). | Permanent (until page reload). |
 | MarkdownView Shiki fails | Whole page still renders; fences use `<pre><code>` fallback. | Permanent. |
-| Save returns 4xx | Top red banner "保存失败: <reason>". Editor stays open. | User edits + retries. |
+| Save returns 4xx | Top red banner "保存失败: `<reason>`". Editor stays open. | User edits + retries. |
 | Save returns 5xx | Same as 4xx + snackbar "保存失败,稍后重试". | User retries. |
 | Save success + refresh fails | Snackbar "目录树刷新失败"; content pane shows new value (we just wrote it). | User clicks tree refresh. |
 | New file name conflict | Red text "同名文件已存在"; request not sent. | User renames. |
 | New file post fails | Optimistic selectedDoc is dropped; toast "新建失败". User can try again. | User retries. |
-| Delete fails | Snackbar "删除失败: <reason>"; selectedDoc unchanged. | User retries. |
+| Delete fails | Snackbar "删除失败: `<reason>`"; selectedDoc unchanged. | User retries. |
 | Switch worktree/project while `editMode && dirty` | Browser-native `beforeunload` confirm. | User choice. |
 | Browser quits while `editMode && dirty` | Same `beforeunload` confirm. | OS behavior. |
 

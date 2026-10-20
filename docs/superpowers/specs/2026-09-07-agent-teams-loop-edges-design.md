@@ -833,7 +833,7 @@ function isActiveLoop(edge: WorkflowEdge): boolean {
 
 **无限循环**：不允许 `max_iterations` 为 0 或无限
 
-**动态迭代次数**：不支持从节点输出读取迭代次数（如 `{{node.output.iterations}}`）
+**动态迭代次数**：不支持从节点输出读取迭代次数（如 <code v-pre>{{node.output.iterations}}</code>）
 
 **嵌套循环的显式控制**：内外层循环独立计数，无法让外层循环重置内层计数器
 
@@ -1009,7 +1009,7 @@ it('displays iteration count on node', () => {
 |---|---|
 | 无限循环（max_iterations=0） | 死循环风险无法接受；用户必须显式设定上限 |
 | 动态迭代次数（从节点输出读取） | 增加复杂度；固定上限已满足绝大多数场景 |
-| 循环计数器作为变量（`{{loop.iteration}}`） | 实现复杂；用户可通过节点输出自行记录 |
+| 循环计数器作为变量（<code v-pre>{{loop.iteration}}</code>） | 实现复杂；用户可通过节点输出自行记录 |
 | 专门的"循环容器"节点（类似 for 循环） | 与 DAG 图形化语义不符；边更直观 |
 | 允许普通边形成环（自动识别为循环） | 歧义大；显式标记 `loop` 字段更清晰 |
 
@@ -1036,7 +1036,7 @@ it('displays iteration count on node', () => {
 ## 11. 未来扩展方向
 
 1. **循环变量注入**：
-   - 在任务模板中注入 `{{__iteration__}}`（当前迭代次数）
+   - 在任务模板中注入 <span v-pre>`{{__iteration__}}`</span>（当前迭代次数）
    - 节点可根据迭代次数调整策略
 
 2. **循环统计面板**：

@@ -311,7 +311,7 @@ POST /spcode/git-worktree-remove
 | reason 类别 | UI 处理 | 备注 |
 |------------|---------|------|
 | `feature_disabled` / `no_project_loaded` / `directory_missing` / `not_a_git_repo` | 顶部 banner + 禁用所有 worktree 写按钮 | 复用现有 `isProjectLoaded` 计算属性 |
-| `git_unavailable` / `git_error` | 红色 banner + stderr <pre> 块 | 复用 `snackbar.stderr` 渲染 |
+| `git_unavailable` / `git_error` | 红色 banner + stderr `<pre>` 块 | 复用 `snackbar.stderr` 渲染 |
 | `invalid_body` / `invalid_branch` / `invalid_param` | 表单字段高亮（红框 + helper text） | 在 `WorktreeCreateDialog.vue` 内做字段级 error |
 | `path_unsafe` | toast `"路径命中黑名单"` | **不**展示 stderr（避免泄露黑名单） |
 | `path_exists_nonempty` | 内联提示"目标路径已被占用" + "换一个路径"按钮 | 在 ADD dialog 内联处理 |
@@ -470,7 +470,7 @@ export const WORKTREE_MGMT_REASON_CODES: Record<string, ReasonMeta> = {
 | 操作 | 主 worktree | locked | not locked | dirty |
 |------|------------|--------|------------|-------|
 | ADD | ✅ 可用 | n/a | n/a | n/a |
-| REMOVE | ❌ 入口**完全隐藏** | ❌ disabled（tooltip "locked: <reason>"） | ✅ | ✅（force 可选） |
+| REMOVE | ❌ 入口**完全隐藏** | ❌ disabled（tooltip "locked: `<reason>`"） | ✅ | ✅（force 可选） |
 | LOCK | ❌ 入口**完全隐藏** | ❌ disabled | ✅ | n/a |
 | UNLOCK | ❌ 入口**完全隐藏** | ❌ disabled | ✅ | n/a |
 

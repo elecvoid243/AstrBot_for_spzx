@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 
 import httpx
 import pytest
@@ -10,7 +11,9 @@ from fastapi import FastAPI
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
-from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.assets import RoleAssetError, RoleAssetService
+from astrbot.core.agent_teams.workflows import WorkflowService
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.dashboard.api.auth import require_dashboard_user
 from astrbot.dashboard.api.workflow_assets import get_workflow_service, router
 from tests.agent_teams.test_workflow_assets import workflow_env as workflow_env
@@ -202,6 +205,303 @@ async def test_import_installs_and_reuses_every_pinned_definition(workflow_env):
         await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
         == package
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "omit_profile_capabilities", "expected"),
+    [
+        (None, False, ["task_result"]),
+        ([], False, ["task_result"]),
+        ([], True, ["task_result"]),
+        (["task_result"], False, ["task_result"]),
+        (["task_tools"], False, ["task_result", "task_tools"]),
+        (["task_result", "task_tools"], False, ["task_result", "task_tools"]),
+    ],
+)
+async def test_shared_role_capabilities_stay_with_their_independent_closure(
+    workflow_env, tmp_path, capabilities, omit_profile_capabilities, expected
+):
+    """Preserve declared capabilities without exporting a parent's inferred tools.
+
+    Args:
+        workflow_env: Public asset services and a compatible local inventory.
+        tmp_path: Isolated receiver database and public observation directory.
+        capabilities: Optional explicit runner requirements on the shared role.
+        omit_profile_capabilities: Omit default profile capability metadata.
+        expected: Capabilities required by the independently callable leaf.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared researcher",
+                "prompt": "Read evidence",
+                **(
+                    {"runner_capabilities": capabilities}
+                    if capabilities is not None
+                    else {}
+                ),
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    leaf = await env.service.save_asset(
+        "alice",
+        {"definition": {"name": "Leaf", "task": "Read", **reference}},
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Parent team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": leaf["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    standalone = await env.service.export_asset("alice", leaf["asset_id"], 1)
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    for exported in (standalone, package):
+        profile = next(
+            dependency
+            for dependency in exported["roles"][0]["dependencies"]
+            if dependency["kind"] == "profiles"
+        )
+        assert profile["capabilities"] == expected
+    payload = {"package": copy.deepcopy(package)}
+    if omit_profile_capabilities:
+        for dependency in payload["package"]["roles"][0]["dependencies"]:
+            if dependency["kind"] == "profiles":
+                dependency.pop("capabilities")
+    preview = await env.service.preview_import("bob", payload)
+    assert preview["ready"], preview
+    assert next(
+        dependency
+        for dependency in preview["roles"][0]["dependencies"]
+        if dependency["kind"] == "profiles"
+    )["capabilities"] == ["task_result", "task_tools"]
+    installed = await env.service.import_asset("bob", payload)
+    child = installed["asset"]["definition"]["allowed_workflows"][0]
+    assert (
+        await env.service.export_asset("bob", child["asset_id"], child["version"])
+        == standalone
+    )
+    assert (
+        await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
+        == package
+    )
+    assert (await env.service.import_asset("bob", payload))["existing"] is True
+
+    coordinator = installed["asset"]["definition"]["coordinator"]
+    reused_role = await env.roles.get_role(
+        "bob", coordinator["role_id"], coordinator["role_version"]
+    )
+    independent = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {
+                "name": "Independent reader",
+                "task": "Read independently",
+                "role_id": coordinator["role_id"],
+                "role_version": coordinator["role_version"],
+            }
+        },
+    )
+    recomposed = await env.service.export_asset("bob", independent["asset_id"], 1)
+    db = SQLiteDatabase(str(tmp_path / "receiver.db"))
+
+    async def inventory():
+        return {
+            "profiles": [{"id": "receiver"}],
+            "models": [{"id": "receiver-model", "fingerprint": "portable-model"}],
+            "personas": [],
+            "tools": [],
+            "skills": [],
+            "knowledge_bases": [],
+        }
+
+    receiver = WorkflowService(
+        db,
+        RoleAssetService(db, catalog_loader=inventory),
+        ports_factory=lambda owner: pytest.fail("Import must not dispatch"),
+    )
+    try:
+        received_preview = await receiver.preview_import(
+            "charlie", {"package": recomposed}
+        )
+        received = await receiver.import_asset("charlie", {"package": recomposed})
+        received_export = await receiver.export_asset(
+            "charlie", received["asset"]["asset_id"], 1
+        )
+        (tmp_path / "recomposed-observations.json").write_text(
+            json.dumps(
+                {
+                    "expected_profile_capabilities": expected,
+                    "coordinator_role": reused_role,
+                    "independent_asset": independent,
+                    "recomposed_package": recomposed,
+                    "receiver_preview": received_preview,
+                    "receiver_installation": received,
+                    "receiver_export": received_export,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        assert reused_role["definition"]["runner_capabilities"] == (capabilities or [])
+        assert (
+            next(
+                dependency
+                for dependency in recomposed["roles"][0]["dependencies"]
+                if dependency["kind"] == "profiles"
+            )["capabilities"]
+            == expected
+        )
+        assert (
+            next(
+                dependency
+                for dependency in received_preview["roles"][0]["dependencies"]
+                if dependency["kind"] == "profiles"
+            )["capabilities"]
+            == expected
+        )
+        assert received_preview["ready"] and received["ready"]
+        assert received_preview["roles"][0]["installation"] == {
+            "profile_id": "receiver",
+            "bindings": {"model": "receiver-model"},
+        }
+        assert received_export == recomposed
+    finally:
+        await receiver.shutdown()
+        await db.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_profile_tools", [False, True])
+async def test_reused_pending_coordinator_checks_the_current_asset_capabilities(
+    workflow_env, tmp_path, explicit_profile_tools
+):
+    """Keep independent task admission consistent with its recomposed package.
+
+    Args:
+        workflow_env: Public services with controlled execution ports.
+        tmp_path: Directory for public readiness and import observations.
+        explicit_profile_tools: Preserve an explicit imported profile requirement.
+    """
+    env = workflow_env
+    env.inventory["profiles"].append(
+        {
+            "id": "remote",
+            "runner_type": "dify",
+            "runner_config": {"dify_api_type": "workflow"},
+        }
+    )
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {"name": "Remote reader", "prompt": "Read evidence"},
+            "installation": {"profile_id": "remote"},
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Pending remote team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    if explicit_profile_tools:
+        next(
+            dependency
+            for dependency in package["roles"][0]["dependencies"]
+            if dependency["kind"] == "profiles"
+        )["capabilities"].append("task_tools")
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "save_pending": True}
+    )
+    assert not installed["ready"]
+    coordinator = installed["asset"]["definition"]["coordinator"]
+    local_role = await env.roles.get_role("bob", coordinator["role_id"], 1)
+    configured = await env.roles.save_role(
+        "bob",
+        {
+            "definition": local_role["definition"],
+            "installation": {"profile_id": "remote"},
+            "expected_version": 1,
+        },
+        local_role["role_id"],
+    )
+    assert (await env.roles.preview_role(configured))["ready"]
+    independent = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {
+                "name": "Independent remote reader",
+                "task": "Read independently",
+                "role_id": configured["role_id"],
+                "role_version": configured["version"],
+            }
+        },
+    )
+    exported = await env.service.export_asset("bob", independent["asset_id"], 1)
+    source = exported["roles"][0]
+    preview = await env.service.preview_import(
+        "charlie",
+        {
+            "package": exported,
+            "installations": {
+                f"{source['role_id']}:{source['version']}": {"profile_id": "remote"}
+            },
+        },
+    )
+    readiness = await env.service.check_readiness("bob", independent["asset_id"], 1)
+    (tmp_path / "current-closure-observations.json").write_text(
+        json.dumps(
+            {
+                "explicit_profile_tools": explicit_profile_tools,
+                "original_package": package,
+                "configured_role": configured,
+                "independent_asset": independent,
+                "exported_package": exported,
+                "receiver_preview": preview,
+                "readiness": readiness,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    assert preview["ready"] is (not explicit_profile_tools), preview
+    assert readiness["ready"] is (not explicit_profile_tools), readiness
+    if explicit_profile_tools:
+        with pytest.raises(RoleAssetError, match="Package dependencies are not ready"):
+            await env.service.start_run("bob", independent["asset_id"], {"version": 1})
+        assert (await env.service.list_runs("bob"))["runs"] == []
+    else:
+        run = await env.service.start_run(
+            "bob", independent["asset_id"], {"version": 1}
+        )
+        assert run["snapshot"]["asset_id"] == independent["asset_id"]
+    assert not (
+        await env.service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+    )["ready"]
 
 
 @pytest.mark.asyncio

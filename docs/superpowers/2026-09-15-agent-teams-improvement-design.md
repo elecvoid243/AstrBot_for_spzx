@@ -84,11 +84,11 @@
 - 校验失败 → 工具回执 `{ok: false, error: "..."}` → 模型当轮自纠（与 `team_dispatch` 未知成员名的自纠同构）；成功 → 回执 `{ok: true}`，runner 写 `structured_output`。
 - 终态判定优先级：工具提交 > 围栏回退解析（兼容 Phase 1 spec 已有 ` ```output ` 提取器）> 无。
 - `required: true` 且两者皆无 → 节点 `failed`（error=`structured_output_missing`）→ 走团队 `failure_policy`，**不再直接 run paused**（修正 Phase 1 spec 语义）。
-- 存储复用 Phase 1 已设计的 `structured_output` / `output_error` 字段，条件表达式求值 `{{node.output.field}}` 不变。
+- 存储复用 Phase 1 已设计的 `structured_output` / `output_error` 字段，条件表达式求值 <code v-pre>{{node.output.field}}</code> 不变。
 
 **编辑器校验**：条件边的源节点必须声明覆盖所引用字段的 `output.schema`；未声明 → 保存时校验错误。
 
-**附带收益**：`{{节点}}` 模板注入可引用 `{{<node_id>.output.<field>}}`（取结构化字段的字符串化），`collect` 全文与"发布结果"自然分离。
+**附带收益**：<code v-pre>{{节点}}</code> 模板注入可引用 <code v-pre>{{&lt;node_id&gt;.output.&lt;field&gt;}}</code>（取结构化字段的字符串化），`collect` 全文与"发布结果"自然分离。
 
 **Phase 1 spec 修订项**（在 `feat/agent-teams-workflow-phases` 合并前完成）：输出契约一节改为"submit_result 为主、围栏为回退、缺失走 failure_policy"；条件求值错误处理保留。
 

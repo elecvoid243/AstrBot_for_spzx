@@ -2354,7 +2354,9 @@ class ChatService:
                     self.chat_runs_by_session.pop(run.session_id, None)
                     self.running_convs.pop(run.session_id, None)
             for subscriber in list(run.subscribers):
-                while not subscriber.empty():
+                # Keep terminal events available to a slow reader. Only make
+                # room for the close marker when the bounded buffer is full.
+                if subscriber.full():
                     subscriber.get_nowait()
                 subscriber.put_nowait(None)
             run.subscribers.clear()

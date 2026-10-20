@@ -205,6 +205,7 @@ async def test_get_sessions_includes_branch_relations():
             is_group=0,
             created_at=datetime(2026, 7, 24, tzinfo=UTC),
             updated_at=datetime(2026, 7, 24, tzinfo=UTC),
+            starred=0,
         )
     }
     child_item = {
@@ -216,6 +217,7 @@ async def test_get_sessions_includes_branch_relations():
             is_group=0,
             created_at=datetime(2026, 7, 24, 1, tzinfo=UTC),
             updated_at=datetime(2026, 7, 24, 1, tzinfo=UTC),
+            starred=0,
         )
     }
     service.db.get_platform_sessions_by_creator_paginated = AsyncMock(
@@ -256,6 +258,7 @@ async def test_get_sessions_filters_relations_to_listed_sessions():
             is_group=0,
             created_at=datetime(2026, 7, 24, 1, tzinfo=UTC),
             updated_at=datetime(2026, 7, 24, 1, tzinfo=UTC),
+            starred=0,
         )
     }
     service.db.get_platform_sessions_by_creator_paginated = AsyncMock(
@@ -376,6 +379,7 @@ async def test_project_session_list_includes_branch_relations():
             is_group=0,
             created_at=datetime(2026, 7, 24, tzinfo=UTC),
             updated_at=datetime(2026, 7, 24, tzinfo=UTC),
+            starred=0,
         )
 
     service = ChatUIProjectService(Mock())
@@ -427,6 +431,7 @@ async def test_project_session_list_filters_relations_to_project_members():
                 is_group=0,
                 created_at=datetime(2026, 7, 24, tzinfo=UTC),
                 updated_at=datetime(2026, 7, 24, tzinfo=UTC),
+                starred=0,
             )
         ]
     )

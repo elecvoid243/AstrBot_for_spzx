@@ -1810,6 +1810,25 @@ paths:
         "200":
           description: Resumed server-sent chat stream or an error envelope
 
+  /api/v1/chat/sessions/{session_id}/system-stream:
+    get:
+      tags: [Chat]
+      summary: Stream session system events when enabled by dashboard configuration
+      operationId: streamChatSessionSystemEvents
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Server-sent system events or a disabled-stream error envelope
+          content:
+            text/event-stream:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/chat/sessions/{session_id}/messages/{message_id}:
     patch:
       tags: [Chat]
@@ -5858,12 +5877,12 @@ paths:
         "200":
           description: Webhook accepted
 
+  # Agent Teams require dashboard authentication, not developer API key scopes.
   /api/v1/agent_teams:
     get:
       tags: [AgentTeams]
       summary: List agent teams owned by the current user
       operationId: listAgentTeams
-      x-astrbot-scope: chat
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -5871,7 +5890,6 @@ paths:
       tags: [AgentTeams]
       summary: Create a team and all member sessions
       operationId: createAgentTeam
-      x-astrbot-scope: chat
       requestBody:
         required: true
         content:
@@ -5887,7 +5905,6 @@ paths:
       tags: [AgentTeams]
       summary: Get one team
       operationId: getAgentTeam
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       responses:
@@ -5897,7 +5914,6 @@ paths:
       tags: [AgentTeams]
       summary: Update team name/coordinator/config
       operationId: updateAgentTeam
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       requestBody:
@@ -5913,7 +5929,6 @@ paths:
       tags: [AgentTeams]
       summary: Delete a team (member sessions are preserved)
       operationId: deleteAgentTeam
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       responses:
@@ -5925,7 +5940,6 @@ paths:
       tags: [AgentTeams]
       summary: Add a member (creates its WebChat session server-side)
       operationId: addAgentTeamMember
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       requestBody:
@@ -5943,7 +5957,6 @@ paths:
       tags: [AgentTeams]
       summary: Remove a member
       operationId: removeAgentTeamMember
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
         - $ref: "#/components/parameters/MemberIdPath"
@@ -5956,7 +5969,6 @@ paths:
       tags: [AgentTeams]
       summary: List the team's workflow templates
       operationId: listAgentTeamWorkflows
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       responses:
@@ -5966,7 +5978,6 @@ paths:
       tags: [AgentTeams]
       summary: Create a workflow template
       operationId: createAgentTeamWorkflow
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       requestBody:
@@ -5984,7 +5995,6 @@ paths:
       tags: [AgentTeams]
       summary: Update a workflow template (graph + layout, server-validated)
       operationId: updateAgentTeamWorkflow
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
         - $ref: "#/components/parameters/WorkflowIdPath"
@@ -6001,7 +6011,6 @@ paths:
       tags: [AgentTeams]
       summary: Delete a workflow template
       operationId: deleteAgentTeamWorkflow
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
         - $ref: "#/components/parameters/WorkflowIdPath"
@@ -6014,7 +6023,6 @@ paths:
       tags: [AgentTeams]
       summary: List the team's run history (full rows incl. graph/node_states)
       operationId: listAgentTeamRuns
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       responses:
@@ -6025,7 +6033,6 @@ paths:
       summary: Retired legacy launch; start a versioned asset run
       deprecated: true
       operationId: startAgentTeamRun
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
       requestBody:
@@ -6043,7 +6050,6 @@ paths:
       tags: [AgentTeams]
       summary: List the user's active runs with snapshots
       operationId: listActiveAgentTeamRuns
-      x-astrbot-scope: chat
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -6053,7 +6059,6 @@ paths:
       tags: [AgentTeams]
       summary: Pause a run
       operationId: pauseAgentTeamRun
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
       responses:
@@ -6065,7 +6070,6 @@ paths:
       tags: [AgentTeams]
       summary: Continue an owned paused legacy run; lost owners cannot resume
       operationId: resumeAgentTeamRun
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
       responses:
@@ -6079,7 +6083,6 @@ paths:
       tags: [AgentTeams]
       summary: Stop a run
       operationId: stopAgentTeamRun
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
       responses:
@@ -6091,7 +6094,6 @@ paths:
       tags: [AgentTeams]
       summary: Retry a failed node
       operationId: retryAgentTeamNode
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
         - $ref: "#/components/parameters/NodeIdPath"
@@ -6104,7 +6106,6 @@ paths:
       tags: [AgentTeams]
       summary: Skip a failed node and cascade-skip its successors
       operationId: skipAgentTeamNode
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
         - $ref: "#/components/parameters/NodeIdPath"
@@ -6117,7 +6118,6 @@ paths:
       tags: [AgentTeams]
       summary: Interrupt one member's in-flight turn
       operationId: interruptAgentTeamMember
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
         - $ref: "#/components/parameters/MemberIdPath"
@@ -6130,7 +6130,6 @@ paths:
       tags: [AgentTeams]
       summary: Page one member's transcript rows chronologically
       operationId: getAgentTeamMemberTranscript
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
         - $ref: "#/components/parameters/MemberIdPath"
@@ -6153,7 +6152,6 @@ paths:
       tags: [AgentTeams]
       summary: Server-sent events for one run (full history replay, then live, heartbeats)
       operationId: streamAgentTeamRun
-      x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/RunIdPath"
       responses:

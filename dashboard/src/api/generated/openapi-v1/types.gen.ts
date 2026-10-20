@@ -2398,6 +2398,16 @@ export type ResumeChatRunResponse = (unknown);
 
 export type ResumeChatRunError = unknown;
 
+export type StreamChatSessionSystemEventsData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type StreamChatSessionSystemEventsResponse = (ErrorEnvelope);
+
+export type StreamChatSessionSystemEventsError = unknown;
+
 export type UpdateChatMessageData = {
     body: ChatMessagePatchRequest;
     path: {

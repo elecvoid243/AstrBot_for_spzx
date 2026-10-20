@@ -18,6 +18,7 @@ from astrbot.core.agent.message import Message, dump_messages_with_checkpoints
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.agent_team_execution import NodeExecutionBinding
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.computer.booters.local import ShellSpec
 from astrbot.core.config.agent_runner import resolve_context_compression_config
@@ -29,7 +30,9 @@ from astrbot.core.platform.platform_metadata import PlatformMetadata
 from astrbot.core.provider import Provider
 from astrbot.core.provider import manager as provider_manager_module
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, ProviderType
+from astrbot.core.provider.func_tool_manager import FunctionToolManager
 from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.skills import skill_manager
 from astrbot.core.skills.skill_manager import SkillInfo
 from astrbot.core.star.context import Context
 from astrbot.core.star.star import StarMetadata
@@ -1955,6 +1958,194 @@ class TestPluginToolFix:
 
 class TestBuildMainAgent:
     """Tests for build_main_agent function."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "persona_selection,role_selection,expected_tools,expected_skills",
+        [
+            pytest.param(
+                {"tools": None, "skills": None},
+                {},
+                {"selected", "excluded"},
+                {"global-kept", "global-excluded", "workspace-only"},
+                id="inherit",
+            ),
+            pytest.param(
+                {"tools": [], "skills": []},
+                {},
+                set(),
+                set(),
+                id="disabled",
+            ),
+            pytest.param(
+                {
+                    "tools": ["selected", "inactive", "missing"],
+                    "skills": ["global-kept"],
+                },
+                {},
+                {"selected"},
+                {"global-kept", "workspace-only"},
+                id="persona-allowlist",
+            ),
+            pytest.param(
+                {"tools": None, "skills": None},
+                {"tools": ["selected"], "skills": ["workspace-only"]},
+                {"selected"},
+                {"workspace-only"},
+                id="role-allowlist",
+            ),
+            pytest.param(
+                {"tools": ["selected"], "skills": ["global-kept"]},
+                {"tools": ["excluded"], "skills": ["global-excluded"]},
+                set(),
+                set(),
+                id="role-cannot-widen-persona",
+            ),
+            pytest.param(
+                {"tools": None, "skills": None},
+                {"tools": [], "skills": []},
+                set(),
+                set(),
+                id="role-disabled",
+            ),
+        ],
+    )
+    async def test_build_persona_capability_states(
+        self,
+        monkeypatch,
+        tmp_path,
+        mock_event,
+        mock_provider,
+        persona_selection,
+        role_selection,
+        expected_tools,
+        expected_skills,
+    ):
+        """Preserve persona selections and final role limits in real requests.
+
+        Args:
+            monkeypatch: Redirects host storage paths to the test workspace.
+            tmp_path: Isolated global and workspace skills.
+            mock_event: Incoming platform event boundary.
+            mock_provider: External model boundary, not invoked during construction.
+            persona_selection: Frozen persona tool and skill selections.
+            role_selection: Final role restrictions, omitted to inherit.
+            expected_tools: Expected active custom tools in the model request.
+            expected_skills: Expected skill names in the model request.
+        """
+        global_root = tmp_path / "global-skills"
+        workspaces_root = tmp_path / "workspaces"
+        workspace_root = workspaces_root / ama.normalize_umo_for_workspace(
+            mock_event.unified_msg_origin
+        )
+        for root, names in (
+            (global_root, ["global-kept", "global-excluded"]),
+            (workspace_root / "skills", ["workspace-only"]),
+        ):
+            for name in names:
+                folder = root / name
+                folder.mkdir(parents=True)
+                (folder / "SKILL.md").write_text(
+                    f"---\ndescription: {name} instructions.\n---\n", encoding="utf-8"
+                )
+        monkeypatch.setattr(
+            ama, "get_astrbot_workspaces_path", lambda: str(workspaces_root)
+        )
+        monkeypatch.setattr(
+            skill_manager, "get_astrbot_data_path", lambda: str(tmp_path)
+        )
+        monkeypatch.setattr(
+            skill_manager, "get_astrbot_skills_path", lambda: str(global_root)
+        )
+        monkeypatch.setattr(
+            skill_manager, "get_astrbot_plugin_path", lambda: str(tmp_path / "plugins")
+        )
+        monkeypatch.setattr(
+            skill_manager,
+            "get_astrbot_builtin_plugin_path",
+            lambda: str(tmp_path / "builtin"),
+        )
+        tools = FunctionToolManager()
+        tools.func_list = [
+            FunctionTool(name=name, description=name, parameters={}, active=active)
+            for name, active in (
+                ("selected", True),
+                ("excluded", True),
+                ("inactive", False),
+            )
+        ]
+        configuration = {"provider_settings": {"computer_use_runtime": "local"}}
+        context = Context(
+            event_queue=asyncio.Queue(),
+            config=configuration,
+            db=None,
+            provider_manager=SimpleNamespace(llm_tools=tools),
+            platform_manager=None,
+            conversation_manager=None,
+            message_history_manager=None,
+            persona_manager=None,
+            astrbot_config_mgr=SimpleNamespace(get_conf=lambda umo=None: configuration),
+            knowledge_base_manager=None,
+            cron_manager=None,
+        )
+        execution = NodeExecutionBinding(
+            run_id="run",
+            team_id="team",
+            member_id="writer",
+            node_id="write",
+            umo=mock_event.unified_msg_origin,
+            owner_username="user123",
+            config_id="default",
+            persona_id="writer",
+            profile_snapshot={},
+            persona_snapshot={
+                "name": "writer",
+                "prompt": "Persona instructions.",
+                **persona_selection,
+            },
+            **role_selection,
+        )
+        mock_event.get_extra.side_effect = lambda key, default=None: (
+            execution if key == "agent_team_execution" else default
+        )
+        mock_event.platform_meta.support_proactive_message = False
+        request = ProviderRequest(
+            prompt="Check selected capabilities.",
+            conversation=Conversation(
+                "test_platform", "user123", "cid", history="[]", persona_id="writer"
+            ),
+        )
+        result = await ama.build_main_agent(
+            event=mock_event,
+            plugin_context=context,
+            provider=mock_provider,
+            req=request,
+            config=ama.MainAgentBuildConfig(
+                tool_call_timeout=60,
+                computer_use_runtime="local",
+                add_cron_tools=False,
+            ),
+            apply_reset=False,
+        )
+        assert result is not None
+        try:
+            request = result.provider_request
+            tool_names = set(request.func_tool.names()) if request.func_tool else set()
+            assert (
+                tool_names.intersection({"selected", "excluded", "inactive"})
+                == expected_tools
+            )
+            if "tools" in role_selection:
+                assert tool_names == expected_tools
+            else:
+                assert "astrbot_execute_shell" in tool_names
+            for name in ("global-kept", "global-excluded", "workspace-only"):
+                assert (f"**{name}**" in request.system_prompt) == (
+                    name in expected_skills
+                )
+        finally:
+            if result.reset_coro:
+                result.reset_coro.close()
 
     @pytest.mark.asyncio
     async def test_build_main_agent_basic(

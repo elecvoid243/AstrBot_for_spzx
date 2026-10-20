@@ -1251,3 +1251,137 @@ class TestChangedFilesRecording:
         assert entries[0]["backup_id"] != ""
         _, baseline = manager.read_backup(str(target), entries[0]["backup_id"])
         assert baseline == b"alpha\n"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("list_history", [False, True])
+    async def test_edit_empty_replacement_lists_and_rolls_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, list_history
+    ):
+        """Keep empty replacements and explicit rollback history intact.
+
+        Args:
+            monkeypatch: Isolated filesystem and backup storage.
+            tmp_path: Native temporary workspace.
+            list_history: Whether rollback also receives the history flag.
+        """
+        workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+        self._isolate_history(monkeypatch, tmp_path)
+        target = workspace / "edit_me.txt"
+        target.write_bytes(b"alpha\n")
+        context = _make_context()
+        tool = fs_tools.FileEditTool()
+
+        edited = await tool.call(context, str(target), old="alpha", new="")
+        assert edited.startswith(f"Edited {target}.")
+        assert target.read_bytes() == b"\n"
+
+        history = await tool.call(context, str(target))
+        assert history.startswith(f"Edit history for: {target}")
+        assert "Total: 1 backup(s)." in history
+        backup_id = history.split("[", 1)[1].split("]", 1)[0]
+
+        rolled_back = await tool.call(
+            context, str(target), backup_id=backup_id, list_history=list_history
+        )
+        assert rolled_back.startswith(f"Successfully rolled back {target} to backup ")
+        assert backup_id in rolled_back
+        assert target.read_bytes() == b"alpha\n"
+
+        history = await tool.call(context, str(target), list_history=True)
+        assert "Total: 2 backup(s)." in history
+        assert "[pre-rollback snapshot]" in history
+        assert target.read_bytes() == b"alpha\n"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs,expected_message,expected_bytes",
+        [
+            ({}, "No edit history found for: {path}", b"alpha\n"),
+            (
+                {"old": None, "new": None, "backup_id": None},
+                "No edit history found for: {path}",
+                b"alpha\n",
+            ),
+            ({"old": ""}, "No edit history found for: {path}", b"alpha\n"),
+            ({"backup_id": ""}, "No edit history found for: {path}", b"alpha\n"),
+            (
+                {"old": "", "backup_id": "", "list_history": True},
+                "No edit history found for: {path}",
+                b"alpha\n",
+            ),
+            *[
+                (
+                    kwargs,
+                    "Error editing file: Edit mode requires both `old` and `new`. "
+                    "For rollback, provide `backup_id` or set `list_history=true`.",
+                    b"alpha\n",
+                )
+                for kwargs in (
+                    {"old": "alpha"},
+                    {"old": "alpha", "new": None},
+                    {"new": ""},
+                    {"new": "beta"},
+                    {"old": "", "new": ""},
+                    {"old": "", "new": "beta"},
+                )
+            ],
+            *[
+                (
+                    kwargs,
+                    "Error editing file: Conflicting parameters: provide `old`+`new` "
+                    "for editing, or `backup_id`/`list_history` for rollback. Not both.",
+                    b"alpha\n",
+                )
+                for kwargs in (
+                    {"old": "alpha", "backup_id": "missing"},
+                    {"new": "", "backup_id": "missing"},
+                    {"old": "alpha", "new": "beta", "backup_id": "missing"},
+                    {"old": "alpha", "list_history": True},
+                    {"new": "", "list_history": True},
+                    {"old": "alpha", "new": "beta", "list_history": True},
+                )
+            ],
+            (
+                {"old": "alpha", "new": "beta", "backup_id": ""},
+                "Edited {path}.",
+                b"beta\n",
+            ),
+        ],
+    )
+    async def test_edit_mode_parameter_boundaries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        kwargs,
+        expected_message,
+        expected_bytes,
+    ):
+        """Preserve mode selection, error messages, and actual file effects.
+
+        Args:
+            monkeypatch: Isolated filesystem and backup storage.
+            tmp_path: Native temporary workspace.
+            kwargs: Public file tool arguments.
+            expected_message: Expected response or edit response prefix.
+            expected_bytes: Expected file bytes after the call.
+        """
+        workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+        self._isolate_history(monkeypatch, tmp_path)
+        target = workspace / "edit_me.txt"
+        target.write_bytes(b"alpha\n")
+        context = _make_context()
+        tool = fs_tools.FileEditTool()
+
+        result = await tool.call(context, str(target), **kwargs)
+        expected_message = expected_message.format(path=target)
+        if expected_message.startswith("Edited "):
+            assert result.startswith(expected_message)
+        else:
+            assert result == expected_message
+        assert target.read_bytes() == expected_bytes
+
+        history = await tool.call(context, str(target), list_history=True)
+        if expected_bytes == b"alpha\n":
+            assert history == f"No edit history found for: {target}"
+        else:
+            assert "Total: 1 backup(s)." in history

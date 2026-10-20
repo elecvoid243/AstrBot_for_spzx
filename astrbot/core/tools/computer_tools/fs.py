@@ -930,7 +930,7 @@ class FileEditTool(FunctionTool):
                 )
 
             # Rollback mode: backup_id provided
-            if has_backup_id:
+            if backup_id is not None and backup_id != "":
                 return await self._do_rollback(
                     context, normalized_path, backup_id, local_env
                 )
@@ -940,7 +940,7 @@ class FileEditTool(FunctionTool):
                 return await self._do_list_history(history_mgr, normalized_path)
 
             # ---- Edit mode: both old and new must be present ----
-            if not has_old or not has_new:
+            if old is None or old == "" or new is None:
                 raise ValueError(
                     "Edit mode requires both `old` and `new`. "
                     "For rollback, provide `backup_id` or set `list_history=true`."

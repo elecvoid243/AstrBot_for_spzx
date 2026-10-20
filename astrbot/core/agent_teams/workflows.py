@@ -2132,13 +2132,21 @@ class WorkflowService:
         allowed_slots = {d.slot for d in role.dependencies if d.kind != "profiles"}
         if explicit and set(explicit.bindings) - allowed_slots:
             raise RoleAssetError("Bindings contain undeclared package slots")
-        requirements = {
-            dependency["slot"]: dependency
-            for dependency in package.role_content(role)["dependencies"]
-        }
+        # Launch checks task requirements on the current asset, not its import source.
+        requirements = (
+            {
+                dependency["slot"]: dependency["capabilities"]
+                for dependency in package.role_content(role)["dependencies"]
+            }
+            if validate_tasks
+            else {
+                dependency.slot: dependency.resource_content()["capabilities"]
+                for dependency in role.dependencies
+            }
+        )
         for dep in role.dependencies:
             candidates = []
-            required_capabilities = requirements[dep.slot]["capabilities"]
+            required_capabilities = requirements[dep.slot]
             for resource in catalog[dep.kind]:
                 fingerprint = resource.get("fingerprint")
                 if dep.kind == "profiles":

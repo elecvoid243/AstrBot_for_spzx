@@ -389,6 +389,122 @@ async def test_shared_role_capabilities_stay_with_their_independent_closure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_profile_tools", [False, True])
+async def test_reused_pending_coordinator_checks_the_current_asset_capabilities(
+    workflow_env, tmp_path, explicit_profile_tools
+):
+    """Keep independent task admission consistent with its recomposed package.
+
+    Args:
+        workflow_env: Public services with controlled execution ports.
+        tmp_path: Directory for public readiness and import observations.
+        explicit_profile_tools: Preserve an explicit imported profile requirement.
+    """
+    env = workflow_env
+    env.inventory["profiles"].append(
+        {
+            "id": "remote",
+            "runner_type": "dify",
+            "runner_config": {"dify_api_type": "workflow"},
+        }
+    )
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {"name": "Remote reader", "prompt": "Read evidence"},
+            "installation": {"profile_id": "remote"},
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Pending remote team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+            }
+        },
+    )
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    if explicit_profile_tools:
+        next(
+            dependency
+            for dependency in package["roles"][0]["dependencies"]
+            if dependency["kind"] == "profiles"
+        )["capabilities"].append("task_tools")
+    installed = await env.service.import_asset(
+        "bob", {"package": package, "save_pending": True}
+    )
+    assert not installed["ready"]
+    coordinator = installed["asset"]["definition"]["coordinator"]
+    local_role = await env.roles.get_role("bob", coordinator["role_id"], 1)
+    configured = await env.roles.save_role(
+        "bob",
+        {
+            "definition": local_role["definition"],
+            "installation": {"profile_id": "remote"},
+            "expected_version": 1,
+        },
+        local_role["role_id"],
+    )
+    assert (await env.roles.preview_role(configured))["ready"]
+    independent = await env.service.save_asset(
+        "bob",
+        {
+            "definition": {
+                "name": "Independent remote reader",
+                "task": "Read independently",
+                "role_id": configured["role_id"],
+                "role_version": configured["version"],
+            }
+        },
+    )
+    exported = await env.service.export_asset("bob", independent["asset_id"], 1)
+    source = exported["roles"][0]
+    preview = await env.service.preview_import(
+        "charlie",
+        {
+            "package": exported,
+            "installations": {
+                f"{source['role_id']}:{source['version']}": {"profile_id": "remote"}
+            },
+        },
+    )
+    readiness = await env.service.check_readiness("bob", independent["asset_id"], 1)
+    (tmp_path / "current-closure-observations.json").write_text(
+        json.dumps(
+            {
+                "explicit_profile_tools": explicit_profile_tools,
+                "original_package": package,
+                "configured_role": configured,
+                "independent_asset": independent,
+                "exported_package": exported,
+                "receiver_preview": preview,
+                "readiness": readiness,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    assert preview["ready"] is (not explicit_profile_tools), preview
+    assert readiness["ready"] is (not explicit_profile_tools), readiness
+    if explicit_profile_tools:
+        with pytest.raises(RoleAssetError, match="Package dependencies are not ready"):
+            await env.service.start_run("bob", independent["asset_id"], {"version": 1})
+        assert (await env.service.list_runs("bob"))["runs"] == []
+    else:
+        run = await env.service.start_run(
+            "bob", independent["asset_id"], {"version": 1}
+        )
+        assert run["snapshot"]["asset_id"] == independent["asset_id"]
+    assert not (
+        await env.service.check_readiness("bob", installed["asset"]["asset_id"], 1)
+    )["ready"]
+
+
+@pytest.mark.asyncio
 async def test_new_local_role_version_keeps_imported_compatibility_requirements(
     workflow_env,
 ):

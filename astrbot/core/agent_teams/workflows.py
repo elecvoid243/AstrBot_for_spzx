@@ -328,11 +328,9 @@ class WorkflowPackage(PackageAsset):
             Complete contract for matching an isolated local installation.
         """
         content = role.model_dump()
-        for dependency in content["dependencies"]:
+        for dependency, declared in zip(content["dependencies"], role.dependencies):
             if dependency["kind"] == "profiles":
-                dependency["capabilities"] = sorted(
-                    set(dependency["capabilities"]) | {"task_result"}
-                )
+                dependency["capabilities"] = declared.resource_content()["capabilities"]
         if any(
             isinstance(definition, AutonomousDefinition)
             and (definition.coordinator.role_id, definition.coordinator.role_version)
@@ -1658,9 +1656,7 @@ class WorkflowService:
                     "fingerprint": "astrbot.local.v1"
                     if runner_type == "local"
                     else None,
-                    "capabilities": sorted(
-                        set(portable["runner_capabilities"]) | {"task_result"}
-                    ),
+                    "capabilities": portable["runner_capabilities"],
                     "uses": {"role": []},
                 }
                 reserved_slots.add("profile")
@@ -3611,6 +3607,18 @@ class WorkflowService:
             )
             for current in rows:
                 boundary = checkpoints.get(current.run_id)
+                runner = current.snapshot.get("effective", {}).get("runner")
+                if runner is None:
+                    runner = get_agent_runner_capabilities(
+                        current.snapshot.get("profile", {}).get("agent_runner", {})
+                    )
+                result_issues = (
+                    get_agent_runner_capability_issues(
+                        runner, {"definition.role_id": "task_result"}
+                    )
+                    if "member" in current.snapshot
+                    else []
+                )
                 current_calls = [
                     call for call in calls if call.run_id == current.run_id
                 ]
@@ -3715,6 +3723,7 @@ class WorkflowService:
                                 else "task_boundaries",
                                 "available": current.status
                                 in {"interrupted", "failed", "blocked"}
+                                and not result_issues
                                 and boundary is not None
                                 and (
                                     not boundary.remote_runner
@@ -3756,7 +3765,9 @@ class WorkflowService:
                                     if boundary and boundary.remote_runner
                                     else {}
                                 ),
-                                "reason": "Remote result requires confirmation; no reliable run identity/query is available."
+                                "reason": result_issues[0]["message"]
+                                if result_issues
+                                else "Remote result requires confirmation; no reliable run identity/query is available."
                                 if boundary
                                 and boundary.remote_runner
                                 and boundary.phase not in {"request", "remote_result"}

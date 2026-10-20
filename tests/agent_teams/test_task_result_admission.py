@@ -248,6 +248,8 @@ def test_unsupported_frozen_task_is_blocked_after_process_loss(tmp_path, runner)
     assert evidence["after"]["snapshot"] == original["snapshot"]
     assert evidence["after"]["state"]["attempt_id"] == "attempt-original"
     assert evidence["after"]["recovery"]["boundary"] == "remote_running"
+    assert evidence["after"]["recovery"]["available"] is False
+    assert "task_result" in evidence["after"]["recovery"]["reason"]
     assert evidence["after"]["result"] is None
     assert evidence["error"]["status"] == 409
     assert evidence["error"]["fields"] == [

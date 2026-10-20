@@ -1344,6 +1344,18 @@ async def test_v1_openapi_is_served_by_fastapi(asgi_client: httpx.AsyncClient):
     assert "**Required scope:** `chat`" in chat_send["description"]
     assert "**Conditional sensitive scope:** `chat:admin`" in chat_send["description"]
 
+    system_stream = spec["paths"]["/api/v1/chat/sessions/{session_id}/system-stream"][
+        "get"
+    ]
+    assert system_stream["x-astrbot-scope"] == "chat"
+    for path in (
+        "/api/v1/agent_teams",
+        "/api/v1/agent_roles",
+        "/api/v1/workflow_assets",
+    ):
+        assert path in spec["paths"]
+        assert "x-astrbot-scope" not in spec["paths"][path]["get"]
+
     public_spec_path = (
         Path(__file__).resolve().parents[1] / "docs" / "public" / "openapi.json"
     )
@@ -1363,6 +1375,40 @@ async def test_v1_openapi_is_served_by_fastapi(asgi_client: httpx.AsyncClient):
         and not operation.get("x-websocket")
     }
     assert public_scope_map == runtime_scope_map
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    ["/api/v1/agent_teams", "/api/v1/agent_roles", "/api/v1/workflow_assets"],
+)
+async def test_v1_agent_assets_reject_developer_api_keys(
+    asgi_client: httpx.AsyncClient, fake_db: FakeDb, path: str
+):
+    fake_db.add_api_key("abk-chat-assets", scopes=["chat"])
+
+    response = await asgi_client.get(path, headers={"X-API-Key": "abk-chat-assets"})
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_v1_system_stream_requires_chat_scope_and_respects_config(
+    asgi_client: httpx.AsyncClient, fake_db: FakeDb, fake_core_lifecycle
+):
+    fake_core_lifecycle.astrbot_config["dashboard"] = {"system_stream_enabled": False}
+    fake_db.add_api_key("abk-stream-chat", scopes=["chat"])
+    fake_db.add_api_key("abk-stream-data", scopes=["data"])
+    path = "/api/v1/chat/sessions/session-1/system-stream"
+
+    unauthenticated = await asgi_client.get(path)
+    assert unauthenticated.status_code == 401
+    forbidden = await asgi_client.get(path, headers={"X-API-Key": "abk-stream-data"})
+    assert forbidden.status_code == 403
+    disabled = await asgi_client.get(path, headers={"X-API-Key": "abk-stream-chat"})
+    assert disabled.status_code == 200
+    assert disabled.json()["status"] == "error"
+    assert disabled.json()["message"] == "System event stream is disabled"
 
 
 def test_static_openapi_v1_paths_include_api_version():

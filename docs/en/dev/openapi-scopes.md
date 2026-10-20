@@ -144,28 +144,6 @@ Use chat capabilities and manage ChatUI sessions and projects.
 
 | Method | Endpoint | Conditional sensitive sub-scope |
 | --- | --- | --- |
-| `GET` | `/api/v1/agent_teams` | — |
-| `POST` | `/api/v1/agent_teams` | — |
-| `GET` | `/api/v1/agent_teams/runs/active` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/members/{member_id}/interrupt` | — |
-| `GET` | `/api/v1/agent_teams/runs/{run_id}/members/{member_id}/transcript` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/retry` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/nodes/{node_id}/skip` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/pause` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/resume` | — |
-| `POST` | `/api/v1/agent_teams/runs/{run_id}/stop` | — |
-| `GET` | `/api/v1/agent_teams/runs/{run_id}/stream` | — |
-| `GET` | `/api/v1/agent_teams/{team_id}` | — |
-| `PATCH` | `/api/v1/agent_teams/{team_id}` | — |
-| `DELETE` | `/api/v1/agent_teams/{team_id}` | — |
-| `POST` | `/api/v1/agent_teams/{team_id}/members` | — |
-| `DELETE` | `/api/v1/agent_teams/{team_id}/members/{member_id}` | — |
-| `GET` | `/api/v1/agent_teams/{team_id}/runs` | — |
-| `POST` | `/api/v1/agent_teams/{team_id}/runs` | — |
-| `GET` | `/api/v1/agent_teams/{team_id}/workflows` | — |
-| `POST` | `/api/v1/agent_teams/{team_id}/workflows` | — |
-| `PUT` | `/api/v1/agent_teams/{team_id}/workflows/{workflow_id}` | — |
-| `DELETE` | `/api/v1/agent_teams/{team_id}/workflows/{workflow_id}` | — |
 | `POST` | `/api/v1/chat` | `chat:admin` |
 | `GET` | `/api/v1/chat/configs` | — |
 | `GET` | `/api/v1/chat/file-access-mode` | — |
@@ -214,6 +192,7 @@ Use chat capabilities and manage ChatUI sessions and projects.
 | `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/terminate` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/system-stream` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
 | `POST` | `/api/v1/chat/subagent-follow-up` | — |
 | `POST` | `/api/v1/chat/threads` | — |

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
 from astrbot.dashboard.api.chat import resume_chat_run
 from astrbot.dashboard.services import chat_service
 from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
@@ -295,38 +297,184 @@ async def test_active_chat_runs_keep_creation_order(chat_service_instance):
 
 
 @pytest.mark.asyncio
-async def test_slow_chat_run_subscriber_is_closed_at_buffer_limit(
+@pytest.mark.parametrize(
+    "buffer_size", [4, chat_service.CHAT_RUN_SUBSCRIBER_QUEUE_SIZE]
+)
+async def test_slow_chat_run_subscriber_keeps_latest_events_and_can_resume(
     chat_service_instance,
+    monkeypatch,
+    buffer_size,
 ):
     service = chat_service_instance
+    monkeypatch.setattr(chat_service, "CHAT_RUN_SUBSCRIBER_QUEUE_SIZE", buffer_size)
     session_id = "slow-subscriber-session"
     stream = await service.build_chat_stream(
         "alice",
         {"message": "hello", "session_id": session_id},
     )
     run = next(iter(service.chat_runs.values()))
-    subscriber = next(iter(run.subscribers))
+    observer = await service.build_chat_run_stream("alice", run.run_id)
+    resumed_stream = None
 
     try:
-        for index in range(chat_service.CHAT_RUN_SUBSCRIBER_QUEUE_SIZE + 1):
-            service._publish_chat_run(
-                run,
-                {"type": "plain", "data": str(index), "streaming": True},
-            )
-
-        assert subscriber.maxsize == chat_service.CHAT_RUN_SUBSCRIBER_QUEUE_SIZE
-        assert subscriber.qsize() == 1
-        assert not run.subscribers
         assert _decode_sse_event(await anext(stream))["type"] == "session_id"
         assert _decode_sse_event(await anext(stream))["type"] == "user_message_saved"
-        with pytest.raises(StopAsyncIteration):
-            await anext(stream)
+        assert _decode_sse_event(await anext(observer))["type"] == "run_snapshot"
+
+        chunks = [f"{index}," for index in range(buffer_size + 3)]
+        for chunk in chunks:
+            payload = {
+                "type": "plain",
+                "data": chunk,
+                "streaming": True,
+                "message_id": run.run_id,
+            }
+            assert await chat_service.webchat_queue_mgr.put_back_queue(
+                run.run_id, payload
+            )
+            # The fast observer is a processing barrier for the slow stream.
+            assert (
+                _decode_sse_event(await asyncio.wait_for(anext(observer), 1)) == payload
+            )
+
+        retained = [
+            _decode_sse_event(await asyncio.wait_for(anext(stream), 1))["data"]
+            for _ in range(buffer_size)
+        ]
+        assert retained == chunks[3:]
+
+        resumed_stream = await service.build_chat_run_stream("alice", run.run_id)
+        snapshot = _decode_sse_event(await anext(resumed_stream))
+        assert snapshot["type"] == "run_snapshot"
+        assert snapshot["data"]["content"]["message"] == [
+            {"type": "plain", "text": "".join(chunks)}
+        ]
+
+        later = {
+            "type": "plain",
+            "data": "after overflow",
+            "streaming": True,
+            "message_id": run.run_id,
+        }
+        assert await chat_service.webchat_queue_mgr.put_back_queue(run.run_id, later)
+        for attached in (stream, observer, resumed_stream):
+            assert (
+                _decode_sse_event(await asyncio.wait_for(anext(attached), 1)) == later
+            )
     finally:
         await stream.aclose()
+        await observer.aclose()
+        if resumed_stream is not None:
+            await resumed_stream.aclose()
         if run.task and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
         chat_service.webchat_queue_mgr.remove_queues(session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "buffer_size", [4, chat_service.CHAT_RUN_SUBSCRIBER_QUEUE_SIZE]
+)
+async def test_slow_chat_run_subscriber_receives_completion_and_saved_history(
+    chat_service_instance,
+    monkeypatch,
+    tmp_path,
+    buffer_size,
+):
+    service = chat_service_instance
+    monkeypatch.setattr(chat_service, "CHAT_RUN_SUBSCRIBER_QUEUE_SIZE", buffer_size)
+    db_path = tmp_path / "chat.db"
+    service.db = SQLiteDatabase(str(db_path))
+    await service.db.initialize()
+    service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
+    # Exercise real persistence instead of the route fixture's save mock.
+    del service.save_bot_message
+    session_id = "slow-completion-session"
+    stream = await service.build_chat_stream(
+        "alice", {"message": "hello", "session_id": session_id}
+    )
+    run = next(iter(service.chat_runs.values()))
+    observer = await service.build_chat_run_stream("alice", run.run_id)
+
+    try:
+        assert _decode_sse_event(await anext(stream))["type"] == "session_id"
+        assert _decode_sse_event(await anext(stream))["type"] == "user_message_saved"
+        assert _decode_sse_event(await anext(observer))["type"] == "run_snapshot"
+        chunks = [f"{index}," for index in range(buffer_size + 3)]
+        for chunk in chunks:
+            assert await chat_service.webchat_queue_mgr.put_back_queue(
+                run.run_id,
+                {
+                    "type": "plain",
+                    "data": chunk,
+                    "streaming": True,
+                    "message_id": run.run_id,
+                },
+            )
+            assert (
+                _decode_sse_event(await asyncio.wait_for(anext(observer), 1))["data"]
+                == chunk
+            )
+        await observer.aclose()
+
+        full_text = "".join(chunks)
+        for payload in (
+            {
+                "type": "complete",
+                "data": full_text,
+                "streaming": True,
+                "message_id": run.run_id,
+            },
+            {"type": "end", "data": "", "streaming": False, "message_id": run.run_id},
+        ):
+            assert await chat_service.webchat_queue_mgr.put_back_queue(
+                run.run_id, payload
+            )
+        await asyncio.wait_for(run.task, 1)
+
+        events = []
+        for _ in range(buffer_size + 1):
+            try:
+                event = await asyncio.wait_for(anext(stream), 1)
+            except StopAsyncIteration:
+                break
+            events.append(_decode_sse_event(event))
+        else:
+            pytest.fail("Completed chat stream did not close within its buffer limit")
+        assert [event["type"] for event in events][-3:] == [
+            "complete",
+            "message_saved",
+            "end",
+        ]
+        assert len(events) <= buffer_size
+        assert events[-3]["data"] == full_text
+
+        # A finished run is recovered through history, using a fresh DB handle.
+        await service.db.engine.dispose()
+        service.db = SQLiteDatabase(str(db_path))
+        await service.db.initialize()
+        service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
+        history = await service.get_session("alice", session_id)
+        assert history["total_messages"] == 2
+        assert history["active_runs"] == []
+        assert history["is_running"] is False
+        bot = next(row for row in history["history"] if row["content"]["type"] == "bot")
+        assert bot["id"] == events[-2]["data"]["id"]
+        assert bot["llm_checkpoint_id"] == events[-2]["data"]["llm_checkpoint_id"]
+        assert bot["content"]["message"] == [{"type": "plain", "text": full_text}]
+        with pytest.raises(ChatServiceError, match="not found"):
+            await service.build_chat_run_stream("alice", run.run_id)
+        with pytest.raises(ChatServiceError, match="Permission denied"):
+            await service.get_session("bob", session_id)
+    finally:
+        await stream.aclose()
+        await observer.aclose()
+        if run.task and not run.task.done():
+            run.task.cancel()
+            await asyncio.gather(run.task, return_exceptions=True)
+        chat_service.webchat_queue_mgr.remove_queues(session_id)
+        await service.db.engine.dispose()
 
 
 @pytest.mark.asyncio

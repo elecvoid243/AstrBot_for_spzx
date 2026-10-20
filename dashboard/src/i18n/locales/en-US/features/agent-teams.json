@@ -632,6 +632,7 @@
   "runner": {
     "title": "Executor",
     "requirements": "Required executor capabilities",
+    "taskResultRequired": "This executor can be configured for chat, but cannot run task assets because it cannot submit a validated task result. Task readiness checks this automatically; selecting a capability does not add support.",
     "identity": "Original remote run identity",
     "query": "Query original remote run",
     "check": "Check readiness",

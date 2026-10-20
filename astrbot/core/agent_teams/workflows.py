@@ -66,7 +66,10 @@ from astrbot.core.agent_teams.usage import (
     UsageStart,
     summarize_usage,
 )
-from astrbot.core.config.agent_runner import get_agent_runner_capabilities
+from astrbot.core.config.agent_runner import (
+    get_agent_runner_capabilities,
+    get_agent_runner_capability_issues,
+)
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentRoleInstallation,
@@ -174,7 +177,12 @@ class PackageDependency(BaseModel):
         Returns:
             Compatibility requirements without aliases or context provenance.
         """
-        return self.model_dump(exclude={"slot", "logical_slots", "uses"})
+        content = self.model_dump(exclude={"slot", "logical_slots", "uses"})
+        if self.kind == "profiles":
+            content["capabilities"] = sorted(
+                set(content["capabilities"]) | {"task_result"}
+            )
+        return content
 
 
 class PackageRole(BaseModel):
@@ -311,7 +319,7 @@ class WorkflowPackage(PackageAsset):
     assets: list[PackageAsset] = Field(default_factory=list, max_length=100)
 
     def role_content(self, role: PackageRole) -> dict:
-        """Read a manifest with the intrinsic coordinator requirements included.
+        """Read a manifest with intrinsic task and coordinator requirements.
 
         Args:
             role: Included source role version.
@@ -320,6 +328,11 @@ class WorkflowPackage(PackageAsset):
             Complete contract for matching an isolated local installation.
         """
         content = role.model_dump()
+        for dependency in content["dependencies"]:
+            if dependency["kind"] == "profiles":
+                dependency["capabilities"] = sorted(
+                    set(dependency["capabilities"]) | {"task_result"}
+                )
         if any(
             isinstance(definition, AutonomousDefinition)
             and (definition.coordinator.role_id, definition.coordinator.role_version)
@@ -469,7 +482,7 @@ class WorkflowPackage(PackageAsset):
                 **asset.model_dump(),
                 "format": self.format,
                 "roles": [
-                    role.model_dump()
+                    self.role_content(role)
                     for role in self.roles
                     if (role.role_id, role.version) in roles
                 ],
@@ -1645,7 +1658,9 @@ class WorkflowService:
                     "fingerprint": "astrbot.local.v1"
                     if runner_type == "local"
                     else None,
-                    "capabilities": portable["runner_capabilities"],
+                    "capabilities": sorted(
+                        set(portable["runner_capabilities"]) | {"task_result"}
+                    ),
                     "uses": {"role": []},
                 }
                 reserved_slots.add("profile")
@@ -3069,7 +3084,12 @@ class WorkflowService:
         return await self.get_run(username, run_id)
 
     async def _freeze_member(
-        self, username: str, definition: dict, *, asset: dict
+        self,
+        username: str,
+        definition: dict,
+        *,
+        asset: dict,
+        role_path: str = "definition.role_id",
     ) -> dict:
         """Freeze role capabilities and create an isolated member identity.
 
@@ -3077,6 +3097,7 @@ class WorkflowService:
             username: Actual initiating owner.
             definition: Task with a pinned role and explicit overrides.
             asset: Authorized fixed asset supplying the actual contract context.
+            role_path: Role reference field in the selected asset definition.
 
         Returns:
             Frozen role, effective settings, safe profile, persona and member.
@@ -3092,6 +3113,11 @@ class WorkflowService:
         )
         if not role["ready"]:
             raise RoleAssetError("Role resources are not ready", role["issues"])
+        issues = get_agent_runner_capability_issues(
+            role["effective"]["runner"], {role_path: "task_result"}
+        )
+        if issues:
+            raise RoleAssetError("Task runner cannot submit results", issues)
         if role["effective"]["runner"]["type"] != "local":
             for limit in ("token_budget", "max_output_tokens"):
                 if (definition.get("limits") or {}).get(limit) is not None:
@@ -5275,8 +5301,13 @@ class WorkflowService:
         )
         allowed_roles = {}
         if team:
-            for role in team["allowed_roles"]:
-                frozen = await self._freeze_member(username, role, asset=asset)
+            for index, role in enumerate(team["allowed_roles"]):
+                frozen = await self._freeze_member(
+                    username,
+                    role,
+                    asset=asset,
+                    role_path=f"definition.allowed_roles.{index}.role_id",
+                )
                 frozen.pop("member")
                 allowed_roles[role["role_id"]] = frozen
             definition = GraphDefinition.model_validate(
@@ -5342,13 +5373,20 @@ class WorkflowService:
         validate_graph(definition)
         members = {}
         role_counts: dict[str, int] = {}
-        for task in definition.tasks:
+        for index, task in enumerate(definition.tasks):
             if task.human is not None or task.team is not None:
                 continue
             assert task.role_id is not None
             if task.member not in members:
                 frozen = await self._freeze_member(
-                    username, task.model_dump(exclude_none=True), asset=asset
+                    username,
+                    task.model_dump(exclude_none=True),
+                    asset=asset,
+                    role_path="definition.coordinator.role_id"
+                    if team
+                    else f"definition.tasks.{index}.role_id"
+                    if "tasks" in asset["definition"]
+                    else "definition.role_id",
                 )
                 if (
                     team
@@ -8064,6 +8102,40 @@ class WorkflowService:
             raise RoleAssetError(
                 "Recover the interrupted task inside the child scope", status=409
             )
+        runner = run["snapshot"]["effective"].get("runner")
+        if runner is None:
+            runner = get_agent_runner_capabilities(
+                run["snapshot"].get("profile", {}).get("agent_runner", {})
+            )
+        issues = get_agent_runner_capability_issues(
+            runner, {"definition.role_id": "task_result"}
+        )
+        if issues and run["status"] in {
+            "interrupted",
+            "failed",
+            "blocked",
+            "awaiting_result",
+        }:
+            reason = "Frozen task runner cannot submit results"
+            async with self.db.get_db() as session:
+                row = await session.get(AgentWorkflowRun, run_id)
+                assert row is not None
+                await self._lock_control(session, row)
+                await session.refresh(row)
+                if row.status != run["status"]:
+                    raise RoleAssetError("Execution ownership has changed", status=409)
+                row.status = "blocked"
+                row.state = {**row.state, "reason": reason, "issues": issues}
+                session.add(row)
+                session.add(
+                    AgentWorkflowEvent(
+                        run_id=run_id,
+                        kind="task.blocked",
+                        data={"attempt_id": row.state["attempt_id"], "reason": reason},
+                    )
+                )
+                await session.commit()
+            raise RoleAssetError(reason, issues, status=409)
         async with self.db.get_db() as session:
             row = await session.get(AgentWorkflowRun, run_id)
             if row is not None:

@@ -10,7 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 
-from astrbot.core.config.agent_runner import get_agent_runner_capabilities
+from astrbot.core.config.agent_runner import (
+    get_agent_runner_capabilities,
+    get_agent_runner_capability_issues,
+)
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import (
     AgentRoleInstallation,
@@ -382,7 +385,7 @@ class RoleAssetService:
     async def validate_frozen_role(
         self, role: dict, profile_snapshot: dict | None = None
     ) -> None:
-        """Check current resources against frozen bindings and immutable requirements.
+        """Check current resources against a frozen task role's requirements.
 
         Args:
             role: Pinned definition, bindings, effective configuration and resolved
@@ -423,6 +426,11 @@ class RoleAssetService:
                 "runner_type": profile.get("runner_type", "local"),
                 "config": profile.get("runner_config", {}),
             }
+        )
+        issues.extend(
+            get_agent_runner_capability_issues(
+                runner, {"definition.role_id": "task_result"}
+            )
         )
         if effective.get("runner", runner) != runner:
             issues.append(
@@ -636,15 +644,17 @@ class RoleAssetService:
         )
         effective["runner"] = runner
         sources["runner"] = f"profile:{profile_id}"
-        for index, capability in enumerate(definition["runner_capabilities"]):
-            if capability not in runner["capabilities"]:
-                issues.append(
-                    {
-                        "path": f"definition.runner_capabilities.{index}",
-                        "code": "INCOMPATIBLE",
-                        "message": f"{runner['label']} does not support {capability}",
-                    }
-                )
+        issues.extend(
+            get_agent_runner_capability_issues(
+                runner,
+                {
+                    f"definition.runner_capabilities.{index}": capability
+                    for index, capability in enumerate(
+                        definition["runner_capabilities"]
+                    )
+                },
+            )
+        )
         if not profile:
             issues.append(
                 {

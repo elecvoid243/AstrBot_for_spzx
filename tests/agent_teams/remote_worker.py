@@ -390,6 +390,17 @@ async def run_worker(folder: Path, endpoint: str, action: str, scenario: str) ->
         sql_event.listen(Session, "after_commit", after_commit)
     dispatch = asyncio.create_task(bus.dispatch())
     try:
+        if action.startswith("protocol_"):
+            from tests.agent_teams.remote_protocol_worker import run_protocol_worker
+
+            await run_protocol_worker(
+                folder,
+                action,
+                scenario,
+                build_ports_for_test(queue, "alice", lambda event: None),
+                config,
+            )
+            return
         if action == "serve":
             from fastapi import FastAPI
             from fastapi.responses import HTMLResponse

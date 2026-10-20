@@ -64,7 +64,9 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
 ):
     """Recover a real remote invocation across independent worker processes.
 
-    The parent owns the HTTP ledger while the production pipeline writes SQLite.
+    The parent owns the HTTP ledger while public checkpoint callbacks write SQLite.
+    Dify workflows retain the task asset service; other runners use the public
+    execution pipeline because their response protocol cannot complete task assets.
     Kill-ready files mark committed identities/results or an explicit unknown
     boundary; the parent terminates that worker and rebuilds the public service.
 
@@ -430,10 +432,15 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         f"http://127.0.0.1:{server.server_port}",
     ]
     process = None
+    # These adapters retain their checkpoint contract at the public pipeline seam;
+    # they cannot create new task assets without a structured result protocol.
+    protocol = runner != "dify" or scenario.startswith("chat_")
+    start_action = "protocol_start" if protocol else "start"
+    recover_action = "protocol_recover" if protocol else "recover"
     try:
         with (tmp_path / "first.log").open("w", encoding="utf-8") as log:
             process = subprocess.Popen(
-                [*args, "start", runner + ":" + scenario],
+                [*args, start_action, runner + ":" + scenario],
                 cwd=root,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -478,7 +485,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                         querying.wait(timeout=10)
                     release_query.set()
         restarted = subprocess.run(
-            [*args, "recover", runner + ":" + scenario],
+            [*args, recover_action, runner + ":" + scenario],
             cwd=root,
             capture_output=True,
             text=True,
@@ -536,7 +543,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             or scenario.endswith("thought_checkpoint_failure")
         ):
             assert evidence["error"]["status"] == 409
-            assert evidence["after"]["result"] is None
+            assert evidence["after"].get("result") is None
             assert evidence["after"]["recovery"]["available"] is False
             assert [entry["method"] for entry in ledger] == ["POST"]
             assert evidence["after"]["usage"]["model_calls"] == 1
@@ -555,7 +562,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             assert evidence["before"]["status"] == "blocked"
             assert evidence["before"]["recovery"]["boundary"] == "remote_running"
             assert evidence["after"]["status"] == "blocked"
-            assert evidence["after"]["result"] is None
+            assert evidence["after"].get("result") is None
             assert [entry["method"] for entry in ledger] == [
                 "POST",
                 "POST",
@@ -566,7 +573,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         if scenario in {"identity_save_failure", "identity_missing", "chat_unknown"}:
             assert evidence["error"]["status"] == 409
             assert "requires confirmation" in evidence["error"]["message"]
-            assert evidence["after"]["result"] is None
+            assert evidence["after"].get("result") is None
             assert evidence["after"]["recovery"]["available"] is False
             assert len(ledger) == 1 and ledger[0]["method"] == "POST"
             if scenario == "chat_unknown":
@@ -576,7 +583,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             return
         if scenario.startswith("query_") and scenario != "query_interrupted":
             assert evidence["after"]["status"] == "blocked"
-            assert evidence["after"]["result"] is None
+            assert evidence["after"].get("result") is None
             assert (
                 "confirmation" in evidence["after"]["state"]["reason"]
                 or "confirmed" in evidence["after"]["state"]["reason"]
@@ -668,10 +675,25 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             .read_text(encoding="utf-8")
             .splitlines()
         ]
-        assert [entry["kind"] for entry in hooks] == ["request", "response", "done"]
+        assert [entry["kind"] for entry in hooks] == (
+            ["request", "response", "done", "response", "done"]
+            if protocol
+            else ["request", "response", "done"]
+        )
         assert hooks[1]["text"].endswith("[Checked by completion hook]")
+        if protocol:
+            assert "result" not in evidence["after"]
+            assert (
+                evidence["repeated"]["response"]
+                == evidence["after"]["state"]["response"]
+            )
+            assert (
+                evidence["repeated"]["observations"]["usage"]
+                == evidence["after"]["usage"]
+            )
         if scenario in {"chat_result_saved", "chat_thoughts", "chat_workflow_events"}:
-            assert evidence["after"]["status"] == "awaiting_result"
+            assert evidence["after"]["status"] == "response_saved"
+            assert "result" not in evidence["after"]
             assert evidence["after"]["usage"]["tokens"]["reported"] == 31
             assert evidence["after"]["usage"]["model_calls"] == 1
             assert evidence["stopped"]["recovery"]["capability"] == "external_boundary"
@@ -703,7 +725,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                 assert records[4]["data"]["event"]["metadata"]["reasoning"] == {
                     "llm-original": "Original final reasoning."
                 }
-                assert not evidence["after"]["tool_calls"]
+                assert not any(record["kind"] == "tool_result" for record in records)
             if scenario == "chat_thoughts":
                 records = [
                     record
@@ -733,7 +755,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                     records[2]["data"]["event"]["thought"]
                     == "Second provider reasoning."
                 )
-                assert not evidence["after"]["tool_calls"]
+                assert not any(record["kind"] == "tool_result" for record in records)
                 assert (
                     len(
                         [
@@ -748,7 +770,8 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
         if runner == "dashscope":
             assert "Check evidence." in ledger[0]["body"]["input"]["prompt"]
             assert "Find the original evidence." in ledger[0]["body"]["input"]["prompt"]
-            assert evidence["after"]["status"] == "awaiting_result"
+            assert evidence["after"]["status"] == "response_saved"
+            assert "result" not in evidence["after"]
             assert evidence["after"]["usage"]["tokens"]["reported"] == (
                 None
                 if scenario == "usage_missing"
@@ -776,7 +799,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             else {"thread_id": "thread-original", "run_id": "run-original"}
         )
         assert evidence["after"]["status"] == (
-            "completed" if runner == "dify" else "awaiting_result"
+            "completed" if runner == "dify" else "response_saved"
         )
         if runner == "dify":
             assert evidence["after"]["usage"]["tokens"]["reported"] == 31
@@ -785,7 +808,7 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
                 "text": "Original verified evidence."
             }
         else:
-            assert evidence["after"]["result"] is None
+            assert "result" not in evidence["after"]
             assert (
                 evidence["after"]["state"]["response"]["text"]
                 == "Original verified evidence.[Checked by completion hook]"
@@ -795,9 +818,8 @@ def test_remote_run_identity_survives_process_loss_without_recreating_remote_wor
             == evidence["before"]["state"]["attempt_id"]
         )
         assert evidence["after"]["snapshot"] == evidence["before"]["snapshot"]
-        assert evidence["repeated"] == (
-            evidence["after"] if runner == "dify" else {"error": 409}
-        )
+        if runner == "dify":
+            assert evidence["repeated"] == evidence["after"]
         if scenario == "query_interrupted":
             assert [entry["method"] for entry in ledger] == ["POST", "GET", "GET"]
             return

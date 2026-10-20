@@ -96,7 +96,7 @@ Agent Teams 是 **dashboard 服务层子系统**，驱动 core 的 WebChat 会�
 | name | str | 团队名 |
 | coordinator_member_id | str | 协调者成员 id（成员之一） |
 | members | str(JSON) | `[{member_id, name, session_id, persona_id, provider_id}]` |
-| config | str(JSON) | `{failure_policy: "pause"|"auto_skip", reply_timeout: 600, max_rounds: 20, max_parallel: 5, inject_max_length: 4000}` |
+| config | str(JSON) | `{failure_policy: "pause"\|"auto_skip", reply_timeout: 600, max_rounds: 20, max_parallel: 5, inject_max_length: 4000}` |
 | created_at / updated_at | str | ISO 时间 |
 
 成员约束：`name` 团队内唯一（≤32 字符，即派发路由键）；`session_id` 全局唯一（唯一性校验，为将来"绑定已有会话"兜底）；成员数 ≤10。`member_id` 为 uuid hex[:8]。

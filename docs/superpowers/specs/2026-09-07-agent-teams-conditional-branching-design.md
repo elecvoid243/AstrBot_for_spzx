@@ -21,7 +21,7 @@ Agent Teams 当前 DAG 编排是**静态无环图**，所有节点按拓扑顺�
 | 决策点 | 结论 |
 |---|---|
 | 输出格式 | Markdown 标记块 ` ```output ... ``` `，内含 JSON（对 LLM 友好） |
-| 条件表达式 | 支持逻辑运算（`&&`/`||`/`!`）+ 比较（`==`/`!=`/`>`等）+ 访问路径（`{{node.output.field}}`） |
+| 条件表达式 | 支持逻辑运算（`&&`/`\|\|`/`!`）+ 比较（`==`/`!=`/`>`等）+ 访问路径（<code v-pre>{{node.output.field}}</code>） |
 | 存储方式 | `node_states[id].structured_output` 独立字段存解析后的 JSON（不混入 `result` 文本） |
 | 混合模式 | 同一节点的出边可混合：有 `condition` 的边求值检查；无 `condition` 的边总是执行 |
 | 错误处理 | 条件表达式语法错误 → run `failed`（编辑器校验 + 运行时终审）；节点输出 JSON 格式错误 → run `paused`（用户可修复） |
@@ -196,7 +196,7 @@ def extract_structured_output(result_text: str) -> tuple[dict | list | None, str
 | `>` `<` `>=` `<=` | 比较 | <code v-pre>{{n1.output.score}} &gt; 80</code> |
 | `==` `!=` | 相等 | <code v-pre>{{n1.output.status}} == "success"</code> |
 | `&&` | 逻辑与 | <code v-pre>{{a.output.x}} &gt; 0 &amp;&amp; {{b.output.y}} &lt; 10</code> |
-| `||` | 逻辑或 | `{{a.output.ok}} || {{b.output.ok}}` |
+| `\|\|` | 逻辑或 | <code v-pre>{{a.output.ok}} &#124;&#124; {{b.output.ok}}</code> |
 
 **字面量**：
 - 布尔：`true` / `false`

@@ -712,13 +712,14 @@ async def _ensure_persona_and_skills(
         workspace_skills.extend(skill_manager.list_workspace_skills(workspace_root))
 
     if skills or workspace_skills:
-        if persona and persona.get("skills") is not None:
-            if not persona["skills"]:
+        persona_skills = persona.get("skills") if persona else None
+        if persona_skills is not None:
+            if not persona_skills:
                 skills = []
             else:
-                allowed = set(persona["skills"])
+                allowed = set(persona_skills)
                 skills = [skill for skill in skills if skill.name in allowed]
-        if workspace_skills and (not persona or persona.get("skills") != []):
+        if workspace_skills and persona_skills != []:
             skills_by_name = {skill.name: skill for skill in skills}
             for skill in workspace_skills:
                 skills_by_name[skill.name] = skill
@@ -744,15 +745,16 @@ async def _ensure_persona_and_skills(
     tmgr = plugin_context.get_llm_tool_manager()
 
     # inject toolset in the persona
-    if (persona and persona.get("tools") is None) or not persona:
+    persona_tool_names = persona.get("tools") if persona else None
+    if persona_tool_names is None:
         persona_toolset = tmgr.get_full_tool_set()
         for tool in list(persona_toolset):
             if not tool.active:
                 persona_toolset.remove_tool(tool.name)
     else:
         persona_toolset = ToolSet()
-        if persona["tools"]:
-            for tool_name in persona["tools"]:
+        if persona_tool_names:
+            for tool_name in persona_tool_names:
                 tool = tmgr.get_func(tool_name)
                 if tool and tool.active:
                     persona_toolset.add_tool(tool)

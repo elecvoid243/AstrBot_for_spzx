@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from astrbot.core.computer import process_sandbox
 from astrbot.core.computer.booters import local as local_booter
 from astrbot.core.computer.booters.local import LocalFileSystemComponent
 
@@ -111,6 +110,8 @@ def test_local_file_system_component_searches_with_rg_glob_and_context(monkeypat
             {
                 "capture_output": True,
                 "timeout": 30,
+                # CREATE_NO_WINDOW is required for console tools on Windows.
+                **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
             },
         )
     ]
@@ -190,7 +191,7 @@ def test_local_file_system_component_preserves_python_ripgrep_before_314(monkeyp
         return ["技能内容\n"]
 
     monkeypatch.setattr(local_booter.sys, "version_info", (3, 13))
-    monkeypatch.setattr(local_booter, "search", fake_search)
+    monkeypatch.setattr(local_booter, "search", fake_search, raising=False)
     monkeypatch.setattr(
         local_booter.subprocess,
         "run",
@@ -220,10 +221,6 @@ def test_local_file_system_component_preserves_python_ripgrep_before_314(monkeyp
     ]
 
 
-@pytest.mark.skipif(
-    sys.version_info >= (3, 14),
-    reason="python-ripgrep is only used before Python 3.14",
-)
 def test_local_file_system_component_handles_search_timeout(monkeypatch):
     def fake_run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
@@ -238,4 +235,51 @@ def test_local_file_system_component_handles_search_timeout(monkeypatch):
         "success": False,
         "content": "",
         "error": "File search timed out after 30 seconds.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_error"),
+    [
+        ("rg: 无效表达式\n".encode(), "rg: 无效表达式"),
+        (b"", "ripgrep exited with code 2"),
+    ],
+)
+def test_local_file_system_component_reports_rg_errors(
+    monkeypatch, stderr, expected_error
+):
+    monkeypatch.setattr(local_booter.shutil, "which", lambda _executable: "/bin/rg")
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 14))
+    monkeypatch.setattr(
+        local_booter.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 2, stdout=b"partial output\n", stderr=stderr
+        ),
+    )
+
+    result = asyncio.run(LocalFileSystemComponent().search_files("["))
+
+    assert result == {
+        "success": False,
+        "content": "",
+        "error": expected_error,
+        "exit_code": 2,
+    }
+
+
+def test_local_file_system_component_reports_rg_launch_error(monkeypatch):
+    def fake_run(*_args, **_kwargs):
+        raise OSError("rg launch failed")
+
+    monkeypatch.setattr(local_booter.shutil, "which", lambda _executable: "/bin/rg")
+    monkeypatch.setattr(local_booter.sys, "version_info", (3, 14))
+    monkeypatch.setattr(local_booter.subprocess, "run", fake_run)
+
+    result = asyncio.run(LocalFileSystemComponent().search_files("needle"))
+
+    assert result == {
+        "success": False,
+        "content": "",
+        "error": "Unable to start ripgrep: rg launch failed",
     }

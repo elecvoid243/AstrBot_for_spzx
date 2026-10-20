@@ -205,6 +205,103 @@ async def test_import_installs_and_reuses_every_pinned_definition(workflow_env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "omit_manifest", "expected"),
+    [
+        (None, False, ["task_result"]),
+        ([], False, ["task_result"]),
+        ([], True, ["task_result"]),
+        (["task_result"], False, ["task_result"]),
+        (["task_tools"], False, ["task_result", "task_tools"]),
+        (["task_result", "task_tools"], False, ["task_result", "task_tools"]),
+    ],
+)
+async def test_shared_role_capabilities_stay_with_their_independent_closure(
+    workflow_env, capabilities, omit_manifest, expected
+):
+    """Preserve declared capabilities without exporting a parent's inferred tools.
+
+    Args:
+        workflow_env: Public asset services and a compatible local inventory.
+        capabilities: Optional explicit runner requirements on the shared role.
+        omit_manifest: Import a package omitting default profile capabilities.
+        expected: Capabilities required by the independently callable leaf.
+    """
+    env = workflow_env
+    env.inventory["models"][0]["fingerprint"] = "portable-model"
+    role = await env.roles.save_role(
+        "alice",
+        {
+            "definition": {
+                "name": "Shared researcher",
+                "prompt": "Read evidence",
+                **(
+                    {"runner_capabilities": capabilities}
+                    if capabilities is not None
+                    else {}
+                ),
+            },
+            "installation": {"bindings": {"model": "model-a"}},
+        },
+    )
+    reference = {"role_id": role["role_id"], "role_version": 1}
+    leaf = await env.service.save_asset(
+        "alice",
+        {"definition": {"name": "Leaf", "task": "Read", **reference}},
+    )
+    team = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "kind": "autonomous",
+                "name": "Parent team",
+                "coordinator": reference,
+                "allowed_roles": [reference],
+                "allowed_workflows": [
+                    {
+                        "asset_id": leaf["asset_id"],
+                        "version": 1,
+                        "result_task_id": "result",
+                    }
+                ],
+            }
+        },
+    )
+    standalone = await env.service.export_asset("alice", leaf["asset_id"], 1)
+    package = await env.service.export_asset("alice", team["asset_id"], 1)
+    for exported in (standalone, package):
+        profile = next(
+            dependency
+            for dependency in exported["roles"][0]["dependencies"]
+            if dependency["kind"] == "profiles"
+        )
+        assert profile["capabilities"] == expected
+    payload = {"package": copy.deepcopy(package)}
+    if omit_manifest:
+        for dependency in payload["package"]["roles"][0]["dependencies"]:
+            if dependency["kind"] == "profiles":
+                dependency.pop("capabilities")
+    preview = await env.service.preview_import("bob", payload)
+    assert preview["ready"], preview
+    assert next(
+        dependency
+        for dependency in preview["roles"][0]["dependencies"]
+        if dependency["kind"] == "profiles"
+    )["capabilities"] == ["task_result", "task_tools"]
+    installed = await env.service.import_asset("bob", payload)
+    child = installed["asset"]["definition"]["allowed_workflows"][0]
+    assert (
+        await env.service.export_asset("bob", child["asset_id"], child["version"])
+        == standalone
+    )
+    assert (
+        await env.service.export_asset("bob", installed["asset"]["asset_id"], 1)
+        == package
+    )
+    assert (await env.service.import_asset("bob", payload))["existing"] is True
+
+
+@pytest.mark.asyncio
 async def test_new_local_role_version_keeps_imported_compatibility_requirements(
     workflow_env,
 ):

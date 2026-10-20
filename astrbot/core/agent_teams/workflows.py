@@ -480,7 +480,7 @@ class WorkflowPackage(PackageAsset):
                 **asset.model_dump(),
                 "format": self.format,
                 "roles": [
-                    self.role_content(role)
+                    role.model_dump()
                     for role in self.roles
                     if (role.role_id, role.version) in roles
                 ],
@@ -527,6 +527,14 @@ class WorkflowPackage(PackageAsset):
                     role["definition"]["prompt"] = members[0][1]["prompt"]
                 dependencies = []
                 for dependency in role["dependencies"]:
+                    if dependency["kind"] == "profiles":
+                        # Coordinator tools are inferred per closure, not inherited
+                        # as an explicit requirement by independently callable children.
+                        dependency.update(
+                            PackageDependency.model_validate(
+                                dependency
+                            ).resource_content()
+                        )
                     uses = dependency.get("uses")
                     if uses is not None:
                         uses = {

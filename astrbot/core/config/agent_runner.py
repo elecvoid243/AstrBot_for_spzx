@@ -7,6 +7,29 @@ AGENT_RUNNER_TYPES = ("local", "dify", "coze", "dashscope", "deerflow")
 THIRD_PARTY_AGENT_RUNNER_TYPES = AGENT_RUNNER_TYPES[1:]
 
 
+def get_agent_runner_capability_issues(
+    runner: dict, requirements: dict[str, str]
+) -> list[dict]:
+    """Locate unsupported capabilities at their declaring fields.
+
+    Args:
+        runner: Actual integrated runner capability metadata.
+        requirements: Field paths mapped to declared or intrinsic capabilities.
+
+    Returns:
+        Field diagnostics shared by role previews and task admission.
+    """
+    return [
+        {
+            "path": path,
+            "code": "INCOMPATIBLE",
+            "message": f"{runner['label']} does not support {capability}",
+        }
+        for path, capability in requirements.items()
+        if capability not in runner["capabilities"]
+    ]
+
+
 def get_agent_runner_capabilities(agent_runner: dict) -> dict:
     """Describe only the recovery and execution protocols AstrBot integrates.
 

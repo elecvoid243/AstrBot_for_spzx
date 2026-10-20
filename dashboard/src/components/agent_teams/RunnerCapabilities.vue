@@ -6,6 +6,9 @@
   >
     <strong>{{ tm("runner.title") }}: {{ runner.label }}</strong>
     <p class="mt-2">{{ tm(`runner.recovery.${runner.recovery}`) }}</p>
+    <p v-if="!runner.capabilities.includes('task_result')" class="mt-2">
+      {{ tm("runner.taskResultRequired") }}
+    </p>
     <div class="d-flex flex-wrap ga-2 mt-2">
       <v-chip
         v-for="capability in runner.capabilities"

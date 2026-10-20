@@ -104,6 +104,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         },
     )
     bindings, files, reads, deliveries = {}, {}, [], []
+    coordinator_results: asyncio.Queue[str] = asyncio.Queue()
     consumer_ready, release = asyncio.Event(), asyncio.Event()
 
     async def deliver(
@@ -198,6 +199,7 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
                 )
                 == "Result accepted."
             )
+            coordinator_results.put_nowait(binding.run_id)
         else:
             if binding.node_id == "consumer":
                 consumer_ready.set()
@@ -237,8 +239,20 @@ async def test_returned_file_revision_preserves_authorization_inputs_and_approva
         parent["asset_id"],
         {"version": 1, "inputs": {"goal": "Produce complete files"}},
     )
+    # Root capacity serializes both nested teams. Bound each explicit submission
+    # before timing consumer dispatch, so prerequisite work keeps its own deadline.
+    submitted = {
+        await asyncio.wait_for(coordinator_results.get(), 10) for _ in range(2)
+    }
     await asyncio.wait_for(consumer_ready.wait(), 10)
     current = await env.service.get_run("alice", started["run_id"])
+    assert len(submitted) == 2
+    assert submitted == {
+        task["run_id"]
+        for scope in current["scopes"]
+        for task in scope["tasks"]
+        if task["node_id"] == "coordinator"
+    }
     call = next(task for task in current["tasks"] if task["node_id"] == "call")
     sibling = next(task for task in current["tasks"] if task["node_id"] == "sibling")
     scope = next(

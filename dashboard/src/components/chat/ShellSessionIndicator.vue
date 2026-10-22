@@ -130,7 +130,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { chatApi } from "@/api/v1";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useModuleI18n } from "@/i18n/composables";
@@ -184,6 +184,24 @@ const CLEAR_ALL_KEY = "__clear_all__";
 const cleanupConfirmId = ref<string | null>(null);
 const clearing = ref(false);
 let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+// An emptied session list unmounts the menu (see the root `v-if`) but not
+// this component, so `menuOpen` and an armed confirm would survive. The
+// next short-lived session would then remount the popover already open —
+// the whole panel flashes for as long as that process lives. Collapse the
+// transient UI state the moment the list empties.
+watch(
+  () => sessions.value.length,
+  (count) => {
+    if (count > 0) return;
+    menuOpen.value = false;
+    cleanupConfirmId.value = null;
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
+  },
+);
 
 /**
  * Arm a two-click confirmation for one cleanup target.

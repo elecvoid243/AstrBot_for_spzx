@@ -239,7 +239,7 @@
                 >
                   <Check
                     class="agent-work-pill-icon"
-                    :size="13"
+                    :size="15"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -256,7 +256,7 @@
                   </span>
                   <ChevronDown
                     class="agent-work-pill-chevron"
-                    :size="12"
+                    :size="14"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -2459,26 +2459,27 @@ function formatDuration(seconds: number) {
 }
 
 /* The completed-work capsule is a status readout, not a chip. It borrows
-   the composer's quiet anatomy — a 24 px row of 12 px tabular text with no
-   border or fill at rest — so it reads as part of the reply instead of a
+   the composer's quiet anatomy — a 32 px row of body-sized tabular text with
+   no border or fill at rest — so it reads as part of the reply instead of a
    floating control. Only hover / expanded paint a wash. The negative left
    inset cancels the horizontal padding so the checkmark starts on the same
    column as the body text. `font: inherit` matters: a bare <button> would
-   otherwise fall back to the browser UI font and break the chat type. */
+   otherwise fall back to the browser UI font and break the chat type. It also
+   carries the body size: the capsule must not read smaller than the reply it
+   summarises. */
 .agent-work-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   max-width: 100%;
-  height: 24px;
-  margin: 0 0 8px -7px;
-  padding: 0 7px;
+  height: 32px;
+  margin: 0 0 10px -10px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 16px;
   background: transparent;
   color: rgba(var(--v-theme-on-surface), 0.55);
   font: inherit;
-  font-size: 12px;
   font-weight: 500;
   line-height: 1;
   letter-spacing: 0.01em;

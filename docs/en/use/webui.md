@@ -110,7 +110,7 @@ With a conversation open, use **New side chat** (the speech-bubble-plus button a
 
 ![Temporary side chat with an empty, separate message area](/images/chat-side-panel-en.jpg)
 
-Closing the panel, switching conversations, leaving the chat page, or opening another sidebar ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
+Closing the panel, switching conversations, or leaving the chat page ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
 
 An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
 

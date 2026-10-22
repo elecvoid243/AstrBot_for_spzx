@@ -4,6 +4,7 @@ import { parse } from "vue/compiler-sfc";
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { effectScope, nextTick, reactive, ref, watch } from "vue";
+import { flushPromises } from "@vue/test-utils";
 
 // Chat's scroll controller lives inside script setup. Run its actual declarations
 // with controlled geometry: happy-dom cannot lay out or anchor a scrolling panel.
@@ -167,7 +168,7 @@ function scrollHarness() {
     currSessionId: ref("A"),
     historyPagingBySession: {} as Record<
       string,
-      { hasMore: boolean; loadingOlder?: boolean }
+      { hasMore: boolean; loadingOlder?: boolean; autoLoadArmed?: boolean }
     >,
     historyOffsetBySession: {} as Record<string, number>,
     threadSelection: { visible: false },
@@ -727,5 +728,106 @@ describe("Chat viewport ownership", () => {
     expect(await oldJump).toBe(false);
     h.frame();
     expect(h.writes).toHaveLength(1);
+  });
+});
+
+// 2026-10-22 (elecvoid243): regressions for the jitter that appeared once the
+// history window was paged (50 records + load-on-scroll instead of one shot).
+describe("paged history jitter", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("takes one page per entry into the top band instead of chaining", async () => {
+    const h = scrollHarness();
+    let height = 1600;
+    let rowTop = 100;
+    h.controller.setStickToBottom("A", false);
+    h.historyPagingBySession.A = { hasMore: true, loadingOlder: false };
+    h.setLayout({ height, top: 0, rowTop });
+    h.loadOlderMessages.mockImplementation(
+      async (_id: string, options?: { beforePrepend?: () => void }) => {
+        options?.beforePrepend?.();
+        height += 1000;
+        rowTop += 1000;
+        h.setLayout({ height, rowTop });
+      },
+    );
+
+    h.controller.handleMessagesScroll();
+    await flushPromises();
+    expect(h.loadOlderMessages).toHaveBeenCalledTimes(1);
+    // The anchor write pulled the reader into the freshly prepended window.
+    expect(h.panel.scrollTop).toBe(1000);
+
+    // A held scrollbar thumb reports the top again on every pointer-driven
+    // event; the armed flag must not let that request a second page.
+    h.setLayout({ top: 0 });
+    h.controller.handleMessagesScroll();
+    await flushPromises();
+    expect(h.loadOlderMessages).toHaveBeenCalledTimes(1);
+
+    // Leaving the band re-arms exactly one more page.
+    h.setLayout({ top: 500 });
+    h.controller.handleMessagesScroll();
+    h.setLayout({ top: 0 });
+    h.controller.handleMessagesScroll();
+    await flushPromises();
+    expect(h.loadOlderMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the viewport untouched by layout while the scrollbar is dragged", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.setStickToBottom("A", false);
+    h.setLayout({ height: 1600, top: 400, rowTop: 600 });
+    h.controller.handleMessagesScroll();
+    const event = new Event("pointerdown");
+    Object.defineProperty(event, "target", { value: h.panel });
+    h.controller.handleMessagesScrollIntent(event);
+    h.writes.length = 0;
+
+    // A card above the reader grew 200px mid-drag.
+    h.setLayout({ rowTop: 800 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.writes).toEqual([]);
+
+    // Once the gesture closes the same displacement is repaired once.
+    h.controller.endMessagesScrollGesture();
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.writes).toEqual([600]);
+  });
+
+  it("keeps follow on a downward wheel while the stream is one frame ahead", () => {
+    const h = scrollHarness();
+    h.controller.scrollToBottom();
+    h.frame();
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+
+    // A chunk arrived; the coalesced follow frame has not run yet.
+    h.setLayout({ height: 1800 });
+    h.controller.handleMessagesScrollIntent(
+      new WheelEvent("wheel", { deltaY: 120 }),
+    );
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+
+    h.controller.scrollToBottom();
+    h.frame();
+    expect(h.panel.scrollTop).toBe(1400);
+  });
+
+  it("still lets an upward wheel leave the bottom", () => {
+    const h = scrollHarness();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.controller.handleMessagesScrollIntent(
+      new WheelEvent("wheel", { deltaY: -120 }),
+    );
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
   });
 });

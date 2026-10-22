@@ -2638,7 +2638,13 @@ watch(
           return;
         }
         if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
-        else preserveReadingAnchor();
+        // 2026-10-22 (elecvoid243): while the reader drags the native
+        // scrollbar the browser owns the offset, so a content-driven anchor
+        // write here fights the pointer and the panel shakes. The anchor is
+        // kept as-is (not re-captured), so the first correction after the
+        // gesture closes still measures the displacement that happened during
+        // the drag; a prepend during it is repaired by loadOlderHistory().
+        else if (!scrollPointerActive) preserveReadingAnchor();
       });
       markerResizeObserver.observe(container);
       if (content) markerResizeObserver.observe(content);
@@ -2650,8 +2656,8 @@ watch(
             installPendingViewport(pendingViewportSessionId);
             return;
           }
-          if (!shouldStickToBottom(currSessionId.value))
-            preserveReadingAnchor();
+          const following = shouldStickToBottom(currSessionId.value);
+          if (!following && !scrollPointerActive) preserveReadingAnchor();
         });
         historyLayoutObserver.observe(content, {
           childList: true,
@@ -5438,7 +5444,18 @@ function handleMessagesScrollIntent(event: Event) {
   userScrollPending = true;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
-  setStickToBottom(currSessionId.value, scrollingDown && distance <= 2);
+  // 2026-10-22 (elecvoid243): follow is deliberately one frame behind the
+  // stream — scrollToBottom() coalesces its writes into a rAF — so `distance`
+  // is not evidence that the reader left the bottom. Judging the intent by it
+  // switched follow off for a wheel that arrived in that gap and re-armed it
+  // on the next one within 2px, which read as a stutter while a reply streamed
+  // in. A wheel keeps an armed follow armed; only an upward gesture, or a
+  // wheel from a viewport that was already scrolled away, clears it.
+  const following = shouldStickToBottom(currSessionId.value);
+  setStickToBottom(
+    currSessionId.value,
+    scrollingDown && (following || distance <= 2),
+  );
   preserveReadingAnchor();
   window.clearTimeout(userScrollSettleTimer);
   userScrollSettleTimer = window.setTimeout(() => {
@@ -5531,15 +5548,28 @@ function handleMessagesScroll() {
   // History windowing: reached the top boundary while older history exists
   // → load the next page (the loadOlderHistory anchor keeps the viewport).
   // Suppressed while a programmatic jump scrolls (see suppressHistoryAutoLoad).
+  //
+  // 2026-10-22 (elecvoid243): one automatic page per entry into the band. The
+  // trigger is a position, not an intent: a held scrollbar thumb keeps
+  // reporting scrollTop < 80 for every pointer-driven event, so each page was
+  // requested again the moment its anchor write was clamped back to the top —
+  // pages chained and the panel bounced by a page height each round. The arm
+  // flag is cleared when a page starts and only restored after the reader has
+  // moved clear of the band (hysteresis), so an explicit second tier (the
+  // load-older button) remains the only way to page from a parked viewport.
   const paging = currSessionId.value
     ? historyPagingBySession[currSessionId.value]
     : null;
+  if (paging?.autoLoadArmed === false && container.scrollTop > 160) {
+    paging.autoLoadArmed = true;
+  }
   if (
     container.scrollTop < 80 &&
     !shouldStickToBottom(sessionId) &&
     !suppressHistoryAutoLoad.value &&
     paging?.hasMore &&
     !paging.loadingOlder &&
+    paging?.autoLoadArmed !== false &&
     // A failed page stays paused until the user retries (see
     // loadOlderMessages) — otherwise every scroll event re-fires it.
     !paging.error
@@ -5707,6 +5737,13 @@ function preserveReadingAnchor() {
 async function loadOlderHistory(retry = false) {
   const sessionId = currSessionId.value;
   if (!sessionId || historyPagingBySession[sessionId]?.loadingOlder) return;
+  // Disarmed before the fetch, not after it: scroll events keep arriving while
+  // the page is in flight, and the automatic path must not queue a second one.
+  // An explicit retry (the button) never disarms — the reader asked for it.
+  if (!retry) {
+    const paging = historyPagingBySession[sessionId];
+    if (paging) paging.autoLoadArmed = false;
+  }
   const sessionToken = viewportSessionToken;
   const container = messagesContainer.value;
   if (retry) {
@@ -7176,6 +7213,13 @@ function toggleTheme() {
   overflow-y: auto;
   /* The reader's text anchor, follow, or an explicit jump owns the viewport. */
   overflow-anchor: none;
+  /* 2026-10-22 (elecvoid243): reserve the scrollbar gutter. The paged history
+     window often sits right at the viewport height, so a scrollbar that
+     appeared or hid mid-stream used to narrow .messages-list-shell (80% of the
+     panel) by ~12px and re-wrap every message — a whole-document height jump
+     and a flickering scrollbar. The gutter is reserved unconditionally, which
+     also keeps the marker rail's measured offset stable. */
+  scrollbar-gutter: stable;
   padding: 24px 0 0;
 }
 

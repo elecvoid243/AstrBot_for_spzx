@@ -1646,6 +1646,7 @@ const activeThread = ref<ChatThread | null>(null);
 // delete the backend record.
 const sideChatThreadId = ref<string | null>(null);
 const creatingSideChat = ref(false);
+let sideChatGeneration = 0;
 const reasoningPanelOpen = ref(false);
 const activeReasoningTarget = ref<{
   message: ChatRecord;
@@ -2270,9 +2271,13 @@ watch(currSessionId, (newId, oldId) => {
 
 // 2026-10-22 side-chat: switching sessions ends the temporary chat; a
 // branch panel belongs to the outgoing session and closes with it too.
-watch(currSessionId, (newId, oldId) => {
-  if (oldId && newId !== oldId) closeThreadPanel();
-});
+watch(
+  currSessionId,
+  (newId, oldId) => {
+    if (oldId && newId !== oldId) closeThreadPanel();
+  },
+  { flush: "sync" },
+);
 
 // 2026-09-01 (elecvoid243): opening a session acknowledges its
 // run-finished marker — the output is right there in the message list.
@@ -5152,6 +5157,9 @@ async function createThreadFromSelection() {
  * outcome. Branch threads keep their data.
  */
 function closeThreadPanel() {
+  // Invalidate pending creation even before its temporary thread ID is known.
+  sideChatGeneration += 1;
+  creatingSideChat.value = false;
   const thread = activeThread.value;
   const isSideChat =
     Boolean(thread) && sideChatThreadId.value === thread?.thread_id;
@@ -5170,21 +5178,39 @@ function onThreadPanelToggle(open: boolean) {
   if (!open) closeThreadPanel();
 }
 
-/** Open a temporary side chat: no parent message, zero inherited context. */
+/**
+ * Open a temporary side chat with no inherited context.
+ *
+ * Returns:
+ *   Resolves after creation is handled or a stale response is discarded.
+ */
 async function openSideChat(): Promise<void> {
-  if (!currSessionId.value || creatingSideChat.value) return;
+  const sessionId = currSessionId.value;
+  if (!sessionId || creatingSideChat.value) return;
   if (threadPanelOpen.value) closeThreadPanel();
+  const generation = ++sideChatGeneration;
   creatingSideChat.value = true;
   try {
     const response = await chatApi.createThread({
-      session_id: currSessionId.value,
+      session_id: sessionId,
       side_chat: true,
     });
+    const thread = response.data?.data as ChatThread | undefined;
+    if (
+      generation !== sideChatGeneration ||
+      sessionId !== currSessionId.value
+    ) {
+      if (response.data?.status === "ok" && thread) {
+        void chatApi.deleteThread(thread.thread_id).catch((error) => {
+          console.error("Failed to delete side chat thread:", error);
+        });
+      }
+      return;
+    }
     if (response.data?.status !== "ok") {
       toast.error(response.data?.message || tm("thread.createFailed"));
       return;
     }
-    const thread = response.data?.data as ChatThread | undefined;
     if (!thread) {
       toast.error(tm("thread.createFailed"));
       return;
@@ -5202,6 +5228,8 @@ async function openSideChat(): Promise<void> {
     activeThread.value = thread;
     threadPanelOpen.value = true;
   } catch (error) {
+    if (generation !== sideChatGeneration || sessionId !== currSessionId.value)
+      return;
     toast.error(
       isAxiosError(error)
         ? error.response?.data?.message || error.message
@@ -5209,13 +5237,13 @@ async function openSideChat(): Promise<void> {
     );
     console.error("Failed to create side chat:", error);
   } finally {
-    creatingSideChat.value = false;
+    if (generation === sideChatGeneration) creatingSideChat.value = false;
   }
 }
 
 function openThreadPanel(thread: ChatThread) {
-  // Opening a branch displaces (and therefore destroys) any open side chat.
-  if (sideChatThreadId.value) closeThreadPanel();
+  // Opening a branch also invalidates any pending temporary side chat.
+  closeThreadPanel();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
@@ -5333,10 +5361,16 @@ watch(
 // 与 RefsSidebar 互斥: 展开 todo 菜单 / 打开 Goal 抽屉时收起 refs;
 // 反向亦然。todo 菜单与 Goal 抽屉互不相干 (浮层 vs 侧栏), 不互斥。
 watch(todoMenuOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(goalSidebarOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(refsSidebarOpen, (open) => {
   if (open) {

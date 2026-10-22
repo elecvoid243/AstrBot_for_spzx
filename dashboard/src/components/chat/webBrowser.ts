@@ -72,15 +72,6 @@ export function normalizeBrowserUrl(raw: string): NormalizeUrlResult {
   return { ok: true, url: parsed.href };
 }
 
-/** Whether `url` shares an origin with the dashboard itself. */
-export function isSameOrigin(url: string, origin: string): boolean {
-  try {
-    return new URL(url).origin === origin;
-  } catch {
-    return false;
-  }
-}
-
 const SANDBOX_TOKENS = [
   "allow-scripts",
   "allow-forms",
@@ -107,7 +98,13 @@ export function buildIframeSandbox(
   url: string,
   dashboardOrigin: string,
 ): string {
-  const tokens = isSameOrigin(url, dashboardOrigin)
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(url).origin === dashboardOrigin;
+  } catch {
+    // Invalid URLs retain the cross-origin sandbox policy.
+  }
+  const tokens = sameOrigin
     ? SANDBOX_TOKENS.filter((token) => token !== "allow-same-origin")
     : [...SANDBOX_TOKENS];
   return tokens.join(" ");

@@ -37,6 +37,7 @@ from astrbot.core.agent.tool import (
     ToolRecoveryResult,
     ToolSet,
     current_tool_invocation,
+    current_tool_recovery_retry,
 )
 from astrbot.core.agent.tool_image_cache import CachedImage, tool_image_cache
 from astrbot.core.agent_team_execution import (
@@ -2407,6 +2408,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 continue
             tool_failed = False
             invocation_token = None
+            recovery_retry_token = None
             usage_receipt = None
             try:
                 if not req.func_tool:
@@ -2506,6 +2508,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
                 invocation_token = current_tool_invocation.set(
                     call_state["record_id"] if call_state else uuid.uuid4().hex
+                )
+                recovery_retry_token = current_tool_recovery_retry.set(
+                    retry_prefix is not None
                 )
 
                 try:
@@ -2755,6 +2760,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             finally:
                 if invocation_token is not None:
                     current_tool_invocation.reset(invocation_token)
+                if recovery_retry_token is not None:
+                    current_tool_recovery_retry.reset(recovery_retry_token)
                 await self._report_metered_call(usage_receipt)
 
             if call_state is not None and not reused:

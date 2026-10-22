@@ -18,7 +18,12 @@ from astrbot import logger
 from astrbot.core import sp
 from astrbot.core.agent.mcp_client import MCPClient, MCPTool
 from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import FunctionTool, ToolRecoveryResult, ToolSet
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolRecoveryResult,
+    ToolSet,
+    current_tool_recovery_retry,
+)
 from astrbot.core.tools.registry import (
     ensure_builtin_tools_loaded,
     get_builtin_tool_class,
@@ -276,6 +281,8 @@ class _PermissionGuardedTool(FunctionTool):
 
         error = await self._mgr._check_tool_permission(self.name, context)
         if error is not None:
+            if current_tool_recovery_retry.get():
+                raise PermissionError(error)
             return error
 
         # @filter.llm_tool decorated tools have a handler attribute, which is the actual callable.

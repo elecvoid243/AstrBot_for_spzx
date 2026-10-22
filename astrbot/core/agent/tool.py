@@ -21,6 +21,10 @@ ToolExecResult = str | mcp.types.CallToolResult
 current_tool_invocation: ContextVar[str | None] = ContextVar(
     "current_tool_invocation", default=None
 )
+# A recovery denial must not become a replacement result for an unknown effect.
+current_tool_recovery_retry: ContextVar[bool] = ContextVar(
+    "current_tool_recovery_retry", default=False
+)
 
 
 def has_tool_recovery(declaration: dict | None) -> bool:

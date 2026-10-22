@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from astrbot.core import sp
-from astrbot.core.agent.tool import FunctionTool
+from astrbot.core.agent.tool import FunctionTool, ToolRecovery
 from astrbot.core.provider.func_tool_manager import (
     FunctionToolManager,
     _PermissionGuardedTool,
@@ -295,6 +295,39 @@ async def test_guarded_tool_handles_async_generator_handler():
 
 
 # ── get_full_tool_set ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_declared_tool_denial_retains_ordinary_call_behavior():
+    """A declared contract does not change ordinary permission-denial results."""
+    await sp.global_put("tool_permissions", {"_default": {"declared_tool": "admin"}})
+    effects = []
+
+    async def handler(event):
+        """Record an effect only if the real permission proxy allows the call.
+
+        Args:
+            event: Actual authorized event.
+
+        Returns:
+            The external tool result.
+        """
+        effects.append("effect")
+        return "Original result."
+
+    try:
+        manager = FunctionToolManager()
+        manager.func_list.append(FunctionTool(
+            name="declared_tool", description="Declared tool.", parameters={},
+            handler=handler, recovery=ToolRecovery(safe_retry=True),
+        ))
+        tool = manager.get_full_tool_set().get_tool("declared_tool")
+        assert tool is not None
+        result = await tool.call(_make_context(role="member"))
+        assert isinstance(result, str) and "Permission denied" in result
+        assert effects == []
+    finally:
+        await _clear_tool_permissions()
 
 
 def test_get_full_tool_set_excludes_builtin_tools():

@@ -192,7 +192,7 @@ def test_permission_wrapped_recovery_survives_process_termination(tmp_path, capa
             restored["recovery"]["declaration"] == original["recovery"]["declaration"]
         )
         if capability.endswith(("_changed", "_missing", "_denied")):
-            assert after["status"] != "completed"
+            assert after["status"] == "blocked"
             assert queries == []
             assert len(deliveries) == len(effects) == 1
             if capability == "query_denied":
@@ -204,11 +204,12 @@ def test_permission_wrapped_recovery_survives_process_termination(tmp_path, capa
                 )
                 assert len(requests) == 1
             elif capability.endswith("_denied"):
+                assert restored["status"] == "unknown"
+                assert restored["raw_results"] == []
                 assert (
-                    "Permission denied"
-                    in restored["raw_results"][0]["content"][0]["text"]
+                    "Permission denied" in restored["recovery"]["retries"][0]["error"]
                 )
-                assert receipt not in json.dumps(restored["raw_results"])
+                assert len(requests) == 1
             else:
                 assert restored["status"] == "unknown"
                 assert restored["raw_results"] == []

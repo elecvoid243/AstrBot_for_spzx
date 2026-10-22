@@ -8733,9 +8733,7 @@
       "ChatThreadCreateRequest": {
         "type": "object",
         "required": [
-          "session_id",
-          "parent_message_id",
-          "selected_text"
+          "session_id"
         ],
         "properties": {
           "session_id": {
@@ -8753,6 +8751,9 @@
           },
           "selected_text": {
             "type": "string"
+          },
+          "side_chat": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

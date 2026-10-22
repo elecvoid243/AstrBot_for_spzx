@@ -1,11 +1,11 @@
 <!--
   ShellSessionIndicator
   ─────────────────────────────────────────────────────────────────────
-  App-bar entry for managed background shell sessions (Scope A: awareness
-  only, read-only). Reads the active session's session list from the
-  chatHeader store (pushed by Chat.vue / useShellSessions), shows a running
-  count badge with a pulse while anything is alive, and lists sessions in a
-  popover on click.
+  App-bar entry for managed background shell sessions. Reads the active
+  session's list from the chatHeader store (pushed by Chat.vue /
+  useShellSessions), badges the total with a pulse while anything is alive,
+  and lists sessions in a popover on click. Finished sessions can be
+  discarded one by one or all at once from that popover.
 
   Hidden entirely when there are no sessions — zero noise by default.
 
@@ -26,20 +26,46 @@
         variant="text"
         size="small"
         rounded="sm"
-        :title="tm('shellSession.indicator.title')"
-        :aria-label="tm('shellSession.indicator.title')"
+        :title="summary"
+        :aria-label="summary"
       >
         <v-icon size="18" :class="{ 'shell-pulse': runningCount > 0 }" :color="runningCount > 0 ? '#2da44e' : undefined">
           mdi-console
         </v-icon>
         <span class="shell-trigger-count" :class="{ dimmed: runningCount === 0 }">
-          {{ runningCount > 0 ? runningCount : sessions.length }}
+          {{ sessions.length }}
         </span>
       </v-btn>
     </template>
 
     <v-card class="shell-session-popover" elevation="8" rounded="lg">
-      <div class="popover-title">{{ tm("shellSession.indicator.title") }}</div>
+      <div class="popover-header">
+        <div class="popover-title">{{ tm("shellSession.indicator.title") }}</div>
+        <button
+          v-if="finishedCount > 0"
+          type="button"
+          class="clear-all"
+          :class="{ confirm: cleanupConfirmId === CLEAR_ALL_KEY }"
+          :disabled="clearing || !conversationId"
+          :title="
+            cleanupConfirmId === CLEAR_ALL_KEY
+              ? tm('shellSession.labels.cleanupAllConfirm', { count: finishedCount })
+              : tm('shellSession.labels.cleanupAll')
+          "
+          @click="onClearFinished"
+        >
+          <v-icon size="14">
+            {{ cleanupConfirmId === CLEAR_ALL_KEY ? "mdi-check" : "mdi-delete-sweep-outline" }}
+          </v-icon>
+          <span>
+            {{
+              cleanupConfirmId === CLEAR_ALL_KEY
+                ? tm("shellSession.labels.cleanupAllConfirm", { count: finishedCount })
+                : tm("shellSession.labels.cleanupAll")
+            }}
+          </span>
+        </button>
+      </div>
       <div
         v-for="s in sessions"
         :key="s.session_id"
@@ -127,6 +153,20 @@ const sessions = computed(() => chatHeader.shellSessions ?? []);
 const runningCount = computed(
   () => sessions.value.filter((s) => s.status === "running").length,
 );
+const finishedCount = computed(
+  () => sessions.value.length - runningCount.value,
+);
+
+// The badge is the total session count. Switching it to the running count
+// while anything was alive made the number jump (3 → 1 → 3) as sessions
+// were reaped; liveness stays a separate signal (pulse + accent icon) and
+// the exact running count lives in the tooltip.
+const summary = computed(() =>
+  tm("shellSession.indicator.summary", {
+    total: sessions.value.length,
+    running: runningCount.value,
+  }),
+);
 
 const statusMeta = getShellSessionStatusMeta;
 
@@ -140,19 +180,39 @@ function openWindow(shellSessionId: string) {
 // Two-click confirm, mirroring the window's terminate button. The list
 // itself refreshes through the shell_sessions_changed push that the
 // removal fires — no local state surgery.
+const CLEAR_ALL_KEY = "__clear_all__";
 const cleanupConfirmId = ref<string | null>(null);
+const clearing = ref(false);
 let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Arm a two-click confirmation for one cleanup target.
+ *
+ * Returns:
+ *   True when this click confirmed an already-armed target, false when it
+ *   only armed it (or re-armed a different target).
+ */
+function armCleanup(key: string): boolean {
+  if (cleanupConfirmId.value === key) {
+    cleanupConfirmId.value = null;
+    if (cleanupTimer) {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = null;
+    }
+    return true;
+  }
+  cleanupConfirmId.value = key;
+  if (cleanupTimer) clearTimeout(cleanupTimer);
+  cleanupTimer = setTimeout(() => {
+    cleanupConfirmId.value = null;
+    cleanupTimer = null;
+  }, 3000);
+  return false;
+}
 
 async function onCleanup(shellSessionId: string) {
   if (!props.conversationId) return;
-  if (cleanupConfirmId.value !== shellSessionId) {
-    cleanupConfirmId.value = shellSessionId;
-    if (cleanupTimer) clearTimeout(cleanupTimer);
-    cleanupTimer = setTimeout(() => (cleanupConfirmId.value = null), 3000);
-    return;
-  }
-  if (cleanupTimer) clearTimeout(cleanupTimer);
-  cleanupConfirmId.value = null;
+  if (!armCleanup(shellSessionId)) return;
   try {
     const resp = await chatApi.discardShellSession(
       props.conversationId,
@@ -165,6 +225,48 @@ async function onCleanup(shellSessionId: string) {
     }
   } catch (error) {
     console.error("Failed to clean up shell session:", error);
+  }
+}
+
+/**
+ * Discard every finished session in one go.
+ *
+ * Reuses the per-session endpoint so the backend reap rules stay in one
+ * place; each removal pushes its own snapshot, which keeps the list in
+ * sync without local state surgery. Running sessions are never included.
+ */
+async function onClearFinished() {
+  const conversationId = props.conversationId;
+  if (!conversationId || clearing.value) return;
+  const targets = sessions.value.filter((s) => s.status !== "running");
+  if (!targets.length) return;
+  if (!armCleanup(CLEAR_ALL_KEY)) return;
+
+  clearing.value = true;
+  let failed = 0;
+  try {
+    await Promise.all(
+      targets.map(async (s) => {
+        try {
+          const resp = await chatApi.discardShellSession(
+            conversationId,
+            s.session_id,
+          );
+          // Business errors arrive as HTTP 200 {status:"error"} envelopes.
+          const envelope = resp.data as { status?: string } | undefined;
+          if (!envelope || envelope.status !== "ok") failed += 1;
+        } catch {
+          failed += 1;
+        }
+      }),
+    );
+  } finally {
+    clearing.value = false;
+  }
+  if (failed) {
+    console.error(
+      `Failed to clean up ${failed}/${targets.length} shell sessions.`,
+    );
   }
 }
 
@@ -190,11 +292,50 @@ onUnmounted(() => {
   padding: 8px;
 }
 
+.popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
 .popover-title {
   font-size: 12px;
   font-weight: 600;
   opacity: 0.65;
-  padding: 4px 8px 8px;
+}
+
+/* Bulk cleanup: quiet text button in the popover header. The confirm
+   click turns it green (check icon), matching the per-row button. */
+.clear-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: inherit;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+
+.clear-all:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.clear-all.confirm {
+  opacity: 1;
+  color: #2da44e;
+}
+
+.clear-all:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .session-row {

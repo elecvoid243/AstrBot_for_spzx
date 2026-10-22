@@ -298,7 +298,9 @@
       "moreOutput": "More output available",
       "sessionClosed": "Session closed",
       "cleanup": "Clean up",
-      "cleanupConfirm": "Confirm cleanup?"
+      "cleanupConfirm": "Confirm cleanup?",
+      "cleanupAll": "Clear finished",
+      "cleanupAllConfirm": "Clear {count}?"
     },
     "stateLabels": {
       "running": "running",
@@ -308,7 +310,8 @@
       "terminated": "terminated"
     },
     "indicator": {
-      "title": "Background processes"
+      "title": "Background processes",
+      "summary": "Background processes · {total} sessions · {running} running"
     },
     "window": {
       "view": "View output",

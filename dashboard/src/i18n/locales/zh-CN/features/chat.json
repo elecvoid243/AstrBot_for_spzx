@@ -298,7 +298,9 @@
       "moreOutput": "还有更多输出",
       "sessionClosed": "会话已关闭",
       "cleanup": "清理记录",
-      "cleanupConfirm": "确认清理？"
+      "cleanupConfirm": "确认清理？",
+      "cleanupAll": "清理已完成",
+      "cleanupAllConfirm": "确认清理 {count} 条？"
     },
     "stateLabels": {
       "running": "运行中",
@@ -308,7 +310,8 @@
       "terminated": "已终止"
     },
     "indicator": {
-      "title": "后台进程"
+      "title": "后台进程",
+      "summary": "后台进程 · {total} 个会话 · {running} 个运行中"
     },
     "window": {
       "view": "查看输出",

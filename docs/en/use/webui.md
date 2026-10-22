@@ -104,6 +104,36 @@ Sent audio and video attachment cards include playback controls and a download b
 
 Under `Settings → Maintenance`, backup imports also show upload progress and offer `Resume Upload` after an upload failure. Chunked backup uploads support up to 8 GiB. These controls extend the existing chat attachment area and backup import dialog; their entry points have not moved.
 
+### Side Chats and Branch Threads
+
+With a conversation open, use **New side chat** (the speech-bubble-plus button at the top right of the message area). The right panel is titled **Side chat** and labelled **Temporary chat · destroyed on close**. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
+
+Closing the panel, switching conversations, leaving the chat page, or opening another sidebar ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
+
+An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
+
+On desktop, drag the panel's **left edge** to change the width of either a branch thread or side chat. At narrow mobile widths the panel fills the screen and the resize handle is hidden.
+
+### Project Workbench Web Preview
+
+With a project loaded for the current conversation, click **Workspace** above the composer (tooltip: **Browse workspace files, changes, and history**) to open **Project Workbench**, then select **Web Preview** beside **Terminal**. The tabs appear when the workbench recognizes the project as a Git repository or shows its non-Git project indicator; they may be absent while the project check fails or is pending.
+
+1. Start the website's development server separately. The preview does not start it for you.
+2. Enter its HTTP(S) address and press **Enter**, or select a suggested local port. For example, `localhost:5173` becomes `http://localhost:5173/`; a bare public hostname defaults to HTTPS. Localhost refers to the machine running your browser, which may differ from the AstrBot server.
+3. Use **Reload**, **Open in new tab**, or the star to bookmark the address. Up to 12 bookmarks and the last entered address are stored per project in this browser; they do not sync across browsers or devices. Switching workbench tabs keeps the loaded preview mounted.
+
+The screenshot shows the workbench in fullscreen mode, available from its top-right fullscreen button.
+
+![Actual Web Preview tab with local documentation data](/images/chat-web-preview-en.jpg)
+
+This is an embedded page, with no back/forward controls. Its address bar keeps the entry address rather than tracking links or redirects inside the page. Sites can block embedding with their frame policy; an HTTPS dashboard may also block an HTTP preview. Use **Open in new tab** if embedding fails. The iframe is sandboxed, with additional isolation for addresses sharing the dashboard's origin; it does not bypass browser or target-site restrictions. File, data, and JavaScript URLs are unsupported.
+
+| Previous entry or behavior | Current location or behavior |
+| --- | --- |
+| Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
+| No separate temporary-chat entry | Added: message area → New side chat; independent context, destroyed when closed |
+| Workspace → Files / Documents / Git Diff / History / Terminal | Existing tabs remain; Web Preview is added after Terminal in Project Workbench |
+
 > [!NOTE]
 > To keep message delivery ordered, keep only one ChatUI page open for the same browser session. If you open chat in multiple tabs, the system may ask you to reconnect.
 

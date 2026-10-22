@@ -196,7 +196,7 @@ function loadViewMode():
   // Spec §2 决策 #10:History 是第 3 个 viewMode,持久化时同样支持。
   // 2026-07-11 document-manager:docs 是第 4 个 viewMode。
   // 2026-09-01 terminal:终端是第 5 个 viewMode。
-  // 2026-10-22 web-preview:浏览器是第 6 个 viewMode。
+  // 2026-10-22 web-preview: browser is the sixth viewMode.
   if (
     v === "files" ||
     v === "diff" ||
@@ -5021,7 +5021,7 @@ watch(
               tm("spcodeProjectLoad.gitDiffSidebar.tabs.terminal")
             }}</span>
           </button>
-          <!-- 2026-10-22 web-preview:第 6 个 tab，内嵌本地 dev server。 -->
+          <!-- 2026-10-22 web-preview: the sixth tab embeds a local dev server. -->
           <button
             type="button"
             role="tab"
@@ -5905,8 +5905,8 @@ watch(
             :project-root="currentRoot"
             :is-dark="!!isDark"
           />
-          <!-- 2026-10-22 web-preview:浏览器 body。v-if 延迟到首次进入才
-              Mount，v-show 保活，切 tab 不重载页面。 -->
+          <!-- 2026-10-22 web-preview: mount the browser body on first activation;
+              v-show keeps it alive so switching tabs does not reload the page. -->
           <WebBrowserView
             v-if="browserMounted"
             v-show="viewMode === 'browser'"

@@ -907,6 +907,8 @@
         "rangeLabel": "第 {start}–{end} 行",
         "placeholder": "写下你的评论…",
         "save": "保存",
+        "sendNow": "直接发送",
+        "sendBusy": "正在生成回复，请稍后再发送评论",
         "cancel": "取消",
         "delete": "删除",
         "saveError": "保存评论失败,请重新打开文件后重试。",

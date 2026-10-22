@@ -526,6 +526,7 @@
           :context-after="editorContext?.contextAfter ?? null"
           :file-path="effectiveCommentPath"
           @save="onSaveComment"
+          @save-and-send="onSendComment"
           @cancel="closeEditor"
           @delete="onDeleteComment"
         />
@@ -1102,6 +1103,7 @@
                 :context-after="editorContext?.contextAfter ?? null"
                 :file-path="effectiveCommentPath"
                 @save="onSaveComment"
+                @save-and-send="onSendComment"
                 @cancel="closeEditor"
                 @delete="onDeleteComment"
               />
@@ -2159,17 +2161,19 @@ function openEditEditor(commentId: string): void {
   };
 }
 
-function onSaveComment(payload: {
+function saveComment(payload: {
   text: string;
   commentId: string | null;
   line: number;
-}): void {
+}): string | null {
   if (payload.commentId) {
     fileComments.updateComment(payload.commentId, payload.text);
+    closeEditor();
+    return payload.commentId;
   } else {
     if (!isCommentable.value) {
       closeEditor();
-      return;
+      return null;
     }
     // Fall back to a minimal context if the diff couldn't synthesize
     // a real one (e.g. out-of-range line). The comment is still
@@ -2179,7 +2183,7 @@ function onSaveComment(payload: {
       contextBefore: null,
       contextAfter: null,
     };
-    fileComments.addCommentWithContext({
+    const created = fileComments.addCommentWithContext({
       filePath: effectiveCommentPath.value,
       line: payload.line,
       text: payload.text,
@@ -2192,8 +2196,31 @@ function onSaveComment(payload: {
       // file-browser paths and for hunks that couldn't be parsed.
       diffHunk: pendingDiffHunk.value ?? undefined,
     });
+    closeEditor();
+    return created?.id ?? null;
   }
-  closeEditor();
+}
+
+function onSaveComment(payload: {
+  text: string;
+  commentId: string | null;
+  line: number;
+}): void {
+  saveComment(payload);
+}
+
+/**
+ * 2026-10-23 direct-send: add the comment only long enough for the chat to
+ * format and send it, then remove it from the store (it must not appear in
+ * the composer's comment chip).
+ */
+function onSendComment(payload: {
+  text: string;
+  commentId: string | null;
+  line: number;
+}): void {
+  const commentId = saveComment(payload);
+  if (commentId) fileComments.requestSend(commentId);
 }
 
 function onDeleteComment(commentId: string): void {

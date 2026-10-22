@@ -9,6 +9,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
+import { useFileComments } from "@/composables/useFileComments";
 
 const props = defineProps<{
   line: number | null;
@@ -39,11 +40,13 @@ interface SavePayload {
 
 const emit = defineEmits<{
   (e: "save", payload: SavePayload): void;
+  (e: "save-and-send", payload: SavePayload): void;
   (e: "cancel"): void;
   (e: "delete", commentId: string): void;
 }>();
 
 const { tm } = useModuleI18n("features/chat");
+const { canSendNow } = useFileComments();
 
 const text = ref<string>("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
@@ -90,15 +93,30 @@ function handleKeyDown(e: KeyboardEvent): void {
   }
 }
 
-function onSave(): void {
-  if (props.line === null) return;
-  emit("save", {
+function buildPayload(): SavePayload | null {
+  if (props.line === null || !text.value.trim()) return null;
+  return {
     text: text.value.trim(),
     commentId: props.commentId,
     line: props.line,
     endLine: isRange.value ? props.endLine ?? null : null,
     selection: isRange.value ? props.selectionContent ?? null : null,
-  });
+  };
+}
+
+function onSave(): void {
+  const payload = buildPayload();
+  if (payload) emit("save", payload);
+}
+
+/**
+ * Save the comment, then ask the chat to send a comment-only message.
+ * The parent handler adds the comment synchronously and calls
+ * `requestSend()` only after the store accepted it.
+ */
+function onSendNow(): void {
+  const payload = buildPayload();
+  if (payload) emit("save-and-send", payload);
 }
 </script>
 
@@ -155,6 +173,16 @@ function onSave(): void {
       <v-spacer />
       <v-btn size="small" variant="text" @click="emit('cancel')">
         {{ tm("spcodeProjectLoad.fileBrowser.comment.cancel") }}
+      </v-btn>
+      <v-btn
+        v-if="canSendNow"
+        size="small"
+        color="primary"
+        variant="tonal"
+        :disabled="!text.trim()"
+        @click="onSendNow"
+      >
+        {{ tm("spcodeProjectLoad.fileBrowser.comment.sendNow") }}
       </v-btn>
       <v-btn
         size="small"

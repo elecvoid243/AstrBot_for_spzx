@@ -6,7 +6,7 @@
 // In-memory comment store + content cache for the file-browser inline
 // comments feature. See spec §1, §2 (decisions), §4.1, §5 for context.
 
-import { reactive, computed } from "vue";
+import { reactive, computed, ref } from "vue";
 
 /**
  * Single file comment, anchored to a line at comment-creation time.
@@ -213,6 +213,28 @@ let _instance: ReturnType<typeof createFileComments> | null = null;
 function createFileComments() {
   const comments = reactive<Record<string, FileComment[]>>({});
   const contentCache = reactive<Record<string, string>>({});
+
+  // 2026-10-23 direct-send: Chat.vue registers a sender while it is mounted;
+  // the comment editor only offers "send now" when at least one exists.
+  const sendListeners = new Set<
+    (commentId?: string) => void | Promise<void>
+  >();
+  const sendListenerCount = ref(0);
+  const canSendNow = computed(() => sendListenerCount.value > 0);
+
+  function onSendRequest(
+    listener: (commentId?: string) => void | Promise<void>,
+  ): () => void {
+    sendListeners.add(listener);
+    sendListenerCount.value += 1;
+    return () => {
+      if (sendListeners.delete(listener)) sendListenerCount.value -= 1;
+    };
+  }
+
+  function requestSend(commentId?: string): void {
+    for (const listener of sendListeners) void listener(commentId);
+  }
 
   // Window layout for the file-browser (non-diff) comment path.
   // `renderWindow` renders ±CONTEXT_LINES around the window's
@@ -436,9 +458,15 @@ function createFileComments() {
    *  without breaking the outer block — markdown supports this).
    *  The code block uses git-diff-style `>` marker for the commented
    *  line. See spec §5.1 for the full format spec. */
-  function formatForLLM(): string {
+  function formatForLLM(onlyCommentId?: string): string {
     const allComments: FileComment[] = [];
-    for (const list of Object.values(comments)) allComments.push(...list);
+    for (const list of Object.values(comments)) {
+      for (const comment of list) {
+        if (!onlyCommentId || comment.id === onlyCommentId) {
+          allComments.push(comment);
+        }
+      }
+    }
     if (allComments.length === 0) return "";
 
     const byFile = new Map<string, FileComment[]>();
@@ -718,6 +746,9 @@ function createFileComments() {
     commentsByFile,
     clearAll,
     formatForLLM,
+    canSendNow,
+    onSendRequest,
+    requestSend,
     // Exposed so the comments-preview dialog can render ±CONTEXT_LINES
     // around each commented line without re-fetching the file. Returns
     // undefined if the file hasn't been registered yet.

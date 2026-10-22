@@ -935,20 +935,20 @@ function onRequestEdit(commentId: string): void {
   };
 }
 
-function onSaveComment(payload: {
+function saveComment(payload: {
   text: string;
   commentId: string | null;
   line: number;
   endLine: number | null;
   selection: string | null;
-}): void {
+}): string | null {
   if (payload.commentId) {
     fileComments.updateComment(payload.commentId, payload.text);
     closeEditor();
-    return;
+    return payload.commentId;
   }
   const path = currentFilePath();
-  if (!path) return;
+  if (!path) return null;
   // 2026-07-17 selection-comment: the editor echoes the range in
   // the save payload when it was opened in range mode.
   const created =
@@ -972,9 +972,36 @@ function onSaveComment(payload: {
       visible: true,
       text: tm("spcodeProjectLoad.fileBrowser.comment.saveError"),
     };
-    return;
+    return null;
   }
   closeEditor();
+  return created.id;
+}
+
+function onSaveComment(payload: {
+  text: string;
+  commentId: string | null;
+  line: number;
+  endLine: number | null;
+  selection: string | null;
+}): void {
+  saveComment(payload);
+}
+
+/**
+ * 2026-10-23 direct-send: add the comment only long enough for the chat to
+ * format and send it, then remove it from the store (it must not appear in
+ * the composer's comment chip).
+ */
+function onSendComment(payload: {
+  text: string;
+  commentId: string | null;
+  line: number;
+  endLine: number | null;
+  selection: string | null;
+}): void {
+  const commentId = saveComment(payload);
+  if (commentId) fileComments.requestSend(commentId);
 }
 
 function closeEditor(): void {
@@ -1668,6 +1695,7 @@ onBeforeUnmount(() => {
             :end-line="activeEditRange?.endLine ?? null"
             :selection-content="activeEditRange?.selection ?? null"
             @save="onSaveComment"
+            @save-and-send="onSendComment"
             @cancel="closeEditor"
             @delete="onDeleteComment"
           />

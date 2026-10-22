@@ -907,6 +907,8 @@
         "rangeLabel": "Lines {start}–{end}",
         "placeholder": "Write your comment…",
         "save": "Save",
+        "sendNow": "Send now",
+        "sendBusy": "A reply is still streaming. Send the comment afterward.",
         "cancel": "Cancel",
         "delete": "Delete",
         "saveError": "Failed to save comment. Please reopen the file and retry.",

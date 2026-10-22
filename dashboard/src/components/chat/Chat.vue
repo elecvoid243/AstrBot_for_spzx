@@ -2329,6 +2329,10 @@ const {
 // the same instance. resetForSession() drops the current session's
 // comments so they don't leak across sessions (spec §2).
 const fileComments = useFileComments();
+// 2026-10-23 direct-send: the file comment editor asks the chat to send a
+// single comment without putting it into the composer chip.
+const stopCommentSend = fileComments.onSendRequest(sendCommentMessage);
+onBeforeUnmount(stopCommentSend);
 // 2026-08-09 drag-reference (elecvoid243): sidebar file drops become
 // references. Same singleton pattern as fileComments.
 const fileReferences = useFileReferences();
@@ -4334,6 +4338,61 @@ async function sendSystemCommand(command: string) {
     console.error("Failed to send system command:", error);
   } finally {
     commandSending.value = false;
+  }
+}
+
+/**
+ * 2026-10-23 direct-send: send a single review comment as its own user
+ * message. The temporary store entry is formatted and removed synchronously
+ * so it never reaches the composer's comment chip; other pending comments
+ * are untouched.
+ */
+function sendCommentMessage(commentId?: string): void {
+  const sid = currSessionId.value;
+  const sessionBusy = Boolean(sid && isSessionRunning(sid));
+  if (sending.value || sessionBusy) {
+    toast.error(tm("spcodeProjectLoad.fileBrowser.comment.sendBusy"));
+    return;
+  }
+  const text = fileComments.formatForLLM(commentId);
+  if (commentId) fileComments.deleteComment(commentId);
+  if (!text.trim()) return;
+  void sendCommentText(text);
+}
+
+async function sendCommentText(text: string): Promise<void> {
+  sending.value = true;
+  try {
+    let sessionId = currSessionId.value;
+    if (!sessionId) {
+      sessionId = await newSession();
+    }
+    const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    const outgoingParts: MessagePart[] = [{ type: "plain", text }];
+    const selection = getSelectedProviderSelection();
+    writeSessionProviderSelection(sessionId, selection);
+    const { userRecord, botRecord } = createLocalExchange({
+      sessionId,
+      messageId,
+      parts: outgoingParts,
+    });
+    scrollToBottom();
+    sendMessageStream({
+      sessionId,
+      messageId,
+      parts: outgoingParts,
+      transport: transportMode.value,
+      enableStreaming: enableStreaming.value,
+      selectedProvider: selection?.providerId || "",
+      selectedModel: selection?.modelName || "",
+      thinkingEffort: getCurrentThinkingEffort(),
+      userRecord,
+      botRecord,
+    });
+  } catch (error) {
+    console.error("Failed to send comment message:", error);
+  } finally {
+    sending.value = false;
   }
 }
 

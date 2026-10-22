@@ -122,6 +122,7 @@ import LockReasonDialogBody from "@/components/chat/message_list_comps/LockReaso
 import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 import DocumentManager from "@/components/chat/message_list_comps/DocumentManager.vue";
 import TerminalView from "@/components/chat/TerminalView.vue";
+import WebBrowserView from "@/components/chat/WebBrowserView.vue";
 import BranchSwitchConfirmDialog from "@/components/chat/message_list_comps/BranchSwitchConfirmDialog.vue";
 import BranchDeleteConfirmDialog from "@/components/chat/message_list_comps/BranchDeleteConfirmDialog.vue";
 const { tm } = useModuleI18n("features/chat");
@@ -184,17 +185,25 @@ function safeSetItem(key: string, value: string): void {
   }
 }
 
-function loadViewMode(): "files" | "diff" | "history" | "docs" | "terminal" {
+function loadViewMode():
+  | "files"
+  | "diff"
+  | "history"
+  | "docs"
+  | "terminal"
+  | "browser" {
   const v = safeGetItem(STORAGE_KEYS.viewMode);
   // Spec §2 决策 #10:History 是第 3 个 viewMode,持久化时同样支持。
   // 2026-07-11 document-manager:docs 是第 4 个 viewMode。
   // 2026-09-01 terminal:终端是第 5 个 viewMode。
+  // 2026-10-22 web-preview:浏览器是第 6 个 viewMode。
   if (
     v === "files" ||
     v === "diff" ||
     v === "history" ||
     v === "docs" ||
-    v === "terminal"
+    v === "terminal" ||
+    v === "browser"
   ) {
     return v;
   }
@@ -393,9 +402,15 @@ const showClearConfirm = ref(false);
 // "docs" shows <DocumentManager> (spec 2026-07-11 document-manager §2 #1)。
 // Default: "files" per spec §2 decision #10 (the more general view;
 // first-time users likely want to "see what's in the project").
-const viewMode = ref<"files" | "diff" | "history" | "docs" | "terminal">(
-  loadViewMode(),
-);
+const viewMode = ref<
+  "files" | "diff" | "history" | "docs" | "terminal" | "browser"
+>(loadViewMode());
+// Web preview mounts lazily on first activation, then stays mounted under
+// v-show so switching to another tab and back does not reload the page.
+const browserMounted = ref(viewMode.value === "browser");
+watch(viewMode, (mode) => {
+  if (mode === "browser") browserMounted.value = true;
+});
 const fileBrowserCurrentPath = ref<string>(loadFileBrowserCurrentPath());
 // ── Fullscreen state ──────────────────────────────────────────────
 // Non-persisted. globalFullscreen expands the entire sidebar to the
@@ -4799,12 +4814,12 @@ watch(
         <div class="git-diff-sidebar-resizer" @mousedown="startResize" />
         <div class="git-diff-sidebar-header">
           <div class="git-diff-sidebar-title-wrap">
+            <!-- The sidebar hosts six tabs (workspace / docs / git diff /
+                 git log / terminal / web preview), so the header names the
+                 container instead of following the active tab. Tabs already
+                 carry navigation semantics. -->
             <span class="git-diff-sidebar-title">
-              {{
-                viewMode === "files"
-                  ? tm("spcodeProjectLoad.fileBrowser.title")
-                  : tm("spcodeProjectLoad.diffSidebar.title")
-              }}
+              {{ tm("spcodeProjectLoad.diffSidebar.title") }}
             </span>
             <!-- UI #5: directory path is now shown as a compact breadcrumb-style
                strip directly under the title, with an inline folder icon.
@@ -5004,6 +5019,23 @@ watch(
             <v-icon size="14">mdi-console</v-icon>
             <span>{{
               tm("spcodeProjectLoad.gitDiffSidebar.tabs.terminal")
+            }}</span>
+          </button>
+          <!-- 2026-10-22 web-preview:第 6 个 tab，内嵌本地 dev server。 -->
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="viewMode === 'browser'"
+            :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.browser')"
+            :class="[
+              'git-diff-sidebar-view-tab',
+              { 'is-active': viewMode === 'browser' },
+            ]"
+            @click="viewMode = 'browser'"
+          >
+            <v-icon size="14">mdi-web</v-icon>
+            <span>{{
+              tm("spcodeProjectLoad.gitDiffSidebar.tabs.browser")
             }}</span>
           </button>
         </div>
@@ -5872,6 +5904,13 @@ watch(
             :umo="session.umo.value"
             :project-root="currentRoot"
             :is-dark="!!isDark"
+          />
+          <!-- 2026-10-22 web-preview:浏览器 body。v-if 延迟到首次进入才
+              Mount，v-show 保活，切 tab 不重载页面。 -->
+          <WebBrowserView
+            v-if="browserMounted"
+            v-show="viewMode === 'browser'"
+            :project-root="projectRoot"
           />
         </div>
 
@@ -6795,10 +6834,19 @@ watch(
   margin: 0 12px 8px;
   padding: 4px;
   border-radius: 10px;
+  /* Six tabs overflow the 320px minimum sidebar width: scroll the strip
+     instead of shrinking the buttons. */
+  max-width: calc(100% - 24px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   background: var(
     --chat-session-active-bg,
     rgba(var(--v-theme-on-surface), 0.06)
   );
+}
+.git-diff-sidebar-view-tabs::-webkit-scrollbar {
+  display: none;
 }
 .git-diff-sidebar-view-tab {
   display: inline-flex;
@@ -6813,6 +6861,8 @@ watch(
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
   transition:
     background 0.14s ease,
     color 0.14s ease,

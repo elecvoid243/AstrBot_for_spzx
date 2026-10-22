@@ -792,7 +792,6 @@
       "expandAria": "Развернуть комментарии для {path}"
     },
     "fileBrowser": {
-      "title": "Обзор рабочей области",
       "viewMode": {
         "files": "Файлы",
         "diff": "Git Diff"
@@ -945,7 +944,7 @@
     "diffSidebar": {
       "chip": "Рабочая область",
       "chipTooltip": "Просмотр файлов, изменений и истории рабочей области",
-      "title": "Изменения проекта",
+      "title": "Инструменты проекта",
       "refreshTooltip": "Обновить",
       "bwRefreshTooltip": "Обновить ветки и деревья",
       "loading": "Загрузка…",
@@ -1863,10 +1862,30 @@
       "activeSegment": "Режим Plan",
       "inactiveSegment": "Режим Build"
     },
+    "webBrowser": {
+      "urlPlaceholder": "Введите адрес, напр. localhost:3000",
+      "urlLabel": "Адрес просмотра",
+      "reload": "Обновить",
+      "openExternal": "Открыть в новой вкладке",
+      "bookmarkAdd": "Добавить адрес в закладки",
+      "bookmarkRemove": "Удалить закладку",
+      "bookmarkRemoveNamed": "Удалить закладку {url}",
+      "bookmarkOpen": "Открыть закладку {url}",
+      "bookmarkLimit": "Достигнут лимит закладок ({max})",
+      "widthLabel": "Ширина просмотра",
+      "widthFill": "По ширине",
+      "emptyTitle": "Адрес ещё не задан",
+      "emptyHint": "Введите адрес локального dev-сервера и нажмите Enter. Некоторые сайты запрещают встраивание — откройте их в новой вкладке.",
+      "embedHint": "Пустая страница обычно означает запрет встраивания (X-Frame-Options / CSP). Откройте адрес в новой вкладке.",
+      "errorInvalid": "Некорректный адрес",
+      "errorScheme": "Поддерживаются только http / https",
+      "frameTitle": "Просмотр страницы"
+    },
     "gitDiffSidebar": {
       "tabs": {
         "docs": "Документы",
-        "terminal": "Терминал"
+        "terminal": "Терминал",
+        "browser": "Web-просмотр"
       },
       "terminal": {
         "connecting": "Подключение…",

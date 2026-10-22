@@ -801,7 +801,6 @@
       "expandAria": "展开 {path} 的评论"
     },
     "fileBrowser": {
-      "title": "工作区浏览",
       "viewMode": {
         "files": "工作区",
         "diff": "Git 变更"
@@ -964,7 +963,7 @@
     "diffSidebar": {
       "chip": "工作区",
       "chipTooltip": "查看工作区文件、改动和历史",
-      "title": "项目改动",
+      "title": "项目工作台",
       "refreshTooltip": "刷新",
       "bwRefreshTooltip": "刷新分支和工作树",
       "loading": "加载中…",
@@ -1923,10 +1922,30 @@
       "activeSegment": "Plan 模式",
       "inactiveSegment": "Build 模式"
     },
+    "webBrowser": {
+      "urlPlaceholder": "输入地址，例如 localhost:3000",
+      "urlLabel": "预览地址",
+      "reload": "刷新",
+      "openExternal": "在新标签页打开",
+      "bookmarkAdd": "收藏当前地址",
+      "bookmarkRemove": "取消收藏",
+      "bookmarkRemoveNamed": "取消收藏 {url}",
+      "bookmarkOpen": "打开收藏地址 {url}",
+      "bookmarkLimit": "收藏已达上限（{max} 条）",
+      "widthLabel": "预览宽度",
+      "widthFill": "铺满",
+      "emptyTitle": "还没有预览地址",
+      "emptyHint": "输入本地开发服务器地址后回车加载。部分站点禁止被嵌入，可改用新标签页打开。",
+      "embedHint": "若一直空白，多半是站点禁止被嵌入（X-Frame-Options / CSP），请改用新标签页打开。",
+      "errorInvalid": "地址格式不正确",
+      "errorScheme": "只支持 http / https 地址",
+      "frameTitle": "网页预览"
+    },
     "gitDiffSidebar": {
       "tabs": {
         "docs": "文档管理",
-        "terminal": "终端"
+        "terminal": "终端",
+        "browser": "Web 预览"
       },
       "terminal": {
         "connecting": "连接中…",

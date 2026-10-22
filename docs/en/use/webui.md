@@ -108,11 +108,19 @@ Under `Settings → Maintenance`, backup imports also show upload progress and o
 
 With a conversation open, use **New side chat** (the speech-bubble-plus button at the top right of the message area). The right panel is titled **Side chat** and labelled **Temporary chat · destroyed on close**. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
 
+![Temporary side chat with an empty, separate message area](/images/chat-side-panel-en.jpg)
+
 Closing the panel, switching conversations, leaving the chat page, or opening another sidebar ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
 
 An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
 
+![Saved ordinary thread with its quote and delete button](/images/chat-thread-panel-en.jpg)
+
 On desktop, drag the panel's **left edge** to change the width of either a branch thread or side chat. At narrow mobile widths the panel fills the screen and the resize handle is hidden.
+
+The desktop screenshots show resized panels with the conversation sidebar collapsed. On mobile, use **×** at the top right to return to the main conversation; closing a side chat still ends it, while an ordinary thread remains saved.
+
+![Side chat fills the screen in the narrow layout](/images/chat-side-mobile-en.jpg)
 
 ### Project Workbench Web Preview
 

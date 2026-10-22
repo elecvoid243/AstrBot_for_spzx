@@ -34,7 +34,7 @@
                Same project gate as before the fold-in: no loaded project,
                nothing to browse. Icon-only below the 768px breakpoint. -->
           <GitDiffChip
-            v-if="spcodeStatus.status.value.loaded"
+            v-if="showWorkspaceChip && spcodeStatus.status.value.loaded"
             :active="props.workspacePanelOpen"
             @toggle-diff-sidebar="emit('toggle-diff-sidebar')"
           />
@@ -958,6 +958,11 @@ interface Props {
    * singleton; a side composer must not surface the main chat's comments.
    */
   showFileComments?: boolean;
+  /**
+   * 2026-10-23 side-chat: the workspace entry opens the main workspace
+   * sidebar, which would displace the side panel; side composers hide it.
+   */
+  showWorkspaceChip?: boolean;
   /** Git-diff / workspace sidebar is open — tints the workspace capsule. */
   workspacePanelOpen?: boolean;
 }
@@ -976,6 +981,7 @@ const props = withDefaults(defineProps<Props>(), {
   tokenUsage: null,
   compressionNotice: null,
   showFileComments: true,
+  showWorkspaceChip: true,
   workspacePanelOpen: false,
 });
 

@@ -95,6 +95,7 @@
           :current-session="mainSession"
           :show-provider-selector="true"
           :show-file-comments="false"
+          :show-workspace-chip="false"
           :workspace-panel-open="false"
           send-shortcut="enter"
           @send="sendFromChatInput"

@@ -239,7 +239,7 @@
                 >
                   <Check
                     class="agent-work-pill-icon"
-                    :size="15"
+                    :size="14"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -256,7 +256,7 @@
                   </span>
                   <ChevronDown
                     class="agent-work-pill-chevron"
-                    :size="14"
+                    :size="13"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -2459,27 +2459,28 @@ function formatDuration(seconds: number) {
 }
 
 /* The completed-work capsule is a status readout, not a chip. It borrows
-   the composer's quiet anatomy — a 32 px row of body-sized tabular text with
-   no border or fill at rest — so it reads as part of the reply instead of a
+   the composer's quiet anatomy — a 28 px row of 14 px tabular text with no
+   border or fill at rest — so it reads as part of the reply instead of a
    floating control. Only hover / expanded paint a wash. The negative left
    inset cancels the horizontal padding so the checkmark starts on the same
    column as the body text. `font: inherit` matters: a bare <button> would
-   otherwise fall back to the browser UI font and break the chat type. It also
-   carries the body size: the capsule must not read smaller than the reply it
-   summarises. */
+   otherwise fall back to the browser UI font and break the chat type; the
+   0.875rem size below keeps the capsule one step under the reply it
+   summarises instead of shouting over it. */
 .agent-work-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   max-width: 100%;
-  height: 32px;
-  margin: 0 0 10px -10px;
-  padding: 0 10px;
+  height: 28px;
+  margin: 0 0 9px -8px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 16px;
+  border-radius: 14px;
   background: transparent;
   color: rgba(var(--v-theme-on-surface), 0.55);
   font: inherit;
+  font-size: 0.875rem;
   font-weight: 500;
   line-height: 1;
   letter-spacing: 0.01em;

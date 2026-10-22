@@ -1,8 +1,8 @@
 // Author: elecvoid243 @ 2026-10-22
 // The side-chat lifecycle lives inside Chat.vue's script setup, so run its
 // actual declarations with controlled refs (same technique as Chat.scroll).
-// Focus: closing a temporary side chat must delete its backend thread, while
-// closing a branch thread must not.
+// Focus: closing the panel only hides it now — side chats persist and are
+// deleted explicitly from the side-chat menu.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -35,23 +35,20 @@ interface ThreadRef {
 }
 
 function setup() {
-  const chatApi = { deleteThread: vi.fn().mockResolvedValue({}) };
   const activeThread: Ref<ThreadRef | null> = ref(null);
   const sideChatThreadId: Ref<string | null> = ref(null);
   const threadPanelOpen = ref(true);
   const api = new Function(
-    "chatApi",
     "activeThread",
     "sideChatThreadId",
     "threadPanelOpen",
     `${code}
      return { closeThreadPanel, onThreadPanelToggle };`,
-  )(chatApi, activeThread, sideChatThreadId, threadPanelOpen) as {
+  )(activeThread, sideChatThreadId, threadPanelOpen) as {
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
   };
   return {
-    chatApi,
     activeThread,
     sideChatThreadId,
     threadPanelOpen,
@@ -64,7 +61,7 @@ afterEach(() => {
 });
 
 describe("Chat side-chat lifecycle", () => {
-  it("closes a branch thread without deleting it", () => {
+  it("closes a branch thread and clears the panel state", () => {
     const ctx = setup();
     ctx.activeThread.value = { thread_id: "branch-1" };
 
@@ -72,10 +69,10 @@ describe("Chat side-chat lifecycle", () => {
 
     expect(ctx.threadPanelOpen.value).toBe(false);
     expect(ctx.activeThread.value).toBeNull();
-    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+    expect(ctx.sideChatThreadId.value).toBeNull();
   });
 
-  it("deletes the backend thread when closing a side chat", () => {
+  it("closes a side chat without deleting the backend thread", () => {
     const ctx = setup();
     ctx.activeThread.value = { thread_id: "side-1" };
     ctx.sideChatThreadId.value = "side-1";
@@ -85,21 +82,6 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.threadPanelOpen.value).toBe(false);
     expect(ctx.activeThread.value).toBeNull();
     expect(ctx.sideChatThreadId.value).toBeNull();
-    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-1");
-  });
-
-  it("survives a failed delete without raising", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const ctx = setup();
-    ctx.activeThread.value = { thread_id: "side-2" };
-    ctx.sideChatThreadId.value = "side-2";
-    ctx.chatApi.deleteThread.mockRejectedValue(new Error("network"));
-
-    expect(() => ctx.closeThreadPanel()).not.toThrow();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(ctx.threadPanelOpen.value).toBe(false);
-    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("routes ThreadPanel's close event through the same teardown", () => {
@@ -108,11 +90,10 @@ describe("Chat side-chat lifecycle", () => {
     ctx.sideChatThreadId.value = "side-3";
 
     ctx.onThreadPanelToggle(false);
-    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-3");
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(ctx.activeThread.value).toBeNull();
 
-    ctx.chatApi.deleteThread.mockClear();
     ctx.onThreadPanelToggle(true);
-    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
     expect(ctx.threadPanelOpen.value).toBe(false);
   });
 });

@@ -28,6 +28,16 @@ from astrbot.core.platform.sources.webchat.request_flags import (
     resolve_webchat_request_flags,
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.tools.fs_access import (
+    FileAccessMode,
+    get_custom_roots,
+    get_mode_for_umo,
+    set_custom_roots,
+    set_mode_for_umo,
+)
+from astrbot.core.tools.fs_access import (
+    resolve_default as resolve_file_access_default,
+)
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id, to_utc_isoformat
@@ -3800,6 +3810,109 @@ class ChatService:
             raise ChatServiceError("Missing key: session_id")
         return await self.get_session(username, session_id)
 
+    def _parent_session_umo(self, creator: str, session_id: str) -> str:
+        """Build the UMO of a main webchat session (used by side chats)."""
+        return (
+            f"webchat:{MessageType.FRIEND_MESSAGE.value}:webchat!{creator}!{session_id}"
+        )
+
+    async def _inherit_side_chat_config(
+        self,
+        creator: str,
+        parent_session_id: str,
+        thread_id: str,
+    ) -> None:
+        """Give a new side thread the parent session's config profile.
+
+        The side chat is a separate UMO, so without this it would fall back to
+        the default config profile. Only the creation path copies it; later
+        sends must not overwrite a profile the user picked for the side chat.
+
+        Args:
+            creator: Dashboard username that owns both records.
+            parent_session_id: ChatUI session the side chat belongs to.
+            thread_id: Side thread identifier.
+        """
+        parent_umo = self._parent_session_umo(creator, parent_session_id)
+        thread_umo = build_thread_unified_msg_origin(creator, thread_id)
+
+        try:
+            router = self.core_lifecycle.umop_config_router
+            conf_id = router.get_conf_id_for_umop(parent_umo)
+            if conf_id:
+                await router.update_route(thread_umo, conf_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to inherit config profile for side thread %s: %s",
+                thread_id,
+                exc,
+            )
+
+    async def _inherit_side_chat_permissions(
+        self,
+        creator: str,
+        parent_session_id: str,
+        thread_id: str,
+    ) -> None:
+        """Mirror the parent session's file-access mode onto a side thread.
+
+        Runs on every send: the user may flip the main composer's mode while
+        the side chat is open. It deliberately does not touch the config route.
+
+        Args:
+            creator: Dashboard username that owns both records.
+            parent_session_id: ChatUI session the side chat belongs to.
+            thread_id: Side thread identifier.
+        """
+        parent_umo = self._parent_session_umo(creator, parent_session_id)
+        thread_umo = build_thread_unified_msg_origin(creator, thread_id)
+
+        try:
+            parent_cfg = self.core_lifecycle.astrbot_config_mgr.get_conf(parent_umo)
+            default_mode = resolve_file_access_default(parent_cfg)
+        except Exception:
+            default_mode = FileAccessMode.FULL
+        set_mode_for_umo(
+            thread_umo,
+            get_mode_for_umo(parent_umo, default=default_mode),
+        )
+        try:
+            roots = await get_custom_roots(parent_umo)
+            if roots:
+                await set_custom_roots(thread_umo, roots)
+        except Exception as exc:
+            logger.warning(
+                "Failed to inherit file-access roots for side thread %s: %s",
+                thread_id,
+                exc,
+            )
+
+    async def _side_thread_title(self, thread_id: str) -> str:
+        """Derive a list label from the first user message of a side thread."""
+        try:
+            history = await self.platform_history_mgr.get(
+                platform_id="webchat_thread",
+                user_id=thread_id,
+                page=1,
+                page_size=200,
+            )
+        except Exception:
+            return ""
+        # History is newest-first; walk backwards to the first user message.
+        for record in reversed(history):
+            content = record.content or {}
+            if content.get("type") != "user":
+                continue
+            parts = content.get("message") or []
+            text = " ".join(
+                str(part.get("text", ""))
+                for part in parts
+                if isinstance(part, dict) and part.get("type") == "plain"
+            ).strip()
+            if text:
+                return text[:60]
+        return ""
+
     async def create_thread(self, username: str, data: dict) -> dict:
         session_id = data.get("session_id")
         side_chat = bool(data.get("side_chat"))
@@ -3830,6 +3943,16 @@ class ChatService:
                 ),
                 platform_id="webchat",
                 content=[],
+            )
+            await self._inherit_side_chat_config(
+                username,
+                session_id,
+                thread.thread_id,
+            )
+            await self._inherit_side_chat_permissions(
+                username,
+                session_id,
+                thread.thread_id,
             )
             return serialize_thread(thread)
 
@@ -3957,12 +4080,23 @@ class ChatService:
         if thread.creator != username:
             raise ChatServiceError("Permission denied")
 
+        # Side chats inherit the parent session's workspace/permissions at
+        # send time, because the user may have changed the mode since the
+        # panel was opened. Branch threads keep their checkpoint context.
+        if thread.parent_message_id == 0:
+            await self._inherit_side_chat_permissions(
+                username,
+                thread.parent_session_id,
+                thread_id,
+            )
+
         return {
             "session_id": thread.thread_id,
             "message": data.get("message", []),
             "flags": resolve_webchat_request_flags(data),
             "selected_provider": data.get("selected_provider"),
             "selected_model": data.get("selected_model"),
+            "thinking_effort": data.get("thinking_effort"),
             "_platform_history_id": "webchat_thread",
             "_thread_selected_text": thread.selected_text,
         }
@@ -3986,6 +4120,17 @@ class ChatService:
 
         await self.db.delete_webchat_thread(thread_id)
         await self.delete_threads_by_ids([thread_id], username)
+        # Drop the config-profile route copied for the side chat (if any).
+        try:
+            await self.core_lifecycle.umop_config_router.delete_route(
+                build_thread_unified_msg_origin(username, thread_id)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete config route for thread %s: %s",
+                thread_id,
+                exc,
+            )
         return {"thread_id": thread_id}
 
     async def delete_thread_from_dashboard_payload(
@@ -3998,6 +4143,60 @@ class ChatService:
         if not thread_id:
             raise ChatServiceError("Missing key: thread_id")
         return await self.delete_thread(username, thread_id)
+
+    async def stop_thread(self, username: str, thread_id: str) -> dict:
+        """Ask the agent run of a thread to stop.
+
+        Args:
+            username: Authenticated dashboard user; must own the thread.
+            thread_id: Thread whose active run should stop.
+
+        Returns:
+            Dict with the thread id and how many runs received the stop.
+        """
+        thread = await self.db.get_webchat_thread_by_id(thread_id)
+        if not thread:
+            raise ChatServiceError(f"Thread {thread_id} not found")
+        if thread.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        umo = build_thread_unified_msg_origin(username, thread_id)
+        stopped_count = active_event_registry.request_agent_stop_all(umo)
+        return {"thread_id": thread_id, "stopped_count": stopped_count}
+
+    async def list_side_threads(self, username: str, session_id: str) -> dict:
+        """List the persistent side chats that belong to a main session.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: Main ChatUI session id.
+
+        Returns:
+            Dict with ``threads`` sorted newest-first, each carrying a derived
+            ``title`` (first user message) for the side-chat menu.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        threads = await self.db.get_webchat_threads_by_parent_session(
+            parent_session_id=session_id,
+            creator=username,
+        )
+        side_threads = [thread for thread in threads if thread.parent_message_id == 0]
+        side_threads.sort(
+            key=lambda thread: thread.updated_at or thread.created_at,
+            reverse=True,
+        )
+
+        items = []
+        for thread in side_threads:
+            item = serialize_thread(thread)
+            item["title"] = await self._side_thread_title(thread.thread_id)
+            items.append(item)
+        return {"threads": items}
 
     async def update_message(self, username: str, data: dict) -> dict:
         session_id = data.get("session_id")

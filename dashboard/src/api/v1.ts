@@ -1117,6 +1117,16 @@ export const chatApi = {
       openApiV1.deleteChatThread({ path: { thread_id: threadId } }),
     );
   },
+  listSideThreads(sessionId: string) {
+    return typed<any>(
+      openApiV1.listChatSideThreads({ path: { session_id: sessionId } }),
+    );
+  },
+  stopThread(threadId: string) {
+    return typed<any>(
+      openApiV1.stopChatThread({ path: { thread_id: threadId } }),
+    );
+  },
   sendThreadMessage(threadId: string, payload: ChatThreadMessageRequest) {
     return typed<any>(
       openApiV1.sendChatThreadMessage({

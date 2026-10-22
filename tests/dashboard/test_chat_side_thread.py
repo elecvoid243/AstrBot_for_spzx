@@ -11,7 +11,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
+from astrbot.core.tools.fs_access import (
+    FileAccessMode,
+    clear_mode_for_umo,
+    get_mode_for_umo,
+    set_mode_for_umo,
+)
+from astrbot.dashboard.services.chat_service import (
+    ChatService,
+    ChatServiceError,
+    build_thread_unified_msg_origin,
+)
 
 
 def make_service(session_creator: str = "alice") -> ChatService:
@@ -32,6 +42,14 @@ def make_service(session_creator: str = "alice") -> ChatService:
     service.db.create_webchat_thread = AsyncMock(return_value=thread)
     service.conv_mgr = MagicMock()
     service.conv_mgr.new_conversation = AsyncMock(return_value="conv-1")
+    service.core_lifecycle = SimpleNamespace(
+        umop_config_router=SimpleNamespace(
+            get_conf_id_for_umop=MagicMock(return_value=None),
+            update_route=AsyncMock(),
+            delete_route=AsyncMock(),
+        ),
+        astrbot_config_mgr=SimpleNamespace(get_conf=MagicMock(return_value={})),
+    )
     return service
 
 
@@ -72,6 +90,27 @@ async def test_side_chat_rejects_a_foreign_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_side_chat_inherits_config_profile_and_file_access() -> None:
+    service = make_service()
+    router = service.core_lifecycle.umop_config_router
+    router.get_conf_id_for_umop.return_value = "profile-b"
+
+    parent_umo = service._parent_session_umo("alice", "session-1")
+    thread_umo = build_thread_unified_msg_origin("alice", "thread-1")
+    set_mode_for_umo(parent_umo, FileAccessMode.READONLY)
+    try:
+        await service.create_thread(
+            "alice", {"session_id": "session-1", "side_chat": True}
+        )
+
+        router.update_route.assert_awaited_once_with(thread_umo, "profile-b")
+        assert get_mode_for_umo(thread_umo) is FileAccessMode.READONLY
+    finally:
+        clear_mode_for_umo(parent_umo)
+        clear_mode_for_umo(thread_umo)
+
+
+@pytest.mark.asyncio
 async def test_branch_thread_still_requires_parent_and_selection() -> None:
     service = make_service()
 
@@ -87,3 +126,22 @@ async def test_branch_thread_still_requires_parent_and_selection() -> None:
                 "selected_text": "   ",
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_side_thread_title_uses_the_first_user_message() -> None:
+    service = make_service()
+    history = [
+        SimpleNamespace(
+            content={"type": "bot", "message": [{"type": "plain", "text": "回复"}]}
+        ),
+        SimpleNamespace(
+            content={"type": "user", "message": [{"type": "plain", "text": "第二问"}]}
+        ),
+        SimpleNamespace(
+            content={"type": "user", "message": [{"type": "plain", "text": "第一问"}]}
+        ),
+    ]
+    service.platform_history_mgr = SimpleNamespace(get=AsyncMock(return_value=history))
+
+    assert await service._side_thread_title("thread-1") == "第一问"

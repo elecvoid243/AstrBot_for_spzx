@@ -2027,6 +2027,38 @@ paths:
         "200":
           description: Server-sent chat stream or an error envelope
 
+  /api/v1/chat/threads/{thread_id}/stop:
+    post:
+      tags: [Chat]
+      summary: Stop the active run of a webchat side thread
+      operationId: stopChatThread
+      x-astrbot-scope: chat
+      parameters:
+        - name: thread_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/sessions/{session_id}/side-threads:
+    get:
+      tags: [Chat]
+      summary: List the persistent side chats of a webchat session
+      operationId: listChatSideThreads
+      x-astrbot-scope: chat
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/projects:
     get:
       tags: [Chat]
@@ -6998,6 +7030,8 @@ components:
         selected_provider:
           type: string
         selected_model:
+          type: string
+        thinking_effort:
           type: string
         enable_streaming:
           type: boolean

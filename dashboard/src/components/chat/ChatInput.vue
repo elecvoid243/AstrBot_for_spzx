@@ -47,7 +47,7 @@
               comments via the confirmDialog plugin.
             -->
         <div
-          v-if="fileComments.totalCount.value > 0"
+          v-if="showFileComments && fileComments.totalCount.value > 0"
           class="comment-count-chip d-none d-md-flex"
           :class="{ 'comment-count-chip--hovered': chipHovered }"
           @mouseenter="chipHovered = true"
@@ -832,7 +832,7 @@ import { chatApi, commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
 import { useProviderModelSelection } from "@/composables/useProviderModelSelection";
-import { useChatConfigSelection } from "@/composables/useChatConfigSelection";
+import { provideChatConfigSelection } from "@/composables/useChatConfigSelection";
 import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import ThinkingEffortLevelsDialog from "./ThinkingEffortLevelsDialog.vue";
 import type { ThinkingEffortEditorPayload } from "./ThinkingEffortLevelsDialog.vue";
@@ -929,6 +929,17 @@ interface Props {
   isRecording: boolean;
   isRunning: boolean;
   sessionId?: string | null;
+  /**
+   * 2026-10-23 side-chat: session/UMO that owns the config-profile chip.
+   * Defaults to ``sessionId``. A side panel passes the thread id here while
+   * ``currentSession`` stays the main session for project/file-access chips.
+   */
+  configSessionId?: string | null;
+  /**
+   * 2026-10-23 side-chat: a side composer resolves the config route of its
+   * own thread UMO but must not overwrite the main chat's stored default.
+   */
+  persistConfigSelection?: boolean;
   currentSession?: Session | null;
   configId?: string | null;
   replyTo?: ReplyInfo | null;
@@ -942,6 +953,11 @@ interface Props {
    */
   compressionNotice?: ContextCompressionEntry | null;
   placeholder?: string;
+  /**
+   * 2026-10-23 side-chat: the inline file-comment store is a main-session
+   * singleton; a side composer must not surface the main chat's comments.
+   */
+  showFileComments?: boolean;
   /** Git-diff / workspace sidebar is open — tints the workspace capsule. */
   workspacePanelOpen?: boolean;
 }
@@ -950,6 +966,7 @@ const props = withDefaults(defineProps<Props>(), {
   sessionId: null,
   currentSession: null,
   configId: null,
+  persistConfigSelection: true,
   stagedFiles: () => [],
   failedUploads: () => [],
   activeUploads: () => [],
@@ -958,6 +975,7 @@ const props = withDefaults(defineProps<Props>(), {
   showProviderSelector: true,
   tokenUsage: null,
   compressionNotice: null,
+  showFileComments: true,
   workspacePanelOpen: false,
 });
 
@@ -2349,13 +2367,14 @@ function handleConfigChange(payload: {
 // the single context binding — the "+" menu item and the composer chip are
 // pure renderers of the shared singleton; selection changes (including the
 // runner-type gate for the provider selector) arrive via this listener.
-const chatConfigSelection = useChatConfigSelection();
+const chatConfigSelection = provideChatConfigSelection();
 chatConfigSelection.bindContext(
   computed(() => ({
-    sessionId: props.sessionId ?? null,
+    sessionId: props.configSessionId ?? props.sessionId ?? null,
     platformId: sessionPlatformId.value,
     isGroup: sessionIsGroup.value,
     initialConfigId: props.configId ?? null,
+    persistGlobal: props.persistConfigSelection !== false,
   })),
 );
 onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));

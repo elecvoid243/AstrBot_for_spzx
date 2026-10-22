@@ -992,6 +992,24 @@ async def delete_chat_thread(
     return await _run(lambda: service.delete_thread(auth.username, thread_id))
 
 
+@router.get("/chat/sessions/{session_id}/side-threads")
+async def list_chat_side_threads(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(lambda: service.list_side_threads(auth.username, session_id))
+
+
+@router.post("/chat/threads/{thread_id}/stop")
+async def stop_chat_thread(
+    thread_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(lambda: service.stop_thread(auth.username, thread_id))
+
+
 @router.post("/chat/threads/{thread_id}/messages")
 async def send_chat_thread_message(
     thread_id: str,

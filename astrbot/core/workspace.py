@@ -213,5 +213,18 @@ async def resolve_workspace_root_for_umo(
 
     project = await db.get_project_by_session(session_id=session_id, creator=creator)
     if not project:
+        # 2026-10-23 side-chat: a thread UMO carries the thread id, not the
+        # ChatUI session id. Resolve the parent session's project so the side
+        # chat runs in the same workspace as the main conversation.
+        try:
+            thread = await db.get_webchat_thread_by_id(session_id)
+        except Exception:
+            thread = None
+        if thread is not None and thread.creator == creator:
+            project = await db.get_project_by_session(
+                session_id=thread.parent_session_id,
+                creator=creator,
+            )
+    if not project:
         return default_workspace_root(umo)
     return resolve_project_workspace_root(project, fallback_umo=umo)

@@ -299,6 +299,7 @@ export type ChatThreadMessageRequest = {
     message: (string | Array<MessagePart>);
     selected_provider?: string;
     selected_model?: string;
+    thinking_effort?: string;
     /**
      * Deprecated compatibility field. It is used only when flags.enable_streaming is absent; otherwise flags.enable_streaming takes priority.
      * @deprecated
@@ -2069,6 +2070,26 @@ export type SendChatThreadMessageData = {
 export type SendChatThreadMessageResponse = (unknown);
 
 export type SendChatThreadMessageError = unknown;
+
+export type StopChatThreadData = {
+    path: {
+        thread_id: string;
+    };
+};
+
+export type StopChatThreadResponse = (SuccessEnvelope);
+
+export type StopChatThreadError = unknown;
+
+export type ListChatSideThreadsData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type ListChatSideThreadsResponse = (SuccessEnvelope);
+
+export type ListChatSideThreadsError = unknown;
 
 export type ListChatProjectsResponse = (SuccessEnvelope);
 

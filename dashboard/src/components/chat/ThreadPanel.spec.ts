@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 
 const { getThreadMock } = vi.hoisted(() => ({
   getThreadMock: vi.fn(),
@@ -49,6 +50,7 @@ function mountPanel(
     thread: ChatThread;
     isDark: boolean;
     sideChat: boolean;
+    title: string;
   }> = {},
 ) {
   return mount(ThreadPanel, {
@@ -59,29 +61,40 @@ function mountPanel(
       ...props,
     },
     global: {
-      stubs: { ChatMessageList: true, VBtn: VBtnStub },
+      stubs: {
+        ChatMessageList: true,
+        ChatInput: true,
+        ProviderModelMenu: true,
+        VBtn: VBtnStub,
+      },
     },
   });
 }
 
 beforeEach(() => {
+  setActivePinia(createPinia());
   getThreadMock.mockReset();
   getThreadMock.mockResolvedValue({ data: { data: { history: [] } } });
 });
 
 describe("ThreadPanel", () => {
-  it("renders the side-chat header without the quote or delete button", async () => {
+  it("renders the side-chat header, full composer and delete action", async () => {
     const wrapper = mountPanel({ sideChat: true });
     await flushPromises();
 
     expect(wrapper.get(".thread-panel-title").text()).toBe("侧边聊天");
-    expect(wrapper.get(".thread-panel-subtitle").text()).toContain(
-      "关闭后销毁",
-    );
     expect(wrapper.find(".thread-selected-text").exists()).toBe(false);
     expect(wrapper.find('[data-icon="mdi-delete-outline"]').exists()).toBe(
-      false,
+      true,
     );
+    expect(wrapper.find("chat-input-stub").exists()).toBe(true);
+  });
+
+  it("prefers the list title supplied by the parent", async () => {
+    const wrapper = mountPanel({ sideChat: true, title: "这段代码为什么慢" });
+    await flushPromises();
+
+    expect(wrapper.get(".thread-panel-title").text()).toBe("这段代码为什么慢");
   });
 
   it("keeps the quoted selection and delete button for branch threads", async () => {
@@ -95,6 +108,7 @@ describe("ThreadPanel", () => {
     expect(wrapper.find('[data-icon="mdi-delete-outline"]').exists()).toBe(
       true,
     );
+    expect(wrapper.find("chat-input-stub").exists()).toBe(false);
   });
 
   it("resizes by dragging the left handle and clamps to [320, 1800]", async () => {

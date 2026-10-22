@@ -237,7 +237,9 @@ class ChatThreadMessageRequest(OpenModel):
     message: Any
     selected_provider: str | None = None
     selected_model: str | None = None
+    thinking_effort: str | None = None
     enable_streaming: bool | None = None
+    flags: ChatFlags | None = None
 
 
 class ChatUiThinkingEffortValueRequest(OpenModel):

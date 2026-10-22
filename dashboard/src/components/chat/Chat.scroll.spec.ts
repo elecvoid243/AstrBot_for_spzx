@@ -29,6 +29,8 @@ const functions = new Set([
   "anchorScrollTopFor",
   "shouldStickToBottom",
   "setStickToBottom",
+  "syncDistanceToBottom",
+  "jumpToBottom",
   "scrollToBottom",
   "recordViewportAnchor",
   "restoreSessionViewport",
@@ -58,6 +60,8 @@ const variables = new Set([
   "lastMessagesScrollTop",
   "scrollGestureDirection",
   "readingViewportAnchor",
+  "followActive",
+  "distanceToBottom",
   "userScrollPending",
   "scrollPointerActive",
   "userScrollSettleTimer",
@@ -204,6 +208,7 @@ function scrollHarness() {
       onBranchToggle,
       handleMessagesScroll, loadOlderHistory, restoreSessionViewport,
       setStickToBottom, shouldStickToBottom, jumpToIndex, runJumpLanding,
+      jumpToBottom, followActive, distanceToBottom,
       endJumpLanding, endJumpScrollLock, jumpInProgress,
       recordViewportAnchor, installPendingViewport,
       installPendingAnchor: (sessionId) => {
@@ -829,5 +834,36 @@ describe("paged history jitter", () => {
       new WheelEvent("wheel", { deltaY: -120 }),
     );
     expect(h.controller.shouldStickToBottom("A")).toBe(false);
+  });
+
+  it("re-arms follow and returns to the tail when the button is used", () => {
+    const h = scrollHarness();
+    h.setLayout({ top: 200 });
+    h.controller.handleMessagesScroll();
+    h.controller.setStickToBottom("A", false);
+    expect(h.controller.followActive.value).toBe(false);
+
+    h.controller.jumpToBottom();
+    // The button is an intent, not just a scroll: the stream follows afterwards.
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+    expect(h.controller.followActive.value).toBe(true);
+
+    // A gesture cancels the glide; follow then lands the panel on the tail.
+    h.controller.endJumpLanding();
+    h.controller.scrollToBottom();
+    h.frame();
+    expect(h.panel.scrollTop).toBe(1200);
+    expect(h.controller.distanceToBottom.value).toBe(0);
+  });
+
+  it("mirrors the distance to the tail for the button", () => {
+    const h = scrollHarness();
+    h.setLayout({ top: 400 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.distanceToBottom.value).toBe(800);
+
+    h.setLayout({ top: 1200 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.distanceToBottom.value).toBe(0);
   });
 });

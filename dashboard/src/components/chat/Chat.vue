@@ -936,6 +936,31 @@
           @jump="onDotClick"
         />
 
+        <!-- Return to the live tail (2026-10-22, elecvoid243): a long
+             conversation read from the middle should not need a scrollbar drag
+             to get back to output that may still be streaming in. The row is a
+             zero-height flex item at the composer's top edge, so the button
+             floats over the panel without taking scroll space or needing the
+             composer's measured height. -->
+        <transition name="jump-to-bottom">
+          <div v-if="showJumpToBottom" class="jump-to-bottom-row">
+            <button
+              type="button"
+              class="jump-to-bottom"
+              :title="tm('actions.scrollToBottom')"
+              :aria-label="tm('actions.scrollToBottom')"
+              @click="jumpToBottom"
+            >
+              <v-icon size="20">mdi-chevron-down</v-icon>
+              <span
+                v-if="streamingWhileAway"
+                class="jump-to-bottom-live"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </transition>
+
         <section ref="composerShell" class="composer-shell">
           <template v-if="!isReadonlySession">
             <ChatInput
@@ -1461,6 +1486,14 @@ const savingMessageEdit = ref(false);
 const scrollMarkers = ref<ChatScrollMarker[]>([]);
 const stripHeight = ref(0);
 const stripRightOffset = ref(0); // Native scrollbar width; the marker rail sits alongside it.
+// Jump-to-bottom affordance (2026-10-22, elecvoid243). The per-session follow
+// map is deliberately non-reactive (see shouldStickToBottom), but the button is
+// template state: `followActive` mirrors the active session's intent and
+// `distanceToBottom` is how far the viewport sits above the tail. The button
+// shows only when both say "the reader is away and there is something below",
+// so simply clicking the panel background never raises it.
+const followActive = ref(true);
+const distanceToBottom = ref(0);
 // A marker jump that has to page older history is in flight — suppress
 // duplicate clicks and show the strip loading hint.
 const jumpInProgress = ref(false);
@@ -1579,6 +1612,9 @@ watch(
     endJumpLanding();
     endJumpScrollLock();
     jumpInProgress.value = false;
+    // New conversation: the outgoing distance and intent describe nothing here.
+    followActive.value = shouldStickToBottom(currSessionId.value);
+    distanceToBottom.value = 0;
   },
   { flush: "sync" },
 );
@@ -2284,6 +2320,23 @@ const historyOffset = computed(() =>
     ? historyOffsetBySession[currSessionId.value] || 0
     : 0,
 );
+// Return-to-tail button: visible once the reader is scrolled away from the
+// newest message. A small threshold keeps the one-frame follow lag and
+// sub-pixel rounding from flickering it in and out while a reply streams in.
+const showJumpToBottom = computed(
+  () => !followActive.value && distanceToBottom.value > 24,
+);
+// A reply is being written while the reader is parked in history — the case
+// the button exists for, so the pip tells them output is still arriving below.
+const streamingWhileAway = computed(
+  () =>
+    showJumpToBottom.value &&
+    Boolean(
+      currSessionId.value &&
+        (isSessionRunning(currSessionId.value) ||
+          hasLiveSystemRecord(currSessionId.value)),
+    ),
+);
 const selectedProject = computed(
   () =>
     projects.value.find(
@@ -2626,8 +2679,10 @@ watch(
     }
     if (container) {
       updateScrollMarkers();
+      syncDistanceToBottom();
       markerResizeObserver = new ResizeObserver(() => {
         updateScrollMarkers();
+        syncDistanceToBottom();
         // A switch still installing its viewport owns the panel: the fresh
         // window has just re-rendered (rows dropped or re-keyed), and the
         // remembered anchor must go back on screen before the browser paints
@@ -2652,6 +2707,9 @@ watch(
         // Correct deferred rendering before paint, including changes whose
         // total height cancels out and therefore produces no resize event.
         historyLayoutObserver = new MutationObserver(() => {
+          // Async markdown, media decode and prepends resize the document
+          // without scrolling, so the tail distance is refreshed here too.
+          syncDistanceToBottom();
           if (pendingViewportSessionId) {
             installPendingViewport(pendingViewportSessionId);
             return;
@@ -5498,6 +5556,9 @@ function handleMessagesScroll() {
     container.scrollHeight - container.clientHeight,
   );
   const top = Math.max(0, container.scrollTop);
+  // One read the handler already needs: keeps the return-to-tail button in step
+  // with every scroll, including the clamps a shrinking document produces.
+  distanceToBottom.value = Math.max(0, maxScrollTop - top);
   // Shrinking content can clamp scrollTop without the reader moving at all.
   const previousTop = Math.min(lastMessagesScrollTop, maxScrollTop);
   const movedUp = top < previousTop - 1;
@@ -5791,6 +5852,51 @@ function shouldStickToBottom(sessionId: string): boolean {
  */
 function setStickToBottom(sessionId: string, stick: boolean): void {
   if (sessionId) shouldStickToBottomBySession.set(sessionId, stick);
+  // The map is the source of truth; the button reads the mirrored ref for the
+  // active conversation. Reading it back keeps the mirror correct even when
+  // this is called for a session that is not the one on screen.
+  followActive.value = shouldStickToBottom(currSessionId.value);
+}
+
+/**
+ * Refresh the reactive distance to the tail used by the jump-to-bottom button.
+ *
+ * The scroll controller keeps its own non-reactive bookkeeping; the button is
+ * template state, so the distance needs a value Vue can watch. Content can grow
+ * or shrink without a scroll event (async markdown, media decode, a prepend), so
+ * both layout observers refresh it as well.
+ */
+function syncDistanceToBottom(): void {
+  const container = messagesContainer.value;
+  distanceToBottom.value = container
+    ? Math.max(
+        0,
+        container.scrollHeight - container.scrollTop - container.clientHeight,
+      )
+    : 0;
+}
+
+/**
+ * Return the viewport to the newest message and follow what comes next.
+ *
+ * The affordance exists for one intent: the reader scrolled back through a long
+ * (or still streaming) conversation and wants the live tail without dragging the
+ * scrollbar. Follow is re-armed first, so once the landing settles the stream
+ * keeps the panel at the bottom; the travel itself uses the shared landing,
+ * which retargets while content settles and yields to any interrupting gesture.
+ */
+function jumpToBottom() {
+  const sessionId = currSessionId.value;
+  const container = messagesContainer.value;
+  if (!sessionId || !container) return;
+  viewportInteractionToken += 1;
+  endJumpScrollLock();
+  jumpInProgress.value = false;
+  setStickToBottom(sessionId, true);
+  runJumpLanding(
+    (panel) => Math.max(0, panel.scrollHeight - panel.clientHeight),
+    true,
+  );
 }
 
 function scrollToBottom() {
@@ -5826,6 +5932,12 @@ function scrollToBottom() {
     // later compares against is the clamped value (see the declaration note).
     selfScrollTop = container.scrollTop;
     lastMessagesScrollTop = container.scrollTop;
+    // Hide the return-to-tail button in the same frame as the snap instead of
+    // waiting for the scroll echo, which is coalesced into a later task.
+    distanceToBottom.value = Math.max(
+      0,
+      container.scrollHeight - container.scrollTop - container.clientHeight,
+    );
   });
 }
 
@@ -7234,6 +7346,105 @@ function toggleTheme() {
   width: var(--chat-content-width);
   max-width: var(--chat-content-max-width);
   margin: 0 auto;
+}
+
+/* Jump-to-bottom affordance (2026-10-22, elecvoid243). The row keeps the
+   composer's column so the button lines up with the message edge, but it is
+   zero height: it only exists to anchor the floating button just above the
+   composer, which is why no measured composer height is involved. */
+.jump-to-bottom-row {
+  position: relative;
+  height: 0;
+  width: var(--chat-content-width);
+  max-width: var(--chat-content-max-width);
+  margin: 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.jump-to-bottom {
+  position: absolute;
+  right: 0;
+  bottom: 14px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 999px;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.jump-to-bottom:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.jump-to-bottom:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+/* Touch: keep the tap target near the platform minimum. */
+@media (pointer: coarse) {
+  .jump-to-bottom {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* Live-output pip: the reader is away from the tail while a reply is written. */
+.jump-to-bottom-live {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface));
+  animation: jump-to-bottom-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes jump-to-bottom-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.jump-to-bottom-enter-active,
+.jump-to-bottom-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.jump-to-bottom-enter-from,
+.jump-to-bottom-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jump-to-bottom-enter-active,
+  .jump-to-bottom-leave-active {
+    transition: none;
+  }
+
+  .jump-to-bottom-live {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .center-state,

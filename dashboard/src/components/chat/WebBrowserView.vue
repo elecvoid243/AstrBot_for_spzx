@@ -1,7 +1,7 @@
 <!-- Author: elecvoid243 @ 2026-10-22
      Web preview tab of the project workbench. Hosts one iframe pointed at
-     a user-supplied address (usually a local dev server), plus width
-     presets, a reload/new-tab pair and per-project bookmarks.
+     a user-supplied address (usually a local dev server), plus a
+     reload/new-tab pair and per-project bookmarks.
 
      Deliberately not a browser: cross-origin iframes hide their history
      and current URL, so there is no back/forward and the address bar only
@@ -44,7 +44,7 @@
       </button>
     </div>
 
-    <div class="web-browser-options">
+    <div v-if="committedUrl || bookmarks.length" class="web-browser-options">
       <button
         type="button"
         class="web-browser-star"
@@ -87,24 +87,6 @@
           <v-icon size="10">mdi-close</v-icon>
         </button>
       </span>
-
-      <div
-        class="web-browser-widths"
-        role="group"
-        :aria-label="tm(`${I18N}.widthLabel`)"
-      >
-        <button
-          v-for="preset in WIDTH_PRESETS"
-          :key="preset"
-          type="button"
-          class="web-browser-width-btn"
-          :class="{ 'is-active': width === preset }"
-          :aria-pressed="width === preset"
-          @click="width = preset"
-        >
-          {{ widthLabel(preset) }}
-        </button>
-      </div>
     </div>
 
     <p v-if="errorMessage" class="web-browser-error" role="alert">
@@ -129,16 +111,14 @@
     </div>
 
     <div v-else class="web-browser-stage">
-      <div class="web-browser-frame-wrap" :style="frameStyle">
-        <iframe
-          :key="reloadNonce"
-          class="web-browser-frame"
-          :src="committedUrl"
-          :sandbox="sandbox"
-          referrerpolicy="no-referrer"
-          :title="tm(`${I18N}.frameTitle`)"
-        />
-      </div>
+      <iframe
+        :key="reloadNonce"
+        class="web-browser-frame"
+        :src="committedUrl"
+        :sandbox="sandbox"
+        referrerpolicy="no-referrer"
+        :title="tm(`${I18N}.frameTitle`)"
+      />
     </div>
 
     <p v-if="committedUrl" class="web-browser-note">
@@ -153,13 +133,11 @@ import { useModuleI18n } from "@/i18n/composables";
 import {
   MAX_BOOKMARKS,
   QUICK_URLS,
-  WIDTH_PRESETS,
   bookmarkLabel,
   buildIframeSandbox,
   loadBrowserState,
   normalizeBrowserUrl,
   saveBrowserState,
-  type WidthPreset,
 } from "./webBrowser";
 
 const props = defineProps<{ projectRoot: string | null }>();
@@ -169,7 +147,6 @@ const I18N = "spcodeProjectLoad.webBrowser";
 
 const draft = ref("");
 const committedUrl = ref("");
-const width = ref<WidthPreset>("fill");
 const bookmarks = ref<string[]>([]);
 const errorMessage = ref("");
 const reloadNonce = ref(0);
@@ -184,21 +161,13 @@ const isBookmarked = computed(
   () =>
     committedUrl.value !== "" && bookmarks.value.includes(committedUrl.value),
 );
-const frameStyle = computed(() => ({
-  width: width.value === "fill" ? "100%" : `${width.value}px`,
-}));
 const quickLinks = computed(() =>
   QUICK_URLS.map((url) => ({ url, label: bookmarkLabel(url) })),
 );
 
-function widthLabel(preset: WidthPreset): string {
-  return preset === "fill" ? tm(`${I18N}.widthFill`) : String(preset);
-}
-
 function persist(): void {
   const state = {
     url: committedUrl.value,
-    width: width.value,
     bookmarks: bookmarks.value,
   };
   const serialized = JSON.stringify(state);
@@ -211,7 +180,6 @@ function hydrate(): void {
   const state = loadBrowserState(props.projectRoot);
   committedUrl.value = state.url;
   draft.value = state.url;
-  width.value = state.width;
   bookmarks.value = state.bookmarks;
   errorMessage.value = "";
   reloadNonce.value = 0;
@@ -280,7 +248,7 @@ function removeBookmark(url: string): void {
 }
 
 watch(() => props.projectRoot, hydrate);
-watch([committedUrl, width, bookmarks], persist, { deep: true });
+watch([committedUrl, bookmarks], persist, { deep: true });
 onMounted(hydrate);
 </script>
 
@@ -421,36 +389,6 @@ onMounted(hydrate);
   color: rgb(var(--v-theme-error));
 }
 
-.web-browser-widths {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
-  padding: 2px;
-  border-radius: 7px;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-}
-.web-browser-width-btn {
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  padding: 2px 6px;
-  font-family: inherit;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--chat-muted, rgba(var(--v-theme-on-surface), 0.62));
-  cursor: pointer;
-  white-space: nowrap;
-}
-.web-browser-width-btn:hover {
-  color: rgb(var(--v-theme-on-surface));
-}
-.web-browser-width-btn.is-active {
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-primary));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-}
-
 .web-browser-error {
   margin: 0;
   font-size: 11.5px;
@@ -510,16 +448,10 @@ onMounted(hydrate);
 .web-browser-stage {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   border-radius: 8px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   background: rgb(var(--v-theme-surface));
-}
-.web-browser-frame-wrap {
-  /* auto margins (not flex centering) so an over-wide preset keeps its
-     left edge reachable when the stage scrolls horizontally */
-  height: 100%;
-  margin: 0 auto;
 }
 .web-browser-frame {
   display: block;

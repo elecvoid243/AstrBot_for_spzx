@@ -115,14 +115,12 @@ describe("per-project persistence", () => {
       "F:/repo",
       {
         url: "localhost:3000",
-        width: 768,
         bookmarks: ["https://example.com/"],
       },
       storage,
     );
     expect(loadBrowserState("F:/repo", storage)).toEqual({
       url: "http://localhost:3000/",
-      width: 768,
       bookmarks: ["https://example.com/"],
     });
   });
@@ -131,7 +129,7 @@ describe("per-project persistence", () => {
     const storage = memoryStorage();
     saveBrowserState(
       "F:/repo-a",
-      { url: "http://localhost:3000/", width: "fill", bookmarks: [] },
+      { url: "http://localhost:3000/", bookmarks: [] },
       storage,
     );
     expect(loadBrowserState("F:/repo-b", storage).url).toBe("");
@@ -145,12 +143,11 @@ describe("per-project persistence", () => {
     storage.setItem(key, JSON.stringify({ url: "javascript:alert(1)" }));
     expect(loadBrowserState("F:/repo", storage)).toEqual({
       url: "",
-      width: "fill",
       bookmarks: [],
     });
   });
 
-  it("drops invalid widths and caps/dedupes bookmarks", () => {
+  it("caps and dedupes bookmarks", () => {
     const storage = memoryStorage();
     const key = webBrowserStorageKey("F:/repo");
     const bookmarks = Array.from(
@@ -158,9 +155,8 @@ describe("per-project persistence", () => {
       (_, i) => `http://localhost:${3000 + i}/`,
     );
     bookmarks.push(bookmarks[0]);
-    storage.setItem(key, JSON.stringify({ url: "", width: 9999, bookmarks }));
+    storage.setItem(key, JSON.stringify({ url: "", bookmarks }));
     const state = loadBrowserState("F:/repo", storage);
-    expect(state.width).toBe("fill");
     expect(state.bookmarks).toHaveLength(MAX_BOOKMARKS);
     expect(new Set(state.bookmarks).size).toBe(MAX_BOOKMARKS);
   });
@@ -169,7 +165,7 @@ describe("per-project persistence", () => {
     const storage = memoryStorage();
     saveBrowserState(
       null,
-      { url: "http://localhost:3000/", width: "fill", bookmarks: [] },
+      { url: "http://localhost:3000/", bookmarks: [] },
       storage,
     );
     expect(storage.map.size).toBe(0);

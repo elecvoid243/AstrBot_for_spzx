@@ -1932,8 +1932,6 @@
       "bookmarkRemoveNamed": "取消收藏 {url}",
       "bookmarkOpen": "打开收藏地址 {url}",
       "bookmarkLimit": "收藏已达上限（{max} 条）",
-      "widthLabel": "预览宽度",
-      "widthFill": "铺满",
       "emptyTitle": "还没有预览地址",
       "emptyHint": "输入本地开发服务器地址后回车加载。部分站点禁止被嵌入，可改用新标签页打开。",
       "embedHint": "若一直空白，多半是站点禁止被嵌入（X-Frame-Options / CSP），请改用新标签页打开。",

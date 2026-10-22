@@ -1899,8 +1899,6 @@
       "bookmarkRemoveNamed": "Remove bookmark {url}",
       "bookmarkOpen": "Open bookmark {url}",
       "bookmarkLimit": "Bookmark limit reached ({max})",
-      "widthLabel": "Preview width",
-      "widthFill": "Fill",
       "emptyTitle": "No preview URL yet",
       "emptyHint": "Enter a local dev server address and press Enter. Some sites block embedding — open them in a new tab instead.",
       "embedHint": "A blank page usually means the site blocks embedding (X-Frame-Options / CSP). Open it in a new tab.",

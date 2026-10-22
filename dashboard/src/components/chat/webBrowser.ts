@@ -5,10 +5,6 @@
 
 import { fnv1aHex } from "@/composables/useRecentFiles";
 
-export type WidthPreset = "fill" | 375 | 768 | 1280;
-
-export const WIDTH_PRESETS: readonly WidthPreset[] = ["fill", 375, 768, 1280];
-
 export const MAX_BOOKMARKS = 12;
 
 /** Quick-start addresses for the empty state: common local dev ports. */
@@ -130,7 +126,6 @@ export function bookmarkLabel(url: string): string {
 
 export interface BrowserState {
   url: string;
-  width: WidthPreset;
   bookmarks: string[];
 }
 
@@ -138,7 +133,6 @@ export type BrowserStorage = Pick<Storage, "getItem" | "setItem">;
 
 export const EMPTY_BROWSER_STATE: BrowserState = {
   url: "",
-  width: "fill",
   bookmarks: [],
 };
 
@@ -174,12 +168,6 @@ function sanitizeBookmarks(value: unknown): string[] {
   return out;
 }
 
-function sanitizeWidth(value: unknown): WidthPreset {
-  return WIDTH_PRESETS.includes(value as WidthPreset)
-    ? (value as WidthPreset)
-    : "fill";
-}
-
 /**
  * Read the stored state for `projectRoot`. Corrupt JSON, missing keys and
  * disabled storage all fall back to an empty state instead of throwing.
@@ -212,7 +200,6 @@ export function loadBrowserState(
   const normalized = rawUrl ? normalizeBrowserUrl(rawUrl) : null;
   return {
     url: normalized && normalized.ok ? normalized.url : "",
-    width: sanitizeWidth(record.width),
     bookmarks: sanitizeBookmarks(record.bookmarks),
   };
 }
@@ -231,7 +218,6 @@ export function saveBrowserState(
       : null;
   const payload: BrowserState = {
     url: normalized && normalized.ok ? normalized.url : "",
-    width: sanitizeWidth(state.width),
     bookmarks: sanitizeBookmarks(state.bookmarks),
   };
   try {

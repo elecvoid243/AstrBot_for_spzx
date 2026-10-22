@@ -1,6 +1,6 @@
 // Author: elecvoid243 @ 2026-10-22
 // Behavioural coverage for the Web preview tab: address submission,
-// bookmarks, width presets and project-scoped restore.
+// bookmarks and project-scoped restore.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -92,23 +92,6 @@ describe("WebBrowserView", () => {
     await flushPromises();
     expect(loadBrowserState(ROOT).bookmarks).toEqual([]);
     expect(wrapper.findAll(".web-browser-bookmark")).toHaveLength(0);
-  });
-
-  it("applies and persists a width preset", async () => {
-    const wrapper = mountView();
-    await submitAddress(wrapper, "localhost:3000");
-
-    const preset = wrapper
-      .findAll(".web-browser-width-btn")
-      .find((button) => button.text() === "768");
-    expect(preset).toBeTruthy();
-    await preset!.trigger("click");
-    await flushPromises();
-
-    expect(
-      wrapper.get(".web-browser-frame-wrap").attributes("style"),
-    ).toContain("width: 768px");
-    expect(loadBrowserState(ROOT).width).toBe(768);
   });
 
   it("keeps allow-same-origin for cross-origin targets and drops it for dashboard routes", async () => {

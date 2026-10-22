@@ -5361,10 +5361,16 @@ watch(
 // 与 RefsSidebar 互斥: 展开 todo 菜单 / 打开 Goal 抽屉时收起 refs;
 // 反向亦然。todo 菜单与 Goal 抽屉互不相干 (浮层 vs 侧栏), 不互斥。
 watch(todoMenuOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(goalSidebarOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(refsSidebarOpen, (open) => {
   if (open) {

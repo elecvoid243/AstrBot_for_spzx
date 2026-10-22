@@ -10,6 +10,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import {
+  computed,
   defineComponent,
   h,
   nextTick,
@@ -37,6 +38,7 @@ const wanted = new Set([
   "openRefsSidebar",
   "openReasoningPanel",
   "toggleGitDiffSidebar",
+  "closeTodoMenu",
 ]);
 const variables = new Set([
   "threadPanelOpen",
@@ -44,6 +46,9 @@ const variables = new Set([
   "sideChatThreadId",
   "creatingSideChat",
   "sideChatGeneration",
+  "goalSidebarOpen",
+  "todoMenuOpen",
+  "todoMenuPlacement",
 ]);
 const declarations = ast.statements.filter((node) => {
   if (ts.isFunctionDeclaration(node)) return wanted.has(node.name!.text);
@@ -56,12 +61,17 @@ const declarations = ast.statements.filter((node) => {
     return false;
   const call = node.expression;
   return (
-    node.getText(ast).includes("closeThreadPanel()") &&
-    (call.expression.getText(ast) === "onBeforeUnmount" ||
-      (call.expression.getText(ast) === "watch" &&
-        ["currSessionId", "() => chatHeader.workspaceFilesOpen"].includes(
+    (call.expression.getText(ast) === "onBeforeUnmount" &&
+      node.getText(ast).includes("closeThreadPanel()")) ||
+    (call.expression.getText(ast) === "watch" &&
+      ((["currSessionId", "() => chatHeader.workspaceFilesOpen"].includes(
+        call.arguments[0].getText(ast),
+      ) &&
+        node.getText(ast).includes("closeThreadPanel()")) ||
+        (["goalSidebarOpen", "todoMenuOpen"].includes(
           call.arguments[0].getText(ast),
-        )))
+        ) &&
+          node.getText(ast).includes("refsSidebarOpen.value"))))
   );
 });
 const code = declarations
@@ -103,10 +113,13 @@ function setup() {
     currSessionId: ref("session-a"),
     chatHeader: reactive({
       workspaceFilesOpen: false,
+      goalSidebarOpen: false,
       SET_WORKSPACE_FILES_OPEN(open: boolean) {
         this.workspaceFilesOpen = open;
       },
-      SET_GOAL_SIDEBAR_OPEN: vi.fn(),
+      SET_GOAL_SIDEBAR_OPEN(open: boolean) {
+        this.goalSidebarOpen = open;
+      },
       CLEAR_CONTEXT: vi.fn(),
     }),
     reasoningPanelOpen: ref(false),
@@ -115,7 +128,6 @@ function setup() {
     selectedRefs: ref(null),
     gitDiffSidebarOpen: ref(false),
     threadSelection: { visible: false },
-    closeTodoMenu: vi.fn(),
     toast: { error: vi.fn() },
     tm: (key: string) => key,
     isAxiosError: (error: unknown) =>
@@ -126,6 +138,7 @@ function setup() {
     ...state,
     chatApi,
     ref,
+    computed,
     watch,
     onBeforeUnmount,
     viewportSessionToken: 0,
@@ -147,6 +160,7 @@ function setup() {
     ...Object.keys(environment),
     `${code}
     return { threadPanelOpen, activeThread, sideChatThreadId, creatingSideChat,
+      goalSidebarOpen, todoMenuOpen,
       ${[...wanted].join(", ")} };`,
   );
   let api!: {
@@ -154,6 +168,8 @@ function setup() {
     activeThread: Ref<ThreadRef | null>;
     sideChatThreadId: Ref<string | null>;
     creatingSideChat: Ref<boolean>;
+    goalSidebarOpen: Ref<boolean>;
+    todoMenuOpen: Ref<boolean>;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
@@ -189,6 +205,9 @@ afterEach(() => {
 describe("Chat side-chat lifecycle", () => {
   it("opens a same-session side chat with isolated context", async () => {
     const ctx = setup();
+    ctx.goalSidebarOpen.value = true;
+    ctx.todoMenuOpen.value = true;
+    await nextTick();
     const pending = ctx.openSideChat();
     expect(ctx.creatingSideChat.value).toBe(true);
     expect(ctx.chatApi.createThread).toHaveBeenCalledWith({
@@ -205,6 +224,8 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.sideChatThreadId.value).toBe("side-a");
     expect(ctx.threadPanelOpen.value).toBe(true);
     expect(ctx.creatingSideChat.value).toBe(false);
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+    expect(ctx.todoMenuOpen.value).toBe(false);
     expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
 
@@ -281,8 +302,8 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.toast.error).not.toHaveBeenCalled();
   });
 
-  it.each(["refs", "reasoning", "git", "workspace"])(
-    "preserves the newer %s sidebar",
+  it.each(["refs", "reasoning", "git", "workspace", "goal", "todo"])(
+    "preserves the newer %s selection",
     async (sidebar) => {
       const ctx = setup();
       const pending = ctx.openSideChat();
@@ -290,6 +311,8 @@ describe("Chat side-chat lifecycle", () => {
       if (sidebar === "reasoning") ctx.openReasoningPanel({ blockIndex: 1 });
       if (sidebar === "git") ctx.toggleGitDiffSidebar();
       if (sidebar === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
+      if (sidebar === "goal") ctx.goalSidebarOpen.value = true;
+      if (sidebar === "todo") ctx.todoMenuOpen.value = true;
       await nextTick();
 
       ctx.requests[0].resolve({
@@ -311,6 +334,23 @@ describe("Chat side-chat lifecycle", () => {
       if (sidebar === "git") expect(ctx.gitDiffSidebarOpen.value).toBe(true);
       if (sidebar === "workspace")
         expect(ctx.chatHeader.workspaceFilesOpen).toBe(true);
+      if (sidebar === "goal") expect(ctx.goalSidebarOpen.value).toBe(true);
+      if (sidebar === "todo") expect(ctx.todoMenuOpen.value).toBe(true);
+    },
+  );
+
+  it.each(["goal", "todo"])(
+    "retains an existing branch when opening %s without a pending create",
+    async (panel) => {
+      const ctx = setup();
+      ctx.openThreadPanel({ thread_id: "retained-branch" });
+      if (panel === "goal") ctx.goalSidebarOpen.value = true;
+      else ctx.todoMenuOpen.value = true;
+      await nextTick();
+
+      expect(ctx.threadPanelOpen.value).toBe(true);
+      expect(ctx.activeThread.value?.thread_id).toBe("retained-branch");
+      expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
     },
   );
 

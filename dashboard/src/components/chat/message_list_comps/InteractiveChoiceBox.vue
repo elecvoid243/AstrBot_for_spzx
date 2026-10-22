@@ -48,7 +48,7 @@
            visual) and POSTs DELETE to the backend so the LLM tool's
            awaiting Future unblocks via asyncio.CancelledError. -->
       <button
-        v-if="state === 'pending'"
+        v-if="state === 'pending' && umo"
         type="button"
         class="choice-cancel-button"
         :aria-label="tm('interactiveChoice.cancelAria')"
@@ -114,7 +114,7 @@
     </div>
 
     <!-- Pending: prose 段(帮用户决策)+ 选项按钮 + 自由输入 -->
-    <template v-if="state === 'pending'">
+    <template v-if="state === 'pending' && umo">
       <InteractiveChoiceProse
         v-if="part.extra_content"
         :content="part.extra_content"
@@ -200,11 +200,13 @@
       </div>
     </template>
 
-    <!-- 非 pending:可折叠回看"prose + 原始选项",避免历史 prose 与选项信息丢失。
-         默认折叠;展开后依次渲染 prose(若存在)与全部 options,并高亮当时选中的那一项。
-         折叠触发条件:state 非 pending 且(prose 存在 或 options 非空)。 -->
+    <!-- Terminal or unscoped history keeps prose and original options reviewable
+         without exposing live actions. Persisted answers retain their selection. -->
     <div
-      v-if="state !== 'pending' && (part.options.length || part.extra_content)"
+      v-if="
+        (state !== 'pending' || !umo) &&
+        (part.options.length || part.extra_content)
+      "
       class="choice-options-collapse"
     >
       <button
@@ -300,10 +302,8 @@ import InteractiveChoiceProse from "@/components/chat/message_list_comps/Interac
 const props = defineProps<{
   part: InteractiveChoicePart;
   /**
-   * UMO this choice belongs to. Required (Bug Y1 fix) — without it
-   * the store cannot scope `markSubmitted` / `getSubmissionState` to
-   * the right session, which would leak submission intents across
-   * sessions.
+   * Live conversation UMO. An empty value renders a read-only transcript:
+   * history stamps still apply, but session state and actions are unavailable.
    */
   umo: string;
   isDark?: boolean;
@@ -344,10 +344,12 @@ const interactiveChoiceStore = useInteractiveChoiceStore();
 // History is the authoritative source for "已选择"; localStorage is a cache.
 const submissionState = computed(
   () =>
-    interactiveChoiceStore.getSubmissionState(
-      props.umo,
-      props.part.request_id,
-    ) ?? submissionFromPart(props.part),
+    (props.umo
+      ? interactiveChoiceStore.getSubmissionState(
+          props.umo,
+          props.part.request_id,
+        )
+      : undefined) ?? submissionFromPart(props.part),
 );
 
 // v1.2: Reactively reads the server-cancelled flag for this
@@ -358,7 +360,8 @@ const submissionState = computed(
 // whether the resolved event arrived cleanly.
 const cancelledState = computed(
   () =>
-    interactiveChoiceStore.isCancelled(props.umo, props.part.request_id) ||
+    (props.umo &&
+      interactiveChoiceStore.isCancelled(props.umo, props.part.request_id)) ||
     // 2026-09-29: same history-first fallback as `submissionState` — the
     // backend stamps `resolved` onto the persisted part when the request is
     // cancelled or times out.
@@ -471,6 +474,7 @@ const collapseItemCount = computed<number>(() => {
 });
 
 function onOptionClick(opt: InteractiveChoiceOption) {
+  if (!props.umo) return;
   // eslint-disable-next-line no-console
   console.log("[InteractiveChoiceBox] onOptionClick", {
     requestId: props.part.request_id,
@@ -494,6 +498,7 @@ function onOptionClick(opt: InteractiveChoiceOption) {
 }
 
 function onInputSubmit() {
+  if (!props.umo) return;
   const text = freeText.value.trim();
   if (!text || state.value !== "pending") return;
   // 自由文本提交:choice_id 用哨兵值 "__free_text__" 标识,真实文本放在 free_text
@@ -518,6 +523,7 @@ function onInputSubmit() {
 // submit / onInputSubmit 的对偶(symmetric)与「网络细节集中在
 // store」的分层原则。
 function onCancelClick() {
+  if (!props.umo) return;
   if (state.value !== "pending") return;
   emit("cancel", props.part.request_id);
 }

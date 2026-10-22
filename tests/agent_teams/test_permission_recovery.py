@@ -55,10 +55,11 @@ def checkpoint_process(command, folder, action, capability):
                 assert time.monotonic() < deadline, "Worker identity was not published"
                 time.sleep(0.02)
             identity = json.loads(identity_path.read_text(encoding="utf-8"))
-            runtime = psutil.Process(identity["pid"])
-            assert runtime.create_time() == identity["creation_time"]
-            assert runtime.pid == launcher.pid or runtime.ppid() == launcher.pid
-            assert str(folder) in runtime.cmdline()
+            candidate = psutil.Process(identity["pid"])
+            assert candidate.create_time() == identity["creation_time"]
+            assert candidate.pid == launcher.pid or candidate.ppid() == launcher.pid
+            assert str(folder) in candidate.cmdline()
+            runtime = candidate
             if runtime.pid != launcher.pid and runtime not in children:
                 children.append(runtime)
             record["worker"] = identity

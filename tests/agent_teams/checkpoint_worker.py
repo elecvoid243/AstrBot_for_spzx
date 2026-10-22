@@ -5,12 +5,14 @@ import base64
 import contextlib
 import copy
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import psutil
 from mcp.types import CallToolResult
 from pytest import MonkeyPatch
 from sqlalchemy import event as sql_event
@@ -89,6 +91,12 @@ async def run_worker(
             "unknown": "started",
             "legacy": "started",
         }[guarded_case]
+        identity = {
+            "pid": os.getpid(), "parent_pid": os.getppid(),
+            "creation_time": psutil.Process().create_time(), "action": action,
+        }
+        (folder / f"worker-{action}.tmp").write_text(json.dumps(identity), encoding="utf-8")
+        (folder / f"worker-{action}.tmp").replace(folder / f"worker-{action}.json")
     db = SQLiteDatabase(str(folder / "pipeline.db"))
     await db.initialize()
     live_partial = "partial" in scenario and scenario.startswith(("idempotent_", "safe_", "reconcile_partial_not_executed"))

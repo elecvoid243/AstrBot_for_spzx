@@ -7494,7 +7494,9 @@ function toggleTheme() {
 /* Jump-to-bottom affordance (2026-10-22, elecvoid243). The row keeps the
    composer's column so the button lines up with the message edge, but it is
    zero height: it only exists to anchor the floating button just above the
-   composer, which is why no measured composer height is involved. */
+   composer, which is why no measured composer height is involved. The button
+   is centred rather than right-aligned: the bottom-right corner of the panel
+   already carries the context-injection marker, and the two overlapped. */
 .jump-to-bottom-row {
   position: relative;
   height: 0;
@@ -7502,15 +7504,16 @@ function toggleTheme() {
   max-width: var(--chat-content-max-width);
   margin: 0 auto;
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   pointer-events: none;
   z-index: 6;
 }
 
 .jump-to-bottom {
   position: absolute;
-  right: 0;
+  left: 50%;
   bottom: 14px;
+  transform: translateX(-50%);
   display: grid;
   place-items: center;
   width: 34px;

@@ -75,6 +75,20 @@ async def run_worker(
         limits: Optional frozen root limits for accounting acceptance scenarios.
     """
     monkeypatch = MonkeyPatch()
+    guarded_case = scenario.removeprefix("guarded_") if scenario.startswith("guarded_") else None
+    if guarded_case:
+        scenario = {
+            "query": "reconcile_succeeded",
+            "query_denied": "reconcile_succeeded",
+            "query_changed": "reconcile_succeeded",
+            "query_missing": "reconcile_succeeded",
+            "idempotent": "idempotent_retry",
+            "idempotent_denied": "idempotent_retry",
+            "safe": "safe_retry",
+            "safe_denied": "safe_retry",
+            "unknown": "started",
+            "legacy": "started",
+        }[guarded_case]
     db = SQLiteDatabase(str(folder / "pipeline.db"))
     await db.initialize()
     live_partial = "partial" in scenario and scenario.startswith(("idempotent_", "safe_", "reconcile_partial_not_executed"))
@@ -210,7 +224,7 @@ async def run_worker(
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
         handler=external_stream if scenario.startswith(("reconcile_partial", "idempotent_partial", "safe_partial")) or scenario in {"partial_generator", "manual_retry_partial", "generator_error", "completed_generator", "overflow_generator", "overflow_legacy_unaligned"} else external_tool,
     )]
-    if scenario.startswith("reconcile_"):
+    if scenario.startswith("reconcile_") or guarded_case == "legacy" and action != "start":
         from astrbot.core.agent.tool import ToolRecovery, ToolRecoveryResult
 
         async def query_tool(context, identity, arguments):
@@ -233,6 +247,12 @@ async def run_worker(
     if scenario.startswith(("idempotent_", "safe_")) or scenario == "manual_retry_key":
         from astrbot.core.agent.tool import ToolRecovery
         providers.llm_tools.func_list[0].recovery = ToolRecovery(idempotency_key_arg="idempotency_key" if scenario.startswith("idempotent_") or scenario == "manual_retry_key" else None, safe_retry=scenario.startswith("safe_"))
+    if guarded_case and providers.llm_tools.func_list[0].recovery is not None:
+        providers.llm_tools.func_list[0].recovery.version = "permission-v1"
+        if action != "start" and guarded_case == "query_changed":
+            providers.llm_tools.func_list[0].recovery.version = "permission-v2"
+        if action != "start" and guarded_case == "query_missing":
+            providers.llm_tools.func_list[0].recovery = None
     if scenario.startswith("overflow"):
         async def read_saved_text(event, path):
             """Read the complete text through the enabled file tool boundary.
@@ -371,7 +391,12 @@ async def run_worker(
         if action != "start" and scenario == "control_request":
             run_id = event.get_extra("agent_team_execution").run_id
             await service.control_run("alice", run_id, {"request_id": "pause-restored-request", "action": "pause"})
-        request.func_tool.add_tool(providers.llm_tools.func_list[0])
+        if not guarded_case:
+            request.func_tool.add_tool(providers.llm_tools.func_list[0])
+        elif action != "start" and guarded_case.endswith("_denied"):
+            # Revoke after resource preflight so the invocation must recheck.
+            assert not event.is_admin()
+            await preferences.global_put("tool_permissions", {"_default": {"external_evidence": "admin"}})
         if scenario.startswith("overflow"):
             request.func_tool.add_tool(providers.llm_tools.func_list[1])
         if action == "start":
@@ -392,6 +417,8 @@ async def run_worker(
         Args:
             data: Member delivery and execution token.
         """
+        if guarded_case:
+            data[2]["_api_key_allow_admin_role"] = False
         queue_manager.get_or_create_back_queue(data[2]["message_id"], data[1])
         await event_bus.event_queue.put(adapter.create_event(await adapter.convert_message(data)))
 

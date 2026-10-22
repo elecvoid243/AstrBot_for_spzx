@@ -2436,6 +2436,16 @@ function formatDuration(seconds: number) {
   flex: 0 0 auto;
 }
 
+/* Read at the message's own size: the reasoning header ("思考了 N 次") inherits
+   the bubble's font-size, while ThinkingIndicator carries a slightly smaller
+   scale for the reasoning sidebar. Inheriting size and line-height here keeps
+   "思考中..." identical to the streaming status line, and keeps the 26 px line
+   box the rail offset above is aligned to. */
+.loading-message :deep(.thinking-indicator) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
 @media (max-width: 560px) {
   .message-rail {
     display: none;

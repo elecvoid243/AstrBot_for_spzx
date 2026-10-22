@@ -363,6 +363,10 @@
   "thread": {
     "title": "Thread",
     "askInThread": "Ask in thread",
+    "sideTitle": "Side chat",
+    "sideHint": "Temporary chat · destroyed on close",
+    "newSideChat": "New side chat",
+    "sidePlaceholder": "Ask something on the side…",
     "count": "{count} threads",
     "createFailed": "Failed to create thread",
     "delete": "Delete thread",

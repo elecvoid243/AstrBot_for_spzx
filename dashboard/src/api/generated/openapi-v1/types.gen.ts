@@ -290,8 +290,9 @@ export type ChatSubagentFollowUpRequest = {
 
 export type ChatThreadCreateRequest = {
     session_id: string;
-    parent_message_id: (string | number);
-    selected_text: string;
+    parent_message_id?: (string | number);
+    selected_text?: string;
+    side_chat?: boolean;
 };
 
 export type ChatThreadMessageRequest = {

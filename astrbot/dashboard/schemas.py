@@ -226,8 +226,11 @@ class ChatMessageRegenerateRequest(OpenModel):
 
 class ChatThreadCreateRequest(OpenModel):
     session_id: str
-    parent_message_id: str | int
-    selected_text: str
+    parent_message_id: str | int | None = None
+    selected_text: str | None = None
+    # 2026-10-22 side-chat: start a thread with no parent message and an
+    # empty conversation, used by the temporary side chat panel.
+    side_chat: bool = False
 
 
 class ChatThreadMessageRequest(OpenModel):

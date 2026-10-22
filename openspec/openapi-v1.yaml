@@ -8546,7 +8546,7 @@ components:
 
     ChatThreadCreateRequest:
       type: object
-      required: [session_id, parent_message_id, selected_text]
+      required: [session_id]
       properties:
         session_id:
           type: string
@@ -8556,6 +8556,8 @@ components:
             - type: integer
         selected_text:
           type: string
+        side_chat:
+          type: boolean
       additionalProperties: false
 
     ChatThreadMessageRequest:

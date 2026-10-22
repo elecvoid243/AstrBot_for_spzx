@@ -3269,6 +3269,9 @@ class ChatService:
             parent_session_id=session_id,
             creator=username,
         )
+        # 2026-10-22 side-chat: temporary threads (parent_message_id 0) are
+        # not attached to any message; keep them out of branch menus.
+        threads = [thread for thread in threads if thread.parent_message_id > 0]
 
         # Author: elecvoid243
         # Date: 2026-07-05
@@ -3801,10 +3804,39 @@ class ChatService:
 
     async def create_thread(self, username: str, data: dict) -> dict:
         session_id = data.get("session_id")
-        parent_message_id = data.get("parent_message_id")
-        selected_text = str(data.get("selected_text") or "").strip()
+        side_chat = bool(data.get("side_chat"))
         if not session_id:
             raise ChatServiceError("Missing key: session_id")
+
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        # 2026-10-22 side-chat: a temporary thread with zero inherited
+        # context. The table columns are NOT NULL, so 0 / "" are sentinels
+        # rather than a schema change; the conversation is seeded empty.
+        if side_chat:
+            thread = await self.db.create_webchat_thread(
+                creator=username,
+                parent_session_id=session_id,
+                parent_message_id=0,
+                base_checkpoint_id="",
+                selected_text="",
+            )
+            await self.conv_mgr.new_conversation(
+                unified_msg_origin=build_thread_unified_msg_origin(
+                    username,
+                    thread.thread_id,
+                ),
+                platform_id="webchat",
+                content=[],
+            )
+            return serialize_thread(thread)
+
+        parent_message_id = data.get("parent_message_id")
+        selected_text = str(data.get("selected_text") or "").strip()
         if parent_message_id is None:
             raise ChatServiceError("Missing key: parent_message_id")
         if not selected_text:
@@ -3814,12 +3846,6 @@ class ChatService:
             parent_message_id = int(parent_message_id)
         except (TypeError, ValueError) as exc:
             raise ChatServiceError("Invalid key: parent_message_id") from exc
-
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
 
         parent_record = await self.db.get_platform_message_history_by_id(
             parent_message_id

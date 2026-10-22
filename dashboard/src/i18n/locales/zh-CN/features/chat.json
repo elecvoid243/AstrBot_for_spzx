@@ -298,7 +298,9 @@
       "moreOutput": "还有更多输出",
       "sessionClosed": "会话已关闭",
       "cleanup": "清理记录",
-      "cleanupConfirm": "确认清理？"
+      "cleanupConfirm": "确认清理？",
+      "cleanupAll": "清理已完成",
+      "cleanupAllConfirm": "确认清理 {count} 条？"
     },
     "stateLabels": {
       "running": "运行中",
@@ -308,7 +310,8 @@
       "terminated": "已终止"
     },
     "indicator": {
-      "title": "后台进程"
+      "title": "后台进程",
+      "summary": "后台进程 · {total} 个会话 · {running} 个运行中"
     },
     "window": {
       "view": "查看输出",
@@ -360,6 +363,10 @@
   "thread": {
     "title": "分支",
     "askInThread": "在新分支中询问",
+    "sideTitle": "侧边聊天",
+    "sideHint": "临时对话 · 关闭后销毁",
+    "newSideChat": "新建侧边聊天",
+    "sidePlaceholder": "顺便问一下…",
     "count": "{count} 个分支",
     "createFailed": "创建分支失败",
     "delete": "删除分支",
@@ -798,7 +805,6 @@
       "expandAria": "展开 {path} 的评论"
     },
     "fileBrowser": {
-      "title": "工作区浏览",
       "viewMode": {
         "files": "工作区",
         "diff": "Git 变更"
@@ -961,7 +967,7 @@
     "diffSidebar": {
       "chip": "工作区",
       "chipTooltip": "查看工作区文件、改动和历史",
-      "title": "项目改动",
+      "title": "项目工作台",
       "refreshTooltip": "刷新",
       "bwRefreshTooltip": "刷新分支和工作树",
       "loading": "加载中…",
@@ -1920,10 +1926,28 @@
       "activeSegment": "Plan 模式",
       "inactiveSegment": "Build 模式"
     },
+    "webBrowser": {
+      "urlPlaceholder": "输入地址，例如 localhost:3000",
+      "urlLabel": "预览地址",
+      "reload": "刷新",
+      "openExternal": "在新标签页打开",
+      "bookmarkAdd": "收藏当前地址",
+      "bookmarkRemove": "取消收藏",
+      "bookmarkRemoveNamed": "取消收藏 {url}",
+      "bookmarkOpen": "打开收藏地址 {url}",
+      "bookmarkLimit": "收藏已达上限（{max} 条）",
+      "emptyTitle": "还没有预览地址",
+      "emptyHint": "输入本地开发服务器地址后回车加载。部分站点禁止被嵌入，可改用新标签页打开。",
+      "embedHint": "若一直空白，多半是站点禁止被嵌入（X-Frame-Options / CSP），请改用新标签页打开。",
+      "errorInvalid": "地址格式不正确",
+      "errorScheme": "只支持 http / https 地址",
+      "frameTitle": "网页预览"
+    },
     "gitDiffSidebar": {
       "tabs": {
         "docs": "文档管理",
-        "terminal": "终端"
+        "terminal": "终端",
+        "browser": "Web 预览"
       },
       "terminal": {
         "connecting": "连接中…",

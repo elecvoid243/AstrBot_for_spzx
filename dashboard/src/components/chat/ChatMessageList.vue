@@ -239,7 +239,7 @@
                 >
                   <Check
                     class="agent-work-pill-icon"
-                    :size="14"
+                    :size="15"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -256,7 +256,7 @@
                   </span>
                   <ChevronDown
                     class="agent-work-pill-chevron"
-                    :size="13"
+                    :size="14"
                     :stroke-width="1.8"
                     aria-hidden="true"
                   />
@@ -2436,6 +2436,16 @@ function formatDuration(seconds: number) {
   flex: 0 0 auto;
 }
 
+/* Read at the message's own size: the reasoning header ("思考了 N 次") inherits
+   the bubble's font-size, while ThinkingIndicator carries a slightly smaller
+   scale for the reasoning sidebar. Inheriting size and line-height here keeps
+   "思考中..." identical to the streaming status line, and keeps the 26 px line
+   box the rail offset above is aligned to. */
+.loading-message :deep(.thinking-indicator) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
 @media (max-width: 560px) {
   .message-rail {
     display: none;
@@ -2448,46 +2458,57 @@ function formatDuration(seconds: number) {
   }
 }
 
-/* The completed-work capsule uses neutral ink and a bare checkmark.
-   Only its fill and chevron change on interaction, keeping its size stable. */
+/* The completed-work capsule is a status readout, not a chip. It borrows
+   the composer's quiet anatomy — a 32 px row of body-sized tabular text with
+   no border or fill at rest — so it reads as part of the reply instead of a
+   floating control. Only hover / expanded paint a wash. The negative left
+   inset cancels the horizontal padding so the checkmark starts on the same
+   column as the body text. `font: inherit` matters: a bare <button> would
+   otherwise fall back to the browser UI font and break the chat type. It also
+   carries the body size: the capsule must not read smaller than the reply it
+   summarises. */
 .agent-work-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   max-width: 100%;
-  height: 30px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
-  border-radius: 999px;
+  height: 32px;
+  margin: 0 0 10px -10px;
   padding: 0 10px;
-  margin: 2px 0 10px;
-  background: rgba(var(--v-theme-on-surface), 0.035);
-  color: rgba(var(--v-theme-on-surface), 0.68);
-  font-size: 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font: inherit;
   font-weight: 500;
-  line-height: 18px;
+  line-height: 1;
+  letter-spacing: 0.01em;
   cursor: pointer;
   user-select: none;
   text-align: left;
   transition:
     background 0.16s ease,
-    border-color 0.16s ease,
     color 0.16s ease;
 }
 
 .agent-work-pill:hover {
-  background: rgba(var(--v-theme-on-surface), 0.065);
-  border-color: rgba(var(--v-theme-on-surface), 0.22);
-  color: rgba(var(--v-theme-on-surface), 0.86);
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 .agent-work-pill:focus-visible {
-  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
-  outline-offset: 3px;
+  outline: 2px solid rgba(var(--v-theme-primary), 0.45);
+  outline-offset: 1px;
 }
 
 .agent-work-pill-icon {
   flex-shrink: 0;
-  color: rgba(var(--v-theme-on-surface), 0.58);
+  color: rgba(var(--v-theme-on-surface), 0.48);
+  transition: color 0.16s ease;
+}
+
+.agent-work-pill:hover .agent-work-pill-icon {
+  color: rgba(var(--v-theme-on-surface), 0.7);
 }
 
 .agent-work-pill-label {
@@ -2500,26 +2521,32 @@ function formatDuration(seconds: number) {
 
 .agent-work-pill-duration {
   font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.87);
+  color: rgba(var(--v-theme-on-surface), 0.78);
 }
 
 .agent-work-pill-chevron {
   flex-shrink: 0;
   margin-left: 1px;
-  opacity: 0.65;
+  /* Explicit colour, not opacity: the stroke follows currentColor, so a
+     second opacity layer would compound with the label's 0.55 alpha and
+     wash the chevron out. */
+  color: rgba(var(--v-theme-on-surface), 0.5);
   transition:
     transform 0.18s ease,
-    opacity 0.16s ease;
+    color 0.16s ease;
 }
 
 .agent-work-pill:hover .agent-work-pill-chevron {
-  opacity: 1;
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 .agent-work-pill--expanded {
-  background: rgba(var(--v-theme-on-surface), 0.065);
-  border-color: rgba(var(--v-theme-on-surface), 0.18);
-  color: rgba(var(--v-theme-on-surface), 0.74);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+
+.agent-work-pill--expanded:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
 }
 
 .agent-work-pill--expanded .agent-work-pill-chevron {

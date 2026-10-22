@@ -298,7 +298,9 @@
       "moreOutput": "More output available",
       "sessionClosed": "Session closed",
       "cleanup": "Clean up",
-      "cleanupConfirm": "Confirm cleanup?"
+      "cleanupConfirm": "Confirm cleanup?",
+      "cleanupAll": "Clear finished",
+      "cleanupAllConfirm": "Clear {count}?"
     },
     "stateLabels": {
       "running": "running",
@@ -308,7 +310,8 @@
       "terminated": "terminated"
     },
     "indicator": {
-      "title": "Background processes"
+      "title": "Background processes",
+      "summary": "Background processes · {total} sessions · {running} running"
     },
     "window": {
       "view": "View output",
@@ -360,6 +363,10 @@
   "thread": {
     "title": "Thread",
     "askInThread": "Ask in thread",
+    "sideTitle": "Side chat",
+    "sideHint": "Temporary chat · destroyed on close",
+    "newSideChat": "New side chat",
+    "sidePlaceholder": "Ask something on the side…",
     "count": "{count} threads",
     "createFailed": "Failed to create thread",
     "delete": "Delete thread",
@@ -798,7 +805,6 @@
       "expandAria": "Expand comments for {path}"
     },
     "fileBrowser": {
-      "title": "Workspace Browser",
       "viewMode": {
         "files": "Files",
         "diff": "Git Diff"
@@ -961,7 +967,7 @@
     "diffSidebar": {
       "chip": "Workspace",
       "chipTooltip": "Browse workspace files, changes, and history",
-      "title": "Project changes",
+      "title": "Project Workbench",
       "refreshTooltip": "Refresh",
       "bwRefreshTooltip": "Refresh branches & worktrees",
       "loading": "Loading…",
@@ -1887,10 +1893,28 @@
       "activeSegment": "Plan mode",
       "inactiveSegment": "Build mode"
     },
+    "webBrowser": {
+      "urlPlaceholder": "Enter a URL, e.g. localhost:3000",
+      "urlLabel": "Preview URL",
+      "reload": "Reload",
+      "openExternal": "Open in new tab",
+      "bookmarkAdd": "Bookmark current URL",
+      "bookmarkRemove": "Remove bookmark",
+      "bookmarkRemoveNamed": "Remove bookmark {url}",
+      "bookmarkOpen": "Open bookmark {url}",
+      "bookmarkLimit": "Bookmark limit reached ({max})",
+      "emptyTitle": "No preview URL yet",
+      "emptyHint": "Enter a local dev server address and press Enter. Some sites block embedding — open them in a new tab instead.",
+      "embedHint": "A blank page usually means the site blocks embedding (X-Frame-Options / CSP). Open it in a new tab.",
+      "errorInvalid": "Invalid URL",
+      "errorScheme": "Only http / https URLs are supported",
+      "frameTitle": "Web preview"
+    },
     "gitDiffSidebar": {
       "tabs": {
         "docs": "Documents",
-        "terminal": "Terminal"
+        "terminal": "Terminal",
+        "browser": "Web Preview"
       },
       "terminal": {
         "connecting": "Connecting…",

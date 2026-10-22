@@ -94,6 +94,10 @@
   "thread": {
     "title": "分岐",
     "askInThread": "新しい分岐で質問",
+    "sideTitle": "サイドチャット",
+    "sideHint": "一時的な会話 · 閉じると削除されます",
+    "newSideChat": "サイドチャットを新規作成",
+    "sidePlaceholder": "ついでに聞いてみる…",
     "count": "{count} 件の分岐",
     "createFailed": "分岐の作成に失敗しました",
     "delete": "分岐を削除",

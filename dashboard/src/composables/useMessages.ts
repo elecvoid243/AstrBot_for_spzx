@@ -78,6 +78,15 @@ type HistoryPaging = {
   totalMessages: number;
   loadingOlder: boolean;
   /**
+   * 2026-10-22 (elecvoid243): automatic top-of-list paging is armed for one
+   * page per entry into the top band. The scroll handler disarms it when it
+   * starts a page and re-arms it once the reader has moved clear of the band,
+   * so a held scrollbar thumb (which reports `scrollTop < 80` for every
+   * pointer-driven event) cannot chain page after page. `undefined` means
+   * armed: every window opens armed and an explicit retry never disarms.
+   */
+  autoLoadArmed?: boolean;
+  /**
    * Message of the last failed "load older" request. While set, the automatic
    * scroll-to-top loading stays paused (retrying a broken request on every
    * scroll event would spin); the explicit button clears it and retries.
@@ -726,6 +735,7 @@ export function useMessages(options: UseMessagesOptions) {
         oldestLoadedId: oldestRecord ? Number(oldestRecord.id) : null,
         totalMessages,
         loadingOlder: false,
+        autoLoadArmed: true,
         error: null,
       };
       historyOffsetBySession[sessionId] = Math.max(

@@ -729,6 +729,24 @@
         class="conversation-stack"
         :class="{ 'is-empty': isEmptyChat }"
       >
+        <!-- 2026-10-22 side-chat: temporary, zero-context conversation.
+             Sits in the top-right margin so it clears the 28px scroll-marker
+             rail pinned to the panel's right edge. -->
+        <button
+          v-if="currSessionId && !isReadonlySession"
+          type="button"
+          class="side-chat-fab"
+          :class="{ 'is-busy': creatingSideChat }"
+          :disabled="creatingSideChat || threadPanelOpen"
+          :title="tm('thread.newSideChat')"
+          :aria-label="tm('thread.newSideChat')"
+          @click="openSideChat"
+        >
+          <v-icon size="18">{{
+            creatingSideChat ? "mdi-loading" : "mdi-comment-plus-outline"
+          }}</v-icon>
+        </button>
+
         <section
           ref="messagesContainer"
           class="messages-panel"
@@ -936,6 +954,31 @@
           @jump="onDotClick"
         />
 
+        <!-- Return to the live tail (2026-10-22, elecvoid243): a long
+             conversation read from the middle should not need a scrollbar drag
+             to get back to output that may still be streaming in. The row is a
+             zero-height flex item at the composer's top edge, so the button
+             floats over the panel without taking scroll space or needing the
+             composer's measured height. -->
+        <transition name="jump-to-bottom">
+          <div v-if="showJumpToBottom" class="jump-to-bottom-row">
+            <button
+              type="button"
+              class="jump-to-bottom"
+              :title="tm('actions.scrollToBottom')"
+              :aria-label="tm('actions.scrollToBottom')"
+              @click="jumpToBottom"
+            >
+              <v-icon size="20">mdi-chevron-down</v-icon>
+              <span
+                v-if="streamingWhileAway"
+                class="jump-to-bottom-live"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </transition>
+
         <section ref="composerShell" class="composer-shell">
           <template v-if="!isReadonlySession">
             <ChatInput
@@ -1077,10 +1120,12 @@
       </v-card>
     </v-dialog>
     <ThreadPanel
-      v-model="threadPanelOpen"
+      :model-value="threadPanelOpen"
       :thread="activeThread"
       :is-dark="isDark"
       :deleting="deletingThread"
+      :side-chat="Boolean(sideChatThreadId)"
+      @update:model-value="onThreadPanelToggle"
       @delete="deleteThread"
     />
     <ReasoningSidebar
@@ -1461,6 +1506,14 @@ const savingMessageEdit = ref(false);
 const scrollMarkers = ref<ChatScrollMarker[]>([]);
 const stripHeight = ref(0);
 const stripRightOffset = ref(0); // Native scrollbar width; the marker rail sits alongside it.
+// Jump-to-bottom affordance (2026-10-22, elecvoid243). The per-session follow
+// map is deliberately non-reactive (see shouldStickToBottom), but the button is
+// template state: `followActive` mirrors the active session's intent and
+// `distanceToBottom` is how far the viewport sits above the tail. The button
+// shows only when both say "the reader is away and there is something below",
+// so simply clicking the panel background never raises it.
+const followActive = ref(true);
+const distanceToBottom = ref(0);
 // A marker jump that has to page older history is in flight — suppress
 // duplicate clicks and show the strip loading hint.
 const jumpInProgress = ref(false);
@@ -1579,12 +1632,20 @@ watch(
     endJumpLanding();
     endJumpScrollLock();
     jumpInProgress.value = false;
+    // New conversation: the outgoing distance and intent describe nothing here.
+    followActive.value = shouldStickToBottom(currSessionId.value);
+    distanceToBottom.value = 0;
   },
   { flush: "sync" },
 );
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
+// 2026-10-22 side-chat: the open temporary thread (if any). Kept separate
+// from the branch threads so closing the panel can tell whether it must
+// delete the backend record.
+const sideChatThreadId = ref<string | null>(null);
+const creatingSideChat = ref(false);
 const reasoningPanelOpen = ref(false);
 const activeReasoningTarget = ref<{
   message: ChatRecord;
@@ -2207,6 +2268,12 @@ watch(currSessionId, (newId, oldId) => {
   }
 });
 
+// 2026-10-22 side-chat: switching sessions ends the temporary chat; a
+// branch panel belongs to the outgoing session and closes with it too.
+watch(currSessionId, (newId, oldId) => {
+  if (oldId && newId !== oldId) closeThreadPanel();
+});
+
 // 2026-09-01 (elecvoid243): opening a session acknowledges its
 // run-finished marker — the output is right there in the message list.
 // 2026-09-14: it reads the session, so a manual unread mark (context
@@ -2283,6 +2350,23 @@ const historyOffset = computed(() =>
   currSessionId.value
     ? historyOffsetBySession[currSessionId.value] || 0
     : 0,
+);
+// Return-to-tail button: visible once the reader is scrolled away from the
+// newest message. A small threshold keeps the one-frame follow lag and
+// sub-pixel rounding from flickering it in and out while a reply streams in.
+const showJumpToBottom = computed(
+  () => !followActive.value && distanceToBottom.value > 24,
+);
+// A reply is being written while the reader is parked in history — the case
+// the button exists for, so the pip tells them output is still arriving below.
+const streamingWhileAway = computed(
+  () =>
+    showJumpToBottom.value &&
+    Boolean(
+      currSessionId.value &&
+        (isSessionRunning(currSessionId.value) ||
+          hasLiveSystemRecord(currSessionId.value)),
+    ),
 );
 const selectedProject = computed(
   () =>
@@ -2470,8 +2554,7 @@ watch(
   (open) => {
     if (!open) return;
     threadSelection.visible = false;
-    threadPanelOpen.value = false;
-    activeThread.value = null;
+    closeThreadPanel();
     reasoningPanelOpen.value = false;
     activeReasoningTarget.value = null;
     refsSidebarOpen.value = false;
@@ -2527,6 +2610,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   viewportSessionToken += 1;
   viewportInteractionToken += 1;
+  // A side chat is temporary: leaving the page deletes its backend thread.
+  closeThreadPanel();
   cancelAnimationFrame(bottomScrollFrame);
   window.clearTimeout(userScrollSettleTimer);
   endJumpLanding();
@@ -2626,8 +2711,10 @@ watch(
     }
     if (container) {
       updateScrollMarkers();
+      syncDistanceToBottom();
       markerResizeObserver = new ResizeObserver(() => {
         updateScrollMarkers();
+        syncDistanceToBottom();
         // A switch still installing its viewport owns the panel: the fresh
         // window has just re-rendered (rows dropped or re-keyed), and the
         // remembered anchor must go back on screen before the browser paints
@@ -2638,7 +2725,13 @@ watch(
           return;
         }
         if (shouldStickToBottom(currSessionId.value)) scrollToBottom();
-        else preserveReadingAnchor();
+        // 2026-10-22 (elecvoid243): while the reader drags the native
+        // scrollbar the browser owns the offset, so a content-driven anchor
+        // write here fights the pointer and the panel shakes. The anchor is
+        // kept as-is (not re-captured), so the first correction after the
+        // gesture closes still measures the displacement that happened during
+        // the drag; a prepend during it is repaired by loadOlderHistory().
+        else if (!scrollPointerActive) preserveReadingAnchor();
       });
       markerResizeObserver.observe(container);
       if (content) markerResizeObserver.observe(content);
@@ -2646,12 +2739,15 @@ watch(
         // Correct deferred rendering before paint, including changes whose
         // total height cancels out and therefore produces no resize event.
         historyLayoutObserver = new MutationObserver(() => {
+          // Async markdown, media decode and prepends resize the document
+          // without scrolling, so the tail distance is refreshed here too.
+          syncDistanceToBottom();
           if (pendingViewportSessionId) {
             installPendingViewport(pendingViewportSessionId);
             return;
           }
-          if (!shouldStickToBottom(currSessionId.value))
-            preserveReadingAnchor();
+          const following = shouldStickToBottom(currSessionId.value);
+          if (!following && !scrollPointerActive) preserveReadingAnchor();
         });
         historyLayoutObserver.observe(content, {
           childList: true,
@@ -2941,8 +3037,7 @@ function closeMobileSidebar() {
 
 function closeSecondaryPanels() {
   threadSelection.visible = false;
-  threadPanelOpen.value = false;
-  activeThread.value = null;
+  closeThreadPanel();
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
   refsSidebarOpen.value = false;
@@ -5051,7 +5146,76 @@ async function createThreadFromSelection() {
   }
 }
 
+/**
+ * Close the thread panel. A side chat is temporary: its backend thread is
+ * deleted fire-and-forget, and the panel closes regardless of the request
+ * outcome. Branch threads keep their data.
+ */
+function closeThreadPanel() {
+  const thread = activeThread.value;
+  const isSideChat =
+    Boolean(thread) && sideChatThreadId.value === thread?.thread_id;
+  threadPanelOpen.value = false;
+  activeThread.value = null;
+  sideChatThreadId.value = null;
+  if (isSideChat && thread) {
+    void chatApi.deleteThread(thread.thread_id).catch((error) => {
+      console.error("Failed to delete side chat thread:", error);
+    });
+  }
+}
+
+/** ThreadPanel ✕: closing a side chat also deletes its backend thread. */
+function onThreadPanelToggle(open: boolean) {
+  if (!open) closeThreadPanel();
+}
+
+/** Open a temporary side chat: no parent message, zero inherited context. */
+async function openSideChat(): Promise<void> {
+  if (!currSessionId.value || creatingSideChat.value) return;
+  if (threadPanelOpen.value) closeThreadPanel();
+  creatingSideChat.value = true;
+  try {
+    const response = await chatApi.createThread({
+      session_id: currSessionId.value,
+      side_chat: true,
+    });
+    if (response.data?.status !== "ok") {
+      toast.error(response.data?.message || tm("thread.createFailed"));
+      return;
+    }
+    const thread = response.data?.data as ChatThread | undefined;
+    if (!thread) {
+      toast.error(tm("thread.createFailed"));
+      return;
+    }
+    // Mutual exclusion with the other right-hand sidebars.
+    chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+    reasoningPanelOpen.value = false;
+    activeReasoningTarget.value = null;
+    refsSidebarOpen.value = false;
+    selectedRefs.value = null;
+    closeTodoMenu();
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+    gitDiffSidebarOpen.value = false;
+    sideChatThreadId.value = thread.thread_id;
+    activeThread.value = thread;
+    threadPanelOpen.value = true;
+  } catch (error) {
+    toast.error(
+      isAxiosError(error)
+        ? error.response?.data?.message || error.message
+        : tm("thread.createFailed"),
+    );
+    console.error("Failed to create side chat:", error);
+  } finally {
+    creatingSideChat.value = false;
+  }
+}
+
 function openThreadPanel(thread: ChatThread) {
+  // Opening a branch displaces (and therefore destroys) any open side chat.
+  if (sideChatThreadId.value) closeThreadPanel();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
@@ -5062,8 +5226,7 @@ function openThreadPanel(thread: ChatThread) {
 
 function openRefsSidebar(refs: unknown) {
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  threadPanelOpen.value = false;
-  activeThread.value = null;
+  closeThreadPanel();
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
   selectedRefs.value =
@@ -5082,8 +5245,7 @@ function openReasoningPanel(payload: {
   query?: string;
 }) {
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  threadPanelOpen.value = false;
-  activeThread.value = null;
+  closeThreadPanel();
   refsSidebarOpen.value = false;
   selectedRefs.value = null;
   closeTodoMenu();
@@ -5103,8 +5265,7 @@ function toggleGitDiffSidebar(): void {
   // Git Diff sidebar. The watch in GitDiffSidebar will also auto-close
   // the sidebar when the underlying spcode project is unloaded.
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  threadPanelOpen.value = false;
-  activeThread.value = null;
+  closeThreadPanel();
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
   refsSidebarOpen.value = false;
@@ -5315,8 +5476,7 @@ async function deleteThread(thread: ChatThread) {
     await chatApi.deleteThread(thread.thread_id);
     removeThreadFromMessages(thread.thread_id);
     if (activeThread.value?.thread_id === thread.thread_id) {
-      threadPanelOpen.value = false;
-      activeThread.value = null;
+      closeThreadPanel();
     }
   } catch (error) {
     console.error("Failed to delete thread:", error);
@@ -5438,7 +5598,18 @@ function handleMessagesScrollIntent(event: Event) {
   userScrollPending = true;
   const distance =
     container.scrollHeight - container.scrollTop - container.clientHeight;
-  setStickToBottom(currSessionId.value, scrollingDown && distance <= 2);
+  // 2026-10-22 (elecvoid243): follow is deliberately one frame behind the
+  // stream — scrollToBottom() coalesces its writes into a rAF — so `distance`
+  // is not evidence that the reader left the bottom. Judging the intent by it
+  // switched follow off for a wheel that arrived in that gap and re-armed it
+  // on the next one within 2px, which read as a stutter while a reply streamed
+  // in. A wheel keeps an armed follow armed; only an upward gesture, or a
+  // wheel from a viewport that was already scrolled away, clears it.
+  const following = shouldStickToBottom(currSessionId.value);
+  setStickToBottom(
+    currSessionId.value,
+    scrollingDown && (following || distance <= 2),
+  );
   preserveReadingAnchor();
   window.clearTimeout(userScrollSettleTimer);
   userScrollSettleTimer = window.setTimeout(() => {
@@ -5481,6 +5652,9 @@ function handleMessagesScroll() {
     container.scrollHeight - container.clientHeight,
   );
   const top = Math.max(0, container.scrollTop);
+  // One read the handler already needs: keeps the return-to-tail button in step
+  // with every scroll, including the clamps a shrinking document produces.
+  distanceToBottom.value = Math.max(0, maxScrollTop - top);
   // Shrinking content can clamp scrollTop without the reader moving at all.
   const previousTop = Math.min(lastMessagesScrollTop, maxScrollTop);
   const movedUp = top < previousTop - 1;
@@ -5531,15 +5705,28 @@ function handleMessagesScroll() {
   // History windowing: reached the top boundary while older history exists
   // → load the next page (the loadOlderHistory anchor keeps the viewport).
   // Suppressed while a programmatic jump scrolls (see suppressHistoryAutoLoad).
+  //
+  // 2026-10-22 (elecvoid243): one automatic page per entry into the band. The
+  // trigger is a position, not an intent: a held scrollbar thumb keeps
+  // reporting scrollTop < 80 for every pointer-driven event, so each page was
+  // requested again the moment its anchor write was clamped back to the top —
+  // pages chained and the panel bounced by a page height each round. The arm
+  // flag is cleared when a page starts and only restored after the reader has
+  // moved clear of the band (hysteresis), so an explicit second tier (the
+  // load-older button) remains the only way to page from a parked viewport.
   const paging = currSessionId.value
     ? historyPagingBySession[currSessionId.value]
     : null;
+  if (paging?.autoLoadArmed === false && container.scrollTop > 160) {
+    paging.autoLoadArmed = true;
+  }
   if (
     container.scrollTop < 80 &&
     !shouldStickToBottom(sessionId) &&
     !suppressHistoryAutoLoad.value &&
     paging?.hasMore &&
     !paging.loadingOlder &&
+    paging?.autoLoadArmed !== false &&
     // A failed page stays paused until the user retries (see
     // loadOlderMessages) — otherwise every scroll event re-fires it.
     !paging.error
@@ -5707,6 +5894,13 @@ function preserveReadingAnchor() {
 async function loadOlderHistory(retry = false) {
   const sessionId = currSessionId.value;
   if (!sessionId || historyPagingBySession[sessionId]?.loadingOlder) return;
+  // Disarmed before the fetch, not after it: scroll events keep arriving while
+  // the page is in flight, and the automatic path must not queue a second one.
+  // An explicit retry (the button) never disarms — the reader asked for it.
+  if (!retry) {
+    const paging = historyPagingBySession[sessionId];
+    if (paging) paging.autoLoadArmed = false;
+  }
   const sessionToken = viewportSessionToken;
   const container = messagesContainer.value;
   if (retry) {
@@ -5754,6 +5948,51 @@ function shouldStickToBottom(sessionId: string): boolean {
  */
 function setStickToBottom(sessionId: string, stick: boolean): void {
   if (sessionId) shouldStickToBottomBySession.set(sessionId, stick);
+  // The map is the source of truth; the button reads the mirrored ref for the
+  // active conversation. Reading it back keeps the mirror correct even when
+  // this is called for a session that is not the one on screen.
+  followActive.value = shouldStickToBottom(currSessionId.value);
+}
+
+/**
+ * Refresh the reactive distance to the tail used by the jump-to-bottom button.
+ *
+ * The scroll controller keeps its own non-reactive bookkeeping; the button is
+ * template state, so the distance needs a value Vue can watch. Content can grow
+ * or shrink without a scroll event (async markdown, media decode, a prepend), so
+ * both layout observers refresh it as well.
+ */
+function syncDistanceToBottom(): void {
+  const container = messagesContainer.value;
+  distanceToBottom.value = container
+    ? Math.max(
+        0,
+        container.scrollHeight - container.scrollTop - container.clientHeight,
+      )
+    : 0;
+}
+
+/**
+ * Return the viewport to the newest message and follow what comes next.
+ *
+ * The affordance exists for one intent: the reader scrolled back through a long
+ * (or still streaming) conversation and wants the live tail without dragging the
+ * scrollbar. Follow is re-armed first, so once the landing settles the stream
+ * keeps the panel at the bottom; the travel itself uses the shared landing,
+ * which retargets while content settles and yields to any interrupting gesture.
+ */
+function jumpToBottom() {
+  const sessionId = currSessionId.value;
+  const container = messagesContainer.value;
+  if (!sessionId || !container) return;
+  viewportInteractionToken += 1;
+  endJumpScrollLock();
+  jumpInProgress.value = false;
+  setStickToBottom(sessionId, true);
+  runJumpLanding(
+    (panel) => Math.max(0, panel.scrollHeight - panel.clientHeight),
+    true,
+  );
 }
 
 function scrollToBottom() {
@@ -5789,6 +6028,12 @@ function scrollToBottom() {
     // later compares against is the clamped value (see the declaration note).
     selfScrollTop = container.scrollTop;
     lastMessagesScrollTop = container.scrollTop;
+    // Hide the return-to-tail button in the same frame as the snap instead of
+    // waiting for the scroll echo, which is coalesced into a later task.
+    distanceToBottom.value = Math.max(
+      0,
+      container.scrollHeight - container.scrollTop - container.clientHeight,
+    );
   });
 }
 
@@ -7104,6 +7349,53 @@ function toggleTheme() {
   padding-top: 50px;
 }
 
+/* 2026-10-22 side-chat: floating entry in the messages area. right: 44px
+   clears the 28px marker rail (+4px inset) pinned to the panel edge. */
+.side-chat-fab {
+  position: absolute;
+  top: 12px;
+  right: 44px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 999px;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    opacity 0.14s ease;
+}
+
+.side-chat-fab:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.side-chat-fab:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+.side-chat-fab:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.side-chat-fab.is-busy :deep(.v-icon) {
+  animation: side-chat-spin 1s linear infinite;
+}
+
+@keyframes side-chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .provider-workspace-shell {
   flex: 1;
   min-height: 0;
@@ -7176,6 +7468,13 @@ function toggleTheme() {
   overflow-y: auto;
   /* The reader's text anchor, follow, or an explicit jump owns the viewport. */
   overflow-anchor: none;
+  /* 2026-10-22 (elecvoid243): reserve the scrollbar gutter. The paged history
+     window often sits right at the viewport height, so a scrollbar that
+     appeared or hid mid-stream used to narrow .messages-list-shell (80% of the
+     panel) by ~12px and re-wrap every message — a whole-document height jump
+     and a flickering scrollbar. The gutter is reserved unconditionally, which
+     also keeps the marker rail's measured offset stable. */
+  scrollbar-gutter: stable;
   padding: 24px 0 0;
 }
 
@@ -7190,6 +7489,108 @@ function toggleTheme() {
   width: var(--chat-content-width);
   max-width: var(--chat-content-max-width);
   margin: 0 auto;
+}
+
+/* Jump-to-bottom affordance (2026-10-22, elecvoid243). The row keeps the
+   composer's column so the button lines up with the message edge, but it is
+   zero height: it only exists to anchor the floating button just above the
+   composer, which is why no measured composer height is involved. The button
+   is centred rather than right-aligned: the bottom-right corner of the panel
+   already carries the context-injection marker, and the two overlapped. */
+.jump-to-bottom-row {
+  position: relative;
+  height: 0;
+  width: var(--chat-content-width);
+  max-width: var(--chat-content-max-width);
+  margin: 0 auto;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.jump-to-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 999px;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.jump-to-bottom:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.jump-to-bottom:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+/* Touch: keep the tap target near the platform minimum. */
+@media (pointer: coarse) {
+  .jump-to-bottom {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* Live-output pip: the reader is away from the tail while a reply is written. */
+.jump-to-bottom-live {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface));
+  animation: jump-to-bottom-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes jump-to-bottom-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.jump-to-bottom-enter-active,
+.jump-to-bottom-leave-active {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.jump-to-bottom-enter-from,
+.jump-to-bottom-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jump-to-bottom-enter-active,
+  .jump-to-bottom-leave-active {
+    transition: none;
+  }
+
+  .jump-to-bottom-live {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .center-state,

@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 395 icons */
+/* Auto-generated MDI subset – 396 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -414,6 +414,10 @@
 
 .mdi-cog-outline::before {
   content: "\F08BB";
+}
+
+.mdi-comment-plus-outline::before {
+  content: "\F0183";
 }
 
 .mdi-comment-question::before {

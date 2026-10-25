@@ -769,7 +769,9 @@
         "root": "Repo root",
         "staged": "Staged",
         "unstaged": "Unstaged",
-        "subdirAria": "Select all files in {parent}/{name}"
+        "subdirAria": "Select all files in {parent}/{name}",
+        "chainExpand": "expand levels",
+        "chainAria": "Directory chain {path}, click to expand levels"
       },
       "toolbar": {
         "expandAll": "Expand all",

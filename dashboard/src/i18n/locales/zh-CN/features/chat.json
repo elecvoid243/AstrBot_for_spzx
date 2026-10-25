@@ -769,7 +769,9 @@
         "root": "项目根",
         "staged": "已暂存",
         "unstaged": "未暂存",
-        "subdirAria": "全选 {parent}/{name} 下的所有文件"
+        "subdirAria": "全选 {parent}/{name} 下的所有文件",
+        "chainExpand": "展开层级",
+        "chainAria": "目录链 {path}，点击展开各层目录"
       },
       "toolbar": {
         "expandAll": "全部展开",

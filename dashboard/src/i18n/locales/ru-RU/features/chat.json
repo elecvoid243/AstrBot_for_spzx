@@ -763,7 +763,9 @@
         "root": "Корень",
         "staged": "В индексе",
         "unstaged": "Не в индексе",
-        "subdirAria": "Выбрать все файлы в {parent}/{name}"
+        "subdirAria": "Выбрать все файлы в {parent}/{name}",
+        "chainExpand": "развернуть",
+        "chainAria": "Цепочка каталогов {path}, нажмите, чтобы развернуть"
       },
       "toolbar": {
         "expandAll": "Развернуть все",

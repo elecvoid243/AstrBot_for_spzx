@@ -21,6 +21,7 @@ import type {
 } from "@/composables/useSpcodeGitDiff";
 import type { SpcodeGitDiffFile } from "@/composables/parseSpcodeGitDiff";
 import {
+  buildDirectoryChain,
   buildDirectorySections,
   walkSections,
   type DiffSection,
@@ -245,6 +246,13 @@ const sections = computed<DiffSection[]>(() => {
 
 const collapsedGroups = ref<Set<string>>(new Set());
 
+// 2026-10-25 compact-directory-chains: single-child directory runs
+// (each level holds exactly one sub-directory and no files) render as
+// one breadcrumb row; this set holds the chain HEAD ids that the user
+// expanded into their real nested levels. Keyed by the head's stable
+// section id, same lifecycle as collapsedGroups.
+const expandedChains = ref<Set<string>>(new Set());
+
 function toggleGroup(id: string): void {
   const next = new Set(collapsedGroups.value);
   if (next.has(id)) next.delete(id);
@@ -252,8 +260,22 @@ function toggleGroup(id: string): void {
   collapsedGroups.value = next;
 }
 
+function toggleChain(id: string): void {
+  const next = new Set(expandedChains.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedChains.value = next;
+}
+
 function expandAll(): void {
   collapsedGroups.value = new Set();
+  // Reveal every compacted chain: collect all chain-link ids so
+  // "expand all" shows the real nested levels, not breadcrumbs.
+  const chainIds = new Set<string>();
+  walkSections(sections.value, (s) => {
+    if (buildDirectoryChain(s) !== null) chainIds.add(s.id);
+  });
+  expandedChains.value = chainIds;
   // Also expand every file row by emitting toggle for collapsed files.
   for (const f of files.value) {
     if (!props.expanded.has(f.path)) emit("toggle", f.path);
@@ -266,6 +288,8 @@ function collapseAll(): void {
   const ids = new Set<string>();
   walkSections(sections.value, (s) => ids.add(s.id));
   collapsedGroups.value = ids;
+  // Chains fold back to their one-row breadcrumb view.
+  expandedChains.value = new Set();
   // Also collapse every file row by emitting toggle for expanded files.
   for (const f of files.value) {
     if (props.expanded.has(f.path)) emit("toggle", f.path);
@@ -700,6 +724,8 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :depth="0"
       :expanded="expanded"
       :collapsed-groups="collapsedGroups"
+      :expanded-chains="expandedChains"
+      :on-toggle-chain="toggleChain"
       :is-dark="isDark"
       :show-stage="showStageButton"
       :show-unstage="showUnstageButton"

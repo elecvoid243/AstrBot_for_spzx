@@ -223,3 +223,18 @@ def test_iteration_boundary_survives_process_termination(tmp_path, scenario):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_loop_recovery_ignores_machine_proxy(tmp_path, monkeypatch):
+    """Recover through loopback fixtures even when the machine proxy is unusable.
+
+    Args:
+        tmp_path: Isolated SQLite and independent external ledger directory.
+        monkeypatch: Process-local environment overrides inherited by the workers.
+    """
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(name, "http://127.0.0.1:1")
+        monkeypatch.setenv(name.lower(), "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    test_iteration_boundary_survives_process_termination(tmp_path, "loop_cancel")

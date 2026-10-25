@@ -150,7 +150,8 @@ async def run_worker(
         Returns:
             Complete external tool evidence.
         """
-        async with httpx.AsyncClient() as client:
+        # Keep loopback fixture traffic independent of machine proxy settings.
+        async with httpx.AsyncClient(trust_env=False) as client:
             payload = {"value": value}
             if scenario.startswith(("reconcile_", "idempotent_", "safe_")) or scenario == "manual_retry_key":
                 from astrbot.core.agent.tool import current_tool_invocation
@@ -203,7 +204,7 @@ async def run_worker(
         """
         if scenario == "overflow_legacy_unaligned":
             yield CallToolResult.model_validate({"content": [{"type": "resource_link", "name": "Progress reference", "uri": "https://example.org/evidence"}]})
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             if live_partial:
                 from astrbot.core.agent.tool import current_tool_invocation
                 payload = {"value": value, "identity": current_tool_invocation.get()}
@@ -246,7 +247,7 @@ async def run_worker(
             Returns:
                 External evidence and a complete result, or an unknown outcome.
             """
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 response = await client.post(endpoint + "/query", json={"identity": identity, "arguments": arguments})
                 response.raise_for_status()
                 return ToolRecoveryResult.model_validate(response.json())
@@ -320,7 +321,8 @@ async def run_worker(
             from astrbot.core.agent_team_execution import current_team_execution
             execution = current_team_execution.get()
             async with httpx.AsyncClient(
-                timeout=60 if scenario.startswith("team_deadline_") else 5
+                timeout=60 if scenario.startswith("team_deadline_") else 5,
+                trust_env=False,
             ) as client:
                 response = await client.post(endpoint + "/model", json={
                     "contexts": [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in kwargs["contexts"]],
@@ -444,7 +446,7 @@ async def run_worker(
             assert Path(filename).name == filename
             (folder / filename).write_bytes(base64.b64decode(encoded))
         prepared = fixture["cases"][scenario]
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             for request in prepared["external"]["requests"]:
                 response = await client.post(endpoint + "/model", json=request)
                 response.raise_for_status()
@@ -1117,7 +1119,7 @@ async def run_worker(
                     await operation
                 except RoleAssetError as exc:
                     during_resolution_errors.append(exc.status)
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(trust_env=False) as client:
                 await client.post(endpoint + "/release", json={})
         for _ in range(2000):
             current = await service.get_run("alice", run["run_id"])

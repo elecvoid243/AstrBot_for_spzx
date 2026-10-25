@@ -786,7 +786,8 @@
         "confirmLabel": "Подтвердить?",
         "confirmingAria": "Нажмите ещё раз для подтверждения отмены hunk {hunk}",
         "loadingAria": "Отмена hunk {hunk}"
-      }
+      },
+      "loadMore": "Показать больше файлов"
     },
     "fileReferencesCard": {
       "title": "Связанные файлы"
@@ -1867,7 +1868,10 @@
           "network": "Сбой сетевого подключения",
           "unknown": "Не удалось инициализировать ({reason})"
         }
-      }
+      },
+      "loadingDiff": "Загрузка diff…",
+      "loadDiffFailed": "Не удалось загрузить diff",
+      "fileDiffTruncated": "Diff файла слишком велик; показаны первые 256 КБ"
     },
     "planModeChip": {
       "activeLabel": "Plan",

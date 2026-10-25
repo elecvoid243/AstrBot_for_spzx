@@ -34,6 +34,9 @@ const props = defineProps<{
   // 2026-10-25 chains: an ancestor chain is currently revealed, so this
   // node must render as an ordinary row (no breadcrumb compression).
   chainSuppressed?: boolean;
+  // 2026-10-25 progressive loading: per-file on-demand diff entry
+  // resolver (shared instance from the sidebar via GitDiffBodyContent).
+  fileDiffEntry?: (path: string) => import("@/composables/useSpcodeFileDiff").FileDiffEntry | undefined;
   // Selection helpers
   isSelected: (path: string) => boolean;
   isStagingForPath: (path: string) => boolean;
@@ -83,6 +86,8 @@ provide(PARENT_LABEL_KEY, props.section.label);
 const emit = defineEmits<{
   (e: "toggle", path: string): void;
   (e: "restore", path: string): void;
+  // 2026-10-25 progressive loading: retry a leaf row's patch fetch.
+  (e: "retry-diff", path: string): void;
   (e: "stage", path: string): void;
   (e: "unstage", path: string): void;
   (e: "open-file", path: string): void;
@@ -201,6 +206,9 @@ function onChildUnstage(path: string): void {
 function onChildOpenFile(path: string): void {
   emit("open-file", path);
 }
+function onChildRetryDiff(path: string): void {
+  emit("retry-diff", path);
+}
 </script>
 
 <template>
@@ -281,6 +289,7 @@ function onChildOpenFile(path: string): void {
         v-for="f in section.files"
         :key="f.path + ':' + f.status"
         :file="f"
+        :file-diff-entry="fileDiffEntry"
         :expanded="expanded.has(f.path)"
         :is-dark="isDark"
         :show-stage="showStage"
@@ -289,6 +298,7 @@ function onChildOpenFile(path: string): void {
         :on-unstage="(p: string) => emit('unstage', p)"
         :on-restore="(p: string) => emit('restore', p)"
         :on-open-file="(p: string) => emit('open-file', p)"
+        @retry-diff="emit('retry-diff', f.path)"
         :is-staging="isStagingForPath(f.path)"
         :is-unstaging="isUnstagingForPath(f.path)"
         :is-new-file="newFilePaths?.has(f.path) ?? false"
@@ -322,6 +332,7 @@ function onChildOpenFile(path: string): void {
         :collapsed-groups="collapsedGroups"
         :expanded-chains="expandedChains"
         :chain-suppressed="childChainSuppressed"
+        :file-diff-entry="fileDiffEntry"
         :is-dark="isDark"
         :show-stage="showStage"
         :show-unstage="showUnstage"
@@ -347,6 +358,7 @@ function onChildOpenFile(path: string): void {
         :discarding-hunks="discardingHunks"
         :scope="scope"
         @toggle="onChildToggle"
+        @retry-diff="onChildRetryDiff"
         @restore="onChildRestore"
         @stage="onChildStage"
         @unstage="onChildUnstage"

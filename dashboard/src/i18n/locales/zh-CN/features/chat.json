@@ -792,7 +792,8 @@
         "confirmLabel": "确认?",
         "confirmingAria": "再次点击以确认丢弃 hunk {hunk}",
         "loadingAria": "正在丢弃 hunk {hunk}"
-      }
+      },
+      "loadMore": "加载更多文件"
     },
     "fileReferencesCard": {
       "title": "引用的文件"
@@ -1924,7 +1925,10 @@
         "buttonAria": "导出并打开 {path} 在此提交下的版本",
         "exporting": "导出中…",
         "exportFailed": "导出失败:{reason}"
-      }
+      },
+      "loadingDiff": "正在加载 diff…",
+      "loadDiffFailed": "diff 加载失败",
+      "fileDiffTruncated": "该文件 diff 过大，已截断显示前 256KB"
     },
     "planModeChip": {
       "activeLabel": "Plan",

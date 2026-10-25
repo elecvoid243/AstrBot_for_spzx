@@ -792,7 +792,8 @@
         "confirmLabel": "Confirm?",
         "confirmingAria": "Click again to confirm discarding hunk {hunk}",
         "loadingAria": "Discarding hunk {hunk}"
-      }
+      },
+      "loadMore": "Load more files"
     },
     "fileReferencesCard": {
       "title": "Referenced files"
@@ -1891,7 +1892,10 @@
         "buttonAria": "Export and open {path} at this commit",
         "exporting": "Exporting…",
         "exportFailed": "Export failed: {reason}"
-      }
+      },
+      "loadingDiff": "Loading diff…",
+      "loadDiffFailed": "Failed to load diff",
+      "fileDiffTruncated": "This file's diff is too large; showing the first 256KB"
     },
     "planModeChip": {
       "activeLabel": "Plan",

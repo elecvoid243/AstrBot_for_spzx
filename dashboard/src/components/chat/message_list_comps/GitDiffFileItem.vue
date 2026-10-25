@@ -16,6 +16,7 @@ import type {
   FileStatus,
   GitDiffScope,
 } from "@/composables/parseSpcodeGitDiff";
+import type { FileDiffEntry } from "@/composables/useSpcodeFileDiff";
 import { useModuleI18n } from "@/i18n/composables";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
@@ -30,6 +31,10 @@ const props = defineProps<{
   file: SpcodeGitDiffFile;
   expanded: boolean;
   isDark: boolean;
+  /** 2026-10-25 progressive loading: resolver into the shared
+   *  useSpcodeFileDiff cache. Returns undefined when not fetched yet;
+   *  loading/error drive the placeholders. */
+  fileDiffEntry?: (path: string) => FileDiffEntry | undefined;
   /** When provided, renders the restore button and emits 'restore' on click. */
   onRestore?: (path: string) => void;
   /** True while a restore request is in flight for THIS row. */
@@ -93,6 +98,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "toggle"): void;
   (e: "restore", path: string): void;
+  // 2026-10-25 progressive loading: retry the on-demand patch fetch.
+  (e: "retry-diff", path: string): void;
   (e: "stage", path: string): void;
   (e: "unstage", path: string): void;
   (e: "open-file", path: string): void;
@@ -133,6 +140,10 @@ const displayName = computed(() => {
 });
 
 const spcodeStatus = useSpcodeProjectStatus();
+
+/** This row's on-demand diff entry (reactive: the resolver reads the
+ *  cache's version ref, so cache mutations re-render). */
+const diffEntry = computed(() => props.fileDiffEntry?.(props.file.path));
 const session = useSpcodeSession();
 /** Spec §6.2: button visible only when project is loaded + umo present. */
 const showRestoreButton = computed(() => {
@@ -517,6 +528,14 @@ function rowKey(): string {
       <!-- 2026-10-08:mode 切换器已搬进 DiffPreview 的模式组第三格,
            本组件只交接状态。DiffPreview 仍必须留在 v-else-if 分支内:
            v-else-if 链条附着于紧邻的前置 v-if,裸插元素会截断链条。 -->
+      <!-- New-file stub rows carry an inline synthetic slice; they never
+           hit the on-demand endpoint. -->
+      <!-- New-file stub rows carry an inline synthetic slice
+           (useSpcodeNewFileLineCounts); they never hit the on-demand
+           endpoint. Both paths render the same DiffPreview with the
+           standard 30-line truncation + "Show all N lines" overflow.
+           2026-10-08: mode 切换器已搬进 DiffPreview 的模式组第三格,
+           本组件只交接状态。 -->
       <template v-else-if="file.slice">
         <DiffPreview
           :content="file.slice"
@@ -535,13 +554,53 @@ function rowKey(): string {
           :scope="scope"
         />
       </template>
-      <!-- Fallback: content not yet fetched (or file is too large /
-           binary). Shows the same placeholder as a diff row whose
-           patch exceeds the truncation cap, keeping the body
-           layout identical across all three "empty slice" causes. -->
-      <div v-else class="git-diff-file-no-content">
-        {{ tm("spcodeProjectLoad.diffSidebar.noContent") }}
+      <!-- 2026-10-25 progressive loading: the patch is fetched on
+           demand when the row expands. Loading spinner first; error row
+           with retry next; per-file truncation hint above the preview. -->
+      <div
+        v-else-if="!diffEntry || diffEntry.status === 'loading'"
+        class="git-diff-file-no-content"
+      >
+        <v-progress-circular indeterminate :size="14" :width="2" />
+        <span>{{ tm("spcodeProjectLoad.diffSidebar.loadingDiff") }}</span>
       </div>
+      <div
+        v-else-if="diffEntry.status === 'error'"
+        class="git-diff-file-no-content git-diff-file-diff-error"
+      >
+        <span>{{ tm("spcodeProjectLoad.diffSidebar.loadDiffFailed") }}</span>
+        <button
+          type="button"
+          class="git-diff-file-retry"
+          @click.stop="emit('retry-diff', file.path)"
+        >
+          {{ tm("spcodeProjectLoad.diffSidebar.error.retry") }}
+        </button>
+      </div>
+      <template v-else>
+        <div
+          v-if="diffEntry.truncated"
+          class="git-diff-file-truncated-hint"
+        >
+          {{ tm("spcodeProjectLoad.diffSidebar.fileDiffTruncated") }}
+        </div>
+        <DiffPreview
+          :content="diffEntry.slice ?? ''"
+          :base-content="overlayBaseContent"
+          v-model:overlay-mode="overlayMode"
+          :overlay-loading="overlayLoading"
+          :overlay-unavailable="overlayUnavailable"
+          :overlay-supported="true"
+          :file-path="file.path"
+          :comment-path="commentPath"
+          :is-dark="isDark"
+          :on-discard-hunk="onDiscardHunk"
+          :discarding-hunks="discardingHunks"
+          :discard-key-prefix="file.path"
+          :discardable="discardable"
+          :scope="scope"
+        />
+      </template>
     </div>
   </div>
 </template>
@@ -769,10 +828,42 @@ function rowKey(): string {
 }
 .git-diff-file-no-content {
   /* Themed muted text — stays readable in both light and dark modes. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 12px;
   text-align: center;
   color: rgba(var(--v-theme-on-surface), 0.45);
   font-size: 12px;
+}
+
+.git-diff-file-diff-error {
+  color: rgb(var(--v-theme-error));
+}
+
+.git-diff-file-retry {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: rgb(var(--v-theme-primary));
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.git-diff-file-retry:hover {
+  border-color: rgb(var(--v-theme-primary));
+}
+
+.git-diff-file-truncated-hint {
+  margin: 0 12px 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-warning), 0.12);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 11.5px;
 }
 .git-diff-binary-alert {
   font-size: 13px;

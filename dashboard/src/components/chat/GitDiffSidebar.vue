@@ -71,6 +71,7 @@ import {
   type GitStatsRange,
 } from "@/composables/parseSpcodeGitStats";
 import { useSpcodeNewFileLineCounts } from "@/composables/useSpcodeNewFileLineCounts";
+import { useSpcodeFileDiff } from "@/composables/useSpcodeFileDiff";
 import { classifyReason } from "@/composables/parseSpcodeGitWorkflow";
 import { classifyWorktreeReason } from "@/composables/parseSpcodeWorktreeManagement";
 import {
@@ -871,6 +872,7 @@ watch(fileBrowserCurrentPath, (newPath) => {
 // because Vue's analyser hoists variable usage but TypeScript does not.
 
 const composable = useSpcodeGitDiff(selectedWorktree, selectedScope);
+const fileDiff = useSpcodeFileDiff();
 // git-status is fetched alongside git-diff ONLY for the unstaged view.
 // The endpoint is complementary (branch / untracked / intent-to-add)
 // and is not relevant to staged or all-scope views. Lifecycle
@@ -2556,6 +2558,23 @@ function buildNewFileSlice(content: string): string {
  * path is also untouched — new-file data should never mask a real
  * git-diff error.
  */
+// 2026-10-25 progressive loading: per-file patch wiring + paging.
+const diffEtag = computed<string | null>(() => {
+  const s = composable.state.value;
+  return s.kind === "ok" || s.kind === "ok-loading-more"
+    ? s.snapshot.meta.etag
+    : null;
+});
+const hasMore = computed<boolean>(() => {
+  const s = composable.state.value;
+  return s.kind === "ok" || s.kind === "ok-loading-more"
+    ? s.snapshot.hasMore
+    : false;
+});
+const loadingMore = computed(
+  () => composable.state.value.kind === "ok-loading-more",
+);
+
 const diffBodyState = computed<GitDiffFetchState>(() => {
   const base = composable.state.value;
   // See `newFilePaths` above for why we skip the merge only for the
@@ -4652,12 +4671,38 @@ onBeforeUnmount(() => {
   document.body.style.overflow = "";
 });
 
+function onLoadMore(): void {
+  void composable.loadMore();
+}
+
+function onRetryDiff(path: string): void {
+  void fileDiff.load(
+    path,
+    selectedScope.value,
+    selectedWorktree.value,
+    diffEtag.value,
+  );
+}
+
 function toggleFile(path: string): void {
   const next = new Set(expandedSet.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   expandedSet.value = next;
 }
+
+// 2026-10-25 progressive loading: fetch the patch the moment a row is
+// expanded (one request per file; the cache dedups and keys on
+// scope/worktree/etag). Rows with an inline slice (new-file stubs)
+// never reach this — GitDiffFileItem renders file.slice directly.
+watch(expandedSet, (next, prev) => {
+  const s = composable.state.value;
+  const etag = s.kind === "ok" ? s.snapshot.meta.etag : null;
+  for (const path of next) {
+    if (prev.has(path)) continue;
+    void fileDiff.load(path, selectedScope.value, selectedWorktree.value, etag);
+  }
+});
 
 // ── Drag resize ────────────────────────────────────────────────────
 
@@ -4707,29 +4752,11 @@ const directoryPath = computed(() => {
   return null;
 });
 
-const isTruncated = computed(() => {
-  const s = composable.state.value;
-  if (s.kind === "ok") return s.snapshot.meta.truncated;
-  if (s.kind === "error" && s.previousSnapshot)
-    return s.previousSnapshot.meta.truncated;
-  return false;
-});
+// 2026-10-25 progressive loading: the global diff-truncation banner is
+// gone — the list endpoint no longer ships patch text, and per-file
+// truncation is flagged by the file endpoint (rendered in the row body).
 
-const truncatedShown = computed(() => {
-  const s = composable.state.value;
-  if (s.kind === "ok") return s.snapshot.meta.truncatedAtBytes;
-  if (s.kind === "error" && s.previousSnapshot)
-    return s.previousSnapshot.meta.truncatedAtBytes;
-  return 0;
-});
 
-const truncatedMax = computed(() => {
-  const s = composable.state.value;
-  if (s.kind === "ok") return s.snapshot.meta.maxBytes;
-  if (s.kind === "error" && s.previousSnapshot)
-    return s.previousSnapshot.meta.maxBytes;
-  return 0;
-});
 
 // Root path for FileBrowserView: the active worktree, then the main
 // worktree, then the loaded project's root directory. We pass this
@@ -5700,14 +5727,6 @@ watch(
               </button>
             </div>
           </div>
-          <div v-if="isTruncated" class="git-diff-sidebar-warning">
-            {{
-              tm("spcodeProjectLoad.diffSidebar.truncated", {
-                shown: truncatedShown,
-                max: truncatedMax,
-              })
-            }}
-          </div>
         </template>
 
         <!-- Spec 2026-07-16: GitRepoInitPrompt + dismissed chip slot. The
@@ -5790,7 +5809,14 @@ watch(
             :on-open-file="onOpenFile"
             :on-discard-hunk="onDiscardHunk"
             :discarding-hunks="fileDiscardHunk.isDiscardingHunk.value"
+            :file-diff="fileDiff"
+            :worktree="selectedWorktree"
+            :diff-etag="diffEtag"
+            :has-more="hasMore"
+            :loading-more="loadingMore"
             @toggle="toggleFile"
+            @load-more="onLoadMore"
+            @retry-diff="onRetryDiff"
             @retry="onManualRefresh"
             @restore="onFileRestore"
             @stage="onStageFile"

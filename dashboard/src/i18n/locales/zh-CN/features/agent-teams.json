@@ -278,7 +278,7 @@
     "logicalSlots": "逻辑槽位（输入名称后按 Enter）",
     "binding": "本机绑定",
     "limits": "实例与执行限制",
-    "limitsNotice": "配置供后续运行使用的限制；运行冻结与实际限制执行由后续运行任务交付。留空时继承配置档案或默认值。",
+    "limitsNotice": "运行开始时固定这些限制，并在执行中应用。留空时继承配置档案或默认值。",
     "max_instances": "最大实例数",
     "max_parallel": "最大并发数",
     "max_steps": "最大步骤数",

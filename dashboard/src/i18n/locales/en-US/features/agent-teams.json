@@ -278,7 +278,7 @@
     "logicalSlots": "Logical slots (type a name and press Enter)",
     "binding": "Local binding",
     "limits": "Instances and execution limits",
-    "limitsNotice": "Configure limits for future runs. Freezing and enforcement are delivered by the subsequent run tasks. Empty fields inherit the profile or default.",
+    "limitsNotice": "Limits are frozen at run start and enforced during execution. Empty fields inherit the profile or default.",
     "max_instances": "Maximum instances",
     "max_parallel": "Maximum parallelism",
     "max_steps": "Maximum steps",

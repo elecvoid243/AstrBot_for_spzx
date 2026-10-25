@@ -48,6 +48,7 @@ from astrbot.dashboard.schemas import (
     FileAccessModeSetRequest,
     FileAccessRootsSetRequest,
     GoalActionRequest,
+    GoalSetRequest,
 )
 from astrbot.dashboard.services.auth_service import CONFIG_EDIT_ADMIN_SCOPE
 from astrbot.dashboard.services.chat_service import (
@@ -384,6 +385,24 @@ async def get_chat_session_goal(
 ):
     """Return the standing-goal state for a session (null when none)."""
     return await _run(lambda: service.get_session_goal(auth.username, session_id))
+
+
+@router.post("/chat/sessions/{session_id}/goal")
+async def set_chat_session_goal(
+    session_id: str,
+    payload: GoalSetRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Set (or replace) the session's standing goal and kick off the loop."""
+    return await _run(
+        lambda: service.set_session_goal(
+            auth.username,
+            session_id,
+            payload.goal,
+            payload.max_turns,
+        )
+    )
 
 
 @router.post("/chat/sessions/{session_id}/goal/actions")

@@ -591,7 +591,20 @@
     "subgoalsTitle": "Judge criteria",
     "lastReason": "Last verdict",
     "pausedReason": "Paused reason",
-    "setAt": "Set at {time}"
+    "setAt": "Set at {time}",
+    "menuSet": "Set a goal",
+    "menuHint": "Keep the agent working until done",
+    "menuLabel": "Goal",
+    "popoverTitle": "Set a session goal",
+    "popoverDesc": "A goal drives the agent across multiple turns; a judge model evaluates progress each turn until it is met or the budget runs out.",
+    "goalPlaceholder": "e.g. finish the auth refactor with all unit tests passing",
+    "budgetLabel": "Turn budget",
+    "budgetHint": "pauses automatically when exhausted",
+    "budgetDecrease": "Fewer turns",
+    "budgetIncrease": "More turns",
+    "start": "Start",
+    "cmdHint": "Equivalent command",
+    "setFailed": "Failed to set the goal, please retry"
   },
   "connection": {
     "title": "Connection Status Notice",

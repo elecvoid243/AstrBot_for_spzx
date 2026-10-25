@@ -554,6 +554,15 @@
               />
 
               <!--
+                2026-10-25 goal entry: "设定目标" menu item (kernel /goal
+                discovery). Without a standing goal it opens the set-goal
+                card (text + turn budget); with one it opens the GoalSidebar
+                drawer. State lives in the chatHeader store (pushed by
+                useSessionGoal), never here.
+              -->
+              <GoalMenuItem :session-id="sessionId || null" :disabled="disabled" />
+
+              <!--
                 spcode project load trigger (lives inside the + menu's
                 popover slot, which is mounted lazily). It only emits
                 "open"; the dialog itself is mounted at the ChatInput
@@ -871,6 +880,7 @@ import FileAccessModeChip from "./FileAccessModeChip.vue";
 import GitDiffChip from "./GitDiffChip.vue";
 import ShellSessionIndicator from "./ShellSessionIndicator.vue";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
+import GoalMenuItem from "./GoalMenuItem.vue";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 import type { ContextCompressionEntry } from "@/composables/contextCompressionNotice";
 import { useContextCompressionChip } from "@/composables/useContextCompressionChip";

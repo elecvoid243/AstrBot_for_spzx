@@ -220,12 +220,16 @@ class GoalService:
             logger.info(f"goal loop: requested stop for {stopped} turn(s), umo={umo}")
         return had
 
-    async def set_goal(self, umo: str, goal: str) -> GoalState:
-        """Start a standing goal with the turn budget from config.
+    async def set_goal(
+        self, umo: str, goal: str, *, max_turns: int | None = None
+    ) -> GoalState:
+        """Start a standing goal.
 
         Args:
             umo: Unified message origin of the session.
             goal: The goal text.
+            max_turns: Optional turn-budget override. ``None`` follows the
+                ``goal.max_turns`` config.
 
         Returns:
             The created goal state.
@@ -233,9 +237,9 @@ class GoalService:
         Raises:
             ValueError: If the goal text is empty or max_turns is not an int.
         """
-        return await self.goals.set(
-            umo, goal, max_turns=self._config().get("max_turns")
-        )
+        if max_turns is None:
+            max_turns = self._config().get("max_turns")
+        return await self.goals.set(umo, goal, max_turns=max_turns)
 
     async def _notify(self, event: AstrMessageEvent, text: str) -> None:
         """Proactively push a message to the session of ``event``."""

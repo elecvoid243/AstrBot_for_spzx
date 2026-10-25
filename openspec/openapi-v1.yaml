@@ -1515,6 +1515,30 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+    post:
+      tags: [Chat]
+      summary: Set (or replace) the session's standing goal and kick off the loop
+      operationId: setChatSessionGoal
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [goal]
+              properties:
+                goal:
+                  type: string
+                  description: The goal description; becomes the loop's first turn.
+                max_turns:
+                  type: integer
+                  description: Optional turn-budget override; omitted follows the goal.max_turns config.
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
 
   /api/v1/chat/sessions/{session_id}/goal/actions:
     post:

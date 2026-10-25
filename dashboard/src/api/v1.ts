@@ -921,6 +921,14 @@ export const chatApi = {
       openApiV1.getChatSessionGoal({ path: { session_id: sessionId } }),
     );
   },
+  setSessionGoal(sessionId: string, goal: string, maxTurns?: number) {
+    return typed<{ goal: SessionGoalState }>(
+      openApiV1.setChatSessionGoal({
+        path: { session_id: sessionId },
+        body: { goal, max_turns: maxTurns },
+      }),
+    );
+  },
   applyGoalAction(sessionId: string, action: 'pause' | 'resume' | 'clear') {
     return typed<{ goal: SessionGoalState | null }>(
       openApiV1.applyChatSessionGoalAction({

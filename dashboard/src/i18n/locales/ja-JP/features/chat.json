@@ -305,7 +305,20 @@
     "subgoalsTitle": "評価基準",
     "lastReason": "最新の評価",
     "pausedReason": "一時停止の理由",
-    "setAt": "設定: {time}"
+    "setAt": "設定: {time}",
+    "menuSet": "ゴールを設定",
+    "menuHint": "完了まで Agent を継続実行",
+    "menuLabel": "ゴール",
+    "popoverTitle": "セッションゴールを設定",
+    "popoverDesc": "ゴールは Agent を複数ターンにわたって駆動し、各ターン後に judge モデルが進捗を評価します。完了判定または予算消費で停止します。",
+    "goalPlaceholder": "例：認証モジュールのリファクタリングと全テスト合格",
+    "budgetLabel": "ターン予算",
+    "budgetHint": "使い切ると自動一時停止",
+    "budgetDecrease": "ターンを減らす",
+    "budgetIncrease": "ターンを増やす",
+    "start": "実行開始",
+    "cmdHint": "同等コマンド",
+    "setFailed": "設定に失敗しました。再試行してください"
   },
   "refs": {
     "title": "参照",

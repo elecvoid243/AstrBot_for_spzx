@@ -1813,6 +1813,26 @@ export type GetChatSessionGoalResponse = (SuccessEnvelope);
 
 export type GetChatSessionGoalError = unknown;
 
+export type SetChatSessionGoalData = {
+    body: {
+        /**
+         * The goal description; becomes the loop's first turn.
+         */
+        goal: string;
+        /**
+         * Optional turn-budget override; omitted follows the goal.max_turns config.
+         */
+        max_turns?: number;
+    };
+    path: {
+        session_id: string;
+    };
+};
+
+export type SetChatSessionGoalResponse = (SuccessEnvelope);
+
+export type SetChatSessionGoalError = unknown;
+
 export type ApplyChatSessionGoalActionData = {
     body: {
         action: 'pause' | 'resume' | 'clear';

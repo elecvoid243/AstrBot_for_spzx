@@ -591,7 +591,20 @@
     "subgoalsTitle": "评判标准",
     "lastReason": "最近评估",
     "pausedReason": "暂停原因",
-    "setAt": "设定于 {time}"
+    "setAt": "设定于 {time}",
+    "menuSet": "设定目标",
+    "menuHint": "让 Agent 持续工作到完成",
+    "menuLabel": "目标",
+    "popoverTitle": "设定会话目标",
+    "popoverDesc": "目标会驱动 Agent 持续多轮工作，每轮由 judge 模型评估进度，直到判定完成或预算用完。",
+    "goalPlaceholder": "例如：完成鉴权模块重构，单元测试全部通过",
+    "budgetLabel": "轮次预算",
+    "budgetHint": "超预算自动暂停",
+    "budgetDecrease": "减少轮次",
+    "budgetIncrease": "增加轮次",
+    "start": "开始执行",
+    "cmdHint": "等价命令",
+    "setFailed": "设定失败，请重试"
   },
   "connection": {
     "title": "连接状态提醒",

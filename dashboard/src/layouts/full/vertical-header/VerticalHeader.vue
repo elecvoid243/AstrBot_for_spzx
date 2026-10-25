@@ -1168,8 +1168,9 @@ onMounted(async () => {
 
     <v-spacer />
 
-    <!-- 版本提示信息 - 在手机上隐藏；点击直接打开更新对话框 -->
-    <div v-if="!isChatPath" class="mr-4 hidden-xs">
+    <!-- 版本提示信息 - 在手机上隐藏；点击直接打开更新对话框。
+         Chat 页与 Bot 页共用顶栏，提示在两种模式下都显示。 -->
+    <div class="mr-4 hidden-xs">
       <button
         v-if="hasNewVersion"
         type="button"

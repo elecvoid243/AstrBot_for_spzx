@@ -109,15 +109,17 @@
             :aria-label="tm('roles.history')"
             @update:model-value="openVersion"
           />
-          <div class="role-editor">
+          <div ref="editor" class="role-editor">
             <div>
               <v-text-field
                 data-testid="role-name"
+                data-issue-path="definition.name"
                 v-model="definition.name"
                 :label="tm('roles.name')"
                 :error-messages="fieldErrors('definition.name')"
               />
               <v-textarea
+                data-issue-path="definition.description"
                 v-model="definition.description"
                 :label="tm('roles.description')"
                 rows="2"
@@ -137,18 +139,21 @@
                     <v-textarea
                       v-if="promptMode === 'inline'"
                       data-testid="role-prompt"
+                      data-issue-path="definition.prompt"
                       v-model="definition.prompt"
                       :label="tm('roles.prompt')"
                       rows="4"
                       :error-messages="fieldErrors('definition.prompt')"
                     />
                     <v-text-field
+                      data-issue-path="definition.persona_slot"
                       v-model="definition.persona_slot"
                       :label="tm('roles.personaSlot')"
                       clearable
                     />
                     <v-select
                       v-if="definition.persona_slot"
+                      :data-issue-path="`installation.bindings.${definition.persona_slot}`"
                       v-model="installation.bindings[definition.persona_slot]"
                       :items="catalog.personas"
                       item-title="name"
@@ -171,6 +176,7 @@
                   }}</v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <v-select
+                      data-issue-path="installation.profile_id"
                       v-model="installation.profile_id"
                       :items="catalog.profiles"
                       item-title="name"
@@ -184,6 +190,7 @@
                         (selectedProfile?.runner_type ?? 'local') === 'local'
                       "
                       v-model="definition.model_slot"
+                      data-issue-path="definition.model_slot"
                       :label="tm('roles.modelSlot')"
                       :error-messages="fieldErrors('definition.model_slot')"
                     />
@@ -192,6 +199,7 @@
                         (selectedProfile?.runner_type ?? 'local') === 'local'
                       "
                       v-model="installation.bindings[definition.model_slot]"
+                      :data-issue-path="`installation.bindings.${definition.model_slot}`"
                       :items="catalog.models"
                       item-title="name"
                       item-value="id"
@@ -205,6 +213,7 @@
                       "
                     />
                     <v-select
+                      data-issue-path="definition.model_capabilities"
                       v-model="definition.model_capabilities"
                       :items="['tool_use', 'image', 'audio']"
                       multiple
@@ -214,6 +223,7 @@
                     />
                     <v-select
                       data-testid="runner-requirements"
+                      data-issue-path="definition.runner_capabilities"
                       v-model="definition.runner_capabilities"
                       :items="
                         [
@@ -247,6 +257,11 @@
                   <v-expansion-panel-text>
                     <v-select
                       v-model="modes[field]"
+                      :data-issue-path="
+                        modes[field] === 'custom'
+                          ? undefined
+                          : `definition.${field}`
+                      "
                       :items="capabilityModes"
                       :label="tm('roles.mode')"
                       :aria-label="`${tm(`roles.${field}`)}: ${tm(
@@ -255,6 +270,7 @@
                     />
                     <template v-if="modes[field] === 'custom'">
                       <v-combobox
+                        :data-issue-path="`definition.${field}`"
                         v-model="definition[field]"
                         multiple
                         chips
@@ -268,6 +284,7 @@
                       <v-select
                         v-for="slot in definition[field] || []"
                         :key="slot"
+                        :data-issue-path="`installation.bindings.${slot}`"
                         v-model="installation.bindings[slot]"
                         :items="catalog[field]"
                         item-title="name"
@@ -293,6 +310,7 @@
                     <v-text-field
                       v-for="field in limitFields"
                       :key="field"
+                      :data-issue-path="`definition.${field}`"
                       v-model="definition[field]"
                       type="number"
                       :label="tm(`roles.${field}`)"
@@ -392,7 +410,7 @@
 
 <script setup lang="ts">
 import MigrationReview from "./MigrationReview.vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { roleAssetsApi } from "@/api/roleAssets";
 import { useModuleI18n } from "@/i18n/composables";
@@ -413,6 +431,7 @@ const catalog = ref<Record<string, any[]>>({
 const loading = ref(false);
 const loadError = ref("");
 const dialog = ref(false);
+const editor = ref<HTMLElement | null>(null);
 const currentId = ref<string | null>(null);
 const latestVersion = ref<number | null>(null);
 const selectedVersion = ref<number | null>(null);
@@ -633,7 +652,7 @@ function fieldErrors(path: string) {
     .map((issue) => issue.message);
 }
 
-function focusIssue(path: string) {
+async function focusIssue(path: string) {
   // Binding errors name logical slots; reveal the section that owns that slot.
   const field = path.split(".")[1];
   const group = path.startsWith("installation.bindings.")
@@ -654,6 +673,31 @@ function focusIssue(path: string) {
     ? "responsibility"
     : "model";
   groups.value = [...new Set([...groups.value, group])];
+  await nextTick();
+  // Match the longest field path so indexed errors and dotted slots stay exact.
+  const target = Array.from(
+    editor.value?.querySelectorAll<HTMLElement>("[data-issue-path]") ?? [],
+  )
+    .filter((element) => {
+      const fieldPath = element.dataset.issuePath!;
+      return path === fieldPath || path.startsWith(`${fieldPath}.`);
+    })
+    .sort(
+      (a, b) => b.dataset.issuePath!.length - a.dataset.issuePath!.length,
+    )[0];
+  const control = target?.matches("input, textarea, select")
+    ? target
+    : target?.querySelector<HTMLElement>("input, textarea, select");
+  // Vuetify starts the height transition on the next frame after rendering.
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await Promise.all(
+    (target?.closest(".v-expansion-panel-text")?.getAnimations?.() ?? []).map(
+      (animation) => animation.finished.catch(() => undefined),
+    ),
+  );
+  if (!control || !editor.value?.contains(control)) return;
+  control.scrollIntoView({ block: "center", inline: "nearest" });
+  control.focus({ preventScroll: true });
 }
 
 onMounted(load);

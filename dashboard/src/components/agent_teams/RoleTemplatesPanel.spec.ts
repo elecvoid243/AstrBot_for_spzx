@@ -207,4 +207,150 @@ describe("reusable role configuration", () => {
     ).toBe(true);
     panel.unmount();
   });
+
+  it.each([
+    ["definition.name", '[data-testid="role-name"]'],
+    ["definition.runner_capabilities.0", '[data-testid="runner-requirements"]'],
+    ["definition.max_steps", 'input[label="roles.max_steps"]'],
+  ])("focuses and reveals the control for %s", async (path, selector) => {
+    api.save.mockRejectedValue({
+      response: {
+        data: {
+          message: "Invalid role configuration",
+          data: { fields: [{ path, message: "Invalid value" }] },
+        },
+      },
+    });
+    const panel = mount(RoleTemplatesPanel, {
+      attachTo: document.body,
+      global: { stubs },
+    });
+    try {
+      await flushPromises();
+      await panel.get('[data-testid="new-role"]').trigger("click");
+      await panel.get('[data-testid="save-role"]').trigger("click");
+      await flushPromises();
+      const control = panel.get(selector).element;
+      const scroll = vi.fn();
+      control.scrollIntoView = scroll;
+      const link = panel.get<HTMLButtonElement>(".issue-link");
+      link.element.focus();
+      await link.trigger("click");
+      await flushPromises();
+      await vi.waitFor(() => expect(document.activeElement).toBe(control));
+      expect(scroll).toHaveBeenCalledWith({
+        block: "center",
+        inline: "nearest",
+      });
+    } finally {
+      panel.unmount();
+    }
+  });
+
+  it("locates the exact resource binding when logical slots share a dotted prefix", async () => {
+    api.list.mockResolvedValue({
+      roles: [
+        {
+          role_id: "writer",
+          version: 1,
+          versions: [1],
+          definition: {
+            name: "Writer",
+            prompt: "Write evidence.",
+            model_slot: "shared",
+            tools: ["shared.tool"],
+          },
+          installation: { profile_id: "default", bindings: {} },
+        },
+      ],
+    });
+    api.save.mockRejectedValue({
+      response: {
+        data: {
+          message: "Invalid role configuration",
+          data: {
+            fields: [
+              {
+                path: "installation.bindings.shared.tool",
+                message: "Missing tool",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const panel = mount(RoleTemplatesPanel, {
+      attachTo: document.body,
+      global: { stubs },
+    });
+    try {
+      await flushPromises();
+      await panel
+        .findAll("button")
+        .find((button) => button.text() === "roles.edit")!
+        .trigger("click");
+      await panel.get('[data-testid="save-role"]').trigger("click");
+      await flushPromises();
+      const control = panel.get(
+        'select[aria-label="roles.binding: shared.tool"]',
+      ).element;
+      const scroll = vi.fn();
+      control.scrollIntoView = scroll;
+      const link = panel.get<HTMLButtonElement>(".issue-link");
+      link.element.focus();
+      await link.trigger("click");
+      await flushPromises();
+      await vi.waitFor(() => expect(document.activeElement).toBe(control));
+      expect(scroll).toHaveBeenCalledOnce();
+    } finally {
+      panel.unmount();
+    }
+  });
+
+  it("waits for the expanding section before scrolling to its error", async () => {
+    const panel = mount(RoleTemplatesPanel, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          ...stubs,
+          "v-expansion-panel-text": {
+            template: '<div class="v-expansion-panel-text"><slot /></div>',
+          },
+        },
+      },
+    });
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    try {
+      await flushPromises();
+      await panel.get('[data-testid="new-role"]').trigger("click");
+      await panel.get('[data-testid="preview-role"]').trigger("click");
+      await flushPromises();
+      const control = panel.get(
+        'select[aria-label="roles.localModel"]',
+      ).element;
+      const animations = vi.fn(() => [{ finished }]);
+      Object.defineProperty(
+        control.closest(".v-expansion-panel-text"),
+        "getAnimations",
+        { value: animations },
+      );
+      const scroll = vi.fn();
+      control.scrollIntoView = scroll;
+      const link = panel.get<HTMLButtonElement>(".issue-link");
+      link.element.focus();
+      await link.trigger("click");
+      await vi.waitFor(() => expect(animations).toHaveBeenCalled());
+      expect(scroll).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(link.element);
+      finish();
+      await vi.waitFor(() => expect(document.activeElement).toBe(control));
+      expect(scroll).toHaveBeenCalledOnce();
+    } finally {
+      finish();
+      panel.unmount();
+    }
+  });
 });

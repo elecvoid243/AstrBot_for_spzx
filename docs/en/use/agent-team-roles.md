@@ -8,7 +8,7 @@ To convert previous members, use **Agent Teams → Migrate previous definitions*
 2. Under **Model**, select the profile that chooses the actual executor. The built-in executor uses a logical model slot and a local model binding; remote executors use the configured remote application and hide unused local model fields. Select `tool_use`, `image` or `audio` requirements as needed. Under **Required executor capabilities**, choose internal invocation checkpoints, original remote run query, local task/team tools or explicit task result submission.
 3. Under **Tools, Skills, Knowledge bases**, choose **Inherit**, **Disable all** or **Local override**. For an override, type logical slot names and press Enter, then bind each slot to a local resource. Slots express portable requirements; bindings record identities on this machine.
 4. Configure instances, parallelism, steps, iterations, nesting depth, tool timeout and context length under **Instances and execution limits**. Empty values inherit. Independent single-task runs freeze the effective configuration; see the [workflow instructions](./agent-team-workflows.md) for supported behavior and limits.
-5. Choose **Preview configuration** to inspect effective values, inheritance and overrides. Missing, ambiguous, disabled or incompatible resources have field paths; click a path to expand its group. Preview again after changing the form.
+5. Choose **Preview configuration** to inspect effective values, inheritance and overrides. Missing, ambiguous, disabled or incompatible resources have field paths; click a path to expand its group, scroll the field into view and focus its input. Preview again after changing the form.
 6. Choose **Save role**. Incomplete templates can be saved and are marked **Needs configuration**. Editing uses **Save new version**, preserving previous definitions and bindings. **View historical version** reopens an old version; saving its edited content creates another new version.
 
 Inline prompts are portable definition content and appear explicitly in the preview. A persona reference declares a dependency; its local prompt is not embedded in the definition. Complete asset package import and export is available from the cards and toolbar in Assets → Teams / Workflows; see the [asset workspace](./agent-team-workflows.md).
@@ -42,3 +42,5 @@ Previous entry: **Role templates → Assets → Role templates**. Template ident
 ![Actual role overview and template identity](/images/agent-teams-roles-t25-en.jpg)
 
 ![Actual role form with effective configuration and inheritance](/images/agent-teams-role-config-t25-en.jpg)
+
+![The error path expands the limits section and focuses the invalid field](/images/agent-teams-role-error-focus-en.jpg)

@@ -56,6 +56,17 @@ from .star import star_map, star_registry
 from .star_handler import EventType, star_handlers_registry
 from .updater import PLUGIN_METADATA_FILENAMES, _PluginUpdater
 
+# Plugins whose features have been migrated into the kernel, keyed by the
+# plugin metadata ``name``. A matching plugin is never loaded: the kernel
+# builtin replaces it, and loading both would double-register commands and
+# tools. The dashboard shows the record from ``failed_plugin_dict`` so the
+# user can uninstall the deprecated plugin from the plugin workspace.
+MIGRATED_PLUGIN_FEATURES: dict[str, str] = {
+    "astrbot_plugin_compact": "/compact 命令",
+    "astrbot_plugin_ask_user": "ask_user_choice 工具",
+    "astrbot_plugin_skill_guide": "skill 引导加载",
+}
+
 try:
     from watchfiles import PythonFilter, awatch
 except ImportError:
@@ -1101,6 +1112,7 @@ class PluginManager:
             return False, "未找到任何插件模块"
 
         has_load_error = False
+        deprecated_skip_messages: list[str] = []
 
         # 导入插件模块，并尝试实例化插件类
         for plugin_module in plugin_modules:
@@ -1129,6 +1141,46 @@ class PluginManager:
                     continue
 
                 logger.info("Loading plugin %s ...", root_dir_name)
+
+                # Deprecation guard: a plugin whose feature the kernel now
+                # provides must not load (double /compact handlers, duplicate
+                # tool names). Checked before import so no module code runs;
+                # the dashboard picks the notice up from failed_plugin_dict.
+                if not reserved:
+                    try:
+                        migrated_metadata = self._load_plugin_metadata(
+                            plugin_path=plugin_dir_path,
+                        )
+                    except Exception:
+                        migrated_metadata = None
+                    migrated_feature = (
+                        MIGRATED_PLUGIN_FEATURES.get(migrated_metadata.name)
+                        if migrated_metadata is not None
+                        else None
+                    )
+                    if migrated_feature is not None:
+                        deprecated_message = (
+                            f"该插件已弃用，功能已迁移至 AstrBot 内核"
+                            f"（{migrated_feature}），请卸载本插件。"
+                        )
+                        logger.warning(
+                            "Plugin %s is deprecated (%s migrated into the "
+                            "kernel); skipping load. Uninstall it to remove "
+                            "this notice.",
+                            migrated_metadata.name,
+                            migrated_feature,
+                        )
+                        self.failed_plugin_dict[root_dir_name] = (
+                            self._build_failed_plugin_record(
+                                root_dir_name=root_dir_name,
+                                plugin_dir_path=plugin_dir_path,
+                                reserved=reserved,
+                                error=deprecated_message,
+                                error_trace="",
+                            )
+                        )
+                        deprecated_skip_messages.append(deprecated_message)
+                        continue
 
                 # 尝试导入模块
                 try:
@@ -1479,6 +1531,10 @@ class PluginManager:
         self._rebuild_failed_plugin_info()
         if has_load_error:
             return False, self.failed_plugin_info
+        if deprecated_skip_messages and (specified_module_path or specified_dir_name):
+            # A targeted reload of a deprecated plugin can never succeed;
+            # report the deprecation so the failed-plugins record is kept.
+            return False, "\n".join(deprecated_skip_messages)
         return True, None
 
     async def _cleanup_failed_plugin_install(

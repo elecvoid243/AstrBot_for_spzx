@@ -174,10 +174,14 @@ async function onGenerate(): Promise<void> {
   generateErrorKey.value = null;
   // 1. Fetch the fresh staged diff — the btw endpoint mounts no LLM
   //    tools, so the change content must be embedded in the prompt.
+  //    2026-10-25 progressive loading: the sidebar's list endpoint no
+  //    longer ships patch text; the commit flow uses the dedicated
+  //    /full endpoint (same contract the old list endpoint had).
   let snapshot: SpcodeGitDiffSnapshot;
+  let rawDiff: string | null = null;
   try {
     const resp = await pluginExtensionApi.get<SpcodeGitDiffRawResponse>(
-      "spcode/git-diff",
+      "spcode/git-diff/full",
       {
         params: {
           umo: props.umo,
@@ -189,6 +193,7 @@ async function onGenerate(): Promise<void> {
     const data = resp.data?.data;
     if (!data) throw new Error("empty git-diff response");
     snapshot = parseSpcodeGitDiff(data);
+    rawDiff = data.diff ?? null;
   } catch {
     if (!generateAborted) generateErrorKey.value = "diff_fetch_failed";
     return;
@@ -198,7 +203,7 @@ async function onGenerate(): Promise<void> {
   const prompt = buildCommitMessagePrompt({
     language: msgLanguage.value,
     files: snapshot.files,
-    rawDiff: snapshot.rawDiff,
+    rawDiff,
   });
   // Deliberately context-free (no umo): the prompt is fully
   // self-contained (stats + diff embedded), and session context made

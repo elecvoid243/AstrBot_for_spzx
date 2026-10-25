@@ -261,6 +261,11 @@
                     aria-hidden="true"
                   />
                 </button>
+                <div
+                  v-if="agentWorkPillVisible(msg, msgIndex)"
+                  class="agent-work-divider"
+                  aria-hidden="true"
+                ></div>
                 <template
                   v-for="(entry, blockIndex) in visibleBlocks(msg, msgIndex)"
                   :key="`block-${entry.index}-${entry.block.kind}`"
@@ -2503,6 +2508,21 @@ function formatDuration(seconds: number) {
 .agent-work-pill:focus-visible {
   outline: 2px solid rgba(var(--v-theme-primary), 0.45);
   outline-offset: 1px;
+}
+
+/* Section break under the completed-work capsule: a hairline that fades
+   out at both ends, separating the collapsed work summary from the final
+   answer (same pattern as collapsed agent work in coding agents). */
+.agent-work-divider {
+  height: 1px;
+  margin: 0 0 10px;
+  background: linear-gradient(
+    to right,
+    rgba(var(--v-theme-on-surface), 0),
+    rgba(var(--v-theme-on-surface), 0.13) 12%,
+    rgba(var(--v-theme-on-surface), 0.13) 88%,
+    rgba(var(--v-theme-on-surface), 0)
+  );
 }
 
 .agent-work-pill-icon {

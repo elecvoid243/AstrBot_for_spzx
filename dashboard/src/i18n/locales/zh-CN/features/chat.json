@@ -598,7 +598,20 @@
     "subgoalsTitle": "评判标准",
     "lastReason": "最近评估",
     "pausedReason": "暂停原因",
-    "setAt": "设定于 {time}"
+    "setAt": "设定于 {time}",
+    "menuSet": "设定目标",
+    "menuHint": "让 Agent 持续工作到完成",
+    "menuLabel": "目标",
+    "popoverTitle": "设定会话目标",
+    "popoverDesc": "目标会驱动 Agent 持续多轮工作，每轮由 judge 模型评估进度，直到判定完成或预算用完。",
+    "goalPlaceholder": "例如：完成鉴权模块重构，单元测试全部通过",
+    "budgetLabel": "轮次预算",
+    "budgetHint": "超预算自动暂停",
+    "budgetDecrease": "减少轮次",
+    "budgetIncrease": "增加轮次",
+    "start": "开始执行",
+    "cmdHint": "等价命令",
+    "setFailed": "设定失败，请重试"
   },
   "connection": {
     "title": "连接状态提醒",
@@ -763,7 +776,9 @@
         "root": "项目根",
         "staged": "已暂存",
         "unstaged": "未暂存",
-        "subdirAria": "全选 {parent}/{name} 下的所有文件"
+        "subdirAria": "全选 {parent}/{name} 下的所有文件",
+        "chainExpand": "展开层级",
+        "chainAria": "目录链 {path}，点击展开各层目录"
       },
       "toolbar": {
         "expandAll": "全部展开",
@@ -784,7 +799,8 @@
         "confirmLabel": "确认?",
         "confirmingAria": "再次点击以确认丢弃 hunk {hunk}",
         "loadingAria": "正在丢弃 hunk {hunk}"
-      }
+      },
+      "loadMore": "加载更多文件"
     },
     "fileReferencesCard": {
       "title": "引用的文件"
@@ -1915,7 +1931,10 @@
         "buttonAria": "导出并打开 {path} 在此提交下的版本",
         "exporting": "导出中…",
         "exportFailed": "导出失败:{reason}"
-      }
+      },
+      "loadingDiff": "正在加载 diff…",
+      "loadDiffFailed": "diff 加载失败",
+      "fileDiffTruncated": "该文件 diff 过大，已截断显示前 256KB"
     },
     "planModeChip": {
       "activeLabel": "Plan",

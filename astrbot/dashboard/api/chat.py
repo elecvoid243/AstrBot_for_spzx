@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,16 @@ from astrbot.core.tools.computer_tools.edit_history import (
     render_unified_diff,
 )
 from astrbot.core.tools.computer_tools.recycle_restore import restore_from_recycle_bin
+from astrbot.core.tools.interactive_choice_registry import (
+    push_resolved_event_to_back_queue,
+    registry,
+)
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
     get_astrbot_temp_path,
 )
 from astrbot.dashboard.async_utils import run_maybe_async
-from astrbot.dashboard.responses import error, ok
+from astrbot.dashboard.responses import ApiError, error, ok
 from astrbot.dashboard.schemas import (
     ChatFileChangeDiffRequest,
     ChatFileChangeRestoreRemovedRequest,
@@ -43,6 +48,7 @@ from astrbot.dashboard.schemas import (
     FileAccessModeSetRequest,
     FileAccessRootsSetRequest,
     GoalActionRequest,
+    GoalSetRequest,
 )
 from astrbot.dashboard.services.auth_service import CONFIG_EDIT_ADMIN_SCOPE
 from astrbot.dashboard.services.chat_service import (
@@ -379,6 +385,24 @@ async def get_chat_session_goal(
 ):
     """Return the standing-goal state for a session (null when none)."""
     return await _run(lambda: service.get_session_goal(auth.username, session_id))
+
+
+@router.post("/chat/sessions/{session_id}/goal")
+async def set_chat_session_goal(
+    session_id: str,
+    payload: GoalSetRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    """Set (or replace) the session's standing goal and kick off the loop."""
+    return await _run(
+        lambda: service.set_session_goal(
+            auth.username,
+            session_id,
+            payload.goal,
+            payload.max_turns,
+        )
+    )
 
 
 @router.post("/chat/sessions/{session_id}/goal/actions")
@@ -1261,3 +1285,161 @@ async def dashboard_post_file(
         return ok(await service.save_uploaded_file(upload))
     except ChatServiceError as exc:
         return error(str(exc))
+
+
+# --- Interactive choice (ask_user_choice tool) ------------------------------
+# Route order matters (Starlette matches in registration order): the static
+# /pending path must be registered before /{request_id}, or POST /pending
+# would be swallowed by the submit endpoint.
+
+
+def _extract_username_from_umo(umo: str) -> str:
+    """Extract the dashboard username from a webchat umo.
+
+    Expected format: ``webchat:FriendMessage:webchat!alice!session_id``.
+    Returns the username, or ``""`` for non-webchat/malformed umos.
+    """
+    if not umo.startswith("webchat:"):
+        return ""
+    parts = umo.split(":", 2)
+    if len(parts) < 3:
+        return ""
+    chunks = parts[2].split("!")
+    if len(chunks) >= 3 and chunks[0] == "webchat":
+        return chunks[1]
+    return ""
+
+
+@legacy_router.post("/interactive-choice/pending")
+async def get_pending_choices(
+    session_id: str | None = None,
+    payload: dict | None = None,
+    username: str = Depends(require_dashboard_user),
+):
+    """Return all pending choices for a given webchat UMO.
+
+    Used by the frontend on mount/reconnect to reconcile any choices the
+    user has not yet answered. Read-only; never mutates registry state.
+
+    Args:
+        session_id: Full UMO (query param) — ``None`` allowed so the
+            endpoint can also accept it in the JSON body.
+        payload: POST body, optional. Fallback source for ``session_id``
+            when the query param is absent.
+        username: Injected by ``require_dashboard_user``.
+
+    Returns:
+        200: ``{status: "ok", data: {pending: [...]}}``.
+        400: Missing ``session_id`` or session_id is not a webchat UMO.
+        403: ``session_id`` belongs to a different dashboard user.
+    """
+    if (not session_id or not session_id.strip()) and payload:
+        sid = payload.get("session_id")
+        if isinstance(sid, str) and sid.strip():
+            session_id = sid
+    if not session_id or not session_id.strip():
+        raise ApiError("Missing session_id (query or body)", status_code=400)
+
+    expected = _extract_username_from_umo(session_id)
+    if not expected:
+        raise ApiError("session_id must be a webchat UMO", status_code=400)
+    if expected != username:
+        raise ApiError("Not authorized for this session", status_code=403)
+
+    pending_list = registry.list_pending_for_umo(session_id)
+    parts = []
+    for item in pending_list:
+        spec = item["spec"].copy()
+        spec["request_id"] = item["request_id"]
+        spec["expires_at"] = item["timeout_at"]
+        parts.append(spec)
+    return ok({"pending": parts})
+
+
+@legacy_router.post("/interactive-choice/{request_id}")
+async def submit_interactive_choice(
+    request_id: str,
+    request: Request,
+    username: str = Depends(require_dashboard_user),
+):
+    """Resolve the pending choice future with the user's selection.
+
+    Returns:
+        200: ``{status: "ok", data: {request_id, resolved_at}}``.
+        400: body missing ``choice_id``.
+        403: pending belongs to another user.
+        404: request_id unknown or expired.
+        409: already resolved (guards double submission).
+    """
+    pending = registry._pending.get(request_id)
+    if pending is None:
+        raise ApiError("Interactive choice not found or expired", status_code=404)
+
+    expected = _extract_username_from_umo(pending.umo)
+    if not expected or expected != username:
+        raise ApiError("Not authorized to resolve this choice", status_code=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise ApiError("Invalid JSON body", status_code=400)
+    if not isinstance(body, dict):
+        raise ApiError("Body must be a JSON object", status_code=400)
+
+    choice_id = body.get("choice_id")
+    if not isinstance(choice_id, str) or not choice_id.strip():
+        raise ApiError("Missing key: choice_id", status_code=400)
+    free_text = body.get("free_text") or ""
+    if not isinstance(free_text, str):
+        free_text = ""
+
+    payload = {"choice_id": choice_id.strip(), "free_text": free_text.strip()}
+    if not registry.resolve(request_id, payload):
+        raise ApiError("Already resolved or expired", status_code=409)
+
+    return ok({"request_id": request_id, "resolved_at": time.time()})
+
+
+@legacy_router.delete("/interactive-choice/{request_id}")
+async def cancel_interactive_choice(
+    request_id: str,
+    username: str = Depends(require_dashboard_user),
+):
+    """Cancel a pending choice from the option box's cancel button.
+
+    ``registry.remove()`` cancels the unfinished future, so the tool's
+    ``CancelledError`` branch returns "[User input was cancelled] ..." to
+    the LLM.
+
+    Returns:
+        200: ``{status: "ok", data: {request_id, cancelled_at}}``.
+        403: pending belongs to another user (not cancelled).
+        404: unknown/already resolved/expired (idempotent; the frontend
+            ignores the error).
+    """
+    pending = registry._pending.get(request_id)
+    if pending is None:
+        raise ApiError("Interactive choice not found or expired", status_code=404)
+
+    expected = _extract_username_from_umo(pending.umo)
+    if not expected or expected != username:
+        raise ApiError("Not authorized to cancel this choice", status_code=403)
+
+    umo = pending.umo
+    sse_message_id = pending.sse_message_id
+    registry.remove(request_id)
+
+    # Cross-tab consistency: broadcast resolved{cancelled} so other tabs of
+    # the same session switch to cancelled. Best-effort; the frontend
+    # reconcile covers a failed broadcast.
+    try:
+        await push_resolved_event_to_back_queue(
+            request_id=request_id,
+            umo=umo,
+            reason="cancelled",
+            sse_message_id=sse_message_id,
+        )
+    except Exception as exc:
+        logger.warning(f"ask_user_choice: failed to broadcast cancel event ({exc})")
+
+    return ok({"request_id": request_id, "cancelled_at": time.time()})

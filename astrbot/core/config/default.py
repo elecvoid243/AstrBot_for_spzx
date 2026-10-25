@@ -4386,6 +4386,41 @@ CONFIG_METADATA_3 = {
                     "provider_settings.enable": True,
                 },
             },
+            "ask_user_choice": {
+                "description": "交互选项框",
+                "hint": "ask_user_choice 工具：LLM 需要用户拍板时在 WebChat 呈现可交互选项框，用户点击或输入后结果直接返回给 LLM。",
+                "type": "object",
+                "items": {
+                    "agent_runner.config.ask_user_choice.enabled": {
+                        "description": "启用 ask_user_choice 工具",
+                        "type": "bool",
+                        "hint": "启用后 LLM 可在需要决策时调用该工具；修改后需重启生效。",
+                        "condition": {
+                            "agent_runner.runner_type": "local",
+                        },
+                    },
+                    "agent_runner.config.ask_user_choice.timeout_seconds": {
+                        "description": "等待用户响应的超时秒数",
+                        "type": "int",
+                        "hint": "超过该秒数未响应，工具向 LLM 返回超时提示文本。范围 30-3600，默认 1800（30 分钟）。",
+                        "condition": {
+                            "agent_runner.runner_type": "local",
+                        },
+                    },
+                    "agent_runner.config.ask_user_choice.timeout_fallback_message": {
+                        "description": "超时后返回给 LLM 的文本",
+                        "type": "text",
+                        "hint": "{timeout} 会被替换为实际超时秒数。",
+                        "condition": {
+                            "agent_runner.runner_type": "local",
+                        },
+                    },
+                },
+                "condition": {
+                    "agent_runner.runner_type": "local",
+                    "provider_settings.enable": True,
+                },
+            },
             "others": {
                 "description": "其他配置",
                 "type": "object",

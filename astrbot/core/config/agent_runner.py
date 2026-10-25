@@ -100,6 +100,15 @@ AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             "safety_mode": True,
             "safety_mode_strategy": "system_prompt",
         },
+        "ask_user_choice": {
+            "enabled": True,
+            "timeout_seconds": 1800,
+            "timeout_fallback_message": (
+                "[SYSTEME NOTICE] User did not respond within {timeout} seconds. "
+                "Immediately stop all behavior and wait for user's next insturction. "
+                "No speculating on user intentions."
+            ),
+        },
         "compression": {
             "max_turns": -1,
             "trim_turns": 1,
@@ -294,4 +303,8 @@ def normalize_agent_runner(agent_runner: object) -> dict[str, Any]:
             normalized["compression"]["target_usage_ratio"] = 0.0
         if normalized["compression"]["target_usage_ratio"] > 0.8:
             normalized["compression"]["target_usage_ratio"] = 0.8
+        timeout_seconds = normalized["ask_user_choice"]["timeout_seconds"]
+        normalized["ask_user_choice"]["timeout_seconds"] = min(
+            3600, max(30, timeout_seconds)
+        )
     return {"runner_type": runner_type, "config": normalized}

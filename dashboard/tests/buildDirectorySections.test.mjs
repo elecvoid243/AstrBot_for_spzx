@@ -247,3 +247,68 @@ test("buildDirectorySections: parentPath threaded into child id", () => {
   assert.equal(result[0].fullPath, "outer");
   assert.equal(result[0].id, "dir:outer");
 });
+
+// ── 2026-10-25 compact-directory-chains ──────────────────────────────
+
+import {
+  buildDirectoryChain,
+  isDirectoryChainLink,
+} from "../src/composables/parseDirectorySections.ts";
+
+// 16. a single-child directory run is a chain; its crumb covers head
+//     through terminal
+test("buildDirectoryChain: single-child run collapses to one crumb", () => {
+  const tree = buildDirectorySections(
+    [file("a/b/c/deep.py")],
+    "",
+    "unstaged",
+  );
+  // a → b → c → deep.py: a and b are links, c is the terminal (holds file)
+  assert.equal(tree.length, 1);
+  const chain = buildDirectoryChain(tree[0]);
+  assert.ok(chain, "a should be a chain head");
+  assert.deepEqual(chain.segments, ["a", "b", "c"]);
+  assert.deepEqual(chain.linkIds, ["dir:a", "dir:a/b"]);
+  assert.equal(chain.terminal.label, "c");
+  assert.equal(chain.terminal.fileCount, 1);
+});
+
+// 17. a branch node (multiple children) is not a chain
+test("buildDirectoryChain: branch node returns null", () => {
+  const tree = buildDirectorySections(
+    [file("a/x.py"), file("a/b/y.py")],
+    "",
+    "unstaged",
+  );
+  assert.equal(buildDirectoryChain(tree[0]), null);
+  assert.equal(isDirectoryChainLink(tree[0]), false);
+});
+
+// 18. a directory holding direct files is not a link even with one child
+test("buildDirectoryChain: dir with file + single subdir is not a link", () => {
+  const tree = buildDirectorySections(
+    [file("a/x.py"), file("a/b/y.py")],
+    "",
+    "unstaged",
+  );
+  const a = tree[0];
+  // a has file x + dir b → not a link; b (one file, no children) → not a
+  // link either (it holds files, chain ends there).
+  assert.equal(buildDirectoryChain(a), null);
+  assert.equal(buildDirectoryChain(a.children[0]), null);
+});
+
+// 19. chain ends at the first file-holding level
+test("buildDirectoryChain: chain stops at terminal that holds files", () => {
+  const tree = buildDirectorySections(
+    [file("a/b/x.py"), file("a/b/y.py")],
+    "",
+    "unstaged",
+  );
+  // a is a link (only child b); b holds 2 files → terminal
+  const chain = buildDirectoryChain(tree[0]);
+  assert.ok(chain);
+  assert.deepEqual(chain.segments, ["a", "b"]);
+  assert.deepEqual(chain.linkIds, ["dir:a"]);
+  assert.equal(chain.terminal.fileCount, 2);
+});

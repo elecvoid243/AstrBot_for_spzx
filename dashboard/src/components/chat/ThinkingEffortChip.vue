@@ -24,6 +24,7 @@ import type { ThinkingEffort } from "@/composables/useMessages";
 import {
   DEFAULT_THINKING_EFFORT_SLIDER,
   effortValueLabel,
+  findEffortSnap,
   normalizeEffortValue,
   type ThinkingEffortSliderConfig,
 } from "@/composables/thinkingEffortSlider";
@@ -74,9 +75,27 @@ const activeLabel = computed<string>(() => {
   );
 });
 
-const sliderReadout = computed<string>(() =>
-  effortValueLabel(sliderValue.value, sliderConfig.value),
+const activeSnapName = computed<string>(
+  () => findEffortSnap(sliderValue.value, sliderConfig.value)?.name ?? "",
 );
+
+/** Percent along the track for the current value (thumb / fill reveal). */
+const sliderPercent = computed<number>(() => {
+  const { min, max } = sliderConfig.value;
+  return ((sliderValue.value - min) / (max - min)) * 100;
+});
+
+const sliderPercentText = computed<string>(() => `${sliderPercent.value}%`);
+
+/** Reveal the anchored gradient left of the thumb: clip from the right. */
+const fillClipStyle = computed<string>(
+  () => `inset(0 ${100 - sliderPercent.value}% 0 0)`,
+);
+
+function snapLeftText(value: number): string {
+  const { min, max } = sliderConfig.value;
+  return `${((value - min) / (max - min)) * 100}%`;
+}
 
 function select(value: ThinkingEffort): void {
   menuOpen.value = false;
@@ -143,32 +162,69 @@ function openEditor(): void {
 
         <!-- Slider mode: free numeric track (1-100 by default). The named
              aliases are labels + click-to-jump shortcuts, never magnetism —
-             pulling the handle under the pointer made it jitter. -->
+             pulling the handle under the pointer made it jitter. The native
+             range stays invisible on top as the interaction layer (drag +
+             keyboard), while the gradient track / thumb / snap columns are
+             our own themed rendering underneath. -->
         <template v-if="sliderMode">
-          <div class="effort-slider-readout">{{ sliderReadout }}</div>
-          <v-slider
-            :model-value="sliderValue"
-            :min="sliderConfig.min"
-            :max="sliderConfig.max"
-            :step="sliderConfig.step"
-            color="primary"
-            density="compact"
-            hide-details
-            class="effort-slider"
-            @update:model-value="onSliderInput"
-          />
-          <div v-if="sliderConfig.snaps.length" class="effort-slider-snaps">
-            <button
-              v-for="snap in sliderConfig.snaps"
-              :key="snap.value"
-              type="button"
-              class="effort-snap-btn"
-              :class="{ 'effort-snap-btn--active': snap.value === sliderValue }"
-              @click="selectSnap(snap.value)"
+          <div class="effort-slider-readout">
+            <span class="effort-slider-readout__main">
+              {{ sliderValue }}
+              <span
+                v-if="activeSnapName"
+                class="effort-slider-readout__alias"
+              >{{ activeSnapName }}</span>
+            </span>
+            <span class="effort-slider-readout__range">
+              {{ sliderConfig.min }}–{{ sliderConfig.max }}
+            </span>
+          </div>
+          <div class="effort-slider-zone">
+            <div class="effort-slider-hitzone">
+              <div class="effort-slider-track">
+                <div class="effort-slider-track__base"></div>
+                <div
+                  class="effort-slider-track__fill"
+                  :style="{ clipPath: fillClipStyle }"
+                ></div>
+              </div>
+              <div
+                class="effort-slider-thumb"
+                :style="{ left: sliderPercentText }"
+              ></div>
+              <input
+                type="range"
+                class="effort-slider-input"
+                :min="sliderConfig.min"
+                :max="sliderConfig.max"
+                :step="sliderConfig.step"
+                :value="sliderValue"
+                :aria-label="tm('input.thinkingEffort')"
+                @input="onSliderInput(Number(($event.target as HTMLInputElement).value))"
+              />
+            </div>
+            <div
+              v-if="sliderConfig.snaps.length"
+              class="effort-slider-snaps"
             >
-              <span class="effort-snap-btn__name">{{ snap.name }}</span>
-              <span class="effort-snap-btn__value">{{ snap.value }}</span>
-            </button>
+              <button
+                v-for="snap in sliderConfig.snaps"
+                :key="snap.value"
+                type="button"
+                class="effort-snap"
+                :class="{
+                  'effort-snap--active': snap.value === sliderValue,
+                  'effort-snap--edge-end': snap.value === sliderConfig.max,
+                  'effort-snap--edge-start': snap.value === sliderConfig.min,
+                }"
+                :style="{ left: snapLeftText(snap.value) }"
+                :data-test="`effort-snap-${snap.name}`"
+                @click="selectSnap(snap.value)"
+              >
+                <span class="effort-snap__name">{{ snap.name }}</span>
+                <span class="effort-snap__value">{{ snap.value }}</span>
+              </button>
+            </div>
           </div>
         </template>
 
@@ -353,48 +409,164 @@ function openEditor(): void {
 }
 
 .effort-slider-readout {
-  margin: 2px 0 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 2px 0 10px;
+}
+
+.effort-slider-readout__main {
   color: rgb(var(--v-theme-primary));
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
-.effort-slider-snaps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
+.effort-slider-readout__alias {
+  margin-left: 6px;
+  font-size: 12px;
 }
 
-/* Alias shortcuts under the track: click jumps exactly onto the snap value
-   instead of nudging the handle there. */
-.effort-snap-btn {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--sp-chip-divider);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--sp-text-muted);
-  font-size: 12px;
+.effort-slider-readout__range {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Track zone: the gradient stays anchored to the FULL track width (the fill
+   is a clip-path reveal of the same layer), so the deep-blue end always sits
+   at the right edge no matter where the handle is. The invisible native
+   range on top owns dragging and keyboard input. */
+.effort-slider-zone {
+  min-width: 0;
+}
+
+.effort-slider-hitzone {
+  position: relative;
+  height: 22px;
   cursor: pointer;
 }
 
-.effort-snap-btn:hover {
-  background: var(--sp-chip-hover-bg);
-  color: var(--sp-text-primary);
+.effort-slider-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  transform: translateY(-50%);
+  background: var(--sp-chip-divider, rgba(var(--v-theme-on-surface), 0.12));
 }
 
-.effort-snap-btn--active {
-  border-color: currentColor;
-  color: rgb(var(--v-theme-primary));
-  font-weight: 600;
+.effort-slider-track__base,
+.effort-slider-track__fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    rgba(var(--v-theme-primary200), 0.55),
+    rgb(var(--v-theme-primary)) 55%,
+    rgb(var(--v-theme-darkprimary))
+  );
 }
 
-.effort-snap-btn__value {
-  opacity: 0.7;
+.effort-slider-track__base {
+  opacity: 0.22;
+}
+
+.effort-slider-thumb {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgb(var(--v-theme-surface));
+  border: 2px solid rgb(var(--v-theme-primary));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  box-sizing: border-box;
+  transition: box-shadow 0.15s ease;
+}
+
+.effort-slider-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.effort-slider-hitzone:has(.effort-slider-input:focus-visible)
+  .effort-slider-thumb {
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.22),
+    0 0 0 3px rgba(var(--v-theme-primary), 0.35);
+}
+
+/* Snap columns under the track, two rows (alias over number), one clickable
+   column per alias. Edge columns align their outer edge with the track end
+   instead of centering, so "max 100" never overflows the card. */
+.effort-slider-snaps {
+  position: relative;
+  height: 30px;
+  margin-top: 2px;
+}
+
+.effort-snap {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.effort-snap:hover {
+  background: var(--sp-chip-hover-bg, rgba(var(--v-theme-on-surface), 0.06));
+}
+
+.effort-snap--edge-start {
+  transform: translateX(0);
+  padding-left: 0;
+}
+
+.effort-snap--edge-end {
+  transform: translateX(-100%);
+  padding-right: 0;
+}
+
+.effort-snap__name {
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.effort-snap__value {
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.effort-snap--active .effort-snap__name,
+.effort-snap--active .effort-snap__value {
+  color: rgb(var(--v-theme-primary));
+  font-weight: 500;
 }
 </style>

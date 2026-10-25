@@ -1515,6 +1515,30 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Ok"
+    post:
+      tags: [Chat]
+      summary: Set (or replace) the session's standing goal and kick off the loop
+      operationId: setChatSessionGoal
+      x-astrbot-scope: chat
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [goal]
+              properties:
+                goal:
+                  type: string
+                  description: The goal description; becomes the loop's first turn.
+                max_turns:
+                  type: integer
+                  description: Optional turn-budget override; omitted follows the goal.max_turns config.
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
 
   /api/v1/chat/sessions/{session_id}/goal/actions:
     post:
@@ -3842,6 +3866,54 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ModelScopeSyncRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/skill-guide/active:
+    get:
+      tags: [Skills]
+      summary: List the skills effective for a session, for the skill-guide menu
+      operationId: getSkillGuideActive
+      x-astrbot-scope: skill
+      parameters:
+        - name: umo
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/skill-guide/load:
+    post:
+      tags: [Skills]
+      summary: Queue a one-shot skill nudge for a session
+      operationId: loadSkillGuide
+      x-astrbot-scope: skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillGuideLoadRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/skill-guide/clear:
+    post:
+      tags: [Skills]
+      summary: Drop the unconsumed skill-guide queue of a session
+      operationId: clearSkillGuide
+      x-astrbot-scope: skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillGuideClearRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -7980,6 +8052,23 @@ components:
       - preview_token
       title: LegacyMigrationRequest
       description: Confirm exactly the reviewed definition proposal, optionally pending.
+    SkillGuideLoadRequest:
+      type: object
+      required: [umo, skill_name]
+      properties:
+        umo:
+          type: string
+          description: Unified message origin of the session.
+        skill_name:
+          type: string
+          description: Name of the skill to nudge (any skill on disk).
+    SkillGuideClearRequest:
+      type: object
+      required: [umo]
+      properties:
+        umo:
+          type: string
+          description: Unified message origin of the session.
     RuntimeInfo:
       type: object
       description: The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.

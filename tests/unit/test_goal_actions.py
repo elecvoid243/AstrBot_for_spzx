@@ -140,6 +140,75 @@ async def test_unknown_action_rejected(fresh_goals):
         await service.apply_goal_action("alice", "cid1", "explode")
 
 
+async def test_set_goal_queues_kickoff_and_returns_state(fresh_goals, monkeypatch):
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+
+    order = []
+    register_mock = AsyncMock(side_effect=lambda **kw: order.append("register"))
+    monkeypatch.setattr(service, "register_synthetic_chat_run", register_mock)
+
+    queue = asyncio.Queue()
+
+    class _FakeMgr:
+        def get_or_create_queue(self, cid):
+            order.append("get_queue")
+            return queue
+
+    monkeypatch.setattr(chat_service_mod, "webchat_queue_mgr", _FakeMgr())
+
+    result = await service.set_session_goal(
+        "alice", "cid1", "重构鉴权模块直到测试通过", max_turns=12
+    )
+
+    state = result["goal"]
+    assert state["status"] == "active"
+    assert state["goal"] == "重构鉴权模块直到测试通过"
+    assert state["max_turns"] == 12
+    assert (await fresh_goals.get(UMO)).goal_id == state["goal_id"]
+
+    username, cid, payload = await asyncio.wait_for(queue.get(), timeout=1)
+    assert username == "alice"
+    assert cid == "cid1"
+    assert payload["internal_turn"] == "goal"
+    assert payload["goal_id"] == state["goal_id"]
+    # The goal text itself becomes the first turn.
+    assert payload["message"][0]["text"] == "重构鉴权模块直到测试通过"
+    assert order[0] == "register"
+
+
+async def test_set_goal_requires_owner_and_text(fresh_goals):
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session("bob"))
+    with pytest.raises(ChatServiceError):
+        await service.set_session_goal("alice", "cid1", "g")
+
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+    with pytest.raises(ChatServiceError):
+        await service.set_session_goal("alice", "cid1", "   ")
+
+
+async def test_set_goal_without_budget_follows_config(fresh_goals, monkeypatch):
+    service = _make_service()
+    service.db.get_platform_session_by_id = AsyncMock(return_value=_session())
+
+    class _FakeMgr:
+        def get_or_create_queue(self, cid):
+            return asyncio.Queue()
+
+    monkeypatch.setattr(chat_service_mod, "webchat_queue_mgr", _FakeMgr())
+    monkeypatch.setattr(service, "register_synthetic_chat_run", AsyncMock())
+    monkeypatch.setattr(
+        goal_service,
+        "_config",
+        lambda: {"max_turns": 33},
+    )
+
+    result = await service.set_session_goal("alice", "cid1", "g", max_turns=None)
+
+    assert result["goal"]["max_turns"] == 33
+
+
 # ---------------------------------------------------------------------------
 # adapter lifts internal_turn / goal_id payload keys into event extras
 # ---------------------------------------------------------------------------

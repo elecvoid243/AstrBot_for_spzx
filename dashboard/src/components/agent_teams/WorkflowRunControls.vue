@@ -35,7 +35,10 @@
         color="error"
         :disabled="busy"
         data-testid="cancel-run"
-        @click="confirming = 'cancel'"
+        @click="
+          confirmationAction = 'cancel';
+          confirming = true;
+        "
         >{{ tm("controls.cancel") }}</v-btn
       >
       <v-btn
@@ -43,7 +46,10 @@
         variant="tonal"
         :disabled="busy || uncertain || !!task.pending_result"
         data-testid="retry-task"
-        @click="confirming = 'retry'"
+        @click="
+          confirmationAction = 'retry';
+          confirming = true;
+        "
         >{{ tm("controls.retry") }}</v-btn
       >
     </div>
@@ -78,26 +84,22 @@
         JSON.stringify(attempt.checkpoint?.stats?.token_usage ?? null, null, 2)
       }}</pre>
     </details>
-    <v-dialog
-      :model-value="!!confirming"
-      max-width="720"
-      @update:model-value="!$event && (confirming = null)"
-    >
+    <v-dialog v-model="confirming" max-width="720">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
-          tm(`controls.${confirming}`)
+          tm(`controls.${confirmationAction}`)
         }}</v-card-title>
         <v-card-text>
           <p>
             {{
               tm(
-                confirming === "retry"
+                confirmationAction === "retry"
                   ? "controls.retryHint"
                   : "controls.cancelHint",
               )
             }}
           </p>
-          <template v-if="confirming === 'retry'">
+          <template v-if="confirmationAction === 'retry'">
             <p class="mt-3">
               {{ tm("controls.originalInputs") }} · {{ task.state.attempt_id }}
             </p>
@@ -115,14 +117,14 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="confirming = null">{{
+          <v-btn variant="text" @click="confirming = false">{{
             tm("v2.close")
           }}</v-btn>
           <v-btn
             variant="tonal"
             :disabled="busy"
             data-testid="confirm-run-control"
-            @click="submit(confirming!)"
+            @click="submit(confirmationAction)"
             >{{ tm("controls.confirm") }}</v-btn
           >
         </v-card-actions>
@@ -170,7 +172,8 @@ const uncertain = computed(() =>
       !call.recovery?.replacement_record_id,
   ),
 );
-const confirming = ref<"cancel" | "retry" | null>(null);
+const confirming = ref(false);
+const confirmationAction = ref<"cancel" | "retry">("cancel");
 const requests = new Map<string, string>();
 
 function submit(action: WorkflowControlRequest["action"] | "retry") {
@@ -200,7 +203,7 @@ function submit(action: WorkflowControlRequest["action"] | "retry") {
           expected_revision: props.run.control?.revision ?? 0,
         },
   );
-  confirming.value = null;
+  confirming.value = false;
 }
 </script>
 

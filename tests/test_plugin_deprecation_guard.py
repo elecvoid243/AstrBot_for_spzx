@@ -47,9 +47,16 @@ def _write_deprecated_plugin(plugin_path: Path) -> None:
 
 @pytest.fixture
 def plugin_manager_pm(tmp_path, monkeypatch):
-    """An isolated PluginManager whose plugin store lives in tmp_path."""
+    """An isolated PluginManager whose plugin store lives in tmp_path.
+
+    The reserved (builtin stars) path is pointed at an empty directory too:
+    a bare MockContext cannot initialize real builtin stars, and this test
+    only exercises the data/plugins scan.
+    """
     plugin_dir = tmp_path / "astrbot_root" / "data" / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
+    reserved_dir = tmp_path / "astrbot_root" / "astrbot" / "builtin_stars"
+    reserved_dir.mkdir(parents=True, exist_ok=True)
 
     class MockContext:
         def __init__(self):
@@ -62,6 +69,7 @@ def plugin_manager_pm(tmp_path, monkeypatch):
     pm = PluginManager(cast(Any, mock_context), cast(Any, {}))
 
     monkeypatch.setattr(pm, "plugin_store_path", str(plugin_dir))
+    monkeypatch.setattr(pm, "reserved_plugin_path", str(reserved_dir))
     monkeypatch.setattr(
         "astrbot.core.star.star_manager.sp.global_get",
         AsyncMock(return_value=[]),

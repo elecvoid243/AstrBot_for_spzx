@@ -6,7 +6,8 @@ import ThinkingEffortChip from "./ThinkingEffortChip.vue";
 import type { ThinkingEffortSliderConfig } from "@/composables/thinkingEffortSlider";
 
 // Vuetify is not registered under test; only the pieces this chip touches
-// are stubbed, and the slider stub emits like the real component does.
+// are stubbed. The slider-mode interaction layer is a real native range
+// input inside the component, so it needs no stub.
 const stubs = {
   "v-menu": defineComponent({
     name: "VMenu",
@@ -28,24 +29,6 @@ const stubs = {
     name: "VCardText",
     setup(_, { slots }) {
       return () => h("div", { class: "v-card-text" }, slots.default?.());
-    },
-  }),
-  "v-slider": defineComponent({
-    name: "VSlider",
-    props: { modelValue: { type: Number, default: 0 } },
-    emits: ["update:modelValue"],
-    setup(props, { emit }) {
-      return () =>
-        h("input", {
-          class: "slider-stub",
-          type: "range",
-          value: String(props.modelValue),
-          onInput: (event: Event) =>
-            emit(
-              "update:modelValue",
-              Number((event.target as HTMLInputElement).value),
-            ),
-        });
     },
   }),
 };
@@ -70,21 +53,28 @@ function mountChip(props: Record<string, unknown>) {
 }
 
 describe("ThinkingEffortChip (slider mode)", () => {
-  it("renders the track and the snap pills instead of the level list", () => {
+  it("renders the gradient track and two-row snap columns instead of the level list", () => {
     const wrapper = mountChip({ mode: "slider", slider: SLIDER });
-    expect(wrapper.find("input.slider-stub").exists()).toBe(true);
-    const pills = wrapper.findAll(".effort-snap-btn");
-    expect(pills.map((pill) => pill.text())).toEqual([
+    expect(wrapper.find("input.effort-slider-input").exists()).toBe(true);
+    expect(wrapper.find(".effort-slider-track__fill").exists()).toBe(true);
+    const snaps = wrapper.findAll(".effort-snap");
+    expect(snaps.map((snap) => snap.text())).toEqual([
       "low25",
       "high50",
       "xhigh75",
       "max100",
     ]);
+    // The end column aligns its outer edge with the track end (no overflow).
+    expect(snaps[3].classes()).toContain("effort-snap--edge-end");
   });
 
   it("labels the current value with the alias it sits on", () => {
     const wrapper = mountChip({ mode: "slider", slider: SLIDER });
-    expect(wrapper.find(".effort-slider-readout").text()).toBe("high 50");
+    // Template whitespace between the number and the alias renders as one
+    // space; the alias itself is visually separated by margin.
+    expect(
+      wrapper.find(".effort-slider-readout__main").text().replace(/\s+/g, " "),
+    ).toBe("50 high");
     expect(wrapper.find(".effort-chip-btn__label").text()).toBe("high 50");
   });
 
@@ -92,32 +82,32 @@ describe("ThinkingEffortChip (slider mode)", () => {
     // 48 sits 2 away from the "high" alias at 50; magnetism used to yank the
     // handle there, which made the controlled slider jitter under the pointer.
     const wrapper = mountChip({ modelValue: "37", mode: "slider", slider: SLIDER });
-    await wrapper.find("input.slider-stub").setValue("48");
+    await wrapper.find("input.effort-slider-input").setValue("48");
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["48"]);
   });
 
   it("reports the value unchanged when the pointer lands on an alias", async () => {
     const wrapper = mountChip({ modelValue: "37", mode: "slider", slider: SLIDER });
-    await wrapper.find("input.slider-stub").setValue("50");
+    await wrapper.find("input.effort-slider-input").setValue("50");
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["50"]);
   });
 
   it("keeps free values that are not near an alias", async () => {
     const wrapper = mountChip({ mode: "slider", slider: SLIDER });
-    await wrapper.find("input.slider-stub").setValue("37");
+    await wrapper.find("input.effort-slider-input").setValue("37");
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["37"]);
   });
 
-  it("jumps onto a snap point when a pill is clicked", async () => {
+  it("jumps onto a snap point when a column is clicked", async () => {
     const wrapper = mountChip({ mode: "slider", slider: SLIDER });
-    await wrapper.findAll(".effort-snap-btn")[2].trigger("click");
+    await wrapper.findAll(".effort-snap")[2].trigger("click");
     expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["75"]);
-    expect(wrapper.find(".effort-snap-btn--active").exists()).toBe(true);
+    expect(wrapper.find(".effort-snap--active").exists()).toBe(true);
   });
 
   it("stays silent when the drag resolves to the current value", async () => {
     const wrapper = mountChip({ modelValue: "50", mode: "slider", slider: SLIDER });
-    await wrapper.find("input.slider-stub").setValue("50");
+    await wrapper.find("input.effort-slider-input").setValue("50");
     expect(wrapper.emitted("update:modelValue")).toBeFalsy();
   });
 
@@ -126,7 +116,7 @@ describe("ThinkingEffortChip (slider mode)", () => {
       mode: "levels",
       levels: [{ name: "低", value: "low" }],
     });
-    expect(wrapper.find("input.slider-stub").exists()).toBe(false);
+    expect(wrapper.find("input.effort-slider-input").exists()).toBe(false);
     expect(wrapper.find(".effort-chip-row__label").text()).toBe("低");
   });
 

@@ -8,15 +8,19 @@ import { flushPromises } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/api/v1", () => ({
-  pluginExtensionApi: { get: vi.fn(), post: vi.fn() },
+  skillGuideApi: {
+    active: vi.fn(),
+    load: vi.fn(),
+    clear: vi.fn(),
+  },
   skillApi: { list: vi.fn() },
 }));
 
-import { pluginExtensionApi, skillApi } from "@/api/v1";
+import { skillGuideApi, skillApi } from "@/api/v1";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 
-const getMock = pluginExtensionApi.get as ReturnType<typeof vi.fn>;
-const postMock = pluginExtensionApi.post as ReturnType<typeof vi.fn>;
+const activeMock = skillGuideApi.active as ReturnType<typeof vi.fn>;
+const loadMock = skillGuideApi.load as ReturnType<typeof vi.fn>;
 const listMock = skillApi.list as ReturnType<typeof vi.fn>;
 
 const UMO = "webchat:FriendMessage:webchat!alice!sess-1";
@@ -76,7 +80,7 @@ const ALL_SKILLS = [
 const guide = useSkillGuide();
 
 async function primeSession() {
-  getMock.mockResolvedValue({ data: ACTIVE_PAYLOAD });
+  activeMock.mockResolvedValue({ data: ACTIVE_PAYLOAD });
   listMock.mockResolvedValue({ data: { data: { skills: ALL_SKILLS } } });
   await guide.setSession(UMO);
   // setSession warms the cache fire-and-forget; refetch deterministically.
@@ -89,8 +93,8 @@ function candidateNames(): string[] {
 }
 
 beforeEach(async () => {
-  getMock.mockReset();
-  postMock.mockReset();
+  activeMock.mockReset();
+  loadMock.mockReset();
   listMock.mockReset();
   guide.reset();
   // showAll is a persisted preference outside reset() — force it off.
@@ -131,21 +135,18 @@ describe("candidateSkills", () => {
 describe("queueSkill", () => {
   it("POSTs /skill-guide/load and mirrors the queue locally", async () => {
     await primeSession();
-    postMock.mockResolvedValue({
+    loadMock.mockResolvedValue({
       data: { status: "ok", data: { skill_name: "pdf", queued: true } },
     });
 
     await expect(guide.queueSkill("pdf")).resolves.toBe(true);
-    expect(postMock).toHaveBeenCalledWith("skill-guide/load", {
-      umo: UMO,
-      skill_name: "pdf",
-    });
+    expect(loadMock).toHaveBeenCalledWith(UMO, "pdf");
     expect(guide.queued.value).toEqual(["pdf"]);
   });
 
   it("soft-fails without touching the local queue", async () => {
     await primeSession();
-    postMock.mockRejectedValue(new Error("boom"));
+    loadMock.mockRejectedValue(new Error("boom"));
 
     await expect(guide.queueSkill("pdf")).resolves.toBe(false);
     expect(guide.queued.value).toEqual([]);
@@ -153,6 +154,6 @@ describe("queueSkill", () => {
 
   it("refuses to queue without a session", async () => {
     await expect(guide.queueSkill("pdf")).resolves.toBe(false);
-    expect(postMock).not.toHaveBeenCalled();
+    expect(loadMock).not.toHaveBeenCalled();
   });
 });

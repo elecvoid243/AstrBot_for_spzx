@@ -22,7 +22,11 @@ import { computed, defineComponent } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/api/v1", () => ({
-  pluginExtensionApi: { get: vi.fn(), post: vi.fn() },
+  skillGuideApi: {
+    active: vi.fn(),
+    load: vi.fn(),
+    clear: vi.fn(),
+  },
   skillApi: { list: vi.fn() },
 }));
 
@@ -41,12 +45,13 @@ vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: tmMock, getRaw: vi.fn() }),
 }));
 
-import { pluginExtensionApi, skillApi } from "@/api/v1";
+import { skillGuideApi, skillApi } from "@/api/v1";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 import SkillGuideMenuItem from "./SkillGuideMenuItem.vue";
 
-const getMock = pluginExtensionApi.get as ReturnType<typeof vi.fn>;
-const postMock = pluginExtensionApi.post as ReturnType<typeof vi.fn>;
+const activeMock = skillGuideApi.active as ReturnType<typeof vi.fn>;
+const loadMock = skillGuideApi.load as ReturnType<typeof vi.fn>;
+const clearMock = skillGuideApi.clear as ReturnType<typeof vi.fn>;
 const listMock = skillApi.list as ReturnType<typeof vi.fn>;
 
 const UMO = "webchat:FriendMessage:webchat!alice!sess-1";
@@ -153,7 +158,7 @@ function mountItem(props: Record<string, unknown> = {}) {
 
 /** Prime the singleton with a successful /skill-guide/active fetch. */
 async function primeSession(payload: unknown = ACTIVE_PAYLOAD) {
-  getMock.mockResolvedValue({ data: payload });
+  activeMock.mockResolvedValue({ data: payload });
   await useSkillGuide().setSession(UMO);
 }
 
@@ -163,8 +168,9 @@ async function openByHover(wrapper: ReturnType<typeof mountItem>) {
 }
 
 beforeEach(async () => {
-  getMock.mockReset();
-  postMock.mockReset();
+  activeMock.mockReset();
+  loadMock.mockReset();
+  clearMock.mockReset();
   listMock.mockReset();
   useSkillGuide().reset();
   // showAll is a persisted preference living outside reset() — force it
@@ -228,7 +234,7 @@ describe("SkillGuideMenuItem — rendering & hover", () => {
 
     // Interact with the content: select a skill (real timers here — the
     // singleton's async toggle must complete before we fake timers).
-    postMock.mockResolvedValue(okLoad("brainstorming"));
+    loadMock.mockResolvedValue(okLoad("brainstorming"));
     await wrapper
       .find('[data-test="skill-guide-item-brainstorming"]')
       .trigger("click");
@@ -302,7 +308,7 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
   });
 
   it("shows the load-failed state when the plugin cannot be reached", async () => {
-    getMock.mockRejectedValue(new Error("404"));
+    activeMock.mockRejectedValue(new Error("404"));
     await useSkillGuide().setSession(UMO);
     const wrapper = mountItem();
     await openByHover(wrapper);
@@ -313,7 +319,7 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
 
   it("queues a skill via POST /skill-guide/load and marks it queued", async () => {
     await primeSession();
-    postMock.mockResolvedValue(okLoad("brainstorming"));
+    loadMock.mockResolvedValue(okLoad("brainstorming"));
     const wrapper = mountItem();
     await openByHover(wrapper);
 
@@ -322,10 +328,7 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(postMock).toHaveBeenCalledWith("skill-guide/load", {
-      umo: UMO,
-      skill_name: "brainstorming",
-    });
+    expect(loadMock).toHaveBeenCalledWith(UMO, "brainstorming");
     const item = wrapper.find('[data-test="skill-guide-item-brainstorming"]');
     expect(item.classes()).toContain(
       "skill-guide-menu-card__item--queued",
@@ -342,31 +345,33 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
     await openByHover(wrapper);
 
     // Select two skills.
-    postMock.mockResolvedValue(okLoad("brainstorming"));
+    loadMock.mockResolvedValue(okLoad("brainstorming"));
     await wrapper
       .find('[data-test="skill-guide-item-brainstorming"]')
       .trigger("click");
     await flushPromises();
-    postMock.mockResolvedValue(okLoad("pdf"));
+    loadMock.mockResolvedValue(okLoad("pdf"));
     await wrapper.find('[data-test="skill-guide-item-pdf"]').trigger("click");
     await flushPromises();
     expect(useSkillGuide().queued.value).toEqual(["brainstorming", "pdf"]);
 
     // Un-select one: clear the whole server queue, then re-queue the rest.
-    postMock.mockReset();
-    postMock
-      .mockResolvedValueOnce(okClear(["brainstorming", "pdf"]))
-      .mockResolvedValueOnce(okLoad("pdf"));
+    clearMock.mockReset();
+    loadMock.mockReset();
+    clearMock.mockResolvedValueOnce(okClear(["brainstorming", "pdf"]));
+    loadMock.mockResolvedValueOnce(okLoad("pdf"));
     await wrapper
       .find('[data-test="skill-guide-item-brainstorming"]')
       .trigger("click");
     await flushPromises();
 
     expect(useSkillGuide().queued.value).toEqual(["pdf"]);
-    expect(postMock.mock.calls).toEqual([
-      ["skill-guide/clear", { umo: UMO }],
-      ["skill-guide/load", { umo: UMO, skill_name: "pdf" }],
-    ]);
+    expect(clearMock).toHaveBeenCalledWith(UMO);
+    expect(loadMock).toHaveBeenCalledWith(UMO, "pdf");
+    // Clear first, then re-queue the remaining selection.
+    expect(loadMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      clearMock.mock.invocationCallOrder[0],
+    );
     expect(
       wrapper
         .find('[data-test="skill-guide-item-brainstorming"]')
@@ -379,18 +384,18 @@ describe("SkillGuideMenuItem — list states & queueing", () => {
 
   it("clears the whole queue via POST /skill-guide/clear", async () => {
     await primeSession();
-    postMock.mockResolvedValue(okLoad("pdf"));
+    loadMock.mockResolvedValue(okLoad("pdf"));
     await useSkillGuide().toggleSkill("pdf");
 
     const wrapper = mountItem();
     await openByHover(wrapper);
 
-    postMock.mockReset();
-    postMock.mockResolvedValue(okClear(["pdf"]));
+    loadMock.mockReset();
+    clearMock.mockResolvedValue(okClear(["pdf"]));
     await wrapper.find('[data-test="skill-guide-clear-all"]').trigger("click");
     await flushPromises();
 
-    expect(postMock).toHaveBeenCalledWith("skill-guide/clear", { umo: UMO });
+    expect(clearMock).toHaveBeenCalledWith(UMO);
     expect(
       wrapper.find('[data-test="skill-guide-item-pdf"]').classes(),
     ).not.toContain("skill-guide-menu-card__item--queued");
@@ -448,7 +453,7 @@ describe("SkillGuideMenuItem — show-all mode", () => {
   it("queues an unmounted (gray) skill via POST /skill-guide/load", async () => {
     listMock.mockResolvedValue(ALL_SKILLS_PAYLOAD);
     await primeSession();
-    postMock.mockResolvedValue(okLoad("grilling"));
+    loadMock.mockResolvedValue(okLoad("grilling"));
     const wrapper = mountItem();
     await openByHover(wrapper);
 
@@ -459,10 +464,7 @@ describe("SkillGuideMenuItem — show-all mode", () => {
       .trigger("click");
     await flushPromises();
 
-    expect(postMock).toHaveBeenCalledWith("skill-guide/load", {
-      umo: UMO,
-      skill_name: "grilling",
-    });
+    expect(loadMock).toHaveBeenCalledWith(UMO, "grilling");
     expect(useSkillGuide().queued.value).toEqual(["grilling"]);
     expect(
       wrapper.find('[data-test="skill-guide-item-grilling"]').classes(),
@@ -473,12 +475,12 @@ describe("SkillGuideMenuItem — show-all mode", () => {
 describe("SkillGuideMenuItem — per-open refresh & search", () => {
   it("re-fetches the active skill list every time the menu opens", async () => {
     await primeSession();
-    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(activeMock).toHaveBeenCalledTimes(1);
     const wrapper = mountItem();
 
     // First open: the menu triggers a fresh /skill-guide/active fetch.
     await openByHover(wrapper);
-    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(activeMock).toHaveBeenCalledTimes(2);
 
     // Explicitly dismiss the menu (the update:modelValue=false that
     // Vuetify emits on outside click / Escape — pointer leave no longer
@@ -492,7 +494,7 @@ describe("SkillGuideMenuItem — per-open refresh & search", () => {
       .find('[data-test="skill-guide-menu-item"]')
       .trigger("mouseenter");
     await flushPromises();
-    expect(getMock).toHaveBeenCalledTimes(3);
+    expect(activeMock).toHaveBeenCalledTimes(3);
   });
 
   it("filters the skill list by name or description", async () => {

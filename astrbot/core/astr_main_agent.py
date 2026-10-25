@@ -44,6 +44,7 @@ from astrbot.core.platform.message_type import MessageType
 from astrbot.core.provider import Provider
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.register import llm_tools
+from astrbot.core.skills.skill_guide import inject_pending_guidance
 from astrbot.core.skills.skill_manager import (
     SkillInfo,
     SkillManager,
@@ -719,6 +720,25 @@ async def _ensure_persona_and_skills(
                     "You cannot use shell or Python to perform skills. "
                     "If you need to use these capabilities, ask the user to enable Computer Use in the AstrBot WebUI -> Config."
                 )
+
+    # One-shot skill-guide nudges queued from the dashboard skill-guide menu:
+    # drain the queue (one-shot semantics even when nothing resolves) and
+    # append guidance parts. Must never block the request.
+    try:
+        injected = inject_pending_guidance(
+            event.unified_msg_origin,
+            req,
+            runtime,
+        )
+        if injected:
+            logger.info(
+                "skill guide: injected guidance for %s into session %s",
+                injected,
+                event.unified_msg_origin[:80],
+            )
+    except Exception as e:
+        logger.error(f"skill guide injection failed: {e}")
+
     tmgr = plugin_context.get_llm_tool_manager()
 
     # inject toolset in the persona

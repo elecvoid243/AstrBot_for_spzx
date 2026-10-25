@@ -840,6 +840,24 @@ export type SetupAuthRequest = {
     confirm_password: string;
 };
 
+export type SkillGuideClearRequest = {
+    /**
+     * Unified message origin of the session.
+     */
+    umo: string;
+};
+
+export type SkillGuideLoadRequest = {
+    /**
+     * Unified message origin of the session.
+     */
+    umo: string;
+    /**
+     * Name of the skill to nudge (any skill on disk).
+     */
+    skill_name: string;
+};
+
 export type SkillPatchRequest = {
     enabled?: boolean;
     display_name?: string;
@@ -3131,6 +3149,32 @@ export type SyncModelScopeMcpServersData = {
 export type SyncModelScopeMcpServersResponse = (SuccessEnvelope);
 
 export type SyncModelScopeMcpServersError = unknown;
+
+export type GetSkillGuideActiveData = {
+    query: {
+        umo: string;
+    };
+};
+
+export type GetSkillGuideActiveResponse = (SuccessEnvelope);
+
+export type GetSkillGuideActiveError = unknown;
+
+export type LoadSkillGuideData = {
+    body: SkillGuideLoadRequest;
+};
+
+export type LoadSkillGuideResponse = (SuccessEnvelope);
+
+export type LoadSkillGuideError = unknown;
+
+export type ClearSkillGuideData = {
+    body: SkillGuideClearRequest;
+};
+
+export type ClearSkillGuideResponse = (SuccessEnvelope);
+
+export type ClearSkillGuideError = unknown;
 
 export type ListSkillsData = {
     query?: {

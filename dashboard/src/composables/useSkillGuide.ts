@@ -1,7 +1,7 @@
 // src/composables/useSkillGuide.ts
 //
-// Singleton state for the Skill Guide plugin
-// (`astrbot_plugin_skill_guide`, routes under `/skill-guide/*`).
+// Singleton state for the kernel skill-guide feature
+// (core API under `/api/v1/skill-guide/*`).
 //
 // Mirrors the pattern of `useSpcodePlanMode.ts`:
 //
@@ -12,30 +12,30 @@
 //     `clearAll` / `consumeQueued` / `reset`) as the only writers;
 //   - a soft-fail `refresh` that never throws to callers.
 //
-// Semantics (from the plugin README, v1):
+// Semantics:
 //
-//   - The plugin exposes a per-session (umo) queue of one-shot skill
+//   - The kernel exposes a per-session (umo) queue of one-shot skill
 //     "nudges". When the next LLM request for that session fires, the
-//     plugin injects a guidance prompt into `extra_user_content_parts`
-//     and drains the queue — persona and the skill's global active
-//     state are NOT touched.
+//     request assembly injects a guidance prompt into
+//     `extra_user_content_parts` and drains the queue — persona and
+//     the skill's global active state are NOT touched.
 //   - The frontend only *queues* (POST /skill-guide/load). The actual
 //     injection happens server-side on the next request, so the
 //     pending badges are cleared optimistically when the message is
 //     sent (see `consumeQueued`).
 //   - "Show all skills" (default off) widens the menu list to EVERY
 //     skill in data/skills (core GET /skills). Skills not mounted by
-//     the persona render gray but remain loadable — the plugin accepts
+//     the persona render gray but remain loadable — the kernel accepts
 //     any skill that exists on disk (the nudge only carries the
 //     SKILL.md path).
 //
 // Author: elecvoid243
-// Last-Modified: 2026-08-16
+// Last-Modified: 2026-10-25
 
 import { computed, ref } from 'vue'
-import { pluginExtensionApi, skillApi } from '@/api/v1'
+import { skillApi, skillGuideApi } from '@/api/v1'
 
-/** One entry of GET /skill-guide/active -> data.skills[]. */
+/** One entry of GET /api/v1/skill-guide/active -> data.skills[]. */
 export interface SkillGuideSkill {
   name: string
   description: string
@@ -55,26 +55,22 @@ export interface SkillGuideDisplaySkill extends SkillGuideSkill {
   mounted: boolean
 }
 
-/** GET /skill-guide/active -> data. */
+/** GET /api/v1/skill-guide/active -> data. */
 export interface SkillGuideActivePayload {
   persona: { id: string; name: string } | null
   skills: SkillGuideSkill[]
 }
 
-/** POST /skill-guide/load -> data. */
+/** POST /api/v1/skill-guide/load -> data. */
 export interface SkillGuideLoadPayload {
   skill_name: string
   queued: boolean
 }
 
-/** POST /skill-guide/clear -> data. */
+/** POST /api/v1/skill-guide/clear -> data. */
 export interface SkillGuideClearPayload {
   cleared: string[]
 }
-
-const ACTIVE_PATH = 'skill-guide/active'
-const LOAD_PATH = 'skill-guide/load'
-const CLEAR_PATH = 'skill-guide/clear'
 
 // localStorage key for the "show every skill in data/skills" preference
 // (chat.* prefix, same family as chat.transportMode in Chat.vue).
@@ -85,9 +81,9 @@ const SHOW_ALL_KEY = 'chat.skillGuide.showAll'
 /** Current session's unified_msg_origin (null = no session). */
 const sessionUmo = ref<string | null>(null)
 
-/** True once the plugin answered /skill-guide/active successfully. Used as
- *  the visibility gate for the whole UI (plugin not installed/disabled
- *  -> the button simply never appears). */
+/** True once the backend answered /skill-guide/active successfully. Used as
+ *  the visibility gate for the whole UI (backend without the feature or
+ *  transient failure -> the button simply never appears). */
 const available = ref(false)
 
 const loading = ref(false)
@@ -206,10 +202,7 @@ export function useSkillGuide() {
     loading.value = true
     loadFailed.value = false
     try {
-      const res = await pluginExtensionApi.get<SkillGuideActivePayload>(
-        ACTIVE_PATH,
-        { params: { umo } },
-      )
+      const res = await skillGuideApi.active<SkillGuideActivePayload>(umo)
       const data = res.data?.data
       if (!data || !Array.isArray(data.skills)) {
         throw new Error('malformed /skill-guide/active payload')
@@ -218,7 +211,7 @@ export function useSkillGuide() {
       skills.value = data.skills
       available.value = true
     } catch {
-      // Soft-fail: plugin missing/disabled or transient network error.
+      // Soft-fail: transient network error or backend without the feature.
       loadFailed.value = true
     } finally {
       loading.value = false
@@ -294,8 +287,8 @@ export function useSkillGuide() {
    * Toggle a skill on/off the one-shot queue.
    *
    * Queuing POSTs /skill-guide/load. Un-queuing a SINGLE skill works
-   * around the plugin's v1 API (POST /skill-guide/clear only drops the
-   * WHOLE session queue): we clear first, then re-queue the remaining
+   * around the kernel API v1 shape (POST /skill-guide/clear only drops
+   * the WHOLE session queue): we clear first, then re-queue the remaining
    * selection so only the clicked skill is removed.
    */
   async function toggleSkill(name: string): Promise<boolean> {
@@ -323,11 +316,8 @@ export function useSkillGuide() {
     const umo = sessionUmo.value
     if (!umo) return false
     try {
-      const res = await pluginExtensionApi.post<SkillGuideLoadPayload>(
-        LOAD_PATH,
-        { umo, skill_name: name },
-      )
-      if (res.data?.status !== "ok" || !res.data?.data?.queued) {
+      const res = await skillGuideApi.load<SkillGuideLoadPayload>(umo, name)
+      if (res.data?.status !== 'ok' || !res.data?.data?.queued) {
         throw new Error(res.data?.message ?? 'load failed')
       }
       if (!queued.value.includes(name)) {
@@ -345,10 +335,10 @@ export function useSkillGuide() {
     queued.value = []
     if (!umo) return
     try {
-      await pluginExtensionApi.post<SkillGuideClearPayload>(CLEAR_PATH, { umo })
+      await skillGuideApi.clear<SkillGuideClearPayload>(umo)
     } catch {
-      // Soft-fail: the queue is in-memory on the plugin side and will
-      // be drained (or vanish on restart) anyway; local state wins.
+      // Soft-fail: the queue is in-memory kernel-side and will be drained
+      // (or vanish on restart) anyway; local state wins.
     }
   }
 

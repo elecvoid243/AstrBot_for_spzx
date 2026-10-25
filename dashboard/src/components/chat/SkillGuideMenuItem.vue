@@ -1,6 +1,6 @@
 <!--
   Author: elecvoid243, 2026-08-16
-  Plugin: astrbot_plugin_skill_guide (routes /skill-guide/*, see plugin README)
+  Kernel feature: skill guide (core API under /api/v1/skill-guide/*)
 
   SkillGuideMenuItem — "手动加载 Skill" entry inside the chat input's
   "+" menu.
@@ -22,9 +22,9 @@
       max-width with ellipsis-truncated lines so it never grows with the
       descriptions.
 
-  Queuing semantics (from the plugin README): clicking a skill POSTs
-  /skill-guide/load for a ONE-SHOT nudge — the plugin injects a guidance
-  prompt into the NEXT LLM request of the session and drains the queue.
+  Queuing semantics: clicking a skill POSTs /api/v1/skill-guide/load for a
+  ONE-SHOT nudge — the kernel injects a guidance prompt into the NEXT LLM
+  request of the session and drains the queue.
   Persona and the skill's global active state are never touched.
 
   Show-all mode (toggle row, default off): additionally list EVERY skill

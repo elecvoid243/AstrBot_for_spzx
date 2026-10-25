@@ -3827,6 +3827,54 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/skill-guide/active:
+    get:
+      tags: [Skills]
+      summary: List the skills effective for a session, for the skill-guide menu
+      operationId: getSkillGuideActive
+      x-astrbot-scope: skill
+      parameters:
+        - name: umo
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/skill-guide/load:
+    post:
+      tags: [Skills]
+      summary: Queue a one-shot skill nudge for a session
+      operationId: loadSkillGuide
+      x-astrbot-scope: skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillGuideLoadRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/skill-guide/clear:
+    post:
+      tags: [Skills]
+      summary: Drop the unconsumed skill-guide queue of a session
+      operationId: clearSkillGuide
+      x-astrbot-scope: skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillGuideClearRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/skills:
     get:
       tags: [Skills]
@@ -6405,6 +6453,23 @@ components:
       schema: { type: string }
 
   schemas:
+    SkillGuideLoadRequest:
+      type: object
+      required: [umo, skill_name]
+      properties:
+        umo:
+          type: string
+          description: Unified message origin of the session.
+        skill_name:
+          type: string
+          description: Name of the skill to nudge (any skill on disk).
+    SkillGuideClearRequest:
+      type: object
+      required: [umo]
+      properties:
+        umo:
+          type: string
+          description: Unified message origin of the session.
     RuntimeInfo:
       type: object
       description: The AstrBot backend runtime, including when running inside a container. Values are captured at application startup.

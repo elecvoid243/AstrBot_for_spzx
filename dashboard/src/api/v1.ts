@@ -1907,6 +1907,20 @@ export const skillApi = {
   },
 };
 
+export const skillGuideApi = {
+  active<T = any>(umo: string) {
+    return typed<T>(openApiV1.getSkillGuideActive({ query: { umo } }));
+  },
+  load<T = any>(umo: string, skillName: string) {
+    return typed<T>(
+      openApiV1.loadSkillGuide({ body: { umo, skill_name: skillName } }),
+    );
+  },
+  clear<T = any>(umo: string) {
+    return typed<T>(openApiV1.clearSkillGuide({ body: { umo } }));
+  },
+};
+
 export const personaApi = {
   tree() {
     return typed<any>(openApiV1.getPersonaTree());

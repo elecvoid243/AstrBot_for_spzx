@@ -2,6 +2,8 @@
 // The side-chat lifecycle lives inside Chat.vue's script setup, so run its
 // actual declarations, watchers and unmount hook in a mounted lifecycle harness.
 // This does not mount the complete Chat component or verify browser rendering.
+// Focus: closing the panel only hides it — side chats persist and are deleted
+// explicitly from the side-chat menu.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -34,6 +36,9 @@ const wanted = new Set([
   "closeThreadPanel",
   "onThreadPanelToggle",
   "openSideChat",
+  "openSideChatPanel",
+  "loadSideChats",
+  "openSideChatMenu",
   "openThreadPanel",
   "openRefsSidebar",
   "openReasoningPanel",
@@ -46,6 +51,9 @@ const variables = new Set([
   "sideChatThreadId",
   "creatingSideChat",
   "sideChatGeneration",
+  "sideChats",
+  "sideChatMenuOpen",
+  "loadingSideChats",
   "goalSidebarOpen",
   "todoMenuOpen",
   "todoMenuPlacement",
@@ -108,6 +116,9 @@ function setup() {
         }),
     ),
     deleteThread: vi.fn().mockResolvedValue({}),
+    listSideThreads: vi.fn().mockResolvedValue({
+      data: { data: { threads: [] } },
+    }),
   };
   const state = {
     currSessionId: ref("session-a"),
@@ -160,6 +171,7 @@ function setup() {
     ...Object.keys(environment),
     `${code}
     return { threadPanelOpen, activeThread, sideChatThreadId, creatingSideChat,
+      sideChats, sideChatMenuOpen, loadingSideChats,
       goalSidebarOpen, todoMenuOpen,
       ${[...wanted].join(", ")} };`,
   );
@@ -168,11 +180,15 @@ function setup() {
     activeThread: Ref<ThreadRef | null>;
     sideChatThreadId: Ref<string | null>;
     creatingSideChat: Ref<boolean>;
+    sideChats: Ref<Array<{ thread_id: string; title?: string }>>;
+    sideChatMenuOpen: Ref<boolean>;
+    loadingSideChats: Ref<boolean>;
     goalSidebarOpen: Ref<boolean>;
     todoMenuOpen: Ref<boolean>;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
+    openSideChatMenu: () => void;
     openThreadPanel: (thread: ThreadRef) => void;
     openRefsSidebar: (refs: unknown) => void;
     openReasoningPanel: (payload: unknown) => void;
@@ -229,7 +245,7 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
 
-  it("deletes a late temporary thread after switching sessions", async () => {
+  it("cleans up a side-chat thread created after the session switched", async () => {
     const ctx = setup();
     const pending = ctx.openSideChat();
     ctx.currSessionId.value = "session-b";
@@ -470,7 +486,7 @@ describe("Chat side-chat lifecycle", () => {
     },
   );
 
-  it("keeps the selected branch when deleting a stale temporary thread fails", async () => {
+  it("keeps the selected branch when cleaning up a stale side chat fails", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = setup();
     const pending = ctx.openSideChat();
@@ -501,7 +517,7 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
 
-  it("deletes the backend thread when closing a side chat", () => {
+  it("closes a side chat without deleting the backend thread", () => {
     const ctx = setup();
     ctx.activeThread.value = { thread_id: "side-1" };
     ctx.sideChatThreadId.value = "side-1";
@@ -511,21 +527,7 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.threadPanelOpen.value).toBe(false);
     expect(ctx.activeThread.value).toBeNull();
     expect(ctx.sideChatThreadId.value).toBeNull();
-    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-1");
-  });
-
-  it("survives a failed delete without raising", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const ctx = setup();
-    ctx.activeThread.value = { thread_id: "side-2" };
-    ctx.sideChatThreadId.value = "side-2";
-    ctx.chatApi.deleteThread.mockRejectedValue(new Error("network"));
-
-    expect(() => ctx.closeThreadPanel()).not.toThrow();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(ctx.threadPanelOpen.value).toBe(false);
-    expect(errorSpy).toHaveBeenCalled();
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
 
   it("routes ThreadPanel's close event through the same teardown", () => {
@@ -534,11 +536,32 @@ describe("Chat side-chat lifecycle", () => {
     ctx.sideChatThreadId.value = "side-3";
 
     ctx.onThreadPanelToggle(false);
-    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-3");
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(ctx.activeThread.value).toBeNull();
+    expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
 
-    ctx.chatApi.deleteThread.mockClear();
     ctx.onThreadPanelToggle(true);
     expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
     expect(ctx.threadPanelOpen.value).toBe(false);
+  });
+
+  it("lists the session's persistent side chats when the menu opens", async () => {
+    const ctx = setup();
+    ctx.chatApi.listSideThreads.mockResolvedValue({
+      data: {
+        data: { threads: [{ thread_id: "side-old", title: "旧问题" }] },
+      },
+    });
+
+    ctx.openSideChatMenu();
+    await flushPromises();
+
+    expect(ctx.chatApi.listSideThreads).toHaveBeenCalledWith("session-a");
+    expect(ctx.sideChats.value).toEqual([
+      { thread_id: "side-old", title: "旧问题" },
+    ]);
+    expect(ctx.sideChatMenuOpen.value).toBe(true);
+    expect(ctx.loadingSideChats.value).toBe(false);
   });
 });

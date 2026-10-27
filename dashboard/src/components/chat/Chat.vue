@@ -729,87 +729,23 @@
         class="conversation-stack"
         :class="{ 'is-empty': isEmptyChat }"
       >
-        <!-- 2026-10-22 side-chat: persistent, zero-context conversations.
-             The entry sits in the top-right margin, clear of the 28px
-             scroll-marker rail; hovering it lists this session's side chats. -->
-        <div
+        <!-- 2026-10-22 side-chat: temporary, zero-context conversation.
+             Sits in the top-right margin so it clears the 28px scroll-marker
+             rail pinned to the panel's right edge. -->
+        <button
           v-if="currSessionId && !isReadonlySession"
-          class="side-chat-entry"
-          @mouseenter="openSideChatMenu"
-          @mouseleave="sideChatMenuOpen = false"
+          type="button"
+          class="side-chat-fab"
+          :class="{ 'is-busy': creatingSideChat }"
+          :disabled="creatingSideChat || threadPanelOpen"
+          :title="tm('thread.newSideChat')"
+          :aria-label="tm('thread.newSideChat')"
+          @click="openSideChat"
         >
-          <button
-            type="button"
-            class="side-chat-fab"
-            :class="{ 'is-busy': creatingSideChat }"
-            :disabled="creatingSideChat"
-            :title="tm('thread.newSideChat')"
-            :aria-label="tm('thread.newSideChat')"
-            :aria-expanded="sideChatMenuOpen"
-            @click="openSideChatMenu"
-          >
-            <v-icon size="18">{{
-              creatingSideChat ? "mdi-loading" : "mdi-comment-plus-outline"
-            }}</v-icon>
-          </button>
-          <transition name="side-chat-menu">
-            <div
-              v-if="sideChatMenuOpen"
-              class="side-chat-menu"
-              role="menu"
-              @mouseenter="sideChatMenuOpen = true"
-            >
-              <button
-                type="button"
-                class="side-chat-menu-new"
-                @click="openSideChat"
-              >
-                <v-icon size="14">mdi-plus</v-icon>
-                <span>{{ tm("thread.newSideChat") }}</span>
-              </button>
-              <div v-if="loadingSideChats" class="side-chat-menu-state">
-                {{ tm("thread.sideLoading") }}
-              </div>
-              <template v-else>
-                <div
-                  v-for="item in sideChats"
-                  :key="item.thread_id"
-                  class="side-chat-menu-item"
-                  :class="{
-                    'is-active': item.thread_id === sideChatThreadId,
-                  }"
-                  role="menuitem"
-                >
-                  <button
-                    type="button"
-                    class="side-chat-menu-title"
-                    @click="openSideChatThread(item)"
-                  >
-                    <v-icon size="13">mdi-chat-outline</v-icon>
-                    <span>{{
-                      item.title?.trim() || tm("thread.sideTitle")
-                    }}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="side-chat-menu-delete"
-                    :title="tm('thread.delete')"
-                    :aria-label="tm('thread.delete')"
-                    @click.stop="deleteThread(item)"
-                  >
-                    <v-icon size="13">mdi-delete-outline</v-icon>
-                  </button>
-                </div>
-              </template>
-              <div
-                v-if="!loadingSideChats && !sideChats.length"
-                class="side-chat-menu-state"
-              >
-                {{ tm("thread.sideEmpty") }}
-              </div>
-            </div>
-          </transition>
-        </div>
+          <v-icon size="18">{{
+            creatingSideChat ? "mdi-loading" : "mdi-comment-plus-outline"
+          }}</v-icon>
+        </button>
 
         <section
           ref="messagesContainer"
@@ -1189,8 +1125,6 @@
       :is-dark="isDark"
       :deleting="deletingThread"
       :side-chat="Boolean(sideChatThreadId)"
-      :title="activeSideChatTitle"
-      :main-session="currentSession"
       @update:model-value="onThreadPanelToggle"
       @delete="deleteThread"
     />
@@ -1707,20 +1641,12 @@ watch(
 const replyTarget = ref<ChatRecord | null>(null);
 const threadPanelOpen = ref(false);
 const activeThread = ref<ChatThread | null>(null);
-// 2026-10-23 side-chat: the open persistent side thread (if any). Kept
-// separate from branch threads so the panel can show its list title and the
-// agent can inherit the main session's project/permissions.
+// 2026-10-22 side-chat: the open temporary thread (if any). Kept separate
+// from the branch threads so closing the panel can tell whether it must
+// delete the backend record.
 const sideChatThreadId = ref<string | null>(null);
 const creatingSideChat = ref(false);
-type SideChatEntry = ChatThread & { title?: string };
-const sideChats = ref<SideChatEntry[]>([]);
-const sideChatMenuOpen = ref(false);
-const loadingSideChats = ref(false);
-const activeSideChatTitle = computed(() => {
-  const id = sideChatThreadId.value;
-  if (!id) return null;
-  return sideChats.value.find((item) => item.thread_id === id)?.title || null;
-});
+let sideChatGeneration = 0;
 const reasoningPanelOpen = ref(false);
 const activeReasoningTarget = ref<{
   message: ChatRecord;
@@ -2329,10 +2255,6 @@ const {
 // the same instance. resetForSession() drops the current session's
 // comments so they don't leak across sessions (spec §2).
 const fileComments = useFileComments();
-// 2026-10-23 direct-send: the file comment editor asks the chat to send a
-// single comment without putting it into the composer chip.
-const stopCommentSend = fileComments.onSendRequest(sendCommentMessage);
-onBeforeUnmount(stopCommentSend);
 // 2026-08-09 drag-reference (elecvoid243): sidebar file drops become
 // references. Same singleton pattern as fileComments.
 const fileReferences = useFileReferences();
@@ -2347,15 +2269,15 @@ watch(currSessionId, (newId, oldId) => {
   }
 });
 
-// 2026-10-23 side-chat: switching sessions hides the panel (the side chat
-// persists for the old session); a branch panel closes with its session too.
-watch(currSessionId, (newId, oldId) => {
-  if (oldId && newId !== oldId) {
-    closeThreadPanel();
-    sideChats.value = [];
-    sideChatMenuOpen.value = false;
-  }
-});
+// 2026-10-22 side-chat: switching sessions ends the temporary chat; a
+// branch panel belongs to the outgoing session and closes with it too.
+watch(
+  currSessionId,
+  (newId, oldId) => {
+    if (oldId && newId !== oldId) closeThreadPanel();
+  },
+  { flush: "sync" },
+);
 
 // 2026-09-01 (elecvoid243): opening a session acknowledges its
 // run-finished marker — the output is right there in the message list.
@@ -2693,7 +2615,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   viewportSessionToken += 1;
   viewportInteractionToken += 1;
-  // Leaving the page only hides the panel; side chats persist on the server.
+  // A side chat is temporary: leaving the page deletes its backend thread.
   closeThreadPanel();
   cancelAnimationFrame(bottomScrollFrame);
   window.clearTimeout(userScrollSettleTimer);
@@ -4341,61 +4263,6 @@ async function sendSystemCommand(command: string) {
   }
 }
 
-/**
- * 2026-10-23 direct-send: send a single review comment as its own user
- * message. The temporary store entry is formatted and removed synchronously
- * so it never reaches the composer's comment chip; other pending comments
- * are untouched.
- */
-function sendCommentMessage(commentId?: string): void {
-  const sid = currSessionId.value;
-  const sessionBusy = Boolean(sid && isSessionRunning(sid));
-  if (sending.value || sessionBusy) {
-    toast.error(tm("spcodeProjectLoad.fileBrowser.comment.sendBusy"));
-    return;
-  }
-  const text = fileComments.formatForLLM(commentId);
-  if (commentId) fileComments.deleteComment(commentId);
-  if (!text.trim()) return;
-  void sendCommentText(text);
-}
-
-async function sendCommentText(text: string): Promise<void> {
-  sending.value = true;
-  try {
-    let sessionId = currSessionId.value;
-    if (!sessionId) {
-      sessionId = await newSession();
-    }
-    const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts: MessagePart[] = [{ type: "plain", text }];
-    const selection = getSelectedProviderSelection();
-    writeSessionProviderSelection(sessionId, selection);
-    const { userRecord, botRecord } = createLocalExchange({
-      sessionId,
-      messageId,
-      parts: outgoingParts,
-    });
-    scrollToBottom();
-    sendMessageStream({
-      sessionId,
-      messageId,
-      parts: outgoingParts,
-      transport: transportMode.value,
-      enableStreaming: enableStreaming.value,
-      selectedProvider: selection?.providerId || "",
-      selectedModel: selection?.modelName || "",
-      thinkingEffort: getCurrentThinkingEffort(),
-      userRecord,
-      botRecord,
-    });
-  } catch (error) {
-    console.error("Failed to send comment message:", error);
-  } finally {
-    sending.value = false;
-  }
-}
-
 function buildOutgoingParts(text: string): MessagePart[] {
   const parts: MessagePart[] = [];
   if (replyTarget.value?.id != null) {
@@ -5284,95 +5151,85 @@ async function createThreadFromSelection() {
   }
 }
 
-/** Hide the thread panel. Side chats persist and can be reopened from the menu. */
+/**
+ * Close the thread panel. A side chat is temporary: its backend thread is
+ * deleted fire-and-forget, and the panel closes regardless of the request
+ * outcome. Branch threads keep their data.
+ */
 function closeThreadPanel() {
+  // Invalidate pending creation even before its temporary thread ID is known.
+  sideChatGeneration += 1;
+  creatingSideChat.value = false;
+  const thread = activeThread.value;
+  const isSideChat =
+    Boolean(thread) && sideChatThreadId.value === thread?.thread_id;
   threadPanelOpen.value = false;
   activeThread.value = null;
   sideChatThreadId.value = null;
+  if (isSideChat && thread) {
+    void chatApi.deleteThread(thread.thread_id).catch((error) => {
+      console.error("Failed to delete side chat thread:", error);
+    });
+  }
 }
 
-/** ThreadPanel ✕: hide the panel; the thread stays on disk. */
+/** ThreadPanel ✕: closing a side chat also deletes its backend thread. */
 function onThreadPanelToggle(open: boolean) {
   if (!open) closeThreadPanel();
 }
 
-/** Show a side chat, displacing the other right-hand sidebars. */
-function openSideChatPanel(thread: ChatThread) {
-  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
-  reasoningPanelOpen.value = false;
-  activeReasoningTarget.value = null;
-  refsSidebarOpen.value = false;
-  selectedRefs.value = null;
-  closeTodoMenu();
-  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
-  gitDiffSidebarOpen.value = false;
-  sideChatThreadId.value = thread.thread_id;
-  activeThread.value = thread;
-  threadPanelOpen.value = true;
-}
-
-/** Load the persistent side chats of the active main session. */
-async function loadSideChats(): Promise<void> {
-  const sessionId = currSessionId.value;
-  if (!sessionId) {
-    sideChats.value = [];
-    return;
-  }
-  loadingSideChats.value = true;
-  try {
-    const response = await chatApi.listSideThreads(sessionId);
-    if (currSessionId.value !== sessionId) return;
-    sideChats.value = (response.data?.data?.threads || []) as SideChatEntry[];
-  } catch (error) {
-    console.error("Failed to load side chats:", error);
-  } finally {
-    loadingSideChats.value = false;
-  }
-}
-
-function openSideChatMenu() {
-  if (creatingSideChat.value) return;
-  sideChatMenuOpen.value = true;
-  void loadSideChats();
-}
-
-function closeSideChatMenuOnOutsideClick(event: PointerEvent) {
-  if (!sideChatMenuOpen.value) return;
-  const target = event.target as Element | null;
-  if (target?.closest?.(".side-chat-entry")) return;
-  sideChatMenuOpen.value = false;
-}
-
-onMounted(() => {
-  document.addEventListener("pointerdown", closeSideChatMenuOnOutsideClick);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", closeSideChatMenuOnOutsideClick);
-});
-
-/** Create a persistent side chat: no parent message, zero inherited context. */
+/**
+ * Open a temporary side chat with no inherited context.
+ *
+ * Returns:
+ *   Resolves after creation is handled or a stale response is discarded.
+ */
 async function openSideChat(): Promise<void> {
-  if (!currSessionId.value || creatingSideChat.value) return;
-  sideChatMenuOpen.value = false;
+  const sessionId = currSessionId.value;
+  if (!sessionId || creatingSideChat.value) return;
+  if (threadPanelOpen.value) closeThreadPanel();
+  const generation = ++sideChatGeneration;
   creatingSideChat.value = true;
   try {
     const response = await chatApi.createThread({
-      session_id: currSessionId.value,
+      session_id: sessionId,
       side_chat: true,
     });
+    const thread = response.data?.data as ChatThread | undefined;
+    if (
+      generation !== sideChatGeneration ||
+      sessionId !== currSessionId.value
+    ) {
+      if (response.data?.status === "ok" && thread) {
+        void chatApi.deleteThread(thread.thread_id).catch((error) => {
+          console.error("Failed to delete side chat thread:", error);
+        });
+      }
+      return;
+    }
     if (response.data?.status !== "ok") {
       toast.error(response.data?.message || tm("thread.createFailed"));
       return;
     }
-    const thread = response.data?.data as ChatThread | undefined;
     if (!thread) {
       toast.error(tm("thread.createFailed"));
       return;
     }
-    openSideChatPanel(thread);
-    void loadSideChats();
+    // Mutual exclusion with the other right-hand sidebars.
+    chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+    reasoningPanelOpen.value = false;
+    activeReasoningTarget.value = null;
+    refsSidebarOpen.value = false;
+    selectedRefs.value = null;
+    closeTodoMenu();
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+    gitDiffSidebarOpen.value = false;
+    sideChatThreadId.value = thread.thread_id;
+    activeThread.value = thread;
+    threadPanelOpen.value = true;
   } catch (error) {
+    if (generation !== sideChatGeneration || sessionId !== currSessionId.value)
+      return;
     toast.error(
       isAxiosError(error)
         ? error.response?.data?.message || error.message
@@ -5380,18 +5237,13 @@ async function openSideChat(): Promise<void> {
     );
     console.error("Failed to create side chat:", error);
   } finally {
-    creatingSideChat.value = false;
+    if (generation === sideChatGeneration) creatingSideChat.value = false;
   }
 }
 
-function openSideChatThread(thread: SideChatEntry) {
-  sideChatMenuOpen.value = false;
-  openSideChatPanel(thread);
-}
-
 function openThreadPanel(thread: ChatThread) {
-  // Opening a branch displaces the side-chat panel; the side chat persists.
-  if (sideChatThreadId.value) closeThreadPanel();
+  // Opening a branch also invalidates any pending temporary side chat.
+  closeThreadPanel();
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
@@ -5509,10 +5361,16 @@ watch(
 // 与 RefsSidebar 互斥: 展开 todo 菜单 / 打开 Goal 抽屉时收起 refs;
 // 反向亦然。todo 菜单与 Goal 抽屉互不相干 (浮层 vs 侧栏), 不互斥。
 watch(todoMenuOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(goalSidebarOpen, (open) => {
-  if (open) refsSidebarOpen.value = false;
+  if (open) {
+    if (creatingSideChat.value) closeThreadPanel();
+    refsSidebarOpen.value = false;
+  }
 });
 watch(refsSidebarOpen, (open) => {
   if (open) {
@@ -5654,7 +5512,6 @@ async function deleteThread(thread: ChatThread) {
     if (activeThread.value?.thread_id === thread.thread_id) {
       closeThreadPanel();
     }
-    void loadSideChats();
   } catch (error) {
     console.error("Failed to delete thread:", error);
   } finally {
@@ -7528,14 +7385,11 @@ function toggleTheme() {
 
 /* 2026-10-22 side-chat: floating entry in the messages area. right: 44px
    clears the 28px marker rail (+4px inset) pinned to the panel edge. */
-.side-chat-entry {
+.side-chat-fab {
   position: absolute;
   top: 12px;
   right: 44px;
-  z-index: 7;
-}
-
-.side-chat-fab {
+  z-index: 6;
   display: grid;
   place-items: center;
   width: 32px;
@@ -7568,137 +7422,6 @@ function toggleTheme() {
 
 .side-chat-fab.is-busy :deep(.v-icon) {
   animation: side-chat-spin 1s linear infinite;
-}
-
-.side-chat-menu {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 280px;
-  max-height: 380px;
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 12px;
-  background: rgb(var(--v-theme-surface));
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
-  z-index: 8;
-}
-
-/* Bridge the 8px gap so moving from the button to the menu keeps it open. */
-.side-chat-menu::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: -8px;
-  height: 8px;
-}
-
-.side-chat-menu-new {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: transparent;
-  color: rgb(var(--v-theme-primary));
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.side-chat-menu-new:hover {
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-
-.side-chat-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: 8px;
-}
-
-.side-chat-menu-item.is-active {
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-
-.side-chat-menu-title {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 6px 8px 10px;
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.78);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.side-chat-menu-title span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.side-chat-menu-title:hover {
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.side-chat-menu-delete {
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  margin-right: 4px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.42);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 0.14s ease,
-    color 0.14s ease;
-}
-
-.side-chat-menu-item:hover .side-chat-menu-delete,
-.side-chat-menu-delete:focus-visible {
-  opacity: 1;
-}
-
-.side-chat-menu-delete:hover {
-  color: rgb(var(--v-theme-error));
-  background: rgba(var(--v-theme-error), 0.08);
-}
-
-.side-chat-menu-state {
-  padding: 8px 10px;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-
-.side-chat-menu-enter-active,
-.side-chat-menu-leave-active {
-  transition:
-    opacity 0.14s ease,
-    transform 0.14s ease;
-}
-
-.side-chat-menu-enter-from,
-.side-chat-menu-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 
 @keyframes side-chat-spin {
@@ -8007,15 +7730,6 @@ kbd {
 }
 
 @media (max-width: 760px) {
-  .side-chat-entry {
-    top: 10px;
-    right: 38px;
-  }
-
-  .side-chat-menu {
-    width: min(280px, calc(100vw - 24px));
-  }
-
   .chat-sidebar {
     top: 50px !important;
     height: calc(100vh - 50px) !important;

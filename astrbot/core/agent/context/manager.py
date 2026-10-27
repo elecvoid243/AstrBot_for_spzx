@@ -117,6 +117,10 @@ class ContextManager:
 
             return result
         except Exception as e:
+            from astrbot.core.agent_team_execution import ProcessPersistenceError
+
+            if isinstance(e, ProcessPersistenceError):
+                raise
             logger.error(f"Error during context processing: {e}", exc_info=True)
             return messages
 

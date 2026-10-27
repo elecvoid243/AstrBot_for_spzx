@@ -95,7 +95,7 @@
     "unconnectedRef": "Ссылается на неподключённый узел {id}",
     "variableChips": "Переменные",
     "upstreamChip": "Вставить результат предшественника {id}",
-    "missingMember": "Участник, привязанный к узлу, был удалён",
+    "missingMember": "Участник отсутствует — нажмите, чтобы исправить",
     "memberMissing": "Нет участника",
     "inDegree": "Входящие зависимости",
     "cycleDetected": "Обнаружен цикл: {path}",
@@ -121,7 +121,6 @@
     "downstreamList": "Исходящие узлы",
     "relationsEmpty": "Нет",
     "saveAndRun": "Сохранить и запустить",
-    "missingMember": "Участник отсутствует — нажмите, чтобы исправить",
     "handleTarget": "Входящий коннектор",
     "handleSource": "Исходящий коннектор",
     "deleteEdgeConfirm": "Удалить соединение от {from} к {to}?",
@@ -214,5 +213,19 @@
     "speakingHint": "Отправка...",
     "empty": "Пока нет сообщений",
     "systemEntry": "Система"
+  },
+  "autonomous": {
+    "create": "New Autonomous Team",
+    "title": "Autonomous Team",
+    "explanation": "Pin the coordinator and allowed role templates, then enter a goal to start a run.",
+    "coordinator": "Coordinator role",
+    "allowedRoles": "Allowed role templates",
+    "maxMembers": "Maximum members",
+    "maxTasks": "Maximum member tasks",
+    "approval": "Final version approval question (optional)",
+    "waiting": "Waiting for members",
+    "dispatched": "Dispatched",
+    "name": "Team name",
+    "coordinatorCount": "Includes the coordinator."
   }
 }

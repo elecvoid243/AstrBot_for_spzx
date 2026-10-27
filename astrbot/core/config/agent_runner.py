@@ -6,6 +6,88 @@ from typing import Any
 AGENT_RUNNER_TYPES = ("local", "dify", "coze", "dashscope", "deerflow")
 THIRD_PARTY_AGENT_RUNNER_TYPES = AGENT_RUNNER_TYPES[1:]
 
+
+def get_agent_runner_capability_issues(
+    runner: dict, requirements: dict[str, str]
+) -> list[dict]:
+    """Locate unsupported capabilities at their declaring fields.
+
+    Args:
+        runner: Actual integrated runner capability metadata.
+        requirements: Field paths mapped to declared or intrinsic capabilities.
+
+    Returns:
+        Field diagnostics shared by role previews and task admission.
+    """
+    return [
+        {
+            "path": path,
+            "code": "INCOMPATIBLE",
+            "message": f"{runner['label']} does not support {capability}",
+        }
+        for path, capability in requirements.items()
+        if capability not in runner["capabilities"]
+    ]
+
+
+def get_agent_runner_capabilities(agent_runner: dict) -> dict:
+    """Describe only the recovery and execution protocols AstrBot integrates.
+
+    Args:
+        agent_runner: Selected runner type and its effective configuration.
+
+    Returns:
+        Public capability metadata, without credentials or conversation history.
+        Remote queries never imply access to the remote internal tool checkpoints.
+    """
+    runner_type = agent_runner.get("runner_type", "local")
+    api_type = agent_runner.get("config", {}).get("dify_api_type", "chat")
+    capabilities = []
+    modalities = []
+    recovery = "external_boundary"
+    if runner_type == "local":
+        capabilities = ["internal_checkpoint", "task_tools", "task_result"]
+        recovery = "internal_checkpoint"
+    elif runner_type == "dify" and api_type == "workflow":
+        capabilities = ["remote_query", "task_result"]
+        recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type == "coze":
+        if agent_runner.get("config", {}).get("auto_save_history", True):
+            capabilities = ["remote_query"]
+            recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type == "deerflow":
+        capabilities = ["remote_query"]
+        recovery = "remote_query"
+        modalities = ["image"]
+    elif runner_type in {"dify", "deerflow"}:
+        modalities = ["image"]
+    return {
+        "type": runner_type,
+        "label": f"dify ({api_type})" if runner_type == "dify" else runner_type,
+        "capabilities": capabilities,
+        "recovery": recovery,
+        "modalities": modalities,
+        "binding": {
+            key: value
+            for key, value in agent_runner.get("config", {}).items()
+            if key
+            in {
+                "dify_api_base",
+                "dify_api_type",
+                "coze_api_base",
+                "bot_id",
+                "auto_save_history",
+                "dashscope_app_id",
+                "dashscope_app_type",
+                "deerflow_api_base",
+                "deerflow_assistant_id",
+            }
+        },
+    }
+
+
 AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
     "local": {
         "model": {
@@ -17,6 +99,15 @@ AGENT_RUNNER_CONFIG_DEFAULTS: dict[str, dict[str, Any]] = {
             "persona_id": "default",
             "safety_mode": True,
             "safety_mode_strategy": "system_prompt",
+        },
+        "ask_user_choice": {
+            "enabled": True,
+            "timeout_seconds": 1800,
+            "timeout_fallback_message": (
+                "[SYSTEME NOTICE] User did not respond within {timeout} seconds. "
+                "Immediately stop all behavior and wait for user's next insturction. "
+                "No speculating on user intentions."
+            ),
         },
         "compression": {
             "max_turns": -1,
@@ -212,4 +303,8 @@ def normalize_agent_runner(agent_runner: object) -> dict[str, Any]:
             normalized["compression"]["target_usage_ratio"] = 0.0
         if normalized["compression"]["target_usage_ratio"] > 0.8:
             normalized["compression"]["target_usage_ratio"] = 0.8
+        timeout_seconds = normalized["ask_user_choice"]["timeout_seconds"]
+        normalized["ask_user_choice"]["timeout_seconds"] = min(
+            3600, max(30, timeout_seconds)
+        )
     return {"runner_type": runner_type, "config": normalized}

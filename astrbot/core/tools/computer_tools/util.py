@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent_team_execution import current_team_execution
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.db import BaseDatabase
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
@@ -57,12 +58,25 @@ def is_local_runtime(context: ContextWrapper[AstrAgentContext]) -> bool:
 def check_admin_permission(
     context: ContextWrapper[AstrAgentContext], operation_name: str
 ) -> str | None:
+    """Check current computer permission without promoting the sender's role.
+
+    Args:
+        context: Tool-call context with the original sender identity.
+        operation_name: Human-readable operation for a permission error.
+
+    Returns:
+        A permission error, or None when the operation is permitted.
+    """
     cfg = context.context.context.get_config(
         umo=context.context.event.unified_msg_origin
     )
     provider_settings = cfg.get("provider_settings", {})
     require_admin = provider_settings.get("computer_use_require_admin", True)
-    if require_admin and context.context.event.role != "admin":
+    is_admin = context.context.event.role == "admin"
+    execution = current_team_execution.get()
+    if is_admin and execution is not None and execution.profile_snapshot is not None:
+        is_admin = context.context.event.get_sender_id() in cfg.get("admins_id", [])
+    if require_admin and not is_admin:
         return (
             f"error: Permission denied. {operation_name} is only allowed for admin users. "
             "Tell user to add their user ID under `AstrBot WebUI -> Config -> "

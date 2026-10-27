@@ -223,11 +223,16 @@ class WecomAIBotAdapter(Platform):
                         self.initial_respond_text,
                         False,
                     )
-                    return await self.api_client.encrypt_message(
+                    encrypted = await self.api_client.encrypt_message(
                         resp,
                         callback_params["nonce"],
                         callback_params["timestamp"],
                     )
+                    pending = self.queue_mgr.get_pending_response(stream_id)
+                    if pending is not None:
+                        # A queued message alone does not advertise a pollable stream.
+                        pending["source_response_available"] = bool(encrypted)
+                    return encrypted
             except Exception as e:
                 logger.error("处理消息时发生异常: %s", e)
                 return None

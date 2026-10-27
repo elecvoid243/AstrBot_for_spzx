@@ -11,7 +11,9 @@ class:
 """
 
 import asyncio
+import copy
 from asyncio import Queue
+from contextvars import copy_context
 
 from astrbot.core import logger
 from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
@@ -41,12 +43,12 @@ class EventBus:
             event: AstrMessageEvent = await self.event_queue.get()
             # Agent team node turns (spec §2.3) carry a per-turn execution
             # token. Resolve it BEFORE the usual umo-based routing so the turn
-            # runs on the binding's own config profile scheduler. Unknown or
-            # foreign tokens fall back to default routing; the runner owns
-            # token unregistration, so resolution never consumes the token.
+            # runs on the binding's own config profile scheduler. Expired or
+            # foreign tokens must not start a replacement default invocation.
             scheduler = None
+            binding = None
             token = event.get_extra("execution_token")
-            if token:
+            if isinstance(token, str) and token:
                 from astrbot.core.agent_team_execution import (
                     AgentTeamExecutionRegistry,
                 )
@@ -54,25 +56,42 @@ class EventBus:
                 binding = AgentTeamExecutionRegistry.resolve(
                     token, umo=event.unified_msg_origin
                 )
-                if binding is None:
-                    logger.warning(
-                        "agent team execution token invalid or foreign (umo=%s); ignoring",
-                        event.unified_msg_origin,
-                    )
-                else:
+                if binding is not None:
+                    binding.message_id = str(event.message_obj.message_id)
+                    binding.source_umo = event.unified_msg_origin
+                    event.unified_msg_origin = binding.umo
                     event.set_extra("agent_team_execution", binding)
+                    if binding.caller is not None:
+                        event.role = "member"
+                        event.set_extra("_api_key_allow_admin_role", False)
+                        event.set_extra("asset_caller", binding.caller)
                     if binding.config_id:
                         scheduler = self.pipeline_scheduler_mapping.get(
                             binding.config_id
                         )
-                        if scheduler is None:
-                            logger.warning(
-                                "agent team execution config %r not found; falling back to umo routing",
-                                binding.config_id,
+                if binding is None or (binding.config_id and scheduler is None):
+                    logger.warning(
+                        "Agent team invocation expired, foreign, or missing its profile (umo=%s).",
+                        event.unified_msg_origin,
+                    )
+                    from astrbot.core.platform.sources.webchat.webchat_event import (
+                        WebChatMessageEvent,
+                    )
+
+                    if isinstance(event, WebChatMessageEvent):
+                        await event.send(
+                            event.plain_result(
+                                "Team invocation is no longer available."
                             )
+                        )
+                        await event.send(None)
+                    continue
             conf_info = self.astrbot_config_mgr.get_conf_info(event.unified_msg_origin)
             conf_id = conf_info["id"]
             conf_name = conf_info.get("name") or conf_id
+            if binding is not None:
+                binding.config_id = binding.config_id or conf_id
+                conf_name = binding.config_id
             self._print_event(event, conf_name)
             if scheduler is None:
                 scheduler = self.pipeline_scheduler_mapping.get(conf_id)
@@ -81,7 +100,51 @@ class EventBus:
                     f"PipelineScheduler not found for id: {conf_id}, event ignored."
                 )
                 continue
-            task = asyncio.create_task(scheduler.execute(event))
+            if binding is not None and binding.profile_snapshot is not None:
+                from astrbot.core.pipeline.context import PipelineContext
+
+                # A v2 run owns its settings, while providers and plugin services
+                # remain live references subject to current authorization.
+                frozen_config = dict.__new__(type(scheduler.ctx.astrbot_config))
+                frozen_config.__dict__.update(vars(scheduler.ctx.astrbot_config))
+                frozen_config.update(copy.deepcopy(dict(scheduler.ctx.astrbot_config)))
+                frozen_config.update(copy.deepcopy(binding.profile_snapshot))
+                # Waking assigns the event role from the current profile authority.
+                frozen_config["admins_id"] = copy.deepcopy(
+                    self.astrbot_config_mgr.confs[binding.config_id or conf_id].get(
+                        "admins_id", []
+                    )
+                )
+                runner = frozen_config.get("agent_runner", {})
+                if runner.get("runner_type") != "local":
+                    live_runner = self.astrbot_config_mgr.confs[
+                        binding.config_id or conf_id
+                    ].get("agent_runner", {})
+                    for credential in (
+                        "dify_api_key",
+                        "coze_api_key",
+                        "dashscope_api_key",
+                        "deerflow_api_key",
+                        "deerflow_auth_header",
+                    ):
+                        if credential in live_runner.get("config", {}):
+                            runner.setdefault("config", {})[credential] = live_runner[
+                                "config"
+                            ][credential]
+                scheduler = PipelineScheduler(
+                    PipelineContext(
+                        astrbot_config=frozen_config,
+                        plugin_manager=scheduler.ctx.plugin_manager,
+                        astrbot_config_id=binding.config_id or conf_id,
+                        db_helper=scheduler.ctx.db_helper,
+                    )
+                )
+                await scheduler.initialize()
+            from astrbot.core.agent_team_execution import current_team_execution
+
+            execution_context = copy_context()
+            execution_context.run(current_team_execution.set, binding)
+            task = execution_context.run(asyncio.create_task, scheduler.execute(event))
             self._pending_tasks.add(task)
             task.add_done_callback(self._on_task_done)
 

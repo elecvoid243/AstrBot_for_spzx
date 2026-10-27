@@ -4,6 +4,7 @@
 // `{ status: 'error', message, data? }` envelope body, so axios rejects with
 // the response attached. The 429 rate-limit interceptor instead rejects with
 // `data.message` as a bare string (see api/http.ts normalizeAxiosError).
+// Typed HTTP 422 validation errors carry FastAPI's `detail` entries.
 // Callers use this in catch blocks so users see the backend reason instead of
 // axios's generic "Request failed with status code N".
 
@@ -26,9 +27,9 @@ function asFields(value: unknown): ApiErrorField[] {
   return value.filter(
     (field): field is ApiErrorField =>
       !!field &&
-      typeof field === 'object' &&
-      typeof field.path === 'string' &&
-      typeof field.message === 'string',
+      typeof field === "object" &&
+      typeof field.path === "string" &&
+      typeof field.message === "string",
   );
 }
 
@@ -36,7 +37,8 @@ function asFields(value: unknown): ApiErrorField[] {
  * Extract the user-facing reason and structured fields from an API failure.
  *
  * Resolution order: the axios error envelope message (`response.data.message`)
- * → plain-string rejection (the 429 case) → `Error.message` → the fallback.
+ * → typed validation fallback with fields → plain-string rejection (the 429
+ * case) → `Error.message` → the fallback.
  * The envelope's `response.data.data.fields` array is passed through whenever
  * present, regardless of which message branch resolved.
  *
@@ -48,14 +50,35 @@ function asFields(value: unknown): ApiErrorField[] {
  * Returns:
  *   `{ message, fields }` with a non-empty message and `fields: []` default.
  */
-export function extractApiError(err: unknown, fallback: string): ExtractedApiError {
-  const data = (err as { response?: { data?: any } } | null | undefined)?.response?.data;
-  const fields = asFields(data?.data?.fields);
+export function extractApiError(
+  err: unknown,
+  fallback: string,
+): ExtractedApiError {
+  const data = (err as { response?: { data?: any } } | null | undefined)
+    ?.response?.data;
+  let fields = asFields(data?.data?.fields);
+  if (!fields.length && Array.isArray(data?.detail)) {
+    fields = data.detail.flatMap((item: any) => {
+      if (
+        !item ||
+        !Array.isArray(item.loc) ||
+        typeof item.msg !== "string" ||
+        !item.loc.every(
+          (part: unknown) =>
+            typeof part === "string" || typeof part === "number",
+        )
+      )
+        return [];
+      return [{ path: item.loc.join("."), message: item.msg }];
+    });
+  }
 
-  let message = '';
-  if (data && typeof data.message === 'string' && data.message.trim()) {
+  let message = "";
+  if (data && typeof data.message === "string" && data.message.trim()) {
     message = data.message;
-  } else if (typeof err === 'string' && err.trim()) {
+  } else if (fields.length && Array.isArray(data?.detail)) {
+    message = fallback;
+  } else if (typeof err === "string" && err.trim()) {
     message = err;
   } else if (err instanceof Error && err.message.trim()) {
     message = err.message;

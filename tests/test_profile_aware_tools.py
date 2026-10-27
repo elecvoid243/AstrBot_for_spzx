@@ -58,8 +58,17 @@ class TestShipyardNeoBooterCapabilities:
 
 
 def _make_config(booter_type: str = "shipyard_neo"):
+    """Supply sandbox settings and the default file tool behavior.
+
+    Args:
+        booter_type: Sandbox implementation used by the browser capability test.
+
+    Returns:
+        A build configuration with the provider settings consumed by assembly.
+    """
     return SimpleNamespace(
         sandbox_cfg={"booter": booter_type},
+        provider_settings={},
     )
 
 

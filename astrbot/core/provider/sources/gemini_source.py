@@ -16,6 +16,10 @@ import astrbot.core.message.components as Comp
 from astrbot import logger
 from astrbot.api.provider import Provider
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart
+from astrbot.core.agent_team_execution import (
+    apply_model_output_limit,
+    current_model_usage,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
@@ -323,7 +327,13 @@ class ProviderGoogleGenAI(Provider):
                 # silently no-op and the level would never reach the API.
                 thinking_config.thinking_level = level
 
+        apply_model_output_limit(payloads, "max_tokens")
         return types.GenerateContentConfig(
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=1)
+            )
+            if current_model_usage.get() is not None
+            else None,
             system_instruction=system_instruction,
             temperature=temperature,
             max_output_tokens=payloads.get("max_tokens")
@@ -510,19 +520,45 @@ class ProviderGoogleGenAI(Provider):
 
     def _extract_usage(
         self, usage_metadata: types.GenerateContentResponseUsageMetadata
-    ) -> TokenUsage:
+    ) -> TokenUsage | None:
         """Extract usage from response metadata.
 
         `prompt_token_count` includes tokens served from cache, so subtract
         `cached_content_token_count` to avoid double-counting cached input
         (matching the OpenAI provider's TokenUsage accounting).
+
+        Args:
+            usage_metadata: Native provider token counts, including thinking.
+
+        Returns:
+            Normalized usage, or None for incomplete team-call accounting.
         """
+        if (
+            current_model_usage.get() is not None
+            and usage_metadata.total_token_count is None
+            and (
+                usage_metadata.prompt_token_count is None
+                or usage_metadata.candidates_token_count is None
+                and usage_metadata.thoughts_token_count is None
+            )
+        ):
+            return None
         prompt_tokens = usage_metadata.prompt_token_count or 0
+        if current_model_usage.get() is not None:
+            prompt_tokens += usage_metadata.tool_use_prompt_token_count or 0
         cached = usage_metadata.cached_content_token_count or 0
         return TokenUsage(
             input_other=prompt_tokens - cached,
             input_cached=cached,
-            output=usage_metadata.candidates_token_count or 0,
+            output=(
+                max(0, usage_metadata.total_token_count - prompt_tokens)
+                if current_model_usage.get() is not None
+                and usage_metadata.total_token_count is not None
+                else (usage_metadata.candidates_token_count or 0)
+                + (usage_metadata.thoughts_token_count or 0)
+                if current_model_usage.get() is not None
+                else usage_metadata.candidates_token_count or 0
+            ),
         )
 
     @staticmethod

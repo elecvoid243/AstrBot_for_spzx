@@ -99,6 +99,7 @@ const declarations = ast.statements
         call.expression.getText(ast) === "watch" &&
         (call.arguments[0].getText(ast).includes("messagesListShell") ||
           (call.arguments[0].getText(ast) === "currSessionId" &&
+            call.arguments[1].getText(ast).includes("viewportSessionToken") &&
             call.arguments[2]?.getText(ast).includes('flush: "sync"')))
       );
     }

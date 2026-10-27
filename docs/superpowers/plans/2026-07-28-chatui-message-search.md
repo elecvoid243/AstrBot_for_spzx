@@ -402,7 +402,7 @@ Script key logic:
 - performSearch on Enter key
 - toggleGroup for expand/collapse
 - navigateToMessage closes dialog and router.push with scrollToIndex query param
-- highlightSnippet uses <mark> tags
+- highlightSnippet uses `<mark>` tags
 
 Style:
 - Fixed overlay, centered, ~480px wide, max-height 450px
@@ -415,7 +415,7 @@ Full implementation details available in the design spec. Key functions to imple
 - performSearch(): call messageApi.searchMessages, handle loading/error states
 - toggleGroup(conv): toggle expandedGroups[conv.session_id]
 - navigateToMessage(conv, match): closeDialog + router.push with scrollToIndex
-- highlightSnippet(snippet, keyword): escapeHtml + regex replace with <mark>
+- highlightSnippet(snippet, keyword): escapeHtml + regex replace with `<mark>`
 
 - [ ] **Step 2: Typecheck**
 

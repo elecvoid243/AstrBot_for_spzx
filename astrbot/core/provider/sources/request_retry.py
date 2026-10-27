@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TypeVar
+from uuid import uuid4
 
 from tenacity import (
     AsyncRetrying,
@@ -11,6 +12,10 @@ from tenacity import (
 )
 
 from astrbot import logger
+from astrbot.core.agent_team_execution import (
+    current_model_usage,
+    current_team_execution,
+)
 from astrbot.core.utils.config_number import coerce_int_config
 from astrbot.core.utils.network_utils import is_connection_error
 
@@ -123,6 +128,24 @@ async def retry_provider_request(
 
     async for attempt in retrying:
         with attempt:
+            receipt = current_model_usage.get()
+            execution = current_team_execution.get()
+            if (
+                receipt
+                and execution
+                and execution.begin_usage
+                and execution.report_usage
+            ):
+                if receipt.get("transport_started"):
+                    # The failed transport may have consumed tokens. Preserve it
+                    # before admitting another real request under the same invocation.
+                    await execution.report_usage(receipt["receipt_id"], {})
+                    replacement = await execution.begin_usage(
+                        {**receipt["request"], "receipt_id": uuid4().hex}
+                    )
+                    receipt.clear()
+                    receipt.update(replacement)
+                receipt["transport_started"] = True
             return await request_factory()
 
     raise RuntimeError("Provider request retry loop exited unexpectedly.")

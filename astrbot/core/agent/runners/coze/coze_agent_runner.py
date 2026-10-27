@@ -43,6 +43,7 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         self.api_key = provider_config.get("coze_api_key", "")
         if not self.api_key:
@@ -115,7 +116,37 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
                 yield resp
 
     async def _execute_coze_request(self):
-        """执行 Coze 请求的核心逻辑"""
+        """Execute or query the original Coze chat without repeating creation.
+
+        Yields:
+            Normal Agent responses from the original chat.
+
+        Raises:
+            ValueError: A completed original answer cannot be confirmed.
+        """
+        if self.remote_checkpoint:
+            restored, queried = await self.remote_checkpoint.restore(self.api_client)
+            if restored or queried:
+                if queried:
+                    answer = "".join(
+                        message.get("content", "")
+                        for message in queried["messages"]
+                        if message.get("role") == "assistant"
+                        and message.get("type") == "answer"
+                    )
+                    if not answer:
+                        raise ValueError(
+                            "Coze completed chat has no confirmed answer messages"
+                        )
+                    restored = LLMResponse(
+                        role="assistant", result_chain=MessageChain().message(answer)
+                    )
+                    await self.remote_checkpoint.complete(restored, queried)
+                self.final_llm_resp = restored
+                assert restored is not None and restored.result_chain is not None
+                async for response in self._finish_recovered_response(restored):
+                    yield response
+                return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
         image_urls = self.req.image_urls or []
@@ -251,6 +282,11 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
         # 执行 Coze API 请求
         accumulated_content = ""
         message_started = False
+        chat_completed = False
+        completed_chat = {}
+        raw_messages = []
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
 
         async for chunk in self.api_client.chat_messages(
             bot_id=self.bot_id,
@@ -265,6 +301,14 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
             data = chunk.get("data", {})
 
             if event_type == "conversation.chat.created":
+                if self.remote_checkpoint:
+                    await self.remote_checkpoint.save_identity(
+                        {
+                            "chat_id": data["id"],
+                            "conversation_id": data["conversation_id"],
+                            "bot_id": data.get("bot_id", self.bot_id),
+                        }
+                    )
                 if isinstance(data, dict) and "conversation_id" in data:
                     await sp.put_async(
                         scope="umo",
@@ -295,11 +339,14 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
                         )
 
             elif event_type == "conversation.message.completed":
+                raw_messages.append(data)
                 # 消息完成
                 logger.debug("Coze message completed")
                 message_started = True
 
             elif event_type == "conversation.chat.completed":
+                chat_completed = True
+                completed_chat = data
                 # 对话完成
                 logger.debug("Coze chat completed")
                 break
@@ -318,6 +365,12 @@ class CozeAgentRunner(BaseAgentRunner[TContext]):
         # 创建最终响应
         chain = MessageChain(chain=[Comp.Plain(accumulated_content)])
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+        if self.remote_checkpoint:
+            if not chat_completed:
+                raise ValueError("Coze stream ended without a confirmed completed chat")
+            await self.remote_checkpoint.complete(
+                self.final_llm_resp, {"chat": completed_chat, "messages": raw_messages}
+            )
         self._transition_state(AgentState.DONE)
 
         try:

@@ -1,11 +1,12 @@
 import copy
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Any, Generic
+from contextvars import ContextVar
+from typing import Any, Generic, Literal
 
 import jsonschema
 import mcp
 from deprecated import deprecated
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.dataclasses import dataclass
 
 from astrbot.core.message.message_event_result import MessageEventResult
@@ -14,6 +15,103 @@ from .run_context import ContextWrapper, TContext
 
 ParametersType = dict[str, Any]
 ToolExecResult = str | mcp.types.CallToolResult
+
+# External adapters can forward this identity to a remote operation ledger.
+# A human-authorized replacement receives a new identity; safe recovery keeps it.
+current_tool_invocation: ContextVar[str | None] = ContextVar(
+    "current_tool_invocation", default=None
+)
+# A recovery denial must not become a replacement result for an unknown effect.
+current_tool_recovery_retry: ContextVar[bool] = ContextVar(
+    "current_tool_recovery_retry", default=False
+)
+
+
+def has_tool_recovery(declaration: dict | None) -> bool:
+    """Recognize explicit adapter guarantees without inferring a retry outcome.
+
+    Args:
+        declaration: Original serializable guarantees saved before execution.
+
+    Returns:
+        Whether an adapter supplied a query, idempotency key or safe retry contract.
+        A query still has to prove its outcome before the call can continue.
+    """
+    return bool(
+        declaration
+        and any(
+            declaration.get(key)
+            for key in ("query", "safe_retry", "idempotency_key_arg")
+        )
+    )
+
+
+class ToolRecoveryResult(BaseModel):
+    """Authoritative evidence and the complete original ordered result sequence."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    status: Literal["succeeded", "failed", "not_executed", "unknown"]
+    evidence: str = Field(min_length=1)
+    results: list[mcp.types.CallToolResult] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "ToolRecoveryResult":
+        """Require actual output for a proven completed invocation.
+
+        Returns:
+            Validated authoritative outcome.
+
+        Raises:
+            ValueError: A terminal outcome lacks its original complete output.
+        """
+        if self.status in {"succeeded", "failed"} and not self.results:
+            raise ValueError("A completed tool query must provide its complete result")
+        if self.status == "failed" and not self.results[-1].isError:
+            raise ValueError("A failed tool query must end with an error result")
+        if self.status == "succeeded" and self.results[-1].isError:
+            raise ValueError("A successful tool query cannot end with an error result")
+        return self
+
+
+@dataclass
+class ToolRecovery:
+    """Explicit external adapter contract; absent declarations forbid replay.
+
+    The query receives the authorized context, durable invocation identity and
+    original arguments. ``not_executed`` must prove that no effect occurred.
+    ``safe_retry`` promises replay is safe even after an uncertain partial call.
+    Adapters must bump version when changing the meaning of these guarantees.
+
+    Args:
+        version: Identity of the adapter's recovery contract.
+        idempotency_key_arg: Hidden handler argument receiving the original durable
+            identity. The adapter guarantees the key deduplicates the whole call.
+        safe_retry: Explicit guarantee that replay after partial effects is safe.
+        query: Authoritative status query. Completed outcomes supply the complete
+            original ordered result sequence, including any saved partial prefix.
+            Unknown outcomes never authorize automatic replay.
+    """
+
+    version: str = "1"
+    idempotency_key_arg: str | None = None
+    safe_retry: bool = False
+    query: (
+        Callable[[ContextWrapper, str, dict], Awaitable[ToolRecoveryResult]] | None
+    ) = None
+
+    @property
+    def declaration(self) -> dict:
+        """Return the serializable guarantees frozen before external execution.
+
+        Returns:
+            Capability identity without an unserializable callback or credentials.
+        """
+        return {
+            "version": self.version,
+            "idempotency_key_arg": self.idempotency_key_arg,
+            "safe_retry": self.safe_retry,
+            "query": self.query is not None,
+        }
 
 
 @dataclass
@@ -63,6 +161,9 @@ class FunctionTool(ToolSchema, Generic[TContext]):
     Declare this tool as a background task. Background tasks return immediately
     with a task identifier while the real work continues asynchronously.
     """
+
+    recovery: ToolRecovery | None = None
+    """Explicit idempotency, authoritative query or safe replay guarantees."""
 
     def __repr__(self) -> str:
         return f"FuncTool(name={self.name}, parameters={self.parameters}, description={self.description})"

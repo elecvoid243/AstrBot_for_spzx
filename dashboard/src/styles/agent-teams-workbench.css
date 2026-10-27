@@ -1,0 +1,130 @@
+.workbench-navigation {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.workbench-content,
+.workbench-legacy {
+  min-width: 0;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 16px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.workbench-asset-navigation {
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  padding-inline: 12px;
+}
+
+.workbench-panel,
+.workbench-legacy {
+  padding: 20px;
+}
+
+.workbench-legacy > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+
+.agent-teams-page .v-card,
+.workbench-dialog .v-card {
+  border-radius: 16px;
+}
+
+.agent-teams-page .v-card-title,
+.workbench-dialog .v-card-title,
+.agent-teams-page .v-alert__content,
+.workbench-dialog .v-alert__content {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.agent-teams-page .v-btn,
+.workbench-dialog .v-btn {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.agent-teams-page .v-card-actions,
+.workbench-dialog .v-card-actions {
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 12px 16px;
+}
+
+.workbench-dialog .v-card-text {
+  min-height: 0;
+}
+
+.workbench-dialog .v-card-actions {
+  flex-shrink: 0;
+}
+
+.graph-workbench .vue-flow__controls-button {
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  border-bottom-color: rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.graph-workbench .vue-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.graph-workbench .vue-flow__controls-button:hover {
+  background: rgba(var(--v-theme-primary), 0.12);
+}
+
+.graph-workbench .vue-flow__minimap {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 8px;
+}
+
+.graph-workbench .vue-flow__minimap-node {
+  fill: rgba(var(--v-theme-primary), 0.4);
+}
+
+.graph-workbench .vue-flow__minimap-mask {
+  fill: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.graph-workbench .at-node-member-dot {
+  border-radius: 2px;
+}
+
+@media (max-width: 600px) {
+  .workbench-panel,
+  .workbench-legacy {
+    padding: 12px;
+  }
+
+  .workbench-dialog .v-overlay__content {
+    margin: 8px !important;
+    width: calc(100% - 16px) !important;
+    max-width: calc(100% - 16px) !important;
+    max-height: calc(100% - 16px) !important;
+  }
+
+  .workbench-dialog .v-card-text {
+    padding: 16px;
+  }
+
+  .workbench-dialog .v-card-title {
+    font-size: 1.25rem !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-teams-page *,
+  .agent-teams-page *::before,
+  .agent-teams-page *::after,
+  .workbench-dialog *,
+  .workbench-dialog *::before,
+  .workbench-dialog *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

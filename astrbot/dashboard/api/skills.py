@@ -6,6 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from astrbot.core import logger
+from astrbot.core.skills.skill_guide import (
+    build_active_payload,
+    guide_state,
+    resolve_active_skills,
+    resolve_all_skills,
+    validate_load_skill,
+)
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.schemas import (
@@ -559,3 +566,73 @@ async def delete_dashboard_neo_skill_release(
 ):
     body = await _json_or_empty(request)
     return await _run(lambda: service.delete_neo_release(body))
+
+
+# --- Skill guide (one-shot skill nudges) ------------------------------------
+
+
+@router.get("/skill-guide/active")
+async def skill_guide_active(
+    umo: str,
+    _auth: AuthContext = Depends(require_skill_scope),
+    service: SkillsService = Depends(get_service),
+):
+    """List the skills effective for a session, for the guide menu.
+
+    Args:
+        umo: Unified message origin of the session.
+    """
+    context = service.core_lifecycle.star_context
+    try:
+        skills, persona = await run_maybe_async(
+            lambda: resolve_active_skills(context, umo),
+        )
+    except Exception as exc:
+        logger.error(f"skill guide: failed to resolve active skills: {exc}")
+        return error("resolve failed")
+    return ok(build_active_payload(skills, persona))
+
+
+@router.post("/skill-guide/load")
+async def skill_guide_load(
+    request: Request,
+    _auth: AuthContext = Depends(require_skill_scope),
+    service: SkillsService = Depends(get_service),
+):
+    """Queue a one-shot skill nudge for a session.
+
+    Manual loads may target any skill on disk (not only session-active
+    ones); the guidance prompt only needs the SKILL.md path.
+    """
+    body = await _json_or_empty(request)
+    umo = str(body.get("umo") or "").strip()
+    skill_name = str(body.get("skill_name") or "").strip()
+    if not umo:
+        return error("missing umo")
+    if not skill_name:
+        return error("missing skill_name")
+
+    context = service.core_lifecycle.star_context
+    try:
+        all_skills = await run_maybe_async(lambda: resolve_all_skills(context, umo))
+    except Exception as exc:
+        logger.error(f"skill guide: failed to resolve skills: {exc}")
+        return error("resolve failed")
+    if err := validate_load_skill(all_skills, skill_name):
+        return error(err)
+    guide_state.queue(umo, skill_name)
+    return ok({"skill_name": skill_name, "queued": True})
+
+
+@router.post("/skill-guide/clear")
+async def skill_guide_clear(
+    request: Request,
+    _auth: AuthContext = Depends(require_skill_scope),
+    service: SkillsService = Depends(get_service),
+):
+    """Drop the unconsumed guide queue of a session (undo)."""
+    body = await _json_or_empty(request)
+    umo = str(body.get("umo") or "").strip()
+    if not umo:
+        return error("missing umo")
+    return ok({"cleared": guide_state.clear(umo)})

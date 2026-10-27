@@ -3,8 +3,8 @@
 Covers `AgentTeamExecutionRegistry` / `NodeExecutionBinding`: per-turn token
 issuance, umo-scoped resolution (forged/foreign token defense), and
 runner-owned lifecycle (resolve does not unregister; unregister is idempotent).
-Also covers EventBus token routing (profile scheduler selection, fallback to
-umo-based routing) and the webchat adapter `execution_token` passthrough.
+Also covers EventBus token routing (profile selection and expired invocation
+rejection) and the webchat adapter `execution_token` passthrough.
 """
 
 import asyncio
@@ -268,7 +268,7 @@ async def test_eventbus_routes_token_event_to_profile_scheduler():
 
 
 @pytest.mark.asyncio
-async def test_eventbus_foreign_token_falls_back_to_default():
+async def test_eventbus_foreign_token_is_rejected():
     # Token is bound to UMO but the event arrives from another conversation.
     token = AgentTeamExecutionRegistry.register(make_binding())
     bus, default, profile = make_bus()
@@ -276,37 +276,42 @@ async def test_eventbus_foreign_token_falls_back_to_default():
         "webchat:FriendMessage:conv-2", extras={"execution_token": token}
     )
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     assert event.get_extra("agent_team_execution") is None
     AgentTeamExecutionRegistry.unregister(token)
 
 
 @pytest.mark.asyncio
-async def test_eventbus_unknown_token_falls_back_to_default():
+async def test_eventbus_unknown_token_is_rejected():
     bus, default, profile = make_bus()
     event = TeamNodeEvent(UMO, extras={"execution_token": "0" * 32})
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     assert event.get_extra("agent_team_execution") is None
 
 
 @pytest.mark.asyncio
-async def test_eventbus_unknown_config_id_falls_back_with_binding_set():
-    # Defense-in-depth: a resolved binding whose config profile has no
-    # scheduler falls back to umo routing, but the binding extra stays set.
+async def test_eventbus_unknown_config_id_is_rejected():
+    # A missing profile must not silently execute with a different model.
     token = AgentTeamExecutionRegistry.register(make_binding(config_id="cfg-gone"))
     bus, default, profile = make_bus()
     event = TeamNodeEvent(UMO, extras={"execution_token": token})
 
-    await dispatch_one(bus, event, default)
+    await bus.event_queue.put(event)
+    marker = TeamNodeEvent(UMO)
+    await dispatch_one(bus, marker, default)
 
-    assert default.events == [event]
+    assert default.events == [marker]
     assert profile.events == []
     resolved_extra = event.get_extra("agent_team_execution")
     assert resolved_extra is not None
@@ -1088,9 +1093,12 @@ async def test_runner_config_checker_pass_runs_normally(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
-    """Resuming an interrupted run whose pending node's config profile was
-    deleted surfaces the failure immediately — no turn is dispatched."""
+async def test_ownerless_resume_preserves_history_with_deleted_config(tmp_path):
+    """Reject ownerless execution without rewriting deleted-profile history.
+
+    Args:
+        tmp_path: Isolated database containing the original node results.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
     await db.initialize()
     members = runner_members()
@@ -1169,21 +1177,20 @@ async def test_resume_run_prefails_pending_nodes_with_deleted_config(tmp_path):
         rounds=[],
     )
 
-    await run_svc.resume_run("alice", "rres")
-    runner = run_svc._runners["rres"]
-    for _ in range(250):
-        if runner.status in ("completed", "paused", "stopped", "failed"):
-            break
-        await asyncio.sleep(0.02)
-
-    # n2 (re-built pending, cfg-gone) pre-fails before any spawn; n1 stays done.
-    assert runner.node_states["n2"]["status"] == "failed"
-    assert runner.node_states["n2"]["error"] == "配置档案已删除"
-    assert runner.node_states["n1"]["status"] == "done"
+    before = await run_svc.get_history_run("alice", "rres")
+    row_before = await db.get_agent_team_run("rres")
+    with pytest.raises(AgentTeamsServiceError) as retired:
+        await run_svc.resume_run("alice", "rres")
+    assert retired.value.status == 410
+    assert await run_svc.get_history_run("alice", "rres") == before
+    assert not run_svc._runners
     assert delivered == []
     row = await db.get_agent_team_run("rres")
-    assert row.node_states["n2"]["status"] == "failed"
-    assert row.node_states["n2"]["error"] == "配置档案已删除"
+    assert row.status == "interrupted"
+    assert row.node_states == node_states
+    assert row.node_states["n1"]["result"] == "前驱结果"
+    assert row.node_states["n2"]["error"] is None
+    assert row.updated_at == row_before.updated_at
 
 
 # ---------------------------------------------------------------------------
@@ -1282,9 +1289,12 @@ async def test_runner_deliver_failure_still_unregisters_token(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
-    """Nodes without an execution block deliver with execution_token=None;
-    auto-mode member turns behave the same by design (spec §2.2)."""
+async def test_runner_node_without_execution_still_correlates_turn(tmp_path):
+    """Default-profile turns also carry a scoped execution identity.
+
+    Args:
+        tmp_path: Isolated database directory.
+    """
     db = SQLiteDatabase(str(tmp_path / "rnotok.db"))
     await db.initialize()
     captured: dict = {}
@@ -1311,7 +1321,8 @@ async def test_runner_node_without_execution_dispatches_no_token(tmp_path):
     await runner.run()
 
     assert runner.status == "completed"
-    assert captured["token"] is None
+    assert captured["token"]
+    assert AgentTeamExecutionRegistry.resolve(captured["token"]) is None
 
 
 @pytest.mark.asyncio

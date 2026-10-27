@@ -21,10 +21,12 @@ import type {
 } from "@/composables/useSpcodeGitDiff";
 import type { SpcodeGitDiffFile } from "@/composables/parseSpcodeGitDiff";
 import {
+  buildDirectoryChain,
   buildDirectorySections,
   walkSections,
   type DiffSection,
 } from "@/composables/parseDirectorySections";
+import type { FileDiffEntry } from "@/composables/useSpcodeFileDiff";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useModuleI18n } from "@/i18n/composables";
@@ -64,6 +66,27 @@ const props = defineProps<{
   newFilePaths?: ReadonlySet<string>;
   /** Passed through to GitDiffFileItem for the "view file" button. */
   onOpenFile?: (path: string) => void;
+  // ── 2026-10-25 progressive loading: on-demand per-file patches ──
+  /** useSpcodeFileDiff instance (shared, sidebar-owned). The body only
+   *  forwards a resolver; the cache itself lives at the sidebar. */
+  fileDiff?: {
+    version: Ref<number>;
+    get: (key: string) => FileDiffEntry | undefined;
+    keyFor: (
+      path: string,
+      scope: string,
+      worktree: string | null,
+      etag: string | null,
+    ) => string;
+  };
+  /** Active worktree (null = primary) — part of the slice cache key. */
+  worktree?: string | null;
+  /** Snapshot etag — part of the slice cache key. */
+  diffEtag?: string | null;
+  /** True when the server holds more metadata pages than loaded. */
+  hasMore?: boolean;
+  /** True while a "load more" page request is in flight. */
+  loadingMore?: boolean;
   // ── Spec 2026-07-07 hunk discard: pass-through props ──
   // Matches GitDiffFileItem's prop signature exactly so the prop can be
   // threaded through verbatim (callback-prop passthrough, not emit —
@@ -98,10 +121,25 @@ const emit = defineEmits<{
   // endpoint once per path (the backend only accepts a single file per
   // request), then aggregates the result into one snackbar + refresh.
   (e: "restore-paths", paths: string[]): void;
+  // 2026-10-25 progressive loading: fetch the next metadata page.
+  (e: "load-more"): void;
+  // Retry a leaf row's on-demand patch fetch (parent drives the cache).
+  (e: "retry-diff", path: string): void;
 }>();
 
 const spcodeStatus = useSpcodeProjectStatus();
 const session = useSpcodeSession();
+
+/** Per-file on-demand diff entry resolver, threaded down to leaf rows.
+ *  Reads `fileDiff.version` so entries mutating in place re-render. */
+const fileDiffEntryFor = (path: string): FileDiffEntry | undefined => {
+  const fd = props.fileDiff;
+  if (!fd) return undefined;
+  void fd.version.value;
+  return fd.get(
+    fd.keyFor(path, props.selectedScope ?? "unstaged", props.worktree ?? null, props.diffEtag ?? null),
+  );
+};
 // Spec §6.2.3: scope 派生按钮显隐(项目必须已加载 + scope=unstaged 显示 ↑)
 const showStageButton = computed(() => {
   if (!props.onStage) return false;
@@ -186,7 +224,8 @@ const errorInfo = computed(() => {
 });
 
 const files = computed(() => {
-  if (props.state.kind === "ok") return props.state.snapshot.files;
+  if (props.state.kind === "ok" || props.state.kind === "ok-loading-more")
+    return props.state.snapshot.files;
   if (props.state.kind === "error" && props.state.previousSnapshot) {
     return props.state.previousSnapshot.files;
   }
@@ -245,6 +284,13 @@ const sections = computed<DiffSection[]>(() => {
 
 const collapsedGroups = ref<Set<string>>(new Set());
 
+// 2026-10-25 compact-directory-chains: single-child directory runs
+// (each level holds exactly one sub-directory and no files) render as
+// one breadcrumb row; this set holds the chain HEAD ids that the user
+// expanded into their real nested levels. Keyed by the head's stable
+// section id, same lifecycle as collapsedGroups.
+const expandedChains = ref<Set<string>>(new Set());
+
 function toggleGroup(id: string): void {
   const next = new Set(collapsedGroups.value);
   if (next.has(id)) next.delete(id);
@@ -252,8 +298,22 @@ function toggleGroup(id: string): void {
   collapsedGroups.value = next;
 }
 
+function toggleChain(id: string): void {
+  const next = new Set(expandedChains.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedChains.value = next;
+}
+
 function expandAll(): void {
   collapsedGroups.value = new Set();
+  // Reveal every compacted chain: collect all chain-link ids so
+  // "expand all" shows the real nested levels, not breadcrumbs.
+  const chainIds = new Set<string>();
+  walkSections(sections.value, (s) => {
+    if (buildDirectoryChain(s) !== null) chainIds.add(s.id);
+  });
+  expandedChains.value = chainIds;
   // Also expand every file row by emitting toggle for collapsed files.
   for (const f of files.value) {
     if (!props.expanded.has(f.path)) emit("toggle", f.path);
@@ -266,6 +326,8 @@ function collapseAll(): void {
   const ids = new Set<string>();
   walkSections(sections.value, (s) => ids.add(s.id));
   collapsedGroups.value = ids;
+  // Chains fold back to their one-row breadcrumb view.
+  expandedChains.value = new Set();
   // Also collapse every file row by emitting toggle for expanded files.
   for (const f of files.value) {
     if (props.expanded.has(f.path)) emit("toggle", f.path);
@@ -700,6 +762,8 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :depth="0"
       :expanded="expanded"
       :collapsed-groups="collapsedGroups"
+      :expanded-chains="expandedChains"
+      :on-toggle-chain="toggleChain"
       :is-dark="isDark"
       :show-stage="showStageButton"
       :show-unstage="showUnstageButton"
@@ -714,6 +778,7 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :selectable-aria-label="
         (p: string) => tm('spcodeProjectLoad.diffPreview.toolbar.selectFile', { path: p })
       "
+      :file-diff-entry="fileDiffEntryFor"
       :on-toggle-group="toggleGroup"
       :on-toggle-select="toggleSelect"
       :on-toggle-group-select="toggleGroupSelect"
@@ -726,11 +791,32 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :discarding-hunks="discardingHunks"
       :scope="selectedScope"
       @toggle="emit('toggle', $event)"
+      @retry-diff="emit('retry-diff', $event)"
       @restore="emit('restore', $event)"
       @stage="emit('stage', $event)"
       @unstage="emit('unstage', $event)"
       @open-file="emit('open-file', $event)"
     />
+
+    <!-- 2026-10-25 progressive loading: append the next metadata page.
+         Totals in the header are server-side cross-page aggregates, so
+         paging never shrinks them. -->
+    <div v-if="hasMore" class="git-diff-load-more-wrap">
+      <button
+        type="button"
+        class="git-diff-load-more"
+        :disabled="loadingMore"
+        @click="emit('load-more')"
+      >
+        <v-progress-circular
+          v-if="loadingMore"
+          indeterminate
+          :size="12"
+          :width="2"
+        />
+        {{ tm("spcodeProjectLoad.diffPreview.loadMore") }}
+      </button>
+    </div>
 
     <div v-if="state.kind === 'error' && errorInfo" class="git-diff-banner-error">
       <span>{{ localizedReason(errorInfo.reason) }}</span>
@@ -956,5 +1042,38 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* 2026-10-25 progressive loading: "load more files" footer for the
+   paged metadata list. Centered, quiet, spinner while in flight. */
+.git-diff-load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px 12px;
+}
+
+.git-diff-load-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.git-diff-load-more:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.git-diff-load-more:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 </style>

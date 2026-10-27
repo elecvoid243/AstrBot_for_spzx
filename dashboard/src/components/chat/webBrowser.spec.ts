@@ -81,6 +81,27 @@ describe("buildIframeSandbox", () => {
     expect(sandbox.split(" ")).not.toContain("allow-same-origin");
     expect(sandbox.split(" ")).toContain("allow-scripts");
   });
+
+  it.each([
+    ["http://localhost:6185/settings?tab=security#top", false],
+    ["http://localhost:6185.evil.example/", true],
+    ["https://localhost:6185/", true],
+    ["http://127.0.0.1:6185/", true],
+    ["not a url", true],
+    ["/chat", true],
+    ["", true],
+  ])("preserves sandbox permissions for %s", (url, allowsSameOrigin) => {
+    const tokens = buildIframeSandbox(url, origin).split(" ");
+    expect(tokens.includes("allow-same-origin")).toBe(allowsSameOrigin);
+    expect(tokens.filter((token) => token !== "allow-same-origin")).toEqual([
+      "allow-scripts",
+      "allow-forms",
+      "allow-popups",
+      "allow-popups-to-escape-sandbox",
+      "allow-downloads",
+      "allow-modals",
+    ]);
+  });
 });
 
 describe("bookmarkLabel", () => {

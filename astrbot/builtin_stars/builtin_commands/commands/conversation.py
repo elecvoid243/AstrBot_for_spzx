@@ -167,9 +167,7 @@ class ConversationCommands:
         message.set_extra("_clean_group_context_session", True)
 
         message.set_result(
-            MessageEventResult().message(
-                f"✅ 已切换到新对话: {cid[:4]}。"
-            ),
+            MessageEventResult().message(f"✅ 已切换到新对话: {cid[:4]}。"),
         )
 
     async def cmd_context(self, message: AstrMessageEvent) -> None:

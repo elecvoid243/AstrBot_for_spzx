@@ -1,8 +1,12 @@
+import copy
+import hashlib
+import json
 import sys
 import typing as T
 
 import astrbot.core.message.components as Comp
 from astrbot.core import logger, sp
+from astrbot.core.agent_team_execution import CheckpointRecoveryError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import (
     LLMResponse,
@@ -40,6 +44,7 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         self.api_key = provider_config.get("dify_api_key", "")
         self.api_base = provider_config.get("dify_api_base", "https://api.dify.ai/v1")
@@ -139,8 +144,108 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
             "upload_file_id": file_response["id"],
         }
 
+    async def _record_remote_event(self, chunk: dict) -> None:
+        """Save original process observations from either Dify streaming API.
+
+        Args:
+            chunk: Original provider frame, including its node execution identity.
+
+        Raises:
+            CheckpointRecoveryError: The observation could not be durably saved.
+        """
+        if not self.remote_checkpoint:
+            return
+        event = chunk.get("event")
+        if event not in {
+            "agent_thought",
+            "agent_log",
+            "workflow_started",
+            "workflow_finished",
+            "workflow_paused",
+            "node_started",
+            "node_finished",
+            "node_retry",
+            "iteration_started",
+            "iteration_next",
+            "iteration_completed",
+            "loop_started",
+            "loop_next",
+            "loop_completed",
+            "reasoning_chunk",
+            "human_input_required",
+            "human_input_form_filled",
+            "human_input_form_timeout",
+        } and not (
+            event == "message_end" and chunk.get("metadata", {}).get("reasoning")
+        ):
+            return
+        # Full snapshots include execution/iteration IDs, so repeated nodes do
+        # not collapse, while a repeated identical frame remains idempotent.
+        record_id = (
+            self.remote_checkpoint.data["invocation_id"]
+            + ":dify:"
+            + hashlib.sha256(
+                json.dumps(chunk, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        )
+        events = self.remote_checkpoint.data["remote"].setdefault("events", {})
+        if event == "reasoning_chunk":
+            # Unsequenced deltas may legitimately repeat the same text. Preserve
+            # arrival order; checkpoint replay still uses these saved record IDs.
+            record_id += ":" + str(len(events))
+        data = {"provider": "dify", "event": copy.deepcopy(chunk)}
+        events[record_id] = data
+        checkpoint_error = None
+        try:
+            await self.remote_checkpoint.save()
+        except CheckpointRecoveryError as exc:
+            # Keep the received frame through the public process transaction
+            # when the checkpoint transaction fails, then still block the result.
+            checkpoint_error = exc
+        if self.remote_checkpoint.binding.record_process:
+            try:
+                await self.remote_checkpoint.binding.record_process(
+                    record_id, "remote_event", data
+                )
+            except Exception as exc:
+                error = CheckpointRecoveryError(
+                    "Remote process event could not be saved; result requires confirmation"
+                )
+                self.remote_checkpoint.binding.recovery_error = error
+                raise error from exc
+        if checkpoint_error:
+            raise checkpoint_error
+
     async def _execute_dify_request(self):
-        """执行 Dify 请求的核心逻辑"""
+        """Execute a fresh request or reuse the original remote response.
+
+        Yields:
+            Normal Agent responses, with complete remote evidence saved first.
+
+        Raises:
+            ValueError: Remote completion cannot be confirmed.
+        """
+        restored_response = None
+        queried_result = None
+        if self.remote_checkpoint:
+            restored_response, queried_result = await self.remote_checkpoint.restore(
+                self.api_client
+            )
+        if restored_response or queried_result:
+            assert self.remote_checkpoint is not None
+            self.final_llm_resp = restored_response
+            if queried_result:
+                raw = {"data": queried_result}
+                chain = await self.parse_dify_result(raw)
+                self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+                await self.remote_checkpoint.complete(self.final_llm_resp, raw)
+            assert (
+                self.final_llm_resp is not None
+                and self.final_llm_resp.result_chain is not None
+            )
+            async for response in self._finish_recovered_response(self.final_llm_resp):
+                yield response
+            return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
         image_urls = self.req.image_urls or []
@@ -153,6 +258,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
             default="",
         )
         result = ""
+        completed = False
+        terminal = None
 
         # 处理图片上传
         files_payload = []
@@ -178,6 +285,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
         payload_vars["system_prompt"] = system_prompt
 
         # 处理不同的 API 类型
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
         match self.api_type:
             case "chat" | "agent" | "chatflow":
                 if not prompt:
@@ -194,6 +303,7 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     timeout=self.timeout,
                 ):
                     logger.debug(f"dify resp chunk: {chunk}")
+                    await self._record_remote_event(chunk)
                     if chunk["event"] == "message" or chunk["event"] == "agent_message":
                         result += chunk["answer"]
                         if not conversation_id:
@@ -214,6 +324,8 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                 ),
                             )
                     elif chunk["event"] == "message_end":
+                        terminal = chunk
+                        completed = True
                         logger.debug("Dify message end")
                         break
                     elif chunk["event"] == "error":
@@ -236,6 +348,10 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                     logger.debug(f"dify workflow resp chunk: {chunk}")
                     match chunk["event"]:
                         case "workflow_started":
+                            if self.remote_checkpoint:
+                                await self.remote_checkpoint.save_identity(
+                                    {"workflow_run_id": chunk["workflow_run_id"]}
+                                )
                             logger.info(
                                 f"Dify 工作流(ID: {chunk['workflow_run_id']})开始运行。"
                             )
@@ -254,6 +370,16 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     ),
                                 )
                         case "workflow_finished":
+                            if self.remote_checkpoint and (
+                                chunk.get("workflow_run_id")
+                                != self.remote_checkpoint.data["remote"]["identity"][
+                                    "workflow_run_id"
+                                ]
+                                or chunk["data"].get("status") != "succeeded"
+                            ):
+                                raise ValueError(
+                                    "Dify did not confirm successful completion of the original workflow"
+                                )
                             logger.info(
                                 f"Dify 工作流(ID: {chunk['workflow_run_id']})运行结束"
                             )
@@ -270,9 +396,15 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
                                     f"Dify 工作流的输出不包含指定的键名：{self.workflow_output_key}"
                                 )
                             result = chunk
+                            completed = True
+                    # Keep the run identity durable before an observation creates
+                    # another crash boundary in the checkpoint/process callbacks.
+                    await self._record_remote_event(chunk)
             case _:
                 raise Exception(f"未知的 Dify API 类型：{self.api_type}")
 
+        if self.remote_checkpoint and not completed:
+            raise ValueError("Dify stream ended without a confirmed complete result")
         if not result:
             logger.warning("Dify 请求结果为空，请查看 Debug 日志。")
 
@@ -281,6 +413,11 @@ class DifyAgentRunner(BaseAgentRunner[TContext]):
 
         # 创建最终响应
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.complete(
+                self.final_llm_resp,
+                {"answer": result, "terminal": terminal} if terminal else result,
+            )
         self._transition_state(AgentState.DONE)
 
         try:

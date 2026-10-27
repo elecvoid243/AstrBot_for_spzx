@@ -1,4 +1,4 @@
-"""Boot sweep + hot resume semantics (spec §6.5)."""
+"""Read-only legacy history and original-owner pause semantics."""
 
 import asyncio
 
@@ -19,9 +19,21 @@ from tests.agent_teams.test_agent_team_service import (
 
 
 @pytest.mark.asyncio
-async def test_boot_sweep_marks_stale_runs_interrupted(tmp_path):
+async def test_history_preserves_saved_status_while_projecting_owner_loss(tmp_path):
+    """Preserve original records when repeated public reads report interruption.
+
+    Args:
+        tmp_path: Isolated persistent history database.
+    """
     db = SQLiteDatabase(str(tmp_path / "t.db"))
-    await db.initialize()
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="Original team",
+        coordinator_member_id="lead",
+        config={},
+        members=[],
+    )
     for run_id, status in (("r1", "running"), ("r2", "paused"), ("r3", "completed")):
         await db.create_agent_team_run(
             run_id=run_id,
@@ -34,121 +46,62 @@ async def test_boot_sweep_marks_stale_runs_interrupted(tmp_path):
             node_states={},
             rounds=[],
         )
-    svc = AgentTeamRunService(db=db, chat_service=FakeChatService())
-    assert await svc.boot_sweep() == 2
-    assert (await db.get_agent_team_run("r1")).status == "interrupted"
-    assert (await db.get_agent_team_run("r2")).status == "interrupted"
-    assert (await db.get_agent_team_run("r3")).status == "completed"
+    svc = AgentTeamRunService(db=db, chat_service=None)
+    try:
+        for run_id, status in (
+            ("r1", "running"),
+            ("r2", "paused"),
+            ("r3", "completed"),
+        ):
+            before = await svc.get_history_run("alice", run_id)
+            assert before["status"] == status
+            assert before["history_status"] == (
+                "interrupted" if status in {"running", "paused"} else status
+            )
+            assert await svc.get_history_run("alice", run_id) == before
+    finally:
+        await db.engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_resume_preserves_done_and_redoes_running(tmp_path):
-    db = SQLiteDatabase(str(tmp_path / "t.db"))
-    await db.initialize()
-    events: list = []
-    delivered: list = []
+async def test_lost_legacy_owner_preserves_done_results_and_refuses_redo(tmp_path):
+    """Keep original done and running records read-only after owner loss.
 
-    async def deliver(session_id, text, context=None, execution_token=None):
-        delivered.append((session_id, text))
-        return f"mid-{len(delivered)}"
-
-    async def collect(
-        session_id: str,
-        message_id: str,
-        member_id: str | None = None,
-        on_event=None,
-    ) -> tuple[str, list]:
-        await asyncio.sleep(0.01)
-        return "重做完成", [{"type": "plain", "data": "重做完成"}]
-
-    svc = AgentTeamRunService(db=db, chat_service=FakeChatService())
-    svc.ports_factory = lambda username, emit: TeamPorts(
-        deliver=deliver,
-        collect=collect,
-        is_busy=lambda sid: False,
-        emit=events.append,
+    Args:
+        tmp_path: Isolated durable legacy database.
+    """
+    db = SQLiteDatabase(str(tmp_path / "legacy.db"))
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="Original team",
+        coordinator_member_id="m1",
+        members=MEMBERS,
+        config={},
     )
-
-    members = [
-        {
-            "member_id": "m1",
-            "name": "a",
-            "session_id": "c1",
-            "umo": "webchat:FriendMessage:c1",
-            "persona_id": None,
-            "provider_id": None,
-            "system_prompt": None,
-        },
-        {
-            "member_id": "m2",
-            "name": "b",
-            "session_id": "c2",
-            "umo": "webchat:FriendMessage:c2",
-            "persona_id": None,
-            "provider_id": None,
-            "system_prompt": None,
-        },
-    ]
-    graph = {
-        "nodes": [
-            {"id": "n1", "member_id": "m1", "task": "t1"},
-            {"id": "n2", "member_id": "m2", "task": "t2 {{n1}}"},
-        ],
-        "edges": [{"from": "n1", "to": "n2"}],
-    }
-    node_states = {
-        "n1": {
-            "status": "done",
-            "member_id": "m1",
-            "task_rendered": "t1",
-            "result": "前驱结果",
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-        },
-        "n2": {
-            "status": "running",
-            "member_id": "m2",
-            "task_rendered": None,
-            "result": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-        },
-    }
     await db.create_agent_team_run(
         run_id="r1",
         team_id="t1",
         workflow_id=None,
         mode="dag",
-        input="x",
+        input="Original",
         status="interrupted",
-        graph_snapshot=graph,
-        node_states=node_states,
+        graph_snapshot={"nodes": [], "edges": []},
+        node_states={
+            "n1": {"status": "done", "result": "Original predecessor evidence"},
+            "n2": {"status": "running", "result": None},
+        },
         rounds=[],
     )
-    await db.create_agent_team(
-        team_id="t1",
-        owner_username="alice",
-        name="t",
-        coordinator_member_id="m1",
-        members=members,
-        config={},
-    )
-
-    snapshot = await svc.resume_run("alice", "r1")
-    runner = svc._runners[snapshot["run_id"]]
-    for _ in range(250):
-        if runner.status in ("completed", "paused", "stopped", "failed"):
-            break
-        await asyncio.sleep(0.02)
-    snap = await svc.get_run_snapshot("alice", "r1")
-    assert snap["status"] == "completed"
-    # n1's done result was preserved (never re-delivered); n2 was redone and
-    # received n1's preserved result in its rendered task
-    assert snap["node_states"]["n1"]["result"] == "前驱结果"
-    n2_delivery = next(d for d in delivered if d[0] == "c2")
-    assert "前驱结果" in n2_delivery[1]
+    service = AgentTeamRunService(db, None)
+    try:
+        before = await service.get_history_run("alice", "r1")
+        with pytest.raises(AgentTeamsServiceError) as retired:
+            await service.resume_run("alice", "r1")
+        assert retired.value.status == 410
+        assert await service.get_history_run("alice", "r1") == before
+    finally:
+        await db.engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -294,114 +247,48 @@ async def test_stop_run_lands_terminal_on_dead_paused_task(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_seeds_prefail_node_status_events(tmp_path):
-    """Fold-in seed: nodes pre-failed on resume (deleted config profile) get
-    seed node_status events on the fresh bus, so a monitor attached after the
-    resume still sees the failure (the runner never executes those nodes)."""
-    db = SQLiteDatabase(str(tmp_path / "t.db"))
-    await db.initialize()
-    events: list = []
-    delivered: list = []
+async def test_lost_legacy_owner_does_not_prefail_or_redispatch_nodes(tmp_path):
+    """Do not rewrite old task history when a previous profile has disappeared.
 
-    async def deliver(session_id, text, context=None, execution_token=None):
-        delivered.append((session_id, text))
-        return f"mid-{len(delivered)}"
-
-    async def collect(session_id, message_id, member_id=None, on_event=None):
-        await asyncio.sleep(0.01)
-        return "ok", []
-
-    svc = AgentTeamRunService(
-        db=db,
-        chat_service=FakeChatService(),
-        config_checker=lambda config_id: False,
+    Args:
+        tmp_path: Isolated durable legacy database.
+    """
+    db = SQLiteDatabase(str(tmp_path / "legacy.db"))
+    await db.create_agent_team(
+        team_id="t1",
+        owner_username="alice",
+        name="Original team",
+        coordinator_member_id="m1",
+        members=MEMBERS,
+        config={},
     )
-    svc.ports_factory = lambda username, emit: TeamPorts(
-        deliver=deliver, collect=collect, is_busy=lambda sid: False, emit=events.append
-    )
-    members = [
-        {
-            "member_id": "m1",
-            "name": "a",
-            "session_id": "c1",
-            "umo": "webchat:FriendMessage:c1",
-            "persona_id": None,
-            "provider_id": None,
-            "system_prompt": None,
-        },
-        {
-            "member_id": "m2",
-            "name": "b",
-            "session_id": "c2",
-            "umo": "webchat:FriendMessage:c2",
-            "persona_id": None,
-            "provider_id": None,
-            "system_prompt": None,
-        },
-    ]
-    graph = {
-        "nodes": [
-            {
-                "id": "n1",
-                "member_id": "m1",
-                "task": "t1",
-                "execution": {"config_id": "gone"},
-            },
-            {"id": "n2", "member_id": "m2", "task": "t2"},
-        ],
-        "edges": [],
-    }
-    node_states = {
-        "n1": {
-            "status": "pending",
-            "member_id": "m1",
-            "task_rendered": None,
-            "result": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-        },
-        "n2": {
-            "status": "pending",
-            "member_id": "m2",
-            "task_rendered": None,
-            "result": None,
-            "error": None,
-            "started_at": None,
-            "finished_at": None,
-        },
-    }
     await db.create_agent_team_run(
         run_id="rseed",
         team_id="t1",
         workflow_id=None,
         mode="dag",
-        input="x",
+        input="Original",
         status="interrupted",
-        graph_snapshot=graph,
-        node_states=node_states,
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "n1",
+                    "member_id": "m1",
+                    "task": "Original task",
+                    "execution": {"config_id": "gone"},
+                },
+            ],
+            "edges": [],
+        },
+        node_states={"n1": {"status": "pending", "result": None}},
         rounds=[],
     )
-    await db.create_agent_team(
-        team_id="t1",
-        owner_username="alice",
-        name="t",
-        coordinator_member_id="m1",
-        members=members,
-        config={},
-    )
-
-    await svc.resume_run("alice", "rseed")
-
-    history = svc._buses["rseed"].history()
-    seeds = [
-        e
-        for e in history
-        if e.get("type") == "node_status"
-        and e.get("node_id") == "n1"
-        and e.get("status") == "failed"
-    ]
-    assert seeds, "the pre-failed node must be announced on the new bus"
-    assert seeds[0]["error"] == "配置档案已删除"
-    # The seed is the very first event: it precedes every runner event.
-    assert history[0]["node_id"] == "n1" and history[0]["status"] == "failed"
+    service = AgentTeamRunService(db, None, config_checker=lambda _: False)
+    try:
+        before = await service.get_history_run("alice", "rseed")
+        with pytest.raises(AgentTeamsServiceError) as retired:
+            await service.resume_run("alice", "rseed")
+        assert retired.value.status == 410
+        assert await service.get_history_run("alice", "rseed") == before
+    finally:
+        await db.engine.dispose()

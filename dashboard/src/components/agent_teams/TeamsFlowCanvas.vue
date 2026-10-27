@@ -16,6 +16,7 @@
       :max-zoom="1.5"
       @connect="onConnect"
       @nodes-change="onNodesChange"
+      @node-drag-stop="onNodeDragStop"
       @node-click="onNodeClick"
       @edge-click="onEdgeClick"
       @edge-double-click="onEdgeDoubleClick"
@@ -116,6 +117,8 @@ const props = withDefaults(
     minimapVisible?: boolean;
     /** Snap node positions to the grid while dragging (edit mode only). */
     snapToGrid?: boolean;
+    /** Commit one complete gesture when the caller records undo history. */
+    commitPositionsOnDragStop?: boolean;
     /**
      * Id of the currently selected edge (edit mode). Owned by the parent so
      * the editor toolbar can enable its delete action; the canvas only reads
@@ -123,7 +126,14 @@ const props = withDefaults(
      */
     selectedEdgeId?: string | null;
   }>(),
-  { mode: 'edit', nodeStates: null, minimapVisible: true, snapToGrid: false, selectedEdgeId: null },
+  {
+    mode: 'edit',
+    nodeStates: null,
+    minimapVisible: true,
+    snapToGrid: false,
+    selectedEdgeId: null,
+    commitPositionsOnDragStop: false,
+  },
 );
 
 const emit = defineEmits<{
@@ -140,7 +150,7 @@ const emit = defineEmits<{
 // This component owns the <VueFlow> instance: calling useVueFlow() here
 // creates the store that the inner VueFlow component adopts, so the drop
 // handler can translate screen coordinates through the live viewport.
-const { screenToFlowCoordinate, setCenter } = useVueFlow();
+const { screenToFlowCoordinate, setCenter, fitView } = useVueFlow();
 const { tm } = useModuleI18n('features/agent-teams');
 
 /**
@@ -154,7 +164,7 @@ function panToFlow(x: number, y: number) {
   void setCenter(x, y, { duration: 300 });
 }
 
-defineExpose({ panTo: panToFlow });
+defineExpose({ panTo: panToFlow, fit: () => fitView({ padding: 0.2 }) });
 
 /** DataTransfer MIME type carrying the dragged member id (set by the editor). */
 const MEMBER_MIME = 'application/x-member-id';
@@ -228,6 +238,7 @@ function onConnect(connection: Connection) {
  * id -> position map so the parent can keep its layout up to date.
  */
 function onNodesChange(changes: NodeChange[]) {
+  if (props.commitPositionsOnDragStop) return;
   let positions: Record<string, { x: number; y: number }> | null = null;
   for (const change of changes ?? []) {
     if (change?.type === 'position' && change.position) {
@@ -236,6 +247,28 @@ function onNodesChange(changes: NodeChange[]) {
     }
   }
   if (positions) emit('positionChange', positions);
+}
+
+/**
+ * Commit the final positions together so one drag is one undo action.
+ *
+ * Args:
+ *   event: Dragged node and all nodes moved in the same gesture.
+ */
+function onNodeDragStop(event: {
+  node: { id: string; position: { x: number; y: number } };
+  nodes?: { id: string; position: { x: number; y: number } }[];
+}) {
+  if (!props.commitPositionsOnDragStop) return;
+  emit(
+    'positionChange',
+    Object.fromEntries(
+      (event.nodes?.length ? event.nodes : [event.node]).map((node) => [
+        node.id,
+        { x: node.position.x, y: node.position.y },
+      ]),
+    ),
+  );
 }
 
 function onNodeClick(event: { node: { id: string } }) {
@@ -268,9 +301,7 @@ function onEdgeDoubleClick(event: EdgeMouseEvent) {
 
 /** Forward a Ctrl/Cmd-drag box selection as the selected node id list. */
 function onSelectionDragStop(event: { nodes?: { id: string }[] }) {
-  const ids = (event?.nodes ?? [])
-    .map((node) => node.id)
-    .filter((id): id is string => Boolean(id));
+  const ids = (event?.nodes ?? []).map((node) => node.id).filter((id): id is string => Boolean(id));
   emit('selectionChange', ids);
 }
 

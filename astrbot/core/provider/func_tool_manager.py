@@ -17,7 +17,13 @@ from deprecated import deprecated
 from astrbot import logger
 from astrbot.core import sp
 from astrbot.core.agent.mcp_client import MCPClient, MCPTool
-from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolRecoveryResult,
+    ToolSet,
+    current_tool_recovery_retry,
+)
 from astrbot.core.tools.registry import (
     ensure_builtin_tools_loaded,
     get_builtin_tool_class,
@@ -242,12 +248,41 @@ class _PermissionGuardedTool(FunctionTool):
         # Mirror mutable state from the underlying tool
         self.active = getattr(tool, "active", True)
         self.handler_module_path = getattr(tool, "handler_module_path", None)
+        if tool.recovery is not None:
+            self.recovery = copy.copy(tool.recovery)
+            query = tool.recovery.query
+            if query is not None:
+
+                async def authorized_query(
+                    context: ContextWrapper, identity: str, arguments: dict
+                ) -> ToolRecoveryResult:
+                    """Check current authorization before querying an external effect.
+
+                    Args:
+                        context: Restored invocation context and current caller.
+                        identity: Original durable invocation identity.
+                        arguments: Original tool arguments.
+
+                    Returns:
+                        The adapter's authoritative recovery result.
+
+                    Raises:
+                        PermissionError: The caller no longer has tool permission.
+                    """
+                    error = await self._mgr._check_tool_permission(self.name, context)
+                    if error is not None:
+                        raise PermissionError(error)
+                    return await query(context, identity, arguments)
+
+                self.recovery.query = authorized_query
 
     async def call(self, context: Any, **kwargs: Any) -> Any:
         import inspect as _inspect
 
         error = await self._mgr._check_tool_permission(self.name, context)
         if error is not None:
+            if current_tool_recovery_retry.get():
+                raise PermissionError(error)
             return error
 
         # @filter.llm_tool decorated tools have a handler attribute, which is the actual callable.

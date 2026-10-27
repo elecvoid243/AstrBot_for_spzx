@@ -1497,7 +1497,7 @@ git status
 - R1 (U+2212) → Task 5 Step 7 ASCII prefix
 - R2 (maxLines 截断) → Task 5 Step 7 `Infinity` 解析 + Task 3 hunkIndex 字段
 - R5 (残留 confirmingHunkIndex) → Task 5 Step 8 watch + onBeforeUnmount
-- R6 (并发 POST) → Task 2 Set<string> 复合键
+- R6 (并发 POST) → Task 2 `Set<string>` 复合键
 - R7 (5 个 callsite 零影响) → opt-in `discardable` 默认 false（Task 5 Step 1）
 - R8 (parsedHunks vs fullHunks 索引) → Task 3 hunkIndex 字段 + Task 5 Step 7 find 双保险
 - R9 (hunk-header 重构 a11y) → Task 4 Step 4 onHunkHeaderKeydown

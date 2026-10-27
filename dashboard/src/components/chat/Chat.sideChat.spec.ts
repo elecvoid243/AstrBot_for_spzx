@@ -1,32 +1,85 @@
 // Author: elecvoid243 @ 2026-10-22
 // The side-chat lifecycle lives inside Chat.vue's script setup, so run its
-// actual declarations with controlled refs (same technique as Chat.scroll).
-// Focus: closing the panel only hides it now — side chats persist and are
-// deleted explicitly from the side-chat menu.
+// actual declarations, watchers and unmount hook in a mounted lifecycle harness.
+// This does not mount the complete Chat component or verify browser rendering.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "vue/compiler-sfc";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ref, type Ref } from "vue";
+import { flushPromises, mount } from "@vue/test-utils";
+import {
+  computed,
+  defineComponent,
+  h,
+  nextTick,
+  onBeforeUnmount,
+  reactive,
+  ref,
+  watch,
+  type Ref,
+} from "vue";
 
 const script = parse(
   readFileSync(resolve("src/components/chat/Chat.vue"), "utf8"),
 ).descriptor.scriptSetup!.content;
-const ast = ts.createSourceFile("Chat.ts", script, ts.ScriptTarget.Latest, true);
-const wanted = new Set(["closeThreadPanel", "onThreadPanelToggle"]);
-const declarations = ast.statements.filter(
-  (node): node is ts.FunctionDeclaration =>
-    ts.isFunctionDeclaration(node) &&
-    Boolean(node.name) &&
-    wanted.has(node.name!.text),
+const ast = ts.createSourceFile(
+  "Chat.ts",
+  script,
+  ts.ScriptTarget.Latest,
+  true,
 );
+const wanted = new Set([
+  "closeThreadPanel",
+  "onThreadPanelToggle",
+  "openSideChat",
+  "openThreadPanel",
+  "openRefsSidebar",
+  "openReasoningPanel",
+  "toggleGitDiffSidebar",
+  "closeTodoMenu",
+]);
+const variables = new Set([
+  "threadPanelOpen",
+  "activeThread",
+  "sideChatThreadId",
+  "creatingSideChat",
+  "sideChatGeneration",
+  "goalSidebarOpen",
+  "todoMenuOpen",
+  "todoMenuPlacement",
+]);
+const declarations = ast.statements.filter((node) => {
+  if (ts.isFunctionDeclaration(node)) return wanted.has(node.name!.text);
+  if (ts.isVariableStatement(node)) {
+    return node.declarationList.declarations.every((item) =>
+      variables.has(item.name.getText(ast)),
+    );
+  }
+  if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression))
+    return false;
+  const call = node.expression;
+  return (
+    (call.expression.getText(ast) === "onBeforeUnmount" &&
+      node.getText(ast).includes("closeThreadPanel()")) ||
+    (call.expression.getText(ast) === "watch" &&
+      ((["currSessionId", "() => chatHeader.workspaceFilesOpen"].includes(
+        call.arguments[0].getText(ast),
+      ) &&
+        node.getText(ast).includes("closeThreadPanel()")) ||
+        (["goalSidebarOpen", "todoMenuOpen"].includes(
+          call.arguments[0].getText(ast),
+        ) &&
+          node.getText(ast).includes("refsSidebarOpen.value"))))
+  );
+});
 const code = declarations
-  .map((node) =>
-    ts.transpileModule(node.getText(ast), {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText,
+  .map(
+    (node) =>
+      ts.transpileModule(node.getText(ast), {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
   )
   .join("\n");
 
@@ -34,34 +87,410 @@ interface ThreadRef {
   thread_id: string;
 }
 
+/**
+ * Mount the extracted lifecycle with controlled HTTP responses.
+ *
+ * Returns:
+ *   Component state, lifecycle actions and queued create responses.
+ */
 function setup() {
-  const activeThread: Ref<ThreadRef | null> = ref(null);
-  const sideChatThreadId: Ref<string | null> = ref(null);
-  const threadPanelOpen = ref(true);
-  const api = new Function(
-    "activeThread",
-    "sideChatThreadId",
-    "threadPanelOpen",
+  const requests: Array<{
+    resolve: (response: {
+      data: { status: string; data?: ThreadRef; message?: string };
+    }) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  const chatApi = {
+    createThread: vi.fn(
+      () =>
+        new Promise((resolve, reject) => {
+          requests.push({ resolve, reject });
+        }),
+    ),
+    deleteThread: vi.fn().mockResolvedValue({}),
+  };
+  const state = {
+    currSessionId: ref("session-a"),
+    chatHeader: reactive({
+      workspaceFilesOpen: false,
+      goalSidebarOpen: false,
+      SET_WORKSPACE_FILES_OPEN(open: boolean) {
+        this.workspaceFilesOpen = open;
+      },
+      SET_GOAL_SIDEBAR_OPEN(open: boolean) {
+        this.goalSidebarOpen = open;
+      },
+      CLEAR_CONTEXT: vi.fn(),
+    }),
+    reasoningPanelOpen: ref(false),
+    activeReasoningTarget: ref(null),
+    refsSidebarOpen: ref(false),
+    selectedRefs: ref(null),
+    gitDiffSidebarOpen: ref(false),
+    threadSelection: { visible: false },
+    toast: { error: vi.fn() },
+    tm: (key: string) => key,
+    isAxiosError: (error: unknown) =>
+      Boolean((error as { isAxiosError?: boolean })?.isAxiosError),
+  };
+  // The real unmount callback also disposes unrelated viewport/media resources.
+  const environment = {
+    ...state,
+    chatApi,
+    ref,
+    computed,
+    watch,
+    onBeforeUnmount,
+    viewportSessionToken: 0,
+    viewportInteractionToken: 0,
+    bottomScrollFrame: 0,
+    userScrollSettleTimer: 0,
+    endJumpLanding() {},
+    endJumpScrollLock() {},
+    historyLayoutObserver: null,
+    readingViewportAnchor: null,
+    endMessagesScrollGesture() {},
+    composerResizeObserver: null,
+    cleanupMediaCache() {},
+    onSidebarResizeEnd() {},
+    onSidebarKeydown() {},
+    markerResizeObserver: null,
+  };
+  const run = new Function(
+    ...Object.keys(environment),
     `${code}
-     return { closeThreadPanel, onThreadPanelToggle };`,
-  )(activeThread, sideChatThreadId, threadPanelOpen) as {
+    return { threadPanelOpen, activeThread, sideChatThreadId, creatingSideChat,
+      goalSidebarOpen, todoMenuOpen,
+      ${[...wanted].join(", ")} };`,
+  );
+  let api!: {
+    threadPanelOpen: Ref<boolean>;
+    activeThread: Ref<ThreadRef | null>;
+    sideChatThreadId: Ref<string | null>;
+    creatingSideChat: Ref<boolean>;
+    goalSidebarOpen: Ref<boolean>;
+    todoMenuOpen: Ref<boolean>;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
+    openSideChat: () => Promise<void>;
+    openThreadPanel: (thread: ThreadRef) => void;
+    openRefsSidebar: (refs: unknown) => void;
+    openReasoningPanel: (payload: unknown) => void;
+    toggleGitDiffSidebar: () => void;
   };
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        api = run(...Object.values(environment));
+        return () => h("div");
+      },
+    }),
+  );
+  cleanups.push(() => wrapper.unmount());
   return {
-    activeThread,
-    sideChatThreadId,
-    threadPanelOpen,
+    chatApi,
+    requests,
+    wrapper,
+    ...state,
     ...api,
   };
 }
 
+const cleanups: Array<() => void> = [];
 afterEach(() => {
+  cleanups.splice(0).forEach((cleanup) => cleanup());
   vi.restoreAllMocks();
 });
 
 describe("Chat side-chat lifecycle", () => {
-  it("closes a branch thread and clears the panel state", () => {
+  it("opens a same-session side chat with isolated context", async () => {
+    const ctx = setup();
+    ctx.goalSidebarOpen.value = true;
+    ctx.todoMenuOpen.value = true;
+    await nextTick();
+    const pending = ctx.openSideChat();
+    expect(ctx.creatingSideChat.value).toBe(true);
+    expect(ctx.chatApi.createThread).toHaveBeenCalledWith({
+      session_id: "session-a",
+      side_chat: true,
+    });
+
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "side-a" } },
+    });
+    await pending;
+
+    expect(ctx.activeThread.value?.thread_id).toBe("side-a");
+    expect(ctx.sideChatThreadId.value).toBe("side-a");
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.creatingSideChat.value).toBe(false);
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+    expect(ctx.todoMenuOpen.value).toBe(false);
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it("deletes a late temporary thread after switching sessions", async () => {
+    const ctx = setup();
+    const pending = ctx.openSideChat();
+    ctx.currSessionId.value = "session-b";
+    await nextTick();
+
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "late-a" } },
+    });
+    await pending;
+
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(ctx.activeThread.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledTimes(1);
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("late-a");
+  });
+
+  it("preserves a branch selected while side-chat creation is pending", async () => {
+    const ctx = setup();
+    const pending = ctx.openSideChat();
+    ctx.openThreadPanel({ thread_id: "branch-new" });
+
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "late-side" } },
+    });
+    await pending;
+
+    expect(ctx.activeThread.value?.thread_id).toBe("branch-new");
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledTimes(1);
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("late-side");
+    ctx.closeThreadPanel();
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalledWith("branch-new");
+  });
+
+  it.each([false, true])(
+    "invalidates A -> B -> A even with batched updates: %s",
+    async (batched) => {
+      const ctx = setup();
+      const pending = ctx.openSideChat();
+      ctx.currSessionId.value = "session-b";
+      if (!batched) await nextTick();
+      ctx.currSessionId.value = "session-a";
+      await nextTick();
+
+      ctx.requests[0].resolve({
+        data: { status: "ok", data: { thread_id: "obsolete-a" } },
+      });
+      await pending;
+
+      expect(ctx.threadPanelOpen.value).toBe(false);
+      expect(ctx.activeThread.value).toBeNull();
+      expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("obsolete-a");
+    },
+  );
+
+  it("cleans up a thread created after the real unmount hook runs", async () => {
+    const ctx = setup();
+    const pending = ctx.openSideChat();
+    ctx.wrapper.unmount();
+
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "after-unmount" } },
+    });
+    await pending;
+
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(ctx.activeThread.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("after-unmount");
+    expect(ctx.toast.error).not.toHaveBeenCalled();
+  });
+
+  it.each(["refs", "reasoning", "git", "workspace", "goal", "todo"])(
+    "preserves the newer %s selection",
+    async (sidebar) => {
+      const ctx = setup();
+      const pending = ctx.openSideChat();
+      if (sidebar === "refs") ctx.openRefsSidebar({ title: "new refs" });
+      if (sidebar === "reasoning") ctx.openReasoningPanel({ blockIndex: 1 });
+      if (sidebar === "git") ctx.toggleGitDiffSidebar();
+      if (sidebar === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
+      if (sidebar === "goal") ctx.goalSidebarOpen.value = true;
+      if (sidebar === "todo") ctx.todoMenuOpen.value = true;
+      await nextTick();
+
+      ctx.requests[0].resolve({
+        data: { status: "ok", data: { thread_id: "obsolete-side" } },
+      });
+      await pending;
+
+      expect(ctx.threadPanelOpen.value).toBe(false);
+      expect(ctx.activeThread.value).toBeNull();
+      expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("obsolete-side");
+      if (sidebar === "refs") {
+        expect(ctx.refsSidebarOpen.value).toBe(true);
+        expect(ctx.selectedRefs.value).toEqual({ title: "new refs" });
+      }
+      if (sidebar === "reasoning") {
+        expect(ctx.reasoningPanelOpen.value).toBe(true);
+        expect(ctx.activeReasoningTarget.value).toEqual({ blockIndex: 1 });
+      }
+      if (sidebar === "git") expect(ctx.gitDiffSidebarOpen.value).toBe(true);
+      if (sidebar === "workspace")
+        expect(ctx.chatHeader.workspaceFilesOpen).toBe(true);
+      if (sidebar === "goal") expect(ctx.goalSidebarOpen.value).toBe(true);
+      if (sidebar === "todo") expect(ctx.todoMenuOpen.value).toBe(true);
+    },
+  );
+
+  it.each(["goal", "todo"])(
+    "retains an existing branch when opening %s without a pending create",
+    async (panel) => {
+      const ctx = setup();
+      ctx.openThreadPanel({ thread_id: "retained-branch" });
+      if (panel === "goal") ctx.goalSidebarOpen.value = true;
+      else ctx.todoMenuOpen.value = true;
+      await nextTick();
+
+      expect(ctx.threadPanelOpen.value).toBe(true);
+      expect(ctx.activeThread.value?.thread_id).toBe("retained-branch");
+      expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["success", "status-error", "network-error"])(
+    "keeps a newer request busy when the old request returns %s",
+    async (result) => {
+      const ctx = setup();
+      const oldPending = ctx.openSideChat();
+      ctx.currSessionId.value = "session-b";
+      await nextTick();
+      const newPending = ctx.openSideChat();
+      expect(ctx.requests).toHaveLength(2);
+      expect(ctx.chatApi.createThread).toHaveBeenLastCalledWith({
+        session_id: "session-b",
+        side_chat: true,
+      });
+
+      if (result === "network-error")
+        ctx.requests[0].reject(new Error("old network error"));
+      else
+        ctx.requests[0].resolve({
+          data:
+            result === "success"
+              ? { status: "ok", data: { thread_id: "old-side" } }
+              : { status: "error", message: "old status error" },
+        });
+      await oldPending;
+
+      expect(ctx.creatingSideChat.value).toBe(true);
+      expect(ctx.threadPanelOpen.value).toBe(false);
+      expect(ctx.toast.error).not.toHaveBeenCalled();
+      ctx.requests[1].resolve({
+        data: { status: "ok", data: { thread_id: "new-side" } },
+      });
+      await newPending;
+      expect(ctx.creatingSideChat.value).toBe(false);
+      expect(ctx.activeThread.value?.thread_id).toBe("new-side");
+      expect(ctx.chatApi.deleteThread).not.toHaveBeenCalledWith("new-side");
+    },
+  );
+
+  it("preserves a newer side chat when it completes before the stale request", async () => {
+    const ctx = setup();
+    const oldPending = ctx.openSideChat();
+    ctx.closeThreadPanel();
+    const newPending = ctx.openSideChat();
+    expect(ctx.requests).toHaveLength(2);
+    ctx.requests[1].resolve({
+      data: { status: "ok", data: { thread_id: "new-side" } },
+    });
+    await newPending;
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "old-side" } },
+    });
+    await oldPending;
+
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.activeThread.value?.thread_id).toBe("new-side");
+    expect(ctx.sideChatThreadId.value).toBe("new-side");
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledTimes(1);
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("old-side");
+  });
+
+  it.each(["status-error", "network-error", "missing-thread"])(
+    "silences stale %s after teardown",
+    async (result) => {
+      const ctx = setup();
+      const pending = ctx.openSideChat();
+      ctx.wrapper.unmount();
+      if (result === "network-error")
+        ctx.requests[0].reject(new Error("network"));
+      else
+        ctx.requests[0].resolve({
+          data:
+            result === "missing-thread"
+              ? { status: "ok" }
+              : { status: "error", message: "create failed" },
+        });
+      await pending;
+
+      expect(ctx.toast.error).not.toHaveBeenCalled();
+      expect(ctx.threadPanelOpen.value).toBe(false);
+      expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["status-error", "network-error", "missing-thread"])(
+    "still reports current-session %s and allows retry",
+    async (result) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const ctx = setup();
+      const pending = ctx.openSideChat();
+      if (result === "network-error")
+        ctx.requests[0].reject(new Error("network"));
+      else
+        ctx.requests[0].resolve({
+          data:
+            result === "missing-thread"
+              ? { status: "ok" }
+              : { status: "error", message: "create failed" },
+        });
+      await pending;
+
+      expect(ctx.toast.error).toHaveBeenCalledTimes(1);
+      expect(ctx.toast.error).toHaveBeenCalledWith(
+        result === "status-error" ? "create failed" : "thread.createFailed",
+      );
+      expect(ctx.threadPanelOpen.value).toBe(false);
+      expect(ctx.creatingSideChat.value).toBe(false);
+      const retry = ctx.openSideChat();
+      expect(ctx.requests).toHaveLength(2);
+      ctx.requests[1].resolve({
+        data: { status: "ok", data: { thread_id: "retry-side" } },
+      });
+      await retry;
+      expect(ctx.activeThread.value?.thread_id).toBe("retry-side");
+    },
+  );
+
+  it("keeps the selected branch when deleting a stale temporary thread fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx = setup();
+    const pending = ctx.openSideChat();
+    ctx.openThreadPanel({ thread_id: "kept-branch" });
+    ctx.chatApi.deleteThread.mockRejectedValue(new Error("delete failed"));
+    ctx.requests[0].resolve({
+      data: { status: "ok", data: { thread_id: "stale-side" } },
+    });
+    await pending;
+    await flushPromises();
+
+    expect(ctx.activeThread.value?.thread_id).toBe("kept-branch");
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledTimes(1);
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("stale-side");
+    expect(ctx.toast.error).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it("closes a branch thread without deleting it", () => {
     const ctx = setup();
     ctx.activeThread.value = { thread_id: "branch-1" };
 
@@ -69,10 +498,10 @@ describe("Chat side-chat lifecycle", () => {
 
     expect(ctx.threadPanelOpen.value).toBe(false);
     expect(ctx.activeThread.value).toBeNull();
-    expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
   });
 
-  it("closes a side chat without deleting the backend thread", () => {
+  it("deletes the backend thread when closing a side chat", () => {
     const ctx = setup();
     ctx.activeThread.value = { thread_id: "side-1" };
     ctx.sideChatThreadId.value = "side-1";
@@ -82,6 +511,21 @@ describe("Chat side-chat lifecycle", () => {
     expect(ctx.threadPanelOpen.value).toBe(false);
     expect(ctx.activeThread.value).toBeNull();
     expect(ctx.sideChatThreadId.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-1");
+  });
+
+  it("survives a failed delete without raising", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ctx = setup();
+    ctx.activeThread.value = { thread_id: "side-2" };
+    ctx.sideChatThreadId.value = "side-2";
+    ctx.chatApi.deleteThread.mockRejectedValue(new Error("network"));
+
+    expect(() => ctx.closeThreadPanel()).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("routes ThreadPanel's close event through the same teardown", () => {
@@ -90,10 +534,11 @@ describe("Chat side-chat lifecycle", () => {
     ctx.sideChatThreadId.value = "side-3";
 
     ctx.onThreadPanelToggle(false);
-    expect(ctx.threadPanelOpen.value).toBe(false);
-    expect(ctx.activeThread.value).toBeNull();
+    expect(ctx.chatApi.deleteThread).toHaveBeenCalledWith("side-3");
 
+    ctx.chatApi.deleteThread.mockClear();
     ctx.onThreadPanelToggle(true);
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
     expect(ctx.threadPanelOpen.value).toBe(false);
   });
 });

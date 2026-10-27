@@ -207,3 +207,57 @@ export function walkSections(
     if (s.children.length > 0) walkSections(s.children, fn);
   }
 }
+
+/**
+ * A run of directories that each contain exactly one sub-directory and
+ * no direct files. Such runs carry no information per level — one
+ * near-empty header row per level — so the tree renders them as a
+ * single breadcrumb row (VS Code "compact folders").
+ */
+export interface DiffDirectoryChain {
+  /** Labels from the chain head through the terminal, in order. The
+   *  terminal's label is included: it names the level that finally
+   *  branches (or holds files). */
+  segments: string[];
+  /** Ids of every chain LINK section (head included). Keys for the
+   *  expandedChains set; the terminal is not a link and never keyed. */
+  linkIds: string[];
+  /** The first section that breaks the chain (has direct files, or
+   *  more than one child). Owns the aggregated subtree; rendered as
+   *  the deepest real level once the chain is expanded. */
+  terminal: DiffSection;
+}
+
+/** True when the section neither holds files nor branches: exactly one
+ *  sub-directory, nothing else. Such a section is pure "path filler". */
+export function isDirectoryChainLink(section: DiffSection): boolean {
+  return section.files.length === 0 && section.children.length === 1;
+}
+
+/**
+ * Build the breadcrumb chain for a chain-link section, walking down
+ * while each descendant is also a link. Returns null when the section
+ * is not a chain link (branch node, file holder, or empty).
+ *
+ * Args:
+ *   section: The candidate chain head.
+ *
+ * Returns:
+ *   The chain descriptor (segments include the terminal's label), or
+ *   null when the section is not a chain link.
+ */
+export function buildDirectoryChain(
+  section: DiffSection,
+): DiffDirectoryChain | null {
+  if (!isDirectoryChainLink(section)) return null;
+  const segments: string[] = [section.label];
+  const linkIds: string[] = [section.id];
+  let node = section.children[0];
+  while (isDirectoryChainLink(node)) {
+    segments.push(node.label);
+    linkIds.push(node.id);
+    node = node.children[0];
+  }
+  segments.push(node.label);
+  return { segments, linkIds, terminal: node };
+}

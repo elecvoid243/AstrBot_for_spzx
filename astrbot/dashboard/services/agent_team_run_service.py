@@ -7,8 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from astrbot import logger
 from astrbot.core.agent_team_execution import (
-    AgentTeamExecutionRegistry,
-    NodeExecutionBinding,
+    execute_team_turn,
 )
 from astrbot.core.agent_team_tools import AgentTeamToolRegistry, build_team_tools
 from astrbot.core.utils.active_event_registry import active_event_registry
@@ -515,64 +514,36 @@ class DAGRunner:
                 state.update(status="pending", started_at=None)
                 await self._persist()
             return
-        # Per-turn execution binding (spec §2.3): a node carrying a resolved
-        # profile (its execution block or the member's runner_config/pins)
-        # dispatches under a token the EventBus resolves to the binding's own
-        # PipelineScheduler. Registered here, unregistered in the delivery
-        # try's finally below — the token lives exactly for this turn. The
-        # merged dict always carries persona_id/provider_id keys (None when
-        # unset), so an explicit non-None scan guards default nodes: a node
-        # with neither block nor member config dispatches with no token, as
-        # before.
-        token = None
-        if any(value is not None for value in execution.values()):
-            token = AgentTeamExecutionRegistry.register(
-                NodeExecutionBinding(
-                    run_id=self.run_id,
-                    team_id=self.team_id,
-                    member_id=member["member_id"],
-                    node_id=node_id,
-                    umo=member["umo"],
-                    owner_username=self.username,
-                    config_id=execution.get("config_id") or None,
-                    persona_id=execution.get("persona_id") or None,
-                    tools=execution.get("tools"),
-                    skills=execution.get("skills"),
-                    provider_id=execution.get("provider_id") or None,
-                    max_steps=execution.get("max_steps"),
-                    tool_call_timeout=execution.get("tool_call_timeout"),
-                    kb_names=execution.get("kb_names"),
-                    context_length=execution.get("context_length"),
-                )
-            )
         # Stream deltas for this turn are tagged via the session -> turn_id
         # map; cleared in the finally below (every exit path).
         self._turn_by_session[member["session_id"]] = turn_id
         try:
-            # deliver stays inside the try so a delivery failure fails the
-            # node instead of escaping gather while sibling wave coroutines
-            # keep persisting transitions after the run went terminal.
-            message_id = await self.ports.deliver(
-                member["session_id"], task_text, None, execution_token=token
-            )
-            self._emit(
-                {
-                    "type": "message",
-                    "direction": "sent",
-                    "member_id": member["member_id"],
-                    "session_id": member["session_id"],
-                    "text": task_text,
-                    "turn_id": turn_id,
-                    "run_id": self.run_id,
-                }
-            )
-            await self._transcript(
-                "sent",
-                task_text,
-                member_id=member["member_id"],
-                node_id=node_id,
-                turn_id=turn_id,
-            )
+
+            async def _on_delivered(message_id: str) -> None:
+                """Record the dispatched turn before collecting its reply.
+
+                Args:
+                    message_id: Message identity assigned by the chat transport.
+                """
+                self._emit(
+                    {
+                        "type": "message",
+                        "direction": "sent",
+                        "member_id": member["member_id"],
+                        "session_id": member["session_id"],
+                        "text": task_text,
+                        "turn_id": turn_id,
+                        "run_id": self.run_id,
+                    }
+                )
+                await self._transcript(
+                    "sent",
+                    task_text,
+                    member_id=member["member_id"],
+                    node_id=node_id,
+                    turn_id=turn_id,
+                )
+
             # Race the reply collection against the stop request and the
             # reply deadline: a stop mid-turn abandons the collection right
             # away instead of waiting out the remaining reply_timeout, and a
@@ -603,10 +574,18 @@ class DAGRunner:
                     choice_pending = False
 
             collect_task = asyncio.ensure_future(
-                self.ports.collect(
-                    member["session_id"],
-                    message_id,
-                    member["member_id"],
+                execute_team_turn(
+                    ports=self.ports,
+                    member=member,
+                    run_id=self.run_id,
+                    team_id=self.team_id,
+                    username=self.username,
+                    turn_id=turn_id,
+                    text=task_text,
+                    execution=execution,
+                    node_id=node_id,
+                    config_checker=self.config_checker,
+                    on_delivered=_on_delivered,
                     on_event=_on_choice_event,
                 )
             )
@@ -689,11 +668,6 @@ class DAGRunner:
                 )
         finally:
             self._turn_by_session.pop(member["session_id"], None)
-            # Every exit path (stop abandonment, timeout, delivery failure)
-            # releases the token; late foreign events fall back to default
-            # routing once it is gone.
-            if token:
-                AgentTeamExecutionRegistry.unregister(token)
         await self._persist()
         self._emit(
             {
@@ -865,6 +839,7 @@ class AutoOrchestrator:
         username: str,
         rounds: list[dict] | None = None,
         on_member_stop: Callable[[dict], None] | None = None,
+        config_checker: Callable[[str], bool] | None = None,
         transcript_sink: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self.run_id = run_id
@@ -882,6 +857,7 @@ class AutoOrchestrator:
         # next round number is len(self.rounds) + 1.
         self.rounds: list[dict] = list(rounds or [])
         self.on_member_stop = on_member_stop
+        self.config_checker = config_checker
         # Optional transcript sink: a single-row async callable the service
         # wires to the DB (tests script recording sinks). Every sink call is
         # best-effort — a transcript failure never fails the run.
@@ -1130,12 +1106,12 @@ class AutoOrchestrator:
             # turn_id map; cleared in the method's finally (every exit path).
             self._turn_by_session[session_id] = turn_id
 
-            async def _turn_io() -> None:
-                # Auto mode has no per-node execution blocks: turns run under
-                # member defaults by design (spec §2.2).
-                message_id = await self.ports.deliver(
-                    session_id, body, None, execution_token=None
-                )
+            async def _on_delivered(message_id: str) -> None:
+                """Record the coordinator turn before collecting its reply.
+
+                Args:
+                    message_id: Message identity assigned by the chat transport.
+                """
                 self._emit(
                     {
                         "type": "message",
@@ -1154,8 +1130,19 @@ class AutoOrchestrator:
                     round=n,
                     turn_id=turn_id,
                 )
-                reply, reply_parts = await self.ports.collect(
-                    session_id, message_id, member_id
+
+            async def _turn_io() -> None:
+                reply, reply_parts = await execute_team_turn(
+                    ports=self.ports,
+                    member=self.coordinator,
+                    run_id=self.run_id,
+                    team_id=self.team_id,
+                    username=self.username,
+                    turn_id=turn_id,
+                    text=body,
+                    execution=_merged_member_execution(self.coordinator, None),
+                    config_checker=self.config_checker,
+                    on_delivered=_on_delivered,
                 )
                 self._emit(
                     {
@@ -1260,29 +1247,32 @@ class AutoOrchestrator:
                     turn_id = uuid.uuid4().hex[:12]
                     try:
                         task = str(assignment.get("task") or "")
-                        # Auto mode has no per-node execution blocks: turns
-                        # run under member defaults by design (spec §2.2).
-                        message_id = await self.ports.deliver(
-                            member["session_id"], task, context, execution_token=None
-                        )
-                        self._emit(
-                            {
-                                "type": "message",
-                                "direction": "sent",
-                                "member_id": member["member_id"],
-                                "session_id": member["session_id"],
-                                "text": task,
-                                "turn_id": turn_id,
-                                "run_id": self.run_id,
-                            }
-                        )
-                        await self._transcript(
-                            "sent",
-                            task,
-                            member_id=member["member_id"],
-                            round=n,
-                            turn_id=turn_id,
-                        )
+
+                        async def _on_delivered(message_id: str) -> None:
+                            """Record the member turn before collecting its reply.
+
+                            Args:
+                                message_id: Message identity assigned by chat.
+                            """
+                            self._emit(
+                                {
+                                    "type": "message",
+                                    "direction": "sent",
+                                    "member_id": member["member_id"],
+                                    "session_id": member["session_id"],
+                                    "text": task,
+                                    "turn_id": turn_id,
+                                    "run_id": self.run_id,
+                                }
+                            )
+                            await self._transcript(
+                                "sent",
+                                task,
+                                member_id=member["member_id"],
+                                round=n,
+                                turn_id=turn_id,
+                            )
+
                         # Stream deltas for this turn are tagged via the
                         # session -> turn_id map; cleared in the finally below
                         # (every exit path from the collect race).
@@ -1292,10 +1282,18 @@ class AutoOrchestrator:
                         # the remaining reply_timeout (spec §6.3/§10).
                         collect_task = asyncio.ensure_future(
                             asyncio.wait_for(
-                                self.ports.collect(
-                                    member["session_id"],
-                                    message_id,
-                                    member["member_id"],
+                                execute_team_turn(
+                                    ports=self.ports,
+                                    member=member,
+                                    run_id=self.run_id,
+                                    team_id=self.team_id,
+                                    username=self.username,
+                                    turn_id=turn_id,
+                                    text=task,
+                                    context=context,
+                                    execution=_merged_member_execution(member, None),
+                                    config_checker=self.config_checker,
+                                    on_delivered=_on_delivered,
                                 ),
                                 timeout=float(self.config["reply_timeout"]),
                             )
@@ -1539,36 +1537,21 @@ class AgentTeamRunService:
         self._runners: dict[str, DAGRunner | AutoOrchestrator] = {}
         self._buses: dict[str, RunEventBus] = {}
 
-    async def boot_sweep(self) -> int:
-        """Mark stale runs interrupted at startup (spec §6.5).
-
-        In-memory runners do not survive a restart; rows still marked
-        running/paused cannot make progress and must surface as
-        `interrupted` so the panel offers resume.
-
-        Returns:
-            Number of rows transitioned to `interrupted`.
-        """
-        stale = await self.db.get_agent_team_runs_by_status(["running", "paused"])
-        for row in stale:
-            await self.db.update_agent_team_run(row.run_id, status="interrupted")
-        return len(stale)
-
     async def resume_run(self, username: str, run_id: str) -> dict:
-        """Resume a paused (in-memory) or interrupted (post-restart) run.
+        """Continue a paused legacy run only while its original owner remains.
 
         Args:
             username: Requesting dashboard user.
             run_id: Persisted run id.
 
         Returns:
-            The snapshot of the resumed (or rebuilt) runner.
+            The snapshot of the original resumed runner.
 
         Raises:
-            AgentTeamsServiceError: On ownership errors or a status that
-                cannot be resumed.
+            AgentTeamsServiceError: On ownership errors, a nonpaused status,
+                or retired history whose original execution owner was lost.
         """
-        row, team = await self._require_run(username, run_id)
+        await self._require_run(username, run_id)
         runner = self._runners.get(run_id)
         if runner is not None:
             if runner.status != "paused":
@@ -1581,80 +1564,10 @@ class AgentTeamRunService:
                 self._start_runner_task(runner)
             return runner.snapshot()
 
-        if row.status not in ("interrupted", "paused"):
-            raise AgentTeamsServiceError(f"运行 '{run_id}' 当前状态不可恢复")
-        config = {**DEFAULT_TEAM_CONFIG, **(team["config"] or {})}
-        if row.mode == "auto":
-            # Rebuild from the persisted rounds (next round = len+1). A fresh
-            # orchestrator starts with the no-tool counter at 0, so a
-            # no-dispatch pause gets a fresh chance — flagged so its first
-            # turn injects the stronger no-dispatch reminder.
-            await self.db.update_agent_team_run(run_id, status="running")
-            runner = self._build_orchestrator(
-                run_id=run_id,
-                team=team,
-                config=config,
-                run_input=row.input,
-                username=username,
-                rounds=list(row.rounds or []),
-            )
-            runner._resume_reminder = True
-            self._start_runner_task(runner)
-            return runner.snapshot()
-        # Redo semantics: in-flight nodes at interruption are re-dispatched
-        # from scratch; done/skipped nodes and their results are preserved.
-        node_states = {
-            node_id: (
-                {**state, "status": "pending"}
-                if state["status"] == "running"
-                else state
-            )
-            for node_id, state in (row.node_states or {}).items()
-        }
-        # Deleted-config pre-fail: pending nodes bound to a config profile
-        # that no longer resolves fail right here so a deleted profile
-        # surfaces immediately on resume instead of at dispatch time.
-        prefailed: list[str] = []
-        if self.config_checker is not None:
-            graph_nodes = {
-                n.get("id"): n for n in (row.graph_snapshot or {}).get("nodes", [])
-            }
-            for node_id, state in node_states.items():
-                if state["status"] != "pending":
-                    continue
-                execution = (graph_nodes.get(node_id) or {}).get("execution") or {}
-                config_id = execution.get("config_id")
-                if config_id and not self.config_checker(config_id):
-                    state["status"] = "failed"
-                    state["error"] = "配置档案已删除"
-                    prefailed.append(node_id)
-        await self.db.update_agent_team_run(
-            run_id, status="running", node_states=node_states
+        raise AgentTeamsServiceError(
+            "Legacy history is read-only after its original owner is lost. Start a new asset run.",
+            status=410,
         )
-        runner = self._build_runner(
-            run_id=run_id,
-            team=team,
-            graph=row.graph_snapshot,
-            config=config,
-            run_input=row.input,
-            node_states=node_states,
-            username=username,
-            workflow_id=row.workflow_id,
-        )
-        # Seed the pre-failed nodes onto the fresh bus history: the runner
-        # never executes those nodes, so a monitor attached after the resume
-        # would otherwise never see their failure.
-        for node_id in prefailed:
-            runner._emit(
-                {
-                    "type": "node_status",
-                    "node_id": node_id,
-                    "status": "failed",
-                    "error": node_states[node_id].get("error"),
-                }
-            )
-        self._start_runner_task(runner)
-        return runner.snapshot()
 
     async def start_run(self, username: str, team_id: str, payload: dict) -> dict:
         """Start a DAG or auto run for a team.
@@ -1832,6 +1745,7 @@ class AgentTeamRunService:
             username=username,
             rounds=rounds,
             on_member_stop=self.on_member_stop,
+            config_checker=self.config_checker,
             transcript_sink=transcript_sink,
         )
         self._runners[run_id] = orchestrator
@@ -1874,7 +1788,7 @@ class AgentTeamRunService:
     async def list_active_runs(self, username: str) -> dict:
         active = []
         for run_id, runner in list(self._runners.items()):
-            if runner.status not in ("running", "paused"):
+            if runner.status not in ("running", "paused", "stopping"):
                 continue
             row = await self.db.get_agent_team_run(run_id)
             if row is None:
@@ -1890,6 +1804,35 @@ class AgentTeamRunService:
         await self._require_team(username, team_id)
         rows = await self.db.get_agent_team_runs_by_team(team_id)
         return {"runs": [_run_to_dict(r) for r in rows]}
+
+    async def get_history_run(self, username: str, run_id: str) -> dict:
+        """Read original persisted history without resuming or changing execution.
+
+        Args:
+            username: Authenticated team owner.
+            run_id: Original legacy run identity.
+
+        Returns:
+            Original saved fields with owner-aware history and live execution.
+
+        Raises:
+            AgentTeamsServiceError: The run or its team is inaccessible.
+        """
+        row, team = await self._require_run(username, run_id)
+        runner = self._runners.get(run_id)
+        active = bool(runner and runner.task and not runner.task.done())
+        # Ownership outlives the task. An unfinished row read before completion
+        # must not become interrupted just because its task finished meanwhile.
+        return {
+            **_run_to_dict(row),
+            "team_name": team["name"],
+            "execution_active": active,
+            "history_status": (
+                "interrupted"
+                if row.status in ("running", "paused", "stopping") and runner is None
+                else row.status
+            ),
+        }
 
     async def pause_run(self, username: str, run_id: str) -> dict:
         await self._require_run(username, run_id)

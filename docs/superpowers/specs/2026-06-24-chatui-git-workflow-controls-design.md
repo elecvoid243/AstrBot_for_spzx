@@ -108,7 +108,7 @@ GitDiffBodyContent (state: GitDiffFetchState, expanded: Set<string>, onRestore c
 
 ### 3.2 改造后数据流
 
-```
+````
 GitDiffSidebar (顶层 orchestrator — 扩展)
   ├─ useSpcodeGitDiff         (existing) → state / refresh / polling
   ├─ useSpcodeFileRestore     (existing) → restore()
@@ -189,7 +189,7 @@ GitCommitBar  [NEW]  (粘性底部)
   ├─ isStagingAll: boolean    ← composable 暴露的单值 flag
   ├─ onStageAll: () => void   ← 点击触发 confirmStageAllOpen
   └─ onCommit: () => void     ← 点击触发 commitDialogOpen
-```
+````
 
 **`isStaging` 派生链(P1-4 修复)**:
 
@@ -670,7 +670,7 @@ async function onStageFile(path: string): Promise<void> {
 | `warning` | 业务失败(nothing_to_commit, hook_rejected, identity_not_set, empty_repository, ...) | 6000ms |
 | `error` | 系统/网络/参数失败 | 6000ms |
 
-`withStderr: true` 的 reason 在 snackbar 内部追加 `<pre class="spcode-stderr">{{ stderr }}</pre>`(API 文档 §7.8 建议)。
+`withStderr: true` 的 reason 在 snackbar 内部追加 <code v-pre>&lt;pre class="spcode-stderr"&gt;{{ stderr }}&lt;/pre&gt;</code>(API 文档 §7.8 建议)。
 
 ---
 
@@ -823,7 +823,7 @@ defineEmits<{
 - `message` 双向绑定 `<textarea>`,min-height 120px
 - 字符数 counter(P1-6 修复:警告色用 Vuetify token):
   - `<span :class="['commit-char-counter', { 'is-warning': message.length > 7000, 'is-error': message.length > 8192 }]">`
-  - `{{ tm("commit.dialog.charCounter", { count: message.length }) }}`
+  - <code v-pre>{{ tm("commit.dialog.charCounter", { count: message.length }) }}</code>
   - CSS:
     ```css
     .commit-char-counter { color: rgba(var(--v-theme-on-surface), 0.55); font-size: 12px; }

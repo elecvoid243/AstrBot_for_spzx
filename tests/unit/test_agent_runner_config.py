@@ -153,6 +153,15 @@ def test_local_legacy_fields_are_fully_migrated():
                 "safety_mode": False,
                 "safety_mode_strategy": "system_prompt",
             },
+            "ask_user_choice": {
+                "enabled": True,
+                "timeout_seconds": 1800,
+                "timeout_fallback_message": (
+                    "[SYSTEME NOTICE] User did not respond within {timeout} seconds. "
+                    "Immediately stop all behavior and wait for user's next insturction. "
+                    "No speculating on user intentions."
+                ),
+            },
             "compression": {
                 "max_turns": 20,
                 "trim_turns": 3,
@@ -237,6 +246,15 @@ def test_local_migration_replaces_default_root_inserted_before_version_bump():
                 "persona_id": "developer",
                 "safety_mode": False,
                 "safety_mode_strategy": "system_prompt",
+            },
+            "ask_user_choice": {
+                "enabled": True,
+                "timeout_seconds": 1800,
+                "timeout_fallback_message": (
+                    "[SYSTEME NOTICE] User did not respond within {timeout} seconds. "
+                    "Immediately stop all behavior and wait for user's next insturction. "
+                    "No speculating on user intentions."
+                ),
             },
             "compression": {
                 "max_turns": 24,

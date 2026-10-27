@@ -329,14 +329,14 @@ class QQOfficialPlatformAdapter(Platform):
         self,
         session: MessageSesion,
         message_chain: MessageChain,
-    ) -> None:
-        await self._send_by_session_common(session, message_chain)
+    ) -> bool:
+        return await self._send_by_session_common(session, message_chain)
 
     async def _send_by_session_common(
         self,
         session: MessageSesion,
         message_chain: MessageChain,
-    ) -> None:
+    ) -> bool:
         """Send a message after resolving the QQ Official delivery session.
 
         Args:
@@ -344,7 +344,7 @@ class QQOfficialPlatformAdapter(Platform):
             message_chain: Message content to send.
 
         Returns:
-            None.
+            Whether every message segment was accepted for external delivery.
         """
         if session.message_type == MessageType.GROUP_MESSAGE:
             session = MessageSesion(
@@ -357,9 +357,13 @@ class QQOfficialPlatformAdapter(Platform):
             message_chain
         )
         if len(message_chains) > 1:
+            accepted = True
             for split_message_chain in message_chains:
-                await self._send_by_session_common(session, split_message_chain)
-            return
+                accepted = (
+                    await self._send_by_session_common(session, split_message_chain)
+                    and accepted
+                )
+            return accepted
 
         (
             plain_text,
@@ -378,7 +382,7 @@ class QQOfficialPlatformAdapter(Platform):
             and not video_file_source
             and not file_source
         ):
-            return
+            return False
 
         # 主动推送不需要 msg_id，见 https://github.com/AstrBotDevs/AstrBot/issues/7904
         msg_id = self._session_last_message_id.get(session.session_id)
@@ -397,7 +401,7 @@ class QQOfficialPlatformAdapter(Platform):
                 "[QQOfficial] No cached msg_id for session: %s, skip send_by_session",
                 session.session_id,
             )
-            return
+            return False
 
         use_md = getattr(message_chain, "use_markdown_", None)
         if use_md is False or (use_md is None and not self.use_markdown_default):
@@ -555,12 +559,13 @@ class QQOfficialPlatformAdapter(Platform):
                 "[QQOfficial] Unsupported message type for send_by_session: %s",
                 session.message_type,
             )
-            return
+            return False
 
         sent_message_id = self._extract_message_id(ret)
         if sent_message_id:
             self.remember_session_message_id(session.session_id, sent_message_id)
         await Platform.send_by_session(self, session, message_chain)
+        return True
 
     def remember_session_message_id(self, session_id: str, message_id: str) -> None:
         if not session_id or not message_id:

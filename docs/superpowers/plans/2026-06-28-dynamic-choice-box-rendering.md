@@ -1572,5 +1572,5 @@ Expected: **正好 5 个 commit**(Task 3 解析层 / Task 4 集成 / Task 5 i18n
 
 - **本计划严格遵循 spec** —— 任何与 spec 不一致的实现,先回到 spec review,再修改本计划。
 - **未涉及**:`MessageList.vue` (deprecated,见 spec §5.2)、多选 / 嵌套 / 风险等级(显式 non-goals,见 spec §1)、非 WebChat 平台适配、OpenAPI client 重新生成(本功能不引入新的后端 API)。
-- **关于 v-html / markdown description**:spec §4.7 明确禁用 v-html;本计划组件所有动态文本走 `{{ }}` 插值。
+- **关于 v-html / markdown description**:spec §4.7 明确禁用 v-html;本计划组件所有动态文本走 <code v-pre>{{ }}</code> 插值。
 - **Plugin 测试**:Task 10 完成后可加 `pytest tests/` 验证 `AskUserChoiceTool.call` 行为(本计划 v1 范围外,后续 PR 可加)。

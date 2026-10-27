@@ -921,6 +921,14 @@ export const chatApi = {
       openApiV1.getChatSessionGoal({ path: { session_id: sessionId } }),
     );
   },
+  setSessionGoal(sessionId: string, goal: string, maxTurns?: number) {
+    return typed<{ goal: SessionGoalState }>(
+      openApiV1.setChatSessionGoal({
+        path: { session_id: sessionId },
+        body: { goal, max_turns: maxTurns },
+      }),
+    );
+  },
   applyGoalAction(sessionId: string, action: 'pause' | 'resume' | 'clear') {
     return typed<{ goal: SessionGoalState | null }>(
       openApiV1.applyChatSessionGoalAction({
@@ -1914,6 +1922,20 @@ export const skillApi = {
     return typed<OpenConfig>(
       openApiV1.deleteNeoSkillRelease({ body: body as any }),
     );
+  },
+};
+
+export const skillGuideApi = {
+  active<T = any>(umo: string) {
+    return typed<T>(openApiV1.getSkillGuideActive({ query: { umo } }));
+  },
+  load<T = any>(umo: string, skillName: string) {
+    return typed<T>(
+      openApiV1.loadSkillGuide({ body: { umo, skill_name: skillName } }),
+    );
+  },
+  clear<T = any>(umo: string) {
+    return typed<T>(openApiV1.clearSkillGuide({ body: { umo } }));
   },
 };
 

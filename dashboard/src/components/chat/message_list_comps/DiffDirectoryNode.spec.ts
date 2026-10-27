@@ -130,7 +130,9 @@ describe("DiffDirectoryNode", () => {
 
   // 3. Collapsed parent → child not rendered
   it("collapsed parent hides children", () => {
-    const list = [file("a/b/y.py")];
+    // a holds a direct file AND a subdir → not a chain link, so the
+    // ordinary collapsedGroups collapse applies.
+    const list = [file("a/x.py"), file("a/b/y.py")];
     const sec = buildDirectorySections(list, "", "unstaged")[0];
     const w = mountNode(sec, 0, {
       collapsedGroups: new Set(["dir:a"]),
@@ -145,7 +147,11 @@ describe("DiffDirectoryNode", () => {
   it("expanded parent renders children", () => {
     const list = [file("a/b/y.py")];
     const sec = buildDirectorySections(list, "", "unstaged")[0];
-    const w = mountNode(sec, 0);
+    // a is a single-child chain head: reveal its levels to render the
+    // nested section body visibly.
+    const w = mountNode(sec, 0, {
+      expandedChains: new Set(["dir:a"]),
+    });
     const bodies = w.findAll(".git-diff-section-body");
     // 2 sections → 2 bodies
     expect(bodies.length).toBe(2);
@@ -319,5 +325,94 @@ describe("DiffDirectoryNode", () => {
     };
     const w = mountNode(sec, 0, { showStage: true });
     expect(w.find(".git-diff-section-check").exists()).toBe(false);
+  });
+});
+
+describe("DiffDirectoryNode — compact directory chains", () => {
+  it("renders a breadcrumb row for a single-child run, body hidden", () => {
+    const sec = buildDirectorySections([file("a/b/y.py")], "", "unstaged")[0];
+    const w = mountNode(sec, 0);
+    const crumb = w.find(".git-diff-section-crumb");
+    expect(crumb.exists()).toBe(true);
+    expect(crumb.text()).toContain("a");
+    expect(crumb.text()).toContain("b");
+    expect(crumb.text()).toContain("›");
+    expect(crumb.text()).toContain("group.chainExpand");
+    // Crumb view hides the body.
+    const body = w.find(".git-diff-section-body");
+    expect(body.attributes("style")).toMatch(/display:\s*none/);
+  });
+
+  it("middle-ellipses the crumb when the chain runs deeper than 3", () => {
+    const sec = buildDirectorySections(
+      [file("a/b/c/d/e.py")],
+      "",
+      "unstaged",
+    )[0];
+    const w = mountNode(sec, 0);
+    const segs = w
+      .findAll(".git-diff-crumb-seg")
+      .map((s) => s.text());
+    // a → b → c → d(e.py): the file is a leaf, so the last DIRECTORY
+    // segment d terminates the crumb.
+    expect(segs).toEqual(["a", "…", "d"]);
+  });
+
+  it("chain header click routes to onToggleChain, not onToggleGroup", async () => {
+    const sec = buildDirectorySections([file("a/b/y.py")], "", "unstaged")[0];
+    const onToggleChain = vi.fn();
+    const onToggleGroup = vi.fn();
+    const w = mountNode(sec, 0, { onToggleChain, onToggleGroup });
+    await w.find(".git-diff-section-header").trigger("click");
+    expect(onToggleChain).toHaveBeenCalledWith("dir:a");
+    expect(onToggleGroup).not.toHaveBeenCalled();
+  });
+
+  it("expanded chain reveals the real nested levels as ordinary rows", () => {
+    const sec = buildDirectorySections([file("a/b/y.py")], "", "unstaged")[0];
+    const w = mountNode(sec, 0, {
+      expandedChains: new Set(["dir:a"]),
+    });
+    // Crumb replaced by the head's own label; the terminal level renders
+    // as an ordinary (suppressed) section with its label.
+    expect(w.find(".git-diff-section-crumb").exists()).toBe(false);
+    const labels = w.findAll(".git-diff-section-label");
+    expect(labels[0].text()).toBe("a");
+    expect(labels[1].text()).toBe("b");
+    // The file row is visible under the revealed chain.
+    expect(
+      w.find(".git-diff-section-body .git-diff-file-item").exists(),
+    ).toBe(true);
+  });
+
+  it("suppressed chain link routes header clicks to onToggleGroup", async () => {
+    const sec = buildDirectorySections([file("a/b/y.py")], "", "unstaged")[0];
+    const onToggleChain = vi.fn();
+    const onToggleGroup = vi.fn();
+    const w = mountNode(sec, 0, {
+      chainSuppressed: true,
+      onToggleChain,
+      onToggleGroup,
+    });
+    expect(w.find(".git-diff-section-crumb").exists()).toBe(false);
+    await w.find(".git-diff-section-header").trigger("click");
+    expect(onToggleGroup).toHaveBeenCalledWith("dir:a");
+    expect(onToggleChain).not.toHaveBeenCalled();
+  });
+
+  it("revealed chain keeps its links suppressed for the whole run", () => {
+    // a → b → c → d/e.py: a is the head, b a mid-link, c the terminal.
+    // Expanding a reveals a, b, c as ordinary rows (no nested crumb).
+    const sec = buildDirectorySections(
+      [file("a/b/c/d/e.py")],
+      "",
+      "unstaged",
+    )[0];
+    const w = mountNode(sec, 0, {
+      expandedChains: new Set(["dir:a"]),
+    });
+    expect(w.find(".git-diff-section-crumb").exists()).toBe(false);
+    const labels = w.findAll(".git-diff-section-label").map((l) => l.text());
+    expect(labels).toEqual(["a", "b", "c", "d"]);
   });
 });

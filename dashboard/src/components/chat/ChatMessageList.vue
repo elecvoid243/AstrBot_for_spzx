@@ -261,6 +261,11 @@
                     aria-hidden="true"
                   />
                 </button>
+                <div
+                  v-if="agentWorkPillVisible(msg, msgIndex)"
+                  class="agent-work-divider"
+                  aria-hidden="true"
+                ></div>
                 <template
                   v-for="(entry, blockIndex) in visibleBlocks(msg, msgIndex)"
                   :key="`block-${entry.index}-${entry.block.kind}`"
@@ -747,6 +752,7 @@ const props = withDefaults(
      * ChatMessageList will call `store.reconcile(umo)` on mount and whenever
      * the value changes, so a tab-switch picks up server-side pending
      * interactive choices without depending on a fresh SSE event.
+     * Without it, choices are read-only history and never access session state.
      */
     currentUmo?: string;
     /**
@@ -875,6 +881,7 @@ async function onInteractiveChoiceSubmit(
   requestId: string,
   payload: { choice_id: string; free_text: string },
 ): Promise<void> {
+  if (!props.currentUmo) return;
   // Bug Y1 fix: carry the current UMO into the store so the
   // removeChoice() cleanup targets this session's bucket only.
   try {
@@ -898,6 +905,7 @@ async function onInteractiveChoiceSubmit(
  * 后续 reconcile(umo) 会基于 backend pending 列表兜底重对账。
  */
 async function onInteractiveChoiceCancel(requestId: string): Promise<void> {
+  if (!props.currentUmo) return;
   try {
     await interactiveChoiceStore.cancelChoice(props.currentUmo, requestId);
   } catch (e) {
@@ -964,6 +972,7 @@ function migrateOldInteractiveChoiceText(records: ChatRecord[]): number {
  * every reactive update.
  */
 function mirrorInteractiveChoiceParts(records: ChatRecord[]): void {
+  if (!props.currentUmo) return;
   for (const message of records) {
     for (const part of messageParts(message)) {
       if (!isInteractiveChoicePayload(part)) continue;
@@ -1006,10 +1015,9 @@ onMounted(() => {
   // pending choice does not lose the prompt.
   //
   // Bug Y1 / Y2 fix: hydrate is scoped to a single UMO so a refresh
-  // on session B cannot drag in session A's pending boxes. Passing
-  // `null` / empty is a programmer error here — the parent always
-  // hands us a real UMO before mount.
-  interactiveChoiceStore.hydrate(props.currentUmo);
+  // on session B cannot drag in session A's pending boxes. Thread
+  // transcripts have no live UMO and must leave the active store alone.
+  if (props.currentUmo) interactiveChoiceStore.hydrate(props.currentUmo);
   // Round-2 defensive migration: turn OLD plain-text wire-format
   // JSON (round-1 pre-fix) into proper `interactive_choice` parts
   // in place. Must run *before* `injectOrphans` so its
@@ -1022,6 +1030,7 @@ onMounted(() => {
       `[interactiveChoice] migrated ${recovered} old plain-text wire-format part(s) into interactive_choice`,
     );
   }
+  if (!props.currentUmo) return;
   // Bug X1 / X2 fix: re-attach orphan store parts (those restored
   // from localStorage but absent from chat history) to the nearest
   // bot message so <InteractiveChoiceBox> has a render source after
@@ -2500,6 +2509,21 @@ function formatDuration(seconds: number) {
 .agent-work-pill:focus-visible {
   outline: 2px solid rgba(var(--v-theme-primary), 0.45);
   outline-offset: 1px;
+}
+
+/* Section break under the completed-work capsule: a hairline that fades
+   out at both ends, separating the collapsed work summary from the final
+   answer (same pattern as collapsed agent work in coding agents). */
+.agent-work-divider {
+  height: 1px;
+  margin: 0 0 10px;
+  background: linear-gradient(
+    to right,
+    rgba(var(--v-theme-on-surface), 0),
+    rgba(var(--v-theme-on-surface), 0.13) 12%,
+    rgba(var(--v-theme-on-surface), 0.13) 88%,
+    rgba(var(--v-theme-on-surface), 0)
+  );
 }
 
 .agent-work-pill-icon {

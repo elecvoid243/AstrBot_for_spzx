@@ -280,6 +280,15 @@ class AstrBotCoreLifecycle:
             self.astrbot_config_mgr,
         )
 
+        from astrbot.core.agent_teams.assets import RoleAssetService
+        from astrbot.core.agent_teams.workflows import WorkflowService
+
+        self.workflow_service = WorkflowService(
+            self.db, RoleAssetService(self.db, self)
+        )
+        self.star_context.workflow_service = self.workflow_service
+        await self.workflow_service.boot_sweep()
+
         # 记录启动时间
         self.start_time = int(time.time())
 
@@ -326,6 +335,31 @@ class AstrBotCoreLifecycle:
             *diagnostic_tasks,
             *(extra_tasks if extra_tasks else []),
         ]
+        if hasattr(self, "workflow_service"):
+            from astrbot.core.message.message_event_result import MessageChain
+
+            async def send_asset_notice(caller, text: str) -> bool:
+                """Use the existing platform adapter for durable source delivery.
+
+                Args:
+                    caller: Verified platform identity and delivery conversation.
+                    text: Safe notice or final result.
+
+                Returns:
+                    Whether a matching platform accepted the message.
+                """
+                return await self.star_context.send_message(
+                    caller.source,
+                    MessageChain().message(text),
+                    require_exact_source=True,
+                )
+
+            tasks_.append(
+                asyncio.create_task(
+                    self.workflow_service.chat.run_delivery(send_asset_notice),
+                    name="asset_chat_delivery",
+                )
+            )
         if cron_task:
             tasks_.append(cron_task)
         if temp_dir_cleaner_task:
@@ -381,6 +415,8 @@ class AstrBotCoreLifecycle:
 
     async def stop(self) -> None:
         """停止 AstrBot 核心生命周期管理类, 取消所有当前任务并终止各个管理器."""
+        if hasattr(self, "workflow_service"):
+            await self.workflow_service.shutdown()
         if self.temp_dir_cleaner:
             await self.temp_dir_cleaner.stop()
 
@@ -426,6 +462,8 @@ class AstrBotCoreLifecycle:
 
     async def restart(self) -> None:
         """重启 AstrBot 核心生命周期管理类, 终止各个管理器并重新加载平台实例"""
+        if hasattr(self, "workflow_service"):
+            await self.workflow_service.shutdown()
         await shutdown_local_booter()
         await self.provider_manager.terminate()
         await self.platform_manager.terminate()

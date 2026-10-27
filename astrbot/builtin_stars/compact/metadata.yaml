@@ -1,0 +1,4 @@
+name: builtin_compact
+desc: AstrBot 内置 /compact 命令（手动触发一次与自动压缩行为一致的 LLM 总结式上下文压缩）。
+author: elecvoid243
+version: 1.0.0

@@ -55,6 +55,10 @@ class FakeRunSvc:
     # Class-level call recorder for the run-service routes under test.
     calls: list[tuple] = []
 
+    async def list_team_runs(self, username, team_id):
+        assert username == "alice" and team_id == "t1"
+        return {"runs": []}
+
     async def start_run(self, username, team_id, payload):
         if payload.get("input") == "conflict":
             raise AgentTeamsServiceError("该团队已有 active run，无法重复启动")
@@ -116,12 +120,12 @@ def test_create_team_route(client):
     assert resp.json()["data"]["team_id"] == "t1"
 
 
-def test_start_run_maps_active_conflict_to_409(client):
+def test_start_run_is_retired_in_favor_of_versioned_assets(client):
     resp = client.post(
         "/api/v1/agent_teams/t1/runs",
         json={"mode": "dag", "input": "conflict", "workflow_id": "w1"},
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 410
     # A plain service error carries no field data.
     assert "data" not in resp.json()
 

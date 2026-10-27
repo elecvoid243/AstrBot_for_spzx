@@ -6,6 +6,8 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from astrbot.core.agent_teams.assets import RoleAssetError
+from astrbot.core.agent_teams.migration import LegacyMigrationRequest
 from astrbot.dashboard.responses import error, ok
 from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
 from astrbot.dashboard.services.agent_team_service import (
@@ -43,7 +45,7 @@ def get_run_service(request: Request) -> AgentTeamRunService:
 
 def _handle(e: AgentTeamsServiceError):
     """Map a service error to an HTTP response; run conflicts become 409."""
-    status = 409 if _CONFLICT_MARKER in str(e) else 400
+    status = 409 if _CONFLICT_MARKER in str(e) else e.status
     # Field-level validation problems ride the error envelope as data.fields.
     data = {"fields": e.field_errors} if e.field_errors else None
     return JSONResponse(error(str(e), data), status_code=status)
@@ -68,6 +70,60 @@ async def create_team(
         return ok(await service.create_team(username, await _json_body(request)))
     except AgentTeamsServiceError as e:
         return _handle(e)
+
+
+@router.get("/agent_teams/{team_id}/migration/preview")
+async def preview_legacy_migration(
+    team_id: str, request: Request, username: str = Depends(_auth_dep)
+):
+    """Preview definitions, effective roles, mappings and unresolved legacy items.
+
+    Args:
+        team_id: Legacy team owned by the current user.
+        request: Dashboard request carrying shared application services.
+        username: Authenticated owner; migration grants no additional access.
+
+    Returns:
+        A read-only proposal, active legacy run list and confirmation token.
+    """
+    try:
+        return ok(
+            await request.app.state.services.legacy_migration.preview(username, team_id)
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
+
+
+@router.post("/agent_teams/{team_id}/migration")
+async def confirm_legacy_migration(
+    team_id: str,
+    payload: LegacyMigrationRequest,
+    request: Request,
+    username: str = Depends(_auth_dep),
+):
+    """Atomically migrate the reviewed definitions without starting execution.
+
+    Args:
+        team_id: Legacy team owned by the current user.
+        payload: Reviewed token and explicit pending-save preference.
+        request: Dashboard request carrying shared application services.
+        username: Authenticated legacy and new asset owner.
+
+    Returns:
+        Durable old-to-new identities, pending items and reuse status.
+    """
+    try:
+        return ok(
+            await request.app.state.services.legacy_migration.confirm(
+                username, team_id, payload.model_dump()
+            )
+        )
+    except RoleAssetError as exc:
+        return JSONResponse(
+            error(str(exc), {"fields": exc.fields}), status_code=exc.status
+        )
 
 
 @router.get("/agent_teams")
@@ -233,7 +289,13 @@ async def delete_workflow(
         return _handle(e)
 
 
-@router.post("/agent_teams/{team_id}/runs")
+@router.post(
+    "/agent_teams/{team_id}/runs",
+    deprecated=True,
+    responses={
+        410: {"description": "Legacy launches are retired; start a versioned asset run"}
+    },
+)
 @legacy_router.post("/{team_id}/runs")
 async def start_run(
     team_id: str,
@@ -241,8 +303,25 @@ async def start_run(
     username: str = Depends(_auth_dep),
     service: AgentTeamRunService = Depends(get_run_service),
 ):
+    """Retire both legacy launch URLs while retaining owner-scoped history.
+
+    Args:
+        team_id: Existing legacy definition owned by the authenticated user.
+        request: Original request, retained for the retired route contract.
+        username: Authenticated owner.
+        service: Original legacy service used to enforce ownership.
+
+    Returns:
+        A gone response directing new work to the unified asset entry.
+    """
     try:
-        return ok(await service.start_run(username, team_id, await _json_body(request)))
+        await service.list_team_runs(username, team_id)
+        return JSONResponse(
+            error(
+                "Legacy launches are retired. Migrate the definition and start a new asset run."
+            ),
+            status_code=410,
+        )
     except AgentTeamsServiceError as e:
         return _handle(e)
 

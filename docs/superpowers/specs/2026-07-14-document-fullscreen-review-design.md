@@ -26,7 +26,7 @@
 
 The "文档管理 (Documents)" sub-tab (`DocumentManager.vue`, spec
 `2026-07-11-document-manager-design.md`) ships with three view modes for the
-center pane — `rendered` (MarkdownView), `raw` (plain `<pre>{{ content }}</pre>`),
+center pane — `rendered` (MarkdownView), `raw` (plain <code v-pre>&lt;pre&gt;{{ content }}&lt;/pre&gt;</code>),
 and `diff` (DiffPreview). The right pane is the git log commit list. The left
 pane is the docs directory tree.
 
@@ -35,7 +35,7 @@ pane is the docs directory tree.
 1. **Review is cramped.** When the user wants to read a doc carefully or compare
    it against a historical commit, the left tree + right history split eats too
    much horizontal space. There is no way to enter a focused review mode.
-2. **Raw view is featureless.** `<pre>{{ content }}</pre>` has no line numbers
+2. **Raw view is featureless.** <code v-pre>&lt;pre&gt;{{ content }}&lt;/pre&gt;</code> has no line numbers
    and no way to leave comments. The user has to switch to "Files" tab to use
    `FileBrowserCodeView` (which already has both), losing the context of the
    document picker and history panel.
@@ -161,7 +161,7 @@ overlay implementation (spec `2026-06-30-diff-fullscreen-design.md` §3.2),
 so the two overlays share the same mount lifecycle, Escape handling, and
 z-index layer (`9999`).
 
-**Template (change vs the existing single-file <div> root):**
+**Template (change vs the existing single-file `<div>` root):**
 
 ```vue
 <Teleport to="body" :disabled="!isFullscreen">

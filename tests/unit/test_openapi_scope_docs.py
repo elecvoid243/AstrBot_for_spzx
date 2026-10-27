@@ -49,6 +49,19 @@ def test_public_openapi_documents_sensitive_subscopes() -> None:
     assert "`config:edit_admin`" in system_config_update["description"]
 
 
+def test_agent_teams_remain_documented_as_dashboard_only() -> None:
+    spec = load_yaml(SPEC_PATH)
+    public_spec = filter_public_openapi(spec)
+
+    assert "/api/v1/agent_teams" in spec["paths"]
+    assert "AgentTeamRunStartPayload" in spec["components"]["schemas"]
+    for path, methods in spec["paths"].items():
+        if path.startswith("/api/v1/agent_teams"):
+            for operation in methods.values():
+                assert "x-astrbot-scope" not in operation
+            assert path not in public_spec["paths"]
+
+
 def test_scope_reference_lists_every_supported_scope() -> None:
     spec = filter_public_openapi(load_yaml(SPEC_PATH))
 

@@ -126,11 +126,18 @@ async def run_agent(
     show_reasoning: bool = False,
     buffer_intermediate_messages: bool = False,
 ) -> AsyncGenerator[MessageChain | None, None]:
-    step_idx = 0
-    forced_final_round = False
+    restored_call = getattr(agent_runner, "_restored_call", False)
+    resumed_attempt = getattr(agent_runner, "_resumed_attempt", restored_call)
+    step_idx = (
+        max(0, agent_runner._step_budget_used - int(restored_call))
+        if resumed_attempt
+        else 0
+    )
+    forced_final_round = bool(agent_runner.req.denied_tools) if restored_call else False
     agent_runner._step_budget_max = max_step
-    agent_runner._step_budget_used = 0
-    agent_runner._step_budget_notified = set()
+    if not resumed_attempt:
+        agent_runner._step_budget_used = 0
+        agent_runner._step_budget_notified = set()
     astr_event = agent_runner.run_context.context.event
     tool_name_by_call_id: dict[str, str] = {}
     buffered_llm_chains: list[MessageChain] = []

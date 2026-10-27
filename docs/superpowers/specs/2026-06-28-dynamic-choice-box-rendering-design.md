@@ -261,9 +261,9 @@ function onInteractiveChoiceSubmit(text: string) {
 - `ignored` 态: 整卡片加 `aria-live="polite"` 公告"选项已被忽略"
 
 **XSS / 转义（明确）**:
-- 所有用户可见文本(`prompt` / `title` / `label` / `description` / `value`)在 Vue 模板中用默认 `{{ }}` 插值,Vue 自动转义 HTML
+- 所有用户可见文本(`prompt` / `title` / `label` / `description` / `value`)在 Vue 模板中用默认 <code v-pre>{{ }}</code> 插值,Vue 自动转义 HTML
 - **禁用 `v-html`**: 即使 description 想支持 markdown,本期也只展示纯文本
-- 用户输入文本在 `submitted_via_input` 态显示时同样走 `{{ }}`,不解析为 HTML
+- 用户输入文本在 `submitted_via_input` 态显示时同样走 <code v-pre>{{ }}</code>,不解析为 HTML
 - 未来如需支持 markdown description,会单独 spec,使用 v-text + 单独的 markdown sanitizer
 
 ### 4.8 Visual style

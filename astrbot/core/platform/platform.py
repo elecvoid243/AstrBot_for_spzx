@@ -135,10 +135,16 @@ class Platform(abc.ABC):
         self,
         session: MessageSesion,
         message_chain: MessageChain,
-    ) -> None:
-        """通过会话发送消息。该方法旨在让插件能够直接通过**可持久化的会话数据**发送消息，而不需要保存 event 对象。
+    ) -> bool | None:
+        """Send through a persisted conversation without retaining its event.
 
-        异步方法。
+        Args:
+            session: Persisted destination conversation.
+            message_chain: Message content.
+
+        Returns:
+            True when delivery is accepted, False when the adapter declines it,
+            or None for legacy adapters without an explicit delivery result.
         """
         asyncio.create_task(
             Metric.upload(msg_event_tick=1, adapter_name=self.meta().name)

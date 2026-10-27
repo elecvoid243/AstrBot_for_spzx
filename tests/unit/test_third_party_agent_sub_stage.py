@@ -284,6 +284,7 @@ async def test_third_party_wake_prefix_exempts_webchat(
     stage._resolve_persona_custom_error_message = AsyncMock(return_value=None)
     event = MagicMock()
     event.get_platform_name.return_value = platform
+    event.get_extra.return_value = None
     event.message_str = message
     event.message_obj.message = []
     hook = AsyncMock(return_value=True)

@@ -839,7 +839,7 @@ function computeTopoOrder(nodes: any[], edges: any[]): string[] {
 4. 选中 B → A 边
 5. 勾选"循环边"
 6. 配置最大迭代次数 = 5
-7. 配置退出条件：`{{A.output.done}} == true`
+7. 配置退出条件：<code v-pre>{{A.output.done}} == true</code>
 8. 保存工作流
 9. 验证后端校验通过
 
@@ -1643,7 +1643,7 @@ pnpm test
 
 2. **条件退出**
    - 测试 → 修复 → 测试循环
-   - break_condition: `{{test.output.passed}} == true`
+   - break_condition: <code v-pre>{{test.output.passed}} == true</code>
    - 验证第 2 次测试通过后退出（未达到上限）
 
 3. **嵌套循环**
@@ -1742,7 +1742,7 @@ git commit -m "chore: format code and verify all tests pass"
 2. **Execution history capped at 10**: Older iterations not accessible
    - Mitigation: Sufficient for debugging; full audit can use separate table
 3. **Cannot access previous iteration output in conditions**: Only current output available
-   - Mitigation: v1 limitation; v2 can add `{{node.executions[0].output.*}}` syntax
+   - Mitigation: v1 limitation; v2 can add <code v-pre>{{node.executions[0].output.*}}</code> syntax
 
 ### Revised Plan Score
 

@@ -1,0 +1,4 @@
+name: builtin_ask_user_choice
+desc: AstrBot 内置 ask_user_choice 工具（LLM 呈现可交互选项框，阻塞等待用户选择后返回结果）。
+author: elecvoid243
+version: 1.0.0

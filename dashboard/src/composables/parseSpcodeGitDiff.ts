@@ -1,8 +1,15 @@
 // Author: elecvoid243
 // Date: 2026-06-17 (updated 2026-06-20 for scope echo; 2026-06-30
-//       for empty-diff data-loss fix — see tests/parseSpcodeGitDiff.test.mjs)
+//       for empty-diff data-loss fix; 2026-10-25 for progressive
+//       loading — see tests/parseSpcodeGitDiff.test.mjs)
 // Spec: docs/superpowers/specs/2026-06-17-chatui-git-diff-sidebar-design.md §4.1.1
 //      + docs/superpowers/specs/2026-06-20-git-diff-scope-switcher-design.md §4.2
+//
+// 2026-10-25 (v2.32.0 progressive loading): the sidebar's git-diff
+// endpoint no longer ships patch text. `parseSpcodeGitDiff` consumes the
+// paged metadata contract (files_changed + totals + etag + has_more);
+// slices arrive on demand via GET /spcode/git-diff/file
+// (see useSpcodeFileDiff.ts).
 
 export type GitDiffScope = "unstaged" | "staged" | "all";
 
@@ -21,22 +28,32 @@ function normalizeScope(raw: unknown): GitDiffScope | null {
   return VALID_SCOPES.has(raw as GitDiffScope) ? (raw as GitDiffScope) : null;
 }
 
+/** One paged metadata entry from GET /spcode/git-diff. */
+export interface SpcodeGitDiffFileRaw {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  is_binary?: boolean;
+}
+
 export interface SpcodeGitDiffRawResponse {
   loaded: boolean;
   directory: string | null;
   umo: string | null;
   scope?: GitDiffScope;
-  diff: string | null;
+  etag?: string;
+  files_changed: SpcodeGitDiffFileRaw[];
   stat: string | null;
-  files_changed: Array<{
-    path: string;
-    status: string;
-    additions: number;
-    deletions: number;
-  }>;
-  truncated: boolean;
-  truncated_at_bytes: number;
-  max_bytes: number;
+  /** Patch text — ONLY present on GET /spcode/git-diff/full (commit
+   *  dialog). The paged list endpoint never ships it. */
+  diff?: string | null;
+  total_files?: number;
+  total_additions?: number;
+  total_deletions?: number;
+  offset?: number;
+  limit?: number;
+  has_more?: boolean;
   elapsed_ms: number;
   reason: string | null;
 }
@@ -48,6 +65,8 @@ export interface SpcodeGitDiffFile {
   status: FileStatus;
   additions: number;
   deletions: number;
+  /** On-demand patch (loaded via useSpcodeFileDiff when the file row is
+   *  expanded). Null until fetched; binary files stay null forever. */
   slice: string | null;
   isBinary: boolean;
 }
@@ -61,18 +80,31 @@ export interface SpcodeGitDiffMeta {
    * to verify the requested ``scope`` reached the backend intact.
    */
   scope: GitDiffScope | null;
-  truncated: boolean;
-  truncatedAtBytes: number;
-  maxBytes: number;
+  /** Worktree etag echoed by the backend; the slice cache invalidates
+   *  on change (worktree state moved → old patches are stale). */
+  etag: string | null;
   reason: string | null;
   elapsedMs: number;
   fetchedAt: number;
 }
 
+export interface SpcodeGitDiffTotals {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
 export interface SpcodeGitDiffSnapshot {
   meta: SpcodeGitDiffMeta;
+  /** The currently loaded page(s) of files. `hasMore` reports whether
+   *  the server holds more; totals cover the FULL list regardless. */
   files: SpcodeGitDiffFile[];
-  rawDiff: string | null;
+  /** Aggregates over the full (cross-page) list, server-computed. */
+  totals: SpcodeGitDiffTotals;
+  /** True when the server holds more pages than currently loaded. */
+  hasMore: boolean;
+  /** Offset the next page should request (== loaded file count). */
+  nextOffset: number;
 }
 
 const VALID_STATUSES: ReadonlySet<FileStatus> = new Set([
@@ -93,76 +125,56 @@ function normalizeStatus(raw: string): FileStatus {
 export function parseSpcodeGitDiff(
   data: SpcodeGitDiffRawResponse,
 ): SpcodeGitDiffSnapshot {
+  const files: SpcodeGitDiffFile[] = (
+    Array.isArray(data.files_changed) ? data.files_changed : []
+  ).map((f) => ({
+    path: f.path,
+    status: normalizeStatus(f.status),
+    additions: f.additions ?? 0,
+    deletions: f.deletions ?? 0,
+    // Slices are on-demand now: no patch text ships with the list.
+    slice: null,
+    isBinary: f.is_binary === true,
+  }));
+
   return {
     meta: {
       directory: data.directory,
       umo: data.umo,
       loaded: data.loaded,
       scope: normalizeScope(data.scope),
-      truncated: data.truncated,
-      truncatedAtBytes: data.truncated_at_bytes,
-      maxBytes: data.max_bytes,
+      etag: data.etag ?? null,
       reason: data.reason,
       elapsedMs: data.elapsed_ms,
       fetchedAt: Date.now(),
     },
-    files: (() => {
-      // files_changed is the source of truth for the file list;
-      // diff is OPTIONAL patch text used to attach slices. Treat the
-      // two independently so a missing/empty diff payload (e.g. for
-      // a scope=unstaged query against a clean worktree, or a
-      // truncation that dropped the patch but kept the metadata)
-      // does NOT drop the file rows from the sidebar.
-      if (!Array.isArray(data.files_changed)) return [];
-      const byPath = new Map<string, SpcodeGitDiffFile>();
-      for (const f of data.files_changed) {
-        byPath.set(f.path, {
-          path: f.path,
-          status: normalizeStatus(f.status),
-          additions: f.additions ?? 0,
-          deletions: f.deletions ?? 0,
-          slice: null,
-          isBinary: false,
-        });
-      }
-      // Split the patch text once. `data.diff` may be null or "" when
-      // the backend had no patch to ship; treat that as "no slices
-      // to attach" and keep the file rows with slice=null.
-      const segments = (data.diff ?? "").split(/^diff --git /m);
-      // Match the "diff --git" header line and capture the *new* (b/)
-      // path. Uses non-greedy `.+?` instead of `\S+` so filenames
-      // with internal spaces — e.g. ASCII "foo bar.txt" or
-      // non-ASCII "新建   文文本档.txt" — still parse. The path is
-      // group 2 (group 1 is the old/a/ path); earlier code captured
-      // it as group 1 via `\S+`, which silently returned null for
-      // any path with whitespace and made the diff body render the
-      // "no content" placeholder.
-      const headerRe = /^diff --git a\/(.+?) b\/(.+)$/m;
-      for (let i = 1; i < segments.length; i++) {
-        const seg = "diff --git " + segments[i];
-        const m = seg.match(headerRe);
-        if (!m) continue;
-        const path = m[2];
-        const existing = byPath.get(path);
-        if (!existing) continue;
-        if (seg.includes("Binary files")) {
-          existing.isBinary = true;
-        } else {
-          existing.slice = seg;
-        }
-      }
-      return data.files_changed.map(
-        (f) =>
-          byPath.get(f.path) ?? {
-            path: f.path,
-            status: normalizeStatus(f.status),
-            additions: f.additions ?? 0,
-            deletions: f.deletions ?? 0,
-            slice: null,
-            isBinary: false,
-          },
-      );
-    })(),
-    rawDiff: data.diff,
+    files,
+    totals: {
+      files: data.total_files ?? files.length,
+      additions: data.total_additions ?? 0,
+      deletions: data.total_deletions ?? 0,
+    },
+    hasMore: data.has_more === true,
+    nextOffset: files.length,
+  };
+}
+
+/**
+ * Merge a newly fetched page into an existing snapshot (the "load more"
+ * path). Pure: returns a new snapshot object; totals/meta are carried
+ * over from the existing snapshot (the server recomputes them per page,
+ * and they cover the full list — last page wins).
+ */
+export function appendSpcodeGitDiffPage(
+  snapshot: SpcodeGitDiffSnapshot,
+  page: SpcodeGitDiffSnapshot,
+): SpcodeGitDiffSnapshot {
+  return {
+    meta: page.meta,
+    files: [...snapshot.files, ...page.files],
+    // Totals are cross-page aggregates; any page carries the same values.
+    totals: page.totals,
+    hasMore: page.hasMore,
+    nextOffset: snapshot.nextOffset + page.files.length,
   };
 }

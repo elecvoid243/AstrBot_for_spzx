@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import sys
 import time
 import traceback
@@ -25,9 +26,26 @@ from tenacity import (
 )
 
 from astrbot import logger
-from astrbot.core.agent.message import ImageURLPart, TextPart, ThinkPart
-from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.agent.tool_image_cache import tool_image_cache
+from astrbot.core.agent.call_checkpoint import (
+    dump_call_messages,
+    dump_call_response,
+    load_call_response,
+)
+from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, ThinkPart
+from astrbot.core.agent.tool import (
+    FunctionTool,
+    ToolRecoveryResult,
+    ToolSet,
+    current_tool_invocation,
+    current_tool_recovery_retry,
+)
+from astrbot.core.agent.tool_image_cache import CachedImage, tool_image_cache
+from astrbot.core.agent_team_execution import (
+    CheckpointRecoveryError,
+    ProcessPersistenceError,
+    current_team_execution,
+    model_delivery,
+)
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.components import Json
 from astrbot.core.message.message_event_result import (
@@ -40,6 +58,7 @@ from astrbot.core.pipeline.llm_request_trace import read_injections
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
+    TokenUsage,
     ToolCallsResult,
 )
 from astrbot.core.provider.modalities import (
@@ -59,6 +78,7 @@ from ..message import (
     AssistantMessageSegment,
     Message,
     ToolCallMessageSegment,
+    UserMessageSegment,
     bind_checkpoint_messages,
 )
 from ..response import AgentResponseData, AgentStats
@@ -177,6 +197,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         "The tool output was too large to include directly and was written to "
         "`{overflow_path}`. Use {read_tool_hint} to inspect it. "
         "Use a narrower window when reading large files."
+    )
+    TOOL_IMAGE_NOTICE_TEMPLATE = (
+        "Image returned and cached at path='{file_path}'. "
+        "Review the image below. Use send_message_to_user to send it to the user if satisfied, "
+        "with type='image' and path='{file_path}'."
     )
 
     def _get_persona_custom_error_message(self) -> str | None:
@@ -448,6 +473,301 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         self.stats = AgentStats()
         self.stats.start_time = time.time()
+        execution = current_team_execution.get()
+        self._checkpoint_enabled = bool(
+            execution
+            and execution.save_checkpoint
+            and not (getattr(self.run_context.context, "extra", None) or {}).get(
+                "is_subagent"
+            )
+        )
+        self._call_checkpoint: dict | None = None
+        self._member_message_receipts: list[dict] = []
+        self._resume_requery: dict | None = None
+        self._restored_call = False
+        self._resumed_attempt = False
+        if self._checkpoint_enabled and execution and execution.checkpoint:
+            saved = copy.deepcopy(execution.checkpoint)
+            if saved["started_tools"] and "tool_calls" not in saved:
+                execution.recovery_error = CheckpointRecoveryError(
+                    "Started tools require confirmation before recovery"
+                )
+                raise execution.recovery_error
+            available = self.effective_raw_tool_set
+            if saved["tools"] != [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                    **(
+                        {"recovery": tool.recovery.declaration} if tool.recovery else {}
+                    ),
+                }
+                for tool in (available.tools if available else [])
+            ]:
+                execution.recovery_error = CheckpointRecoveryError(
+                    "Saved tool capabilities have changed; recovery is blocked"
+                )
+                raise execution.recovery_error
+            try:
+                await self._restore_tool_result_files(saved)
+            except (OSError, ValueError) as exc:
+                execution.recovery_error = CheckpointRecoveryError(
+                    f"Failed to restore saved tool output: {exc}"
+                )
+                raise execution.recovery_error from exc
+            self.run_context.messages = bind_checkpoint_messages(saved["messages"])
+            self.req.model = saved["model"]
+            self.req.llm_params = saved["llm_params"]
+            self.req.denied_tools = set(saved["denied_tools"])
+            self.req.extra_user_content_parts = [
+                ContentPart.model_validate(part)
+                for part in saved["extra_user_content_parts"]
+            ]
+            self._step_budget_max = saved["step_budget_max"]
+            self._step_budget_used = saved["step_budget_used"]
+            self._step_budget_notified = set(saved["step_budget_notified"])
+            self._last_tool_name = saved["last_tool_name"]
+            self._last_tool_args = saved["last_tool_args"]
+            self._same_tool_streak = saved["same_tool_streak"]
+            stats = dict(saved["stats"])
+            stats["token_usage"] = TokenUsage(**stats["token_usage"])
+            self.stats = AgentStats(**stats)
+            self._call_checkpoint = saved
+            self._resumed_attempt = True
+            if (
+                saved.get("stage", "main") != "main"
+                and saved["phase"] != "tools_applied"
+            ):
+                self._resume_requery = saved
+            self._restored_call = saved["phase"] != "tools_applied"
+            self._transition_state(AgentState.RUNNING)
+
+    async def _save_call_checkpoint(
+        self,
+        phase: str,
+        *,
+        response: LLMResponse | None = None,
+        contexts: list[Message] | list[dict] | None = None,
+        stage: str = "main",
+        parent_response: LLMResponse | None = None,
+        previous_response: LLMResponse | None = None,
+    ) -> None:
+        """Persist the effective runner state on all model and tool boundaries.
+
+        Args:
+            phase: Model, per-tool result, or context application boundary.
+            response: Complete provider response when that boundary has been reached.
+            contexts: Actual provider-facing messages for a new model request.
+            stage: Main generation, parameter resolution, or parameter repair.
+            parent_response: Original light-schema plan for parameter resolution.
+            previous_response: Saved unsuccessful parameter response before repair.
+
+        Raises:
+            ProcessPersistenceError: Dependent execution must stop if saving fails.
+        """
+        execution = current_team_execution.get()
+        if (
+            not execution
+            or not execution.save_checkpoint
+            or not self._checkpoint_enabled
+        ):
+            return
+        if phase == "request":
+            available = self.effective_raw_tool_set
+            model_calls = (self._call_checkpoint or {}).get("model_calls", 0) + 1
+            self._call_checkpoint = {
+                "format_version": 2,
+                "invocation_id": uuid.uuid4().hex,
+                "messages": dump_call_messages(self.run_context.messages),
+                "member_messages": self._member_message_receipts,
+                "input_contexts": dump_call_messages(
+                    contexts or self.run_context.messages
+                ),
+                "model": self.req.model or self.provider.get_model(),
+                "model_calls": model_calls,
+                "stage": stage,
+                "parent_response": dump_call_response(parent_response)
+                if parent_response
+                else None,
+                "previous_response": dump_call_response(previous_response)
+                if previous_response
+                else None,
+                "provider_id": self.provider.provider_config.get("id"),
+                "config_id": execution.config_id,
+                "run_id": execution.run_id,
+                "attempt_id": execution.turn_id,
+                "conversation_id": execution.conversation_id,
+                "context_position": len(self.run_context.messages),
+                "llm_params": self.req.llm_params,
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                        **(
+                            {"recovery": tool.recovery.declaration}
+                            if tool.recovery
+                            else {}
+                        ),
+                    }
+                    for tool in (available.tools if available else [])
+                ],
+                "denied_tools": sorted(self.req.denied_tools),
+                "extra_user_content_parts": [
+                    part if isinstance(part, dict) else part.model_dump_for_context()
+                    for part in self.req.extra_user_content_parts
+                ],
+                "step_budget_max": self._step_budget_max,
+                "step_budget_used": self._step_budget_used,
+                "step_budget_notified": sorted(self._step_budget_notified),
+                "last_tool_name": self._last_tool_name,
+                "last_tool_args": self._last_tool_args,
+                "same_tool_streak": self._same_tool_streak,
+                "stats": self.stats.to_dict(),
+                "started_tools": [],
+                "tool_calls": [],
+                "tool_result_files": dict(
+                    (self._call_checkpoint or {}).get("tool_result_files", {})
+                ),
+                "response": None,
+            }
+        if self._call_checkpoint is None:
+            raise ProcessPersistenceError(
+                "Model request has no saved invocation identity"
+            )
+        self._call_checkpoint["format_version"] = 2
+        self._call_checkpoint["phase"] = phase
+        if response is not None:
+            self._call_checkpoint["response"] = dump_call_response(response)
+            if (
+                self.tool_schema_mode != "skills_like"
+                or stage != "main"
+                or self._call_checkpoint.get("stage", "main") != "main"
+            ):
+                self._call_checkpoint["tool_calls"] = [
+                    {
+                        "record_id": uuid.uuid4().hex,
+                        "call_id": call_id,
+                        "name": name,
+                        "args": args or {},
+                        "status": "intent",
+                        "raw_results": [],
+                        "protocol_results": [],
+                        "process_records": [],
+                        "context_position": None,
+                    }
+                    for call_id, name, args in zip(
+                        response.tools_call_ids,
+                        response.tools_call_name,
+                        response.tools_call_args,
+                    )
+                ]
+        if phase.startswith("tool"):
+            self._call_checkpoint.update(
+                {
+                    "stats": self.stats.to_dict(),
+                    "last_tool_name": self._last_tool_name,
+                    "last_tool_args": self._last_tool_args,
+                    "same_tool_streak": self._same_tool_streak,
+                    "step_budget_notified": sorted(self._step_budget_notified),
+                }
+            )
+        await execution.save_checkpoint(copy.deepcopy(self._call_checkpoint))
+        if phase == "request":
+            # Parameter and fallback requests carry this context, but the delivery
+            # belongs to the first committed request that included it.
+            self._member_message_receipts = []
+
+    async def _begin_metered_call(
+        self,
+        kind: str,
+        invocation_id: str,
+        *,
+        name: str | None = None,
+        contexts: list | None = None,
+        tools: ToolSet | None = None,
+    ) -> dict | None:
+        """Admit one actual delivery, shared by model, parameter and tool calls.
+
+        Args:
+            kind: Model, tool execution or tool status query.
+            invocation_id: Original checkpoint or tool-call identity.
+            name: Provider or tool name for the durable detail.
+            contexts: Actual provider-facing messages used for estimation.
+            tools: Actual provider-facing schemas used for estimation.
+
+        Returns:
+            Committed receipt with the permitted output cap, or None outside v2.
+        """
+        execution = current_team_execution.get()
+        if not execution or not execution.begin_usage:
+            return None
+        payload = {
+            "receipt_id": uuid.uuid4().hex,
+            "invocation_id": invocation_id,
+            "kind": kind,
+            "name": name,
+        }
+        if kind == "model":
+            messages = bind_checkpoint_messages(
+                dump_call_messages(contexts or self.run_context.messages)
+            )
+            payload["input_tokens"] = (
+                self._tool_result_token_counter.count_tokens(messages)
+                + (
+                    len(
+                        json.dumps(
+                            [
+                                {
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.parameters,
+                                }
+                                for tool in tools.tools
+                            ],
+                            ensure_ascii=False,
+                        )
+                    )
+                    + 3
+                )
+                // 4
+                if tools
+                else self._tool_result_token_counter.count_tokens(messages)
+            )
+            payload["max_output_tokens"] = (self.req.llm_params or {}).get(
+                "max_completion_tokens"
+            ) or (self.req.llm_params or {}).get("max_tokens")
+        return await execution.begin_usage(payload)
+
+    async def _report_metered_call(
+        self, receipt: dict | None, response: LLMResponse | None = None
+    ) -> None:
+        """Persist complete reports or conservative uncertainty for a delivery.
+
+        Args:
+            receipt: Original admitted delivery, absent for ordinary chat.
+            response: Complete provider response; missing usage remains marked.
+        """
+        execution = current_team_execution.get()
+        if receipt is None or not execution or not execution.report_usage:
+            return
+        report = {}
+        if response and response.usage:
+            report = {
+                "input_tokens": response.usage.input,
+                "output_tokens": response.usage.output,
+            }
+        elif response and response.role != "err":
+            report = {
+                "estimated_tokens": receipt["request"]["input_tokens"]
+                + (
+                    len(json.dumps(dump_call_response(response), ensure_ascii=False))
+                    + 3
+                )
+                // 4
+            }
+        await execution.report_usage(receipt["receipt_id"], report)
 
     def _read_tool_hint(self) -> str:
         if self.read_tool is not None:
@@ -490,30 +810,181 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         return {"role": "user", "content": content_blocks}
 
+    async def _restore_tool_result_files(self, saved: dict[str, T.Any]) -> None:
+        """Restore complete files while associating raw outputs with their messages.
+
+        Args:
+            saved: Durable model context and original per-call results.
+
+        Returns:
+            None after rebuilding required files and retaining their full contents.
+
+        Raises:
+            ValueError: A required protocol reference has no matching source.
+            OSError: A complete saved file cannot be restored.
+        """
+        files = dict(saved.get("tool_result_files", {}))
+        legacy = "tool_result_files" not in saved
+        literal_protocols = set()
+        notice_prefix = self.TOOL_RESULT_OVERFLOW_NOTICE_TEMPLATE.partition(
+            "{overflow_path}"
+        )[0]
+        if legacy:
+            for call in [
+                *saved.get("tool_calls", []),
+                *saved.get("tool_result_sources", []),
+            ]:
+                if call["status"] not in {"result_saved", "applied"}:
+                    continue
+                protocols = call["protocol_results"]
+                if not protocols:
+                    continue
+                cursor = 0
+                matched = set()
+                for raw in call["raw_results"]:
+                    result = CallToolResult.model_validate(raw)
+                    parts = [] if result.content else ["The tool returned no content."]
+                    for index, item in enumerate(result.content):
+                        if isinstance(item, TextContent):
+                            parts.append(item.text)
+                        elif isinstance(item, EmbeddedResource) and isinstance(
+                            item.resource, TextResourceContents
+                        ):
+                            parts.append(item.resource.text)
+                        else:
+                            cached = self._cache_tool_image(
+                                item, call["call_id"], call["name"], index
+                            )
+                            if cached:
+                                parts.append(
+                                    self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                        file_path=cached.file_path
+                                    )
+                                )
+                            elif isinstance(item, EmbeddedResource):
+                                parts.append(
+                                    "The tool has returned a data type that is not supported."
+                                )
+                    # Resource links emit no text protocol in the live executor.
+                    if not parts:
+                        continue
+                    content = "\n\n".join(parts)
+                    oversized = (
+                        self._tool_result_token_counter.count_tokens(
+                            [
+                                Message(
+                                    role="tool",
+                                    content=content,
+                                    tool_call_id=call["call_id"],
+                                )
+                            ]
+                        )
+                        > self.TOOL_RESULT_MAX_ESTIMATED_TOKENS
+                    )
+                    expected = content
+                    if oversized:
+                        preview = self._truncate_tool_result_preview(
+                            content, tool_call_id=call["call_id"]
+                        )
+                        expected = (preview + "\n\n" if preview else "") + notice_prefix
+                    index = next(
+                        (
+                            index
+                            for index in range(cursor, len(protocols))
+                            if protocols[index]["content"].startswith(expected)
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        if oversized:
+                            raise ValueError(
+                                "Saved overflow result has no matching protocol"
+                            )
+                        continue
+                    matched.add(index)
+                    cursor = index + 1
+                    if oversized:
+                        path = protocols[index]["content"][len(expected) :].partition(
+                            "`"
+                        )[0]
+                        files[path] = content
+                    else:
+                        literal_protocols.add(protocols[index]["content"])
+                for index, protocol in enumerate(protocols):
+                    if index in matched or notice_prefix not in protocol["content"]:
+                        continue
+                    if any(
+                        record["data"].get("result")
+                        and protocol["content"].startswith(record["data"]["result"])
+                        for record in call.get("process_records", [])
+                    ):
+                        literal_protocols.add(protocol["content"])
+                        continue
+                    raise ValueError("Saved overflow reference has no complete source")
+        for path, content in files.items():
+            await self._write_tool_result_overflow_file(
+                tool_call_id=Path(path).stem, content=content, overflow_path=Path(path)
+            )
+        if legacy:
+            for message in [
+                *saved.get("messages", []),
+                *saved.get("input_contexts", []),
+            ]:
+                content = message.get("content")
+                if (
+                    message["role"] != "tool"
+                    or not isinstance(content, str)
+                    or content in literal_protocols
+                ):
+                    continue
+                _, separator, notice = content.rpartition(notice_prefix)
+                if separator and not Path(notice.partition("`")[0]).is_file():
+                    raise ValueError("Required saved overflow reference is unavailable")
+        saved["tool_result_files"] = files
+
     async def _write_tool_result_overflow_file(
         self,
         *,
         tool_call_id: str,
         content: str,
+        overflow_path: Path | None = None,
     ) -> str:
+        """Write complete output at a new or previously saved temporary path.
+
+        Args:
+            tool_call_id: Tool identity used when naming a new file.
+            content: Complete output before preview truncation.
+            overflow_path: Original saved path when rebuilding required content.
+
+        Returns:
+            Absolute path to the complete readable output.
+
+        Raises:
+            ValueError: No output directory exists or the path escapes it.
+            OSError: The complete file cannot be written.
+        """
         if self.tool_result_overflow_dir is None:
             raise ValueError("tool_result_overflow_dir is not configured")
 
         overflow_dir = Path(self.tool_result_overflow_dir).resolve(strict=False)
-        safe_tool_call_id = (
-            "".join(
-                ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
-                for ch in tool_call_id
-            ).strip("._")
-            or "tool_call"
-        )
-        file_name = f"{safe_tool_call_id}_{uuid.uuid4().hex[:8]}.txt"
-        overflow_path = overflow_dir / file_name
+        if overflow_path is None:
+            safe_tool_call_id = (
+                "".join(
+                    ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+                    for ch in tool_call_id
+                ).strip("._")
+                or "tool_call"
+            )
+            file_name = f"{safe_tool_call_id}_{uuid.uuid4().hex[:8]}.txt"
+            overflow_path = overflow_dir / file_name
+        elif overflow_path.resolve(strict=False).parent != overflow_dir:
+            raise ValueError("Saved tool output is outside its temporary directory")
+        output_path = overflow_path
 
         def _run() -> str:
             overflow_dir.mkdir(parents=True, exist_ok=True)
-            overflow_path.write_text(content, encoding="utf-8")
-            return str(overflow_path)
+            output_path.write_text(content, encoding="utf-8")
+            return str(output_path)
 
         return await asyncio.to_thread(_run)
 
@@ -538,6 +1009,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 tool_call_id=tool_call_id,
                 content=content,
             )
+            if self._checkpoint_enabled and self._call_checkpoint is not None:
+                self._call_checkpoint.setdefault("tool_result_files", {})[
+                    overflow_path
+                ] = content
         except Exception as exc:
             logger.warning(
                 "Failed to spill oversized tool result for %s: %s",
@@ -625,7 +1100,41 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self, *, include_model: bool = True
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Yields chunks *and* a final LLMResponse."""
+        restored_request = self._restored_call
+        message_context_position = len(self.run_context.messages)
+        execution = current_team_execution.get()
+        if (
+            not restored_request
+            and execution
+            and execution.pending_messages
+            and self._checkpoint_enabled
+        ):
+            if execution.admit_work:
+                await execution.admit_work()
+            pending = await execution.pending_messages()
+            self._member_message_receipts = []
+            for message in pending:
+                self._member_message_receipts.append(
+                    {
+                        "message_id": message["message_id"],
+                        "context_position": len(self.run_context.messages),
+                    }
+                )
+                self.run_context.messages.append(
+                    UserMessageSegment(
+                        content=[
+                            TextPart(
+                                text="Team member message (JSON):\n"
+                                + json.dumps(message, ensure_ascii=False)
+                            )
+                        ]
+                    )
+                )
         contexts = self._sanitize_contexts_for_provider(self.run_context.messages)
+        if restored_request:
+            assert self._call_checkpoint is not None
+            contexts = bind_checkpoint_messages(self._call_checkpoint["input_contexts"])
+            self._restored_call = False
         func_tool = self._func_tool_for_provider()
         # Fingerprint the payload-stage request so same-prefix flows (e.g. the
         # compact plugin's summary request) can diff against what the chat
@@ -656,28 +1165,83 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if include_model:
             # For primary provider we keep explicit model selection if provided.
             payload["model"] = self.req.model
-        if self.streaming:
-            stream = self.provider.text_chat_stream(**payload)
+        if not restored_request:
             try:
-                while True:
-                    try:
-                        resp = await self._await_or_stop(anext(stream))  # type: ignore
-                    except StopAsyncIteration:
-                        return
-                    if resp is None:
-                        return
+                await self._save_call_checkpoint("request", contexts=contexts)
+            except (Exception, asyncio.CancelledError):
+                # Failed admission/persistence must not leak an uncommitted delivery
+                # into normal error-history cleanup and then inject it again on retry.
+                if self._member_message_receipts:
+                    del self.run_context.messages[message_context_position:]
+                    self._member_message_receipts = []
+                raise
+        execution = current_team_execution.get()
+        if execution and execution.admit_work:
+            await execution.admit_work()
+        receipt = await self._begin_metered_call(
+            "model",
+            (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
+            name=self.provider.provider_config.get("id"),
+            contexts=contexts,
+            tools=func_tool,
+        )
+        if receipt:
+            params = dict(self.req.llm_params or {})
+            params[
+                "max_completion_tokens"
+                if "max_completion_tokens" in params
+                else "max_tokens"
+            ] = receipt["max_output_tokens"]
+            payload["llm_params"] = params
+        reported = False
+        try:
+            if self.streaming:
+                stream = self.provider.text_chat_stream(**payload)
+                try:
+                    while True:
+                        try:
+                            with model_delivery(receipt):
+                                resp = await self._await_or_stop(anext(stream))  # type: ignore
+                        except StopAsyncIteration:
+                            return
+                        if resp is None:
+                            return
+                        if not resp.is_chunk:
+                            await self._report_metered_call(receipt, resp)
+                            reported = True
+                        yield resp
+                finally:
+                    await self._close_executor(stream)
+            else:
+                with model_delivery(receipt):
+                    resp = await self._await_or_stop(self.provider.text_chat(**payload))
+                if resp is not None:
+                    await self._report_metered_call(receipt, resp)
+                    reported = True
                     yield resp
-            finally:
-                await self._close_executor(stream)
-        else:
-            resp = await self._await_or_stop(self.provider.text_chat(**payload))
-            if resp is not None:
-                yield resp
+        finally:
+            if not reported:
+                await self._report_metered_call(receipt)
 
     async def _iter_llm_responses_with_fallback(
         self,
     ) -> T.AsyncGenerator[LLMResponse, None]:
         """Wrap _iter_llm_responses with provider fallback handling."""
+        if self._restored_call and self._resume_requery is not None:
+            self._restored_call = False
+            self._reused_response = True
+            self._reused_parent_response = True
+            yield load_call_response(self._resume_requery["parent_response"])
+            return
+        if (
+            self._restored_call
+            and self._call_checkpoint is not None
+            and self._call_checkpoint["response"] is not None
+        ):
+            self._restored_call = False
+            self._reused_response = True
+            yield load_call_response(self._call_checkpoint["response"])
+            return
         if not self.run_context.messages:
             logger.warning(
                 "Skipping LLM request because no messages remain after agent/request "
@@ -767,6 +1331,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     if self._is_stop_requested():
                         return
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, ProcessPersistenceError):
+                    raise
                 last_exception = exc
                 logger.warning(
                     "Chat Model %s request error: %s",
@@ -1014,6 +1580,56 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             for tool_name in llm_resp.tools_call_name
         ]
 
+    async def _record_model_response(self, response: LLMResponse) -> None:
+        """Save complete provider output on all three model response paths.
+
+        Args:
+            response: Complete provider response before display or tool execution.
+        """
+
+        if getattr(self, "_reused_response", False):
+            self._reused_response = False
+            if getattr(self, "_reused_parent_response", False):
+                return
+            if self._call_checkpoint and "tool_calls" not in self._call_checkpoint:
+                # Upgrade an original T07 response without replanning its calls.
+                self._call_checkpoint["format_version"] = 2
+                await self._save_call_checkpoint("response", response=response)
+        else:
+            await self._save_call_checkpoint("response", response=response)
+        execution = current_team_execution.get()
+        if execution and execution.record_process:
+            await execution.record_process(
+                self._call_checkpoint["invocation_id"]
+                if self._call_checkpoint
+                else uuid.uuid4().hex,
+                "model_response",
+                {
+                    "id": response.id,
+                    "role": response.role,
+                    "text": response.completion_text,
+                    "parts": [
+                        component.toDict() for component in response.result_chain.chain
+                    ]
+                    if response.result_chain
+                    else [],
+                    "reasoning_content": response.reasoning_content,
+                    "reasoning_signature": response.reasoning_signature,
+                    "tool_calls": [
+                        {"id": call_id, "name": name, "args": args}
+                        for call_id, name, args in zip(
+                            response.tools_call_ids,
+                            response.tools_call_name,
+                            response.tools_call_args,
+                        )
+                    ],
+                    "tools_call_extra_content": response.tools_call_extra_content,
+                    "raw_completion": response.raw_completion.model_dump(mode="json")
+                    if response.raw_completion
+                    else None,
+                },
+            )
+
     @override
     async def step(self):
         """Process a single step of the agent.
@@ -1022,7 +1638,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if not self.req:
             raise ValueError("Request is not set. Please call reset() first.")
 
-        if self._step_budget_max is not None:
+        if self._step_budget_max is not None and not self._restored_call:
             self._step_budget_used += 1
 
         if self._state == AgentState.IDLE:
@@ -1035,42 +1651,45 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         self._transition_state(AgentState.RUNNING)
         llm_resp_result = None
 
-        # Process request-time context before sending it to the provider.
-        token_usage = self.req.conversation.token_usage if self.req.conversation else 0
-        self._simple_print_message_role("[BefCompact]", self.run_context.messages)
-        processed_messages = await self._await_or_stop(
-            self.request_context_manager.process(
-                self.run_context.messages,
-                trusted_token_usage=token_usage,
-                # Same tool set the chat requests send, so the summary
-                # request's payload prefix (tools + system + history) stays
-                # byte-identical and hits the provider prefix cache. The
-                # summary is a one-shot call: the schema is visible but
-                # nothing executes the tools.
-                func_tool=self._func_tool_for_provider(),
+        if not self._restored_call:
+            # Process request-time context before sending it to the provider.
+            token_usage = (
+                self.req.conversation.token_usage if self.req.conversation else 0
             )
-        )
-        if processed_messages is None:
-            yield await self._finalize_aborted_step()
-            return
-        self.run_context.messages = processed_messages
-        self._simple_print_message_role("[AftCompact]", self.run_context.messages)
+            self._simple_print_message_role("[BefCompact]", self.run_context.messages)
+            processed_messages = await self._await_or_stop(
+                self.request_context_manager.process(
+                    self.run_context.messages,
+                    trusted_token_usage=token_usage,
+                    # Same tool set the chat requests send, so the summary
+                    # request's payload prefix (tools + system + history) stays
+                    # byte-identical and hits the provider prefix cache. The
+                    # summary is a one-shot call: the schema is visible but
+                    # nothing executes the tools.
+                    func_tool=self._func_tool_for_provider(),
+                )
+            )
+            if processed_messages is None:
+                yield await self._finalize_aborted_step()
+                return
+            self.run_context.messages = processed_messages
+            self._simple_print_message_role("[AftCompact]", self.run_context.messages)
 
-        # Announce a compression that just happened: webchat turns it into a
-        # transient notice. Emitted before the LLM request so the user learns
-        # why this turn's context (and possibly its answer) changed shape while
-        # still waiting for the reply.
-        compression_report = self.request_context_manager.last_compression
-        if compression_report is not None:
-            yield AgentResponse(
-                type="context_compression",
-                data=AgentResponseData(
-                    chain=MessageChain(
-                        type="context_compression",
-                        chain=[Json(data=compression_report)],
-                    )
-                ),
-            )
+            # Announce a compression that just happened: webchat turns it into a
+            # transient notice. Emitted before the LLM request so the user learns
+            # why this turn's context (and possibly its answer) changed shape while
+            # still waiting for the reply.
+            compression_report = self.request_context_manager.last_compression
+            if compression_report is not None:
+                yield AgentResponse(
+                    type="context_compression",
+                    data=AgentResponseData(
+                        chain=MessageChain(
+                            type="context_compression",
+                            chain=[Json(data=compression_report)],
+                        )
+                    ),
+                )
 
         async for llm_response in self._iter_llm_responses_with_fallback():
             if llm_response.is_chunk:
@@ -1102,17 +1721,28 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     break
                 continue
             llm_resp_result = llm_response
+            await self._record_model_response(llm_response)
 
             # Chunk responses have already continued above. A missing usage report
             # means the latest context occupancy is unknown.
-            self.stats.current_context_tokens = 0
-            if llm_response.usage:
+            usage_saved = bool(
+                self._call_checkpoint
+                and self._call_checkpoint["phase"].startswith("tool")
+            )
+            if not usage_saved:
+                self.stats.current_context_tokens = 0
+            if (
+                llm_response.usage
+                and not getattr(self, "_reused_parent_response", False)
+                and not usage_saved
+            ):
                 # Keep cumulative usage for billing and expose the latest request
                 # input separately for context-window occupancy displays.
                 self.stats.token_usage += llm_response.usage
                 self.stats.current_context_tokens = llm_response.usage.input
                 if self.req.conversation:
                     self.req.conversation.token_usage = llm_response.usage.total
+            self._reused_parent_response = False
             # end_time must be set before the yield serializes to_dict().
             self.stats.end_time = time.time()
             yield AgentResponse(
@@ -1248,9 +1878,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         yield file_changes_resp
                     return
                 else:
-                    llm_resp.tools_call_name = requery_resp.tools_call_name
-                    llm_resp.tools_call_args = requery_resp.tools_call_args
-                    llm_resp.tools_call_ids = requery_resp.tools_call_ids
+                    llm_resp = requery_resp
 
             tool_call_result_blocks = []
             cached_images = []  # Collect cached images for LLM visibility
@@ -1386,15 +2014,26 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
 
             self.req.append_tool_calls_result(tool_calls_result)
+            if self._checkpoint_enabled and self._call_checkpoint:
+                position = self._call_checkpoint["context_position"] + 1
+                for call in self._call_checkpoint["tool_calls"]:
+                    call["status"] = "applied"
+                    call["context_position"] = position
+                    position += len(call["protocol_results"])
+                self._call_checkpoint["messages"] = dump_call_messages(
+                    self.run_context.messages
+                )
+                await self._save_call_checkpoint("tools_applied")
 
     async def step_until_done(
         self, max_step: int
     ) -> T.AsyncGenerator[AgentResponse, None]:
         """Process steps until the agent is done."""
-        self._step_budget_max = max_step
-        self._step_budget_used = 0
-        self._step_budget_notified = set()
-        step_count = 0
+        if not self._resumed_attempt:
+            self._step_budget_max = max_step
+            self._step_budget_used = 0
+            self._step_budget_notified = set()
+        step_count = max(0, self._step_budget_used - int(self._restored_call))
         while not self.done() and step_count < max_step:
             step_count += 1
             async for resp in self.step():
@@ -1428,23 +2067,230 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 async for resp in self.step():
                     yield resp
 
+    @staticmethod
+    def _cache_tool_image(
+        content_item: T.Any, tool_call_id: str, tool_name: str, index: int
+    ) -> CachedImage | None:
+        """Materialize image bytes identically for live and saved tool results.
+
+        Args:
+            content_item: Original MCP image or embedded image resource.
+            tool_call_id: Call identity used by the existing image cache.
+            tool_name: Actual tool that produced this image.
+            index: Content position within the original result.
+
+        Returns:
+            A cached image, or None for non-image content.
+        """
+        if isinstance(content_item, ImageContent):
+            data, mime_type = content_item.data, content_item.mimeType
+        elif (
+            isinstance(content_item, EmbeddedResource)
+            and isinstance(content_item.resource, BlobResourceContents)
+            and content_item.resource.mimeType
+            and content_item.resource.mimeType.startswith("image/")
+        ):
+            data, mime_type = content_item.resource.blob, content_item.resource.mimeType
+        else:
+            return None
+        return tool_image_cache.save_image(
+            base64_data=data,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            index=index,
+            mime_type=mime_type or "image/png",
+        )
+
+    async def _reconcile_tool_call(self, call: dict, tool: FunctionTool | None) -> bool:
+        """Resolve uncertainty only through the adapter's original guarantees.
+
+        Args:
+            call: Original per-tool checkpoint, including partial output evidence.
+            tool: Currently authorized adapter rebuilt by the normal pipeline.
+
+        Returns:
+            Whether the call has a proven result or can safely execute again.
+
+        Raises:
+            ProcessPersistenceError: A reconciliation fact cannot be saved.
+        """
+        metadata = call.setdefault("recovery", {})
+        declaration = metadata.get("declaration")
+        if (
+            tool is None
+            or tool.recovery is None
+            or declaration != tool.recovery.declaration
+        ):
+            return False
+        contract = tool.recovery
+        if contract.query is not None:
+            execution = current_team_execution.get()
+            if execution and execution.admit_work:
+                await execution.admit_work()
+            receipt = await self._begin_metered_call(
+                "query", call["record_id"], name=call["name"]
+            )
+            try:
+                queried = await self._await_or_stop(
+                    asyncio.wait_for(
+                        contract.query(
+                            self.run_context,
+                            call["record_id"],
+                            copy.deepcopy(call["args"]),
+                        ),
+                        timeout=self.run_context.tool_call_timeout,
+                    )
+                )
+                result = ToolRecoveryResult.model_validate(queried)
+            except _ToolExecutionInterrupted:
+                raise
+            except Exception as exc:
+                result = ToolRecoveryResult(
+                    status="unknown",
+                    evidence=f"Status query failed: {type(exc).__name__}: {exc}",
+                )
+            finally:
+                await self._report_metered_call(receipt)
+            metadata.setdefault("queries", []).append(
+                result.model_dump(
+                    mode="json",
+                    exclude={"results"}
+                    if result.status in {"succeeded", "failed"}
+                    else None,
+                )
+            )
+            if result.status in {"succeeded", "failed"}:
+                complete = [raw.model_dump(mode="json") for raw in result.results]
+                known = [
+                    CallToolResult.model_validate(raw).model_dump(mode="json")
+                    for raw in call["raw_results"]
+                ]
+                if complete[: len(known)] != known:
+                    metadata["queries"][-1].update(
+                        {
+                            "accepted": False,
+                            "reason": "The complete query result conflicts with saved partial output.",
+                            "results": complete,
+                        }
+                    )
+                    await self._save_call_checkpoint("tool_progress")
+                    return False
+                # The query returns the complete original sequence. Saved partial
+                # output stays intact and contributes to context exactly once.
+                for data in complete[len(known) :]:
+                    index = len(call["raw_results"])
+                    call["raw_results"].append(data)
+                    call["process_records"].append(
+                        {
+                            "id": call["record_id"] + f":raw:{index}",
+                            "data": {
+                                "id": call["call_id"],
+                                "name": call["name"],
+                                "raw_result": data,
+                            },
+                        }
+                    )
+                call["protocol_results"] = []
+                call["status"] = "result_saved"
+                await self._save_call_checkpoint("tool_result")
+                return True
+            # An ambiguous query cannot justify replay, even if another declared
+            # capability exists. The operator can request a subsequent query.
+            await self._save_call_checkpoint("tool_progress")
+            if result.status != "not_executed":
+                return False
+        elif not (contract.idempotency_key_arg or contract.safe_retry):
+            return False
+        metadata.setdefault("retries", []).append(
+            {
+                "identity": call["record_id"],
+                "reason": "not_executed"
+                if contract.query
+                else "idempotency_key"
+                if contract.idempotency_key_arg
+                else "safe_retry",
+                "protocol_before": copy.deepcopy(call["protocol_results"]),
+            }
+        )
+        # Retain the old protocol as evidence while rebuilding it from the
+        # verified live sequence. Raw output and process identities stay intact.
+        call["protocol_results"] = []
+        await self._save_call_checkpoint("tool_progress")
+        return True
+
     async def _handle_function_tools(
         self,
         req: ProviderRequest,
         llm_response: LLMResponse,
     ) -> T.AsyncGenerator[_HandleFunctionToolsResult, None]:
-        """处理函数工具调用。"""
+        """Execute or reuse individual calls before applying the complete batch.
+
+        Args:
+            req: Effective request with the current permission restrictions.
+            llm_response: Original saved plan, including provider tool signatures.
+
+        Yields:
+            Existing display events and complete tool protocol results.
+
+        Raises:
+            ProcessPersistenceError: A required result could not be saved.
+            CheckpointRecoveryError: An external effect has no saved result.
+        """
         tool_call_result_blocks: list[ToolCallMessageSegment] = []
         logger.info(f"Agent 使用工具: {llm_response.tools_call_name}")
 
-        def _append_tool_call_result(tool_call_id: str, content: str) -> None:
-            tool_call_result_blocks.append(
-                ToolCallMessageSegment(
-                    role="tool",
-                    tool_call_id=tool_call_id,
-                    content=self._merge_follow_up_notice(content),
-                ),
+        async def _append_tool_call_result(
+            tool_call_id: str, content: str, *, raw_result_saved: bool = False
+        ) -> None:
+            """Save distinct protocol results before appending model context.
+
+            Args:
+                tool_call_id: Actual requested tool call identity.
+                content: Complete protocol result before follow-up notices.
+                raw_result_saved: This content represents an already saved raw result.
+            """
+            execution = current_team_execution.get()
+            block = ToolCallMessageSegment(
+                role="tool",
+                tool_call_id=tool_call_id,
+                content=self._merge_follow_up_notice(content),
             )
+            record_id = (
+                call_state["record_id"] + ":protocol"
+                if call_state
+                else uuid.uuid4().hex
+            )
+            record_data = {
+                "id": tool_call_id,
+                "name": func_tool_name,
+                "raw_result": None,
+                "result": content,
+            }
+            if call_state is not None:
+                call_state["protocol_results"].append(block.model_dump(mode="json"))
+                if not raw_result_saved:
+                    call_state["process_records"].append(
+                        {"id": record_id, "data": record_data}
+                    )
+                if call_state["status"] != "started":
+                    call_state["status"] = "result_saved"
+                await self._save_call_checkpoint(
+                    "tool_progress"
+                    if call_state["status"] == "started"
+                    else "tool_result"
+                )
+            if (
+                execution
+                and execution.record_process
+                and not raw_result_saved
+                and (call_state is None or call_state["status"] == "result_saved")
+            ):
+                await execution.record_process(
+                    record_id,
+                    "tool_result",
+                    record_data,
+                )
+            tool_call_result_blocks.append(block)
 
         # 获取 trace span：优先使用 subagent trace_span，否则回退到 event.trace
         _agent_ctx = getattr(self.run_context, "context", None)
@@ -1462,15 +2308,72 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         denied_tools.update(_context_extra.get("denied_tools") or ())
 
         # 执行函数调用
-        for func_tool_name, func_tool_args, func_tool_id in zip(
-            llm_response.tools_call_name,
-            llm_response.tools_call_args,
-            llm_response.tools_call_ids,
+        unresolved = []
+        for call_index, (func_tool_name, func_tool_args, func_tool_id) in enumerate(
+            zip(
+                llm_response.tools_call_name,
+                llm_response.tools_call_args,
+                llm_response.tools_call_ids,
+            )
         ):
+            call_state = (
+                self._call_checkpoint["tool_calls"][call_index]
+                if self._checkpoint_enabled and self._call_checkpoint
+                else None
+            )
+            reused = call_state is not None and call_state["status"] == "result_saved"
+            retry_prefix: list[dict] | None = None
+            if call_state is not None and call_state["status"] in {
+                "started",
+                "unknown",
+            }:
+                available = self.effective_raw_tool_set
+                tool = available.get_tool(func_tool_name) if available else None
+                if (
+                    func_tool_name in denied_tools
+                    or not await self._reconcile_tool_call(call_state, tool)
+                ):
+                    unresolved.append(func_tool_id)
+                    continue
+                reused = call_state["status"] == "result_saved"
+                if not reused:
+                    retry_prefix = [
+                        CallToolResult.model_validate(raw).model_dump(mode="json")
+                        for raw in call_state["raw_results"]
+                    ]
+            if reused and call_state and call_state["protocol_results"]:
+                execution = current_team_execution.get()
+                if execution and execution.record_process:
+                    for record in call_state.get("process_records", []):
+                        await execution.record_process(
+                            record["id"], "tool_result", record["data"]
+                        )
+                # Restore image evidence from durable bytes even after temporary
+                # caches were cleared while the worker was stopped.
+                for raw in call_state["raw_results"]:
+                    for index, item in enumerate(
+                        CallToolResult.model_validate(raw).content
+                    ):
+                        cached_image = self._cache_tool_image(
+                            item, func_tool_id, func_tool_name, index
+                        )
+                        if cached_image:
+                            yield _HandleFunctionToolsResult.from_cached_image(
+                                cached_image
+                            )
+                tool_call_result_blocks.extend(
+                    ToolCallMessageSegment.model_validate(block)
+                    for block in call_state["protocol_results"]
+                )
+                continue
             tool_result_blocks_start = len(tool_call_result_blocks)
-            tool_call_streak = self._track_tool_call_streak(
-                func_tool_name,
-                func_tool_args,
+            tool_call_streak = (
+                self._same_tool_streak
+                if reused
+                else self._track_tool_call_streak(
+                    func_tool_name,
+                    func_tool_args,
+                )
             )
             yield _HandleFunctionToolsResult.from_message_chain(
                 MessageChain(
@@ -1495,7 +2398,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             # 段不存在，幻觉出的调用也能拿到协议完整的错误结果。
             if func_tool_name in denied_tools:
                 logger.info(f"[Permission] 工具 {func_tool_name} 已被禁用，拒绝调用。")
-                _append_tool_call_result(
+                await _append_tool_call_result(
                     func_tool_id,
                     f"error: Permission denied. Tool `{func_tool_name}` is no "
                     "longer available to you in the current state. Do not retry "
@@ -1503,6 +2406,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "have.",
                 )
                 continue
+            tool_failed = False
+            invocation_token = None
+            recovery_retry_token = None
+            usage_receipt = None
             try:
                 if not req.func_tool:
                     return
@@ -1536,7 +2443,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
                 if not func_tool:
                     logger.warning(f"未找到指定的工具: {func_tool_name}，将跳过。")
-                    _append_tool_call_result(
+                    await _append_tool_call_result(
                         func_tool_id,
                         f"error: Tool {func_tool_name} not found. Available tools are: {', '.join(available_tools)}",
                     )
@@ -1570,30 +2477,142 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     # 如果没有 handler（如 MCP 工具），使用所有参数
                     valid_params = func_tool_args
 
-                try:
-                    await self.agent_hooks.on_tool_start(
-                        self.run_context,
-                        func_tool,
-                        valid_params,
+                execution = current_team_execution.get()
+                if execution and execution.admit_work:
+                    await execution.admit_work()
+                if not reused:
+                    usage_receipt = await self._begin_metered_call(
+                        "tool",
+                        call_state["record_id"] if call_state else uuid.uuid4().hex,
+                        name=func_tool_name,
                     )
+                if call_state is not None and not reused:
+                    assert self._call_checkpoint is not None
+                    if func_tool_id not in self._call_checkpoint["started_tools"]:
+                        self._call_checkpoint["started_tools"].append(func_tool_id)
+                    metadata = call_state.setdefault("recovery", {})
+                    metadata["declaration"] = (
+                        func_tool.recovery.declaration if func_tool.recovery else None
+                    )
+                    metadata["identity"] = call_state["record_id"]
+                    if func_tool.recovery and func_tool.recovery.idempotency_key_arg:
+                        valid_params = {
+                            **valid_params,
+                            func_tool.recovery.idempotency_key_arg: call_state[
+                                "record_id"
+                            ],
+                        }
+                        metadata["idempotency_key"] = call_state["record_id"]
+                    call_state["status"] = "started"
+                    await self._save_call_checkpoint("tools_started")
+
+                invocation_token = current_tool_invocation.set(
+                    call_state["record_id"] if call_state else uuid.uuid4().hex
+                )
+                recovery_retry_token = current_tool_recovery_retry.set(
+                    retry_prefix is not None
+                )
+
+                try:
+                    if not reused:
+                        await self.agent_hooks.on_tool_start(
+                            self.run_context,
+                            func_tool,
+                            valid_params,
+                        )
                 except Exception as e:
                     logger.error(f"Error in on_tool_start hook: {e}", exc_info=True)
 
-                executor = self.tool_executor.execute(
-                    tool=func_tool,
-                    run_context=self.run_context,
-                    **valid_params,  # 只传递有效的参数
+                executor = (
+                    None
+                    if reused
+                    else self.tool_executor.execute(
+                        tool=func_tool,
+                        run_context=self.run_context,
+                        **valid_params,  # 只传递有效的参数
+                    )
                 )
 
                 _final_resp: CallToolResult | None = None
-                async for resp in self._iter_tool_executor_results(executor):  # type: ignore
+                replay_index = 0
+                async for resp in self._iter_tool_executor_results(
+                    T.cast(T.AsyncGenerator[T.Any, None] | None, executor),
+                    saved_results=call_state["raw_results"]
+                    if reused and call_state
+                    else None,
+                ):  # type: ignore
+                    known_result = retry_prefix is not None and replay_index < len(
+                        retry_prefix
+                    )
+                    if (
+                        retry_prefix is not None
+                        and known_result
+                        and (
+                            not isinstance(resp, CallToolResult)
+                            or resp.model_dump(mode="json")
+                            != retry_prefix[replay_index]
+                        )
+                    ):
+                        assert call_state is not None
+                        call_state["recovery"]["retries"][-1]["conflict"] = {
+                            "index": replay_index,
+                            "reason": "Live retry output conflicts with saved partial output.",
+                            "result": resp.model_dump(mode="json")
+                            if isinstance(resp, CallToolResult)
+                            else repr(resp),
+                        }
+                        tool_failed = True
+                        break
                     if isinstance(resp, CallToolResult):
+                        raw_index = (
+                            len(call_state["raw_results"])
+                            if call_state and not reused and not known_result
+                            else replay_index
+                        )
+                        replay_index += 1
+                        if call_state is not None and not reused and not known_result:
+                            call_state["raw_results"].append(
+                                resp.model_dump(mode="json")
+                            )
+                            call_state["process_records"].append(
+                                {
+                                    "id": call_state["record_id"] + f":raw:{raw_index}",
+                                    "data": {
+                                        "id": func_tool_id,
+                                        "name": func_tool_name,
+                                        "raw_result": resp.model_dump(mode="json"),
+                                    },
+                                }
+                            )
+                            # A generator may yield more effects and results.
+                            # Only exhaustion below proves that this call finished.
+                            await self._save_call_checkpoint("tool_progress")
+                        execution = current_team_execution.get()
+                        if (
+                            execution
+                            and execution.record_process
+                            and call_state is None
+                        ):
+                            # Keep the original result before overflow materialization
+                            # or display filtering can shorten its content.
+                            await execution.record_process(
+                                call_state["record_id"] + f":raw:{raw_index}"
+                                if call_state
+                                else uuid.uuid4().hex,
+                                "tool_result",
+                                {
+                                    "id": func_tool_id,
+                                    "name": func_tool_name,
+                                    "raw_result": resp.model_dump(mode="json"),
+                                },
+                            )
                         res = resp
                         _final_resp = resp
                         if not res.content:
-                            _append_tool_call_result(
+                            await _append_tool_call_result(
                                 func_tool_id,
                                 "The tool returned no content.",
+                                raw_result_saved=True,
                             )
                             continue
 
@@ -1603,17 +2622,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 result_parts.append(content_item.text)
                             elif isinstance(content_item, ImageContent):
                                 # Cache the image instead of sending directly
-                                cached_img = tool_image_cache.save_image(
-                                    base64_data=content_item.data,
-                                    tool_call_id=func_tool_id,
-                                    tool_name=func_tool_name,
-                                    index=index,
-                                    mime_type=content_item.mimeType or "image/png",
+                                cached_img = self._cache_tool_image(
+                                    content_item, func_tool_id, func_tool_name, index
                                 )
+                                assert cached_img is not None
                                 result_parts.append(
-                                    f"Image returned and cached at path='{cached_img.file_path}'. "
-                                    f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
-                                    f"with type='image' and path='{cached_img.file_path}'."
+                                    self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                        file_path=cached_img.file_path
+                                    )
                                 )
                                 # Yield image info for LLM visibility (will be handled in step())
                                 yield _HandleFunctionToolsResult.from_cached_image(
@@ -1629,17 +2645,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     and resource.mimeType.startswith("image/")
                                 ):
                                     # Cache the image instead of sending directly
-                                    cached_img = tool_image_cache.save_image(
-                                        base64_data=resource.blob,
-                                        tool_call_id=func_tool_id,
-                                        tool_name=func_tool_name,
-                                        index=index,
-                                        mime_type=resource.mimeType,
+                                    cached_img = self._cache_tool_image(
+                                        content_item,
+                                        func_tool_id,
+                                        func_tool_name,
+                                        index,
                                     )
+                                    assert cached_img is not None
                                     result_parts.append(
-                                        f"Image returned and cached at path='{cached_img.file_path}'. "
-                                        f"Review the image below. Use send_message_to_user to send it to the user if satisfied, "
-                                        f"with type='image' and path='{cached_img.file_path}'."
+                                        self.TOOL_IMAGE_NOTICE_TEMPLATE.format(
+                                            file_path=cached_img.file_path
+                                        )
                                     )
                                     # Yield image info for LLM visibility
                                     yield _HandleFunctionToolsResult.from_cached_image(
@@ -1655,12 +2671,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 tool_call_id=func_tool_id,
                                 content=inline_result,
                             )
-                            _append_tool_call_result(
+                            await _append_tool_call_result(
                                 func_tool_id,
                                 inline_result
                                 + self._build_repeated_tool_call_guidance(
                                     func_tool_name, tool_call_streak
                                 ),
+                                raw_result_saved=True,
                             )
 
                     elif resp is None:
@@ -1672,7 +2689,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                         self._transition_state(AgentState.DONE)
                         self.stats.end_time = time.time()
-                        _append_tool_call_result(
+                        await _append_tool_call_result(
                             func_tool_id,
                             "The tool has no return value, or has sent the result directly to the user."
                             + self._build_repeated_tool_call_guidance(
@@ -1684,7 +2701,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         logger.warning(
                             f"Tool 返回了不支持的类型: {type(resp)}。",
                         )
-                        _append_tool_call_result(
+                        await _append_tool_call_result(
                             func_tool_id,
                             "*The tool has returned an unsupported type. Please tell the user to check the definition and implementation of this tool.*"
                             + self._build_repeated_tool_call_guidance(
@@ -1692,26 +2709,78 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             ),
                         )
 
-                try:
-                    await self.agent_hooks.on_tool_end(
-                        self.run_context,
-                        func_tool,
-                        func_tool_args,
-                        _final_resp,
+                if (
+                    retry_prefix is not None
+                    and replay_index < len(retry_prefix)
+                    and not tool_failed
+                ):
+                    assert call_state is not None
+                    call_state["recovery"]["retries"][-1]["conflict"] = {
+                        "index": replay_index,
+                        "reason": "Live retry ended before reproducing saved partial output.",
+                    }
+                    tool_failed = True
+                if (
+                    call_state is not None
+                    and not call_state["protocol_results"]
+                    and not tool_failed
+                ):
+                    await _append_tool_call_result(
+                        func_tool_id,
+                        "The tool returned no content.",
+                        raw_result_saved=True,
                     )
+                try:
+                    if not reused:
+                        await self.agent_hooks.on_tool_end(
+                            self.run_context,
+                            func_tool,
+                            func_tool_args,
+                            _final_resp,
+                        )
                 except Exception as e:
                     logger.error(f"Error in on_tool_end hook: {e}", exc_info=True)
             except Exception as e:
-                if isinstance(e, _ToolExecutionInterrupted):
+                if isinstance(e, (_ToolExecutionInterrupted, ProcessPersistenceError)):
                     raise
                 logger.warning(traceback.format_exc())
-                _append_tool_call_result(
-                    func_tool_id,
-                    f"error: {e!s}"
-                    + self._build_repeated_tool_call_guidance(
-                        func_tool_name, tool_call_streak
-                    ),
+                tool_failed = (
+                    call_state is not None and call_state["status"] == "started"
                 )
+                if retry_prefix is not None and call_state is not None:
+                    call_state["recovery"]["retries"][-1]["error"] = str(e)
+                else:
+                    await _append_tool_call_result(
+                        func_tool_id,
+                        f"error: {e!s}"
+                        + self._build_repeated_tool_call_guidance(
+                            func_tool_name, tool_call_streak
+                        ),
+                    )
+            finally:
+                if invocation_token is not None:
+                    current_tool_invocation.reset(invocation_token)
+                if recovery_retry_token is not None:
+                    current_tool_recovery_retry.reset(recovery_retry_token)
+                await self._report_metered_call(usage_receipt)
+
+            if call_state is not None and not reused:
+                if tool_failed and retry_prefix is not None:
+                    call_state["protocol_results"] = copy.deepcopy(
+                        call_state["recovery"]["retries"][-1]["protocol_before"]
+                    )
+                call_state["status"] = "unknown" if tool_failed else "result_saved"
+                await self._save_call_checkpoint(
+                    "tool_progress" if tool_failed else "tool_result"
+                )
+                execution = current_team_execution.get()
+                if execution and execution.record_process:
+                    for record in call_state["process_records"]:
+                        await execution.record_process(
+                            record["id"], "tool_result", record["data"]
+                        )
+                if tool_failed:
+                    unresolved.append(func_tool_id)
 
             if len(tool_call_result_blocks) > tool_result_blocks_start:
                 tool_result_content = str(tool_call_result_blocks[-1].content)
@@ -1739,6 +2808,15 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         if tool_result_content
                         else None,
                     )
+
+        if unresolved:
+            execution = current_team_execution.get()
+            error = CheckpointRecoveryError(
+                "Tool results require confirmation: " + ", ".join(unresolved)
+            )
+            if execution:
+                execution.recovery_error = error
+            raise error
 
         # 处理函数调用响应
         if tool_call_result_blocks:
@@ -1780,6 +2858,93 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 subset.add_tool(tool)
         return subset
 
+    async def _query_tool_parameters(
+        self,
+        parent: LLMResponse,
+        contexts: list[Message] | list[dict],
+        tools: ToolSet,
+        stage: str,
+        previous: LLMResponse | None = None,
+    ) -> LLMResponse | None:
+        """Resume parameter generation without repeating the original light plan.
+
+        Args:
+            parent: Complete original plan that selected the tools.
+            contexts: Effective parameter or repair request messages.
+            tools: Parameter schemas selected by the original plan.
+            stage: Parameter generation or its existing single repair request.
+            previous: Complete unsuccessful parameter response before repair.
+
+        Returns:
+            Original saved response or a newly persisted complete parameter response.
+
+        Raises:
+            ProcessPersistenceError: Saving the request or response failed.
+        """
+        response = None
+        resumed = self._resume_requery
+        if resumed is not None and resumed["stage"] != stage:
+            return load_call_response(resumed["previous_response"])
+        if resumed is not None:
+            self._resume_requery = None
+            if resumed["response"] is not None:
+                response = load_call_response(resumed["response"])
+                self._reused_response = True
+            else:
+                contexts = bind_checkpoint_messages(resumed["input_contexts"])
+        else:
+            contexts = self._sanitize_contexts_for_provider(contexts)
+            await self._save_call_checkpoint(
+                "request",
+                contexts=contexts,
+                stage=stage,
+                parent_response=parent,
+                previous_response=previous,
+            )
+        if resumed is None or resumed["response"] is None:
+            receipt = await self._begin_metered_call(
+                "model",
+                (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
+                name=self.provider.provider_config.get("id"),
+                contexts=contexts,
+                tools=tools,
+            )
+            params = dict(self.req.llm_params or {})
+            if receipt:
+                params[
+                    "max_completion_tokens"
+                    if "max_completion_tokens" in params
+                    else "max_tokens"
+                ] = receipt["max_output_tokens"]
+            response = None
+            try:
+                with model_delivery(receipt):
+                    response = await self._await_or_stop(
+                        self.provider.text_chat(
+                            contexts=contexts,
+                            func_tool=tools,
+                            model=self.req.model,
+                            session_id=self.req.session_id,
+                            extra_user_content_parts=self.req.extra_user_content_parts,
+                            abort_signal=self._abort_signal,
+                            request_max_retries=self.request_max_retries,
+                            llm_params=params,
+                        )
+                    )
+            finally:
+                await self._report_metered_call(receipt, response)
+        if response:
+            # Fill an observation commit gap with the original invocation identity.
+            await self._record_model_response(response)
+        if (
+            response
+            and response.usage
+            and not (resumed and resumed["phase"].startswith("tool"))
+        ):
+            self.stats.token_usage += response.usage
+            self.stats.current_context_tokens = response.usage.input
+        return response
+
     async def _resolve_tool_exec(
         self,
         llm_resp: LLMResponse,
@@ -1802,17 +2967,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             if param_subset.tools and tool_names:
                 contexts = self._build_tool_requery_context(tool_names)
-                requery_resp = await self._await_or_stop(
-                    self.provider.text_chat(
-                        contexts=self._sanitize_contexts_for_provider(contexts),
-                        func_tool=param_subset,
-                        model=self.req.model,
-                        session_id=self.req.session_id,
-                        extra_user_content_parts=self.req.extra_user_content_parts,
-                        # tool_choice="required",
-                        abort_signal=self._abort_signal,
-                        request_max_retries=self.request_max_retries,
-                    )
+                parent_response = llm_resp
+                requery_resp = await self._query_tool_parameters(
+                    parent_response, contexts, param_subset, "parameters"
                 )
                 if requery_resp:
                     llm_resp = requery_resp
@@ -1832,19 +2989,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         tool_names,
                         extra_instruction=self.SKILLS_LIKE_REQUERY_REPAIR_INSTRUCTION,
                     )
-                    repair_resp = await self._await_or_stop(
-                        self.provider.text_chat(
-                            contexts=self._sanitize_contexts_for_provider(
-                                repair_contexts
-                            ),
-                            func_tool=param_subset,
-                            model=self.req.model,
-                            session_id=self.req.session_id,
-                            extra_user_content_parts=self.req.extra_user_content_parts,
-                            # tool_choice="required",
-                            abort_signal=self._abort_signal,
-                            request_max_retries=self.request_max_retries,
-                        )
+                    repair_resp = await self._query_tool_parameters(
+                        parent_response,
+                        repair_contexts,
+                        param_subset,
+                        "repair",
+                        llm_resp,
                     )
                     if repair_resp:
                         llm_resp = repair_resp
@@ -1934,8 +3084,27 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
     async def _iter_tool_executor_results(
         self,
-        executor: T.AsyncGenerator[ToolExecutorResultT, None],
+        executor: T.AsyncGenerator[ToolExecutorResultT, None] | None,
+        *,
+        saved_results: list[dict] | None = None,
     ) -> T.AsyncGenerator[ToolExecutorResultT, None]:
+        """Read live results or rebuild saved results without starting a tool.
+
+        Args:
+            executor: Live tool generator, absent when reusing saved results.
+            saved_results: Complete original results from a durable call boundary.
+
+        Yields:
+            Existing executor result types for the normal materialization path.
+
+        Raises:
+            _ToolExecutionInterrupted: Stop was requested during live execution.
+        """
+        if saved_results is not None:
+            for raw in saved_results:
+                yield T.cast(ToolExecutorResultT, CallToolResult.model_validate(raw))
+            return
+        assert executor is not None
         executor = iterate_in_task(executor)
 
         async def _next_executor_result() -> ToolExecutorResultT:

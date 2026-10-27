@@ -424,6 +424,15 @@ class InternalAgentSubStage(Stage):
                     if await call_event_hook(event, EventType.OnLLMRequestEvent, req):
                         return
 
+                    execution = event.get_extra("agent_team_execution")
+                    allowed_tools = getattr(execution, "tools", None)
+                    if allowed_tools is not None and req.func_tool:
+                        req.func_tool.tools = [
+                            tool
+                            for tool in req.func_tool.tools
+                            if tool.name in allowed_tools
+                        ]
+
                     options = build_cfg.provider_settings.get(
                         "image_compress_options", {}
                     )

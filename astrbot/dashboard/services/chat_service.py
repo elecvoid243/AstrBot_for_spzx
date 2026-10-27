@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any
 
 from astrbot.core import logger, sp
@@ -2364,7 +2365,9 @@ class ChatService:
                     self.chat_runs_by_session.pop(run.session_id, None)
                     self.running_convs.pop(run.session_id, None)
             for subscriber in list(run.subscribers):
-                while not subscriber.empty():
+                # Keep terminal events available to a slow reader. Only make
+                # room for the close marker when the bounded buffer is full.
+                if subscriber.full():
                     subscriber.get_nowait()
                 subscriber.put_nowait(None)
             run.subscribers.clear()
@@ -3664,44 +3667,114 @@ class ChatService:
         elif action == "resume":
             state = await goal_service.goals.resume(umo)
             if state is not None:
-                message_id = str(uuid.uuid4().hex)
-                checkpoint = str(uuid.uuid4().hex)
-                await self.register_synthetic_chat_run(
-                    session_id=session.session_id,
-                    message_id=message_id,
-                    username=username,
-                    llm_checkpoint_id=checkpoint,
-                )
-                queue = webchat_queue_mgr.get_or_create_queue(session.session_id)
-                await queue.put(
-                    (
-                        username,
-                        session.session_id,
-                        {
-                            "message": [
-                                {
-                                    "type": "plain",
-                                    "text": f"请继续完成目标：{state.goal}",
-                                }
-                            ],
-                            "selected_provider": None,
-                            "selected_model": None,
-                            "flags": resolve_webchat_request_flags({}),
-                            "message_id": message_id,
-                            "llm_checkpoint_id": checkpoint,
-                            "thread_selected_text": None,
-                            "_api_key_allow_admin_role": None,
-                            "internal_turn": "goal",
-                            "goal_id": state.goal_id,
-                            "persist_user_history": True,
-                        },
-                    )
+                await self._queue_goal_kickoff_turn(
+                    session,
+                    username,
+                    f"请继续完成目标：{state.goal}",
+                    state.goal_id,
                 )
         else:
             raise ChatServiceError(f"Unknown goal action: {action}")
 
         state = await goal_service.goals.get(umo)
         return {"goal": state.to_public_dict() if state else None}
+
+    async def set_session_goal(
+        self,
+        username: str,
+        session_id: str,
+        goal_text: str,
+        max_turns: int | None = None,
+    ) -> dict:
+        """Set (or replace) a session's standing goal and kick off the loop.
+
+        Authorized by session ownership (same as apply_goal_action). The
+        goal text becomes the loop's first turn, queued through the same
+        register-then-inject channel the resume action uses. The resulting
+        state reaches the UI through the ``goal_state_changed`` push.
+
+        Args:
+            username: Authenticated dashboard user; must own the session.
+            session_id: WebChat session identifier.
+            goal_text: The goal description; becomes the first turn text.
+            max_turns: Optional turn-budget override; ``None`` follows the
+                ``goal.max_turns`` config.
+
+        Returns:
+            ``{"goal": ...}`` with the freshly created serialized state.
+
+        Raises:
+            ChatServiceError: Session missing, not owned, or empty goal text.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if not session:
+            raise ChatServiceError(f"Session {session_id} not found")
+        if session.creator != username:
+            raise ChatServiceError("Permission denied")
+
+        goal_text = (goal_text or "").strip()
+        if not goal_text:
+            raise ChatServiceError("Goal text cannot be empty")
+        if max_turns is not None:
+            max_turns = max(1, min(1000, int(max_turns)))
+
+        from astrbot.core.goal.goal_service import goal_service
+
+        umo = build_webchat_unified_msg_origin(session)
+        try:
+            state = await goal_service.set_goal(umo, goal_text, max_turns=max_turns)
+        except ValueError as e:
+            raise ChatServiceError(str(e))
+        await self._queue_goal_kickoff_turn(session, username, goal_text, state.goal_id)
+        return {"goal": state.to_public_dict()}
+
+    async def _queue_goal_kickoff_turn(
+        self,
+        session: SimpleNamespace,
+        username: str,
+        goal_text: str,
+        goal_id: str,
+    ) -> None:
+        """Queue the internal goal kickoff turn (register-then-inject).
+
+        Mirrors agent_team_ports.deliver: the synthetic turn is registered
+        as a first-class chat run before it enters the webchat session
+        queue, so it renders and recovers through the primary-run pipeline.
+
+        Args:
+            session: The platform session row (provides ``session_id``).
+            username: Dashboard user the run is attributed to.
+            goal_text: User-role text of the synthetic turn.
+            goal_id: Goal the turn belongs to.
+        """
+        message_id = str(uuid.uuid4().hex)
+        checkpoint = str(uuid.uuid4().hex)
+        await self.register_synthetic_chat_run(
+            session_id=session.session_id,
+            message_id=message_id,
+            username=username,
+            llm_checkpoint_id=checkpoint,
+        )
+        queue = webchat_queue_mgr.get_or_create_queue(session.session_id)
+        await queue.put(
+            (
+                username,
+                session.session_id,
+                {
+                    "message": [{"type": "plain", "text": goal_text}],
+                    "selected_provider": None,
+                    "selected_model": None,
+                    "flags": resolve_webchat_request_flags({}),
+                    "message_id": message_id,
+                    "llm_checkpoint_id": checkpoint,
+                    "thread_selected_text": None,
+                    "_api_key_allow_admin_role": None,
+                    "internal_turn": "goal",
+                    "goal_id": goal_id,
+                    "persist_user_history": True,
+                },
+            )
+        )
 
     async def get_message_markers(
         self,

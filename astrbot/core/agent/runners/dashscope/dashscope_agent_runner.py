@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import functools
 import queue
 import re
@@ -6,7 +7,9 @@ import sys
 import threading
 import typing as T
 
+import requests
 from dashscope import Application
+from dashscope.api_entities.dashscope_response import DashScopeAPIResponse
 from dashscope.app.application_response import ApplicationResponse
 
 import astrbot.core.message.components as Comp
@@ -28,6 +31,33 @@ else:
     from typing_extensions import override
 
 
+class _SingleDeliverySession(requests.Session):
+    """Keep a team creation request from being replayed after ambiguous delivery."""
+
+    def send(self, request, **kwargs):
+        """Send once while preserving the SDK's normal response parsing.
+
+        Args:
+            request: Prepared SDK request.
+            **kwargs: Requests transport options.
+
+        Returns:
+            The original HTTP response, without following redirects.
+
+        Raises:
+            requests.RequestException: Delivery failed without a confirmed result.
+        """
+        kwargs["allow_redirects"] = False
+        try:
+            return super().send(request, **kwargs)
+        except requests.ConnectionError as exc:
+            # The SDK retries ConnectionError even after the server accepts a POST.
+            # Preserve the cause without letting it trigger another delivery.
+            raise requests.RequestException(
+                "DashScope delivery failed; remote result requires confirmation"
+            ) from exc
+
+
 class DashscopeAgentRunner(BaseAgentRunner[TContext]):
     """Dashscope Agent Runner"""
 
@@ -46,6 +76,7 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         self._state = AgentState.IDLE
         self.agent_hooks = agent_hooks
         self.run_context = run_context
+        self.remote_checkpoint = kwargs.get("remote_checkpoint")
 
         self.api_key = provider_config.get("dashscope_api_key", "")
         if not self.api_key:
@@ -299,6 +330,9 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
 
         output_text = ""
         doc_references = None
+        remote_chunks = []
+        remote_usage = None
+        completed = False
 
         while True:
             try:
@@ -314,7 +348,17 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                 raise item_data
             elif item_type == "data":
                 chunk = item_data
+                if self.remote_checkpoint:
+                    assert isinstance(chunk, DashScopeAPIResponse)
+                    raw_chunk = copy.deepcopy(dict(chunk))
+                    raw_chunk["headers"] = dict(raw_chunk.get("headers") or {})
+                    remote_chunks.append(raw_chunk)
+                    if chunk.usage and chunk.usage.get("models"):
+                        remote_usage = copy.deepcopy(chunk.usage)
+                    chunk = ApplicationResponse.from_api_response(chunk)
                 assert isinstance(chunk, ApplicationResponse)
+                if self.remote_checkpoint:
+                    completed = chunk.output.finish_reason == "stop"
 
                 (
                     output_text,
@@ -339,6 +383,8 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
                         value=chunk.output.session_id,
                     )
 
+        if self.remote_checkpoint and not completed:
+            raise ValueError("DashScope stream ended without confirmed completion")
         # 添加 RAG 引用
         if self.output_reference and doc_references:
             ref_text = self._format_doc_references(doc_references)
@@ -353,6 +399,11 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         # 创建最终响应
         chain = MessageChain(chain=[Comp.Plain(output_text)])
         self.final_llm_resp = LLMResponse(role="assistant", result_chain=chain)
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.complete(
+                self.final_llm_resp,
+                {"chunks": remote_chunks, "usage": remote_usage},
+            )
         self._transition_state(AgentState.DONE)
 
         try:
@@ -367,7 +418,19 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
         )
 
     async def _execute_dashscope_request(self):
-        """执行 Dashscope 请求的核心逻辑"""
+        """Execute an Application call within its external recovery boundary.
+
+        Yields:
+            Normal Application output or a previously saved complete response.
+        """
+        if self.remote_checkpoint:
+            restored, _ = await self.remote_checkpoint.restore(None)
+            if restored:
+                assert restored.result_chain is not None
+                self.final_llm_resp = restored
+                async for response in self._finish_recovered_response(restored):
+                    yield response
+                return
         prompt = self.req.prompt or ""
         session_id = self.req.session_id or "unknown"
         image_urls = self.req.image_urls or []
@@ -387,11 +450,46 @@ class DashscopeAgentRunner(BaseAgentRunner[TContext]):
             payload["incremental_output"] = False
 
         # 发起请求
-        partial = functools.partial(Application.call, **payload)
-        response = await asyncio.get_running_loop().run_in_executor(None, partial)
+        delivery_session = None
+        if self.remote_checkpoint:
+            await self.remote_checkpoint.before_request()
+        if self.remote_checkpoint:
+            from dashscope.api_entities.api_request_factory import _build_api_request
+            from dashscope.app.application import Application as RawApplication
 
-        async for resp in self._handle_streaming_response(response, session_id):
-            yield resp
+            # Preserve raw counter presence before ApplicationUsage adds zeros.
+            api_key, app_id = RawApplication._validate_params(
+                payload.pop("api_key"), payload.pop("app_id")
+            )
+            request_input, parameters = RawApplication._build_input_parameters(
+                payload.pop("prompt"),
+                payload.pop("history", None),
+                payload.pop("messages", None),
+                **payload,
+            )
+            delivery_session = _SingleDeliverySession()
+            request = _build_api_request(
+                model="",
+                input=request_input,
+                task_group=RawApplication.task_group,
+                task=app_id,
+                function=RawApplication.function,
+                api_key=api_key,
+                is_service=False,
+                sdk_module="app",
+                session=delivery_session,
+                **parameters,
+            )
+            partial = request.call
+        else:
+            partial = functools.partial(Application.call, **payload)
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(None, partial)
+            async for resp in self._handle_streaming_response(response, session_id):
+                yield resp
+        finally:
+            if delivery_session is not None:
+                delivery_session.close()
 
     @override
     def done(self) -> bool:

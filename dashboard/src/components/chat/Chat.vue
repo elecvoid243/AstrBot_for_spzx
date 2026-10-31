@@ -2867,9 +2867,9 @@ watch(
         // 2026-10-22 (elecvoid243): while the reader drags the native
         // scrollbar the browser owns the offset, so a content-driven anchor
         // write here fights the pointer and the panel shakes. The anchor is
-        // kept as-is (not re-captured), so the first correction after the
-        // gesture closes still measures the displacement that happened during
-        // the drag; a prepend during it is repaired by loadOlderHistory().
+        // retained until another native scroll captures the reader's new
+        // position. Releasing the gesture repairs any remaining displacement,
+        // including a prepend that completed while the pointer was held.
         else if (!scrollPointerActive) preserveReadingAnchor();
       });
       markerResizeObserver.observe(container);
@@ -5916,6 +5916,7 @@ function endMessagesScrollGesture() {
       currSessionId.value,
       distance <= 2 && scrollGestureDirection >= 0,
     );
+    preserveReadingAnchor();
   }
   window.clearTimeout(userScrollSettleTimer);
   userScrollSettleTimer = window.setTimeout(() => {
@@ -5948,7 +5949,15 @@ function handleMessagesScroll() {
   const isSelfScroll =
     Math.abs(top - selfScrollTop) <= 1 &&
     Math.abs(top - lastMessagesScrollTop) <= 1;
-  if (!isSelfScroll) {
+  // A clamp can be delivered after the content has already grown again.
+  // While following, selfScrollTop is the last written bottom: if it no
+  // longer fits in the range, an idle upward event is not user intent.
+  const followRangeShrank =
+    shouldStickToBottom(sessionId) &&
+    !userScrollPending &&
+    selfScrollTop > maxScrollTop + 1;
+  if (followRangeShrank) scrollToBottom();
+  if (!isSelfScroll && !followRangeShrank) {
     if ((movedUp || movedDown) && jumpLandingContainer) {
       // A native scroll without a preceding gesture must also cancel a landing.
       viewportInteractionToken += 1;
@@ -6122,6 +6131,9 @@ function preserveReadingAnchor() {
     readingViewportAnchor = null;
     return;
   }
+  // All callers must yield to a native drag, including scroll events and
+  // completed history requests, not just the layout observers.
+  if (scrollPointerActive) return;
   const anchor = readingViewportAnchor;
   if (
     !anchor ||

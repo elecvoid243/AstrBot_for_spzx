@@ -324,6 +324,40 @@ describe("Chat viewport ownership", () => {
     expect(h.controller.shouldStickToBottom("A")).toBe(true);
   });
 
+  it("keeps idle follow when content shrinks and regrows before the scroll event", () => {
+    const h = scrollHarness();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.writes.length = 0;
+    // The browser clamps at 1000, then a stream chunk grows the range to 1100
+    // before delivering the scroll event for that clamp.
+    h.setLayout({ top: 1000, height: 1400 });
+    h.setLayout({ height: 1500 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(true);
+    h.frame();
+    expect(h.panel.scrollTop).toBe(1100);
+    expect(h.writes).toEqual([1100]);
+  });
+
+  it("still yields to an upward gesture when content shrinks and regrows", () => {
+    const h = scrollHarness();
+    h.controller.scrollToBottom();
+    h.frame();
+    h.writes.length = 0;
+    h.controller.handleMessagesScrollIntent(
+      new WheelEvent("wheel", { deltaY: -40 }),
+    );
+    h.setLayout({ top: 1000, height: 1400 });
+    h.setLayout({ height: 1500 });
+    h.controller.handleMessagesScroll();
+    expect(h.controller.shouldStickToBottom("A")).toBe(false);
+    h.writes.length = 0;
+    h.controller.scrollToBottom();
+    h.frame();
+    expect(h.writes).toEqual([]);
+  });
+
   it("does not resume follow when shrinking content clamps an upward gesture to bottom", async () => {
     const h = scrollHarness();
     await nextTick();
@@ -807,6 +841,53 @@ describe("paged history jitter", () => {
     h.controller.endMessagesScrollGesture();
     h.observers.at(-1)!.callback([], {} as ResizeObserver);
     expect(h.writes).toEqual([600]);
+  });
+
+  it("does not compensate layout from a native scroll event during a drag", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.setStickToBottom("A", false);
+    h.setLayout({ top: 400, rowTop: 500 });
+    h.controller.handleMessagesScroll();
+    const event = new Event("pointerdown");
+    Object.defineProperty(event, "target", { value: h.panel });
+    h.controller.handleMessagesScrollIntent(event);
+    h.writes.length = 0;
+
+    // Layout grew above the reader while the native thumb moved upward.
+    h.setLayout({ top: 350, rowTop: 700 });
+    h.controller.handleMessagesScroll();
+    expect(h.panel.scrollTop).toBe(350);
+    expect(h.writes).toEqual([]);
+
+    h.controller.endMessagesScrollGesture();
+    // Subsequent changes preserve the reading point chosen by the drag.
+    h.setLayout({ rowTop: 750 });
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(400);
+  });
+
+  it("defers a prepend correction until the drag ends without another resize", async () => {
+    const h = scrollHarness();
+    await nextTick();
+    h.controller.setStickToBottom("A", false);
+    h.setLayout({ top: 400, rowTop: 600 });
+    h.controller.handleMessagesScroll();
+    const event = new Event("pointerdown");
+    Object.defineProperty(event, "target", { value: h.panel });
+    h.controller.handleMessagesScrollIntent(event);
+    h.loadOlderMessages.mockImplementation(async (_id, options) => {
+      options?.beforePrepend?.();
+      h.setLayout({ height: 2600, rowTop: 1600 });
+    });
+    await h.controller.loadOlderHistory();
+    h.observers.at(-1)!.callback([], {} as ResizeObserver);
+    expect(h.panel.scrollTop).toBe(400);
+    expect(h.writes).toEqual([]);
+
+    h.controller.endMessagesScrollGesture();
+    expect(h.panel.scrollTop).toBe(1400);
+    expect(h.writes).toEqual([1400]);
   });
 
   it("keeps follow on a downward wheel while the stream is one frame ahead", () => {

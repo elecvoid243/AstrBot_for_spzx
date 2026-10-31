@@ -1115,6 +1115,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             Exception: Any exception raised by the awaited operation.
         """
         operation_task = asyncio.create_task(awaitable)
+        # Do not start new work when cancellation predates this await boundary.
+        if self._is_stop_requested():
+            operation_task.cancel()
         abort_task = asyncio.create_task(self._abort_signal.wait())
         try:
             done, _ = await asyncio.wait(
@@ -1167,6 +1170,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             ContextCapacityError: Existing compression cannot fit the request.
             ToolProtocolIntegrityError: Tool results cannot be paired unambiguously.
         """
+        if self._is_stop_requested():
+            return
         if contexts is None:
             contexts = self._sanitize_contexts_for_provider(
                 copy.deepcopy(self.run_context.messages)
@@ -1988,6 +1993,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if not self.req:
             raise ValueError("Request is not set. Please call reset() first.")
 
+        if self._is_stop_requested():
+            yield await self._finalize_aborted_step()
+            return
+
         if self._step_budget_max is not None and not self._restored_call:
             self._step_budget_used += 1
 
@@ -2002,6 +2011,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         llm_resp_result = None
 
         async for llm_response in self._iter_llm_responses_with_fallback():
+            if self._is_stop_requested():
+                break
             if self._output_compression_report is not None:
                 yield AgentResponse(
                     type="context_compression",
@@ -2090,6 +2101,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if injection_resp is not None:
                 yield injection_resp
             break  # got final response
+
+        # A request can be cancelled before its first response. Still surface
+        # completed compression once, without starting another model request.
+        if self._output_compression_report is not None:
+            yield AgentResponse(
+                type="context_compression",
+                data=AgentResponseData(
+                    chain=MessageChain(
+                        type="context_compression",
+                        chain=[Json(data=self._output_compression_report)],
+                    )
+                ),
+            )
+            self._output_compression_report = None
 
         if self._is_stop_requested():
             yield await self._finalize_aborted_step()
@@ -2477,6 +2502,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "query", call["record_id"], name=call["name"]
             )
             try:
+                if self._is_stop_requested():
+                    raise _ToolExecutionInterrupted(
+                        "Tool status query was interrupted."
+                    )
                 queried = await self._await_or_stop(
                     asyncio.wait_for(
                         contract.query(
@@ -2487,6 +2516,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         timeout=self.run_context.tool_call_timeout,
                     )
                 )
+                if self._is_stop_requested():
+                    raise _ToolExecutionInterrupted(
+                        "Tool status query was interrupted."
+                    )
                 result = ToolRecoveryResult.model_validate(queried)
             except _ToolExecutionInterrupted:
                 raise
@@ -2687,6 +2720,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 llm_response.tools_call_ids,
             )
         ):
+            if self._is_stop_requested():
+                raise _ToolExecutionInterrupted(
+                    "Tool recovery interrupted by the user."
+                )
             call_state = (
                 self._call_checkpoint["tool_calls"][call_index]
                 if self._checkpoint_enabled and self._call_checkpoint
@@ -3346,6 +3383,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             ToolProtocolIntegrityError: Its history cannot be paired unambiguously.
             AstrBotError: The provider returned an explicit parameter-stage error.
         """
+        if self._is_stop_requested():
+            return
         response = None
         resumed = self._resume_requery
         if resumed is not None and resumed["stage"] != stage:
@@ -3566,6 +3605,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
     async def _finalize_aborted_step(self) -> AgentResponse:
         logger.info("Agent execution was requested to stop by user.")
+        self._pending_request_usage = None
+        self._context_usage_snapshot = None
 
         self.run_context.messages.extend(
             [

@@ -1,5 +1,9 @@
 {
   "agentBrowser": {
+    "live": "Наблюдение в реальном времени",
+    "snapshot": "Снимок",
+    "tab": "Вкладка",
+    "disconnected": "Наблюдение прервано. Обновите снимок для повторного подключения.",
     "title": "Agent browser",
     "preview": "Web preview",
     "refresh": "Refresh snapshot",

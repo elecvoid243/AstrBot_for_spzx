@@ -13,12 +13,14 @@
 // supported UI language.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   contextCompressionChip,
   contextCompressionHistoryLine,
 } from "@/composables/contextCompressionNotice";
-import { useModuleI18n } from "@/i18n/composables";
+import { initI18n, useI18n, useModuleI18n } from "@/i18n/composables";
 import chatZh from "./locales/zh-CN/features/chat.json";
 import chatEn from "./locales/en-US/features/chat.json";
 import chatJa from "./locales/ja-JP/features/chat.json";
@@ -29,6 +31,41 @@ const localizations: Array<[string, Record<string, unknown>]> = [
   ["en-US", chatEn as unknown as Record<string, unknown>],
   ["ru-RU", chatRu as unknown as Record<string, unknown>],
 ];
+
+describe("Agent browser i18n completeness", () => {
+  // Derive all component call-site keys so future UI states are covered too.
+  const source = readFileSync(
+    resolve("src/components/chat/AgentBrowserView.vue"),
+    "utf8",
+  );
+  const namespace = source.match(/const key = ["']([^"']+)["']/)?.[1];
+  const suffixes = [
+    ...new Set(
+      [...source.matchAll(/\$\{key\}\.([\w.]+)/g)].map((match) => match[1]),
+    ),
+  ];
+  const { t, availableLocales } = useI18n();
+
+  for (const locale of availableLocales) {
+    it(`${locale} resolves every translation used by AgentBrowserView`, async () => {
+      expect(namespace).toBeTruthy();
+      expect(suffixes.length).toBeGreaterThan(0);
+      try {
+        await initI18n(locale);
+        for (const suffix of suffixes) {
+          const path = `${namespace}.${suffix}`;
+          const translated = t(path);
+          expect(translated, `${locale}: ${path}`).not.toMatch(
+            /^\[(MISSING|INVALID):/,
+          );
+          expect(translated.trim(), `${locale}: ${path}`).not.toBe("");
+        }
+      } finally {
+        await initI18n("zh-CN");
+      }
+    });
+  }
+});
 
 describe("conversation marker labels", () => {
   for (const [locale, translations] of [

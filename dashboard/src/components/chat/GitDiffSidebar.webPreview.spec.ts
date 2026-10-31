@@ -56,6 +56,7 @@ const STUBS = {
   BranchSwitchConfirmDialog: true,
   BranchDeleteConfirmDialog: true,
   WebBrowserView: WebBrowserViewStub,
+  AgentBrowserView: true,
 };
 
 async function mountSidebar() {
@@ -79,6 +80,7 @@ function isHidden(element: Element): boolean {
 beforeEach(() => {
   setActivePinia(createPinia());
   localStorage.removeItem(VIEW_MODE_STORAGE_KEY);
+  localStorage.removeItem("astrbot.agentBrowser.mode");
   getMock.mockReset();
   postMock.mockReset();
   getMock.mockImplementation(async (path: string) => {
@@ -110,6 +112,38 @@ beforeEach(() => {
 });
 
 describe("GitDiffSidebar web preview tab", () => {
+  it("opens the Agent browser without a project and keeps it open on project unload", async () => {
+    const status = useSpcodeProjectStatus();
+    status.status.value = {
+      ...status.status.value,
+      loaded: false,
+      directory: null,
+    };
+    const wrapper = await mountSidebar();
+    await wrapper.setProps({ chatId: "chat-1" });
+    expect(tabButtons(wrapper)).toHaveLength(1);
+    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(
+      true,
+    );
+    status.status.value = {
+      ...status.status.value,
+      loaded: true,
+      directory: "F:/repo",
+    };
+    await flushPromises();
+    status.status.value = {
+      ...status.status.value,
+      loaded: false,
+      directory: null,
+    };
+    await flushPromises();
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    expect(
+      wrapper.findComponent({ name: "AgentBrowserView" }).props("chatId"),
+    ).toBe("chat-1");
+    wrapper.unmount();
+  });
+
   it("renders six tabs and mounts the preview lazily", async () => {
     const wrapper = await mountSidebar();
     const tabs = tabButtons(wrapper);

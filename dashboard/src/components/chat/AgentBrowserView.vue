@@ -29,6 +29,7 @@ interface BrowserState {
   current_action?: BrowserAction | null;
   recent_actions?: BrowserAction[];
   action_cursor?: number;
+  action_reset?: boolean;
   highlight?:
     | (BrowserState & {
         action_id: string;
@@ -46,11 +47,15 @@ interface BrowserAction {
 }
 
 const state = ref<BrowserState | null>(null);
-const error = ref("");
 const loading = ref(false);
-const live = ref(false);
+const connection = ref("loading");
+const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
+const online = ref(navigator.onLine !== false);
 let pending: AbortController | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retryAttempts = 0;
+let lastIdentity = "";
 const now = ref(Date.now());
 let markerTimer: ReturnType<typeof setTimeout> | undefined;
 watch(
@@ -119,28 +124,54 @@ const actions = computed(() => [
   ...(state.value?.recent_actions || []).slice(-32).reverse(),
 ]);
 
+/**
+ * Follow one authorized lifetime after applying its consistent snapshot.
+ *
+ * Args:
+ *   current: Snapshot carrying the lifetime and the last applied action cursor.
+ *   controller: Cancellation scope for this viewing attempt.
+ *   chatId: Captured conversation identity, never read from a later selection.
+ */
 async function follow(
   current: BrowserState,
   controller: AbortController,
+  chatId: string,
 ): Promise<void> {
   const params = new URLSearchParams({
-    chat_id: props.chatId!,
+    chat_id: chatId,
     generation: current.generation!,
     browser_session_id: current.browser_session_id!,
-    action_cursor: String(state.value?.action_cursor ?? 0),
+    action_cursor: String(current.action_cursor ?? 0),
   });
   const response = await fetchWithAuth(
     `/api/v1/plugins/extensions/browser-use/stream?${params}`,
     { signal: controller.signal },
   );
-  if (!response.ok || !response.body) throw new Error(t(`${key}.disconnected`));
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => null);
+    throw Object.assign(new Error("Observation stream disconnected."), {
+      response: { status: response.status, data },
+    });
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // Heartbeats arrive every second. Recover a half-open connection as well as EOF.
+  let watchdog = setTimeout(() => void reader.cancel().catch(() => {}), 15000);
+  const cancel = () => void reader.cancel().catch(() => {});
+  controller.signal.addEventListener("abort", cancel, { once: true });
   try {
     while (!controller.signal.aborted) {
       const { done, value } = await reader.read();
+      if (
+        controller.signal.aborted ||
+        pending !== controller ||
+        props.chatId !== chatId
+      )
+        return;
       if (done) break;
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => void reader.cancel().catch(() => {}), 15000);
       buffer += decoder.decode(value, { stream: true });
       let end: number;
       while ((end = buffer.indexOf("\n\n")) >= 0) {
@@ -150,7 +181,8 @@ async function follow(
         const data = block
           .split("\n")
           .find((line) => line.startsWith("data: "));
-        if (!data || controller.signal.aborted) continue;
+        if (!data || controller.signal.aborted || pending !== controller)
+          continue;
         const event = JSON.parse(data.slice(6)) as BrowserState;
         if (
           event.generation !== current.generation ||
@@ -162,7 +194,8 @@ async function follow(
           event.sequence! <= (state.value?.sequence ?? -1)
         )
           continue;
-        if (event.type === "error") throw new Error(t(`${key}.disconnected`));
+        if (event.type === "error")
+          throw new Error("Observation stream disconnected.");
         if (
           event.type !== "frame" &&
           event.type !== "state" &&
@@ -185,6 +218,13 @@ async function follow(
         // Every event is self-contained; sequence ordering also rejects old tabs.
         // Preserve pixels only while their document and coordinate space match.
         const previous = state.value;
+        // A newer image must never restore an older action snapshot.
+        if ((event.action_cursor ?? 0) < (previous?.action_cursor ?? 0)) {
+          event.current_action = previous?.current_action;
+          event.recent_actions = previous?.recent_actions;
+          event.action_cursor = previous?.action_cursor;
+          event.highlight = null;
+        }
         const unchanged =
           previous?.tab_id === event.tab_id &&
           previous?.url === event.url &&
@@ -207,28 +247,45 @@ async function follow(
                     }
                   : {}),
               };
-        live.value = true;
+        if (event.action_reset) resynchronized.value = true;
+        connection.value = "live";
+        retryAttempts = 0;
       }
       if (buffer.length > 768 * 1024) throw new Error(t(`${key}.unavailable`));
     }
-    if (!controller.signal.aborted) throw new Error(t(`${key}.disconnected`));
+    if (!controller.signal.aborted)
+      throw new Error("Observation stream disconnected.");
   } finally {
+    clearTimeout(watchdog);
+    controller.signal.removeEventListener("abort", cancel);
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
 
-async function refresh(): Promise<void> {
+/**
+ * Reauthorize and resynchronize observation without starting a browser.
+ *
+ * Args:
+ *   resuming: Show automatic reconnection instead of initial loading.
+ */
+async function refresh(resuming = false): Promise<void> {
+  clearTimeout(retryTimer);
   pending?.abort();
   state.value = null;
-  error.value = "";
-  live.value = false;
   loading.value = false;
   if (!props.chatId || !props.visible || !pageVisible.value) return;
+  if (!online.value) {
+    connection.value = "disconnected";
+    return;
+  }
   const controller = new AbortController();
   pending = controller;
   loading.value = true;
+  connection.value = resuming ? "reconnecting" : "loading";
   const chatId = props.chatId;
+  let retry = true;
+  let delay = Math.min(1000 * 2 ** Math.min(retryAttempts, 3), 5000);
   try {
     const initial = await pluginExtensionApi.get<BrowserState>(
       "browser-use/status",
@@ -237,12 +294,20 @@ async function refresh(): Promise<void> {
         signal: controller.signal,
       },
     );
-    if (controller.signal.aborted) return;
+    if (
+      controller.signal.aborted ||
+      pending !== controller ||
+      props.chatId !== chatId
+    )
+      return;
     if (initial.data.status !== "ok")
       throw new Error(initial.data.message || undefined);
     const current = initial.data.data;
     if (!current.available) {
       state.value = current;
+      connection.value = "idle";
+      retryAttempts = 0;
+      delay = 3000;
       return;
     }
     const snapshot = await pluginExtensionApi.get<BrowserState>(
@@ -256,7 +321,12 @@ async function refresh(): Promise<void> {
         signal: controller.signal,
       },
     );
-    if (controller.signal.aborted) return;
+    if (
+      controller.signal.aborted ||
+      pending !== controller ||
+      props.chatId !== chatId
+    )
+      return;
     if (snapshot.data.status !== "ok")
       throw new Error(snapshot.data.message || undefined);
     if (
@@ -266,34 +336,69 @@ async function refresh(): Promise<void> {
       throw new Error(t(`${key}.expired`));
     }
     state.value = snapshot.data.data;
+    const identity = JSON.stringify([
+      state.value.generation,
+      state.value.browser_session_id,
+    ]);
+    if (lastIdentity && lastIdentity !== identity) resynchronized.value = true;
+    lastIdentity = identity;
+    connection.value = "snapshot";
     loading.value = false;
-    await follow(current, controller);
+    await follow(snapshot.data.data, controller, chatId);
   } catch (err: any) {
-    if (!controller.signal.aborted) {
-      live.value = false;
-      error.value =
-        err.response?.data?.message || err.message || t(`${key}.unavailable`);
+    if (!controller.signal.aborted && pending === controller) {
+      // Do not leave stale pixels or a running action visible while disconnected.
+      state.value = null;
+      const status = err.response?.status;
+      const reason = err.response?.data?.data?.reason;
+      connection.value =
+        reason === "busy"
+          ? "busy"
+          : reason === "disabled" || status === 404
+          ? "disabled"
+          : status === 401 || status === 403
+          ? "denied"
+          : status === 503
+          ? "unavailable"
+          : "disconnected";
+      if (status === 409 && reason !== "busy") resynchronized.value = true;
+      retry = connection.value !== "denied";
+      retryAttempts += 1;
     }
   } finally {
-    if (pending === controller) loading.value = false;
+    if (pending === controller && !controller.signal.aborted) {
+      loading.value = false;
+      if (retry) retryTimer = setTimeout(() => void refresh(true), delay);
+    }
   }
 }
 
 watch(
-  () => [props.chatId, props.visible, pageVisible.value],
-  () => {
+  () => [props.chatId, props.visible, pageVisible.value, online.value] as const,
+  (next, previous) => {
+    if (next[0] !== previous?.[0]) lastIdentity = "";
+    retryAttempts = 0;
+    resynchronized.value = false;
     void refresh();
   },
-  { immediate: true },
+  { immediate: true, flush: "sync" },
 );
 const visibilityChanged = () => {
   pageVisible.value = document.visibilityState !== "hidden";
 };
 document.addEventListener("visibilitychange", visibilityChanged);
+const networkChanged = () => {
+  online.value = navigator.onLine !== false;
+};
+window.addEventListener("online", networkChanged);
+window.addEventListener("offline", networkChanged);
 onBeforeUnmount(() => {
+  clearTimeout(retryTimer);
   clearTimeout(markerTimer);
   pending?.abort();
   document.removeEventListener("visibilitychange", visibilityChanged);
+  window.removeEventListener("online", networkChanged);
+  window.removeEventListener("offline", networkChanged);
 });
 </script>
 
@@ -305,13 +410,14 @@ onBeforeUnmount(() => {
     :data-browser-session-id="state?.browser_session_id"
     :data-tab-id="state?.tab_id"
     :data-sequence="state?.sequence"
+    :data-connection="connection"
   >
     <div class="agent-browser-toolbar">
       <div class="agent-browser-page">
         <strong>{{ state?.title || t(`${key}.title`) }}</strong>
         <div class="agent-browser-url">{{ state?.url }}</div>
         <div class="agent-browser-status" aria-live="polite">
-          {{ live ? t(`${key}.live`) : t(`${key}.snapshot`) }}
+          {{ t(`${key}.connectionStates.${connection}`) }}
           <span v-if="state?.tab_id">
             · {{ t(`${key}.tab`) }} {{ state.tab_id.slice(-4) }}</span
           >
@@ -325,14 +431,20 @@ onBeforeUnmount(() => {
         size="small"
         :loading="loading"
         :disabled="!chatId"
-        @click="refresh"
+        @click="refresh()"
       >
         {{ t(`${key}.refresh`) }}
       </v-btn>
     </div>
-    <div v-if="error" role="alert" class="pa-4">{{ error }}</div>
-    <div v-else-if="!state?.image" role="status" class="pa-4">
-      {{ loading ? t(`${key}.loading`) : t(`${key}.empty`) }}
+    <div v-if="resynchronized" role="status" class="pa-2 text-caption">
+      {{ t(`${key}.resynchronized`) }}
+    </div>
+    <div v-if="!state?.image" role="status" class="pa-4">
+      {{
+        connection === "idle"
+          ? t(`${key}.empty`)
+          : t(`${key}.connectionStates.${connection}`)
+      }}
     </div>
     <div v-else class="agent-browser-image">
       <div class="agent-browser-viewport">

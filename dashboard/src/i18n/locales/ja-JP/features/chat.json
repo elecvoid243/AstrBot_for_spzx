@@ -1,5 +1,18 @@
 {
   "agentBrowser": {
+    "connectionStates": {
+      "loading": "接続中…",
+      "snapshot": "スナップショット",
+      "live": "ライブ観測",
+      "disconnected": "観測が切断されました。自動的に再試行します。",
+      "reconnecting": "再接続中…",
+      "idle": "ブラウザーは待機中",
+      "busy": "別のチャットがブラウザーを使用中です。",
+      "disabled": "ブラウザープラグインは無効か未インストールです。",
+      "unavailable": "ブラウザー環境を利用できません。再試行します。",
+      "denied": "このチャットにアクセスできません。"
+    },
+    "resynchronized": "現在のブラウザー状態に再同期しました。",
     "live": "Live",
     "snapshot": "Snapshot",
     "tab": "Tab",
@@ -10,7 +23,7 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot.",
+    "empty": "このチャットで Agent にページを開くよう依頼してください。観測は自動接続します。",
     "recentActions": "最近の操作",
     "target": "実際の操作位置",
     "actionKinds": {

@@ -1,5 +1,18 @@
 {
   "agentBrowser": {
+    "connectionStates": {
+      "loading": "正在连接…",
+      "snapshot": "快照",
+      "live": "实时观测",
+      "disconnected": "观测已断开，将自动重试。",
+      "reconnecting": "正在重新连接…",
+      "idle": "浏览器空闲",
+      "busy": "浏览器正由其他聊天使用。",
+      "disabled": "浏览器插件已禁用或尚未安装。",
+      "unavailable": "浏览器运行环境不可用，将自动重试。",
+      "denied": "无权访问此聊天。"
+    },
+    "resynchronized": "已重新同步当前浏览器状态。",
     "live": "实时观测",
     "snapshot": "快照",
     "tab": "标签页",
@@ -10,7 +23,7 @@
     "expired": "浏览器已变更，请刷新重连。",
     "unavailable": "浏览器不可用。",
     "loading": "正在读取快照…",
-    "empty": "请在当前聊天让 Agent 打开网页，然后刷新快照。",
+    "empty": "请让 Agent 在当前聊天打开网页，观测将自动连接。",
     "recentActions": "最近动作",
     "target": "实际操作位置",
     "actionKinds": {

@@ -1,5 +1,18 @@
 {
   "agentBrowser": {
+    "connectionStates": {
+      "loading": "Connecting…",
+      "snapshot": "Snapshot",
+      "live": "Live",
+      "disconnected": "Observation disconnected; retrying automatically.",
+      "reconnecting": "Reconnecting…",
+      "idle": "Browser idle",
+      "busy": "Browser is in use by another chat.",
+      "disabled": "Browser plugin is disabled or not installed.",
+      "unavailable": "Browser runtime unavailable; retrying.",
+      "denied": "You do not have access to this chat."
+    },
+    "resynchronized": "Observation resynchronized to the current browser state.",
     "live": "Live",
     "snapshot": "Snapshot",
     "tab": "Tab",
@@ -10,7 +23,7 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot.",
+    "empty": "Ask the Agent to open a page in this chat. Observation will connect automatically.",
     "recentActions": "Recent actions",
     "target": "Actual action position",
     "actionKinds": {

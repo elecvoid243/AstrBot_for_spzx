@@ -1,5 +1,18 @@
 {
   "agentBrowser": {
+    "connectionStates": {
+      "loading": "Подключение…",
+      "snapshot": "Снимок",
+      "live": "В реальном времени",
+      "disconnected": "Наблюдение отключено; повторяем подключение.",
+      "reconnecting": "Повторное подключение…",
+      "idle": "Браузер ожидает",
+      "busy": "Браузер используется другим чатом.",
+      "disabled": "Плагин браузера отключён или не установлен.",
+      "unavailable": "Среда браузера недоступна; повторяем попытку.",
+      "denied": "Нет доступа к этому чату."
+    },
+    "resynchronized": "Наблюдение синхронизировано с текущим состоянием браузера.",
     "live": "Наблюдение в реальном времени",
     "snapshot": "Снимок",
     "tab": "Вкладка",
@@ -10,7 +23,7 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot.",
+    "empty": "Попросите Agent открыть страницу в этом чате. Наблюдение подключится автоматически.",
     "recentActions": "Последние действия",
     "target": "Фактическая позиция действия",
     "actionKinds": {

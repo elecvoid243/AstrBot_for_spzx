@@ -51,6 +51,10 @@ describe("Agent browser i18n completeness", () => {
           return Object.keys(chatEn.agentBrowser.actionStatuses).map(
             (status) => suffix + status,
           );
+        if (suffix === "connectionStates.")
+          return Object.keys(chatEn.agentBrowser.connectionStates).map(
+            (status) => suffix + status,
+          );
         return [suffix];
       }),
     ),

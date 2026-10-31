@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 const { get, fetchStream } = vi.hoisted(() => ({
   get: vi.fn(),
@@ -28,8 +28,186 @@ beforeEach(() => {
     }),
   }));
 });
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("Agent browser snapshots", () => {
+  it("recovers a half-open stream after missing heartbeats", async () => {
+    vi.useFakeTimers();
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...current, sequence: 1, image: "stale" }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(view.attributes("data-connection")).toBe("disconnected");
+    expect(view.find("img").exists()).toBe(false);
+    get.mockResolvedValueOnce(ok({ available: false }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(view.attributes("data-connection")).toBe("idle");
+    view.unmount();
+  });
+
+  it("reconnects from a fresh snapshot and rejects replayed or regressing actions", async () => {
+    vi.useFakeTimers();
+    const action = { action_id: "one", kind: "click", status: "succeeded" };
+    const frame = {
+      ...current,
+      sequence: 10,
+      action_cursor: 8,
+      image: "first",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+      recent_actions: [action],
+    };
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(ok(frame));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    const signal = fetchStream.mock.calls[0][1].signal;
+    stream.close();
+    await flushPromises();
+    expect(view.attributes("data-connection")).toBe("disconnected");
+    expect(view.find("img").exists()).toBe(false);
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...frame, sequence: 20, action_cursor: 18 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(signal.aborted).toBe(true);
+    expect(fetchStream.mock.calls[1][0]).toContain("action_cursor=18");
+    for (const event of [
+      {
+        ...frame,
+        type: "action",
+        sequence: 19,
+        current_action: { ...action, status: "running" },
+      },
+      {
+        ...frame,
+        type: "frame",
+        sequence: 21,
+        action_cursor: 8,
+        current_action: { ...action, status: "running" },
+        recent_actions: [],
+      },
+      {
+        ...frame,
+        type: "state",
+        sequence: 22,
+        action_cursor: 22,
+        action_reset: true,
+        recent_actions: [action],
+      },
+    ]) {
+      stream.enqueue(
+        new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
+      );
+      await flushPromises();
+    }
+    expect(view.findAll('[data-action-id="one"]')).toHaveLength(1);
+    expect(view.find('[data-action-status="running"]').exists()).toBe(false);
+    expect(view.text()).toContain("已重新同步");
+    expect(view.attributes("data-sequence")).toBe("22");
+    view.unmount();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(get).toHaveBeenCalledTimes(4);
+  });
+
+  it("resynchronizes a new runtime generation without applying the old stream", async () => {
+    vi.useFakeTimers();
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(
+        ok({ ...current, sequence: 99, action_cursor: 90, image: "old" }),
+      );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    const previousStream = stream;
+    previousStream.close();
+    await flushPromises();
+    const next = {
+      ...current,
+      generation: "run-2",
+      sequence: 1,
+      action_cursor: 0,
+      image: "new",
+    };
+    get.mockResolvedValueOnce(ok(next)).mockResolvedValueOnce(ok(next));
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(view.attributes("data-generation")).toBe("run-2");
+    expect(view.attributes("data-sequence")).toBe("1");
+    expect(view.text()).toContain("已重新同步");
+    expect(fetchStream.mock.calls[1][0]).toContain("action_cursor=0");
+    view.unmount();
+  });
+
+  it("cancels a pending reader on chat switch and never displays its late frame", async () => {
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...current, sequence: 1, image: "private" }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    const old = stream;
+    get.mockResolvedValueOnce(ok({ available: false }));
+    await view.setProps({ chatId: "chat-2" });
+    expect(fetchStream.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(() =>
+      old.enqueue(new TextEncoder().encode("data: {}\n\n")),
+    ).toThrow();
+    expect(view.find("img").exists()).toBe(false);
+    expect(view.findAll("[data-action-id]")).toHaveLength(0);
+    view.unmount();
+  });
+
+  it.each([
+    [503, "disabled", "disabled"],
+    [503, "runtime_unavailable", "unavailable"],
+    [409, "busy", "busy"],
+    [403, null, "denied"],
+  ])("distinguishes HTTP state %s/%s", async (status, reason, expected) => {
+    get.mockRejectedValueOnce({
+      response: { status, data: { data: { reason } } },
+    });
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    expect(view.attributes("data-connection")).toBe(expected);
+    expect(view.find("img").exists()).toBe(false);
+    view.unmount();
+  });
+
+  it("polls an idle browser without starting it and cancels polling while hidden", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValue(ok({ available: false }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    expect(view.attributes("data-connection")).toBe("idle");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(
+      get.mock.calls.every(([path]) => path === "browser-use/status"),
+    ).toBe(true);
+    expect(fetchStream).not.toHaveBeenCalled();
+    await view.setProps({ visible: false });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(get).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it.each([
     { scroll_y: 500 },
     { scroll_x: 100 },
@@ -240,11 +418,11 @@ describe("Agent browser snapshots", () => {
     });
     expect(get).not.toHaveBeenCalled();
     get.mockRejectedValueOnce({
-      response: { data: { message: "Browser is busy in another chat." } },
+      response: { status: 409, data: { data: { reason: "busy" } } },
     });
     await view.setProps({ visible: true });
     await flushPromises();
-    expect(view.find('[role="alert"]').text()).toContain("busy");
+    expect(view.attributes("data-connection")).toBe("busy");
     expect(view.find("img").exists()).toBe(false);
     view.unmount();
   });
@@ -336,7 +514,7 @@ describe("Agent browser snapshots", () => {
     await flushPromises();
     stream.close();
     await flushPromises();
-    expect(view.find('[role="alert"]').exists()).toBe(true);
+    expect(view.attributes("data-connection")).toBe("disconnected");
     await view.setProps({ visible: false });
     get
       .mockResolvedValueOnce(ok(current))

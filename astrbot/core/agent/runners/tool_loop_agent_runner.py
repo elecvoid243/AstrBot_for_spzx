@@ -484,6 +484,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 Message(role="system", content=request.system_prompt),
             )
         self.run_context.messages = messages
+        self._assembled_extra_user_content_parts = copy.deepcopy(
+            [
+                part if isinstance(part, dict) else part.model_dump(mode="json")
+                for part in request.extra_user_content_parts
+            ]
+        )
 
         self.stats = AgentStats()
         self.stats.start_time = time.time()
@@ -538,6 +544,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 ContentPart.model_validate(part)
                 for part in saved["extra_user_content_parts"]
             ]
+            self._assembled_extra_user_content_parts = copy.deepcopy(
+                [
+                    part.model_dump(mode="json")
+                    for part in self.req.extra_user_content_parts
+                ]
+            )
             self._step_budget_max = saved["step_budget_max"]
             self._step_budget_used = saved["step_budget_used"]
             self._step_budget_notified = set(saved["step_budget_notified"])
@@ -566,6 +578,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         stage: str = "main",
         parent_response: LLMResponse | None = None,
         previous_response: LLMResponse | None = None,
+        invocation_id: str | None = None,
+        llm_params: dict | None = None,
+        update_request: bool = False,
     ) -> None:
         """Persist the effective runner state on all model and tool boundaries.
 
@@ -576,6 +591,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             stage: Main generation, parameter resolution, or parameter repair.
             parent_response: Original light-schema plan for parameter resolution.
             previous_response: Saved unsuccessful parameter response before repair.
+            invocation_id: Identity already used for output admission.
+            llm_params: Final admitted parameters actually sent to the provider.
+            update_request: Refresh the same durable intent after output admission.
 
         Raises:
             ProcessPersistenceError: Dependent execution must stop if saving fails.
@@ -589,12 +607,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             return
         if phase == "request":
             available = self.effective_raw_tool_set
-            model_calls = (self._call_checkpoint or {}).get("model_calls", 0) + 1
+            model_calls = (self._call_checkpoint or {}).get("model_calls", 0) + int(
+                not update_request
+            )
             self._call_checkpoint = {
                 "format_version": 2,
-                "invocation_id": uuid.uuid4().hex,
+                "invocation_id": invocation_id or uuid.uuid4().hex,
                 "messages": dump_call_messages(self.run_context.messages),
-                "member_messages": self._member_message_receipts,
+                "member_messages": (self._call_checkpoint or {}).get(
+                    "member_messages", []
+                )
+                if update_request
+                else self._member_message_receipts,
                 "input_contexts": dump_call_messages(
                     contexts or self.run_context.messages
                 ),
@@ -613,7 +637,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 "attempt_id": execution.turn_id,
                 "conversation_id": execution.conversation_id,
                 "context_position": len(self.run_context.messages),
-                "llm_params": self.req.llm_params,
+                "llm_params": llm_params
+                if llm_params is not None
+                else self.req.llm_params,
                 "tools": [
                     {
                         "name": tool.name,
@@ -1110,6 +1136,222 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 abort_task.cancel()
             await asyncio.gather(abort_task, return_exceptions=True)
 
+    async def _prepare_llm_request(
+        self,
+        *,
+        contexts: list | None = None,
+        include_model: bool = True,
+        receipt: dict | None = None,
+        previous_request: dict | None = None,
+        check_output_limit: bool = True,
+    ) -> dict | None:
+        """Prepare and check one immutable provider-facing main-loop request.
+
+        Args:
+            contexts: Saved request view for an already authorized recovery.
+            include_model: Use the request's explicit model selection.
+            receipt: Output ceiling returned by the existing execution admission.
+            previous_request: View checked immediately before admission.
+            check_output_limit: Reserve output only after admission can adjust it.
+
+        Returns:
+            Checked payload fields, or None when the user stopped preparation.
+
+        Raises:
+            ContextCapacityError: Existing compression cannot fit the request.
+            ToolProtocolIntegrityError: Tool results cannot be paired unambiguously.
+        """
+        if contexts is None:
+            contexts = self._sanitize_contexts_for_provider(
+                copy.deepcopy(self.run_context.messages)
+            )
+        if contexts and isinstance(contexts[0], dict):
+            contexts = bind_checkpoint_messages(contexts)
+        # Initial extras were captured during reset, possibly before temporary
+        # media files were removed. Materialize only newly injected parts and
+        # retain them in history once, rather than appending a new user turn on
+        # every tool-loop request or counting both representations.
+        current_parts = [
+            part if isinstance(part, dict) else part.model_dump(mode="json")
+            for part in self.req.extra_user_content_parts
+        ]
+        if current_parts != self._assembled_extra_user_content_parts:
+            previous_parts = list(self._assembled_extra_user_content_parts)
+            new_parts = []
+            for part, serialized in zip(
+                self.req.extra_user_content_parts, current_parts
+            ):
+                if serialized in previous_parts:
+                    previous_parts.remove(serialized)
+                else:
+                    new_parts.append(part)
+            if new_parts:
+                extra = await self._assemble_request_context_for_provider(
+                    replace(
+                        self.req,
+                        prompt=None,
+                        image_urls=[],
+                        audio_urls=[],
+                        extra_user_content_parts=new_parts,
+                    )
+                )
+                parts = Message.model_validate(extra).content
+                if isinstance(parts, list):
+                    visible_parts = [
+                        part.model_dump(mode="json")
+                        for message in contexts
+                        if message.role == "user" and isinstance(message.content, list)
+                        for part in message.content
+                    ]
+                    missing_parts = []
+                    for part in parts:
+                        serialized = part.model_dump(mode="json")
+                        if serialized in visible_parts:
+                            visible_parts.remove(serialized)
+                        else:
+                            missing_parts.append(part)
+                    if missing_parts:
+                        for messages in (contexts, self.run_context.messages):
+                            if messages and messages[-1].role == "user":
+                                content = messages[-1].content
+                                messages[-1].content = (
+                                    content
+                                    if isinstance(content, list)
+                                    else [TextPart(text=content or "")]
+                                ) + copy.deepcopy(missing_parts)
+                            else:
+                                messages.append(
+                                    UserMessageSegment(
+                                        content=copy.deepcopy(missing_parts)
+                                    )
+                                )
+            self._assembled_extra_user_content_parts = copy.deepcopy(current_parts)
+        contexts = self.request_context_manager.truncator.fix_messages(contexts)
+        func_tool = self._func_tool_for_provider()
+        if func_tool:
+            func_tool = copy.copy(func_tool)
+            func_tool.tools = [copy.copy(tool) for tool in func_tool.tools]
+            for tool in func_tool.tools:
+                tool.parameters = copy.deepcopy(tool.parameters)
+        payload = {"func_tool": func_tool}
+        payload["extra_user_content_parts"] = copy.deepcopy(
+            self.req.extra_user_content_parts
+        )
+        params = copy.deepcopy(self.req.llm_params or {})
+        if receipt:
+            params[
+                "max_completion_tokens"
+                if "max_completion_tokens" in params
+                else "max_tokens"
+            ] = receipt["max_output_tokens"]
+        payload["llm_params"] = params
+        if include_model:
+            payload["model"] = self.req.model
+        effective_model = payload.get("model") or self.provider.get_model()
+        extra_body = self.provider.provider_config.get("custom_extra_body", {})
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        output_token_budget = params.get("max_completion_tokens") or params.get(
+            "max_tokens"
+        )
+        configured_output = extra_body.get("max_completion_tokens") or extra_body.get(
+            "max_tokens"
+        )
+        if isinstance(configured_output, int) and configured_output > 0:
+            output_token_budget = (
+                min(receipt["max_output_tokens"], configured_output)
+                if receipt
+                else configured_output
+            )
+        max_context_tokens = self.provider.provider_config.get("max_context_tokens", 0)
+        threshold = int(
+            self.provider.provider_config.get("compress_threshold_tokens", 0) or 0
+        )
+        if max_context_tokens > 0 and threshold > max_context_tokens:
+            threshold = 0
+        limits_changed = (
+            self.request_context_manager_config.max_context_tokens != max_context_tokens
+            or self.request_context_manager_config.compress_threshold_tokens
+            != threshold
+        )
+        if limits_changed:
+            self.request_context_manager_config = replace(
+                self.request_context_manager_config,
+                max_context_tokens=max_context_tokens,
+                compress_threshold_tokens=threshold,
+            )
+            self.request_context_manager = ContextManager(
+                self.request_context_manager_config
+            )
+        usage_snapshot = self._context_usage_snapshot
+        if usage_snapshot and (
+            usage_snapshot.provider is not self.provider
+            or usage_snapshot.model != effective_model
+        ):
+            usage_snapshot = None
+        unchanged = (
+            previous_request is not None
+            and not limits_changed
+            and (
+                previous_request["provider"] is self.provider
+                and previous_request["model"] == effective_model
+                and previous_request["messages"]
+                == [message.model_dump(mode="json") for message in contexts]
+                and previous_request["tool_schema"]
+                == (func_tool.openai_schema() if func_tool else [])
+            )
+        )
+        checked = contexts
+        if not unchanged or (check_output_limit and output_token_budget):
+            checked = await self._await_or_stop(
+                self.request_context_manager.process(
+                    contexts,
+                    func_tool=func_tool,
+                    usage_snapshot=usage_snapshot,
+                    output_token_budget=output_token_budget
+                    if check_output_limit
+                    and isinstance(output_token_budget, int)
+                    and output_token_budget > 0
+                    else 0,
+                    check_compression_threshold=not unchanged,
+                )
+            )
+        if checked is None:
+            return
+        if (
+            not unchanged or (check_output_limit and output_token_budget)
+        ) and self.request_context_manager.last_compression is not None:
+            self._output_compression_report = (
+                self.request_context_manager.last_compression
+            )
+        if checked != contexts:
+            receipts = self._member_message_receipts
+            if previous_request and self._call_checkpoint:
+                receipts = self._call_checkpoint.get("member_messages", [])
+            for receipt_item in receipts:
+                position = receipt_item["context_position"]
+                if position < len(self.run_context.messages):
+                    delivered = self.run_context.messages[position].model_dump(
+                        mode="json"
+                    )
+                    for index, message in enumerate(checked):
+                        if message.model_dump(mode="json") == delivered:
+                            receipt_item["context_position"] = index
+                            break
+            self.run_context.messages = checked
+            self._context_usage_snapshot = None
+        contexts = self._sanitize_contexts_for_provider(checked)
+        if contexts and isinstance(contexts[0], dict):
+            messages = bind_checkpoint_messages(contexts)
+            fixed = self.request_context_manager.truncator.fix_messages(messages)
+            if fixed != messages:
+                contexts = [message.model_dump() for message in fixed]
+        else:
+            contexts = self.request_context_manager.truncator.fix_messages(contexts)
+        # Persistence callbacks and later history appends cannot mutate this view.
+        payload["contexts"] = copy.deepcopy(contexts)
+        return payload
+
     async def _iter_llm_responses(
         self, *, include_model: bool = True
     ) -> T.AsyncGenerator[LLMResponse, None]:
@@ -1125,7 +1367,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             ToolProtocolIntegrityError: The final request has ambiguous tool results.
         """
         restored_request = self._restored_call
-        message_context_position = len(self.run_context.messages)
+        original_messages = list(self.run_context.messages)
+        original_extra_parts = copy.deepcopy(self._assembled_extra_user_content_parts)
         execution = current_team_execution.get()
         if (
             not restored_request
@@ -1159,17 +1402,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             assert self._call_checkpoint is not None
             contexts = bind_checkpoint_messages(self._call_checkpoint["input_contexts"])
             self._restored_call = False
-        # Only the request view is repaired. Execution records and recovery
-        # evidence must not acquire synthetic results or lose orphan records.
-        if contexts and isinstance(contexts[0], dict):
-            messages = bind_checkpoint_messages(contexts)
-            fixed_messages = self.request_context_manager.truncator.fix_messages(
-                messages
-            )
-            if fixed_messages != messages:
-                contexts = [message.model_dump() for message in fixed_messages]
-        else:
-            contexts = self.request_context_manager.truncator.fix_messages(contexts)
         func_tool = self._func_tool_for_provider()
         payload = {
             "contexts": contexts,
@@ -1186,98 +1418,78 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if include_model:
             # For primary provider we keep explicit model selection if provided.
             payload["model"] = self.req.model
-        if not restored_request:
-            try:
-                await self._save_call_checkpoint("request", contexts=contexts)
-            except (Exception, asyncio.CancelledError):
-                # Failed admission/persistence must not leak an uncommitted delivery
-                # into normal error-history cleanup and then inject it again on retry.
-                if self._member_message_receipts:
-                    del self.run_context.messages[message_context_position:]
-                    self._member_message_receipts = []
-                raise
-        execution = current_team_execution.get()
-        if execution and execution.admit_work:
-            await execution.admit_work()
-        receipt = await self._begin_metered_call(
-            "model",
-            (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
-            name=self.provider.provider_config.get("id"),
-            contexts=contexts,
-            tools=func_tool,
+        invocation_id = (
+            (self._call_checkpoint or {}).get("invocation_id")
+            if restored_request
+            else uuid.uuid4().hex
         )
-        if receipt:
-            params = dict(self.req.llm_params or {})
-            params[
-                "max_completion_tokens"
-                if "max_completion_tokens" in params
-                else "max_tokens"
-            ] = receipt["max_output_tokens"]
-            payload["llm_params"] = params
+        receipt = None
         reported = False
+        request_committed = restored_request
         try:
-            # Admission can tighten the output limit. Check its final value,
-            # including native configuration, before delivering the request.
-            params = payload["llm_params"] or {}
-            extra_body = self.provider.provider_config.get("custom_extra_body", {})
-            if not isinstance(extra_body, dict):
-                extra_body = {}
-            output_token_budget = params.get("max_completion_tokens") or params.get(
-                "max_tokens"
+            execution = current_team_execution.get()
+            if execution and execution.admit_work:
+                await execution.admit_work()
+            prepared = await self._prepare_llm_request(
+                contexts=contexts if restored_request else None,
+                include_model=include_model,
+                check_output_limit=False,
             )
-            configured_output = extra_body.get(
-                "max_completion_tokens"
-            ) or extra_body.get("max_tokens")
-            if isinstance(configured_output, int) and configured_output > 0:
-                output_token_budget = (
-                    min(receipt["max_output_tokens"], configured_output)
-                    if receipt
-                    else configured_output
+            if prepared is None:
+                return
+            payload.update(prepared)
+            contexts = payload["contexts"]
+            func_tool = payload["func_tool"]
+            before_admission = {
+                "provider": self.provider,
+                "model": payload.get("model") or self.provider.get_model(),
+                "messages": copy.deepcopy(
+                    [
+                        message.model_dump(mode="json")
+                        if isinstance(message, Message)
+                        else message
+                        for message in contexts
+                    ]
+                ),
+                "tool_schema": copy.deepcopy(
+                    func_tool.openai_schema() if func_tool else []
+                ),
+            }
+            if not restored_request:
+                await self._save_call_checkpoint(
+                    "request",
+                    contexts=contexts,
+                    invocation_id=invocation_id,
+                    llm_params=payload["llm_params"],
                 )
-            if (
-                self.tool_schema_mode == "full"
-                and not restored_request
-                and self.request_context_manager_config.max_context_tokens > 0
-                and isinstance(output_token_budget, int)
-                and output_token_budget > 0
-            ):
-                usage_snapshot = self._context_usage_snapshot
-                if usage_snapshot and (
-                    usage_snapshot.provider is not self.provider
-                    or usage_snapshot.model
-                    != (self.req.model or self.provider.get_model())
-                ):
-                    usage_snapshot = None
-                checked = await self._await_or_stop(
-                    self.request_context_manager.process(
-                        contexts,
-                        func_tool=func_tool,
-                        usage_snapshot=usage_snapshot,
-                        output_token_budget=output_token_budget,
-                        check_compression_threshold=False,
-                    )
-                )
-                if checked is None:
-                    return
-                self._output_compression_report = (
-                    self.request_context_manager.last_compression
-                )
-                if checked != contexts:
-                    self.run_context.messages = checked
-                    contexts = self._sanitize_contexts_for_provider(checked)
-                    payload["contexts"] = contexts
-                    if (
-                        self._call_checkpoint
-                        and execution
-                        and execution.save_checkpoint
-                    ):
-                        self._call_checkpoint["messages"] = dump_call_messages(checked)
-                        self._call_checkpoint["input_contexts"] = dump_call_messages(
-                            contexts
-                        )
-                        await execution.save_checkpoint(
-                            copy.deepcopy(self._call_checkpoint)
-                        )
+                request_committed = True
+            receipt = await self._begin_metered_call(
+                "model",
+                invocation_id or uuid.uuid4().hex,
+                name=self.provider.provider_config.get("id"),
+                contexts=contexts,
+                tools=func_tool,
+            )
+            prepared = await self._prepare_llm_request(
+                contexts=contexts if restored_request else None,
+                include_model=include_model,
+                receipt=receipt,
+                previous_request=before_admission,
+            )
+            if prepared is None:
+                return
+            payload.update(prepared)
+            contexts = payload["contexts"]
+            func_tool = payload["func_tool"]
+            await self._save_call_checkpoint(
+                "request",
+                contexts=contexts,
+                invocation_id=invocation_id,
+                llm_params=payload["llm_params"],
+                update_request=True,
+            )
+            if self._is_stop_requested():
+                return
             record_session_request(
                 self.req.session_id or "",
                 model=payload.get("model") or self.provider.get_model(),
@@ -1330,6 +1542,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     reported = True
                     yield resp
         finally:
+            # Failed or cancelled preparation must not retain an uncommitted
+            # member delivery that remains available in the persistent queue.
+            if not request_committed and self._member_message_receipts:
+                self.run_context.messages = original_messages
+                self._assembled_extra_user_content_parts = original_extra_parts
+                self._member_message_receipts = []
             if not reported:
                 await self._report_metered_call(receipt)
 
@@ -1380,6 +1598,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     candidate_id,
                 )
             self.provider = candidate
+            if idx > 0:
+                # An explicit model belongs to the original provider. Subsequent
+                # steps on this fallback must also use its own default model.
+                self.req.model = None
             try:
                 retrying = AsyncRetrying(
                     retry=retry_if_exception_type(EmptyModelOutputError),
@@ -1767,54 +1989,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         # 开始处理，转换到运行状态
         self._transition_state(AgentState.RUNNING)
         llm_resp_result = None
-
-        if not self._restored_call:
-            # Process request-time context before sending it to the provider.
-            usage_snapshot = self._context_usage_snapshot
-            if usage_snapshot and (
-                usage_snapshot.provider is not self.provider
-                or usage_snapshot.model != (self.req.model or self.provider.get_model())
-            ):
-                usage_snapshot = None
-            self._simple_print_message_role("[BefCompact]", self.run_context.messages)
-            processed_messages = await self._await_or_stop(
-                self.request_context_manager.process(
-                    self.run_context.messages,
-                    usage_snapshot=usage_snapshot,
-                    # Same tool set the chat requests send, so the summary
-                    # request's payload prefix (tools + system + history) stays
-                    # byte-identical and hits the provider prefix cache. The
-                    # summary is a one-shot call: the schema is visible but
-                    # nothing executes the tools.
-                    func_tool=self._func_tool_for_provider(),
-                )
-            )
-            if processed_messages is None:
-                yield await self._finalize_aborted_step()
-                return
-            if (
-                processed_messages != self.run_context.messages
-                or self.request_context_manager.last_compression is not None
-            ):
-                self._context_usage_snapshot = None
-            self.run_context.messages = processed_messages
-            self._simple_print_message_role("[AftCompact]", self.run_context.messages)
-
-            # Announce a compression that just happened: webchat turns it into a
-            # transient notice. Emitted before the LLM request so the user learns
-            # why this turn's context (and possibly its answer) changed shape while
-            # still waiting for the reply.
-            compression_report = self.request_context_manager.last_compression
-            if compression_report is not None:
-                yield AgentResponse(
-                    type="context_compression",
-                    data=AgentResponseData(
-                        chain=MessageChain(
-                            type="context_compression",
-                            chain=[Json(data=compression_report)],
-                        )
-                    ),
-                )
 
         async for llm_response in self._iter_llm_responses_with_fallback():
             if self._output_compression_report is not None:

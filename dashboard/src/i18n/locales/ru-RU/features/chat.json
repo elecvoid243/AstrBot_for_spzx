@@ -862,6 +862,10 @@
       "expandAria": "Развернуть комментарии для {path}"
     },
     "fileBrowser": {
+      "host": {
+        "back": "Назад к предыдущей папке",
+        "returnToProject": "Вернуться в папку загруженного проекта"
+      },
       "viewMode": {
         "files": "Файлы",
         "diff": "Git Diff"

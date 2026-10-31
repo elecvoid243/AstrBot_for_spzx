@@ -1061,6 +1061,8 @@
       "host": {
         "browse": "浏览宿主目录或切换盘符",
         "up": "上一级目录",
+        "back": "后退到上次浏览的目录",
+        "returnToProject": "返回当前加载的项目目录",
         "entry": "文件与浏览器",
         "tab": "文件",
         "pathInputPlaceholder": "输入宿主绝对路径或相对当前目录的路径，Enter 确认",

@@ -1061,6 +1061,8 @@
       "host": {
         "browse": "Browse host folders or drives",
         "up": "Parent directory",
+        "back": "Back to the previous directory",
+        "returnToProject": "Return to the loaded project directory",
         "entry": "Files & Browser",
         "tab": "Files",
         "pathInputPlaceholder": "Enter a host absolute path or a path relative to this directory",

@@ -144,6 +144,41 @@ const previewState = computed(() =>
   props.hostReference ? props.hostState! : previewComposable.state.value,
 );
 
+const previousDirectories = ref<string[]>([]);
+let lastDirectory: string | null = null;
+let backTarget: string | null = null;
+const loadedProjectPath = computed(() =>
+  spcodeStatus.status.value.loaded ? spcodeStatus.status.value.directory : null,
+);
+watch(
+  [directoryState, () => props.hostState],
+  ([state]) => {
+    if (state.kind === "error" || props.hostState?.kind === "error")
+      backTarget = null;
+    if (
+      props.hostReference &&
+      props.hostState?.kind !== "directory" &&
+      props.hostState?.kind !== "file"
+    )
+      return;
+    if (state.kind !== "directory") return;
+    const path = state.snapshot.meta.path;
+    if (
+      projectRelativePathStrict(path, props.currentPath) !== "" ||
+      projectRelativePathStrict(path, lastDirectory) === ""
+    )
+      return;
+    // Record resolved directories only: host navigation can temporarily expose
+    // the target's parent while its metadata request is still loading.
+    if (projectRelativePathStrict(path, backTarget) === "")
+      previousDirectories.value.pop();
+    else if (lastDirectory) previousDirectories.value.push(lastDirectory);
+    lastDirectory = path;
+    backTarget = null;
+  },
+  { immediate: true },
+);
+
 // 2026-07-17 workspace file editor: the preview owns the edit state
 // and exposes confirmLeaveEditing(); every navigation entry point
 // below (tree click / breadcrumb / symlink target / search result /
@@ -214,6 +249,24 @@ async function onBreadcrumbNavigate(payload: {
 }): Promise<void> {
   if (!(await confirmLeaveEditing())) return;
   emit("navigate", payload);
+}
+
+/** Return to the previous directory without consuming history on cancellation. */
+async function navigateBack(): Promise<void> {
+  const path = previousDirectories.value.at(-1);
+  if (!path || !(await confirmLeaveEditing())) return;
+  backTarget = path;
+  searchOpen.value = false;
+  emit("navigate", { dirPath: path, previewPath: null });
+}
+
+/** Open the loaded project's directory through the existing navigation guard. */
+async function returnToProject(): Promise<void> {
+  const path = loadedProjectPath.value;
+  if (!path || !(await confirmLeaveEditing())) return;
+  backTarget = null;
+  searchOpen.value = false;
+  emit("navigate", { dirPath: path, previewPath: null });
 }
 
 async function onPreviewTargetNavigate(resolvedTarget: string): Promise<void> {
@@ -907,6 +960,24 @@ onBeforeUnmount(() => {
         <v-btn
           variant="text"
           size="small"
+          icon="mdi-arrow-left"
+          :disabled="previousDirectories.length === 0"
+          :title="tm('spcodeProjectLoad.fileBrowser.host.back')"
+          :aria-label="tm('spcodeProjectLoad.fileBrowser.host.back')"
+          @click="navigateBack"
+        />
+        <v-btn
+          variant="text"
+          size="small"
+          icon="mdi-folder-home-outline"
+          :disabled="!loadedProjectPath"
+          :title="tm('spcodeProjectLoad.fileBrowser.host.returnToProject')"
+          :aria-label="tm('spcodeProjectLoad.fileBrowser.host.returnToProject')"
+          @click="returnToProject"
+        />
+        <v-btn
+          variant="text"
+          size="small"
           icon="mdi-arrow-up"
           :disabled="!parentOf(currentPath)"
           :title="tm('spcodeProjectLoad.fileBrowser.host.up')"
@@ -961,7 +1032,9 @@ onBeforeUnmount(() => {
       />
       <template v-else>
         <div
-          v-if="!spcodeStatus.status.value.loaded && !hostReference && !previewPath"
+          v-if="
+            !spcodeStatus.status.value.loaded && !hostReference && !previewPath
+          "
           class="file-browser-empty"
         >
           <v-icon size="36" color="grey">mdi-folder-open-outline</v-icon>
@@ -1116,7 +1189,11 @@ onBeforeUnmount(() => {
             @retry="
               hostReference ? emit('retry-host') : previewComposable.refresh()
             "
-            @saved="hostReference ? emit('saved-host', $event) : previewComposable.refresh()"
+            @saved="
+              hostReference
+                ? emit('saved-host', $event)
+                : previewComposable.refresh()
+            "
             @renamed="onPreviewRenamed"
             @deleted="onPreviewDeleted"
             @back-to-current="onBackToCurrent"

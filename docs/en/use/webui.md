@@ -125,6 +125,8 @@ Without a project, open **Files & Browser** above the composer, choose **Files**
 
 Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing preview. Parent breadcrumbs and **Parent directory** can leave the project root. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
 
+To the right of the path, **Back to the previous directory** (left arrow) retraces directories visited in the current file browser, independently of **Parent directory**. Opening files within the same directory and failed directory loads do not add history; Back is disabled when history is empty. **Return to the loaded project directory** (folder with a house) opens the loaded project's root and is disabled without a project. Both actions check unsaved edits first; cancelling preserves the current file and back history.
+
 With a project loaded, **Workspace → Files** still returns to its file list. Manual host browsing and file references share one navigation lifecycle and remain independent of Agent project, active worktree, execution directory and permissions, including read-only mode. Project polling, worktree-list changes and project unload preserve an open external target. Git Diff/History, Documents and Terminal retain their project context; Web Preview and the Agent browser remain available.
 
 | Previous entry | Current entry |
@@ -133,7 +135,7 @@ With a project loaded, **Workspace → Files** still returns to its file list. M
 | Project-relative path input | File pane breadcrumb → host absolute path or path relative to the listed directory |
 | Files bounded by the project root | Parent breadcrumbs / Parent directory / Browse host folders or drives |
 
-![Actual host browsing on Windows in the isolated production ChatUI](./images/host-file-browser.png)
+![Back and return-to-project buttons in the file browser](./images/file-browser-navigation.png)
 
 ## Switch Git worktrees
 

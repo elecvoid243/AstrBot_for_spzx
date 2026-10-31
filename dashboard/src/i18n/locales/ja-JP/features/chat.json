@@ -1,4 +1,12 @@
 {
+  "spcodeProjectLoad": {
+    "fileBrowser": {
+      "host": {
+        "back": "前に開いたフォルダーに戻る",
+        "returnToProject": "読み込んだプロジェクトのフォルダーに戻る"
+      }
+    }
+  },
   "agentBrowser": {
     "stop": "実行を停止",
     "close": "ブラウザーを閉じる",

@@ -140,6 +140,7 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 | --- | --- |
 | Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
 | No separate temporary-chat entry | Added: message area → New side chat; independent context, destroyed when closed |
+| No workbench entry without a project | Agent browser above the composer; the Workspace entry remains for loaded projects |
 | Workspace → Files / Documents / Git Diff / History / Terminal | Existing tabs remain; Web Preview is added after Terminal in Project Workbench |
 
 > [!NOTE]
@@ -256,6 +257,26 @@ In the browser WebUI, open `⋮ → Update AstrBot` in the upper-right corner, e
 You can also use the `/dashboard_update` command to manually update the admin panel (admin command).
 
 Admin panel files are located in the data/dist directory. If you need to manually replace them, download `dist.zip` from https://github.com/AstrBotDevs/AstrBot/releases/ and extract it to the data directory.
+
+## Agent browser live observation
+
+Windows offline deployment requires the Browser Use `0.2.0` complete plugin ZIP, the AstrBot backend containing this feature, and its matching Dashboard build. The plugin ZIP does not upgrade the host or frontend. AstrBot's `4.28.1` version alone does not identify these changes: compare `astrbot_revision` and `dashboard_sha256` in the plugin's `runtime/manifest.json` with `dist/assets/browser-observer-build.json`. Stop AstrBot before installing each component and select the matching `dist` with `--webui-dir`. The packaging command below also emits a backend source ZIP and its SHA256 beside the Dashboard ZIP; the source ZIP requires an existing compatible AstrBot Python environment. Keep the existing data directory separate from the new code. The installer refuses to overwrite an existing plugin; persistent data stays under the separate `plugin_data` directory.
+
+After a production Dashboard build, maintainers can run `python scripts/package_browser_observer_dashboard.py --output <dashboard.zip>` to include version/revision metadata and a SHA256 sidecar. Run `python scripts/browser_observer_acceptance.py --plugin-zip <complete-plugin.zip> --dashboard-dir <dist> --evidence-dir <new-temporary-directory>` with AstrBot development dependencies and `aiohttp playwright psutil` to test final-ZIP installation, real login, the complete chat interface, a deterministic local model, real plugin management and Chromium. Local proxy isolation does not replace a physically offline target or real vLLM verification. For a missing entry, check matching builds and cached assets; for `runtime_unavailable`, inspect plugin startup logs and the private interpreter; for `busy`, close the browser in its owning chat; for 401/403, sign in and use a chat you own.
+
+With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Without a code project, click **Agent browser** above the composer to open observation directly. With a project loaded, use the existing **Workspace → Web Preview → Agent browser** entry. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
+
+Below the image, the view shows the current action and up to 32 recent results for navigation, clicking, input, scrolling and tab operations. Running/waiting, success, failure, timeout and cancellation have distinct states. Input summaries always hide the content. When actual execution supplies reliable coordinates, a brief ring marks the operation position at the viewport scale. Navigation (including reloading the same URL), tab changes, scrolling, the next action or a two-second expiry invalidate the marker. Without reliable positioning, only the action summary appears. When an action reports a new scroll position or viewport before its image arrives, the view clears the old pixels and waits for a matching frame before showing the marker. Cancellation does not undo page operations that have already happened.
+
+The previous iframe entry maps from **Web preview** to **Web preview → Web preview**; its bookmarks retain their existing behavior. Another chat cannot view or operate an occupied browser. Ask the owning chat to close all browser sessions before handing it to another chat. Hiding the sidebar, switching workbench tabs, or putting the Dashboard browser tab in the background stops its observation subscription while execution continues. Reopening obtains a fresh snapshot and stream. A temporary stream interruption reconnects automatically; **Refresh snapshot** resynchronizes immediately. Switching chats clears the previous image, actions and subscription before authorizing the new chat. After a page refresh, reopen the sidebar to resume observation.
+
+Unloading a code project keeps the active Agent browser view open. Git, files, documents, terminal and the original iframe preview retain their existing entries. The view distinguishes idle, another chat holding the browser, plugin disabled, disconnected and reconnecting states. Recovery obtains a consistent snapshot before action increments; an expired recovery window or changed runtime displays a resynchronization notice. Only the latest image is fetched. Resuming observation for the same chat does not restart the browser or clear its login state. Observation sends at most about four frames per second and keeps only the newest pending image; static pages may send no new frames. Actual rate and delay depend on the page and environment. The view queries the browser identity again when the plugin is re-enabled.
+
+The screenshot below shows the production workbench and live observation component without a project in the isolated local acceptance harness, with Chinese form text and a browser cookie marker. It is not a screenshot of a deployed AstrBot login session.
+
+**Stop execution** stops the current chat’s Agent run, waits for the in-flight browser action to finish or cancel, and rejects queued and subsequent browser actions. The browser remains visible for inspection. **Close browser** also closes its sessions and releases ownership; a new task starts with a fresh isolated profile. Completed page operations are not undone. Hiding the panel only stops observation. Disabling the plugin ends its owned browser, action, stream and MCP resources; retained requests cannot reactivate it. Re-enable the plugin to establish a new runtime generation without restarting AstrBot.
+
+![Agent browser component showing the controlled page](./images/agent-browser-snapshot.png)
 
 ## Customizing WebUI Port
 

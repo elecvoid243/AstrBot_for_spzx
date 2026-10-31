@@ -1,4 +1,54 @@
 {
+  "agentBrowser": {
+    "stop": "実行を停止",
+    "close": "ブラウザーを閉じる",
+    "stoppedHint": "実行を停止しました。新しいタスクを開始する前にブラウザーを閉じてください。完了済みのページ操作は元に戻りません。",
+    "controlFailed": "操作に失敗しました。状態を更新して再試行してください。",
+    "connectionStates": {
+      "stopped": "実行を停止しました",
+      "closed": "ブラウザーを閉じました",
+      "loading": "接続中…",
+      "snapshot": "スナップショット",
+      "live": "ライブ観測",
+      "disconnected": "観測が切断されました。自動的に再試行します。",
+      "reconnecting": "再接続中…",
+      "idle": "ブラウザーは待機中",
+      "busy": "別のチャットがブラウザーを使用中です。",
+      "disabled": "ブラウザープラグインは無効か未インストールです。",
+      "unavailable": "ブラウザー環境を利用できません。再試行します。",
+      "denied": "このチャットにアクセスできません。"
+    },
+    "resynchronized": "現在のブラウザー状態に再同期しました。",
+    "live": "Live",
+    "snapshot": "Snapshot",
+    "tab": "Tab",
+    "disconnected": "Observation disconnected. Refresh to reconnect.",
+    "title": "Agent browser",
+    "preview": "Web preview",
+    "refresh": "Refresh snapshot",
+    "expired": "Browser changed. Refresh to reconnect.",
+    "unavailable": "Browser unavailable.",
+    "loading": "Loading snapshot…",
+    "empty": "このチャットで Agent にページを開くよう依頼してください。観測は自動接続します。",
+    "recentActions": "最近の操作",
+    "target": "実際の操作位置",
+    "actionKinds": {
+      "navigate": "移動",
+      "click": "クリック",
+      "type": "入力（内容非表示）",
+      "scroll": "スクロール",
+      "tab": "タブ操作",
+      "close": "ブラウザーを閉じる",
+      "inspect": "ページを読み取る"
+    },
+    "actionStatuses": {
+      "running": "実行中 / 待機中",
+      "succeeded": "成功",
+      "failed": "失敗",
+      "timed_out": "タイムアウト",
+      "cancelled": "キャンセル済み"
+    }
+  },
   "title": "チャットしよう！",
   "subtitle": "AI アシスタントと会話",
   "settings": {

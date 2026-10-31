@@ -1214,6 +1214,7 @@
     <GitDiffSidebar
       v-model="gitDiffSidebarOpen"
       :is-dark="isDark"
+      :chat-id="currSessionId"
       @fullscreen-change="gitDiffFullscreen = $event"
     />
     <WorkspaceFilesPanel
@@ -5471,8 +5472,7 @@ function toggleGitDiffSidebar(): void {
     return;
   }
   // Mutual exclusion: close every other sidebar before opening the
-  // Git Diff sidebar. The watch in GitDiffSidebar will also auto-close
-  // the sidebar when the underlying spcode project is unloaded.
+  // workbench. Its Agent browser remains available without a code project.
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   reasoningPanelOpen.value = false;

@@ -23,8 +23,10 @@ withDefaults(
   defineProps<{
     /** Sidebar is open: tint the capsule instead of swapping the icon. */
     active?: boolean;
+    /** No code project is loaded; open the independent Agent browser. */
+    browserOnly?: boolean;
   }>(),
-  { active: false },
+  { active: false, browserOnly: false },
 );
 
 const emit = defineEmits<{
@@ -45,16 +47,36 @@ function toggle(): void {
         class="sp-ghost-btn"
         :class="{ 'sp-ghost-btn--active': active }"
         :aria-pressed="active"
-        :aria-label="tm('spcodeProjectLoad.diffSidebar.chipTooltip')"
+        :aria-label="
+          tm(
+            browserOnly
+              ? 'agentBrowser.title'
+              : 'spcodeProjectLoad.diffSidebar.chipTooltip',
+          )
+        "
         @click="toggle"
       >
-        <v-icon size="14">mdi-folder-open-outline</v-icon>
+        <v-icon size="14">{{
+          browserOnly ? "mdi-web" : "mdi-folder-open-outline"
+        }}</v-icon>
         <!-- Icon-only below md: the right cluster already carries the
              file-access capsule, and the tooltip keeps the meaning. -->
-        <span class="sp-ghost-btn__label">{{ tm("spcodeProjectLoad.diffSidebar.chip") }}</span>
+        <span class="sp-ghost-btn__label">{{
+          tm(
+            browserOnly
+              ? "agentBrowser.title"
+              : "spcodeProjectLoad.diffSidebar.chip",
+          )
+        }}</span>
       </button>
     </template>
-    <span>{{ tm("spcodeProjectLoad.diffSidebar.chipTooltip") }}</span>
+    <span>{{
+      tm(
+        browserOnly
+          ? "agentBrowser.title"
+          : "spcodeProjectLoad.diffSidebar.chipTooltip",
+      )
+    }}</span>
   </v-tooltip>
 </template>
 

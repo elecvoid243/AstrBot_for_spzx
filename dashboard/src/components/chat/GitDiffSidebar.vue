@@ -124,6 +124,7 @@ import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 import DocumentManager from "@/components/chat/message_list_comps/DocumentManager.vue";
 import TerminalView from "@/components/chat/TerminalView.vue";
 import WebBrowserView from "@/components/chat/WebBrowserView.vue";
+import AgentBrowserView from "@/components/chat/AgentBrowserView.vue";
 import BranchSwitchConfirmDialog from "@/components/chat/message_list_comps/BranchSwitchConfirmDialog.vue";
 import BranchDeleteConfirmDialog from "@/components/chat/message_list_comps/BranchDeleteConfirmDialog.vue";
 const { tm } = useModuleI18n("features/chat");
@@ -317,6 +318,7 @@ function validateCurrentPath(
 const props = defineProps<{
   modelValue: boolean;
   isDark?: boolean;
+  chatId?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
@@ -409,6 +411,10 @@ const viewMode = ref<
 // Web preview mounts lazily on first activation, then stays mounted under
 // v-show so switching to another tab and back does not reload the page.
 const browserMounted = ref(viewMode.value === "browser");
+const browserMode = ref<"preview" | "agent">(
+  safeGetItem("astrbot.agentBrowser.mode") === "agent" ? "agent" : "preview",
+);
+watch(browserMode, (mode) => safeSetItem("astrbot.agentBrowser.mode", mode));
 watch(viewMode, (mode) => {
   if (mode === "browser") browserMounted.value = true;
 });
@@ -750,6 +756,17 @@ const spcodeStatus = useSpcodeProjectStatus();
 // Session identity for every spcode call below: the sidebar acts on the
 // conversation it belongs to, not on whatever the shared singleton holds.
 const session = useSpcodeSession();
+
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open && !session.directory.value) {
+      viewMode.value = "browser";
+      browserMode.value = "agent";
+    }
+  },
+  { immediate: true },
+);
 
 // When the worktree list first loads, validate the persisted worktree
 // AND cross-validate the persisted currentPath against the new root.
@@ -2021,7 +2038,9 @@ const isProjectLoaded = computed(
 // Spec 2026-07-16: derived state for the GitRepoInitPrompt slot. All four
 // refs/booleans are colocated so the template-binding code in Task 5
 // stays compact and obvious.
-const isGitRepo = computed(() => gitRepoProbe.state.value.kind === "ok");
+const isGitRepo = computed(
+  () => isProjectLoaded.value && gitRepoProbe.state.value.kind === "ok",
+);
 const isRepoInitSubmitting = ref(false);
 const repoInitLastError = ref<{ reason: string; stderr?: string } | null>(null);
 const repoPromptDismissed = ref(false);
@@ -2627,7 +2646,8 @@ watch(
   (loaded) => {
     if (!loaded) {
       selectedWorktree.value = null;
-      emit("update:modelValue", false);
+      if (viewMode.value !== "browser" || browserMode.value !== "agent")
+        emit("update:modelValue", false);
     }
   },
 );
@@ -4846,7 +4866,9 @@ watch(
                  container instead of following the active tab. Tabs already
                  carry navigation semantics. -->
             <span class="git-diff-sidebar-title">
-              {{ tm("spcodeProjectLoad.diffSidebar.title") }}
+              {{
+                tm(session.directory.value ? "spcodeProjectLoad.diffSidebar.title" : "agentBrowser.title")
+              }}
             </span>
             <!-- UI #5: directory path is now shown as a compact breadcrumb-style
                strip directly under the title, with an inline folder icon.
@@ -4863,7 +4885,7 @@ watch(
                reads as a lightweight toolbar instead of three chunky
                "circle" buttons. Loading state is preserved (a small
                spinner replaces the icon while the request is in flight). -->
-            <v-tooltip location="bottom" :open-delay="200">
+            <v-tooltip v-if="isProjectLoaded" location="bottom" :open-delay="200">
               <template #activator="{ props: tipProps }">
                 <v-btn
                   v-bind="tipProps"
@@ -4919,7 +4941,7 @@ watch(
            The strip is muted (low-contrast) so it doesn't compete with
            the title above or the diff content below. -->
         <div
-          v-if="currentRoot"
+          v-if="isProjectLoaded && currentRoot"
           class="git-diff-sidebar-path-strip"
           :title="currentRoot"
         >
@@ -4964,91 +4986,93 @@ watch(
            a 31st i18n key — the visible button text already conveys
            the purpose for sighted users. -->
         <div
-          v-if="isGitRepo || showNotGitRepoChip"
+          v-if="isGitRepo || showNotGitRepoChip || chatId"
           class="git-diff-sidebar-view-tabs"
           role="tablist"
           aria-label="Switch view"
         >
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'files'"
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'files' },
-            ]"
-            @click="viewMode = 'files'"
-          >
-            <v-icon size="14">mdi-folder-outline</v-icon>
-            <span>{{
-              tm("spcodeProjectLoad.fileBrowser.viewMode.files")
-            }}</span>
-          </button>
-          <!-- 2026-07-11 document-manager:Documents 文档管理 sub-tab。 -->
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'docs'"
-            :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.docs')"
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'docs' },
-            ]"
-            @click="viewMode = 'docs'"
-          >
-            <v-icon size="14">mdi-file-document-multiple-outline</v-icon>
-            <span>{{ tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs") }}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'diff'"
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'diff' },
-            ]"
-            @click="viewMode = 'diff'"
-          >
-            <v-icon size="14">mdi-source-pull</v-icon>
-            <span>{{ tm("spcodeProjectLoad.fileBrowser.viewMode.diff") }}</span>
-          </button>
-          <!-- Spec 2026-06-24 §2 决策 #10:History 是第 3 个 viewMode。 -->
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'history'"
-            :aria-label="
-              tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.tabAria')
-            "
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'history' },
-            ]"
-            @click="viewMode = 'history'"
-          >
-            <v-icon size="14">mdi-history</v-icon>
-            <span>{{
-              tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.tab")
-            }}</span>
-          </button>
-          <!-- 2026-09-01 terminal:终端子页面 tab。 -->
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'terminal'"
-            :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.terminal')"
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'terminal' },
-            ]"
-            @click="viewMode = 'terminal'"
-          >
-            <v-icon size="14">mdi-console</v-icon>
-            <span>{{
-              tm("spcodeProjectLoad.gitDiffSidebar.tabs.terminal")
-            }}</span>
-          </button>
-          <!-- 2026-10-22 web-preview: the sixth tab embeds a local dev server. -->
+          <template v-if="isGitRepo || showNotGitRepoChip">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'files'"
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'files' },
+              ]"
+              @click="viewMode = 'files'"
+            >
+              <v-icon size="14">mdi-folder-outline</v-icon>
+              <span>{{
+                tm("spcodeProjectLoad.fileBrowser.viewMode.files")
+              }}</span>
+            </button>
+            <!-- 2026-07-11 document-manager:Documents 文档管理 sub-tab。 -->
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'docs'"
+              :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.docs')"
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'docs' },
+              ]"
+              @click="viewMode = 'docs'"
+            >
+              <v-icon size="14">mdi-file-document-multiple-outline</v-icon>
+              <span>{{ tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs") }}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'diff'"
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'diff' },
+              ]"
+              @click="viewMode = 'diff'"
+            >
+              <v-icon size="14">mdi-source-pull</v-icon>
+              <span>{{ tm("spcodeProjectLoad.fileBrowser.viewMode.diff") }}</span>
+            </button>
+            <!-- Spec 2026-06-24 §2 决策 #10:History 是第 3 个 viewMode。 -->
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'history'"
+              :aria-label="
+                tm('spcodeProjectLoad.diffSidebar.gitWorkflow.history.tabAria')
+              "
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'history' },
+              ]"
+              @click="viewMode = 'history'"
+            >
+              <v-icon size="14">mdi-history</v-icon>
+              <span>{{
+                tm("spcodeProjectLoad.diffSidebar.gitWorkflow.history.tab")
+              }}</span>
+            </button>
+            <!-- 2026-09-01 terminal:终端子页面 tab。 -->
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'terminal'"
+              :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.terminal')"
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'terminal' },
+              ]"
+              @click="viewMode = 'terminal'"
+            >
+              <v-icon size="14">mdi-console</v-icon>
+              <span>{{
+                tm("spcodeProjectLoad.gitDiffSidebar.tabs.terminal")
+              }}</span>
+            </button>
+          </template>
+          <!-- The browser entry also works without a code project. -->
           <button
             type="button"
             role="tab"
@@ -5710,6 +5734,7 @@ watch(
              outside the per-view templates so it stays visible in every
              view mode while a conflict operation is in progress. -->
         <GitConflictPanel
+          v-if="isProjectLoaded"
           :conflict="gitConflict"
           @resolved="onConflictResolved"
           @completed="onConflictCompleted"
@@ -5799,7 +5824,8 @@ watch(
         <div
           ref="sidebarBodyRef"
           class="git-diff-sidebar-body"
-          v-show="!conflictBodyHidden"
+          :class="{ 'git-diff-sidebar-body--agent': viewMode === 'browser' && browserMode === 'agent' }"
+          v-show="!isProjectLoaded || !conflictBodyHidden"
         >
           <!-- 2026-07-18 workspace-search-parity: the files-view search
              toolbar moved INTO FileBrowserView (mirroring
@@ -5933,10 +5959,35 @@ watch(
           />
           <!-- 2026-10-22 web-preview: mount the browser body on first activation;
               v-show keeps it alive so switching tabs does not reload the page. -->
+          <div v-if="viewMode === 'browser'" class="d-flex ga-2 pa-2">
+            <v-btn
+              variant="text"
+              size="small"
+              :active="browserMode === 'preview'"
+              @click="browserMode = 'preview'"
+            >
+              {{ tm("agentBrowser.preview") }}
+            </v-btn>
+            <v-btn
+              variant="text"
+              size="small"
+              :active="browserMode === 'agent'"
+              @click="browserMode = 'agent'"
+            >
+              {{ tm("agentBrowser.title") }}
+            </v-btn>
+          </div>
           <WebBrowserView
             v-if="browserMounted"
-            v-show="viewMode === 'browser'"
+            v-show="viewMode === 'browser' && browserMode === 'preview'"
             :project-root="projectRoot"
+          />
+          <AgentBrowserView
+            v-if="browserMounted && browserMode === 'agent'"
+            :key="chatId ?? undefined"
+            v-show="viewMode === 'browser'"
+            :chat-id="chatId"
+            :visible="modelValue && viewMode === 'browser'"
           />
         </div>
 
@@ -7614,6 +7665,12 @@ watch(
   min-height: 0;
   overflow-y: auto;
   padding: 0 14px 12px;
+}
+
+.git-diff-sidebar-body--agent {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* ── Snackbar stderr block (spec §6.8) ─────────────────────────── */

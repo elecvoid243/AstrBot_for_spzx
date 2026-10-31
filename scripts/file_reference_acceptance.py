@@ -458,6 +458,119 @@ async def main() -> None:
                     checks.append(
                         "no loaded project; Chinese space encoded Windows path; whole/single/closed range current source preview"
                     )
+                    for label, first_line, last_line in [
+                        ("F01 single", 40, 40),
+                        ("F01 range", 55, 58),
+                    ]:
+                        async with client.post(
+                            origin + "/api/plugin/off",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200, await response.text()
+                        await click(label)
+                        preview = page.locator(".file-browser-pane-right")
+                        await preview.get_by_text(
+                            "文件预览需要 spcode。", exact=False
+                        ).wait_for()
+                        if first_line == 40:
+                            await page.get_by_role(
+                                "button", name="浏览宿主目录或切换盘符", exact=True
+                            ).click()
+                            await picker.get_by_text(
+                                "请安装或启用 spcode 插件", exact=False
+                            ).wait_for()
+                            assert "[MISSING:" not in await picker.inner_text()
+                            await page.screenshot(
+                                path=str(
+                                    evidence / "disabled-plugin-folder-picker.png"
+                                ),
+                                animations="disabled",
+                            )
+                            await picker.get_by_role(
+                                "button", name="取消", exact=True
+                            ).click()
+                            checks.append(
+                                "F02 correction: actually disabled spcode folder picker displays real install/enable guidance without a missing translation key"
+                            )
+                        async with client.post(
+                            origin + "/api/plugin/on",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200, await response.text()
+                        if first_line == 40:
+                            # Supplementary transport fault: match the host's real HTTP 200 missing-route envelope.
+                            await page.route(
+                                "**/plugins/extensions/spcode/file-browser*",
+                                lambda route: route.fulfill(
+                                    status=200,
+                                    json={
+                                        "status": "error",
+                                        "message": "未找到该路由",
+                                        "data": {},
+                                    },
+                                ),
+                            )
+                            before_requests = len(file_requests)
+                            await page.get_by_role(
+                                "button", name="浏览宿主目录或切换盘符", exact=True
+                            ).click()
+                            await picker.get_by_text(
+                                "请安装或启用 spcode 插件", exact=False
+                            ).wait_for()
+                            assert "[MISSING:" not in await picker.inner_text()
+                            await page.wait_for_timeout(200)
+                            assert len(file_requests) - before_requests == 1, (
+                                file_requests[before_requests:]
+                            )
+                            await page.screenshot(
+                                path=str(evidence / "missing-route-folder-picker.png"),
+                                animations="disabled",
+                            )
+                            await picker.get_by_role(
+                                "button", name="取消", exact=True
+                            ).click()
+                            await page.unroute(
+                                "**/plugins/extensions/spcode/file-browser*"
+                            )
+                            checks.append(
+                                "F02 correction: HTTP 200 status:error/data:{} transport injection shows plugin guidance and makes exactly one folder request, without parent fallback"
+                            )
+                        await preview.get_by_role(
+                            "button", name="重试", exact=True
+                        ).click()
+                        await (
+                            preview.locator(".code-content")
+                            .get_by_text("F01 source line 80", exact=True)
+                            .wait_for()
+                        )
+                        await page.wait_for_function(
+                            "count => document.querySelectorAll('.line-referenced').length === count",
+                            arg=last_line - first_line + 1,
+                        )
+                        assert (
+                            f"line {first_line}"
+                            in await page.locator(".line-referenced").first.inner_text()
+                        )
+                        assert (
+                            f"line {last_line}"
+                            in await page.locator(".line-referenced").last.inner_text()
+                        )
+                        await page.wait_for_function("""() => {
+                            const view = document.querySelector('.code-view')?.getBoundingClientRect();
+                            const line = document.querySelector('.line-referenced')?.getBoundingClientRect();
+                            return view && line && line.top >= view.top && line.bottom <= Math.min(view.bottom, window.innerHeight);
+                        }""")
+                        await page.screenshot(
+                            path=str(
+                                evidence
+                                / f"citation-retry-{first_line}-{last_line}.png"
+                            )
+                        )
+                        checks.append(
+                            f"F02 correction: actual spcode disable/enable followed by existing Retry preserves current text and visible source lines {first_line}-{last_line}"
+                        )
                     await click("F01 invalid")
                     await page.get_by_text(
                         "引用的源文本行范围超出当前文件。", exact=True

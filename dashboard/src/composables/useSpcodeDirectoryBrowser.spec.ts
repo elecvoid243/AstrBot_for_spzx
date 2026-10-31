@@ -259,3 +259,32 @@ describe("host picker lifecycle", () => {
     expect(browser.loading.value).toBe(false);
   });
 });
+
+describe("host non-directory fallback", () => {
+  it("still falls back to the parent of a legitimate file response", async () => {
+    getMock.mockImplementation(
+      async (_route: string, config: { params: { path: string } }) =>
+        config.params.path.endsWith(".txt")
+          ? {
+              data: {
+                status: "ok",
+                data: {
+                  type: "file",
+                  path: config.params.path,
+                  name: "file.txt",
+                  content: "text",
+                },
+              },
+            }
+          : dirResponse(config.params.path, []),
+    );
+    const browser = useSpcodeDirectoryBrowser(true);
+    await browser.list("C:/fixture/file.txt");
+    expect(browser.currentPath.value).toBe("C:/fixture");
+    expect(browser.error.value).toBeNull();
+    expect(getMock.mock.calls.map((call) => call[1].params)).toEqual([
+      { path: "C:/fixture/file.txt", scope: "host" },
+      { path: "C:/fixture", scope: "host" },
+    ]);
+  });
+});

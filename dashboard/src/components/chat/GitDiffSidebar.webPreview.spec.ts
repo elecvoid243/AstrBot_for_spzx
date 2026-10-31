@@ -421,3 +421,94 @@ describe("GitDiffSidebar web preview tab", () => {
     },
   );
 });
+
+describe("host citation retry", () => {
+  it.each([
+    [40, 40],
+    [55, 58],
+  ])(
+    "keeps source lines %i-%i when Retry recovers a failed read",
+    async (startLine, endLine) => {
+      let available = false;
+      const path = "G:/outside/source.txt";
+      getMock.mockImplementation(
+        async (route: string, config?: { params?: { path?: string } }) => {
+          if (route !== "spcode/file-browser") return okEnvelope({});
+          if (config?.params?.path !== path)
+            return okEnvelope({
+              type: "directory",
+              path: config?.params?.path,
+              entries: [],
+            });
+          return available
+            ? okEnvelope({
+                type: "file",
+                path,
+                name: "source.txt",
+                is_binary: false,
+                content: Array.from(
+                  { length: 80 },
+                  (_, index) => `source line ${index + 1}`,
+                ).join("\n"),
+              })
+            : {
+                data: {
+                  status: "error",
+                  message: "spcode is disabled",
+                  data: null,
+                },
+              };
+        },
+      );
+      const wrapper = mount(GitDiffSidebar, {
+        props: {
+          modelValue: true,
+          fileReference: { path, startLine, endLine, requestId: 1 },
+        },
+        global: {
+          stubs: {
+            ...STUBS,
+            FileBrowserView: false,
+            FileBrowserFilePreview: false,
+            DocumentHistoryPanel: true,
+            CodeCheckFormatBar: true,
+            RecentFilesBlock: true,
+            "v-btn": { template: "<button><slot /></button>" },
+          },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(wrapper.get(".preview-error-detail").text()).toContain(
+          "请安装或启用 spcode",
+        ),
+      );
+      available = true;
+      await wrapper
+        .get(".file-browser-pane-right .preview-center button")
+        .trigger("click");
+      await vi.waitFor(() =>
+        expect(wrapper.findAll(".line-referenced")).toHaveLength(
+          endLine - startLine + 1,
+        ),
+      );
+      expect(wrapper.get(".code-content").text()).toContain("source line 80");
+      expect(wrapper.findAll(".line-referenced")[0].text()).toContain(
+        `source line ${startLine}`,
+      );
+      expect(
+        wrapper
+          .findComponent({ name: "FileBrowserView" })
+          .props("hostReference"),
+      ).toMatchObject({ path, startLine, endLine });
+      const files = wrapper.findComponent({ name: "FileBrowserView" });
+      files.vm.$emit("open-path", path);
+      await flushPromises();
+      expect(files.props("hostReference")).toMatchObject({
+        path,
+        startLine: null,
+        endLine: null,
+      });
+      wrapper.unmount();
+    },
+  );
+});

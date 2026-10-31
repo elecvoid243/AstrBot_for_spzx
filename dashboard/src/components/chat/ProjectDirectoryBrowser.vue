@@ -104,7 +104,7 @@ function onConfirm(): void {
 const errorText = computed<string>(() => {
   switch (browser.error.value) {
     case "spcode_unavailable":
-      return tm("spcodeProjectLoad.fileBrowser.reference.unavailable");
+      return tm("spcodeProjectLoad.fileBrowser.reference.pluginUnavailable");
     case "path_not_found":
       return tm("spcodeProjectLoad.directoryBrowser.errorPathNotFound");
     case "permission_denied":

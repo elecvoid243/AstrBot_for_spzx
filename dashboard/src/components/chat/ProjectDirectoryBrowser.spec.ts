@@ -11,10 +11,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getMock = vi.fn();
 vi.mock("@/api/v1", () => ({
-  pluginExtensionApi: { get: (...args: unknown[]) => getMock(...args), post: vi.fn() },
+  pluginExtensionApi: {
+    get: (...args: unknown[]) => getMock(...args),
+    post: vi.fn(),
+  },
 }));
 
 import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
+import { initI18n } from "@/i18n/composables";
 
 const stubs = {
   "v-dialog": defineComponent({
@@ -48,7 +52,14 @@ const stubs = {
 };
 
 function dirEntry(name: string, path: string): Record<string, unknown> {
-  return { path, name, type: "directory", size: null, mtime: 0, is_symlink: false };
+  return {
+    path,
+    name,
+    type: "directory",
+    size: null,
+    mtime: 0,
+    is_symlink: false,
+  };
 }
 function fileEntry(name: string, path: string): Record<string, unknown> {
   return { path, name, type: "file", size: 3, mtime: 0, is_symlink: false };
@@ -73,7 +84,13 @@ function mockDirListing(entries: Record<string, unknown>[]) {
       }
       // Nested listing (double-click target etc.)
       return Promise.resolve({
-        data: { data: { type: "directory", path, entries: [dirEntry("leaf", `${path}/leaf`)] } },
+        data: {
+          data: {
+            type: "directory",
+            path,
+            entries: [dirEntry("leaf", `${path}/leaf`)],
+          },
+        },
       });
     },
   );
@@ -91,8 +108,9 @@ function mountBrowser(): VueWrapper {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   getMock.mockReset();
+  await initI18n("zh-CN");
 });
 
 describe("ProjectDirectoryBrowser", () => {
@@ -176,13 +194,21 @@ describe("ProjectDirectoryBrowser", () => {
         if (path === "/home/user") {
           return Promise.resolve({
             data: {
-              data: { type: "directory", path, entries: [dirEntry("sub", "/home/user/sub")] },
+              data: {
+                type: "directory",
+                path,
+                entries: [dirEntry("sub", "/home/user/sub")],
+              },
             },
           });
         }
         return Promise.resolve({
           data: {
-            data: { type: "directory", path, entries: [dirEntry("leaf", `${path}/leaf`)] },
+            data: {
+              type: "directory",
+              path,
+              entries: [dirEntry("leaf", `${path}/leaf`)],
+            },
           },
         });
       },
@@ -207,7 +233,9 @@ describe("ProjectDirectoryBrowser", () => {
         }
         const path = config?.params?.path ?? "";
         return Promise.resolve({
-          data: { data: { type: "directory", path, entries: [dirEntry("a", "/a")] } },
+          data: {
+            data: { type: "directory", path, entries: [dirEntry("a", "/a")] },
+          },
         });
       },
     );
@@ -230,7 +258,13 @@ describe("ProjectDirectoryBrowser", () => {
         }
         const path = config?.params?.path ?? "";
         return Promise.resolve({
-          data: { data: { type: "directory", path, entries: [dirEntry("a", "C:\\a")] } },
+          data: {
+            data: {
+              type: "directory",
+              path,
+              entries: [dirEntry("a", "C:\\a")],
+            },
+          },
         });
       },
     );
@@ -244,7 +278,9 @@ describe("ProjectDirectoryBrowser", () => {
     // This-PC view: drive list rendered, up disabled.
     expect(wrapper.text()).toContain("此电脑");
     expect(wrapper.text()).toContain("D:\\");
-    expect(wrapper.find('[data-testid="dir-up"]').attributes("disabled")).toBeDefined();
+    expect(
+      wrapper.find('[data-testid="dir-up"]').attributes("disabled"),
+    ).toBeDefined();
   });
 
   it("renders the drive list and enters a drive on double-click", async () => {
@@ -260,7 +296,13 @@ describe("ProjectDirectoryBrowser", () => {
         }
         const path = config?.params?.path ?? "";
         return Promise.resolve({
-          data: { data: { type: "directory", path, entries: [dirEntry("proj", `${path}proj`)] } },
+          data: {
+            data: {
+              type: "directory",
+              path,
+              entries: [dirEntry("proj", `${path}proj`)],
+            },
+          },
         });
       },
     );
@@ -366,7 +408,9 @@ describe("ProjectDirectoryBrowser", () => {
     await flush();
 
     await wrapper.get('[data-testid="dir-path-input"]').setValue("D:\\repo");
-    await wrapper.get('[data-testid="dir-path-input"]').trigger("keydown.enter");
+    await wrapper
+      .get('[data-testid="dir-path-input"]')
+      .trigger("keydown.enter");
     await flush();
 
     expect(getMock).toHaveBeenCalledWith("spcode/file-browser", {
@@ -390,4 +434,49 @@ describe("ProjectDirectoryBrowser", () => {
       params: { path: "repo/foo" },
     });
   });
+});
+
+describe("host directory service feedback", () => {
+  it.each(["zh-CN", "en-US"] as const)(
+    "renders enable-plugin guidance in %s for real error envelopes without probing parents",
+    async (locale) => {
+      await initI18n(locale);
+      const expected =
+        locale === "zh-CN"
+          ? "文件预览需要 spcode。请安装或启用 spcode 插件并检查服务后重试。"
+          : "File preview requires spcode. Install or enable the spcode plugin and check its service, then retry.";
+      for (const data of [{}, null]) {
+        getMock.mockReset();
+        getMock.mockImplementation(async (route: string) =>
+          route === "spcode/home-directory"
+            ? {
+                data: {
+                  status: "ok",
+                  data: { home: "C:/fixture/host-folder" },
+                },
+              }
+            : { data: { status: "error", message: "未找到该路由", data } },
+        );
+        const wrapper = mount(ProjectDirectoryBrowser, {
+          props: { modelValue: true, hostBrowsing: true },
+          global: { stubs },
+        });
+        await flush();
+        expect(wrapper.get('[data-testid="alert"]').text()).toBe(expected);
+        expect(wrapper.text()).not.toContain("[MISSING:");
+        expect(wrapper.emitted("select")).toBeUndefined();
+        expect(
+          getMock.mock.calls.filter(
+            ([route]) => route === "spcode/file-browser",
+          ),
+        ).toEqual([
+          [
+            "spcode/file-browser",
+            { params: { path: "C:/fixture/host-folder", scope: "host" } },
+          ],
+        ]);
+        wrapper.unmount();
+      }
+    },
+  );
 });

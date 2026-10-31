@@ -5964,6 +5964,7 @@ watch(
             :recent-entries="recentFiles.entries.value"
             @navigate="onFileBrowserNavigate"
             @open-path="openHostPath"
+            @retry-host="hostFile.refresh()"
             @browse-host="hostDirectoryPickerOpen = true"
             @open-file="onFileOpen"
             @recent-select="onRecentSelect"

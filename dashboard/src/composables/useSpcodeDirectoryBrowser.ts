@@ -143,10 +143,14 @@ export function useSpcodeDirectoryBrowser(hostRead: MaybeRef<boolean> = false) {
         { params: { path, ...(toValue(hostRead) ? { scope: "host" } : {}) } },
       );
       if (request !== generation) return;
-      const data = (
-        resp.data as { data?: SpcodeFileBrowserRawResponse } | undefined
-      )?.data;
-      if (!data) {
+      const envelope = resp.data as
+        | {
+            status?: string;
+            data?: SpcodeFileBrowserRawResponse;
+          }
+        | undefined;
+      const data = envelope?.data;
+      if (!data || (toValue(hostRead) && envelope?.status === "error")) {
         error.value = toValue(hostRead)
           ? "spcode_unavailable"
           : "path_not_found";

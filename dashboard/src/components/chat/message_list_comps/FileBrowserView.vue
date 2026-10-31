@@ -96,6 +96,7 @@ const props = defineProps<{
  */
 const emit = defineEmits<{
   (e: "open-path", path: string): void;
+  (e: "retry-host"): void;
   (e: "browse-host"): void;
   (
     e: "navigate",
@@ -1096,9 +1097,7 @@ onBeforeUnmount(() => {
             :worktree="props.worktree ?? null"
             @navigate-target="onPreviewTargetNavigate"
             @retry="
-              hostReference
-                ? emit('open-path', hostReference.path)
-                : previewComposable.refresh()
+              hostReference ? emit('retry-host') : previewComposable.refresh()
             "
             @saved="() => previewComposable.refresh()"
             @renamed="onPreviewRenamed"

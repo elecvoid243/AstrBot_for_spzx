@@ -611,21 +611,14 @@ class TestContextManager:
         assert len(result) <= len(messages)
 
     @pytest.mark.asyncio
-    async def test_trusted_usage_triggers_compression_before_provider_call(self):
+    async def test_unbound_usage_scalar_does_not_replace_current_input(self):
+        """A legacy usage scalar cannot establish a request counting baseline."""
         config = ContextConfig(max_context_tokens=100, truncate_turns=1)
         manager = ContextManager(config)
         messages = [self.create_message("user", "short")]
-        compressed = [self.create_message("user", "compressed")]
-        mock_compressor = AsyncMock(return_value=compressed)
-        mock_compressor.should_compress = MagicMock(side_effect=[True, False])
-        manager.compressor = mock_compressor
-
         result = await manager.process(messages, trusted_token_usage=83)
-
-        first_check = mock_compressor.should_compress.call_args_list[0]
-        assert first_check.args == (messages, 83, 100)
-        mock_compressor.assert_awaited_once_with(messages, func_tool=None)
-        assert result == compressed
+        assert result == messages
+        assert manager.last_compression is None
 
     @pytest.mark.asyncio
     async def test_token_compression_with_zero_max_tokens(self):
@@ -1544,6 +1537,7 @@ async def test_context_manager_threads_func_tool_into_compression():
     mock_compressor.should_compress = MagicMock(side_effect=[True, False])
     manager.compressor = mock_compressor
     toolset = MagicMock(name="chat_toolset")
+    toolset.openai_schema.return_value = []
 
     await manager.process(messages, trusted_token_usage=95, func_tool=toolset)
 

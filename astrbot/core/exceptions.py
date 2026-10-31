@@ -17,6 +17,10 @@ class ToolProtocolIntegrityError(AstrBotError):
     """Raised when tool calls and results cannot be associated unambiguously."""
 
 
+class ContextCapacityError(AstrBotError):
+    """Raised when the existing compression strategies cannot fit a request."""
+
+
 class KnowledgeBaseUploadError(AstrBotError):
     """Raised when knowledge base upload fails with a user-facing message."""
 

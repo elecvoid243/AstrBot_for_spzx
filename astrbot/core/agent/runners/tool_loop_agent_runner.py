@@ -53,7 +53,11 @@ from astrbot.core.agent_team_execution import (
     current_team_execution,
     model_delivery,
 )
-from astrbot.core.exceptions import EmptyModelOutputError, ToolProtocolIntegrityError
+from astrbot.core.exceptions import (
+    ContextCapacityError,
+    EmptyModelOutputError,
+    ToolProtocolIntegrityError,
+)
 from astrbot.core.message.components import Json
 from astrbot.core.message.message_event_result import (
     MessageChain,
@@ -78,7 +82,7 @@ from astrbot.core.utils.prefix_diagnostics import record_session_request
 
 from ..context.compressor import ContextCompressor
 from ..context.config import ContextConfig
-from ..context.manager import ContextManager
+from ..context.manager import ContextManager, ContextUsageSnapshot
 from ..context.token_counter import EstimateTokenCounter, TokenCounter
 from ..hooks import BaseAgentRunHooks
 from ..message import (
@@ -400,6 +404,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         )
 
         self.provider = provider
+        self._context_usage_snapshot: ContextUsageSnapshot | None = None
+        self._pending_request_usage: ContextUsageSnapshot | None = None
+        self._output_compression_report: dict | None = None
         self.fallback_providers: list[Provider] = []
         seen_provider_ids: set[str] = {str(provider.provider_config.get("id", ""))}
         for fallback_provider in fallback_providers or []:
@@ -1164,20 +1171,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         else:
             contexts = self.request_context_manager.truncator.fix_messages(contexts)
         func_tool = self._func_tool_for_provider()
-        # Fingerprint the payload-stage request so same-prefix flows (e.g. the
-        # compact plugin's summary request) can diff against what the chat
-        # requests actually sent when a provider prefix-cache miss shows up.
-        record_session_request(
-            self.req.session_id or "",
-            model=self.req.model,
-            func_tool=func_tool,
-            messages=contexts,
-            is_subagent=bool(
-                (getattr(self.run_context.context, "extra", None) or {}).get(
-                    "is_subagent"
-                )
-            ),
-        )
         payload = {
             "contexts": contexts,
             "func_tool": func_tool,
@@ -1223,6 +1216,95 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             payload["llm_params"] = params
         reported = False
         try:
+            # Admission can tighten the output limit. Check its final value,
+            # including native configuration, before delivering the request.
+            params = payload["llm_params"] or {}
+            extra_body = self.provider.provider_config.get("custom_extra_body", {})
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            output_token_budget = params.get("max_completion_tokens") or params.get(
+                "max_tokens"
+            )
+            configured_output = extra_body.get(
+                "max_completion_tokens"
+            ) or extra_body.get("max_tokens")
+            if isinstance(configured_output, int) and configured_output > 0:
+                output_token_budget = (
+                    min(receipt["max_output_tokens"], configured_output)
+                    if receipt
+                    else configured_output
+                )
+            if (
+                self.tool_schema_mode == "full"
+                and not restored_request
+                and self.request_context_manager_config.max_context_tokens > 0
+                and isinstance(output_token_budget, int)
+                and output_token_budget > 0
+            ):
+                usage_snapshot = self._context_usage_snapshot
+                if usage_snapshot and (
+                    usage_snapshot.provider is not self.provider
+                    or usage_snapshot.model
+                    != (self.req.model or self.provider.get_model())
+                ):
+                    usage_snapshot = None
+                checked = await self._await_or_stop(
+                    self.request_context_manager.process(
+                        contexts,
+                        func_tool=func_tool,
+                        usage_snapshot=usage_snapshot,
+                        output_token_budget=output_token_budget,
+                        check_compression_threshold=False,
+                    )
+                )
+                if checked is None:
+                    return
+                self._output_compression_report = (
+                    self.request_context_manager.last_compression
+                )
+                if checked != contexts:
+                    self.run_context.messages = checked
+                    contexts = self._sanitize_contexts_for_provider(checked)
+                    payload["contexts"] = contexts
+                    if (
+                        self._call_checkpoint
+                        and execution
+                        and execution.save_checkpoint
+                    ):
+                        self._call_checkpoint["messages"] = dump_call_messages(checked)
+                        self._call_checkpoint["input_contexts"] = dump_call_messages(
+                            contexts
+                        )
+                        await execution.save_checkpoint(
+                            copy.deepcopy(self._call_checkpoint)
+                        )
+            record_session_request(
+                self.req.session_id or "",
+                model=payload.get("model") or self.provider.get_model(),
+                func_tool=func_tool,
+                messages=contexts,
+                is_subagent=bool(
+                    (getattr(self.run_context.context, "extra", None) or {}).get(
+                        "is_subagent"
+                    )
+                ),
+            )
+            self._pending_request_usage = ContextUsageSnapshot(
+                provider=self.provider,
+                model=payload.get("model") or self.provider.get_model(),
+                messages=copy.deepcopy(
+                    [
+                        message.model_dump(mode="json")
+                        if isinstance(message, Message)
+                        else message
+                        for message in contexts
+                    ]
+                ),
+                tool_schema=copy.deepcopy(
+                    func_tool.openai_schema() if func_tool else []
+                ),
+            )
+            self._context_usage_snapshot = None
             if self.streaming:
                 stream = self.provider.text_chat_stream(**payload)
                 try:
@@ -1360,7 +1442,12 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         return
             except Exception as exc:  # noqa: BLE001
                 if isinstance(
-                    exc, (ProcessPersistenceError, ToolProtocolIntegrityError)
+                    exc,
+                    (
+                        ProcessPersistenceError,
+                        ToolProtocolIntegrityError,
+                        ContextCapacityError,
+                    ),
                 ):
                     raise
                 last_exception = exc
@@ -1683,14 +1770,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         if not self._restored_call:
             # Process request-time context before sending it to the provider.
-            token_usage = (
-                self.req.conversation.token_usage if self.req.conversation else 0
-            )
+            usage_snapshot = self._context_usage_snapshot
+            if usage_snapshot and (
+                usage_snapshot.provider is not self.provider
+                or usage_snapshot.model != (self.req.model or self.provider.get_model())
+            ):
+                usage_snapshot = None
             self._simple_print_message_role("[BefCompact]", self.run_context.messages)
             processed_messages = await self._await_or_stop(
                 self.request_context_manager.process(
                     self.run_context.messages,
-                    trusted_token_usage=token_usage,
+                    usage_snapshot=usage_snapshot,
                     # Same tool set the chat requests send, so the summary
                     # request's payload prefix (tools + system + history) stays
                     # byte-identical and hits the provider prefix cache. The
@@ -1702,6 +1792,11 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if processed_messages is None:
                 yield await self._finalize_aborted_step()
                 return
+            if (
+                processed_messages != self.run_context.messages
+                or self.request_context_manager.last_compression is not None
+            ):
+                self._context_usage_snapshot = None
             self.run_context.messages = processed_messages
             self._simple_print_message_role("[AftCompact]", self.run_context.messages)
 
@@ -1722,6 +1817,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 )
 
         async for llm_response in self._iter_llm_responses_with_fallback():
+            if self._output_compression_report is not None:
+                yield AgentResponse(
+                    type="context_compression",
+                    data=AgentResponseData(
+                        chain=MessageChain(
+                            type="context_compression",
+                            chain=[Json(data=self._output_compression_report)],
+                        )
+                    ),
+                )
+                self._output_compression_report = None
             if llm_response.is_chunk:
                 if self.stats.time_to_first_token == 0:
                     self.stats.time_to_first_token = time.time() - self.stats.start_time
@@ -1761,6 +1867,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             )
             if not usage_saved:
                 self.stats.current_context_tokens = 0
+            if (
+                not usage_saved
+                and not getattr(self, "_reused_parent_response", False)
+                and llm_response.role != "err"
+                and llm_response.usage is not None
+                and llm_response.usage.input > 0
+                and self._pending_request_usage is not None
+            ):
+                self._pending_request_usage.input_tokens = llm_response.usage.input
+                self._context_usage_snapshot = self._pending_request_usage
+            self._pending_request_usage = None
             if (
                 llm_response.usage
                 and not getattr(self, "_reused_parent_response", False)

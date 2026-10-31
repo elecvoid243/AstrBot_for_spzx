@@ -29,6 +29,7 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.agent_team_execution import (
     apply_model_output_limit,
     current_model_usage,
+    resolve_model_output_limit,
 )
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.message.message_event_result import MessageChain
@@ -410,24 +411,38 @@ class ProviderOpenAIOfficial(Provider):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def get_default_output_token_limit(self, model: str | None = None) -> int:
+        """Read the model-specific default applied by this Chat adapter.
+
+        Args:
+            model: Actual request model, or None for the provider's current model.
+
+        Returns:
+            Local compatibility default, or zero when the server chooses it.
+        """
+        # NVIDIA's hosted MiniMax M3 endpoint can return empty choices when
+        # max_tokens is omitted (#9206). Other models have different limits.
+        if (
+            self.provider_config.get("provider") == "nvidia"
+            and (model or self.get_model()).lower() == "minimaxai/minimax-m3"
+        ):
+            return 8192
+        return super().get_default_output_token_limit(model)
+
     def _apply_provider_specific_request_overrides(
         self,
         payloads: dict[str, Any],
         extra_body: dict[str, Any],
     ) -> None:
         provider = self.provider_config.get("provider")
-        model = str(payloads.get("model", "")).lower()
-
-        # NVIDIA's hosted MiniMax M3 endpoint can return empty choices when
-        # max_tokens is omitted (#9206). Scope the compatibility default to
-        # that model; other NVIDIA models have different token limits.
-        if (
-            provider == "nvidia"
-            and model == "minimaxai/minimax-m3"
-            and "max_tokens" not in payloads
-            and "max_tokens" not in extra_body
+        default_limit = self.get_default_output_token_limit(payloads.get("model"))
+        receipt = current_model_usage.get()
+        if default_limit and not resolve_model_output_limit(
+            payloads,
+            extra_body,
+            admitted_limit=receipt["max_output_tokens"] if receipt else None,
         ):
-            payloads["max_tokens"] = 8192
+            payloads["max_tokens"] = default_limit
 
         if provider != "ollama":
             return

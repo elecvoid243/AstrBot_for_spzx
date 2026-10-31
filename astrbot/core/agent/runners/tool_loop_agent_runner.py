@@ -1252,10 +1252,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self.req.extra_user_content_parts
         )
         params = copy.deepcopy(self.req.llm_params or {})
+        if include_model:
+            payload["model"] = self.req.model
+        effective_model = payload.get("model") or self.provider.get_model()
+        default_limit = getattr(self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0)
+        if get_default := getattr(
+            self.provider, "get_default_output_token_limit", None
+        ):
+            default_limit = get_default(effective_model)
         output_token_budget = resolve_model_output_limit(
             params,
             self.provider.provider_config.get("custom_extra_body"),
-            default=getattr(self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0),
+            default=default_limit,
             admitted_limit=receipt["max_output_tokens"] if receipt else None,
         )
         if receipt:
@@ -1265,9 +1273,6 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 else "max_tokens"
             ] = output_token_budget
         payload["llm_params"] = params
-        if include_model:
-            payload["model"] = self.req.model
-        effective_model = payload.get("model") or self.provider.get_model()
         max_context_tokens = self.provider.provider_config.get("max_context_tokens", 0)
         threshold = int(
             self.provider.provider_config.get("compress_threshold_tokens", 0) or 0

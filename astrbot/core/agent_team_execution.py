@@ -162,25 +162,27 @@ def resolve_model_output_limit(
     """
     params = llm_params if isinstance(llm_params, dict) else {}
     overrides = extra_body if isinstance(extra_body, dict) else {}
+    aliases = (
+        "max_completion_tokens",
+        "max_tokens",
+        "max_output_tokens",
+        "maxOutputTokens",
+    )
     if isinstance(admitted_limit, int) and admitted_limit > 0:
         return min(
             [admitted_limit]
             + [
                 value
                 for body in (params, overrides)
-                for alias in (
-                    "max_tokens",
-                    "max_completion_tokens",
-                    "max_output_tokens",
-                    "maxOutputTokens",
-                )
+                for alias in aliases
                 if isinstance(value := body.get(alias), int) and value > 0
             ]
         )
     for body in (overrides, params):
-        value = body.get("max_completion_tokens") or body.get("max_tokens")
-        if isinstance(value, int) and value > 0:
-            return value
+        for alias in aliases:
+            value = body.get(alias)
+            if isinstance(value, int) and value > 0:
+                return value
     return default if isinstance(default, int) and default > 0 else 0
 
 
@@ -206,6 +208,16 @@ def apply_model_output_limit(
     ]
     if not limits:
         return
+    # Match the guard's source precedence before applying its independent ceiling.
+    # Unmetered overrides may raise a request limit; admitted calls keep every
+    # explicit limit as a ceiling instead.
+    native_limit = resolve_model_output_limit(
+        payload,
+        extra_body,
+        admitted_limit=receipt["max_output_tokens"] if receipt else None,
+    )
+    if native_limit > 0:
+        limits.append(native_limit)
     cap = min(limits)
     for body in [payload, extra_body] if extra_body is not None else [payload]:
         for alias in (
@@ -214,9 +226,7 @@ def apply_model_output_limit(
             "max_output_tokens",
             "maxOutputTokens",
         ):
-            configured = body.pop(alias, None)
-            if isinstance(configured, int) and configured > 0:
-                cap = min(cap, configured)
+            body.pop(alias, None)
     payload[field] = cap
 
 

@@ -34,6 +34,17 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
     _REASONING_STATE_TYPE = "openai_responses_reasoning"
     _request_input_key = "input"
 
+    def get_default_output_token_limit(self, model: str | None = None) -> int:
+        """Read the Responses output default without Chat compatibility rules.
+
+        Args:
+            model: Actual request model, or None for the provider's current model.
+
+        Returns:
+            Zero because this adapter leaves an omitted limit to the server.
+        """
+        return 0
+
     def __init__(self, provider_config: dict, provider_settings: dict) -> None:
         """Initialize the Responses API client.
 

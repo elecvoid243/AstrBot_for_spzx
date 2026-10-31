@@ -78,6 +78,18 @@ class Provider(AbstractProvider):
         super().__init__(provider_config)
         self.provider_settings = provider_settings
 
+    def get_default_output_token_limit(self, model: str | None = None) -> int:
+        """Read the local output default used when a request has no limit.
+
+        Args:
+            model: Actual request model, or None for the provider's current model.
+
+        Returns:
+            Known positive native default, or zero for an unknown server default.
+        """
+        default = getattr(self, "DEFAULT_MAX_OUTPUT_TOKENS", 0)
+        return default if isinstance(default, int) and default > 0 else 0
+
     @abc.abstractmethod
     def get_current_key(self) -> str:
         raise NotImplementedError

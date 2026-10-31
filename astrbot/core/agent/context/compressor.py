@@ -465,10 +465,17 @@ class LLMSummaryCompressor:
                     )
                 response = None
                 try:
+                    default_limit = getattr(
+                        self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0
+                    )
+                    if get_default := getattr(
+                        self.provider, "get_default_output_token_limit", None
+                    ):
+                        default_limit = get_default()
                     output_budget = resolve_model_output_limit(
                         params,
                         self.provider.provider_config.get("custom_extra_body"),
-                        default=getattr(self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0),
+                        default=default_limit,
                         admitted_limit=receipt["max_output_tokens"]
                         if receipt
                         else None,

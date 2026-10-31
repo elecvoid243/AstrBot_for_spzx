@@ -437,6 +437,494 @@ async def test_explicit_chat_output_field_survives_native_limit_resolution(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_openai", ["chat", "responses"], indirect=True)
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("fits", [False, True])
+@pytest.mark.parametrize("request_field", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("override_field", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("configured_limit", [50, 100, 500])
+@pytest.mark.parametrize("admitted", [None, 80, 700])
+async def test_native_override_priority_matches_the_checked_capacity(
+    native_openai,
+    streaming,
+    fits,
+    request_field,
+    override_field,
+    configured_limit,
+    admitted,
+):
+    provider, requests, native_field = native_openai
+    expected = (
+        configured_limit if admitted is None else min(100, configured_limit, admitted)
+    )
+    selected_field = (
+        "max_completion_tokens"
+        if native_field == "max_tokens"
+        and "max_completion_tokens" in (request_field, override_field)
+        else native_field
+    )
+    if selected_field == "max_completion_tokens":
+        provider.set_model("o3")
+    provider.provider_config.update(
+        custom_extra_body={override_field: configured_limit},
+        max_context_tokens=750 + expected - int(not fits),
+    )
+    original_config = copy.deepcopy(provider.provider_config)
+    receipts = []
+
+    async def begin_usage(request):
+        receipt = {"receipt_id": request["receipt_id"], "max_output_tokens": admitted}
+        receipts.append(receipt)
+        return receipt
+
+    binding = NodeExecutionBinding(
+        run_id="run",
+        team_id="team",
+        member_id="member",
+        node_id=None,
+        umo="test:FriendMessage:native-priority",
+        owner_username="test",
+        config_id=None,
+        begin_usage=begin_usage,
+    )
+    token = current_team_execution.set(binding if admitted else None)
+    try:
+        runner, executor = await native_runner(
+            provider,
+            streaming=streaming,
+            request=ProviderRequest(prompt="x" * 2500, llm_params={request_field: 100}),
+        )
+        if fits:
+            async for _ in runner.step():
+                pass
+            assert len(requests) == 1
+            assert requests[0][selected_field] == expected
+            assert set(requests[0]) & {
+                "max_tokens",
+                "max_completion_tokens",
+                "max_output_tokens",
+                "maxOutputTokens",
+            } == {selected_field}
+            assert runner.get_final_llm_resp().completion_text == "done"
+        else:
+            with pytest.raises(ContextCapacityError):
+                async for _ in runner.step():
+                    pass
+            assert requests == []
+        assert executor.calls == []
+        assert runner.req.llm_params == {request_field: 100}
+        assert provider.provider_config == original_config
+        if admitted:
+            assert len(receipts) == 1 and receipts[0]["max_output_tokens"] == admitted
+    finally:
+        current_team_execution.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_openai", ["responses"], indirect=True)
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("fits", [False, True])
+@pytest.mark.parametrize("alias", ["max_output_tokens", "maxOutputTokens"])
+async def test_responses_native_alias_without_request_limit(
+    native_openai,
+    streaming,
+    fits,
+    alias,
+):
+    provider, requests, field = native_openai
+    provider.provider_config.update(
+        custom_extra_body={alias: 500},
+        max_context_tokens=1250 - int(not fits),
+    )
+    original = copy.deepcopy(provider.provider_config)
+    runner, executor = await native_runner(
+        provider,
+        streaming=streaming,
+        request=ProviderRequest(prompt="x" * 2500),
+    )
+    if fits:
+        async for _ in runner.step():
+            pass
+        assert len(requests) == 1 and requests[0][field] == 500
+        assert "maxOutputTokens" not in requests[0]
+    else:
+        with pytest.raises(ContextCapacityError):
+            async for _ in runner.step():
+                pass
+        assert requests == []
+    assert executor.calls == [] and provider.provider_config == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_openai", ["chat", "responses"], indirect=True)
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("fits", [False, True])
+@pytest.mark.parametrize(
+    "configured_model,request_model",
+    [
+        ("minimaxai/minimax-m3", None),
+        ("other-model", "minimaxai/minimax-m3"),
+        ("minimaxai/minimax-m3", "other-model"),
+    ],
+)
+async def test_native_default_uses_the_actual_provider_and_model(
+    native_openai,
+    streaming,
+    fits,
+    configured_model,
+    request_model,
+):
+    provider, requests, field = native_openai
+    provider.set_model(configured_model)
+    expected = (
+        8192
+        if field == "max_tokens"
+        and (request_model or configured_model) == "minimaxai/minimax-m3"
+        else None
+    )
+    provider.provider_config.update(
+        provider="nvidia",
+        max_context_tokens=(750 + expected if expected else 1000)
+        - int(not fits) * (1 if expected else 251),
+    )
+    original = copy.deepcopy(provider.provider_config)
+    runner, executor = await native_runner(
+        provider,
+        streaming=streaming,
+        request=ProviderRequest(prompt="x" * 2500, model=request_model),
+    )
+    if fits:
+        async for _ in runner.step():
+            pass
+        assert len(requests) == 1 and requests[0].get(field) == expected
+        assert requests[0]["model"] == (request_model or configured_model)
+    else:
+        with pytest.raises(ContextCapacityError):
+            async for _ in runner.step():
+                pass
+        assert requests == []
+    assert executor.calls == [] and provider.provider_config == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("window", [0, 10000])
+async def test_native_default_respects_only_the_configured_window(
+    native_openai, streaming, window
+):
+    provider, requests, field = native_openai
+    provider.set_model("minimaxai/minimax-m3")
+    provider.provider_config.update(provider="nvidia", max_context_tokens=window)
+    runner, executor = await native_runner(
+        provider,
+        streaming=streaming,
+        request=ProviderRequest(prompt="x" * 25000),
+    )
+    if window:
+        with pytest.raises(ContextCapacityError):
+            async for _ in runner.step():
+                pass
+        assert requests == []
+    else:
+        async for _ in runner.step():
+            pass
+        assert len(requests) == 1 and requests[0][field] == 8192
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "request_field,override_field,admitted,expected",
+    [
+        ("max_tokens", None, None, 10000),
+        ("max_completion_tokens", None, None, 10000),
+        (None, "max_completion_tokens", None, 9500),
+        (None, None, 10000, 10000),
+        ("max_completion_tokens", None, 11000, 10000),
+    ],
+)
+async def test_explicit_limits_replace_the_native_compatibility_default(
+    native_openai,
+    streaming,
+    request_field,
+    override_field,
+    admitted,
+    expected,
+):
+    provider, requests, _ = native_openai
+    provider.set_model("minimaxai/minimax-m3")
+    provider.provider_config.update(
+        provider="nvidia",
+        max_context_tokens=750 + expected,
+        custom_extra_body={override_field: 9500} if override_field else {},
+    )
+
+    async def begin_usage(request):
+        return {"receipt_id": request["receipt_id"], "max_output_tokens": admitted}
+
+    binding = NodeExecutionBinding(
+        run_id="run",
+        team_id="team",
+        member_id="member",
+        node_id=None,
+        umo="test:FriendMessage:native-default",
+        owner_username="test",
+        config_id=None,
+        begin_usage=begin_usage,
+    )
+    token = current_team_execution.set(binding if admitted else None)
+    try:
+        runner, executor = await native_runner(
+            provider,
+            streaming=streaming,
+            request=ProviderRequest(
+                prompt="x" * 2500,
+                llm_params={request_field: 10000} if request_field else {},
+            ),
+        )
+        async for _ in runner.step():
+            pass
+        field = (
+            "max_completion_tokens"
+            if "max_completion_tokens" in (request_field, override_field)
+            else "max_tokens"
+        )
+        assert len(requests) == 1 and requests[0][field] == expected
+        assert set(requests[0]) & {"max_tokens", "max_completion_tokens"} == {field}
+        assert executor.calls == []
+    finally:
+        current_team_execution.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("fits", [False, True])
+async def test_fallback_checks_its_own_native_default(native_openai, streaming, fits):
+    fallback, requests, field = native_openai
+    fallback.set_model("minimaxai/minimax-m3")
+    fallback.provider_config.update(
+        provider="nvidia", max_context_tokens=15692 - int(not fits)
+    )
+    primary = BudgetProvider(
+        [LLMResponse(role="err", completion_text="unavailable")],
+        max_context_tokens=20000,
+    )
+    runner, executor = await native_runner(
+        primary,
+        streaming=streaming,
+        request=ProviderRequest(prompt="x" * 25000, model="primary-model"),
+        fallback_providers=[fallback],
+    )
+    if fits:
+        async for _ in runner.step():
+            pass
+        assert len(requests) == 1 and requests[0][field] == 8192
+        assert requests[0]["model"] == fallback.get_model()
+    else:
+        with pytest.raises(ContextCapacityError):
+            async for _ in runner.step():
+                pass
+        assert requests == []
+    assert len(primary.requests) == 1 and executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fits", [False, True])
+async def test_summary_reserves_its_native_default(native_openai, fits):
+    summary, requests, field = native_openai
+    summary.set_model("minimaxai/minimax-m3")
+    summary.provider_config.update(provider="nvidia", max_context_tokens=1000000)
+
+    async def run_main():
+        main = BudgetProvider(
+            [LLMResponse(role="assistant", completion_text="main done")],
+            max_context_tokens=1000,
+        )
+        runner, executor = await native_runner(
+            main,
+            request=ProviderRequest(
+                prompt="task",
+                model="different-main-model",
+                contexts=[
+                    {"role": "user", "content": "old user " * 200},
+                    {"role": "assistant", "content": "old answer " * 200},
+                ],
+            ),
+            llm_compress_provider=summary,
+            llm_compress_instruction="Summarize briefly.",
+        )
+        async for _ in runner.step():
+            pass
+        assert len(main.requests) == 1 and executor.calls == []
+        return main.requests[0]["contexts"]
+
+    await run_main()
+    assert len(requests) == 1 and requests[0][field] == 8192
+    input_tokens = EstimateTokenCounter().count_tokens(
+        bind_checkpoint_messages(requests[0]["messages"])
+    )
+    requests.clear()
+    summary.provider_config["max_context_tokens"] = input_tokens + 8192 - int(not fits)
+    sent = await run_main()
+    assert len(requests) == int(fits)
+    if fits:
+        assert (
+            requests[0][field] == 8192 and requests[0]["model"] == summary.get_model()
+        )
+    assert (
+        any(
+            "Our previous history conversation summary: done" in str(message.content)
+            for message in sent
+        )
+        is fits
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_native_default_compresses_history_before_delivery(
+    native_openai, streaming
+):
+    provider, requests, field = native_openai
+    provider.set_model("minimaxai/minimax-m3")
+    provider.provider_config.update(provider="nvidia", max_context_tokens=10000)
+    runner, executor = await native_runner(
+        provider,
+        streaming=streaming,
+        request=ProviderRequest(
+            prompt="task",
+            contexts=[
+                {"role": "user", "content": "old user " * 1500},
+                {"role": "assistant", "content": "old answer " * 1500},
+            ],
+        ),
+    )
+    events = [event async for event in runner.step()]
+    assert len(requests) == 1 and requests[0][field] == 8192
+    assert "old user" not in str(requests[0]["messages"])
+    assert any(event.type == "context_compression" for event in events)
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_openai", ["chat", "responses"], indirect=True)
+@pytest.mark.parametrize("fits", [False, True])
+@pytest.mark.parametrize("request_field", [None, "max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize(
+    "override_field",
+    ["max_tokens", "max_completion_tokens", "max_output_tokens", "maxOutputTokens"],
+)
+@pytest.mark.parametrize("configured_limit", [50, 100, 500])
+@pytest.mark.parametrize("admitted", [None, 80, 700])
+async def test_summary_override_priority_matches_its_native_request(
+    native_openai,
+    fits,
+    request_field,
+    override_field,
+    configured_limit,
+    admitted,
+):
+    summary, requests, native_field = native_openai
+    expected = (
+        configured_limit
+        if admitted is None
+        else min(*([100] if request_field else []), configured_limit, admitted)
+    )
+    selected_field = (
+        "max_completion_tokens"
+        if native_field == "max_tokens"
+        and "max_completion_tokens" in (request_field, override_field)
+        else native_field
+    )
+    if selected_field == "max_completion_tokens":
+        summary.set_model("o3")
+    summary.provider_config.update(
+        custom_extra_body={override_field: configured_limit},
+        max_context_tokens=1000000,
+    )
+    original_overrides = copy.deepcopy(summary.provider_config["custom_extra_body"])
+
+    async def begin_usage(request):
+        return {
+            "receipt_id": request["receipt_id"],
+            "max_output_tokens": admitted if request["name"] == "native-openai" else 50,
+        }
+
+    async def run_main():
+        main = BudgetProvider(
+            [LLMResponse(role="assistant", completion_text="main done")],
+            max_context_tokens=1000,
+        )
+        runner, executor = await native_runner(
+            main,
+            request=ProviderRequest(
+                prompt="task",
+                llm_params={request_field: 100} if request_field else {},
+                contexts=[
+                    {"role": "user", "content": "old user " * 200},
+                    {"role": "assistant", "content": "old answer " * 200},
+                ],
+            ),
+            llm_compress_provider=summary,
+            llm_compress_instruction="Summarize briefly.",
+        )
+        async for _ in runner.step():
+            pass
+        assert len(main.requests) == 1 and executor.calls == []
+        return main.requests[0]["contexts"]
+
+    binding = NodeExecutionBinding(
+        run_id="run",
+        team_id="team",
+        member_id="member",
+        node_id=None,
+        umo="test:FriendMessage:summary-priority",
+        owner_username="test",
+        config_id=None,
+        begin_usage=begin_usage,
+    )
+    token = current_team_execution.set(binding if admitted else None)
+    try:
+        await run_main()
+        assert len(requests) == 1 and requests[0][selected_field] == expected
+        messages = copy.deepcopy(requests[0].get("messages", requests[0].get("input")))
+        for message in messages:
+            if isinstance(message.get("content"), list):
+                for part in message["content"]:
+                    if part.get("type") in {"input_text", "output_text"}:
+                        part["type"] = "text"
+        input_tokens = EstimateTokenCounter().count_tokens(
+            bind_checkpoint_messages(messages)
+        )
+        requests.clear()
+        summary.provider_config["max_context_tokens"] = (
+            input_tokens + expected - int(not fits)
+        )
+        sent = await run_main()
+        assert len(requests) == int(fits)
+        if fits:
+            assert requests[0][selected_field] == expected
+            assert set(requests[0]) & {
+                "max_tokens",
+                "max_completion_tokens",
+                "max_output_tokens",
+                "maxOutputTokens",
+            } == {selected_field}
+        assert (
+            any(
+                "Our previous history conversation summary: done"
+                in str(message.content)
+                for message in sent
+            )
+            is fits
+        )
+        assert summary.provider_config["custom_extra_body"] == original_overrides
+    finally:
+        current_team_execution.reset(token)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_nested_and_unspecified_deliveries_do_not_inherit_request_caps(
     native_openai, streaming
@@ -693,8 +1181,13 @@ async def test_auxiliary_request_delivers_its_own_final_output_limit(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mode", ["late", "native_alias"])
+@pytest.mark.parametrize("fits", [False, True])
 async def test_gemini_runner_delivers_the_checked_cap_to_its_sdk(
-    streaming, monkeypatch
+    streaming,
+    monkeypatch,
+    mode,
+    fits,
 ):
     from google.genai import types
 
@@ -706,7 +1199,12 @@ async def test_gemini_runner_delivers_the_checked_cap_to_its_sdk(
             "model": "gemini-test",
             "key": ["offline"],
             "api_base": "https://example.invalid",
-            "max_context_tokens": 1000,
+            "max_context_tokens": 750
+            + (100 if mode == "late" else 500)
+            - int(not fits),
+            "custom_extra_body": {"maxOutputTokens": 500}
+            if mode == "native_alias"
+            else {},
         },
         {},
     )
@@ -755,18 +1253,29 @@ async def test_gemini_runner_delivers_the_checked_cap_to_its_sdk(
         config_id=None,
         begin_usage=begin_usage,
     )
-    token = current_team_execution.set(binding)
+    token = current_team_execution.set(binding if mode == "late" else None)
     try:
         runner, executor = await native_runner(
             provider,
             streaming=streaming,
-            request=ProviderRequest(prompt="x" * 2500, llm_params={"max_tokens": 500}),
+            request=ProviderRequest(
+                prompt="x" * 2500,
+                llm_params={"max_tokens": 500} if mode == "late" else {},
+            ),
         )
-        async for _ in runner.step():
-            pass
-        assert len(requests) == 1
-        assert requests[0]["config"].max_output_tokens == 100
-        assert runner.get_final_llm_resp().completion_text == "done"
+        if fits:
+            async for _ in runner.step():
+                pass
+            assert len(requests) == 1
+            assert requests[0]["config"].max_output_tokens == (
+                100 if mode == "late" else 500
+            )
+            assert runner.get_final_llm_resp().completion_text == "done"
+        else:
+            with pytest.raises(ContextCapacityError):
+                async for _ in runner.step():
+                    pass
+            assert requests == []
         assert executor.calls == []
     finally:
         current_team_execution.reset(token)

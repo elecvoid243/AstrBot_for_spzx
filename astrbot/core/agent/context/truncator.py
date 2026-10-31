@@ -61,7 +61,8 @@ class ContextTruncator:
         Returns:
             Messages with one result per call, without modifying original records.
             Missing results describe unknown execution state; orphan results are
-            excluded only from this view. Valid messages retain their order.
+            excluded only from this view. Existing results retain their order;
+            intervening system injections follow the complete result group.
 
         Raises:
             ToolProtocolIntegrityError: Required identities are absent, repeated
@@ -95,10 +96,15 @@ class ContextTruncator:
                 call_ids[call_id] = None
 
             results: dict[str, Message] = {}
+            system_injections: list[Message] = []
             # A real user message or any new assistant batch closes this scope.
-            while index < len(messages) and messages[index].role == "tool":
+            while index < len(messages) and messages[index].role in {"tool", "system"}:
                 result = messages[index]
                 index += 1
+                if result.role == "system":
+                    # Keep instructions without splitting the protocol result group.
+                    system_injections.append(result)
+                    continue
                 call_id = result.tool_call_id
                 if not call_id or not call_id.strip():
                     raise ToolProtocolIntegrityError(
@@ -128,6 +134,8 @@ class ContextTruncator:
                             ),
                         )
                     )
+
+            fixed_messages.extend(system_injections)
 
         return fixed_messages
 

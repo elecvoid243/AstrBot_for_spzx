@@ -204,6 +204,162 @@ def test_pairing_duplicate_protocol_is_independent_of_python_message_type():
     assert fixed[1] is result
 
 
+@pytest.mark.parametrize(
+    ("messages", "expected_results", "expected_roles"),
+    [
+        (
+            [
+                pairing_batch("A", "B"),
+                pairing_result("A", "real A"),
+                Message(role="system", content="injection"),
+                pairing_result("B", "real B - write succeeded"),
+            ],
+            [("A", "real A"), ("B", "real B - write succeeded")],
+            ["assistant", "tool", "tool", "system"],
+        ),
+        (
+            [
+                pairing_batch("A", "B"),
+                Message(role="system", content="first injection"),
+                pairing_result("B", "real B"),
+                Message(role="system", content="second injection"),
+                pairing_result("A", "real A"),
+            ],
+            [("B", "real B"), ("A", "real A")],
+            ["assistant", "tool", "tool", "system", "system"],
+        ),
+        (
+            [
+                pairing_batch("A", "B"),
+                pairing_result("A", "real A"),
+                Message(role="system", content="injection"),
+            ],
+            [("A", "real A"), ("B", None)],
+            ["assistant", "tool", "tool", "system"],
+        ),
+        (
+            [
+                pairing_batch("A", "B"),
+                pairing_result("A", "real A"),
+                Message(role="system", content="injection"),
+                Message(role="user", content="new request"),
+                pairing_result("B", "late B"),
+            ],
+            [("A", "real A"), ("B", None)],
+            ["assistant", "tool", "tool", "system", "user"],
+        ),
+        (
+            [
+                pairing_batch("A", "B"),
+                pairing_result("A", "real A"),
+                Message(role="system", content="injection"),
+                pairing_batch("C"),
+                pairing_result("B", "late B"),
+                pairing_result("C", "real C"),
+            ],
+            [("A", "real A"), ("B", None), ("C", "real C")],
+            ["assistant", "tool", "tool", "system", "assistant", "tool"],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_result("A", "first result"),
+                Message(role="system", content="injection"),
+                pairing_batch("A"),
+                pairing_result("A", "second result"),
+            ],
+            [("A", "first result"), ("A", "second result")],
+            ["assistant", "tool", "system", "assistant", "tool"],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_result("A", "same result"),
+                Message(role="system", content="injection"),
+                pairing_result("A", "same result"),
+            ],
+            [("A", "same result")],
+            ["assistant", "tool", "system"],
+        ),
+    ],
+    ids=[
+        "split-results",
+        "multiple-injections-and-reversed-results",
+        "missing-result",
+        "user-boundary",
+        "batch-boundary",
+        "closed-batch-id-reuse",
+        "duplicate-result",
+    ],
+)
+def test_pairing_preserves_results_across_system_injections(
+    messages, expected_results, expected_roles
+):
+    original = copy.deepcopy(messages)
+    truncator = ContextTruncator()
+    fixed = truncator.fix_messages(messages)
+    assert [message.role for message in fixed] == expected_roles
+    results = [message for message in fixed if message.role == "tool"]
+    assert len(results) == len(expected_results)
+    for result, (call_id, content) in zip(results, expected_results):
+        assert result.tool_call_id == call_id
+        if content is None:
+            assert "execution status is unknown" in result.content
+        else:
+            assert result.content == content
+    assert [message for message in fixed if message.role == "system"] == [
+        message for message in original if message.role == "system"
+    ]
+    assert truncator.fix_messages(fixed) == fixed
+    assert messages == original
+
+
+@pytest.mark.parametrize(
+    "result",
+    [pairing_result("A", "conflicting result"), pairing_result(None, "no identity")],
+    ids=["conflict", "missing-id"],
+)
+def test_pairing_system_injection_does_not_hide_protocol_errors(result):
+    messages = [
+        pairing_batch("A"),
+        pairing_result("A", "original result"),
+        Message(role="system", content="injection"),
+        result,
+    ]
+    original = copy.deepcopy(messages)
+    with pytest.raises(ToolProtocolIntegrityError):
+        ContextTruncator().fix_messages(messages)
+    assert messages == original
+
+
+def test_pairing_system_injection_preserves_result_media_and_metadata():
+    result = pairing_result(
+        "B",
+        [
+            TextPart(text="error: diagnostic evidence"),
+            ImageURLPart(
+                image_url=ImageURLPart.ImageURL(
+                    url="data:image/png;base64,AA==", id="original-evidence"
+                )
+            ),
+        ],
+    )
+    result._no_save = True
+    injection = Message(role="system", content=[TextPart(text="injected instructions")])
+    messages = [
+        pairing_batch("A", "B"),
+        pairing_result("A", "real A"),
+        injection,
+        result,
+    ]
+    original = copy.deepcopy(messages)
+    fixed = ContextTruncator().fix_messages(messages)
+    assert fixed == [messages[0], messages[1], result, injection]
+    assert fixed[2] is result
+    assert fixed[3] is injection
+    assert messages == original
+
+
 class TestContextTruncator:
     """Test suite for ContextTruncator."""
 

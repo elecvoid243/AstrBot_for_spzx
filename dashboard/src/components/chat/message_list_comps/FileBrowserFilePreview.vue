@@ -94,7 +94,7 @@ const props = defineProps<{
    */
   scrollToLine?: number | null;
   scrollToEndLine?: number | null;
-  /** Host references are read-only until the independent write contract is available. */
+  /** Independent host target for manual editing and preview. */
   hostReference?: FileReferenceNavigation | null;
   /**
    * 2026-07-17 workspace file editor: repo-relative path of the
@@ -519,10 +519,10 @@ const currentContent = computed<string>(() =>
 
 function onEditDirtyChange(dirty: boolean): void {
   isEditDirty.value = dirty;
+  if (dirty) saveSuccessMessage.value = null;
 }
 
 const canEdit = computed<boolean>(() => {
-  if (props.hostReference) return false;
   if (props.state.kind !== "file") return false;
   // Historical revisions are read-only.
   if (props.selectedRevision) return false;
@@ -530,13 +530,12 @@ const canEdit = computed<boolean>(() => {
   if (snap.meta.isBinary === true || typeof snap.content !== "string") {
     return false;
   }
-  if (!props.fileRelativePath) return false;
+  if (!props.hostReference && !props.fileRelativePath) return false;
+  if (props.hostReference && !snap.meta.revision) return false;
   return new TextEncoder().encode(snap.content).length <= MAX_EDIT_BYTES;
 });
 
-/** Non-plain-UTF-8 files (GBK, UTF-8-BOM, ...) are re-encoded as
- *  UTF-8 on save (the backend write is fixed UTF-8), so surface that
- *  in the editor toolbar. */
+/** Existing encoding, BOM and dominant newline style are preserved on save. */
 const encodingNotice = computed<string | null>(() => {
   if (props.state.kind !== "file") return null;
   const enc = props.state.snapshot.meta.encoding;
@@ -548,7 +547,25 @@ const encodingNotice = computed<string | null>(() => {
   });
 });
 
+const editRevision = ref<string | undefined>();
+const editFormat = ref<{ encoding?: string; newline?: string }>({});
+const conflictRevision = ref<string | null>(null);
+let editGeneration = 0;
+
 function onStartEdit(): void {
+  editGeneration += 1;
+  editRevision.value =
+    props.state.kind === "file"
+      ? props.state.snapshot.meta.revision ?? undefined
+      : undefined;
+  editFormat.value =
+    props.state.kind === "file"
+      ? {
+          encoding: props.state.snapshot.meta.encoding ?? undefined,
+          newline: props.state.snapshot.meta.newline,
+        }
+      : {};
+  conflictRevision.value = null;
   // Freeze the loaded content as the editing session's baseline —
   // same "no mid-edit clobber" semantics as the old editBuffer init.
   editInitialContent.value = currentContent.value;
@@ -557,48 +574,81 @@ function onStartEdit(): void {
   editMode.value = true;
 }
 
-async function onSaveEdit(): Promise<void> {
-  if (!isEditDirty.value || fileWrite.isSaving.value) return;
+async function onSaveEdit(baseRevision = editRevision.value): Promise<boolean> {
+  if (fileWrite.isSaving.value) return false;
+  if (!isEditDirty.value) return true;
+  saveSuccessMessage.value = null;
+  const generation = editGeneration;
   const savedContent = editorRef.value?.getValue() ?? "";
+  const path =
+    baseRevision !== undefined && props.state.kind === "file"
+      ? props.state.snapshot.meta.path
+      : props.fileRelativePath ?? "";
   const r = await fileWrite.save({
-    path: props.fileRelativePath ?? "",
+    path,
     content: savedContent,
+    baseRevision,
+    ...editFormat.value,
   });
-  if (r.ok) {
-    // 2026-07-26 toolbar parity: stay in edit mode after save (matches
-    // DocumentManager's onSave). The save button stays available for
-    // further edits; cancel still exits the editor. Two flips are
-    // needed for a clean post-save state:
-    //   1. editor.setBaseline() — CodeMirrorEditor's internal lastDirty
-    //      resets to clean, emits dirty-change false → the parent's
-    //      isEditDirty (which gates the save button) drops to false.
-    //   2. The next keystroke naturally re-transitions to dirty
-    //      because props.modelValue is still the pre-save baseline.
-    // emit("saved") bubbles up so the parent refresh() pulls the
-    // post-save bytes back into currentContent for the read view
-    // (matches DocumentManager's treeRef.refresh() / fileBrowser.refresh()
-    // on save).
-    editorRef.value?.setBaseline();
-    saveError.value = null;
-    emit("saved");
-    // 2026-07-26 save-success-toast: surface a transient green
-    // "Saved" confirmation in the editor toolbar. We cancel any
-    // in-flight dismiss timer before scheduling a new one so
-    // rapid back-to-back saves don't get their toast clipped
-    // short by the previous schedule.
-    saveSuccessMessage.value = tm(
-      "spcodeProjectLoad.fileBrowser.editor.saveSuccess",
-    );
-    if (saveSuccessTimer) clearTimeout(saveSuccessTimer);
-    saveSuccessTimer = setTimeout(() => {
-      saveSuccessMessage.value = null;
-      saveSuccessTimer = null;
-    }, SAVE_SUCCESS_TTL_MS);
-  } else {
+  if (generation !== editGeneration || !editMode.value) return false;
+  if (!r.ok) {
+    conflictRevision.value =
+      r.reason === "conflict" ? r.revision ?? null : null;
+    const message = [
+      "encoding_error",
+      "write_failed",
+      "conflict",
+      "target_changed",
+      "file_too_large",
+    ].includes(r.reason)
+      ? tm(`spcodeProjectLoad.fileBrowser.editor.errors.${r.reason}`)
+      : localizedReason(r.reason);
     saveError.value = `${tm(
       "spcodeProjectLoad.fileBrowser.editor.saveError",
-    )}: ${r.reason}`;
+    )}: ${message}`;
+    return false;
   }
+  editRevision.value = r.revision;
+  if (r.encoding) {
+    editFormat.value = {
+      encoding: r.encoding,
+      newline: r.newline ?? editFormat.value.newline,
+    };
+  }
+  conflictRevision.value = null;
+  saveError.value = null;
+  // The saved request's content is the baseline, even when the current
+  // buffer has changed (including a return to the original pre-save text).
+  editorRef.value?.setBaseline(savedContent);
+  if (!props.hostReference) emit("saved");
+  saveSuccessMessage.value = isEditDirty.value
+    ? null
+    : tm("spcodeProjectLoad.fileBrowser.editor.saveSuccess");
+  if (saveSuccessTimer) clearTimeout(saveSuccessTimer);
+  saveSuccessTimer = setTimeout(() => {
+    saveSuccessMessage.value = null;
+  }, SAVE_SUCCESS_TTL_MS);
+  return !isEditDirty.value;
+}
+
+function reloadConflict(): void {
+  if (!window.confirm(tm("spcodeProjectLoad.fileBrowser.editor.reloadConfirm")))
+    return;
+  editGeneration += 1;
+  editMode.value = false;
+  isEditDirty.value = false;
+  conflictRevision.value = null;
+  emit("retry");
+}
+
+async function overwriteConflict(): Promise<void> {
+  const revision = conflictRevision.value;
+  if (
+    !revision ||
+    !window.confirm(tm("spcodeProjectLoad.fileBrowser.editor.overwriteConfirm"))
+  )
+    return;
+  await onSaveEdit(revision);
 }
 
 // 2026-07-26 keyboard shortcut: Ctrl/Cmd+S triggers save when the
@@ -624,7 +674,10 @@ function onCancelEdit(): void {
     );
     if (!ok) return;
   }
+  editGeneration += 1;
   editMode.value = false;
+  isEditDirty.value = false;
+  if (props.hostReference) emit("retry");
   saveError.value = null;
   // 2026-07-26 save-success-toast: drop the in-flight "Saved"
   // message and its dismiss timer when the user exits the editor
@@ -737,18 +790,53 @@ async function onConfirmDelete(): Promise<void> {
  *  navigation that would swap the previewed file. Returns true when
  *  navigation may proceed (not editing / clean / user confirmed the
  *  discard); false when the user cancelled. */
-function confirmLeaveEditing(): boolean {
+const leaveDialogOpen = ref(false);
+let leaveResolver: ((allowed: boolean) => void) | null = null;
+
+async function confirmLeaveEditing(): Promise<boolean> {
+  if (fileWrite.isSaving.value || leaveResolver) return false;
   if (!editMode.value) return true;
   if (!isEditDirty.value) {
     editMode.value = false;
     return true;
   }
-  const ok = window.confirm(
-    tm("spcodeProjectLoad.fileBrowser.editor.discardConfirm"),
-  );
-  if (ok) editMode.value = false;
-  return ok;
+  leaveDialogOpen.value = true;
+  return new Promise<boolean>((resolve) => {
+    leaveResolver = resolve;
+  });
 }
+
+async function finishLeave(
+  choice: "save" | "discard" | "cancel",
+): Promise<void> {
+  if (choice === "save" && !(await onSaveEdit())) {
+    leaveDialogOpen.value = false;
+    leaveResolver?.(false);
+    leaveResolver = null;
+    return;
+  }
+  const allowed = choice !== "cancel";
+  if (allowed) {
+    editGeneration += 1;
+    editMode.value = false;
+    isEditDirty.value = false;
+  }
+  leaveDialogOpen.value = false;
+  leaveResolver?.(allowed);
+  leaveResolver = null;
+}
+onBeforeUnmount(() => {
+  editGeneration += 1;
+  leaveResolver?.(false);
+});
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (isEditDirty.value || fileWrite.isSaving.value) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+}
+onMounted(() => window.addEventListener("beforeunload", beforeUnload));
+onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
 defineExpose({ confirmLeaveEditing });
 
 // Safety nets: the parent's guards normally veto navigation while
@@ -1161,6 +1249,38 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="file-browser-preview" :class="{ 'is-mobile': isMobile }">
+    <v-dialog v-model="leaveDialogOpen" persistent max-width="520">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveTitle")
+        }}</v-card-title>
+        <v-card-text>{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveBody")
+        }}</v-card-text>
+        <v-card-actions>
+          <v-btn
+            variant="text"
+            :disabled="fileWrite.isSaving.value"
+            @click="finishLeave('cancel')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveCancel") }}</v-btn
+          >
+          <v-btn
+            variant="text"
+            :disabled="fileWrite.isSaving.value"
+            @click="finishLeave('discard')"
+            >{{
+              tm("spcodeProjectLoad.fileBrowser.editor.leaveDiscard")
+            }}</v-btn
+          >
+          <v-btn
+            variant="tonal"
+            :loading="fileWrite.isSaving.value"
+            @click="finishLeave('save')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveSave") }}</v-btn
+          >
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <!-- 加载中 -->
     <div
       v-if="state.kind === 'idle' || state.kind === 'loading'"
@@ -1357,30 +1477,28 @@ onBeforeUnmount(() => {
                  for markdown files. Shows the CURRENT mode (click to
                  switch), mirroring the document-manager 原文/渲染
                  view tabs; reuses its i18n keys. -->
-            <v-btn
-              v-if="canToggleMdView"
-              size="x-small"
-              variant="text"
-              color="primary"
-              :prepend-icon="
-                mdViewMode === 'rendered'
-                  ? 'mdi-language-markdown-outline'
-                  : 'mdi-code-tags'
-              "
-              :aria-pressed="mdViewMode === 'rendered'"
-              @click="
-                mdViewMode = mdViewMode === 'rendered' ? 'raw' : 'rendered'
-              "
-            >
-              {{
-                tm(
-                  mdViewMode === 'rendered'
-                    ? 'spcodeProjectLoad.documentManager.viewMode.rendered'
-                    : 'spcodeProjectLoad.documentManager.viewMode.raw',
-                )
-              }}
-            </v-btn>
-            <!-- 2026-07-17 workspace file editor: enters edit mode
+        <v-btn
+          v-if="canToggleMdView"
+          size="x-small"
+          variant="text"
+          color="primary"
+          :prepend-icon="
+            mdViewMode === 'rendered'
+              ? 'mdi-language-markdown-outline'
+              : 'mdi-code-tags'
+          "
+          :aria-pressed="mdViewMode === 'rendered'"
+          @click="mdViewMode = mdViewMode === 'rendered' ? 'raw' : 'rendered'"
+        >
+          {{
+            tm(
+              mdViewMode === "rendered"
+                ? "spcodeProjectLoad.documentManager.viewMode.rendered"
+                : "spcodeProjectLoad.documentManager.viewMode.raw",
+            )
+          }}
+        </v-btn>
+        <!-- 2026-07-17 workspace file editor: enters edit mode
                  (body swaps to <CodeMirrorEditor>). Hidden while editing,
                  for history views, binaries, oversized files, and
                  when no repo-relative path is available. -->
@@ -1426,15 +1544,16 @@ onBeforeUnmount(() => {
             </v-btn>
           </div>
 
-          <div v-if="hostReference" class="pa-2 text-caption" role="status">
-            {{ hostReference.path }} · {{ tm('spcodeProjectLoad.fileBrowser.reference.readOnly') }}
-            <span v-if="referenceLineUnavailable" class="text-warning">
-              {{ tm('spcodeProjectLoad.fileBrowser.reference.lineUnavailable') }}
-            </span>
-            <span v-else-if="referenceRangeInvalid" class="text-error">
-              {{ tm('spcodeProjectLoad.fileBrowser.reference.invalidRange') }}
-            </span>
-          </div>
+      <div v-if="hostReference" class="pa-2 text-caption" role="status">
+        {{ hostReference.path }} ·
+        {{ tm("spcodeProjectLoad.fileBrowser.reference.readOnly") }}
+        <span v-if="referenceLineUnavailable" class="text-warning">
+          {{ tm("spcodeProjectLoad.fileBrowser.reference.lineUnavailable") }}
+        </span>
+        <span v-else-if="referenceRangeInvalid" class="text-error">
+          {{ tm("spcodeProjectLoad.fileBrowser.reference.invalidRange") }}
+        </span>
+      </div>
 
           <!-- 2026-08-13 one-click code check / format toolbar. Rendered
                only for the live working copy (not edit mode, not a
@@ -1464,87 +1583,101 @@ onBeforeUnmount(() => {
                whole body for the overlay editor + a compact toolbar.
                Rendered before every read-only branch so it wins over
                the current-file code view. -->
-          <div v-if="editMode" class="preview-editor">
-            <CodeMirrorEditor
-              ref="editorRef"
-              :model-value="editInitialContent"
-              :file-path="state.snapshot.meta.path"
-              class="preview-editor-body"
-              @dirty-change="onEditDirtyChange"
-            />
-            <div class="preview-editor-toolbar editor-bar">
-              <span class="preview-editor-notice">{{
-                encodingNotice ?? ""
-              }}</span>
-              <span v-if="saveError" class="preview-editor-error">{{
-                saveError
-              }}</span>
-              <button
-                type="button"
-                class="editor-bar__btn editor-bar__btn--primary"
-                :title="tm('spcodeProjectLoad.fileBrowser.editor.saveHint')"
-                :disabled="!isEditDirty || fileWrite.isSaving.value"
-                @click="onSaveEdit"
-              >
-                <v-icon size="14">mdi-content-save-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.save") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :disabled="fileWrite.isSaving.value"
-                @click="onCancelEdit"
-              >
-                <v-icon size="14">mdi-close</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :disabled="fileWrite.isSaving.value"
-                @click="onRenameClick"
-              >
-                <v-icon size="14">mdi-rename-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :title="tm('spcodeProjectLoad.fileBrowser.preview.copy')"
-                :disabled="fileWrite.isSaving.value"
-                @click="onCopyEdit"
-              >
-                <v-icon size="14">mdi-content-copy</v-icon>
-              </button>
-              <!-- 2026-07-26 save-success-toast: green inline
+      <div v-if="editMode" class="preview-editor">
+        <div v-if="conflictRevision" role="alert" class="pa-2">
+          {{ tm("spcodeProjectLoad.fileBrowser.editor.conflict") }}
+          <v-btn variant="text" @click="reloadConflict">{{
+            tm("spcodeProjectLoad.fileBrowser.editor.reload")
+          }}</v-btn>
+          <v-btn
+            variant="tonal"
+            :disabled="fileWrite.isSaving.value"
+            @click="overwriteConflict"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.overwrite") }}</v-btn
+          >
+        </div>
+        <CodeMirrorEditor
+          ref="editorRef"
+          :model-value="editInitialContent"
+          :file-path="state.snapshot.meta.path"
+          class="preview-editor-body"
+          @dirty-change="onEditDirtyChange"
+        />
+        <div class="preview-editor-toolbar editor-bar">
+          <span class="preview-editor-notice">{{ encodingNotice ?? "" }}</span>
+          <span v-if="saveError" class="preview-editor-error">{{
+            saveError
+          }}</span>
+          <button
+            type="button"
+            class="editor-bar__btn editor-bar__btn--primary"
+            :title="tm('spcodeProjectLoad.fileBrowser.editor.saveHint')"
+            :disabled="!isEditDirty || fileWrite.isSaving.value"
+            @click="onSaveEdit()"
+          >
+            <v-icon size="14">mdi-content-save-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.save") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :disabled="fileWrite.isSaving.value"
+            @click="onCancelEdit"
+          >
+            <v-icon size="14">mdi-close</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :disabled="fileWrite.isSaving.value"
+            v-if="!hostReference"
+            @click="onRenameClick"
+          >
+            <v-icon size="14">mdi-rename-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :title="tm('spcodeProjectLoad.fileBrowser.preview.copy')"
+            :disabled="fileWrite.isSaving.value"
+            @click="onCopyEdit"
+          >
+            <v-icon size="14">mdi-content-copy</v-icon>
+          </button>
+          <!-- 2026-07-26 save-success-toast: green inline
                    confirmation that lives in the dead space between
                    the copy button and the right-aligned delete.
                    Fades in when fileWrite.save resolves r.ok and
                    back out when the local auto-dismiss timer clears
                    the ref. -->
-              <Transition name="preview-editor__success-fade">
-                <span
-                  v-if="saveSuccessMessage"
-                  class="preview-editor__save-success"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <v-icon size="14" color="success">mdi-check-circle-outline</v-icon>
-                  {{ saveSuccessMessage }}
-                </span>
-              </Transition>
-              <span class="editor-bar__spacer" />
-              <button
-                type="button"
-                class="editor-bar__btn editor-bar__btn--danger"
-                :disabled="fileWrite.isSaving.value"
-                @click="onDeleteClick"
+          <Transition name="preview-editor__success-fade">
+            <span
+              v-if="saveSuccessMessage"
+              class="preview-editor__save-success"
+              role="status"
+              aria-live="polite"
+            >
+              <v-icon size="14" color="success"
+                >mdi-check-circle-outline</v-icon
               >
-                <v-icon size="14">mdi-delete-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}
-              </button>
-            </div>
-          </div>
+              {{ saveSuccessMessage }}
+            </span>
+          </Transition>
+          <span class="editor-bar__spacer" />
+          <button
+            type="button"
+            class="editor-bar__btn editor-bar__btn--danger"
+            :disabled="fileWrite.isSaving.value"
+            v-if="!hostReference"
+            @click="onDeleteClick"
+          >
+            <v-icon size="14">mdi-delete-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}
+          </button>
+        </div>
+      </div>
 
           <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
           <div

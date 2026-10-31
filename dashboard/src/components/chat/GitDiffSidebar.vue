@@ -410,9 +410,27 @@ const showClearConfirm = ref(false);
 // "docs" shows <DocumentManager> (spec 2026-07-11 document-manager §2 #1)。
 // Default: "files" per spec §2 decision #10 (the more general view;
 // first-time users likely want to "see what's in the project").
-const viewMode = ref<
+const fileBrowserRef = ref<{
+  refresh: () => Promise<void>;
+  confirmLeaveEditing: () => Promise<boolean>;
+} | null>(null);
+const activeViewMode = ref<
   "files" | "diff" | "history" | "docs" | "terminal" | "browser"
 >(loadViewMode());
+const viewMode = computed({
+  get: () => activeViewMode.value,
+  set: (mode: typeof activeViewMode.value) => {
+    if (mode === activeViewMode.value) return;
+    if (!fileBrowserRef.value) {
+      activeViewMode.value = mode;
+      return;
+    }
+    void (async () => {
+      if (await confirmLeaveEditing()) activeViewMode.value = mode;
+    })();
+  },
+});
+
 // Web preview mounts lazily on first activation, then stays mounted under
 // v-show so switching to another tab and back does not reload the page.
 const browserMounted = ref(viewMode.value === "browser");
@@ -1307,8 +1325,8 @@ const isBulkRestoring = ref(false);
 //   - select  → open the file the user just clicked (no line jump)
 //   - remove  → drop one entry from the per-worktree bucket
 //   - clear   → already opened via the dialog; this confirms it
-function onRecentSelect(payload: { path: string }): void {
-  if (!showProjectFiles()) return;
+async function onRecentSelect(payload: { path: string }): Promise<void> {
+  if (!(await showProjectFiles())) return;
   // Same navigation contract as onFileOpen but without a `line` field:
   // RecentFilesBlock emits `{ path }` only; we deliberately don't jump
   // to any anchor.
@@ -2105,14 +2123,18 @@ const isFetching = ref(false);
 // methods to the public type — defineExpose types are local to the
 // file that calls it. Mirroring the shape here keeps the consumer
 // honest about what it can call.
-const fileBrowserRef = ref<{
-  refresh: () => Promise<void>;
-  confirmLeaveEditing: () => boolean;
-} | null>(null);
+
+async function confirmLeaveEditing(): Promise<boolean> {
+  return (await fileBrowserRef.value?.confirmLeaveEditing?.()) ?? true;
+}
+async function closeSidebar(): Promise<void> {
+  if (await confirmLeaveEditing()) emit("update:modelValue", false);
+}
+defineExpose({ confirmLeaveEditing });
 
 /** Enter project files only for an explicit user navigation, preserving dirty edits. */
-function showProjectFiles(): boolean {
-  if (!(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return false;
+async function showProjectFiles(): Promise<boolean> {
+  if (!(await confirmLeaveEditing())) return false;
   // Without a project, the Files tab still represents the open host reference.
   if (currentRoot.value) hostFileTarget.value = null;
   else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
@@ -2120,8 +2142,8 @@ function showProjectFiles(): boolean {
   return true;
 }
 /** Open a manual host target through the same lifecycle as a citation. */
-function openHostPath(path: string): void {
-  if (!(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return;
+async function openHostPath(path: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   hostFileTarget.value = {
     path,
     startLine: null,
@@ -2132,9 +2154,8 @@ function openHostPath(path: string): void {
 }
 watch(
   () => props.fileReference,
-  (target) => {
-    if (!target || !(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true))
-      return;
+  async (target) => {
+    if (!target || !(await confirmLeaveEditing())) return;
     hostFileTarget.value = { ...target, requestId: ++hostNavigationId };
     viewMode.value = "files";
   },
@@ -2196,6 +2217,7 @@ async function refreshBranchesAndWorktrees(): Promise<void> {
   ]);
 }
 async function onManualRefresh(): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   if (viewMode.value === "files" && hostFileTarget.value) {
     await hostFile.refresh();
     return;
@@ -2773,7 +2795,8 @@ watch(
 // context, so reset the scope to default. Done here (not in a
 // watcher) so project switches — which also reset selectedWorktree
 // via the directory watcher above — do NOT clobber scope.
-function onWorktreeChange(path: string | null): void {
+async function onWorktreeChange(path: string | null): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   // Spec 2026-07-16: switching worktrees is a new "did the user already
   // dismiss the prompt?" boundary. Reset so a different non-Git
   // worktree re-presents the init flow.
@@ -3543,7 +3566,7 @@ async function onCreateSubmit(params: WorktreeAddParams): Promise<void> {
   if (result.ok) {
     // spec §7.4: 自动切到新 worktree + 切到 Files 视图
     const newWt = result.snapshot.worktrees.find((w) => w.path === params.path);
-    if (newWt && showProjectFiles()) {
+    if (newWt && (await showProjectFiles())) {
       selectedWorktree.value = newWt.isMain ? null : newWt.path;
       fileBrowserCurrentPath.value = newWt.path;
       fileBrowserPreviewPath.value = null;
@@ -3764,10 +3787,10 @@ function onScopeChange(scope: GitDiffScope): void {
 // file to display in the right pane (null = show directory hint).
 // FileBrowserEntryList sends previewPath=null for directory clicks
 // and previewPath=file.path for file/symlink clicks.
-function onFileBrowserNavigate(payload: {
+async function onFileBrowserNavigate(payload: {
   dirPath: string;
   previewPath: string | null;
-}): void {
+}): Promise<void> {
   const target = payload.previewPath ?? payload.dirPath;
   const root = currentRoot.value?.replace(/\\/g, "/").replace(/\/+$/, "");
   const normalized = target.replace(/\\/g, "/");
@@ -3779,7 +3802,7 @@ function onFileBrowserNavigate(payload: {
     openHostPath(target);
     return;
   }
-  if (!showProjectFiles()) return;
+  if (!(await showProjectFiles())) return;
   fileBrowserCurrentPath.value = payload.dirPath;
   fileBrowserPreviewPath.value = payload.previewPath;
   // 2026-07-02: clear any pending search-result scroll target.
@@ -3820,7 +3843,10 @@ function onFileBrowserNavigate(payload: {
 //      line. 0 (filename mode) is normalized to null (= no scroll).
 //      Propagated down to FileBrowserCodeView, which centers the
 //      target line in the code-view scroll container.
-function onFileOpen(payload: { path: string; line: number }): void {
+async function onFileOpen(payload: {
+  path: string;
+  line: number;
+}): Promise<void> {
   let abs = payload.path;
   // Drive-letter (C:\ / C:/), UNC (\\) and POSIX-rooted (/) paths are
   // already absolute; anything else is worktree-relative and must be
@@ -3839,7 +3865,7 @@ function onFileOpen(payload: { path: string; line: number }): void {
     const cleanPath = abs.replace(/^[\\/]+/, "").replace(/\//g, sep);
     abs = cleanPath ? `${cleanRoot}${sep}${cleanPath}` : cleanRoot;
   }
-  if (!showProjectFiles()) return;
+  if (!(await showProjectFiles())) return;
   fileBrowserPreviewPath.value = abs;
   // POSIX + Windows separator: strip the trailing filename. Use a
   // single regex that matches either separator so the same code
@@ -3925,7 +3951,7 @@ function onFileRestore(path: string): void {
  *  silently breaks the multi-level breadcrumb and misroutes the
  *  directory listing. Anchor to currentRoot (the active worktree or
  *  project root) before computing the parent. */
-function onOpenFile(path: string): void {
+async function onOpenFile(path: string): Promise<void> {
   const root = currentRoot.value;
   // No project / worktree resolved yet → nothing to navigate to.
   // Skip silently rather than writing a relative path that would
@@ -3943,7 +3969,7 @@ function onOpenFile(path: string): void {
   const parent = absolute.includes(sep)
     ? absolute.substring(0, absolute.lastIndexOf(sep))
     : cleanRoot;
-  if (!showProjectFiles()) return;
+  if (!(await showProjectFiles())) return;
   fileBrowserCurrentPath.value = parent;
   fileBrowserPreviewPath.value = absolute;
   // Clear any pending search-result scroll target so the file does not
@@ -5026,7 +5052,8 @@ watch(
               icon="mdi-close"
               size="small"
               variant="text"
-              @click="emit('update:modelValue', false)"
+              :aria-label="tm('spcodeProjectLoad.fileBrowser.editor.closePane')"
+              @click="closeSidebar"
             />
           </div>
         </div>

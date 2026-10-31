@@ -378,6 +378,7 @@ describe("GitDiffSidebar web preview tab", () => {
       );
       if (entry === "Files tab") {
         await tabButtons(wrapper)[0].trigger("click");
+        await flushPromises();
         await vi.waitFor(() =>
           expect(wrapper.find(".file-tree-list").text()).toContain(
             "project.txt",

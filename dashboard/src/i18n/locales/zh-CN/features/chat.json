@@ -873,7 +873,7 @@
     "fileBrowser": {
       "reference": {
         "pluginUnavailable": "文件预览需要 spcode。请安装或启用 spcode 插件并检查服务后重试。",
-        "readOnly": "当前磁盘内容 · 文件引用只读预览",
+        "readOnly": "当前磁盘内容 · 宿主文件",
         "lineUnavailable": "此格式无法按源文本行号定位。",
         "invalidRange": "引用的源文本行范围超出当前文件。",
         "notAFile": "引用目标不是普通文件。"
@@ -938,7 +938,7 @@
         "discardConfirm": "有未保存的修改，确定要放弃吗？",
         "saveError": "保存失败",
         "saveSuccess": "已保存",
-        "encodingNotice": "该文件为 {encoding} 编码，保存后将转为 UTF-8",
+        "encodingNotice": "保存时保留原有 {encoding} 编码、BOM 和换行风格。",
         "rename": "重命名",
         "renameDialogTitle": "重命名文件",
         "newNameLabel": "新文件名",
@@ -951,7 +951,25 @@
         "deleteConfirm": "删除",
         "deleteSuccess": "已删除 {name}",
         "deleteFailed": "删除失败：{reason}",
-        "unsavedActionConfirm": "有未保存的修改，继续操作将丢失这些修改。是否继续？"
+        "unsavedActionConfirm": "有未保存的修改，继续操作将丢失这些修改。是否继续？",
+        "leaveTitle": "未保存的修改",
+        "leaveBody": "打开目标前是否保存当前修改？",
+        "leaveCancel": "取消",
+        "leaveDiscard": "放弃并打开",
+        "leaveSave": "保存并打开",
+        "conflict": "磁盘文件已发生变化，当前草稿已保留。",
+        "reload": "从磁盘重新加载",
+        "overwrite": "覆盖已确认版本",
+        "reloadConfirm": "放弃当前草稿并重新加载磁盘上的最新内容？",
+        "overwriteConfirm": "覆盖上次冲突检测到的磁盘版本？若磁盘再次变化，将重新提示冲突。",
+        "errors": {
+          "encoding_error": "草稿包含原文件编码无法表示的字符。",
+          "write_failed": "文件写入失败，草稿已保留。",
+          "conflict": "磁盘文件已变化，请在下方选择重新加载或确认覆盖。",
+          "target_changed": "保存期间文件被替换，请重新加载后再试。",
+          "file_too_large": "文件或编辑后的内容超出大小限制。"
+        },
+        "closePane": "关闭文件侧栏"
       },
       "codeTools": {
         "check": "检查",

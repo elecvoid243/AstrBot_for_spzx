@@ -873,7 +873,7 @@
     "fileBrowser": {
       "reference": {
         "pluginUnavailable": "File preview requires spcode. Install or enable the spcode plugin and check its service, then retry.",
-        "readOnly": "Current disk contents · Read-only reference preview",
+        "readOnly": "Current disk contents · Host file",
         "lineUnavailable": "This format cannot be located by source text lines.",
         "invalidRange": "The referenced source line range is outside the current file.",
         "notAFile": "The reference does not point to a regular file."
@@ -938,7 +938,7 @@
         "discardConfirm": "You have unsaved changes. Discard them?",
         "saveError": "Save failed",
         "saveSuccess": "Saved",
-        "encodingNotice": "This file is {encoding}-encoded; it will be saved as UTF-8",
+        "encodingNotice": "Saving preserves the existing {encoding} encoding, BOM and newline style.",
         "rename": "Rename",
         "renameDialogTitle": "Rename file",
         "newNameLabel": "New file name",
@@ -951,7 +951,25 @@
         "deleteConfirm": "Delete",
         "deleteSuccess": "Deleted {name}",
         "deleteFailed": "Delete failed: {reason}",
-        "unsavedActionConfirm": "You have unsaved changes. Continue and lose them?"
+        "unsavedActionConfirm": "You have unsaved changes. Continue and lose them?",
+        "leaveTitle": "Unsaved changes",
+        "leaveBody": "Save your changes before opening the requested view?",
+        "leaveCancel": "Cancel",
+        "leaveDiscard": "Discard and open",
+        "leaveSave": "Save and open",
+        "conflict": "The file changed on disk. Your draft has been kept.",
+        "reload": "Reload from disk",
+        "overwrite": "Overwrite confirmed version",
+        "reloadConfirm": "Discard your draft and reload the current disk contents?",
+        "overwriteConfirm": "Overwrite the disk version detected by the last conflict? A further change will cause another conflict.",
+        "errors": {
+          "encoding_error": "The draft cannot be represented in the original encoding.",
+          "write_failed": "The file could not be saved. Your draft is kept.",
+          "conflict": "The disk file changed. Confirm reload or overwrite below.",
+          "target_changed": "The file was replaced during saving. Reload it before trying again.",
+          "file_too_large": "The file or edited content exceeds the size limit."
+        },
+        "closePane": "Close file pane"
       },
       "codeTools": {
         "check": "Check",

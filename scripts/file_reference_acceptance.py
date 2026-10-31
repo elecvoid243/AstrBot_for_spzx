@@ -32,6 +32,7 @@ async def main() -> None:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rich-previews", action="store_true")
+    parser.add_argument("--editing", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--chromium", type=Path, required=True)
@@ -654,7 +655,7 @@ async def main() -> None:
                         .get_by_text("F01 source line 80", exact=True)
                         .wait_for(timeout=20000)
                     )
-                    assert not await page.get_by_role(
+                    assert await page.get_by_role(
                         "button", name="编辑", exact=True
                     ).count()
                     await click("F01 single")
@@ -682,6 +683,341 @@ async def main() -> None:
                     checks.append(
                         "no loaded project; Chinese space encoded Windows path; whole/single/closed range current source preview"
                     )
+                    if args.editing:
+                        edit_umo = "webchat:FriendMessage:webchat!f01!" + chat_id
+                        permissions_url = origin + "/api/v1/chat/file-access-mode"
+                        original_other = other.read_bytes()
+                        write_url = (
+                            origin + "/api/v1/plugins/extensions/spcode/host-file-write"
+                        )
+                        async with client.post(write_url, json={}) as response:
+                            assert response.status in (401, 403)
+                        for mode, encoding, bom, newline in [
+                            ("readonly", "utf-8", b"\xef\xbb\xbf", "\r\n"),
+                            ("workspace", "gbk", b"", "\r\n"),
+                        ]:
+                            other.write_bytes(
+                                bom + ("旧内容" + newline).encode(encoding)
+                            )
+                            async with client.post(
+                                permissions_url,
+                                headers=headers,
+                                json={"umo": edit_umo, "mode": mode},
+                            ) as response:
+                                assert response.status == 200
+                            async with client.get(
+                                permissions_url,
+                                headers=headers,
+                                params={"umo": edit_umo},
+                            ) as response:
+                                before = (await response.json())["data"]
+                            await click("F01 other")
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill("人工保存\n")
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as saved_response:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            assert (await (await saved_response.value).json())["data"][
+                                "saved"
+                            ]
+                            await (
+                                page.get_by_role("status")
+                                .filter(has_text="已保存")
+                                .wait_for()
+                            )
+                            assert other.read_bytes() == bom + (
+                                "人工保存" + newline
+                            ).encode(encoding), (mode, other.read_bytes())
+                            async with client.get(
+                                permissions_url,
+                                headers=headers,
+                                params={"umo": edit_umo},
+                            ) as response:
+                                assert (await response.json())["data"] == before
+                            # Reopening the same clean target must leave edit mode and reread disk.
+                            await click("F01 other")
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("人工保存", exact=True)
+                                .wait_for()
+                            )
+                            assert not await page.locator(".cm-content").count()
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            # A real external writer changes the file; saving must preserve both versions.
+                            await page.locator(".cm-content").fill("完整草稿\n")
+                            other.write_bytes(
+                                bom + ("外部修改" + newline).encode(encoding)
+                            )
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="保存并打开", exact=True)
+                                .click()
+                            )
+                            await page.get_by_text(
+                                "磁盘文件已发生变化", exact=False
+                            ).wait_for()
+                            assert (
+                                await page.locator(".cm-content").inner_text()
+                            ).rstrip("\n") == "完整草稿"
+                            assert other.read_bytes() == bom + (
+                                "外部修改" + newline
+                            ).encode(encoding)
+                            # The first confirmation is already stale. No force-save bypass exists.
+                            other.write_bytes(
+                                bom + ("再次外部修改" + newline).encode(encoding)
+                            )
+                            page.once("dialog", lambda dialog: dialog.accept())
+                            await page.get_by_role(
+                                "button", name="覆盖已确认版本", exact=True
+                            ).click()
+                            await page.wait_for_timeout(250)
+                            assert other.read_bytes() == bom + (
+                                "再次外部修改" + newline
+                            ).encode(encoding)
+                            page.once("dialog", lambda dialog: dialog.accept())
+                            await page.get_by_role(
+                                "button", name="覆盖已确认版本", exact=True
+                            ).click()
+                            await page.get_by_text(
+                                "磁盘文件已发生变化", exact=False
+                            ).wait_for(state="hidden")
+                            assert other.read_bytes() == bom + (
+                                "完整草稿" + newline
+                            ).encode(encoding)
+                            # Cancel preserves the full editor; discard opens without writing.
+                            await page.locator(".cm-content").fill("CANCELLED DRAFT")
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="取消", exact=True)
+                                .click()
+                            )
+                            assert (
+                                await page.locator(".cm-content").inner_text()
+                                == "CANCELLED DRAFT"
+                            )
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="放弃并打开", exact=True)
+                                .click()
+                            )
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("F01 source line 80", exact=True)
+                                .wait_for()
+                            )
+                            await click("F01 other")
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill("保存跳转\n")
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="保存并打开", exact=True)
+                                .click()
+                            )
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("F01 source line 80", exact=True)
+                                .wait_for()
+                            )
+                            assert other.read_bytes() == bom + (
+                                "保存跳转" + newline
+                            ).encode(encoding)
+                            checks.append(
+                                f"F04 real no-project {mode} manual save, {encoding}/BOM/newlines final bytes, external conflict, stale overwrite, full draft, cancel/discard/save navigation and unchanged Agent permissions"
+                            )
+                        # All these UI entry points would remove or hide the editor.
+                        await click("F01 other")
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("GUARDED COMPLETE DRAFT")
+                        for action in [
+                            page.get_by_role(
+                                "button", name="浏览宿主目录或切换盘符", exact=True
+                            ),
+                            page.get_by_role("button", name="关闭文件侧栏", exact=True),
+                            page.locator(".sidebar-provider-btn").first,
+                            page.locator(
+                                ".new-chat-btn:not(.sidebar-provider-btn)"
+                            ).first,
+                            page.get_by_role("tab").last,
+                        ]:
+                            await action.click()
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="取消", exact=True)
+                                .click()
+                            )
+                            assert (
+                                await page.locator(".cm-content").inner_text()
+                                == "GUARDED COMPLETE DRAFT"
+                            )
+                        await click("F01 whole")
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="放弃并打开", exact=True)
+                            .click()
+                        )
+                        checks.append(
+                            "F04 real directory picker, file pane close, provider workspace, new session and workbench tab all preserve the original draft/view on cancel"
+                        )
+                        # Real host errors use real files, not a mocked save service.
+                        for failure in ["permission", "encoding", "missing"]:
+                            other.write_bytes("旧内容\r\n".encode("gbk"))
+                            await click("F01 other")
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            draft = (
+                                "😀" if failure == "encoding" else "FAILED SAVE DRAFT"
+                            )
+                            await page.locator(".cm-content").fill(draft)
+                            if failure == "permission":
+                                other.chmod(0o444)
+                            elif failure == "missing":
+                                other.unlink()
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as failed_response:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            result = (await (await failed_response.value).json())[
+                                "data"
+                            ]
+                            assert not result["saved"], result
+                            assert (
+                                result["reason"]
+                                == {
+                                    "permission": "permission_denied",
+                                    "encoding": "encoding_error",
+                                    "missing": "path_not_found",
+                                }[failure]
+                            )
+                            assert (
+                                await page.locator(".cm-content").inner_text() == draft
+                            )
+                            if failure != "missing":
+                                assert other.read_bytes() == "旧内容\r\n".encode("gbk")
+                                other.chmod(0o666)
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="放弃并打开", exact=True)
+                                .click()
+                            )
+                        other.write_bytes("旧内容\r\n".encode("gbk"))
+                        checks.append(
+                            "F04 real Windows read-only file, GBK encoding failure and externally removed target all reject saving and preserve the complete UI draft"
+                        )
+                        # A real save is delayed only after the actual service has written.
+                        await click("F01 other")
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("SAVED EARLIER SNAPSHOT")
+                        entered_save, release_save = asyncio.Event(), asyncio.Event()
+
+                        async def delayed_save(route):
+                            response = await route.fetch()
+                            entered_save.set()
+                            await release_save.wait()
+                            await route.fulfill(response=response)
+
+                        await page.route(
+                            "**/plugins/extensions/spcode/host-file-write", delayed_save
+                        )
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="保存", exact=True)
+                            .click()
+                        )
+                        await asyncio.wait_for(entered_save.wait(), 20)
+                        await page.locator(".cm-content").fill("旧内容\n")
+                        await click("F01 whole")
+                        assert (await page.locator(".cm-content").inner_text()).rstrip(
+                            "\n"
+                        ) == "旧内容"
+                        release_save.set()
+                        await page.wait_for_timeout(300)
+                        await page.unroute(
+                            "**/plugins/extensions/spcode/host-file-write"
+                        )
+                        assert (await page.locator(".cm-content").inner_text()).rstrip(
+                            "\n"
+                        ) == "旧内容"
+                        assert (
+                            other.read_bytes().decode("gbk") == "SAVED EARLIER SNAPSHOT"
+                        )
+                        await click("F01 whole")
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="保存并打开", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F01 source line 80", exact=True)
+                            .wait_for()
+                        )
+                        assert other.read_bytes().decode("gbk") == "旧内容\r\n"
+                        checks.append(
+                            "F04 actual save plus delayed response cannot clear a newer draft returned to the original text or navigate during an in-flight save"
+                        )
+                        # Explicit reload drops the draft only after user confirmation.
+                        await click("F01 other")
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("RELOAD DRAFT")
+                        other.write_bytes(b"RELOAD DISK\n")
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="保存", exact=True)
+                            .click()
+                        )
+                        await page.get_by_text(
+                            "磁盘文件已发生变化", exact=False
+                        ).wait_for()
+                        await page.wait_for_timeout(350)
+                        await page.screenshot(
+                            path=str(evidence / "file-edit-conflict-zh.png")
+                        )
+                        page.once("dialog", lambda dialog: dialog.accept())
+                        await page.get_by_role(
+                            "button", name="从磁盘重新加载", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("RELOAD DISK", exact=True)
+                            .wait_for()
+                        )
+                        other.write_bytes(original_other)
+                        await click("F01 whole")
+                        checks.append(
+                            "F04 real conflict reload explicitly replaces the draft with current disk contents; unauthenticated saves rejected"
+                        )
+
                     for label, first_line, last_line in [
                         ("F01 single", 40, 40),
                         ("F01 range", 55, 58),
@@ -936,6 +1272,40 @@ async def main() -> None:
                     ) as response:
                         assert response.status == 200
                     before_context = await session_context()
+                    if args.editing:
+                        await jump_host(cross_file)
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill(
+                            "F04 LOADED PROJECT EXTERNAL SAVE"
+                        )
+                        async with page.expect_response(
+                            lambda response: "/spcode/host-file-write" in response.url
+                        ) as project_save:
+                            await (
+                                page.locator(".preview-editor-toolbar")
+                                .get_by_role("button", name="保存", exact=True)
+                                .click()
+                            )
+                        assert (await (await project_save.value).json())["data"][
+                            "saved"
+                        ]
+                        assert (
+                            cross_file.read_bytes()
+                            == b"F04 LOADED PROJECT EXTERNAL SAVE"
+                        )
+                        assert await session_context() == before_context
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="取消", exact=True)
+                            .click()
+                        )
+                        cross_file.write_bytes(b"F02 REAL C DRIVE\n")
+                        checks.append(
+                            "F04 actual cross-drive save with loaded project and active worktree leaves their real backend state unchanged"
+                        )
+
                     async with client.get(
                         origin + "/api/v1/chat/file-access-mode",
                         headers=headers,
@@ -1001,6 +1371,39 @@ async def main() -> None:
                         .wait_for()
                     )
                     await page.screenshot(path=str(evidence / "host-browsing-en.png"))
+                    if args.editing:
+                        await click("F01 other")
+                        await page.get_by_role(
+                            "button", name="Edit", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill(
+                            "PRESERVED ENGLISH DRAFT"
+                        )
+                        other.write_bytes(b"EXTERNAL DISK CHANGE\n")
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="Save", exact=True)
+                            .click()
+                        )
+                        await page.get_by_text(
+                            "The file changed on disk.", exact=False
+                        ).wait_for()
+                        await page.wait_for_timeout(350)
+                        await page.screenshot(
+                            path=str(evidence / "file-edit-conflict-en.png")
+                        )
+                        page.once("dialog", lambda dialog: dialog.accept())
+                        await page.get_by_role(
+                            "button", name="Reload from disk", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("EXTERNAL DISK CHANGE", exact=True)
+                            .wait_for()
+                        )
+                        other.write_bytes(original_other)
+                        await click("F01 whole")
+
                     await page.evaluate(
                         "localStorage.setItem('astrbot-locale', 'zh-CN')"
                     )
@@ -1043,8 +1446,12 @@ async def main() -> None:
                     )
                     await page.get_by_role("button", name="编辑", exact=True).click()
                     await page.locator(".cm-content").fill("UNSAVED PROJECT DRAFT")
-                    page.once("dialog", lambda dialog: dialog.dismiss())
                     await click("F01 whole")
+                    await (
+                        page.get_by_role("dialog")
+                        .get_by_role("button", name="取消", exact=True)
+                        .click()
+                    )
                     assert (
                         await page.locator(".cm-content").inner_text()
                         == "UNSAVED PROJECT DRAFT"

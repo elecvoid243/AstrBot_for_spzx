@@ -20,7 +20,7 @@
        are adopted; own echoes (=== lastEmitted) are ignored.
      - If the CM core modules fail to load, the component silently
        degrades to a plain textarea implementing the same contract.
-     - setBaseline() (exposed): pin the current buffer as the new
+     - setBaseline(content?) (exposed): pin the saved content as the new
        dirty baseline without remounting. Parents call it after a
        successful save so the save button disables and the next
        keystroke correctly transitions back to dirty. props.modelValue
@@ -69,6 +69,7 @@ let view: any = null;
  *  is our own echo and must not reset the buffer. */
 let lastEmitted: string | null = null;
 let lastDirty = false;
+let savedBaseline: string | null = null;
 let destroyed = false;
 
 // Buffer for the textarea fallback path (the CM path keeps its buffer
@@ -76,7 +77,7 @@ let destroyed = false;
 const buffer = ref(props.modelValue);
 
 function checkDirty(doc: string): void {
-  const d = doc !== props.modelValue;
+  const d = doc !== (savedBaseline ?? props.modelValue);
   if (d !== lastDirty) {
     lastDirty = d;
     emit("dirty-change", d);
@@ -181,6 +182,7 @@ watch(
   (v) => {
     if (v === lastEmitted) return;
     lastEmitted = null;
+    savedBaseline = null;
     if (view) {
       const cur = view.state.doc.toString();
       if (cur !== v) {
@@ -235,16 +237,10 @@ function focus(): void {
   else textareaRef.value?.focus();
 }
 
-// 2026-07-26 toolbar parity: post-save baseline pin. Mirrors the
-// `editBuffer.value = content` reset that DocumentManager does on
-// successful save — here we can't reassign props.modelValue (it
-// tracks the file's original content, not the saved buffer), so we
-// just flip lastDirty to false and let checkDirty re-transition
-// naturally on the next keystroke.
-function setBaseline(): void {
-  if (!lastDirty) return;
-  lastDirty = false;
-  emit("dirty-change", false);
+// Pin the content actually saved, retaining any edits typed while saving.
+function setBaseline(content = getValue()): void {
+  savedBaseline = content;
+  checkDirty(getValue());
 }
 defineExpose({ focus, getValue, setBaseline });
 

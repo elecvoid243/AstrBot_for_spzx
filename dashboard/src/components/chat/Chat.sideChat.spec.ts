@@ -147,6 +147,7 @@ function setup() {
   // The real unmount callback also disposes unrelated viewport/media resources.
   const environment = {
     ...state,
+    confirmFileNavigation: async () => true,
     chatApi,
     ref,
     computed,
@@ -265,7 +266,7 @@ describe("Chat side-chat lifecycle", () => {
   it("preserves a branch selected while side-chat creation is pending", async () => {
     const ctx = setup();
     const pending = ctx.openSideChat();
-    ctx.openThreadPanel({ thread_id: "branch-new" });
+    await ctx.openThreadPanel({ thread_id: "branch-new" });
 
     ctx.requests[0].resolve({
       data: { status: "ok", data: { thread_id: "late-side" } },
@@ -323,9 +324,9 @@ describe("Chat side-chat lifecycle", () => {
     async (sidebar) => {
       const ctx = setup();
       const pending = ctx.openSideChat();
-      if (sidebar === "refs") ctx.openRefsSidebar({ title: "new refs" });
-      if (sidebar === "reasoning") ctx.openReasoningPanel({ blockIndex: 1 });
-      if (sidebar === "git") ctx.toggleGitDiffSidebar();
+      if (sidebar === "refs") await ctx.openRefsSidebar({ title: "new refs" });
+      if (sidebar === "reasoning") await ctx.openReasoningPanel({ blockIndex: 1 });
+      if (sidebar === "git") await ctx.toggleGitDiffSidebar();
       if (sidebar === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
       if (sidebar === "goal") ctx.goalSidebarOpen.value = true;
       if (sidebar === "todo") ctx.todoMenuOpen.value = true;
@@ -359,7 +360,7 @@ describe("Chat side-chat lifecycle", () => {
     "retains an existing branch when opening %s without a pending create",
     async (panel) => {
       const ctx = setup();
-      ctx.openThreadPanel({ thread_id: "retained-branch" });
+      await ctx.openThreadPanel({ thread_id: "retained-branch" });
       if (panel === "goal") ctx.goalSidebarOpen.value = true;
       else ctx.todoMenuOpen.value = true;
       await nextTick();
@@ -490,7 +491,7 @@ describe("Chat side-chat lifecycle", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = setup();
     const pending = ctx.openSideChat();
-    ctx.openThreadPanel({ thread_id: "kept-branch" });
+    await ctx.openThreadPanel({ thread_id: "kept-branch" });
     ctx.chatApi.deleteThread.mockRejectedValue(new Error("delete failed"));
     ctx.requests[0].resolve({
       data: { status: "ok", data: { thread_id: "stale-side" } },

@@ -147,8 +147,10 @@ const previewState = computed(() =>
 // below (tree click / breadcrumb / symlink target / search result /
 // history pick) consults it first so an unsaved edit is never
 // discarded silently.
-const previewRef = ref<{ confirmLeaveEditing: () => boolean } | null>(null);
-function confirmLeaveEditing(): boolean {
+const previewRef = ref<{ confirmLeaveEditing: () => Promise<boolean> } | null>(
+  null,
+);
+async function confirmLeaveEditing(): Promise<boolean> {
   return previewRef.value?.confirmLeaveEditing() ?? true;
 }
 
@@ -181,8 +183,8 @@ const breadcrumbPath = computed<string>(() => {
   );
 });
 
-function onEntryNavigate(entry: SpcodeFileBrowserEntry): void {
-  if (!confirmLeaveEditing()) return;
+async function onEntryNavigate(entry: SpcodeFileBrowserEntry): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   // Dangling symlink: EntryList already filters clicks on these.
   if (entry.type === "directory") {
     emit("navigate", { dirPath: entry.path, previewPath: null });
@@ -204,16 +206,16 @@ function onEntryNavigate(entry: SpcodeFileBrowserEntry): void {
 // previewPath: null, but we no longer second-guess that here —
 // the breadcrumb is the single source of truth for whether the
 // destination is a file or a directory.
-function onBreadcrumbNavigate(payload: {
+async function onBreadcrumbNavigate(payload: {
   dirPath: string;
   previewPath: string | null;
-}): void {
-  if (!confirmLeaveEditing()) return;
+}): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   emit("navigate", payload);
 }
 
-function onPreviewTargetNavigate(resolvedTarget: string): void {
-  if (!confirmLeaveEditing()) return;
+async function onPreviewTargetNavigate(resolvedTarget: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   // Symlink "go to target": treat as a file click so the right pane
   // previews it; if the target is actually a directory, the
   // previewComposable will land on a directory state and the user
@@ -231,8 +233,11 @@ function onPreviewTargetNavigate(resolvedTarget: string): void {
  *  it must close to reveal the file the user just picked. Declining
  *  the dirty-edit confirm keeps the panel open so the user can pick
  *  a different result (same as DocumentManager). */
-function onSearchOpenFile(p: { path: string; line: number }): void {
-  if (!confirmLeaveEditing()) return;
+async function onSearchOpenFile(p: {
+  path: string;
+  line: number;
+}): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   searchOpen.value = false;
   emit("open-file", p);
 }
@@ -241,7 +246,8 @@ function onSearchOpenFile(p: { path: string; line: number }): void {
 // These are intentionally thin — the parent (GitDiffSidebar) is the
 // one that owns the bucket and the dialog state, so FileBrowserView
 // stays a pure adapter and stays test-mountable without a sidebar.
-function onRecentSelect(p: { path: string }): void {
+async function onRecentSelect(p: { path: string }): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   emit("recent-select", p);
 }
 function onRecentRemove(p: { path: string }): void {
@@ -259,6 +265,7 @@ function onRecentClear(): void {
  *  being previewed — calling previewComposable.refresh() with no
  *  preview path would force it into the path_not_found error state. */
 async function refresh(): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   const tasks: Promise<void>[] = [dirComposable.refresh()];
   if (props.previewPath) {
     tasks.push(previewComposable.refresh());
@@ -266,6 +273,9 @@ async function refresh(): Promise<void> {
   await Promise.all(tasks);
 }
 
+async function browseHost(): Promise<void> {
+  if (await confirmLeaveEditing()) emit("browse-host");
+}
 defineExpose({ refresh, confirmLeaveEditing });
 
 // ── Draggable divider (left/right pane resize) ──────────────────
@@ -497,8 +507,8 @@ watch(
 /** History-panel event handlers. Both accept the SHA emitted by
  *  <DocumentHistoryPanel> and set local state; the lazy watchers
  *  above / the gitFile composable do the actual fetching. */
-function onHistorySelectRevision(sha: string): void {
-  if (!confirmLeaveEditing()) return;
+async function onHistorySelectRevision(sha: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   if (!gitLogPath.value) return;
   compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
@@ -507,8 +517,8 @@ function onHistorySelectRevision(sha: string): void {
   // computed above re-fires when state transitions to "ok".
   void gitFile.fetchRef(gitLogPath.value, sha);
 }
-function onHistoryCompareCurrent(sha: string): void {
-  if (!confirmLeaveEditing()) return;
+async function onHistoryCompareCurrent(sha: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   if (!gitLogPath.value) return;
   compareRange.value = null; // 与 range 比较互斥
   selectedRevision.value = sha;
@@ -556,8 +566,8 @@ function onSetRangeBase(sha: string | null): void {
   rangeBase.value = sha;
 }
 
-function onCompareRange(from: string, to: string): void {
-  if (!confirmLeaveEditing()) return;
+async function onCompareRange(from: string, to: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   if (!gitLogPath.value) return;
   compareRange.value = { from, to };
   selectedRevision.value = null; // 与单版本查看互斥
@@ -679,7 +689,8 @@ function onSearchClose(e: KeyboardEvent): void {
  *  fake bar is only mounted when the panel is closed). The watcher
  *  above already handles focus + query reset on every transition,
  *  so this just flips the ref. */
-function toggleSearch(): void {
+async function toggleSearch(): Promise<void> {
+  if (!searchOpen.value && !(await confirmLeaveEditing())) return;
   searchOpen.value = !searchOpen.value;
 }
 
@@ -820,7 +831,7 @@ onBeforeUnmount(() => {
           class="file-browser-search-trigger"
           :title="tm('spcodeProjectLoad.diffSidebar.search.button')"
           :aria-label="tm('spcodeProjectLoad.diffSidebar.search.button')"
-          @click="searchOpen = true"
+          @click="toggleSearch"
         >
           <v-icon size="16" class="file-browser-search-trigger__icon"
             >mdi-magnify</v-icon
@@ -908,7 +919,7 @@ onBeforeUnmount(() => {
           icon="mdi-folder-search-outline"
           :title="tm('spcodeProjectLoad.fileBrowser.host.browse')"
           :aria-label="tm('spcodeProjectLoad.fileBrowser.host.browse')"
-          @click="emit('browse-host')"
+          @click="browseHost"
         />
         <!-- File-area fullscreen toggle (2026-07-18). Icon-only v-btn
              matching the sidebar header chrome; the icon swaps between

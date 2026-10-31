@@ -77,4 +77,16 @@ describe("CodeMirrorEditor (textarea fallback)", () => {
     await ta.setValue("abcd");
     expect(w.emitted("dirty-change")?.at(-1)).toEqual([true]);
   });
+  it("pins the saved request without replacing a newer draft or treating the old text as clean", async () => {
+    const w = await mountEditor("original");
+    const ta = w.find("textarea");
+    await ta.setValue("request content");
+    await ta.setValue("original");
+    w.vm.setBaseline("request content");
+    expect(w.vm.getValue()).toBe("original");
+    expect(w.emitted("dirty-change")?.at(-1)).toEqual([true]);
+    await ta.setValue("request content");
+    expect(w.emitted("dirty-change")?.at(-1)).toEqual([false]);
+    w.unmount();
+  });
 });

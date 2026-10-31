@@ -1212,6 +1212,7 @@
       :session-id="currSessionId"
     />
     <GitDiffSidebar
+      ref="gitDiffSidebarRef"
       v-model="gitDiffSidebarOpen"
       :file-reference="fileReferenceNavigation"
       :is-dark="isDark"
@@ -1250,7 +1251,12 @@ import {
   ref,
   watch,
 } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import {
+  useRoute,
+  useRouter,
+  onBeforeRouteLeave,
+  onBeforeRouteUpdate,
+} from "vue-router";
 import { useDisplay } from "vuetify";
 import { isAxiosError } from "axios";
 import {
@@ -1887,6 +1893,14 @@ function formatTodoUpdatedAt(value: string | undefined): string {
   if (sameDay) return hm;
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
 }
+const gitDiffSidebarRef = ref<{
+  confirmLeaveEditing: () => Promise<boolean>;
+} | null>(null);
+async function confirmFileNavigation(): Promise<boolean> {
+  return (await gitDiffSidebarRef.value?.confirmLeaveEditing?.()) ?? true;
+}
+onBeforeRouteLeave(() => confirmFileNavigation());
+onBeforeRouteUpdate(() => confirmFileNavigation());
 const gitDiffSidebarOpen = ref(false);
 const fileReferenceNavigation = ref<FileReferenceNavigation | null>(null);
 let fileReferenceRequestId = 0;
@@ -2648,8 +2662,12 @@ watch(
 
 watch(
   () => chatHeader.workspaceFilesOpen,
-  (open) => {
+  async (open) => {
     if (!open) return;
+    if (!(await confirmFileNavigation())) {
+      chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+      return;
+    }
     threadSelection.visible = false;
     closeThreadPanel();
     reasoningPanelOpen.value = false;
@@ -3147,6 +3165,7 @@ function showChatWorkspace() {
 }
 
 async function openProviderWorkspace() {
+  if (!(await confirmFileNavigation())) return;
   closeSecondaryPanels();
   activeWorkspace.value = "providers";
   const targetPath = `${basePath()}/models`;
@@ -3188,6 +3207,7 @@ function formatUsagePercent(value: number) {
 }
 
 async function startNewChat() {
+  if (!(await confirmFileNavigation())) return;
   showChatWorkspace();
   selectedProjectId.value = null;
   replyTarget.value = null;
@@ -3234,6 +3254,7 @@ function openEditProjectDialog(project: Project) {
 }
 
 async function selectProject(projectId: string) {
+  if (!(await confirmFileNavigation())) return;
   showChatWorkspace();
   selectedProjectId.value = projectId;
   currSessionId.value = "";
@@ -3641,6 +3662,7 @@ function handleSidebarSessionClick(sessionId: string) {
 }
 
 async function deleteCheckedSessions() {
+  if (!(await confirmFileNavigation())) return;
   const ids = [...checkedSessionIds.value];
   if (!ids.length) return;
   const message = tm("batch.confirmDelete", { count: ids.length });
@@ -3697,6 +3719,7 @@ async function deleteCheckedSessions() {
 /** 2026-08-13 batch archive: moves the checked sessions into the archive
  * via the batch endpoint, then refreshes the lists and badge. */
 async function archiveCheckedSessions() {
+  if (!(await confirmFileNavigation())) return;
   const ids = [...checkedSessionIds.value];
   if (!ids.length) return;
   const message = tm("batch.confirmArchive", { count: ids.length });
@@ -3794,6 +3817,7 @@ function openArchivedSession(session: ArchivedSession) {
 }
 
 async function archiveSidebarSession(session: Session | ArchivedSession) {
+  if (!(await confirmFileNavigation())) return;
   const message = tm("conversation.archiveConfirm", {
     name: sessionTitle(session),
   });
@@ -3858,6 +3882,7 @@ async function refreshArchivedAffectedProjects(session?: ArchivedSession) {
 
 /** Archive a project session row (from ProjectList). */
 async function archiveProjectSession(sessionId: string, projectId: string) {
+  if (!(await confirmFileNavigation())) return;
   const projectSession = (projectSessionsById.value[projectId] || []).find(
     (session) => session.session_id === sessionId,
   );
@@ -3882,6 +3907,7 @@ async function archiveProjectSession(sessionId: string, projectId: string) {
 }
 
 async function deleteSidebarSession(session: Session) {
+  if (!(await confirmFileNavigation())) return;
   const title = sessionTitle(session);
   const message = tm("conversation.confirmDelete", { name: title });
   if (!(await askForConfirmation(message, confirmDialog))) return;
@@ -3953,6 +3979,7 @@ async function selectProjectSession(sessionId: string) {
  * currently opened project — the parameter is optional so the project page
  * button keeps sending none. */
 async function createProjectSession(projectId = selectedProjectId.value) {
+  if (!(await confirmFileNavigation())) return;
   if (!projectId) return;
   // The sidebar shortcut is reachable while the provider workspace is open;
   // leaving `activeWorkspace` on "providers" would create the session without
@@ -4013,6 +4040,7 @@ async function deleteProjectSession(
   sessionId: string,
   projectId = selectedProjectId.value,
 ) {
+  if (!(await confirmFileNavigation())) return;
   // 2026-09-01: session deleted — drop its "already loaded" dirty tag.
   clearSessionLoadedTag(sessionId);
   await deleteSession(sessionId);
@@ -4067,6 +4095,7 @@ watch(projectDialogOpen, (open) => {
 });
 
 async function selectSession(sessionId: string, pushRoute = true) {
+  if (!(await confirmFileNavigation())) return;
   showChatWorkspace();
   clearChoiceAttention(sessionId);
   selectedProjectId.value = null;
@@ -4982,10 +5011,7 @@ function jumpToIndex(targetIndex: number, animate = true): Promise<boolean> {
   );
 }
 
-function onDotClick(marker: {
-  id: string | number;
-  index: number;
-}) {
+function onDotClick(marker: { id: string | number; index: number }) {
   if (marker.index >= 0) {
     void jumpToIndex(marker.index);
   } else {
@@ -5318,7 +5344,12 @@ function onThreadPanelToggle(open: boolean) {
 }
 
 /** Show a side chat, displacing the other right-hand sidebars. */
-function openSideChatPanel(thread: ChatThread) {
+async function openSideChatPanel(thread: ChatThread) {
+  const sessionId = currSessionId.value;
+  const generation = sideChatGeneration;
+  if (!(await confirmFileNavigation())) return;
+  if (currSessionId.value !== sessionId || sideChatGeneration !== generation)
+    return;
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   reasoningPanelOpen.value = false;
   activeReasoningTarget.value = null;
@@ -5409,7 +5440,7 @@ async function openSideChat(): Promise<void> {
       toast.error(tm("thread.createFailed"));
       return;
     }
-    openSideChatPanel(thread);
+    await openSideChatPanel(thread);
     void loadSideChats();
   } catch (error) {
     if (generation !== sideChatGeneration || sessionId !== currSessionId.value)
@@ -5425,12 +5456,13 @@ async function openSideChat(): Promise<void> {
   }
 }
 
-function openSideChatThread(thread: SideChatEntry) {
+async function openSideChatThread(thread: SideChatEntry) {
   sideChatMenuOpen.value = false;
-  openSideChatPanel(thread);
+  await openSideChatPanel(thread);
 }
 
-function openThreadPanel(thread: ChatThread) {
+async function openThreadPanel(thread: ChatThread) {
+  if (!(await confirmFileNavigation())) return;
   // Opening a branch cancels a pending side-chat creation and hides the
   // panel; the side chat itself persists.
   closeThreadPanel();
@@ -5442,7 +5474,8 @@ function openThreadPanel(thread: ChatThread) {
   threadPanelOpen.value = true;
 }
 
-function openRefsSidebar(refs: unknown) {
+async function openRefsSidebar(refs: unknown) {
+  if (!(await confirmFileNavigation())) return;
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   reasoningPanelOpen.value = false;
@@ -5452,7 +5485,7 @@ function openRefsSidebar(refs: unknown) {
   refsSidebarOpen.value = true;
 }
 
-function openReasoningPanel(payload: {
+async function openReasoningPanel(payload: {
   message: ChatRecord;
   blockIndex: number;
   // 2026-08-11 file-change visibility: optional locate target when the
@@ -5462,6 +5495,7 @@ function openReasoningPanel(payload: {
   // the thinking text of this block.
   query?: string;
 }) {
+  if (!(await confirmFileNavigation())) return;
   chatHeader.SET_WORKSPACE_FILES_OPEN(false);
   closeThreadPanel();
   refsSidebarOpen.value = false;
@@ -5474,7 +5508,8 @@ function openReasoningPanel(payload: {
 }
 
 /** Status-row workspace capsule: first click opens, second click closes. */
-function toggleGitDiffSidebar(): void {
+async function toggleGitDiffSidebar(): Promise<void> {
+  if (!(await confirmFileNavigation())) return;
   if (gitDiffSidebarOpen.value) {
     gitDiffSidebarOpen.value = false;
     return;

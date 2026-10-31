@@ -32,6 +32,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
     """OpenAI-compatible stateless Responses API provider adapter."""
 
     _REASONING_STATE_TYPE = "openai_responses_reasoning"
+    _request_input_key = "input"
 
     def __init__(self, provider_config: dict, provider_settings: dict) -> None:
         """Initialize the Responses API client.
@@ -309,6 +310,25 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
 
         return payloads, context_query
 
+    def _native_tool_schema(self, tools: ToolSet | None, model: str) -> list[dict]:
+        """Build Responses function tools without the Chat Completions wrapper.
+
+        Args:
+            tools: Functions offered by the caller, or None.
+            model: Effective model; Responses uses the same format for all models.
+
+        Returns:
+            Flat Responses tool definitions for delivery and usage provenance.
+        """
+        return (
+            [
+                {"type": "function", **tool.get("function", {})}
+                for tool in tools.openai_schema()
+            ]
+            if tools
+            else []
+        )
+
     async def _query(
         self,
         payloads: dict,
@@ -331,10 +351,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
             TypeError: If the SDK returns an unexpected response type.
         """
         if tools:
-            response_tools = []
-            for tool in tools.openai_schema():
-                function = tool.get("function", {})
-                response_tools.append({"type": "function", **function})
+            response_tools = self._native_tool_schema(tools, payloads.get("model", ""))
             if response_tools:
                 payloads["tools"] = response_tools
                 payloads["tool_choice"] = payloads.get("tool_choice", "auto")
@@ -403,10 +420,7 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
             EmptyModelOutputError: If the stream ends without a terminal event.
         """
         if tools:
-            response_tools = []
-            for tool in tools.openai_schema():
-                function = tool.get("function", {})
-                response_tools.append({"type": "function", **function})
+            response_tools = self._native_tool_schema(tools, payloads.get("model", ""))
             if response_tools:
                 payloads["tools"] = response_tools
                 payloads["tool_choice"] = payloads.get("tool_choice", "auto")

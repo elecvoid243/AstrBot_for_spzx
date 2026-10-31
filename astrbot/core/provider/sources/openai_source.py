@@ -55,6 +55,7 @@ from .request_retry import retry_provider_request
 )
 class ProviderOpenAIOfficial(Provider):
     _ERROR_TEXT_CANDIDATE_MAX_CHARS = 4096
+    _request_input_key = "messages"
 
     @classmethod
     def _truncate_error_text_candidate(cls, text: str) -> str:
@@ -537,6 +538,24 @@ class ProviderOpenAIOfficial(Provider):
             )
         payloads["messages"] = final
 
+    def _native_tool_schema(self, tools: ToolSet | None, model: str) -> list[dict]:
+        """Build the protocol-specific tool definitions used by native requests.
+
+        Args:
+            tools: Functions offered by the caller, or None.
+            model: Effective model whose schema compatibility rules apply.
+
+        Returns:
+            Native tool definitions for both delivery and usage provenance.
+        """
+        return (
+            tools.get_func_desc_openai_style(
+                omit_empty_parameter_field="gemini" in model.lower()
+            )
+            if tools
+            else []
+        )
+
     async def _query(
         self,
         payloads: dict,
@@ -546,11 +565,7 @@ class ProviderOpenAIOfficial(Provider):
         conversation_id: str | None = None,
     ) -> LLMResponse:
         if tools:
-            model = payloads.get("model", "").lower()
-            omit_empty_param_field = "gemini" in model
-            tool_list = tools.get_func_desc_openai_style(
-                omit_empty_parameter_field=omit_empty_param_field,
-            )
+            tool_list = self._native_tool_schema(tools, payloads.get("model", ""))
             if tool_list:
                 payloads["tools"] = tool_list
                 payloads["tool_choice"] = payloads.get("tool_choice", "auto")
@@ -570,8 +585,6 @@ class ProviderOpenAIOfficial(Provider):
         if isinstance(custom_extra_body, dict):
             extra_body.update(custom_extra_body)
         self._apply_provider_specific_request_overrides(payloads, extra_body)
-
-        model = payloads.get("model", "").lower()
 
         self._sanitize_assistant_messages(payloads)
 
@@ -616,11 +629,7 @@ class ProviderOpenAIOfficial(Provider):
     ) -> AsyncGenerator[LLMResponse, None]:
         """流式查询API，逐步返回结果"""
         if tools:
-            model = payloads.get("model", "").lower()
-            omit_empty_param_field = "gemini" in model
-            tool_list = tools.get_func_desc_openai_style(
-                omit_empty_parameter_field=omit_empty_param_field,
-            )
+            tool_list = self._native_tool_schema(tools, payloads.get("model", ""))
             if tool_list:
                 payloads["tools"] = tool_list
                 payloads["tool_choice"] = payloads.get("tool_choice", "auto")
@@ -1267,13 +1276,9 @@ class ProviderOpenAIOfficial(Provider):
         if func_tool and not func_tool.empty():
             payloads["tool_choice"] = tool_choice
 
-        original_messages = copy.deepcopy(payloads["messages"])
+        original_input = copy.deepcopy(payloads[self._request_input_key])
         original_tools = copy.deepcopy(
-            func_tool.openai_schema(
-                omit_empty_parameter_field="gemini" in payloads["model"].lower()
-            )
-            if func_tool
-            else []
+            self._native_tool_schema(func_tool, payloads["model"])
         )
         llm_response = None
         max_retries = 10
@@ -1329,7 +1334,7 @@ class ProviderOpenAIOfficial(Provider):
         # holds its original request. Keep usage, but do not certify that prefix.
         llm_response.usage_matches_request = (
             llm_response.usage_matches_request
-            and payloads["messages"] == original_messages
+            and payloads[self._request_input_key] == original_input
             and payloads.get("tools", []) == original_tools
         )
         return llm_response
@@ -1364,13 +1369,9 @@ class ProviderOpenAIOfficial(Provider):
         if func_tool and not func_tool.empty():
             payloads["tool_choice"] = tool_choice
 
-        original_messages = copy.deepcopy(payloads["messages"])
+        original_input = copy.deepcopy(payloads[self._request_input_key])
         original_tools = copy.deepcopy(
-            func_tool.openai_schema(
-                omit_empty_parameter_field="gemini" in payloads["model"].lower()
-            )
-            if func_tool
-            else []
+            self._native_tool_schema(func_tool, payloads["model"])
         )
         max_retries = 10
         available_api_keys = self.api_keys.copy()
@@ -1394,7 +1395,7 @@ class ProviderOpenAIOfficial(Provider):
                 ):
                     if usage_matches_request is None:
                         usage_matches_request = (
-                            payloads["messages"] == original_messages
+                            payloads[self._request_input_key] == original_input
                             and payloads.get("tools", []) == original_tools
                         )
                     response.usage_matches_request = (

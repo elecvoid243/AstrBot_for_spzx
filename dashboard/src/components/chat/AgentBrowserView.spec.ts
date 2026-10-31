@@ -30,6 +30,86 @@ beforeEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it.each([
+    { scroll_y: 500 },
+    { scroll_x: 100 },
+    { viewport_width: 1024 },
+    { viewport_height: 600 },
+  ])(
+    "waits for matching pixels after an action changes coordinate space: %o",
+    async (change) => {
+      const page = {
+        ...current,
+        sequence: 1,
+        url: "/form",
+        document_id: "doc",
+        viewport_width: 1280,
+        viewport_height: 720,
+        scroll_x: 0,
+        scroll_y: 0,
+        image: "OLD_SCROLL_PIXELS",
+        mime_type: "image/jpeg",
+        width: 1280,
+        height: 720,
+      };
+      get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(ok(page));
+      const view = mount(AgentBrowserView, {
+        props: { chatId: "chat-1", visible: true },
+      });
+      await flushPromises();
+      const emit = async (event: unknown) => {
+        stream.enqueue(
+          new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
+        );
+        await flushPromises();
+      };
+      const moved = { ...page, ...change };
+      const action = {
+        action_id: "scrolled-input",
+        kind: "type",
+        status: "succeeded",
+      };
+      const highlight = {
+        ...moved,
+        action_id: action.action_id,
+        x: 640,
+        y: 360,
+        expires_at: Date.now() / 1000 + 2,
+      };
+      await emit({
+        ...moved,
+        image: undefined,
+        type: "action",
+        sequence: 2,
+        current_action: null,
+        recent_actions: [action],
+        highlight,
+      });
+      expect(view.find("img").exists()).toBe(false);
+      expect(view.find(".agent-browser-target").exists()).toBe(false);
+      // A late old-space frame must not acquire the new-space marker.
+      await emit({
+        ...page,
+        type: "frame",
+        sequence: 3,
+        recent_actions: [action],
+        highlight,
+      });
+      expect(view.find(".agent-browser-target").exists()).toBe(false);
+      await emit({
+        ...moved,
+        image: "MATCHING_PIXELS",
+        type: "frame",
+        sequence: 4,
+        recent_actions: [action],
+        highlight,
+      });
+      expect(view.get("img").attributes("src")).toContain("MATCHING_PIXELS");
+      expect(view.find(".agent-browser-target").exists()).toBe(true);
+      view.unmount();
+    },
+  );
+
   it("renders safe action states and scales an actual marker, clearing it on reload and cancellation", async () => {
     const page = {
       ...current,

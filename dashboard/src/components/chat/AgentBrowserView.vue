@@ -183,12 +183,16 @@ async function follow(
         )
           continue;
         // Every event is self-contained; sequence ordering also rejects old tabs.
-        // A target/navigation state clears old pixels before its first new frame.
+        // Preserve pixels only while their document and coordinate space match.
         const previous = state.value;
         const unchanged =
           previous?.tab_id === event.tab_id &&
           previous?.url === event.url &&
-          previous?.document_id === event.document_id;
+          previous?.document_id === event.document_id &&
+          previous?.viewport_width === event.viewport_width &&
+          previous?.viewport_height === event.viewport_height &&
+          previous?.scroll_x === event.scroll_x &&
+          previous?.scroll_y === event.scroll_y;
         state.value =
           event.type === "frame"
             ? event

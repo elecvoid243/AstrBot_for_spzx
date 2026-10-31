@@ -361,7 +361,7 @@ async def test_summary_uses_its_own_capacity_without_recursive_compression(limit
         params = {}
         summary.provider_config["max_context_tokens"] = 1500
     elif limited_by == "admission":
-        params = {"max_completion_tokens": 10}
+        params = {"max_completion_tokens": 1990}
     else:
         params = {limited_by: 1990}
     main = BudgetProvider(

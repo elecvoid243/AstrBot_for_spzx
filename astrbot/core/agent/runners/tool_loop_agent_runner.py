@@ -52,6 +52,7 @@ from astrbot.core.agent_team_execution import (
     ProcessPersistenceError,
     current_team_execution,
     model_delivery,
+    resolve_model_output_limit,
 )
 from astrbot.core.exceptions import (
     AstrBotError,
@@ -1251,31 +1252,22 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self.req.extra_user_content_parts
         )
         params = copy.deepcopy(self.req.llm_params or {})
+        output_token_budget = resolve_model_output_limit(
+            params,
+            self.provider.provider_config.get("custom_extra_body"),
+            default=getattr(self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0),
+            admitted_limit=receipt["max_output_tokens"] if receipt else None,
+        )
         if receipt:
             params[
                 "max_completion_tokens"
                 if "max_completion_tokens" in params
                 else "max_tokens"
-            ] = receipt["max_output_tokens"]
+            ] = output_token_budget
         payload["llm_params"] = params
         if include_model:
             payload["model"] = self.req.model
         effective_model = payload.get("model") or self.provider.get_model()
-        extra_body = self.provider.provider_config.get("custom_extra_body", {})
-        if not isinstance(extra_body, dict):
-            extra_body = {}
-        output_token_budget = params.get("max_completion_tokens") or params.get(
-            "max_tokens"
-        )
-        configured_output = extra_body.get("max_completion_tokens") or extra_body.get(
-            "max_tokens"
-        )
-        if isinstance(configured_output, int) and configured_output > 0:
-            output_token_budget = (
-                min(receipt["max_output_tokens"], configured_output)
-                if receipt
-                else configured_output
-            )
         max_context_tokens = self.provider.provider_config.get("max_context_tokens", 0)
         threshold = int(
             self.provider.provider_config.get("compress_threshold_tokens", 0) or 0

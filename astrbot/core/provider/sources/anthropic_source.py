@@ -15,8 +15,8 @@ from astrbot import logger
 from astrbot.api.provider import Provider
 from astrbot.core.agent.message import AudioURLPart, ContentPart, ImageURLPart, TextPart
 from astrbot.core.agent_team_execution import (
-    apply_model_output_limit,
     current_model_usage,
+    resolve_model_output_limit,
 )
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.provider.entities import LLMResponse, TokenUsage
@@ -42,6 +42,7 @@ from .request_retry import retry_provider_request, retry_provider_request_contex
 )
 class ProviderAnthropic(Provider):
     _PROMPT_CACHE_CONTROL = {"type": "ephemeral"}
+    DEFAULT_MAX_OUTPUT_TOKENS = 65536
 
     @staticmethod
     def _ensure_usable_response(
@@ -568,12 +569,27 @@ class ProviderAnthropic(Provider):
             payloads["tools"] = list(merged.values())
             extra_body = {k: v for k, v in extra_body.items() if k != "tools"}
 
-        if "max_tokens" not in payloads:
-            payloads["max_tokens"] = 65536
         self._apply_explicit_prompt_cache_breakpoints(payloads)
         self._apply_thinking_config(payloads, llm_params)
         self._sanitize_assistant_messages(payloads)
-        apply_model_output_limit(payloads, "max_tokens", extra_body)
+        receipt = current_model_usage.get()
+        payloads["max_tokens"] = resolve_model_output_limit(
+            {**payloads, **(llm_params or {})},
+            extra_body,
+            default=self.DEFAULT_MAX_OUTPUT_TOKENS,
+            admitted_limit=receipt["max_output_tokens"] if receipt else None,
+        )
+        # Resolve configuration overrides before SDK serialization; leave the
+        # shared provider configuration intact and emit only the native field.
+        for alias in ("max_completion_tokens", "max_output_tokens", "maxOutputTokens"):
+            payloads.pop(alias, None)
+        for alias in (
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "maxOutputTokens",
+        ):
+            extra_body.pop(alias, None)
 
         try:
             completion = await retry_provider_request(
@@ -705,12 +721,25 @@ class ProviderAnthropic(Provider):
         reasoning_content = ""
         reasoning_signature = ""
 
-        if "max_tokens" not in payloads:
-            payloads["max_tokens"] = 65536
         self._apply_explicit_prompt_cache_breakpoints(payloads)
         self._apply_thinking_config(payloads, llm_params)
         self._sanitize_assistant_messages(payloads)
-        apply_model_output_limit(payloads, "max_tokens", extra_body)
+        receipt = current_model_usage.get()
+        payloads["max_tokens"] = resolve_model_output_limit(
+            {**payloads, **(llm_params or {})},
+            extra_body,
+            default=self.DEFAULT_MAX_OUTPUT_TOKENS,
+            admitted_limit=receipt["max_output_tokens"] if receipt else None,
+        )
+        for alias in ("max_completion_tokens", "max_output_tokens", "maxOutputTokens"):
+            payloads.pop(alias, None)
+        for alias in (
+            "max_tokens",
+            "max_completion_tokens",
+            "max_output_tokens",
+            "maxOutputTokens",
+        ):
+            extra_body.pop(alias, None)
 
         async with retry_provider_request_context(
             "Anthropic",

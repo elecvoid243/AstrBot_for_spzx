@@ -130,6 +130,49 @@ def model_delivery(receipt: dict | None) -> Iterator[None]:
         current_model_usage.reset(token)
 
 
+def resolve_model_output_limit(
+    llm_params: dict | None,
+    extra_body: dict | None = None,
+    *,
+    default: int = 0,
+    admitted_limit: int | None = None,
+) -> int:
+    """Resolve the output limit shared by context checks and native delivery.
+
+    Args:
+        llm_params: Per-request output parameters.
+        extra_body: Native configuration overrides, applied after request fields.
+        default: Known native default; zero means the default is unknown.
+        admitted_limit: Optional execution ceiling. Every explicit positive limit
+            remains an upper bound when execution admission is active.
+
+    Returns:
+        Effective positive output limit, or zero when no limit is known.
+    """
+    params = llm_params if isinstance(llm_params, dict) else {}
+    overrides = extra_body if isinstance(extra_body, dict) else {}
+    if isinstance(admitted_limit, int) and admitted_limit > 0:
+        return min(
+            [admitted_limit]
+            + [
+                value
+                for body in (params, overrides)
+                for alias in (
+                    "max_tokens",
+                    "max_completion_tokens",
+                    "max_output_tokens",
+                    "maxOutputTokens",
+                )
+                if isinstance(value := body.get(alias), int) and value > 0
+            ]
+        )
+    for body in (overrides, params):
+        value = body.get("max_completion_tokens") or body.get("max_tokens")
+        if isinstance(value, int) and value > 0:
+            return value
+    return default if isinstance(default, int) and default > 0 else 0
+
+
 def apply_model_output_limit(
     payload: dict, field: str, extra_body: dict | None = None
 ) -> None:

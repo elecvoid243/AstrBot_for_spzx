@@ -351,6 +351,9 @@ async def test_auxiliary_admission_rechecks_final_input_and_output(change):
     try:
         provider = BudgetProvider([selected_tool()], max_context_tokens=1000)
         runner, executor = await parameter_runner(provider)
+        if change == "output":
+            # Admission may tighten this requested cap but must never raise it.
+            runner.req.llm_params = {"max_tokens": 999}
         with pytest.raises(
             ToolProtocolIntegrityError if change == "protocol" else ContextCapacityError
         ):

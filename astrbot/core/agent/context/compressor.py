@@ -341,6 +341,7 @@ class LLMSummaryCompressor:
             ProcessPersistenceError,
             current_team_execution,
             model_delivery,
+            resolve_model_output_limit,
         )
 
         from .round_utils import split_into_rounds
@@ -462,31 +463,22 @@ class LLMSummaryCompressor:
                             or params.get("max_tokens"),
                         }
                     )
-                    params[
-                        "max_completion_tokens"
-                        if "max_completion_tokens" in params
-                        else "max_tokens"
-                    ] = receipt["max_output_tokens"]
                 response = None
                 try:
-                    output_budget = params.get("max_completion_tokens") or params.get(
-                        "max_tokens"
+                    output_budget = resolve_model_output_limit(
+                        params,
+                        self.provider.provider_config.get("custom_extra_body"),
+                        default=getattr(self.provider, "DEFAULT_MAX_OUTPUT_TOKENS", 0),
+                        admitted_limit=receipt["max_output_tokens"]
+                        if receipt
+                        else None,
                     )
-                    extra_body = self.provider.provider_config.get(
-                        "custom_extra_body", {}
-                    )
-                    configured_output = (
-                        extra_body.get("max_completion_tokens")
-                        or extra_body.get("max_tokens")
-                        if isinstance(extra_body, dict)
-                        else None
-                    )
-                    if isinstance(configured_output, int) and configured_output > 0:
-                        output_budget = (
-                            min(receipt["max_output_tokens"], configured_output)
-                            if receipt
-                            else configured_output
-                        )
+                    if receipt:
+                        params[
+                            "max_completion_tokens"
+                            if "max_completion_tokens" in params
+                            else "max_tokens"
+                        ] = output_budget
                     explicit_output = (
                         isinstance(output_budget, int) and output_budget > 0
                     )

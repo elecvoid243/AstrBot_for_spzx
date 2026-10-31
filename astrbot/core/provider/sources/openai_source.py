@@ -1267,6 +1267,14 @@ class ProviderOpenAIOfficial(Provider):
         if func_tool and not func_tool.empty():
             payloads["tool_choice"] = tool_choice
 
+        original_messages = copy.deepcopy(payloads["messages"])
+        original_tools = copy.deepcopy(
+            func_tool.openai_schema(
+                omit_empty_parameter_field="gemini" in payloads["model"].lower()
+            )
+            if func_tool
+            else []
+        )
         llm_response = None
         max_retries = 10
         available_api_keys = self.api_keys.copy()
@@ -1317,6 +1325,13 @@ class ProviderOpenAIOfficial(Provider):
             if last_exception is None:
                 raise Exception("未知错误")
             raise last_exception
+        # Recovery can shorten history or remove schemas while the caller still
+        # holds its original request. Keep usage, but do not certify that prefix.
+        llm_response.usage_matches_request = (
+            llm_response.usage_matches_request
+            and payloads["messages"] == original_messages
+            and payloads.get("tools", []) == original_tools
+        )
         return llm_response
 
     async def text_chat_stream(
@@ -1349,6 +1364,14 @@ class ProviderOpenAIOfficial(Provider):
         if func_tool and not func_tool.empty():
             payloads["tool_choice"] = tool_choice
 
+        original_messages = copy.deepcopy(payloads["messages"])
+        original_tools = copy.deepcopy(
+            func_tool.openai_schema(
+                omit_empty_parameter_field="gemini" in payloads["model"].lower()
+            )
+            if func_tool
+            else []
+        )
         max_retries = 10
         available_api_keys = self.api_keys.copy()
         chosen_key = random.choice(available_api_keys)
@@ -1362,12 +1385,21 @@ class ProviderOpenAIOfficial(Provider):
                 query_kwargs = {}
                 if conversation_id:
                     query_kwargs["conversation_id"] = conversation_id
+                usage_matches_request = None
                 async for response in self._query_stream(
                     payloads,
                     func_tool,
                     request_max_retries=request_max_retries,
                     **query_kwargs,
                 ):
+                    if usage_matches_request is None:
+                        usage_matches_request = (
+                            payloads["messages"] == original_messages
+                            and payloads.get("tools", []) == original_tools
+                        )
+                    response.usage_matches_request = (
+                        response.usage_matches_request and usage_matches_request
+                    )
                     yield response
                 break
             except Exception as e:

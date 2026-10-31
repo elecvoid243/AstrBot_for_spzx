@@ -395,6 +395,13 @@ class LLMResponse:
     """The ID of the response. For chunked responses, it's the ID of the chunk; for non-chunked responses, it's the ID of the response."""
     usage: TokenUsage | None = None
     """The usage of the response. For chunked responses, it's the usage of the chunk; for non-chunked responses, it's the usage of the response."""
+    usage_matches_request: bool = True
+    """Whether the successful input still matches the caller's original request.
+
+    False prevents reuse as a context-counting baseline, without discarding usage
+    for billing or statistics. True is the compatibility default for providers
+    that do not report internal request changes.
+    """
 
     def __init__(
         self,
@@ -415,6 +422,7 @@ class LLMResponse:
         is_chunk: bool = False,
         id: str | None = None,
         usage: TokenUsage | None = None,
+        usage_matches_request: bool = True,
     ) -> None:
         """初始化 LLMResponse
 
@@ -425,6 +433,8 @@ class LLMResponse:
             tools_call_args (List[Dict[str, any]], optional): 工具调用参数. Defaults to None.
             tools_call_name (List[str], optional): 工具调用名称. Defaults to None.
             raw_completion (ChatCompletion, optional): 原始响应, OpenAI 格式. Defaults to None.
+            usage_matches_request: Whether input usage still corresponds to the
+                original caller request after provider-side recovery.
 
         """
         if tools_call_args is None:
@@ -447,6 +457,7 @@ class LLMResponse:
         self.reasoning_signature = reasoning_signature
         self.raw_completion = raw_completion
         self.is_chunk = is_chunk
+        self.usage_matches_request = usage_matches_request
 
         if id is not None:
             self.id = id

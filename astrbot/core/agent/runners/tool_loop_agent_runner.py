@@ -2069,6 +2069,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 and llm_response.role != "err"
                 and llm_response.usage is not None
                 and llm_response.usage.input > 0
+                and llm_response.usage_matches_request
                 and self._pending_request_usage is not None
             ):
                 self._pending_request_usage.input_tokens = llm_response.usage.input

@@ -124,6 +124,7 @@ import GitLogView from "@/components/chat/message_list_comps/GitLogView.vue";
 import DocumentManager from "@/components/chat/message_list_comps/DocumentManager.vue";
 import TerminalView from "@/components/chat/TerminalView.vue";
 import WebBrowserView from "@/components/chat/WebBrowserView.vue";
+import AgentBrowserView from "@/components/chat/AgentBrowserView.vue";
 import BranchSwitchConfirmDialog from "@/components/chat/message_list_comps/BranchSwitchConfirmDialog.vue";
 import BranchDeleteConfirmDialog from "@/components/chat/message_list_comps/BranchDeleteConfirmDialog.vue";
 const { tm } = useModuleI18n("features/chat");
@@ -317,6 +318,7 @@ function validateCurrentPath(
 const props = defineProps<{
   modelValue: boolean;
   isDark?: boolean;
+  chatId?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
@@ -409,6 +411,7 @@ const viewMode = ref<
 // Web preview mounts lazily on first activation, then stays mounted under
 // v-show so switching to another tab and back does not reload the page.
 const browserMounted = ref(viewMode.value === "browser");
+const browserMode = ref<"preview" | "agent">("preview");
 watch(viewMode, (mode) => {
   if (mode === "browser") browserMounted.value = true;
 });
@@ -5933,10 +5936,34 @@ watch(
           />
           <!-- 2026-10-22 web-preview: mount the browser body on first activation;
               v-show keeps it alive so switching tabs does not reload the page. -->
+          <div v-if="viewMode === 'browser'" class="d-flex ga-2 pa-2">
+            <v-btn
+              variant="text"
+              size="small"
+              :active="browserMode === 'preview'"
+              @click="browserMode = 'preview'"
+            >
+              {{ tm("agentBrowser.preview") }}
+            </v-btn>
+            <v-btn
+              variant="text"
+              size="small"
+              :active="browserMode === 'agent'"
+              @click="browserMode = 'agent'"
+            >
+              {{ tm("agentBrowser.title") }}
+            </v-btn>
+          </div>
           <WebBrowserView
             v-if="browserMounted"
-            v-show="viewMode === 'browser'"
+            v-show="viewMode === 'browser' && browserMode === 'preview'"
             :project-root="projectRoot"
+          />
+          <AgentBrowserView
+            v-if="browserMounted && browserMode === 'agent'"
+            v-show="viewMode === 'browser'"
+            :chat-id="chatId"
+            :visible="modelValue && viewMode === 'browser'"
           />
         </div>
 

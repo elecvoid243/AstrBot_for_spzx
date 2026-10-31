@@ -1,4 +1,13 @@
 {
+  "agentBrowser": {
+    "title": "Agent 浏览器",
+    "preview": "网页预览",
+    "refresh": "刷新快照",
+    "expired": "浏览器已变更，请刷新重连。",
+    "unavailable": "浏览器不可用。",
+    "loading": "正在读取快照…",
+    "empty": "请在当前聊天让 Agent 打开网页，然后刷新快照。"
+  },
   "title": "聊天吧!",
   "subtitle": "与AI助手进行对话",
   "settings": {

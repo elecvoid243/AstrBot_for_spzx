@@ -1,4 +1,13 @@
 {
+  "agentBrowser": {
+    "title": "Agent browser",
+    "preview": "Web preview",
+    "refresh": "Refresh snapshot",
+    "expired": "Browser changed. Refresh to reconnect.",
+    "unavailable": "Browser unavailable.",
+    "loading": "Loading snapshot…",
+    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot."
+  },
   "title": "Давай пообщаемся!",
   "subtitle": "Общение с AI-помощником",
   "markers": {

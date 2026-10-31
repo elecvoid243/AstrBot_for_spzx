@@ -1148,6 +1148,7 @@
     <GitDiffSidebar
       v-model="gitDiffSidebarOpen"
       :is-dark="isDark"
+      :chat-id="currSessionId"
       @fullscreen-change="gitDiffFullscreen = $event"
     />
     <WorkspaceFilesPanel

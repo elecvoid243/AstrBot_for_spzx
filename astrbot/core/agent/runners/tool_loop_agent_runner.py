@@ -1358,6 +1358,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             contexts = self.request_context_manager.truncator.fix_messages(contexts)
         # Persistence callbacks and later history appends cannot mutate this view.
         payload["contexts"] = copy.deepcopy(contexts)
+        # Internal delivery metadata is removed before calling the provider.
+        payload["output_token_budget"] = output_token_budget
         return payload
 
     async def _iter_llm_responses(
@@ -1446,6 +1448,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if prepared is None:
                 return
             payload.update(prepared)
+            payload.pop("output_token_budget", None)
             contexts = payload["contexts"]
             func_tool = payload["func_tool"]
             before_admission = {
@@ -1487,6 +1490,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             if prepared is None:
                 return
             payload.update(prepared)
+            output_token_budget = payload.pop("output_token_budget")
             contexts = payload["contexts"]
             func_tool = payload["func_tool"]
             await self._save_call_checkpoint(
@@ -1530,7 +1534,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 try:
                     while True:
                         try:
-                            with model_delivery(receipt):
+                            with model_delivery(
+                                receipt, output_limit=output_token_budget
+                            ):
                                 resp = await self._await_or_stop(anext(stream))  # type: ignore
                         except StopAsyncIteration:
                             return
@@ -1543,7 +1549,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 finally:
                     await self._close_executor(stream)
             else:
-                with model_delivery(receipt):
+                with model_delivery(receipt, output_limit=output_token_budget):
                     resp = await self._await_or_stop(self.provider.text_chat(**payload))
                 if resp is not None:
                     await self._report_metered_call(receipt, resp)
@@ -3475,7 +3481,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                     ),
                 )
-                with model_delivery(receipt):
+                with model_delivery(
+                    receipt, output_limit=prepared.pop("output_token_budget")
+                ):
                     response = await self._await_or_stop(
                         self.provider.text_chat(
                             **prepared,

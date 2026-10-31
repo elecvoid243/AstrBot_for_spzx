@@ -492,7 +492,7 @@ class LLMSummaryCompressor:
                             f"Summary context capacity exceeded: {input_tokens} input "
                             f"tokens cannot fit with its output budget in the {window}-token window."
                         )
-                    with model_delivery(receipt):
+                    with model_delivery(receipt, output_limit=output_budget):
                         if schemas is None and func_tool is not None:
                             # Tool-free recovery omits the original schema argument.
                             response = await self.provider.text_chat(

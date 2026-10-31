@@ -111,22 +111,33 @@ current_team_execution: ContextVar[NodeExecutionBinding | None] = ContextVar(
 current_model_usage: ContextVar[dict | None] = ContextVar(
     "current_model_usage", default=None
 )
+current_model_output_limit: ContextVar[int | None] = ContextVar(
+    "current_model_output_limit", default=None
+)
 
 
 @contextmanager
-def model_delivery(receipt: dict | None) -> Iterator[None]:
-    """Expose a mutable receipt to native transport retries during one await.
+def model_delivery(
+    receipt: dict | None, *, output_limit: int | None = None
+) -> Iterator[None]:
+    """Expose accounting and the checked output cap during native delivery.
 
     Args:
         receipt: Admitted delivery, updated in place when transport retries occur.
+        output_limit: Final output budget checked for this request. A missing or
+            nonpositive value leaves the native output limit unspecified.
 
     Yields:
         None while the provider executes in the existing member invocation.
     """
     token = current_model_usage.set(receipt)
+    limit_token = current_model_output_limit.set(
+        output_limit if isinstance(output_limit, int) and output_limit > 0 else None
+    )
     try:
         yield
     finally:
+        current_model_output_limit.reset(limit_token)
         current_model_usage.reset(token)
 
 
@@ -176,7 +187,7 @@ def resolve_model_output_limit(
 def apply_model_output_limit(
     payload: dict, field: str, extra_body: dict | None = None
 ) -> None:
-    """Apply the admitted output ceiling after native provider configuration.
+    """Apply checked and admitted output ceilings after native configuration.
 
     Args:
         payload: Actual native provider request.
@@ -184,9 +195,18 @@ def apply_model_output_limit(
         extra_body: Optional body overrides that otherwise replace SDK parameters.
     """
     receipt = current_model_usage.get()
-    if receipt is None:
+    checked_limit = current_model_output_limit.get()
+    limits = [
+        limit
+        for limit in (
+            receipt["max_output_tokens"] if receipt else None,
+            checked_limit,
+        )
+        if isinstance(limit, int) and limit > 0
+    ]
+    if not limits:
         return
-    cap = receipt["max_output_tokens"]
+    cap = min(limits)
     for body in [payload, extra_body] if extra_body is not None else [payload]:
         for alias in (
             "max_tokens",

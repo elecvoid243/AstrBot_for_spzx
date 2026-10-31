@@ -2025,6 +2025,7 @@ async def main() -> None:
                     checks.append("re-enabled plugin restores the real host preview")
                     if args.side_chat:
                         # Use the actual side-chat composer, runner and persisted history.
+                        side_original_target = target.read_bytes()
                         target.write_text(
                             "".join(f"F06 source line {n}\n" for n in range(1, 81)),
                             encoding="utf-8",
@@ -2418,6 +2419,7 @@ async def main() -> None:
                         await page.get_by_role(
                             "link", name="F01 whole", exact=True
                         ).first.wait_for(timeout=60000)
+                        target.write_bytes(side_original_target)
                         other.write_text("SECOND TARGET\n", encoding="utf-8")
                         await click("F01 other")
                     if args.review_corrections:

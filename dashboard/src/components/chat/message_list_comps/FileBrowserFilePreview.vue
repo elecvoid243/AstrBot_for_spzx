@@ -18,6 +18,7 @@ import {
 } from "@/utils/shiki";
 import { copyToClipboard } from "@/utils/clipboard";
 import type { FileBrowserFetchState } from "@/composables/useSpcodeFileBrowser";
+import type { FileReferenceTarget } from "@/composables/fileReference";
 import { useDisplay } from "vuetify";
 import {
   extractLineContext,
@@ -92,6 +93,9 @@ const props = defineProps<{
    * watcher lives.
    */
   scrollToLine?: number | null;
+  scrollToEndLine?: number | null;
+  /** Host references are read-only until the independent write contract is available. */
+  hostReference?: FileReferenceTarget | null;
   /**
    * 2026-07-17 workspace file editor: repo-relative path of the
    * previewed file (the same value FileBrowserView feeds to the
@@ -430,6 +434,7 @@ const IMAGE_EXTS = [
  *  working copy and historical-raw views route through BinaryPreview,
  *  which re-fetches bytes via /spcode/file-binary with ETag caching. */
 const isImageFile = computed<boolean>(() => {
+  if (props.hostReference) return false;
   if (props.state.kind !== "file") return false;
   const name = props.state.snapshot.meta.name.toLowerCase();
   return IMAGE_EXTS.some((ext) => name.endsWith(ext));
@@ -439,14 +444,14 @@ const isImageFile = computed<boolean>(() => {
  *  view. Binary / too-large / loading are excluded by the template
  *  branches themselves (they win over the rendered branch). */
 const mdRenderActive = computed<boolean>(
-  () => isMarkdownFile.value && mdViewMode.value === "rendered",
+  () => isMarkdownFile.value && mdViewMode.value === "rendered" && !props.scrollToLine,
 );
 
 /** Meta-header toggle visibility. Hidden in edit mode (the editor
  *  owns the body) and in historical-diff mode (a unified diff is
  *  not markdown-renderable). */
 const canToggleMdView = computed<boolean>(
-  () => isMarkdownFile.value && !editMode.value && !isHistoricalDiff.value,
+  () => isMarkdownFile.value && !editMode.value && !isHistoricalDiff.value && !props.scrollToLine,
 );
 
 watch(
@@ -500,6 +505,7 @@ function onEditDirtyChange(dirty: boolean): void {
 }
 
 const canEdit = computed<boolean>(() => {
+  if (props.hostReference) return false;
   if (props.state.kind !== "file") return false;
   // Historical revisions are read-only.
   if (props.selectedRevision) return false;
@@ -761,6 +767,8 @@ function formatMtime(mtime: number | null): string {
 
 // Map the composable's reason codes to localized messages.
 const REASON_I18N_KEYS: Record<string, string> = {
+  spcode_unavailable: "spcodeProjectLoad.fileBrowser.reference.pluginUnavailable",
+  not_a_file: "spcodeProjectLoad.fileBrowser.reference.notAFile",
   path_not_found: "spcodeProjectLoad.fileBrowser.error.pathNotFound",
   permission_denied: "spcodeProjectLoad.fileBrowser.error.permissionDenied",
   special_file: "spcodeProjectLoad.fileBrowser.error.specialFile",
@@ -774,6 +782,14 @@ function localizedReason(reason: string): string {
   }
   return tm("spcodeProjectLoad.fileBrowser.error.unknown", { reason });
 }
+
+const referenceRangeInvalid = computed(() => {
+  if (!props.hostReference?.startLine || props.state.kind !== "file" ||
+      typeof props.state.snapshot.content !== "string") return false;
+  const content = props.state.snapshot.content;
+  const count = content ? content.split("\n").length - (content.endsWith("\n") ? 1 : 0) : 1;
+  return (props.hostReference.endLine ?? props.hostReference.startLine) > count;
+});
 
 // --- inline comments (Chunk 3) ---
 // The file-comments store is a module-level singleton (see
@@ -1381,7 +1397,7 @@ onBeforeUnmount(() => {
                  alike — the on-disk working copy is opened either
                  way. Same affordance as DocumentManager's toolbar. -->
             <v-btn
-              v-if="!editMode"
+              v-if="!editMode && !hostReference"
               size="x-small"
               variant="text"
               color="primary"
@@ -1393,11 +1409,18 @@ onBeforeUnmount(() => {
             </v-btn>
           </div>
 
+          <div v-if="hostReference" class="pa-2 text-caption" role="status">
+            {{ hostReference.path }} · {{ tm('spcodeProjectLoad.fileBrowser.reference.readOnly') }}
+            <span v-if="referenceRangeInvalid" class="text-error">
+              {{ tm('spcodeProjectLoad.fileBrowser.reference.invalidRange') }}
+            </span>
+          </div>
+
           <!-- 2026-08-13 one-click code check / format toolbar. Rendered
                only for the live working copy (not edit mode, not a
                historical revision); the bar itself hides non-code files. -->
           <CodeCheckFormatBar
-            v-if="!editMode && !props.selectedRevision"
+            v-if="!editMode && !props.selectedRevision && !hostReference"
             :file-path="props.fileRelativePath ?? ''"
             :worktree="props.worktree ?? null"
             :is-dark="isDark"
@@ -1674,7 +1697,8 @@ onBeforeUnmount(() => {
             :active-edit-line="activeEditLine"
             :active-edit-comment-id="activeEditCommentId"
             :is-dark="isDark"
-            :scroll-to-line="props.scrollToLine ?? null"
+            :scroll-to-line="referenceRangeInvalid ? null : props.scrollToLine ?? null"
+            :scroll-to-end-line="props.scrollToEndLine ?? null"
             :annotations="inlineAnnotations.annotationsForFile(state.snapshot.meta.path)"
             @request-add="onRequestAdd"
             @request-edit="onRequestEdit"

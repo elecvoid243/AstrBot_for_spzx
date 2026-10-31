@@ -119,3 +119,17 @@ BACKGROUND_TASK_RESULT_WOKE_SYSTEM_PROMPT = (
 # these hosts are base64 encoded
 BLOCKED = {"dGZid2h2d3IuY2xvdWQuc2VhbG9zLmlv", "a291cmljaGF0"}
 decoded_blocked = [base64.b64decode(b).decode("utf-8") for b in BLOCKED]
+CHATUI_FILE_REFERENCE_SYSTEM_PROMPT = """
+When referring to a file on the AstrBot host in a ChatUI reply, use an explicit
+Markdown link with its host-absolute path and forward slashes, for example
+[source](G:/project/main.py), [line](G:/project/main.py#L12), or
+[range](/home/user/project/main.py#L12-L18). Line numbers are one-based source
+text lines; a range is closed and must not be reversed. Percent-encode spaces,
+#, %, parentheses and other URL-special filename characters (for example
+[notes](G:/My%20Project/notes%23draft.md#L2-L4)). Never use file:// URLs,
+project-relative paths, or a sandbox/container path as a host file reference.
+Use the actual known host path; do not invent paths or line numbers. Plain paths
+and code blocks are not clickable references. Clicking reads the current disk
+contents through the authenticated spcode service, does not attach the file to
+the conversation, and does not grant you additional filesystem permissions.
+"""

@@ -1213,6 +1213,7 @@
     />
     <GitDiffSidebar
       v-model="gitDiffSidebarOpen"
+      :file-reference="fileReferenceNavigation"
       :is-dark="isDark"
       :chat-id="currSessionId"
       @fullscreen-change="gitDiffFullscreen = $event"
@@ -1327,6 +1328,7 @@ import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import GoalSidebar from "@/components/chat/message_list_comps/GoalSidebar.vue";
 import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/TodoListPanel.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
+import { OPEN_FILE_REFERENCE, type FileReferenceNavigation } from "@/composables/fileReference";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
@@ -1886,6 +1888,12 @@ function formatTodoUpdatedAt(value: string | undefined): string {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
 }
 const gitDiffSidebarOpen = ref(false);
+const fileReferenceNavigation = ref<FileReferenceNavigation | null>(null);
+let fileReferenceRequestId = 0;
+provide(OPEN_FILE_REFERENCE, (target) => {
+  fileReferenceNavigation.value = { ...target, requestId: ++fileReferenceRequestId };
+  if (!gitDiffSidebarOpen.value) toggleGitDiffSidebar();
+});
 const gitDiffFullscreen = ref(false);
 
 /* ── todo summary bar 拖动 ───────────────────────────

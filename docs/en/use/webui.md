@@ -43,6 +43,33 @@ After starting AstrBot, you can access the admin panel by visiting `http://local
 
 For first-time login, AstrBot generates a random initial password and prints it in startup logs. Please read the startup log line containing the WebUI credential and use that password to log in (username is usually `astrbot`).
 
+## Open Agent file references
+
+In the main chat, click an explicit file link in an Agent reply to open the
+existing file pane. No loaded project is required; a host file outside the
+project opens at the same absolute location even after you switch projects.
+The pane reads the **current disk contents**, including when you reopen an old
+reply. This does not attach the file to the chat or change Agent permissions.
+
+Use `[name](G:/project/main.py)` for a whole file, `#L12` for one source line,
+or `#L12-L18` for a closed source-line range. POSIX host paths such as
+`[source](/home/user/main.py#L12)` are supported too. Use forward slashes and
+percent-encode spaces and special filename characters, for example
+`[notes](G:/My%20Project/notes%23draft.md#L2-L4)`. Plain path text, code blocks,
+relative links, and web links keep their existing behavior. Incomplete streamed
+links do not read files.
+
+![A file reference opens current source lines in the existing pane](./images/file-reference-preview.png)
+
+The first file-reference preview is read-only. It uses authenticated spcode
+services and host account permissions, independently of the Agent's project,
+worktree, execution directory or permission mode. Install or enable spcode if
+the pane asks for it. Missing, unreadable, binary, oversized files and invalid
+line ranges display an explicit state; an invalid range is not highlighted.
+Markdown references with a line target show source text so line numbers remain
+meaningful. The existing project Files, Git, Documents, Terminal and Browser
+entries remain in the same workbench.
+
 ## Two-Factor Authentication
 
 AstrBot WebUI supports TOTP (Time-based One-Time Password) based two-factor authentication.

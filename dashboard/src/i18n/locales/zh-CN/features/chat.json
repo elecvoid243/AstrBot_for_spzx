@@ -871,6 +871,12 @@
       "expandAria": "展开 {path} 的评论"
     },
     "fileBrowser": {
+      "reference": {
+        "pluginUnavailable": "文件预览需要 spcode。请安装或启用 spcode 插件并检查服务后重试。",
+        "readOnly": "当前磁盘内容 · 文件引用只读预览",
+        "invalidRange": "引用的源文本行范围超出当前文件。",
+        "notAFile": "引用目标不是普通文件。"
+      },
       "viewMode": {
         "files": "工作区",
         "diff": "Git 变更"

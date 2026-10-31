@@ -241,7 +241,7 @@ async function refresh(): Promise<void> {
   await Promise.all(tasks);
 }
 
-defineExpose({ refresh });
+defineExpose({ refresh, confirmLeaveEditing });
 
 // ── Draggable divider (left/right pane resize) ──────────────────
 // leftPanePercent is the share of horizontal space the entry list

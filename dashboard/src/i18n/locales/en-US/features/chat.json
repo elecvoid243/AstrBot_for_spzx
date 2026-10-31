@@ -871,6 +871,12 @@
       "expandAria": "Expand comments for {path}"
     },
     "fileBrowser": {
+      "reference": {
+        "pluginUnavailable": "File preview requires spcode. Install or enable the spcode plugin and check its service, then retry.",
+        "readOnly": "Current disk contents · Read-only reference preview",
+        "invalidRange": "The referenced source line range is outside the current file.",
+        "notAFile": "The reference does not point to a regular file."
+      },
       "viewMode": {
         "files": "Files",
         "diff": "Git Diff"

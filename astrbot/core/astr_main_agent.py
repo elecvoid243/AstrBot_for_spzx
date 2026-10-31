@@ -23,6 +23,7 @@ from astrbot.core.astr_agent_hooks import MAIN_AGENT_HOOKS
 from astrbot.core.astr_agent_run_util import AgentRunner
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.astr_main_agent_resources import (
+    CHATUI_FILE_REFERENCE_SYSTEM_PROMPT,
     CHATUI_INLINE_GENUI_SYSTEM_PROMPT,
     CHATUI_SPECIAL_DEFAULT_PERSONA_PROMPT,
     LIVE_MODE_SYSTEM_PROMPT,
@@ -639,6 +640,9 @@ async def _ensure_persona_and_skills(
     """Ensure persona and skills are applied to the request's system prompt or user prompt."""
     if req.system_prompt is None:
         req.system_prompt = ""
+
+    if event.get_platform_name() == "webchat":
+        req.system_prompt += CHATUI_FILE_REFERENCE_SYSTEM_PROMPT
 
     if event.get_extra("enable_inline_genui"):
         req.system_prompt += CHATUI_INLINE_GENUI_SYSTEM_PROMPT

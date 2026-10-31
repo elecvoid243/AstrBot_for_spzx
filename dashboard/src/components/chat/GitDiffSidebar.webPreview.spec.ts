@@ -33,6 +33,7 @@ const WebBrowserViewStub = defineComponent({
 });
 
 const STUBS = {
+  FileBrowserFilePreview: true,
   FileBrowserView: true,
   DocumentManager: true,
   GitDiffBodyContent: true,
@@ -193,6 +194,24 @@ describe("GitDiffSidebar web preview tab", () => {
     const preview = wrapper.find(".web-browser-stub");
     expect(preview.exists()).toBe(true);
     expect(isHidden(preview.element)).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps a host reference independent of project and worktree status refreshes", async () => {
+    const target = { path: "G:/outside/source.py", startLine: 2, endLine: 4, requestId: 1 };
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, fileReference: target },
+      global: { stubs: STUBS },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "FileBrowserFilePreview" }).props("hostReference")).toEqual(target);
+    const status = useSpcodeProjectStatus();
+    status.setUnloaded();
+    await flushPromises();
+    status.setLoaded(status.status.value.umo ?? "reference-test", "F:/another-project", 1);
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "FileBrowserFilePreview" }).props("hostReference")).toEqual(target);
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
     wrapper.unmount();
   });
 });

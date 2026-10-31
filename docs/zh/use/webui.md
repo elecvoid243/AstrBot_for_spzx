@@ -259,6 +259,10 @@ WebChat 未显式选择人格时，仍使用聊天页的默认系统提示词开
 
 ## Agent 浏览器实时观测
 
+Windows 离线部署需同时携带 Browser Use `0.2.0` 完整插件包、包含本功能的 AstrBot 后端以及匹配的 Dashboard 构建。插件 ZIP 不升级宿主或前端；仅有 AstrBot `4.28.1` 版本号不足以判断是否包含这些改动。对照插件 `runtime/manifest.json` 的 `astrbot_revision`、`dashboard_sha256` 和前端 `dist/assets/browser-observer-build.json`。停止 AstrBot 后分别安装，并通过 `--webui-dir` 指向匹配的 `dist`。下方打包命令还会在前端 ZIP 旁输出匹配后端源码 ZIP 和 SHA256；后端源码包需要已有的兼容 AstrBot Python 环境，现有 data 目录应与新代码分开保留。插件安装器拒绝覆盖现有插件，持久数据保存在独立的 `plugin_data` 中。
+
+维护者先执行 Dashboard 生产构建，再用 `python scripts/package_browser_observer_dashboard.py --output <dashboard.zip>` 生成含版本和提交信息的前端包及 SHA256。完整链路可用 `python scripts/browser_observer_acceptance.py --plugin-zip <完整插件.zip> --dashboard-dir <dist> --evidence-dir <尚不存在的临时目录>` 验证：从最终 ZIP 安装、真实登录、完整聊天界面、确定性本地模型、真实插件管理与 Chromium。需要 AstrBot 开发依赖及 `aiohttp playwright psutil`。该本机代理隔离验证不替代实际断网目标机和真实 vLLM 联调。入口缺失时先核对配套版本和缓存；`runtime_unavailable` 查看插件加载日志与独立解释器路径；`busy` 在占用聊天关闭浏览器；401/403 需登录并使用自己拥有的聊天。
+
 启用配套的 Browser Use 插件后，在当前聊天让 Agent 打开网页。未加载代码项目时，点击输入框上方的 **Agent 浏览器** 直接打开观测；加载项目后，入口保持为 **工作区 → Web 预览 → Agent 浏览器**，先显示当前快照，再持续更新实际 Chromium 的画面。画面会跟随 Agent 选择的标签页，当前标签关闭后也会跟随到新的当前页。工具栏显示地址、标题、标签、图像尺寸、观测序号和“实时观测”状态。画面中的登录态和表单值来自 Agent 控制的浏览器，图片只读，不会加入模型上下文。
 
 画面下方显示当前动作和最近 32 个动作结果，包含导航、点击、输入、滚动和标签页操作。执行中或等待、成功、失败、超时和取消都有独立状态。输入摘要统一隐藏内容；实际执行提供可靠坐标时，侧栏按视口比例短暂显示操作位置圆环。导航（包括原地址重载）、切页、滚动、下一动作或两秒后，旧标记失效。无法定位时只显示动作摘要。动作状态先报告新的滚动位置或视口时，会先清空旧画面，等待匹配的新帧后再显示标记。取消不撤销已经发生的网页操作。

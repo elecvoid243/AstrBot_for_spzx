@@ -4,6 +4,7 @@
      Layout mirrors ReasoningSidebar.vue so resizing the sidebar takes
      space from .chat-main (flex sibling) instead of overlaying it. -->
 <script setup lang="ts">
+import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
 import {
   ref,
   watch,
@@ -850,6 +851,7 @@ watch(
           projectRoot.value,
         );
         if (fileBrowserCurrentPath.value !== validated) {
+          if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
           fileBrowserCurrentPath.value = validated;
         }
       }
@@ -894,6 +896,10 @@ watch(
     prevWorktreePaths = newPaths;
     if (!topologyChanged) return;
 
+    // An open file remains a valid manual target even if its project changes.
+    // Explicit navigation consults the editor guard before replacing it.
+    if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
+
     // Validate selectedWorktree
     if (
       selectedWorktree.value &&
@@ -933,6 +939,7 @@ watch(
 // different worktree. The preview path is also cleared: a preview
 // pointing into the old worktree is meaningless in the new one.
 watch(selectedWorktree, (newVal) => {
+  if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
   const root = newVal ?? mainWorktreePath.value;
   if (root && fileBrowserCurrentPath.value !== root) {
     fileBrowserCurrentPath.value = root;
@@ -2132,12 +2139,49 @@ async function closeSidebar(): Promise<void> {
 }
 defineExpose({ confirmLeaveEditing });
 
+function onHostSaved(saved?: SavedFileSnapshot): void {
+  const state = hostFile.state.value;
+  if (
+    !saved?.revision ||
+    state.kind !== "file" ||
+    saved.path !== state.snapshot.meta.path ||
+    saved.requestId !== hostFileTarget.value?.requestId
+  )
+    return;
+  hostFile.state.value = {
+    kind: "file",
+    snapshot: {
+      content: saved.content,
+      meta: {
+        ...state.snapshot.meta,
+        revision: saved.revision,
+        encoding: saved.encoding ?? state.snapshot.meta.encoding,
+        newline: saved.newline ?? state.snapshot.meta.newline,
+        size: saved.size ?? state.snapshot.meta.size,
+        fetchedAt: Date.now(),
+      },
+    },
+  };
+}
+
 /** Enter project files only for an explicit user navigation, preserving dirty edits. */
 async function showProjectFiles(): Promise<boolean> {
   if (!(await confirmLeaveEditing())) return false;
   // Without a project, the Files tab still represents the open host reference.
-  if (currentRoot.value) hostFileTarget.value = null;
-  else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
+  if (currentRoot.value) {
+    hostFileTarget.value = null;
+    const root = currentRoot.value
+      .replace(/\\/g, "/")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+    const preview = fileBrowserPreviewPath.value
+      ?.replace(/\\/g, "/")
+      .toLowerCase();
+    if (preview && preview !== root && !preview.startsWith(root + "/")) {
+      fileBrowserPreviewPath.value = null;
+      fileBrowserCurrentPath.value = currentRoot.value;
+    }
+  } else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
   viewMode.value = "files";
   return true;
 }
@@ -2741,6 +2785,7 @@ watch(
       selectedWorktree.value = null;
       if (
         !hostFileTarget.value &&
+        !(viewMode.value === "files" && fileBrowserPreviewPath.value) &&
         (viewMode.value !== "browser" || browserMode.value !== "agent")
       )
         emit("update:modelValue", false);
@@ -2801,6 +2846,7 @@ async function onWorktreeChange(path: string | null): Promise<void> {
   // dismiss the prompt?" boundary. Reset so a different non-Git
   // worktree re-presents the init flow.
   repoPromptDismissed.value = false;
+  fileBrowserPreviewPath.value = null;
   selectedWorktree.value = path;
   selectedScope.value = DEFAULT_SCOPE;
   pendingScope.value = null;
@@ -5992,6 +6038,7 @@ watch(
             @navigate="onFileBrowserNavigate"
             @open-path="openHostPath"
             @retry-host="hostFile.refresh()"
+            @saved-host="onHostSaved"
             @browse-host="hostDirectoryPickerOpen = true"
             @open-file="onFileOpen"
             @recent-select="onRecentSelect"

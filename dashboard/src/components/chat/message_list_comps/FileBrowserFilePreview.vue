@@ -1,14 +1,8 @@
 <!-- Author: elecvoid243, 2026-06-20
      Spec: docs/superpowers/specs/2026-06-20-git-diff-sidebar-file-browser-design.md §4.5 -->
 <script setup lang="ts">
-import {
-  computed,
-  inject,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from "vue";
+import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import {
   detectLanguage,
@@ -133,11 +127,10 @@ const emit = defineEmits<{
    */
   (e: "back-to-current"): void;
   /**
-   * 2026-07-17 workspace file editor: fired after a successful save
-   * so the parent re-fetches the working-copy content (same handler
-   * as `retry`).
+   * Successful saves refresh project previews or project the saved host
+   * snapshot, without replacing the editor's newer draft.
    */
-  (e: "saved"): void;
+  (e: "saved", snapshot?: SavedFileSnapshot): void;
   /**
    * 2026-07-18 editor toolbar parity: fired after a successful rename
    * (with the new repo-relative path) so the parent refreshes the file
@@ -579,6 +572,7 @@ async function onSaveEdit(baseRevision = editRevision.value): Promise<boolean> {
   if (!isEditDirty.value) return true;
   saveSuccessMessage.value = null;
   const generation = editGeneration;
+  const requestId = props.hostReference?.requestId;
   const savedContent = editorRef.value?.getValue() ?? "";
   const path =
     baseRevision !== undefined && props.state.kind === "file"
@@ -620,7 +614,15 @@ async function onSaveEdit(baseRevision = editRevision.value): Promise<boolean> {
   // The saved request's content is the baseline, even when the current
   // buffer has changed (including a return to the original pre-save text).
   editorRef.value?.setBaseline(savedContent);
-  if (!props.hostReference) emit("saved");
+  emit("saved", {
+    path,
+    content: savedContent.replace(/\r\n?/g, "\n"),
+    revision: r.revision,
+    encoding: r.encoding,
+    newline: r.newline,
+    size: r.size,
+    requestId,
+  });
   saveSuccessMessage.value = isEditDirty.value
     ? null
     : tm("spcodeProjectLoad.fileBrowser.editor.saveSuccess");

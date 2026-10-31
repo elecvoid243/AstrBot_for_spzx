@@ -33,6 +33,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rich-previews", action="store_true")
     parser.add_argument("--editing", action="store_true")
+    parser.add_argument("--review-corrections", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--chromium", type=Path, required=True)
@@ -1371,6 +1372,17 @@ async def main() -> None:
                         .wait_for()
                     )
                     await page.screenshot(path=str(evidence / "host-browsing-en.png"))
+                    await click("F01 whole")
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("CURRENT DISK CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await page.get_by_role("button", name="Edit", exact=True).wait_for()
+                    await page.screenshot(
+                        path=str(evidence / "file-reference-preview-en.png")
+                    )
+
                     if args.editing:
                         await click("F01 other")
                         await page.get_by_role(
@@ -1594,6 +1606,394 @@ async def main() -> None:
                         .wait_for()
                     )
                     checks.append("re-enabled plugin restores the real host preview")
+                    if args.review_corrections:
+                        await page.reload()
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.wait_for(timeout=60000)
+                        review = {}
+
+                        def accept_review_reload(dialog):
+                            """Accept a browser leave warning only during a test reload."""
+                            return dialog.accept()
+
+                        for exit_kind in ["files", "browser", "close"]:
+                            other.write_bytes(b"REVIEW SNAPSHOT A\n")
+                            await click("F01 other")
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("REVIEW SNAPSHOT A", exact=True)
+                                .wait_for()
+                            )
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill(
+                                "REVIEW SNAPSHOT B\n"
+                            )
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as saved:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            assert (await (await saved.value).json())["data"]["saved"]
+                            if exit_kind == "browser":
+                                await page.get_by_role("tab").last.click()
+                                await page.get_by_role(
+                                    "tab", name="文件", exact=True
+                                ).click()
+                            elif exit_kind == "close":
+                                await page.get_by_role(
+                                    "button", name="关闭文件侧栏", exact=True
+                                ).click()
+                                await page.get_by_role(
+                                    "button", name="文件与浏览器", exact=True
+                                ).click()
+                            else:
+                                await page.get_by_role(
+                                    "tab", name="文件", exact=True
+                                ).click()
+                            await page.locator(".code-content").wait_for()
+                            review[f"snapshot_{exit_kind}"] = (
+                                "REVIEW SNAPSHOT B"
+                                in await page.locator(".code-content").inner_text()
+                            )
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill(
+                                "REVIEW SNAPSHOT C\n"
+                            )
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as resaved:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            review[f"resave_{exit_kind}"] = (
+                                await (await resaved.value).json()
+                            )["data"][
+                                "saved"
+                            ] and other.read_bytes() == b"REVIEW SNAPSHOT C\n"
+                            await page.screenshot(
+                                path=str(evidence / f"review-snapshot-{exit_kind}.png")
+                            )
+                            page.once("dialog", accept_review_reload)
+                            await page.reload()
+                            page.remove_listener("dialog", accept_review_reload)
+                            await page.get_by_role(
+                                "link", name="F01 whole", exact=True
+                            ).first.wait_for(timeout=60000)
+                        for bom_added in [False, True]:
+                            initial = b"old\n" if bom_added else b"\xef\xbb\xbfold\n"
+                            external = (
+                                b"\xef\xbb\xbfexternal\n"
+                                if bom_added
+                                else b"external\n"
+                            )
+                            other.write_bytes(initial)
+                            await click("F01 other")
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill("draft\n")
+                            other.write_bytes(external)
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as conflict:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            assert (await (await conflict.value).json())["data"][
+                                "reason"
+                            ] == "conflict"
+                            page.once("dialog", lambda dialog: dialog.accept())
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/host-file-write" in response.url
+                                )
+                            ) as overwritten:
+                                await page.get_by_role(
+                                    "button", name="覆盖已确认版本", exact=True
+                                ).click()
+                            assert (await (await overwritten.value).json())["data"][
+                                "saved"
+                            ]
+                            review[f"bom_{'added' if bom_added else 'removed'}"] = (
+                                other.read_bytes()
+                                == (b"\xef\xbb\xbfdraft\n" if bom_added else b"draft\n")
+                            )
+
+                        (evidence / "review-corrections.json").write_text(
+                            json.dumps(review, indent=2) + "\n", encoding="utf-8"
+                        )
+
+                        async def open_legacy_review_draft():
+                            """Open a real project preview before each destructive background context scenario."""
+                            async with client.post(
+                                origin
+                                + "/api/v1/plugins/extensions/spcode/project-load",
+                                headers=headers,
+                                json={
+                                    "umo": umo,
+                                    "directory": str(project),
+                                    "force": True,
+                                    "no_agentsmd": True,
+                                    "no_codegraph": True,
+                                },
+                            ) as response:
+                                assert (await response.json())["data"]["success"]
+                            page.once("dialog", accept_review_reload)
+                            await page.reload()
+                            page.remove_listener("dialog", accept_review_reload)
+                            await page.get_by_role(
+                                "link", name="F01 whole", exact=True
+                            ).first.wait_for(timeout=60000)
+                            await click("F01 whole")
+                            await page.get_by_role(
+                                "tab", name="工作区", exact=True
+                            ).click()
+                            await (
+                                page.locator(".file-browser-entry")
+                                .filter(has_text="project.txt")
+                                .click()
+                            )
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("PROJECT FILE CONTENT", exact=True)
+                                .wait_for()
+                            )
+                            await page.get_by_role(
+                                "button", name="编辑", exact=True
+                            ).click()
+                            await page.locator(".cm-content").fill(
+                                "REVIEW COMPLETE LEGACY DRAFT"
+                            )
+
+                        await open_legacy_review_draft()
+                        review_worktree = evidence / "review-worktree"
+                        assert review_worktree.resolve().is_relative_to(evidence)
+                        async with page.expect_response(
+                            lambda response: "/spcode/git-worktrees" in response.url,
+                            timeout=45000,
+                        ) as polled:
+                            await asyncio.to_thread(
+                                subprocess.run,
+                                [
+                                    "git",
+                                    "-C",
+                                    str(project),
+                                    "worktree",
+                                    "add",
+                                    "-b",
+                                    "f04-review",
+                                    str(review_worktree),
+                                ],
+                                check=True,
+                                capture_output=True,
+                                creationflags=getattr(
+                                    subprocess, "CREATE_NO_WINDOW", 0
+                                ),
+                            )
+                        polled_paths = {
+                            Path(item["path"]).resolve()
+                            for item in (await (await polled.value).json())["data"][
+                                "worktrees"
+                            ]
+                        }
+                        assert review_worktree.resolve() in polled_paths
+                        await page.wait_for_timeout(1000)
+                        review["legacy_worktree_add"] = (
+                            await page.locator(".cm-content").count() == 1
+                            and await page.locator(".cm-content").inner_text()
+                            == "REVIEW COMPLETE LEGACY DRAFT"
+                        )
+                        await page.screenshot(
+                            path=str(evidence / "review-worktree-add.png")
+                        )
+                        if not review["legacy_worktree_add"]:
+                            await open_legacy_review_draft()
+                        async with page.expect_response(
+                            lambda response: "/spcode/git-worktrees" in response.url,
+                            timeout=45000,
+                        ) as polled:
+                            await asyncio.to_thread(
+                                subprocess.run,
+                                [
+                                    "git",
+                                    "-C",
+                                    str(project),
+                                    "worktree",
+                                    "remove",
+                                    str(review_worktree),
+                                ],
+                                check=True,
+                                capture_output=True,
+                                creationflags=getattr(
+                                    subprocess, "CREATE_NO_WINDOW", 0
+                                ),
+                            )
+                        polled_paths = {
+                            Path(item["path"]).resolve()
+                            for item in (await (await polled.value).json())["data"][
+                                "worktrees"
+                            ]
+                        }
+                        assert review_worktree.resolve() not in polled_paths
+                        await page.wait_for_timeout(1000)
+                        review["legacy_worktree_remove"] = (
+                            await page.locator(".cm-content").count() == 1
+                            and await page.locator(".cm-content").inner_text()
+                            == "REVIEW COMPLETE LEGACY DRAFT"
+                        )
+                        if not review["legacy_worktree_remove"]:
+                            await open_legacy_review_draft()
+                        async with page.expect_response(
+                            lambda response: "/spcode/git-worktrees" in response.url,
+                            timeout=45000,
+                        ) as unchanged:
+                            pass
+                        await (await unchanged.value).json()
+                        await page.wait_for_timeout(300)
+                        review["unchanged_poll_no_dialog"] = (
+                            not await page.get_by_role("dialog").count()
+                            and await page.locator(".cm-content").inner_text()
+                            == "REVIEW COMPLETE LEGACY DRAFT"
+                        )
+                        await page.locator(".sp-capsule").click()
+                        await page.get_by_role(
+                            "button", name="切换或重新加载项目…", exact=True
+                        ).click()
+                        async with page.expect_response(
+                            "**/plugins/extensions/spcode/project-unload"
+                        ) as unloaded:
+                            await page.get_by_role(
+                                "button", name="卸载当前加载目录", exact=True
+                            ).click()
+                        assert (await (await unloaded.value).json())["data"]["success"]
+                        await page.get_by_text("未加载项目", exact=True).first.wait_for(
+                            timeout=30000
+                        )
+                        await page.wait_for_timeout(500)
+                        review["legacy_unload"] = (
+                            await page.locator(".cm-content").count() == 1
+                            and await page.locator(".cm-content").inner_text()
+                            == "REVIEW COMPLETE LEGACY DRAFT"
+                        )
+                        await page.screenshot(path=str(evidence / "review-unload.png"))
+                        if review["legacy_unload"]:
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="取消", exact=True)
+                                .click()
+                            )
+                            review["legacy_unload_cancel"] = (
+                                await page.locator(".cm-content").inner_text()
+                                == "REVIEW COMPLETE LEGACY DRAFT"
+                            )
+                            await click("F01 whole")
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="放弃并打开", exact=True)
+                                .click()
+                            )
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("CURRENT DISK CONTENT", exact=True)
+                                .wait_for()
+                            )
+                            review["legacy_unload_allowed"] = True
+                        else:
+                            review["legacy_unload_cancel"] = review[
+                                "legacy_unload_allowed"
+                            ] = False
+                        await open_legacy_review_draft()
+                        (evidence / "project-one/project.txt").write_bytes(
+                            b"NEW REVIEW PROJECT\n"
+                        )
+                        async with client.post(
+                            origin + "/api/v1/plugins/extensions/spcode/project-load",
+                            headers=headers,
+                            json={
+                                "umo": umo,
+                                "directory": str(evidence / "project-one"),
+                                "force": True,
+                                "no_agentsmd": True,
+                                "no_codegraph": True,
+                            },
+                        ) as response:
+                            assert (await response.json())["data"]["success"]
+                        async with page.expect_response(
+                            lambda response: "/spcode/project-status" in response.url,
+                            timeout=90000,
+                        ):
+                            await page.locator(".chat-text-input, .chat-textarea").fill(
+                                "F04_REVIEW_SWITCH"
+                            )
+                            await page.locator(".send-btn").click()
+                        await page.wait_for_timeout(1500)
+                        review["legacy_switch"] = (
+                            await page.locator(".cm-content").count() == 1
+                            and await page.locator(".cm-content").inner_text()
+                            == "REVIEW COMPLETE LEGACY DRAFT"
+                        )
+                        if review["legacy_switch"]:
+                            await page.get_by_role(
+                                "tab", name="工作区", exact=True
+                            ).click()
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="取消", exact=True)
+                                .click()
+                            )
+                            review["legacy_cancel"] = (
+                                await page.locator(".cm-content").inner_text()
+                                == "REVIEW COMPLETE LEGACY DRAFT"
+                            )
+                            await page.get_by_role(
+                                "tab", name="工作区", exact=True
+                            ).click()
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="放弃并打开", exact=True)
+                                .click()
+                            )
+                            await (
+                                page.locator(".file-browser-entry")
+                                .filter(has_text="project.txt")
+                                .click()
+                            )
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("NEW REVIEW PROJECT", exact=True)
+                                .wait_for()
+                            )
+                            review["legacy_allowed_new_project"] = True
+                        else:
+                            review["legacy_cancel"] = review[
+                                "legacy_allowed_new_project"
+                            ] = False
+                        (evidence / "review-corrections.json").write_text(
+                            json.dumps(review, indent=2) + "\n", encoding="utf-8"
+                        )
+                        assert all(review.values()), review
+                        checks.extend(
+                            f"F04 review correction: {name}" for name in review
+                        )
                     await browser.close()
         (evidence / "result.json").write_text(
             json.dumps(

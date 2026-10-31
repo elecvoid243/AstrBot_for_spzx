@@ -4,6 +4,7 @@
      so the left pane keeps showing the parent directory while the right
      pane previews a file inside it. -->
 <script setup lang="ts">
+import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
 import {
   computed,
   ref,
@@ -97,6 +98,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "open-path", path: string): void;
   (e: "retry-host"): void;
+  (e: "saved-host", snapshot?: SavedFileSnapshot): void;
   (e: "browse-host"): void;
   (
     e: "navigate",
@@ -956,7 +958,7 @@ onBeforeUnmount(() => {
       />
       <template v-else>
         <div
-          v-if="!spcodeStatus.status.value.loaded && !hostReference"
+          v-if="!spcodeStatus.status.value.loaded && !hostReference && !previewPath"
           class="file-browser-empty"
         >
           <v-icon size="36" color="grey">mdi-folder-open-outline</v-icon>
@@ -1110,7 +1112,7 @@ onBeforeUnmount(() => {
             @retry="
               hostReference ? emit('retry-host') : previewComposable.refresh()
             "
-            @saved="() => previewComposable.refresh()"
+            @saved="hostReference ? emit('saved-host', $event) : previewComposable.refresh()"
             @renamed="onPreviewRenamed"
             @deleted="onPreviewDeleted"
             @back-to-current="onBackToCurrent"

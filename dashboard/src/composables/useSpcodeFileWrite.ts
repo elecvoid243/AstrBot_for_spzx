@@ -9,8 +9,24 @@ import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
+export interface SavedFileSnapshot {
+  path: string;
+  content: string;
+  revision?: string;
+  encoding?: string;
+  newline?: string;
+  size?: number;
+  requestId?: number;
+}
+
 export type FileWriteResult =
-  | { ok: true; revision?: string; encoding?: string; newline?: string }
+  | {
+      ok: true;
+      revision?: string;
+      encoding?: string;
+      newline?: string;
+      size?: number;
+    }
   | { ok: false; reason: string; revision?: string };
 type SaveParams = {
   path: string;
@@ -78,6 +94,7 @@ export function useSpcodeFileWrite(
             revision?: string;
             encoding?: string;
             newline?: string;
+            size?: number;
           };
         }
       )?.data;
@@ -90,6 +107,7 @@ export function useSpcodeFileWrite(
           revision: data.revision,
           ...(data.encoding ? { encoding: data.encoding } : {}),
           ...(data.newline ? { newline: data.newline } : {}),
+          ...(typeof data.size === "number" ? { size: data.size } : {}),
         };
       }
       return {

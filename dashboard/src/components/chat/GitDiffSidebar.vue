@@ -31,6 +31,7 @@ import type {
   SpcodeGitDiffSnapshot,
   FileStatus,
 } from "@/composables/parseSpcodeGitDiff";
+import GitWorktreeSwitcher from "./message_list_comps/GitWorktreeSwitcher.vue";
 import type { SpcodeGitWorktree } from "@/composables/parseSpcodeWorktrees";
 import {
   useSpcodeWorktrees,
@@ -164,11 +165,6 @@ const STORAGE_KEYS = {
     "astrbot.spcode.gitDiffSidebar.fileBrowserCurrentPath",
   selectedWorktree: "astrbot.spcode.gitDiffSidebar.selectedWorktree",
   selectedScope: "astrbot.spcode.gitDiffSidebar.selectedScope",
-  // 2026-07-22 worktree-tabs-collapse: persists whether the worktree
-  // tab bar is expanded (show all) or collapsed (show only the active
-  // worktree). Default collapsed keeps the sidebar compact when many
-  // worktrees exist (the long row was the reported UX problem).
-  worktreeTabsExpanded: "astrbot.spcode.gitDiffSidebar.worktreeTabsExpanded",
   // 2026-07-18 git-stats heatmap: stats-panel collapsed state.
   gitStatsOpen: "astrbot.spcode.gitDiffSidebar.gitStatsOpen",
   gitStatsRange: "astrbot.spcode.gitDiffSidebar.gitStatsRange",
@@ -373,27 +369,6 @@ const SCOPE_OPTIONS: ReadonlyArray<ScopeOption> = [
 // null = use primary (main) worktree. This ref is passed to
 // useSpcodeGitDiff which auto-refreshes on changes.
 const selectedWorktree = ref<string | null>(null);
-// 2026-07-22 worktree-tabs-collapse: when many worktrees exist the
-// full row of tab pills overflows the sidebar and pushes the
-// actual content down. Collapsing hides all-but-the-active tab to
-// keep the row single-line. Hydrated from localStorage.
-// 2026-07-22 (rev): default flipped to EXPANDED (true) — the
-// original opt-in collapsed default assumed the "many worktrees"
-// case was the norm, but most projects in practice have 1-3
-// worktrees where the full row fits comfortably and collapsing
-// adds a click. Existing users who already chose collapsed keep
-// their stored preference; only fresh sessions (no stored value)
-// pick up the new default. The hydration returns the stored value
-// verbatim when present, else `true`.
-const _storedWorktreeTabsExpanded = safeGetItem(
-  STORAGE_KEYS.worktreeTabsExpanded,
-);
-const worktreeTabsExpanded = ref<boolean>(
-  _storedWorktreeTabsExpanded === null
-    ? true
-    : _storedWorktreeTabsExpanded === "true",
-);
-
 // ── Recent files (spec 2026-07-20 recent-files §3, §4) ──────────────
 // One bucket per worktree, persisted to localStorage by
 // useRecentFiles. The composable is instantiated further down,
@@ -740,19 +715,6 @@ const currentHeadSha = computed<string | null>(() => {
   if (!target) return null;
   return worktreeList.value.find((w) => w.path === target)?.headSha || null;
 });
-// 2026-07-22 worktree-tabs-collapse: the row of tab pills shown to
-// the user. When worktreeTabsExpanded is false, hide all but the
-// active worktree so a long row doesn't dominate the sidebar;
-// the toggle button next to the "工作树" label brings the full row
-// back. Falls back to the full list if (somehow) the active path
-// isn't in `worktreeList` — the watcher above normalizes this so
-// it's a belt-and-braces guard for transient states during a switch.
-const visibleWorktreeList = computed(() => {
-  if (worktreeTabsExpanded.value) return worktreeList.value;
-  const active = selectedWorktree.value ?? mainWorktreePath.value;
-  const filtered = worktreeList.value.filter((w) => w.path === active);
-  return filtered.length > 0 ? filtered : worktreeList.value;
-});
 // Path of the loaded project's root directory (from
 // /spcode/project-status, independent of git). Used as a fallback
 // root for the file browser when the project is NOT a git project
@@ -775,14 +737,6 @@ watch(
   (v) => safeSetItem(STORAGE_KEYS.selectedWorktree, v === null ? "null" : v),
   { flush: "post" },
 );
-// 2026-07-22 worktree-tabs-collapse: persist expanded/collapsed state
-// (default collapsed; hydration below reads the stored string at setup).
-watch(
-  worktreeTabsExpanded,
-  (v) => safeSetItem(STORAGE_KEYS.worktreeTabsExpanded, v ? "true" : "false"),
-  { flush: "post" },
-);
-
 // Closed-over by the worktree-list watcher below. Tracks the previous
 // worktree path set so we can detect *topology* changes (paths
 // added/removed) and skip the validation sweep on no-op polling
@@ -5270,20 +5224,10 @@ watch(
           </button>
         </div>
 
-        <!-- 2026-07-22 worktree-tabs-collapse: branch switcher and
-             worktree tabs are wrapped in `.git-diff-sidebar-bw` so that
-             when the worktree tabs are collapsed the two rows collapse
-             into ONE row (worktree on the left, branch on the right) to
-             save vertical space. When expanded, the wrapper is just a
-             transparent group — both rows render with their original
-             padding/border. The wrapper's v-if mirrors the worktree
-             row's own condition (the broadest of the two), so the
-             non-git-repo path keeps the worktree row without a stale
-             branch row leaking in. -->
+        <!-- Branch and worktree controls share the project context. -->
         <div
           v-if="hasMultipleWorktrees && (isGitRepo || showNotGitRepoChip)"
           class="git-diff-sidebar-bw"
-          :class="{ 'is-collapsed': !worktreeTabsExpanded }"
         >
           <!-- Branch switcher (spec 2026-07-21 §3.3, layout revised 2026-07-21)
              Sits ABOVE the worktree tabs (not inside the flex row) so its
@@ -5623,15 +5567,8 @@ watch(
                 <v-icon size="14">mdi-cog-outline</v-icon>
               </button>
             </span>
-            <!-- Spec 2026-07-23 §4.2.1: branch/worktree row manual
-               refresh. Expanded state: anchored to the right end of
-               the branch row. Loading state replaces the icon with
-               a progress spinner (derived from the underlying
-               composables' `state.kind === 'loading'` rather than
-               a local ref, so the spinner never lags the real
-               request). -->
+            <!-- Refresh the branch and worktree lists together. -->
             <button
-              v-if="worktreeTabsExpanded"
               type="button"
               class="git-diff-sidebar-bw-refresh"
               :class="{ 'is-flashing': bwClickFlash }"
@@ -5659,172 +5596,15 @@ watch(
             </button>
           </div>
 
-          <!-- Spec 2026-07-23 §4.2.2: collapsed-state counterpart of
-             the refresh button above. Sits as a DIRECT CHILD of
-             `.git-diff-sidebar-bw` so the collapsed flex layout
-             (`justify-content: space-between`, 3 children) can
-             park it visually in the middle. DOM order placed
-             BEFORE .git-diff-sidebar-tabs so the screen-reader
-             order matches the expanded layout (branch-related
-             controls announced first). Visual position is
-             controlled by `order: 2` in CSS. -->
-          <button
-            v-if="!worktreeTabsExpanded"
-            type="button"
-            class="git-diff-sidebar-bw-refresh"
-            :class="{ 'is-flashing': bwClickFlash }"
-            :title="tm('spcodeProjectLoad.diffSidebar.bwRefreshTooltip')"
-            :aria-label="tm('spcodeProjectLoad.diffSidebar.bwRefreshTooltip')"
-            :disabled="
-              branchesComposable.state.value.kind === 'loading' ||
-              worktreesComposable.state.value.kind === 'loading'
-            "
-            @click="refreshBranchesAndWorktrees"
-          >
-            <span class="git-diff-sidebar-bw-refresh-text">
-              {{ tm("spcodeProjectLoad.diffSidebar.bwRefreshTooltip") }}
-            </span>
-            <v-progress-circular
-              v-if="
-                branchesComposable.state.value.kind === 'loading' ||
-                worktreesComposable.state.value.kind === 'loading'
-              "
-              indeterminate
-              :size="14"
-              :width="2"
-            />
-            <v-icon v-else size="14">mdi-refresh</v-icon>
-          </button>
+          <GitWorktreeSwitcher
+            :worktrees="worktreeList"
+            :selected-path="selectedWorktree"
+            @change="onWorktreeChange"
+            @create="openCreateDialog"
+            @contextmenu="openContextMenu"
+          />
 
-          <!-- Worktree tabs (visible in BOTH views, spec 2026-06-20 §5.3) -->
-          <div
-            v-if="hasMultipleWorktrees && (isGitRepo || showNotGitRepoChip)"
-            class="git-diff-sidebar-tabs"
-            role="tablist"
-            :aria-label="
-              tm('spcodeProjectLoad.diffSidebar.worktreeTabs.ariaLabel')
-            "
-          >
-            <!-- Section label: clarifies that the buttons below switch
-             worktrees (otherwise they look like generic pills with
-             no obvious purpose). Anchored to the left of the flex row;
-             existing flex-wrap still lets the tabs wrap to a new line
-             on narrow widths.
-             2026-07-22 worktree-tabs-collapse: this label is now a
-             toggle button. Chevron-down = expanded (full row visible),
-             chevron-right = collapsed (only the active worktree
-             visible). Clicking flips worktreeTabsExpanded so users
-             with many worktrees can keep the sidebar compact. -->
-            <button
-              type="button"
-              class="git-diff-sidebar-tabs-toggle"
-              :aria-expanded="worktreeTabsExpanded"
-              :title="
-                tm(
-                  worktreeTabsExpanded
-                    ? 'spcodeProjectLoad.diffSidebar.worktreeTabs.collapse'
-                    : 'spcodeProjectLoad.diffSidebar.worktreeTabs.expand',
-                )
-              "
-              :aria-label="
-                tm(
-                  worktreeTabsExpanded
-                    ? 'spcodeProjectLoad.diffSidebar.worktreeTabs.collapse'
-                    : 'spcodeProjectLoad.diffSidebar.worktreeTabs.expand',
-                )
-              "
-              @click="worktreeTabsExpanded = !worktreeTabsExpanded"
-            >
-              <span>{{
-                tm("spcodeProjectLoad.diffSidebar.worktreeTabs.label")
-              }}</span>
-              <v-icon size="12" class="git-diff-sidebar-tabs-toggle-chevron">
-                {{
-                  worktreeTabsExpanded
-                    ? "mdi-chevron-down"
-                    : "mdi-chevron-right"
-                }}
-              </v-icon>
-            </button>
-            <button
-              v-for="wt in visibleWorktreeList"
-              :key="wt.path"
-              type="button"
-              role="tab"
-              :aria-selected="
-                (selectedWorktree ?? mainWorktreePath) === wt.path
-              "
-              :class="[
-                'git-diff-sidebar-tab',
-                {
-                  'git-diff-sidebar-tab--active':
-                    (selectedWorktree ?? mainWorktreePath) === wt.path,
-                  'git-diff-sidebar-tab--prunable': wt.prunable,
-                },
-              ]"
-              :title="
-                wt.prunable
-                  ? tm(
-                      'spcodeProjectLoad.diffSidebar.worktreeTabs.prunableTooltip',
-                    )
-                  : wt.path
-              "
-              @click="onWorktreeChange(wt.isMain ? null : wt.path)"
-              @contextmenu.prevent="(e) => openContextMenu(e, wt)"
-            >
-              <v-icon
-                v-if="wt.isMain"
-                size="12"
-                class="git-diff-sidebar-tab-icon"
-                >mdi-home</v-icon
-              >
-              <v-icon
-                v-else-if="wt.prunable"
-                size="12"
-                class="git-diff-sidebar-tab-icon git-diff-sidebar-tab-icon--prunable"
-                >mdi-alert</v-icon
-              >
-              <v-icon
-                v-else-if="wt.locked"
-                size="12"
-                class="git-diff-sidebar-tab-icon"
-                >mdi-lock</v-icon
-              >
-              <span class="git-diff-sidebar-tab-label">
-                {{
-                  wt.branch ??
-                  (wt.isMain
-                    ? tm("spcodeProjectLoad.diffSidebar.worktreeTabs.mainBadge")
-                    : wt.headSha.slice(0, 7))
-                }}
-              </span>
-              <span
-                v-if="wt.prunable"
-                class="git-diff-sidebar-tab-badge git-diff-sidebar-tab-badge--prunable"
-                >{{
-                  tm("spcodeProjectLoad.diffSidebar.worktreeTabs.prunableBadge")
-                }}</span
-              >
-              <span v-else-if="!wt.branch" class="git-diff-sidebar-tab-badge">{{
-                tm("spcodeProjectLoad.diffSidebar.worktreeTabs.detachedBadge")
-              }}</span>
-            </button>
-            <!-- Add button (spec 2026-06-27 §2.1) -->
-            <button
-              type="button"
-              class="git-diff-sidebar-tab-add"
-              :aria-label="
-                tm('spcodeProjectLoad.diffSidebar.worktreeMgmt.addButtonAria')
-              "
-              :title="
-                tm('spcodeProjectLoad.diffSidebar.worktreeMgmt.addButton')
-              "
-              @click="openCreateDialog"
-            >
-              <v-icon size="14">mdi-plus</v-icon>
-            </button>
-
-            <!-- Context menu (spec 2026-06-27 §2.3)
+          <!-- Context menu (spec 2026-06-27 §2.3)
                      Teleported to <body> and positioned with manual
                      `position: fixed` styles so the menu opens exactly at the
                      right-click cursor. Vuetify 3 v-menu's positioning pipeline
@@ -5834,78 +5614,77 @@ watch(
                      left corner of the viewport regardless of cursor position.
                      Manual positioning gives us deterministic behavior and a
                      single source of truth (contextMenuStyle computed). -->
-            <Teleport to="body">
-              <div
-                v-if="contextMenu.open"
-                ref="contextMenuEl"
-                class="worktree-context-menu"
-                :style="contextMenuStyle"
-                role="menu"
-                :aria-label="
-                  tm(
-                    'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.ariaLabel',
-                  )
-                "
-                @click.stop
-                @contextmenu.prevent
-              >
-                <v-list density="compact">
-                  <template v-if="contextMenu.wt && !contextMenu.wt.isMain">
-                    <!-- Lock/unlock toggle: never disabled. When the worktree
+          <Teleport to="body">
+            <div
+              v-if="contextMenu.open"
+              ref="contextMenuEl"
+              class="worktree-context-menu"
+              :style="contextMenuStyle"
+              role="menu"
+              :aria-label="
+                tm(
+                  'spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.ariaLabel',
+                )
+              "
+              @click.stop
+              @contextmenu.prevent
+            >
+              <v-list density="compact">
+                <template v-if="contextMenu.wt && !contextMenu.wt.isMain">
+                  <!-- Lock/unlock toggle: never disabled. When the worktree
                              is locked this button reads "unlock" and the click
                              opens the unlock confirm dialog; when unlocked it
                              reads "lock" and opens the lock-reason dialog.
                              Disabling it when locked would prevent the very
                              action it represents. -->
-                    <v-list-item @click="onLockClick(contextMenu.wt!)">
-                      <template #prepend>
-                        <v-icon>{{
-                          contextMenu.wt.locked
-                            ? "mdi-lock-open-variant"
-                            : "mdi-lock"
-                        }}</v-icon>
-                      </template>
-                      <v-list-item-title>{{
+                  <v-list-item @click="onLockClick(contextMenu.wt!)">
+                    <template #prepend>
+                      <v-icon>{{
                         contextMenu.wt.locked
-                          ? tm(
-                              "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.unlock",
-                            )
-                          : tm(
-                              "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.lock",
-                            )
-                      }}</v-list-item-title>
-                    </v-list-item>
-                    <!-- Remove: disabled only when locked (a locked worktree
-                             must be unlocked before it can be removed). -->
-                    <v-list-item
-                      :disabled="!!contextMenu.wt.locked"
-                      @click="onRemoveClick(contextMenu.wt!)"
-                    >
-                      <template #prepend>
-                        <v-icon color="error">mdi-trash-can-outline</v-icon>
-                      </template>
-                      <v-list-item-title>{{
-                        tm(
-                          "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.remove",
-                        )
-                      }}</v-list-item-title>
-                    </v-list-item>
-                  </template>
-                  <template v-else>
-                    <v-list-item disabled>
-                      <v-list-item-title class="text-caption">
-                        {{
-                          tm(
-                            "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.mainDisabled",
+                          ? "mdi-lock-open-variant"
+                          : "mdi-lock"
+                      }}</v-icon>
+                    </template>
+                    <v-list-item-title>{{
+                      contextMenu.wt.locked
+                        ? tm(
+                            "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.unlock",
                           )
-                        }}
-                      </v-list-item-title>
-                    </v-list-item>
-                  </template>
-                </v-list>
-              </div>
-            </Teleport>
-          </div>
+                        : tm(
+                            "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.lock",
+                          )
+                    }}</v-list-item-title>
+                  </v-list-item>
+                  <!-- Remove: disabled only when locked (a locked worktree
+                             must be unlocked before it can be removed). -->
+                  <v-list-item
+                    :disabled="!!contextMenu.wt.locked"
+                    @click="onRemoveClick(contextMenu.wt!)"
+                  >
+                    <template #prepend>
+                      <v-icon color="error">mdi-trash-can-outline</v-icon>
+                    </template>
+                    <v-list-item-title>{{
+                      tm(
+                        "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.remove",
+                      )
+                    }}</v-list-item-title>
+                  </v-list-item>
+                </template>
+                <template v-else>
+                  <v-list-item disabled>
+                    <v-list-item-title class="text-caption">
+                      {{
+                        tm(
+                          "spcodeProjectLoad.diffSidebar.worktreeMgmt.contextMenu.mainDisabled",
+                        )
+                      }}
+                    </v-list-item-title>
+                  </v-list-item>
+                </template>
+              </v-list>
+            </div>
+          </Teleport>
         </div>
         <!-- /git-diff-sidebar-bw -->
 
@@ -7253,126 +7032,11 @@ watch(
   flex-shrink: 0;
 }
 
-/* ── Branch + Worktree wrapper (2026-07-22) ──────────────
-   Transparent group around the branch switcher row and the worktree
-   tab row. When the worktree tabs are collapsed the wrapper turns
-   into a single flex row so the two rows share a line (worktree on
-   the left, branch on the right) and save ~30px of vertical space.
-   In the expanded state the wrapper is purely structural — the
-   inner rows still own their own padding and border, so this is a
-   pure layout pass with no visual regression. */
-
-/* The wrapper itself is borderless and paddingless in the expanded
-   (default) state; the inner worktree row keeps its `border-bottom`
-   to separate the header strip from the main sidebar content. */
-.git-diff-sidebar-bw {
-  /* no display: block here — the inner rows are already block. */
-}
-
-/* 2026-07-22 (rev): expanded mode = the wrapper is NOT
-   `.is-collapsed`. In that mode the inner branch row and worktree
-   row are independent block elements with their own
-   `padding-left: 14px` defaults. Nudge that to 16px so each row's
-   first content (the "当前分支" / "工作树" labels) picks up an
-   extra 2px of breathing room against the sidebar edge — the
-   2px-inward counterpart of the collapsed-mode `margin-left/right`
-   nudge. The selector is scoped to the wrapper's NOT-collapsed
-   mode so the collapsed layout (which already gives the wrapper
-   its own `padding: 6px 14px 8px` and zeroes the inner rows'
-   padding) stays byte-for-byte identical. */
-.git-diff-sidebar-bw:not(.is-collapsed) > .git-diff-sidebar-branch-mgmt {
-  padding-left: 16px;
-}
-.git-diff-sidebar-bw:not(.is-collapsed) > .git-diff-sidebar-tabs {
+.git-diff-sidebar-bw > .git-diff-sidebar-branch-mgmt {
   padding-left: 16px;
 }
 
-/* Collapsed: turn the wrapper into a single flex row.
-   `justify-content: space-between` parks the worktree row flush
-   LEFT and the branch row flush RIGHT, leaving an empty gap in
-   the middle — the user-stated "工作树靠左, 分支靠右, 中间
-   离远一些，对称" layout. `flex: 0 0 auto` on both children so
-   each row only takes its natural width. `flex-wrap: wrap` is the
-   belt-and-braces guard for the very narrow sidebar case where
-   the two rows can't fit on one line.
-   2026-07-22 (rev): the visual left/right is the INVERSE of the
-   DOM order — the DOM keeps branch-then-worktree so the tab
-   order / screen-reader order stays the same as the expanded
-   layout, but the wrapper sets explicit `order` values to make
-   worktree render on the left and branch on the right. */
-.git-diff-sidebar-bw.is-collapsed {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
-  padding: 6px 14px 8px;
-  border-bottom: 1px solid
-    var(--chat-border, rgba(var(--v-theme-on-surface), 0.08));
-}
-/* In the collapsed state the inner rows shed their own padding and
-   border so the wrapper owns them — otherwise the combined row
-   would carry an internal border line in the middle (the worktree
-   row's `border-bottom`) and look broken. */
-.git-diff-sidebar-bw.is-collapsed > .git-diff-sidebar-tabs,
-.git-diff-sidebar-bw.is-collapsed > .git-diff-sidebar-branch-mgmt {
-  padding: 0;
-  border-bottom: 0;
-  /* Natural-size rows so the wrapper's `space-between` actually
-     creates an empty middle gap instead of having one row stretch
-     to fill it. */
-  flex: 0 0 auto;
-}
-/* Visual left/right is opposite the DOM order. `order` is a
-   layout-only property: it does NOT change tab order, screen
-   reader reading order, or selection — the focusable elements
-   inside still follow DOM order, so keyboard users and AT users
-   get the same logical order as the expanded state. Only the
-   visual placement changes.
-   2026-07-22 (rev): pull the two rows 2px closer to the center
-   so "工作树" and "当前分支" are not flush against the wrapper's
-   `space-between` extremes. The worktree row's leading label
-   ("工作树") is at the row's left edge, so `margin-left: 2px`
-   on the worktree row pushes the entire content 2px toward the
-   center; the branch row's leading label ("当前分支") is at the
-   row's left edge, so `margin-right: 2px` on the branch row
-   shrinks the row's right padding under `space-between`, which
-   pulls the row 2px left. Net effect: the empty middle gap is
-   ~4px narrower, the labels themselves move 2px each toward
-   center. Kept as a small visual nudge (`2px`) so the change is
-   imperceptible in absolute terms but visibly tighter. */
-.git-diff-sidebar-bw.is-collapsed > .git-diff-sidebar-tabs {
-  order: 1; /* visually left */
-  margin-left: 2px; /* nudge content 2px right */
-}
-.git-diff-sidebar-bw.is-collapsed > .git-diff-sidebar-bw-refresh {
-  order: 2; /* visually middle (between worktree=1 and branch=3) */
-  /* In collapsed mode the wrapper owns the row's padding
-     (6px 14px 8px), so the button's own margin-right: 4px from
-     the base rule would over-pad. Zero it out to keep the
-     centered look tight. */
-  margin-right: 0;
-}
-.git-diff-sidebar-bw.is-collapsed > .git-diff-sidebar-branch-mgmt {
-  order: 3; /* visually right (was 2; bumped +1 for refresh button at order: 2) */
-  margin-right: 2px; /* nudge content 2px left */
-}
-
-/* ── Branch/worktree row manual refresh button ──────────────────────
-   Spec 2026-07-23 §4.3. A 24x24 ghost button that mirrors the
-   visual weight of the existing worktree-tab "add" button
-   (.git-diff-sidebar-tab-add) so the two feel like siblings in
-   the row. Two DOM nodes share this class (one inside the
-   branch row, one as a wrapper-level child); the collapsed/
-   expanded position switch is driven by `order` in the parent
-   `.is-collapsed` rules above, NOT by this base rule. */
-
-/* Base shape + interaction states. Rectangular chip with text +
-   trailing refresh icon (rev 2026-07-23: previously icon-only
-   24×24 square; widened to a labeled button per user request so
-   the refresh action is discoverable without hover). The text
-   span inherits font/color from the button; `white-space: nowrap`
-   keeps the label on one line even on narrow sidebars. */
+/* Refresh the branch and worktree lists from the end of the branch row. */
 .git-diff-sidebar-bw-refresh {
   flex: 0 0 auto;
   display: inline-flex;
@@ -7433,28 +7097,6 @@ watch(
   outline-offset: 1px;
 }
 
-/* Expanded state: refresh button is flush-right inside the branch
-   row. The branch row (`.git-diff-sidebar-branch-mgmt`) is already
-   `display: flex; align-items: center` so `margin-left: auto` on
-   this button eats all remaining horizontal space, pushing it to
-   the row's inner right edge. Resulting layout reads as
-   "[当前分支] [main ▾] ↑3↓2 __________ [刷新分支和工作树]"
-   with the empty middle band visually anchoring both ends.
-
-   This selector targets only the expanded-state button — it sits
-   inside `.git-diff-sidebar-branch-mgmt`, while the collapsed-state
-   button is a direct child of `.git-diff-sidebar-bw` (positioned
-   by `order: 2` in the parent, NOT by this rule).
-
-   The previous incarnation of this rule used
-   `.git-diff-sidebar-bw:not(.is-collapsed) > .git-diff-sidebar-bw-refresh`,
-   but that selector never matched anything in the current DOM
-   (expanded button is a grandchild of `.git-diff-sidebar-bw`,
-   collapsed button is excluded by `:not(.is-collapsed)`) — it
-   was dead code that visually "worked" only because the
-   parent row's `gap: 6px` already gave the spacing. The new
-   selector and `margin-left: auto` replace both the dead rule
-   and the implicit gap-based spacing. */
 .git-diff-sidebar-branch-mgmt > .git-diff-sidebar-bw-refresh {
   margin-left: auto;
 }
@@ -7494,154 +7136,6 @@ watch(
 .git-diff-sidebar-sync-btn:disabled {
   cursor: default;
   opacity: 0.5;
-}
-
-/* ── Worktree tabs (spec 2026-06-18 §3.4) ──────────────────── */
-
-.git-diff-sidebar-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px 8px;
-  border-bottom: 1px solid
-    var(--chat-border, rgba(var(--v-theme-on-surface), 0.08));
-}
-
-/* Section label: small muted text that anchors the tab row to a
-   clear purpose ("these pills switch worktrees"). `flex-shrink: 0`
-   keeps it from being squeezed when the tabs wrap on narrow
-   widths; when the row wraps, the label stays on its own line. */
-.git-diff-sidebar-tabs-label {
-  flex-shrink: 0;
-  margin-right: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  user-select: none;
-}
-/* 2026-07-22 worktree-tabs-collapse: the label is a button now so the
-   user can expand / collapse the worktree tab row. Inherits the same
-   muted typography as the old static label so the only visible delta
-   when collapsed is the chevron direction. Hover nudges the
-   foreground color up so it reads as interactive.
-   2026-07-22 align: horizontal padding is 0 so the leading character
-   of "工作树" sits at the same x as "分支" (the branch label is a
-   plain span with no left padding, so any button padding would
-   visually push the worktree label right of the branch label). The
-   right-side `margin-right: 4px` still gives breathing room before
-   the first tab; the hover background is widened by the
-   `border-radius: 4px` so the click target still feels generous. */
-.git-diff-sidebar-tabs-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  margin-right: 4px;
-  padding: 2px 0;
-  border: none;
-  background: transparent;
-  border-radius: 4px;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  cursor: pointer;
-  transition:
-    color 0.14s ease,
-    background 0.14s ease;
-}
-.git-diff-sidebar-tabs-toggle:hover {
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-.git-diff-sidebar-tabs-toggle-chevron {
-  color: inherit;
-  flex-shrink: 0;
-}
-
-/* Pill shape, fully aligned with chat's chat-session-active-bg hover.
-   Inactive state always shows a 1px hairline so the tab reads as a
-   clickable button (a fully transparent outline looks like plain
-   text). The border uses the chat-border token — it darkens slightly
-   on hover and is replaced by a primary-tinted border on the active
-   state. Switching the alpha (rather than toggling border on/off) keeps
-   the layout perfectly stable across states. */
-.git-diff-sidebar-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--chat-border, rgba(var(--v-theme-on-surface), 0.16));
-  background: transparent;
-  color: var(--chat-muted, rgba(var(--v-theme-on-surface), 0.62));
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-  transition:
-    background 0.14s ease,
-    color 0.14s ease,
-    border-color 0.14s ease;
-  max-width: 180px;
-}
-
-.git-diff-sidebar-tab:hover {
-  background: var(
-    --chat-session-active-bg,
-    rgba(var(--v-theme-on-surface), 0.06)
-  );
-  border-color: rgba(var(--v-theme-on-surface), 0.26);
-  color: rgb(var(--v-theme-on-surface));
-}
-
-.git-diff-sidebar-tab--active {
-  background: rgba(var(--v-theme-primary), 0.12);
-  border-color: rgba(var(--v-theme-primary), 0.45);
-  color: rgb(var(--v-theme-primary));
-  font-weight: 500;
-}
-
-.git-diff-sidebar-tab-icon {
-  color: inherit;
-  flex-shrink: 0;
-}
-
-.git-diff-sidebar-tab-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Add button now matches the regular pill geometry (same 999px radius
-   and same height), removing the dashed-circle orphan style. */
-.git-diff-sidebar-tab-add {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  border: 1px solid var(--chat-border, rgba(var(--v-theme-on-surface), 0.18));
-  background: transparent;
-  color: var(--chat-muted, rgba(var(--v-theme-on-surface), 0.62));
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    background 0.14s ease,
-    color 0.14s ease,
-    border-color 0.14s ease;
-}
-.git-diff-sidebar-tab-add:hover {
-  background: var(
-    --chat-session-active-bg,
-    rgba(var(--v-theme-on-surface), 0.06)
-  );
-  border-color: rgb(var(--v-theme-primary));
 }
 
 /* Branch switcher (spec 2026-07-21 §3.3, layout revised 2026-07-21)
@@ -7738,25 +7232,6 @@ watch(
   gap: 4px;
   margin-top: 4px;
 }
-.git-diff-sidebar-tab-badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 6px;
-  background: rgba(var(--v-theme-on-surface), 0.08);
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  flex-shrink: 0;
-}
-.git-diff-sidebar-tab--prunable {
-  border-color: rgba(255, 152, 0, 0.4);
-  background: rgba(255, 152, 0, 0.08);
-}
-.git-diff-sidebar-tab-icon--prunable {
-  color: rgb(255, 152, 0);
-}
-.git-diff-sidebar-tab-badge--prunable {
-  background: rgba(255, 152, 0, 0.15);
-  color: rgb(255, 152, 0);
-}
 /* Ahead/behind indicator: mirrors the worktree tab badge shape so
    the branch row visually matches the worktree row. Ahead is a soft
    green (you have unpushed commits). Behind is a soft red
@@ -7827,14 +7302,6 @@ watch(
 }
 
 @media (max-width: 760px) {
-  .git-diff-sidebar-tab {
-    font-size: 11px;
-    padding: 3px 8px;
-    max-width: 140px;
-  }
-  .git-diff-sidebar-tab-label {
-    max-width: 90px;
-  }
   /* Scope pills collapse to icons-only on narrow screens to keep the
      three pills balanced. Text is hidden because the icon + the
      pill's active color already communicate the choice. */

@@ -135,6 +135,12 @@ With a project loaded, **Workspace → Files** still returns to its file list. M
 
 ![Actual host browsing on Windows in the isolated production ChatUI](./images/host-file-browser.png)
 
+## Switch Git worktrees
+
+In the **Files / Git Diff / History** tabs of **Project Workbench**, the **Worktree** controls adapt to the sidebar width. Buttons remain visible when they fit within two rows. If they need more rows, a dropdown like **Current branch** shows the selected worktree. Open it to choose another worktree. Widening the sidebar or removing worktrees automatically restores the buttons when they fit.
+
+The previous **Worktree → manual expand / collapse** control becomes **Worktree → automatic buttons / dropdown**. Both layouts retain **+** to create a worktree and right-click management on each worktree. The dropdown includes full paths to distinguish worktrees with the same name.
+
 ## Two-Factor Authentication
 
 AstrBot WebUI supports TOTP (Time-based One-Time Password) based two-factor authentication.

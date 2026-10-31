@@ -9,12 +9,12 @@ import pytest
 import pytest_asyncio
 from openai import _base_client as openai_base_client
 
+from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.agent.message import bind_checkpoint_messages
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.core.agent.context.token_counter import EstimateTokenCounter
-from astrbot.core.agent.message import bind_checkpoint_messages
 from astrbot.core.agent_team_execution import (
     NodeExecutionBinding,
     current_team_execution,
@@ -196,6 +196,7 @@ async def native_openai(request):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_openai", ["chat", "responses"], indirect=True)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("override", [None, "max_tokens", "max_completion_tokens"])
 async def test_late_limit_is_delivered_without_widening_the_checked_budget(
@@ -555,6 +556,7 @@ async def test_gemini_runner_delivers_the_checked_cap_to_its_sdk(
     streaming, monkeypatch
 ):
     from google.genai import types
+
     from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
 
     provider = ProviderGoogleGenAI(

@@ -8,8 +8,8 @@ import pytest
 import pytest_asyncio
 from anthropic import _base_client as anthropic_base_client
 
-from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
+from astrbot.core.agent.hooks import BaseAgentRunHooks
 from astrbot.core.agent.message import bind_checkpoint_messages
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner

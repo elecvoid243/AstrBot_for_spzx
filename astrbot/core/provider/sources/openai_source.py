@@ -1049,6 +1049,10 @@ class ProviderOpenAIOfficial(Provider):
         # Per-request overrides (e.g. thinking_effort) win over static config.
         llm_params = kwargs.pop("llm_params", None)
         if isinstance(llm_params, dict):
+            # Preserve the caller's explicit API field before native limit checks.
+            for field in ("max_tokens", "max_completion_tokens"):
+                if llm_params.get(field) is not None:
+                    payloads[field] = llm_params[field]
             effort = llm_params.get("thinking_effort")
             # Free-form passthrough: reasoning_effort values differ per model /
             # inference engine (e.g. "max" on deepseek-v4 official API, "xhigh"

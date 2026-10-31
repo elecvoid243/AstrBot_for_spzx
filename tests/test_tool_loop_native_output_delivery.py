@@ -287,6 +287,8 @@ async def test_unmetered_output_budget_is_enforced_at_its_capacity_boundary(
 ):
     provider, requests, _ = native_openai
     provider.provider_config["max_context_tokens"] = 850 - int(not fits)
+    if field == "max_completion_tokens":
+        provider.set_model("o3")
     runner, executor = await native_runner(
         provider,
         streaming=streaming,
@@ -296,12 +298,141 @@ async def test_unmetered_output_budget_is_enforced_at_its_capacity_boundary(
         async for _ in runner.step():
             pass
         assert len(requests) == 1
-        assert requests[0].get("max_tokens") == 100
+        assert requests[0].get(field) == 100
+        other_field = (
+            "max_tokens"
+            if field == "max_completion_tokens"
+            else "max_completion_tokens"
+        )
+        assert other_field not in requests[0]
     else:
         with pytest.raises(ContextCapacityError):
             async for _ in runner.step():
                 pass
         assert requests == []
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "params,overrides,admitted,expected_field,expected_limit",
+    [
+        ({"max_tokens": 100}, {}, None, "max_tokens", 100),
+        ({"max_completion_tokens": 100}, {}, None, "max_completion_tokens", 100),
+        ({"max_tokens": 100}, {}, 50, "max_tokens", 50),
+        ({"max_completion_tokens": 100}, {}, 50, "max_completion_tokens", 50),
+        (
+            {"max_completion_tokens": 100},
+            {"max_tokens": 80},
+            None,
+            "max_completion_tokens",
+            80,
+        ),
+        (
+            {"max_tokens": 100},
+            {"max_completion_tokens": 80},
+            None,
+            "max_completion_tokens",
+            80,
+        ),
+        (
+            {"max_completion_tokens": 100},
+            {"max_tokens": 500},
+            500,
+            "max_completion_tokens",
+            100,
+        ),
+        (
+            {"max_tokens": 500},
+            {"max_completion_tokens": 100},
+            500,
+            "max_completion_tokens",
+            100,
+        ),
+        (
+            {"max_completion_tokens": 500},
+            {"max_tokens": 200},
+            100,
+            "max_completion_tokens",
+            100,
+        ),
+        (
+            {"max_tokens": 500, "max_completion_tokens": 100},
+            {},
+            500,
+            "max_completion_tokens",
+            100,
+        ),
+        (
+            {"max_tokens": 100, "max_completion_tokens": None},
+            {},
+            None,
+            "max_tokens",
+            100,
+        ),
+        (
+            {"max_tokens": None, "max_completion_tokens": 100},
+            {},
+            None,
+            "max_completion_tokens",
+            100,
+        ),
+    ],
+)
+async def test_explicit_chat_output_field_survives_native_limit_resolution(
+    native_openai,
+    streaming,
+    params,
+    overrides,
+    admitted,
+    expected_field,
+    expected_limit,
+):
+    provider, requests, _ = native_openai
+    if params.get("max_completion_tokens") is not None:
+        provider.set_model("o3")
+    provider.provider_config["custom_extra_body"] = copy.deepcopy(overrides)
+    original_config = copy.deepcopy(provider.provider_config)
+
+    async def begin_usage(request):
+        return {"receipt_id": request["receipt_id"], "max_output_tokens": admitted}
+
+    binding = NodeExecutionBinding(
+        run_id="run",
+        team_id="team",
+        member_id="member",
+        node_id=None,
+        umo="test:FriendMessage:native-alias",
+        owner_username="test",
+        config_id=None,
+        begin_usage=begin_usage,
+    )
+    token = current_team_execution.set(binding if admitted else None)
+    try:
+        runner, executor = await native_runner(
+            provider,
+            streaming=streaming,
+            request=ProviderRequest(
+                prompt="x" * 2500, llm_params=copy.deepcopy(params)
+            ),
+        )
+        async for _ in runner.step():
+            pass
+    finally:
+        current_team_execution.reset(token)
+    assert len(requests) == 1
+    assert requests[0][expected_field] == expected_limit
+    other_field = (
+        "max_tokens"
+        if expected_field == "max_completion_tokens"
+        else "max_completion_tokens"
+    )
+    assert other_field not in requests[0]
+    assert requests[0]["model"] == provider.get_model()
+    assert runner.get_final_llm_resp().completion_text == "done"
+    assert runner.req.llm_params == params
+    assert provider.provider_config == original_config
     assert executor.calls == []
 
 
@@ -389,10 +520,13 @@ async def test_closing_native_stream_resets_the_checked_cap(native_openai):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("metered", [False, True])
 @pytest.mark.parametrize("fits", [False, True])
+@pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
 async def test_summary_budget_is_delivered_to_the_native_sdk(
-    native_openai, metered, fits
+    native_openai, metered, fits, field
 ):
-    summary, requests, field = native_openai
+    summary, requests, _ = native_openai
+    if field == "max_completion_tokens":
+        summary.set_model("o3")
     summary.provider_config["max_context_tokens"] = 1000000
 
     async def begin_usage(request):
@@ -410,7 +544,7 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
             main,
             request=ProviderRequest(
                 prompt="task",
-                llm_params={"max_tokens": 100},
+                llm_params={field: 100},
                 contexts=[
                     {"role": "user", "content": "old user " * 200},
                     {"role": "assistant", "content": "old answer " * 200},
@@ -438,6 +572,12 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
     try:
         await run_main()
         assert len(requests) == 1 and requests[0][field] == 100
+        other_field = (
+            "max_tokens"
+            if field == "max_completion_tokens"
+            else "max_completion_tokens"
+        )
+        assert other_field not in requests[0]
         input_tokens = EstimateTokenCounter().count_tokens(
             bind_checkpoint_messages(requests[0]["messages"])
         )
@@ -449,6 +589,7 @@ async def test_summary_budget_is_delivered_to_the_native_sdk(
         assert len(requests) == int(fits)
         if fits:
             assert requests[0][field] == 100
+            assert other_field not in requests[0]
         assert (
             any(
                 "Our previous history conversation summary: done"

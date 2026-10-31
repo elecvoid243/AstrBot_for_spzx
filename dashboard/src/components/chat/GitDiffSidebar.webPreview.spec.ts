@@ -57,6 +57,7 @@ const STUBS = {
   BranchDeleteConfirmDialog: true,
   WebBrowserView: WebBrowserViewStub,
   AgentBrowserView: true,
+  TerminalView: true,
 };
 
 async function mountSidebar() {
@@ -112,6 +113,26 @@ beforeEach(() => {
 });
 
 describe("GitDiffSidebar web preview tab", () => {
+  it("retains each project view and the mounted iframe while navigating", async () => {
+    const wrapper = await mountSidebar();
+    await tabButtons(wrapper)[5].trigger("click");
+    const preview = wrapper.findComponent(WebBrowserViewStub).vm;
+    for (const [index, name] of [
+      "FileBrowserView",
+      "DocumentManager",
+      "GitDiffBodyContent",
+      "GitLogView",
+      "TerminalView",
+    ].entries()) {
+      await tabButtons(wrapper)[index].trigger("click");
+      await flushPromises();
+      expect(wrapper.findComponent({ name }).exists()).toBe(true);
+      expect(wrapper.findComponent(WebBrowserViewStub).vm).toBe(preview);
+      expect(isHidden(wrapper.find(".web-browser-stub").element)).toBe(true);
+    }
+    wrapper.unmount();
+  });
+
   it("opens the Agent browser without a project and keeps it open on project unload", async () => {
     const status = useSpcodeProjectStatus();
     status.status.value = {

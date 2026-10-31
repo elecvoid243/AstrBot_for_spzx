@@ -5,9 +5,11 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { pluginExtensionApi } from "@/api/v1";
 import type { SpcodeFileBrowserRawResponse } from "@/composables/parseSpcodeFileBrowser";
+import { buildBreadcrumbs } from "@/composables/useSpcodeDirectoryBrowser";
 
 const props = defineProps<{
   currentPath: string;
+  hostBrowsing?: boolean;
   /** Root path; null when project not loaded. */
   rootPath: string | null;
   /**
@@ -35,6 +37,7 @@ const props = defineProps<{
 // would error out, and the user would see the breadcrumb + the
 // "select from left" hint with no way to recover.
 const emit = defineEmits<{
+  (e: "open-path", path: string): void;
   (
     e: "navigate",
     payload: { dirPath: string; previewPath: string | null },
@@ -73,6 +76,12 @@ interface Segment {
 // back to that directory).
 function buildSegments(current: string, root: string | null): Segment[] {
   if (!current) return [];
+  if (props.hostBrowsing)
+    return buildBreadcrumbs(current).map((segment, index, segments) => ({
+      name: segment.label,
+      path: index === segments.length - 1 ? current : segment.path,
+      isRoot: index === 0,
+    }));
   const normCurrent = current.replace(/\\/g, "/");
 
   // Basename fallback (used both for the "no root" case and for the
@@ -157,6 +166,8 @@ const segments = computed<Segment[]>(() => {
 //      .worktrees/feature-x checkout)
 //   4. rootPath missing → cancel (cannot resolve anything)
 //
+// Legacy document consumers retain project-relative validation. Host browsing
+// emits a single target intent instead; its owner performs the authenticated read.
 // 2026-07-20 path-relative-only: rule (2) was tightened to
 // "must be project-relative". The original commitEdit happily
 // navigated to "C:/Windows/System32" if the user typed it, which
@@ -253,6 +264,15 @@ type PathValidation =
  *  resolve to a path outside `rootPath` is rejected. */
 function validatePath(raw: string): PathValidation {
   const normalised = raw.replace(/\\/g, "/").trim();
+  if (props.hostBrowsing && /^(?:[A-Za-z]:\/|\/)/.test(normalised)) {
+    return { ok: true, resolved: normalised };
+  }
+  if (props.hostBrowsing && props.rootPath && !/^[A-Za-z]:/.test(normalised)) {
+    return {
+      ok: true,
+      resolved: props.rootPath.replace(/[\\/]+$/, "") + "/" + normalised,
+    };
+  }
   // No need to surface a "path is empty" error here —
   // commitEdit treats whitespace-only input as a cancel, so
   // this branch should never run for that case. Defensive
@@ -267,10 +287,7 @@ function validatePath(raw: string): PathValidation {
   // POSIX absolute ("/...") or Windows drive-letter absolute
   // ("C:/...", "C:\..." — backslashes were already normalised
   // above, so the regex only needs to match "C:/" or "C:").
-  if (
-    normalised.startsWith("/") ||
-    /^[a-zA-Z]:\/?/.test(normalised)
-  ) {
+  if (normalised.startsWith("/") || /^[a-zA-Z]:\/?/.test(normalised)) {
     return {
       ok: false,
       reason: tm("spcodeProjectLoad.fileBrowser.pathInput.error.absolute"),
@@ -304,8 +321,7 @@ function validatePath(raw: string): PathValidation {
   // intact — it's not a security concern and the backend
   // resolves it the same as "foo/bar".
   const cleaned = normalised.replace(/^\.\//, "");
-  const joined =
-    props.rootPath.replace(/[\\/]+$/, "") + "/" + cleaned;
+  const joined = props.rootPath.replace(/[\\/]+$/, "") + "/" + cleaned;
   return { ok: true, resolved: joined };
 }
 
@@ -327,6 +343,11 @@ async function commitEdit(): Promise<void> {
     return;
   }
   const resolved = validation.resolved;
+  if (props.hostBrowsing) {
+    cancelEdit();
+    emit("open-path", resolved);
+    return;
+  }
   // Exit edit mode immediately so the user sees the breadcrumb
   // collapse back to the segment row. The resolving state on the
   // input keeps the input mounted + disabled while we ask the
@@ -404,8 +425,20 @@ async function commitEdit(): Promise<void> {
       autocorrect="off"
       autocapitalize="off"
       :readonly="isResolving"
-      :placeholder="tm('spcodeProjectLoad.fileBrowser.pathInputPlaceholder')"
-      :aria-label="tm('spcodeProjectLoad.fileBrowser.pathInputPlaceholder')"
+      :placeholder="
+        tm(
+          hostBrowsing
+            ? 'spcodeProjectLoad.fileBrowser.host.pathInputPlaceholder'
+            : 'spcodeProjectLoad.fileBrowser.pathInputPlaceholder',
+        )
+      "
+      :aria-label="
+        tm(
+          hostBrowsing
+            ? 'spcodeProjectLoad.fileBrowser.host.pathInputPlaceholder'
+            : 'spcodeProjectLoad.fileBrowser.pathInputPlaceholder',
+        )
+      "
       :aria-invalid="!!inputError"
       :aria-describedby="inputError ? 'breadcrumb-path-input-error' : undefined"
       @keydown.enter.prevent="commitEdit"
@@ -467,7 +500,11 @@ async function commitEdit(): Promise<void> {
           type="button"
           class="breadcrumb-leaf"
           :title="
-            tm('spcodeProjectLoad.fileBrowser.pathInputTooltip') +
+            tm(
+              hostBrowsing
+                ? 'spcodeProjectLoad.fileBrowser.host.pathInputTooltip'
+                : 'spcodeProjectLoad.fileBrowser.pathInputTooltip',
+            ) +
             ' — ' +
             seg.path
           "
@@ -615,8 +652,7 @@ async function commitEdit(): Promise<void> {
   min-width: 0;
   padding: 4px 8px;
   background: var(--chat-input-bg, rgb(var(--v-theme-surface)));
-  border: 1px solid
-    var(--chat-border, rgba(var(--v-theme-on-surface), 0.16));
+  border: 1px solid var(--chat-border, rgba(var(--v-theme-on-surface), 0.16));
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;

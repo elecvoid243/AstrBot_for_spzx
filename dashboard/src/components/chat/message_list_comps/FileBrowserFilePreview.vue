@@ -1,14 +1,8 @@
 <!-- Author: elecvoid243, 2026-06-20
      Spec: docs/superpowers/specs/2026-06-20-git-diff-sidebar-file-browser-design.md §4.5 -->
 <script setup lang="ts">
-import {
-  computed,
-  inject,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from "vue";
+import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import {
   detectLanguage,
@@ -18,6 +12,7 @@ import {
 } from "@/utils/shiki";
 import { copyToClipboard } from "@/utils/clipboard";
 import type { FileBrowserFetchState } from "@/composables/useSpcodeFileBrowser";
+import type { FileReferenceNavigation } from "@/composables/fileReference";
 import { useDisplay } from "vuetify";
 import {
   extractLineContext,
@@ -92,15 +87,19 @@ const props = defineProps<{
    * watcher lives.
    */
   scrollToLine?: number | null;
+  scrollToEndLine?: number | null;
+  /** Independent host target for manual editing and preview. */
+  hostReference?: FileReferenceNavigation | null;
+  /** False when the resolved file is detached from the active project root. */
+  projectActionsAvailable?: boolean;
   /**
    * 2026-07-17 workspace file editor: repo-relative path of the
    * previewed file (the same value FileBrowserView feeds to the
-   * history panel as `file-relative`). The file-write endpoint
-   * requires a repo-relative path, so the edit affordance is hidden
-   * when this is empty.
+   * history panel as `file-relative`). Legacy project operations
+   * require this path; revision-backed editing uses the absolute snapshot path.
    */
   fileRelativePath?: string;
-  /** Current worktree root, forwarded to the file-write endpoint. */
+  /** Absolute project root, frozen in each legacy project request. */
   worktree?: string | null;
   /**
    * 2026-10-06 range-compare: 任意两版本比较数据(git-file-diff)。
@@ -129,11 +128,10 @@ const emit = defineEmits<{
    */
   (e: "back-to-current"): void;
   /**
-   * 2026-07-17 workspace file editor: fired after a successful save
-   * so the parent re-fetches the working-copy content (same handler
-   * as `retry`).
+   * Successful saves refresh project previews or project the saved host
+   * snapshot, without replacing the editor's newer draft.
    */
-  (e: "saved"): void;
+  (e: "saved", snapshot?: SavedFileSnapshot): void;
   /**
    * 2026-07-18 editor toolbar parity: fired after a successful rename
    * (with the new repo-relative path) so the parent refreshes the file
@@ -435,18 +433,36 @@ const isImageFile = computed<boolean>(() => {
   return IMAGE_EXTS.some((ext) => name.endsWith(ext));
 });
 
+// Text citations use source lines; whole CSV files use the existing table viewer.
+const richPreview = computed(() => {
+  if (props.state.kind !== "file") return false;
+  if (isImageFile.value) return true;
+  if (!props.hostReference) return false;
+  const name = props.state.snapshot.meta.name.toLowerCase();
+  return (
+    [".pdf", ".docx", ".xlsx", ".csv"].some((ext) => name.endsWith(ext)) &&
+    !(name.endsWith(".csv") && props.hostReference.startLine)
+  );
+});
+const referenceLineUnavailable = computed(
+  () =>
+    !!props.hostReference?.startLine &&
+    (richPreview.value ||
+      (props.state.kind === "file" && props.state.snapshot.content === null)),
+);
+
 /** True when the body should render markdown instead of the code
  *  view. Binary / too-large / loading are excluded by the template
  *  branches themselves (they win over the rendered branch). */
 const mdRenderActive = computed<boolean>(
-  () => isMarkdownFile.value && mdViewMode.value === "rendered",
+  () => isMarkdownFile.value && mdViewMode.value === "rendered" && !props.scrollToLine,
 );
 
 /** Meta-header toggle visibility. Hidden in edit mode (the editor
  *  owns the body) and in historical-diff mode (a unified diff is
  *  not markdown-renderable). */
 const canToggleMdView = computed<boolean>(
-  () => isMarkdownFile.value && !editMode.value && !isHistoricalDiff.value,
+  () => isMarkdownFile.value && !editMode.value && !isHistoricalDiff.value && !props.scrollToLine,
 );
 
 watch(
@@ -497,6 +513,7 @@ const currentContent = computed<string>(() =>
 
 function onEditDirtyChange(dirty: boolean): void {
   isEditDirty.value = dirty;
+  if (dirty) saveSuccessMessage.value = null;
 }
 
 const canEdit = computed<boolean>(() => {
@@ -507,13 +524,12 @@ const canEdit = computed<boolean>(() => {
   if (snap.meta.isBinary === true || typeof snap.content !== "string") {
     return false;
   }
-  if (!props.fileRelativePath) return false;
+  if (!props.fileRelativePath && !snap.meta.revision) return false;
+  if (props.hostReference && !snap.meta.revision) return false;
   return new TextEncoder().encode(snap.content).length <= MAX_EDIT_BYTES;
 });
 
-/** Non-plain-UTF-8 files (GBK, UTF-8-BOM, ...) are re-encoded as
- *  UTF-8 on save (the backend write is fixed UTF-8), so surface that
- *  in the editor toolbar. */
+/** Existing encoding, BOM and dominant newline style are preserved on save. */
 const encodingNotice = computed<string | null>(() => {
   if (props.state.kind !== "file") return null;
   const enc = props.state.snapshot.meta.encoding;
@@ -525,7 +541,26 @@ const encodingNotice = computed<string | null>(() => {
   });
 });
 
+const editRevision = ref<string | undefined>();
+const editFormat = ref<{ encoding?: string; newline?: string }>({});
+const conflictRevision = ref<string | null>(null);
+let editGeneration = 0;
+
 function onStartEdit(): void {
+  if (managing.value) return;
+  editGeneration += 1;
+  editRevision.value =
+    props.state.kind === "file"
+      ? props.state.snapshot.meta.revision ?? undefined
+      : undefined;
+  editFormat.value =
+    props.state.kind === "file"
+      ? {
+          encoding: props.state.snapshot.meta.encoding ?? undefined,
+          newline: props.state.snapshot.meta.newline,
+        }
+      : {};
+  conflictRevision.value = null;
   // Freeze the loaded content as the editing session's baseline —
   // same "no mid-edit clobber" semantics as the old editBuffer init.
   editInitialContent.value = currentContent.value;
@@ -534,48 +569,90 @@ function onStartEdit(): void {
   editMode.value = true;
 }
 
-async function onSaveEdit(): Promise<void> {
-  if (!isEditDirty.value || fileWrite.isSaving.value) return;
+async function onSaveEdit(baseRevision = editRevision.value): Promise<boolean> {
+  if (fileWrite.isSaving.value) return false;
+  if (!isEditDirty.value) return true;
+  saveSuccessMessage.value = null;
+  const generation = editGeneration;
+  const requestId = props.hostReference?.requestId;
   const savedContent = editorRef.value?.getValue() ?? "";
+  const path =
+    baseRevision !== undefined && props.state.kind === "file"
+      ? props.state.snapshot.meta.path
+      : props.fileRelativePath ?? "";
   const r = await fileWrite.save({
-    path: props.fileRelativePath ?? "",
+    path,
     content: savedContent,
+    baseRevision,
+    ...editFormat.value,
   });
-  if (r.ok) {
-    // 2026-07-26 toolbar parity: stay in edit mode after save (matches
-    // DocumentManager's onSave). The save button stays available for
-    // further edits; cancel still exits the editor. Two flips are
-    // needed for a clean post-save state:
-    //   1. editor.setBaseline() — CodeMirrorEditor's internal lastDirty
-    //      resets to clean, emits dirty-change false → the parent's
-    //      isEditDirty (which gates the save button) drops to false.
-    //   2. The next keystroke naturally re-transitions to dirty
-    //      because props.modelValue is still the pre-save baseline.
-    // emit("saved") bubbles up so the parent refresh() pulls the
-    // post-save bytes back into currentContent for the read view
-    // (matches DocumentManager's treeRef.refresh() / fileBrowser.refresh()
-    // on save).
-    editorRef.value?.setBaseline();
-    saveError.value = null;
-    emit("saved");
-    // 2026-07-26 save-success-toast: surface a transient green
-    // "Saved" confirmation in the editor toolbar. We cancel any
-    // in-flight dismiss timer before scheduling a new one so
-    // rapid back-to-back saves don't get their toast clipped
-    // short by the previous schedule.
-    saveSuccessMessage.value = tm(
-      "spcodeProjectLoad.fileBrowser.editor.saveSuccess",
-    );
-    if (saveSuccessTimer) clearTimeout(saveSuccessTimer);
-    saveSuccessTimer = setTimeout(() => {
-      saveSuccessMessage.value = null;
-      saveSuccessTimer = null;
-    }, SAVE_SUCCESS_TTL_MS);
-  } else {
+  if (generation !== editGeneration || !editMode.value) return false;
+  if (!r.ok) {
+    conflictRevision.value =
+      r.reason === "conflict" ? r.revision ?? null : null;
+    const message = [
+      "encoding_error",
+      "write_failed",
+      "conflict",
+      "target_changed",
+      "file_too_large",
+    ].includes(r.reason)
+      ? tm(`spcodeProjectLoad.fileBrowser.editor.errors.${r.reason}`)
+      : localizedReason(r.reason);
     saveError.value = `${tm(
       "spcodeProjectLoad.fileBrowser.editor.saveError",
-    )}: ${r.reason}`;
+    )}: ${message}`;
+    return false;
   }
+  editRevision.value = r.revision;
+  if (r.encoding) {
+    editFormat.value = {
+      encoding: r.encoding,
+      newline: r.newline ?? editFormat.value.newline,
+    };
+  }
+  conflictRevision.value = null;
+  saveError.value = null;
+  // The saved request's content is the baseline, even when the current
+  // buffer has changed (including a return to the original pre-save text).
+  editorRef.value?.setBaseline(savedContent);
+  emit("saved", {
+    path,
+    content: savedContent.replace(/\r\n?/g, "\n"),
+    revision: r.revision,
+    encoding: r.encoding,
+    newline: r.newline,
+    size: r.size,
+    requestId,
+  });
+  saveSuccessMessage.value = isEditDirty.value
+    ? null
+    : tm("spcodeProjectLoad.fileBrowser.editor.saveSuccess");
+  if (saveSuccessTimer) clearTimeout(saveSuccessTimer);
+  saveSuccessTimer = setTimeout(() => {
+    saveSuccessMessage.value = null;
+  }, SAVE_SUCCESS_TTL_MS);
+  return !isEditDirty.value;
+}
+
+function reloadConflict(): void {
+  if (!window.confirm(tm("spcodeProjectLoad.fileBrowser.editor.reloadConfirm")))
+    return;
+  editGeneration += 1;
+  editMode.value = false;
+  isEditDirty.value = false;
+  conflictRevision.value = null;
+  emit("retry");
+}
+
+async function overwriteConflict(): Promise<void> {
+  const revision = conflictRevision.value;
+  if (
+    !revision ||
+    !window.confirm(tm("spcodeProjectLoad.fileBrowser.editor.overwriteConfirm"))
+  )
+    return;
+  await onSaveEdit(revision);
 }
 
 // 2026-07-26 keyboard shortcut: Ctrl/Cmd+S triggers save when the
@@ -601,7 +678,10 @@ function onCancelEdit(): void {
     );
     if (!ok) return;
   }
+  editGeneration += 1;
   editMode.value = false;
+  isEditDirty.value = false;
+  if (props.hostReference) emit("retry");
   saveError.value = null;
   // 2026-07-26 save-success-toast: drop the in-flight "Saved"
   // message and its dismiss timer when the user exits the editor
@@ -622,110 +702,183 @@ function onCopyEdit(): void {
   void copyToClipboard(editorRef.value?.getValue() ?? "");
 }
 
-// ── 2026-07-18 rename / delete (editor toolbar parity) ──────────
-// Same-dir rename + hard delete backed by POST /spcode/file-rename
-// and POST /spcode/file-remove (the docs endpoints are .md-only).
-// Both actions operate on the on-disk file, so a dirty edit buffer
-// would be lost — guard with the same confirm semantics as cancel.
-const fileRename = useSpcodeFileRename(computed(() => props.worktree ?? null));
-const fileRemove = useSpcodeFileRemove(computed(() => props.worktree ?? null));
+// Manual management always binds the actual disk path, independent of project state.
+const fileRename = useSpcodeFileRename();
+const fileRemove = useSpcodeFileRemove();
 const renameOpen = ref(false);
 const renameName = ref("");
 const renameError = ref<string | null>(null);
 const deleteOpen = ref(false);
 const deleteError = ref<string | null>(null);
-
-const currentFileName = computed<string>(() => {
-  const p = props.fileRelativePath ?? "";
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return idx >= 0 ? p.slice(idx + 1) : p;
+const actionTarget = ref<{ path: string; requestId?: number } | null>(null);
+const managing = computed(
+  () => fileRename.isRenaming.value || fileRemove.isRemoving.value,
+);
+const projectActionsAvailable = computed(
+  () => !props.hostReference && props.projectActionsAvailable !== false,
+);
+const canManage = computed(
+  () => props.state.kind === "file" && !props.selectedRevision,
+);
+const currentFileName = computed(() => {
+  const path = actionTarget.value?.path ?? currentFilePath() ?? "";
+  return path.split(/[/\\]/).pop() ?? path;
 });
 
-/** Dirty guard for destructive actions: returns true when the action
- *  may proceed (clean buffer, or the user confirmed losing edits). */
-function confirmDiscardForAction(): boolean {
-  if (!isEditDirty.value) return true;
-  return window.confirm(
-    tm("spcodeProjectLoad.fileBrowser.editor.unsavedActionConfirm"),
-  );
-}
-
-function onRenameClick(): void {
-  if (!confirmDiscardForAction()) return;
+async function onRenameClick(): Promise<void> {
+  if (
+    !canManage.value ||
+    managing.value ||
+    renameOpen.value ||
+    deleteOpen.value
+  )
+    return;
+  const path = currentFilePath();
+  if (!path) return;
+  const requestId = props.hostReference?.requestId;
+  if (
+    !(await confirmLeaveEditing()) ||
+    currentFilePath() !== path ||
+    props.hostReference?.requestId !== requestId
+  )
+    return;
+  actionTarget.value = { path, requestId };
   renameName.value = currentFileName.value;
   renameError.value = null;
   renameOpen.value = true;
 }
 
 async function onConfirmRename(): Promise<void> {
+  const target = actionTarget.value;
+  if (!target || !renameOpen.value || managing.value) return;
   const newName = renameName.value.trim();
   if (!newName || newName === currentFileName.value) return;
-  if (/[/\\\n\x00]/.test(newName)) {
+  const generation = editGeneration;
+  const r = await fileRename.rename({ path: target.path, newName, host: true });
+  if (
+    target !== actionTarget.value ||
+    generation !== editGeneration ||
+    currentFilePath() !== target.path ||
+    props.hostReference?.requestId !== target.requestId
+  )
+    return;
+  if (!r.ok || !r.newPath) {
     renameError.value = tm(
       "spcodeProjectLoad.fileBrowser.editor.renameFailed",
-      { reason: "path_unsafe" },
+      {
+        reason: localizedReason(r.ok ? "unknown" : r.reason),
+      },
     );
     return;
   }
-  const r = await fileRename.rename({
-    path: props.fileRelativePath ?? "",
-    newName,
-  });
-  if (!r.ok) {
-    renameError.value = tm(
-      "spcodeProjectLoad.fileBrowser.editor.renameFailed",
-      { reason: r.reason },
-    );
-    return;
-  }
-  // Compute the new repo-relative path (same dir, new basename) so the
-  // parent can switch the preview over without a second lookup.
-  const p = props.fileRelativePath ?? "";
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  const newRel = idx >= 0 ? `${p.slice(0, idx + 1)}${newName}` : newName;
   renameOpen.value = false;
-  editMode.value = false;
-  isEditDirty.value = false;
-  emit("renamed", newRel);
+  emit("renamed", r.newPath);
 }
 
-function onDeleteClick(): void {
-  if (!confirmDiscardForAction()) return;
+async function onDeleteClick(): Promise<void> {
+  if (
+    !canManage.value ||
+    managing.value ||
+    renameOpen.value ||
+    deleteOpen.value
+  )
+    return;
+  const path = currentFilePath();
+  if (!path) return;
+  const requestId = props.hostReference?.requestId;
+  if (
+    !(await confirmLeaveEditing()) ||
+    currentFilePath() !== path ||
+    props.hostReference?.requestId !== requestId
+  )
+    return;
+  actionTarget.value = { path, requestId };
   deleteError.value = null;
   deleteOpen.value = true;
 }
 
 async function onConfirmDelete(): Promise<void> {
-  const r = await fileRemove.remove({ path: props.fileRelativePath ?? "" });
+  const target = actionTarget.value;
+  if (!target || !deleteOpen.value || managing.value) return;
+  const generation = editGeneration;
+  const r = await fileRemove.remove({ path: target.path, host: true });
+  if (
+    target !== actionTarget.value ||
+    generation !== editGeneration ||
+    currentFilePath() !== target.path ||
+    props.hostReference?.requestId !== target.requestId
+  )
+    return;
   if (!r.ok) {
     deleteError.value = tm(
       "spcodeProjectLoad.fileBrowser.editor.deleteFailed",
-      { reason: r.reason },
+      {
+        reason: localizedReason(r.reason),
+      },
     );
     return;
   }
   deleteOpen.value = false;
-  editMode.value = false;
-  isEditDirty.value = false;
   emit("deleted");
 }
+watch([currentFilePath, () => props.hostReference?.requestId], () => {
+  actionTarget.value = null;
+  renameOpen.value = false;
+  deleteOpen.value = false;
+  editGeneration += 1;
+});
 
 /** Dirty guard consulted by the parent (FileBrowserView) before any
  *  navigation that would swap the previewed file. Returns true when
  *  navigation may proceed (not editing / clean / user confirmed the
  *  discard); false when the user cancelled. */
-function confirmLeaveEditing(): boolean {
+const leaveDialogOpen = ref(false);
+let leaveResolver: ((allowed: boolean) => void) | null = null;
+
+async function confirmLeaveEditing(): Promise<boolean> {
+  if (managing.value || fileWrite.isSaving.value || leaveResolver) return false;
   if (!editMode.value) return true;
   if (!isEditDirty.value) {
     editMode.value = false;
     return true;
   }
-  const ok = window.confirm(
-    tm("spcodeProjectLoad.fileBrowser.editor.discardConfirm"),
-  );
-  if (ok) editMode.value = false;
-  return ok;
+  leaveDialogOpen.value = true;
+  return new Promise<boolean>((resolve) => {
+    leaveResolver = resolve;
+  });
 }
+
+async function finishLeave(
+  choice: "save" | "discard" | "cancel",
+): Promise<void> {
+  if (choice === "save" && !(await onSaveEdit())) {
+    leaveDialogOpen.value = false;
+    leaveResolver?.(false);
+    leaveResolver = null;
+    return;
+  }
+  const allowed = choice !== "cancel";
+  if (allowed) {
+    editGeneration += 1;
+    editMode.value = false;
+    isEditDirty.value = false;
+  }
+  leaveDialogOpen.value = false;
+  leaveResolver?.(allowed);
+  leaveResolver = null;
+}
+onBeforeUnmount(() => {
+  editGeneration += 1;
+  leaveResolver?.(false);
+});
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (isEditDirty.value || fileWrite.isSaving.value) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+}
+onMounted(() => window.addEventListener("beforeunload", beforeUnload));
+onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
 defineExpose({ confirmLeaveEditing });
 
 // Safety nets: the parent's guards normally veto navigation while
@@ -761,8 +914,14 @@ function formatMtime(mtime: number | null): string {
 
 // Map the composable's reason codes to localized messages.
 const REASON_I18N_KEYS: Record<string, string> = {
+  spcode_unavailable: "spcodeProjectLoad.fileBrowser.reference.pluginUnavailable",
+  not_a_file: "spcodeProjectLoad.fileBrowser.reference.notAFile",
   path_not_found: "spcodeProjectLoad.fileBrowser.error.pathNotFound",
   permission_denied: "spcodeProjectLoad.fileBrowser.error.permissionDenied",
+  file_exists: "spcodeProjectLoad.fileBrowser.editor.errors.file_exists",
+  operation_failed:
+    "spcodeProjectLoad.fileBrowser.editor.errors.operation_failed",
+  trash_failed: "spcodeProjectLoad.fileBrowser.editor.errors.operation_failed",
   special_file: "spcodeProjectLoad.fileBrowser.error.specialFile",
 };
 
@@ -774,6 +933,14 @@ function localizedReason(reason: string): string {
   }
   return tm("spcodeProjectLoad.fileBrowser.error.unknown", { reason });
 }
+
+const referenceRangeInvalid = computed(() => {
+  if (!props.hostReference?.startLine || props.state.kind !== "file" ||
+      typeof props.state.snapshot.content !== "string") return false;
+  const content = props.state.snapshot.content;
+  const count = content ? content.split("\n").length - (content.endsWith("\n") ? 1 : 0) : 1;
+  return (props.hostReference.endLine ?? props.hostReference.startLine) > count;
+});
 
 // --- inline comments (Chunk 3) ---
 // The file-comments store is a module-level singleton (see
@@ -1128,6 +1295,38 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="file-browser-preview" :class="{ 'is-mobile': isMobile }">
+    <v-dialog v-model="leaveDialogOpen" persistent max-width="520">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveTitle")
+        }}</v-card-title>
+        <v-card-text>{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveBody")
+        }}</v-card-text>
+        <v-card-actions>
+          <v-btn
+            variant="text"
+            :disabled="fileWrite.isSaving.value"
+            @click="finishLeave('cancel')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveCancel") }}</v-btn
+          >
+          <v-btn
+            variant="text"
+            :disabled="fileWrite.isSaving.value"
+            @click="finishLeave('discard')"
+            >{{
+              tm("spcodeProjectLoad.fileBrowser.editor.leaveDiscard")
+            }}</v-btn
+          >
+          <v-btn
+            variant="tonal"
+            :loading="fileWrite.isSaving.value"
+            @click="finishLeave('save')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveSave") }}</v-btn
+          >
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <!-- 加载中 -->
     <div
       v-if="state.kind === 'idle' || state.kind === 'loading'"
@@ -1221,7 +1420,7 @@ onBeforeUnmount(() => {
             the document-manager UX and is consistent with the
             user-feedback request to align the two tabs.
           -->
-          <div
+      <div
             v-if="props.rangeActive || props.rangeDiff || props.selectedRevision"
             class="preview-file__banner"
           >
@@ -1268,10 +1467,10 @@ onBeforeUnmount(() => {
           </div>
           <!-- 元信息头 -->
           <div class="preview-file-meta">
-            <span class="preview-file-path" :title="state.snapshot.meta.path">{{
-              state.snapshot.meta.name
-            }}</span>
-            <!-- 2026-07-03 ANSI/GBK 支持:当文件编码不是 utf-8 时,
+        <span class="preview-file-path" :title="state.snapshot.meta.path">{{
+          state.snapshot.meta.name
+        }}</span>
+        <!-- 2026-07-03 ANSI/GBK 支持:当文件编码不是 utf-8 时,
              在元信息头显示一个 subtle 灰色 chip 提示用户。utf-8
              不显示(主流情况,避免视觉噪声);cp936/gbk/gb18030/
              latin-1/utf-8-sig 等显示完整编码名。 -->
@@ -1324,30 +1523,28 @@ onBeforeUnmount(() => {
                  for markdown files. Shows the CURRENT mode (click to
                  switch), mirroring the document-manager 原文/渲染
                  view tabs; reuses its i18n keys. -->
-            <v-btn
-              v-if="canToggleMdView"
-              size="x-small"
-              variant="text"
-              color="primary"
-              :prepend-icon="
-                mdViewMode === 'rendered'
-                  ? 'mdi-language-markdown-outline'
-                  : 'mdi-code-tags'
-              "
-              :aria-pressed="mdViewMode === 'rendered'"
-              @click="
-                mdViewMode = mdViewMode === 'rendered' ? 'raw' : 'rendered'
-              "
-            >
-              {{
-                tm(
-                  mdViewMode === 'rendered'
-                    ? 'spcodeProjectLoad.documentManager.viewMode.rendered'
-                    : 'spcodeProjectLoad.documentManager.viewMode.raw',
-                )
-              }}
-            </v-btn>
-            <!-- 2026-07-17 workspace file editor: enters edit mode
+        <v-btn
+          v-if="canToggleMdView"
+          size="x-small"
+          variant="text"
+          color="primary"
+          :prepend-icon="
+            mdViewMode === 'rendered'
+              ? 'mdi-language-markdown-outline'
+              : 'mdi-code-tags'
+          "
+          :aria-pressed="mdViewMode === 'rendered'"
+          @click="mdViewMode = mdViewMode === 'rendered' ? 'raw' : 'rendered'"
+        >
+          {{
+            tm(
+              mdViewMode === "rendered"
+                ? "spcodeProjectLoad.documentManager.viewMode.rendered"
+                : "spcodeProjectLoad.documentManager.viewMode.raw",
+            )
+          }}
+        </v-btn>
+        <!-- 2026-07-17 workspace file editor: enters edit mode
                  (body swaps to <CodeMirrorEditor>). Hidden while editing,
                  for history views, binaries, oversized files, and
                  when no repo-relative path is available. -->
@@ -1381,7 +1578,7 @@ onBeforeUnmount(() => {
                  alike — the on-disk working copy is opened either
                  way. Same affordance as DocumentManager's toolbar. -->
             <v-btn
-              v-if="!editMode"
+              v-if="!editMode && !hostReference"
               size="x-small"
               variant="text"
               color="primary"
@@ -1393,11 +1590,39 @@ onBeforeUnmount(() => {
             </v-btn>
           </div>
 
+      <div v-if="canManage && !editMode" class="d-flex ga-2 pa-2">
+        <v-btn
+          size="small"
+          variant="text"
+          :disabled="managing"
+          @click="onRenameClick"
+          >{{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}</v-btn
+        >
+        <v-btn
+          size="small"
+          variant="text"
+          color="error"
+          :disabled="managing"
+          @click="onDeleteClick"
+          >{{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}</v-btn
+        >
+      </div>
+      <div v-if="hostReference" class="pa-2 text-caption" role="status">
+        {{ hostReference.path }} ·
+        {{ tm("spcodeProjectLoad.fileBrowser.reference.readOnly") }}
+        <span v-if="referenceLineUnavailable" class="text-warning">
+          {{ tm("spcodeProjectLoad.fileBrowser.reference.lineUnavailable") }}
+        </span>
+        <span v-else-if="referenceRangeInvalid" class="text-error">
+          {{ tm("spcodeProjectLoad.fileBrowser.reference.invalidRange") }}
+        </span>
+      </div>
+
           <!-- 2026-08-13 one-click code check / format toolbar. Rendered
                only for the live working copy (not edit mode, not a
                historical revision); the bar itself hides non-code files. -->
           <CodeCheckFormatBar
-            v-if="!editMode && !props.selectedRevision"
+            v-if="!editMode && !props.selectedRevision && projectActionsAvailable"
             :file-path="props.fileRelativePath ?? ''"
             :worktree="props.worktree ?? null"
             :is-dark="isDark"
@@ -1421,103 +1646,120 @@ onBeforeUnmount(() => {
                whole body for the overlay editor + a compact toolbar.
                Rendered before every read-only branch so it wins over
                the current-file code view. -->
-          <div v-if="editMode" class="preview-editor">
-            <CodeMirrorEditor
-              ref="editorRef"
-              :model-value="editInitialContent"
-              :file-path="state.snapshot.meta.path"
-              class="preview-editor-body"
-              @dirty-change="onEditDirtyChange"
-            />
-            <div class="preview-editor-toolbar editor-bar">
-              <span class="preview-editor-notice">{{
-                encodingNotice ?? ""
-              }}</span>
-              <span v-if="saveError" class="preview-editor-error">{{
-                saveError
-              }}</span>
-              <button
-                type="button"
-                class="editor-bar__btn editor-bar__btn--primary"
-                :title="tm('spcodeProjectLoad.fileBrowser.editor.saveHint')"
-                :disabled="!isEditDirty || fileWrite.isSaving.value"
-                @click="onSaveEdit"
-              >
-                <v-icon size="14">mdi-content-save-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.save") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :disabled="fileWrite.isSaving.value"
-                @click="onCancelEdit"
-              >
-                <v-icon size="14">mdi-close</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :disabled="fileWrite.isSaving.value"
-                @click="onRenameClick"
-              >
-                <v-icon size="14">mdi-rename-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}
-              </button>
-              <button
-                type="button"
-                class="editor-bar__btn"
-                :title="tm('spcodeProjectLoad.fileBrowser.preview.copy')"
-                :disabled="fileWrite.isSaving.value"
-                @click="onCopyEdit"
-              >
-                <v-icon size="14">mdi-content-copy</v-icon>
-              </button>
-              <!-- 2026-07-26 save-success-toast: green inline
+      <div v-if="editMode" class="preview-editor">
+        <div v-if="conflictRevision" role="alert" class="pa-2">
+          {{ tm("spcodeProjectLoad.fileBrowser.editor.conflict") }}
+          <v-btn variant="text" @click="reloadConflict">{{
+            tm("spcodeProjectLoad.fileBrowser.editor.reload")
+          }}</v-btn>
+          <v-btn
+            variant="tonal"
+            :disabled="fileWrite.isSaving.value"
+            @click="overwriteConflict"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.overwrite") }}</v-btn
+          >
+        </div>
+        <CodeMirrorEditor
+          ref="editorRef"
+          :model-value="editInitialContent"
+          :file-path="state.snapshot.meta.path"
+          class="preview-editor-body"
+          @dirty-change="onEditDirtyChange"
+        />
+        <div class="preview-editor-toolbar editor-bar">
+          <span class="preview-editor-notice">{{ encodingNotice ?? "" }}</span>
+          <span v-if="saveError" class="preview-editor-error">{{
+            saveError
+          }}</span>
+          <button
+            type="button"
+            class="editor-bar__btn editor-bar__btn--primary"
+            :title="tm('spcodeProjectLoad.fileBrowser.editor.saveHint')"
+            :disabled="!isEditDirty || fileWrite.isSaving.value"
+            @click="onSaveEdit()"
+          >
+            <v-icon size="14">mdi-content-save-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.save") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :disabled="fileWrite.isSaving.value"
+            @click="onCancelEdit"
+          >
+            <v-icon size="14">mdi-close</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :disabled="fileWrite.isSaving.value"
+            v-if="canManage"
+            @click="onRenameClick"
+          >
+            <v-icon size="14">mdi-rename-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}
+          </button>
+          <button
+            type="button"
+            class="editor-bar__btn"
+            :title="tm('spcodeProjectLoad.fileBrowser.preview.copy')"
+            :disabled="fileWrite.isSaving.value"
+            @click="onCopyEdit"
+          >
+            <v-icon size="14">mdi-content-copy</v-icon>
+          </button>
+          <!-- 2026-07-26 save-success-toast: green inline
                    confirmation that lives in the dead space between
                    the copy button and the right-aligned delete.
                    Fades in when fileWrite.save resolves r.ok and
                    back out when the local auto-dismiss timer clears
                    the ref. -->
-              <Transition name="preview-editor__success-fade">
-                <span
-                  v-if="saveSuccessMessage"
-                  class="preview-editor__save-success"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <v-icon size="14" color="success">mdi-check-circle-outline</v-icon>
-                  {{ saveSuccessMessage }}
-                </span>
-              </Transition>
-              <span class="editor-bar__spacer" />
-              <button
-                type="button"
-                class="editor-bar__btn editor-bar__btn--danger"
-                :disabled="fileWrite.isSaving.value"
-                @click="onDeleteClick"
+          <Transition name="preview-editor__success-fade">
+            <span
+              v-if="saveSuccessMessage"
+              class="preview-editor__save-success"
+              role="status"
+              aria-live="polite"
+            >
+              <v-icon size="14" color="success"
+                >mdi-check-circle-outline</v-icon
               >
-                <v-icon size="14">mdi-delete-outline</v-icon>
-                {{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}
-              </button>
-            </div>
-          </div>
-
-          <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
-          <div
-            v-else-if="props.rangePending"
-            class="preview-file__range-pending"
-            :class="{ 'preview-file__range-pending--error': props.rangePending.kind === 'error' }"
-          >
-            <span v-if="props.rangePending.kind === 'error'">
-              {{
-                tm("spcodeProjectLoad.documentManager.history.rangeError", {
-                  reason: props.rangePending.reason,
-                })
-              }}
+              {{ saveSuccessMessage }}
             </span>
-          </div>
-          <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
+          </Transition>
+          <span class="editor-bar__spacer" />
+          <button
+            type="button"
+            class="editor-bar__btn editor-bar__btn--danger"
+            :disabled="fileWrite.isSaving.value"
+            v-if="canManage"
+            @click="onDeleteClick"
+          >
+            <v-icon size="14">mdi-delete-outline</v-icon>
+            {{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}
+          </button>
+        </div>
+      </div>
+
+      <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
+      <div
+        v-else-if="props.rangePending"
+        class="preview-file__range-pending"
+        :class="{
+          'preview-file__range-pending--error':
+            props.rangePending.kind === 'error',
+        }"
+      >
+        <span v-if="props.rangePending.kind === 'error'">
+          {{
+            tm("spcodeProjectLoad.documentManager.history.rangeError", {
+              reason: props.rangePending.reason,
+            })
+          }}
+        </span>
+      </div>
+      <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
                compareRange 激活时 selectedRevision 必为 null -->
           <div
             v-else-if="props.rangeDiff"
@@ -1564,19 +1806,16 @@ onBeforeUnmount(() => {
         current file. We deliberately DO NOT register a comment
         gutter here — see the historicalContent watcher above.
       -->
-          <!-- 2026-07-31 workspace-image-preview: image files render
-               inline through <BinaryPreview> (fetches bytes via
-               /spcode/file-binary, dispatches to ImagePreview). Placed
-               right after the historical-DIFF branch so images win over
-               every generic "binary file" placeholder below, for both
-               the current working copy and historical-raw views.
-               Edit mode and historical diff mode still take precedence
-               above. -->
-          <div v-else-if="isImageFile" class="preview-image">
+          <!-- Reuse the binary viewers for host documents and existing
+               project images. Host targets never enter project/Git reads.
+               Edit mode and historical diff still take precedence. -->
+          <div v-else-if="richPreview" class="preview-image">
             <BinaryPreview
-              :path="props.fileRelativePath ?? ''"
-              :git-ref="props.selectedRevision ?? ''"
-              :worktree="props.worktree ?? null"
+              :key="hostReference?.requestId ?? props.fileRelativePath"
+              :host="!projectActionsAvailable"
+              :path="!projectActionsAvailable ? state.snapshot.meta.path : props.fileRelativePath ?? ''"
+              :git-ref="!projectActionsAvailable ? '' : props.selectedRevision ?? ''"
+              :worktree="!projectActionsAvailable ? null : props.worktree ?? null"
             />
           </div>
 
@@ -1674,7 +1913,8 @@ onBeforeUnmount(() => {
             :active-edit-line="activeEditLine"
             :active-edit-comment-id="activeEditCommentId"
             :is-dark="isDark"
-            :scroll-to-line="props.scrollToLine ?? null"
+            :scroll-to-line="referenceRangeInvalid ? null : props.scrollToLine ?? null"
+            :scroll-to-end-line="props.scrollToEndLine ?? null"
             :annotations="inlineAnnotations.annotationsForFile(state.snapshot.meta.path)"
             @request-add="onRequestAdd"
             @request-edit="onRequestEdit"
@@ -1711,25 +1951,25 @@ onBeforeUnmount(() => {
           <!-- 2026-07-17 selection-comment: copy-only menu for the
                rendered-markdown containers above (fixed position,
                one shared instance is enough). -->
-          <SelectionActionMenu
-            v-if="renderedMenu"
-            :x="renderedMenu.x"
-            :y="renderedMenu.y"
-            :show-comment="false"
-            @copy="onRenderedCopy"
-            @close="renderedMenu = null"
-          />
-        </div>
-    <!-- 2026-07-18 editor toolbar parity: rename / delete dialogs.
-         Rename is same-dir only (bare file name); delete is a hard
-         unlink, so the confirm copy carries the cannot-undo warning. -->
-    <v-dialog v-model="renameOpen" max-width="420">
+      <SelectionActionMenu
+        v-if="renderedMenu"
+        :x="renderedMenu.x"
+        :y="renderedMenu.y"
+        :show-comment="false"
+        @copy="onRenderedCopy"
+        @close="renderedMenu = null"
+      />
+    </div>
+    <!-- Confirm the frozen absolute target before a manual filesystem action. -->
+    <v-dialog v-model="renameOpen" persistent max-width="520">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">
           {{ tm("spcodeProjectLoad.fileBrowser.editor.renameDialogTitle") }}
         </v-card-title>
         <v-card-text class="pt-4">
+          <div class="text-break mb-3">{{ actionTarget?.path }}</div>
           <v-text-field
+            :disabled="managing"
             v-model="renameName"
             :label="tm('spcodeProjectLoad.fileBrowser.editor.newNameLabel')"
             density="comfortable"
@@ -1740,7 +1980,11 @@ onBeforeUnmount(() => {
         </v-card-text>
         <v-card-actions class="pa-4 pt-0">
           <v-spacer />
-          <v-btn variant="text" @click="renameOpen = false">
+          <v-btn
+            :disabled="managing"
+            variant="text"
+            @click="renameOpen = false"
+          >
             {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
           </v-btn>
           <v-btn
@@ -1754,7 +1998,7 @@ onBeforeUnmount(() => {
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <v-dialog v-model="deleteOpen" max-width="420">
+    <v-dialog v-model="deleteOpen" persistent max-width="520">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">
           {{ tm("spcodeProjectLoad.fileBrowser.editor.deleteDialogTitle") }}
@@ -1762,7 +2006,7 @@ onBeforeUnmount(() => {
         <v-card-text class="pt-4">
           {{
             tm("spcodeProjectLoad.fileBrowser.editor.deleteConfirmMessage", {
-              name: currentFileName,
+              name: actionTarget?.path ?? "",
             })
           }}
         </v-card-text>
@@ -1771,7 +2015,11 @@ onBeforeUnmount(() => {
             deleteError
           }}</span>
           <v-spacer />
-          <v-btn variant="text" @click="deleteOpen = false">
+          <v-btn
+            :disabled="managing"
+            variant="text"
+            @click="deleteOpen = false"
+          >
             {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
           </v-btn>
           <v-btn

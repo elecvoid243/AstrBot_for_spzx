@@ -9,11 +9,16 @@ import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
-export type FileRemoveResult = { ok: true } | { ok: false; reason: string };
+export type FileRemoveResult =
+  | { ok: true; path?: string }
+  | { ok: false; reason: string };
 
 export interface UseSpcodeFileRemove {
   isRemoving: import("vue").Ref<boolean>;
-  remove: (params: { path: string }) => Promise<FileRemoveResult>;
+  remove: (params: {
+    path: string;
+    host?: boolean;
+  }) => Promise<FileRemoveResult>;
   dispose: () => void;
 }
 
@@ -25,39 +30,46 @@ export function useSpcodeFileRemove(
   let ctrl: AbortController | null = null;
   let isMounted = true;
 
-  async function remove(params: { path: string }): Promise<FileRemoveResult> {
+  async function remove(params: {
+    path: string;
+    host?: boolean;
+  }): Promise<FileRemoveResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
     ctrl?.abort();
     ctrl = new AbortController();
     isRemoving.value = true;
     try {
       const resp = await pluginExtensionApi.post<unknown>(
-        "spcode/file-remove",
+        params.host ? "spcode/host-file-manage" : "spcode/file-remove",
         {
           path: params.path,
-          umo: session.umo.value ?? undefined,
-          worktree: toValue(worktreeRef) ?? undefined,
+          ...(params.host ? { operation: "trash" } : {}),
+          umo: params.host ? undefined : session.umo.value ?? undefined,
+          worktree: params.host ? undefined : toValue(worktreeRef) ?? undefined,
         },
         { signal: ctrl.signal },
       );
       if (!isMounted) return { ok: false, reason: "aborted" };
-      // Envelope semantics mirror useSpcodeFileWrite: `deleted === true`
-      // is the success marker; a non-empty `reason` without the marker
-      // is a genuine failure; anything unrecognized is treated as success.
-      const data = (
-        resp.data as {
-          data?: { deleted?: boolean; reason?: string | null };
-        }
-      )?.data;
-      if (
-        data &&
-        data.deleted !== true &&
-        typeof data.reason === "string" &&
-        data.reason
-      ) {
-        return { ok: false, reason: data.reason };
+      const payload = resp.data as {
+        status?: string;
+        data?: {
+          renamed?: boolean;
+          deleted?: boolean;
+          path?: string;
+          new_path?: string;
+          reason?: string | null;
+        };
+      };
+      const data = payload?.data;
+      if (data?.deleted !== true || (params.host && !data.path)) {
+        return {
+          ok: false,
+          reason:
+            data?.reason ||
+            (payload?.status === "error" ? "spcode_unavailable" : "unknown"),
+        };
       }
-      return { ok: true };
+      return { ok: true, path: data.path };
     } catch (err) {
       if (!isMounted) return { ok: false, reason: "aborted" };
       const e = err as { name?: string; code?: string; message?: string };

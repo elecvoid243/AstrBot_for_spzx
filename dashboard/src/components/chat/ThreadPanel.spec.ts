@@ -1,21 +1,25 @@
 // Author: elecvoid243 @ 2026-10-22
 // ThreadPanel: drag-to-resize, side-chat mode and close semantics.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
-const { getThreadMock } = vi.hoisted(() => ({
+const { getThreadMock, fetchMock, stopMock } = vi.hoisted(() => ({
   getThreadMock: vi.fn(),
+  fetchMock: vi.fn(),
+  stopMock: vi.fn(),
 }));
 
 vi.mock("@/api/v1", () => ({
   chatApi: {
     getThread: getThreadMock,
+    stopThread: stopMock,
     sendThreadMessageUrl: (threadId: string) => `/threads/${threadId}/messages`,
   },
 }));
+vi.mock("@/api/http", () => ({ fetchWithAuth: fetchMock }));
 
 import ThreadPanel from "./ThreadPanel.vue";
 import type { ChatThread } from "@/composables/useMessages";
@@ -47,7 +51,7 @@ const VBtnStub = defineComponent({
 function mountPanel(
   props: Partial<{
     modelValue: boolean;
-    thread: ChatThread;
+    thread: ChatThread | null;
     isDark: boolean;
     sideChat: boolean;
     title: string;
@@ -63,7 +67,19 @@ function mountPanel(
     global: {
       stubs: {
         ChatMessageList: true,
-        ChatInput: true,
+        ChatInput: defineComponent({
+          name: "ChatInput",
+          props: { disabled: Boolean },
+          emits: ["send-command", "stop"],
+          setup(props, { expose }) {
+            expose({
+              getCurrentSelection: () => ({}),
+              getThinkingEffort: () => "",
+            });
+            return () =>
+              h("chat-input-stub", { disabled: String(props.disabled) });
+          },
+        }),
         ProviderModelMenu: true,
         VBtn: VBtnStub,
       },
@@ -75,9 +91,166 @@ beforeEach(() => {
   setActivePinia(createPinia());
   getThreadMock.mockReset();
   getThreadMock.mockResolvedValue({ data: { data: { history: [] } } });
+  fetchMock.mockReset();
+  stopMock.mockReset();
+  stopMock.mockResolvedValue({});
+});
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("ThreadPanel", () => {
+  it("retains live A records across hiding and reopening, and isolates B's stream and stop action", async () => {
+    const streams = new Map<
+      string,
+      ReadableStreamDefaultController<Uint8Array>
+    >();
+    fetchMock.mockImplementation(async (url: string) => ({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.set(url, controller);
+        },
+      }),
+    }));
+    const wrapper = mountPanel({ sideChat: true });
+    await flushPromises();
+    await wrapper
+      .getComponent({ name: "ChatInput" })
+      .vm.$emit("send-command", "A prompt");
+    await flushPromises();
+    const a = streams.get("/threads/thread-1/messages")!;
+    const encode = new TextEncoder();
+    a.enqueue(
+      encode.encode(
+        'data: {"type":"plain","data":"A live reference","streaming":true}\n\n',
+      ),
+    );
+    await flushPromises();
+    const liveMessages = wrapper
+      .getComponent({ name: "ChatMessageList" })
+      .props("messages");
+    await wrapper.setProps({
+      thread: null,
+      modelValue: false,
+    });
+    await wrapper.setProps({ thread: THREAD, modelValue: true });
+    await flushPromises();
+    expect(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    ).toBe(liveMessages);
+    expect(JSON.stringify(liveMessages)).toContain("A live reference");
+    expect(getThreadMock).toHaveBeenCalledTimes(1);
+    const bThread = { ...THREAD, thread_id: "thread-b" };
+    await wrapper.setProps({ thread: bThread });
+    await flushPromises();
+    expect(
+      wrapper.getComponent({ name: "ChatInput" }).attributes("disabled"),
+    ).toBe("false");
+    await wrapper
+      .getComponent({ name: "ChatInput" })
+      .vm.$emit("send-command", "B prompt");
+    await flushPromises();
+    a.enqueue(
+      encode.encode(
+        'data: {"type":"plain","data":" A continued","streaming":true}\n\n',
+      ),
+    );
+    a.close();
+    const b = streams.get("/threads/thread-b/messages")!;
+    b.enqueue(
+      encode.encode(
+        'data: {"type":"plain","data":"B live reply","streaming":true}\n\n',
+      ),
+    );
+    await flushPromises();
+    const visibleB = JSON.stringify(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    );
+    expect(visibleB).toContain("B live reply");
+    expect(visibleB).not.toContain("A continued");
+    await wrapper.getComponent({ name: "ChatInput" }).vm.$emit("stop");
+    await flushPromises();
+    expect(stopMock).toHaveBeenCalledWith("thread-b");
+    b.close();
+    getThreadMock.mockResolvedValue({
+      data: { data: { history: liveMessages } },
+    });
+    await wrapper.setProps({ thread: THREAD });
+    await flushPromises();
+    const visibleA = JSON.stringify(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    );
+    expect(visibleA).toContain("A live reference A continued");
+    expect(visibleA).not.toContain("B live reply");
+    wrapper.unmount();
+  });
+
+  it("ignores stale history loads and a history response superseded by a local stream", async () => {
+    let oldA!: (value: unknown) => void;
+    getThreadMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        oldA = resolve;
+      }),
+    );
+    const wrapper = mountPanel({ sideChat: true });
+    await wrapper.setProps({ thread: { ...THREAD, thread_id: "thread-b" } });
+    await flushPromises();
+    oldA({
+      data: {
+        data: {
+          history: [
+            {
+              content: {
+                type: "bot",
+                message: [{ type: "plain", text: "STALE A" }],
+              },
+            },
+          ],
+        },
+      },
+    });
+    await flushPromises();
+    expect(
+      JSON.stringify(
+        wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+      ),
+    ).not.toContain("STALE A");
+    let reloadA!: (value: unknown) => void;
+    getThreadMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        reloadA = resolve;
+      }),
+    );
+    await wrapper.setProps({ thread: THREAD });
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          stream = controller;
+        },
+      }),
+    });
+    await wrapper
+      .getComponent({ name: "ChatInput" })
+      .vm.$emit("send-command", "new A turn");
+    await flushPromises();
+    reloadA({ data: { data: { history: [] } } });
+    stream.enqueue(
+      new TextEncoder().encode('data: {"type":"plain","data":"CURRENT A"}\n\n'),
+    );
+    await flushPromises();
+    const visible = JSON.stringify(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    );
+    expect(visible).toContain("new A turn");
+    expect(visible).toContain("CURRENT A");
+    stream.close();
+    await flushPromises();
+    wrapper.unmount();
+  });
+
   it("renders the side-chat header, full composer and delete action", async () => {
     const wrapper = mountPanel({ sideChat: true });
     await flushPromises();

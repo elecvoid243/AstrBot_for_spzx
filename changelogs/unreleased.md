@@ -1,5 +1,7 @@
 # Unreleased
 
+- Main and side-chat file citations share guarded navigation into the existing file pane. Side chats retain history when hidden and reopen from their menu: **Temporary chat destroyed on close → saved side-chat title**. Cancelled navigation, failed saves and conflicts preserve the current editor. / 主聊与侧聊引用共用草稿守卫和文件侧栏；**关闭即销毁的临时侧聊 → 菜单中的已保存侧聊**，取消、保存失败或冲突时保留编辑状态。
+
 - Preserve the last Data & Logs tab when leaving the workspace, and restore playback and downloads for sent ChatUI audio and video attachments.
 - Prepare direct and quoted file attachments before acquiring the session lock, with stop and LLM-enable checks around queued work. Follow streamed reasoning activity while respecting manual scrolling and search/file positioning.
 
@@ -9,3 +11,7 @@
 - Raise the model image input cap from 32 MiB to 64 MiB. Larger originals are skipped before reading image bytes, with a model notice retaining their paths and suggesting the file-reading tool or a smaller upload; accepted inputs still produce images strictly below 512 KiB.
 - Local Agent input images are always prepared as JPEG/PNG files strictly below 512 KiB. Compliant local images are reused without copying. Transparent previews retain PNG alpha; animations become 3×3 montages. Original attachment paths remain available to tools, and event-owned previews are deleted after use without a shared conversion cache.
 - Configuration mapping: **Enable image compression** (`provider_settings.image_compress_enabled`) is replaced by always-on preparation; **JPEG quality** (`provider_settings.image_compress_options.quality`) is replaced by automatic size control; **Maximum edge length** is renamed to **Input image maximum edge length** (`provider_settings.image_compress_options.max_size`). User attachments in CUA sessions follow the same limits.
+
+- Add independent authenticated host file browsing with directory paths, parent breadcrumbs and Windows drive selection. With no project, **Agent browser → Files & Browser → Files / Web Preview**; with a project, **Workspace → Files** stays available and **Browse host folders or drives** opens other locations. Browsing and manual editing preserve the Agent project, worktree, execution directory and permissions; saving detects external changes and preserves conflicting drafts.
+
+- File and Docs toolbars: **Delete → Move to recycle bin**. Manual file management now supports host files outside the loaded project; rename stays within the current directory. Failed trash operations preserve files without permanent deletion. / 文件及文档工具栏：**删除 → 移入回收站**；支持管理项目外宿主文件，同目录重命名，回收站失败时保留文件。

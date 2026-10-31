@@ -10,10 +10,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getMock = vi.fn();
 vi.mock("@/api/v1", () => ({
-  pluginExtensionApi: { get: (...args: unknown[]) => getMock(...args), post: vi.fn() },
+  pluginExtensionApi: {
+    get: (...args: unknown[]) => getMock(...args),
+    post: vi.fn(),
+  },
 }));
 
-import { useSpcodeDirectoryBrowser } from "./useSpcodeDirectoryBrowser";
+import {
+  parentOf,
+  buildBreadcrumbs,
+  useSpcodeDirectoryBrowser,
+} from "./useSpcodeDirectoryBrowser";
 
 type Browser = ReturnType<typeof useSpcodeDirectoryBrowser>;
 
@@ -24,7 +31,14 @@ function withSetup<T>(fn: () => T): T {
 }
 
 function dirEntry(name: string, path: string): Record<string, unknown> {
-  return { path, name, type: "directory", size: null, mtime: 0, is_symlink: false };
+  return {
+    path,
+    name,
+    type: "directory",
+    size: null,
+    mtime: 0,
+    is_symlink: false,
+  };
 }
 function fileEntry(name: string, path: string): Record<string, unknown> {
   return { path, name, type: "file", size: 10, mtime: 0, is_symlink: false };
@@ -130,7 +144,11 @@ describe("useSpcodeDirectoryBrowser navigation", () => {
   });
 
   it("openComputer fetches the drive list and clears the folder view", async () => {
-    mockApi((path) => dirResponse(path, []), "C:\\Users", ["C:\\", "D:\\", "E:\\"]);
+    mockApi((path) => dirResponse(path, []), "C:\\Users", [
+      "C:\\",
+      "D:\\",
+      "E:\\",
+    ]);
     const result = withSetup(() => useSpcodeDirectoryBrowser());
     await result.goHome();
     await result.openComputer();
@@ -171,7 +189,9 @@ describe("useSpcodeDirectoryBrowser navigation", () => {
   });
 
   it("propagates a backend error reason", async () => {
-    mockApi(() => ({ data: { data: { type: null, path: "/x", reason: "path_not_found" } } }));
+    mockApi(() => ({
+      data: { data: { type: null, path: "/x", reason: "path_not_found" } },
+    }));
     const result = withSetup(() => useSpcodeDirectoryBrowser());
     await result.list("/x");
     expect(result.error.value).toBe("path_not_found");
@@ -179,7 +199,9 @@ describe("useSpcodeDirectoryBrowser navigation", () => {
   });
 
   it("sets the truncated flag from the listing", async () => {
-    mockApi(() => dirResponse("/big", [dirEntry("a", "/big/a")], { truncated: true }));
+    mockApi(() =>
+      dirResponse("/big", [dirEntry("a", "/big/a")], { truncated: true }),
+    );
     const result = withSetup(() => useSpcodeDirectoryBrowser());
     await result.list("/big");
     expect(result.truncated.value).toBe(true);
@@ -191,5 +213,78 @@ describe("useSpcodeDirectoryBrowser navigation", () => {
     await result.list("/base");
     await result.openEntry(result.entries.value[0]);
     expect(result.currentPath.value).toBe("/base/child");
+  });
+});
+
+describe("host picker lifecycle", () => {
+  it("keeps Windows roots absolute and renders the POSIX root", () => {
+    expect(parentOf("C:/file.txt")).toBe("C:/");
+    expect(parentOf("C:/")).toBeNull();
+    expect(buildBreadcrumbs("/")).toEqual([{ label: "/", path: "/" }]);
+  });
+
+  it("ignores a late folder result after switching to drives", async () => {
+    let resolve!: (value: unknown) => void;
+    getMock.mockImplementation((route: string) =>
+      route === "spcode/drives"
+        ? Promise.resolve({ data: { data: { drives: ["C:/", "G:/"] } } })
+        : new Promise((done) => {
+            resolve = done;
+          }),
+    );
+    const browser = useSpcodeDirectoryBrowser(true);
+    const pending = browser.list("G:/slow");
+    await browser.openComputer();
+    resolve(dirResponse("G:/slow", []));
+    await pending;
+    expect(browser.computerMode.value).toBe(true);
+    expect(browser.drives.value).toEqual(["C:/", "G:/"]);
+    expect(getMock.mock.calls[0][1].params.scope).toBe("host");
+  });
+
+  it("does not apply home navigation after the picker closes", async () => {
+    let resolve!: (value: unknown) => void;
+    getMock.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const browser = useSpcodeDirectoryBrowser(true);
+    const pending = browser.goHome();
+    browser.cancel();
+    resolve({ data: { data: { home: "C:/Users/example" } } });
+    await pending;
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(browser.loading.value).toBe(false);
+  });
+});
+
+describe("host non-directory fallback", () => {
+  it("still falls back to the parent of a legitimate file response", async () => {
+    getMock.mockImplementation(
+      async (_route: string, config: { params: { path: string } }) =>
+        config.params.path.endsWith(".txt")
+          ? {
+              data: {
+                status: "ok",
+                data: {
+                  type: "file",
+                  path: config.params.path,
+                  name: "file.txt",
+                  content: "text",
+                },
+              },
+            }
+          : dirResponse(config.params.path, []),
+    );
+    const browser = useSpcodeDirectoryBrowser(true);
+    await browser.list("C:/fixture/file.txt");
+    expect(browser.currentPath.value).toBe("C:/fixture");
+    expect(browser.error.value).toBeNull();
+    expect(getMock.mock.calls.map((call) => call[1].params)).toEqual([
+      { path: "C:/fixture/file.txt", scope: "host" },
+      { path: "C:/fixture", scope: "host" },
+    ]);
   });
 });

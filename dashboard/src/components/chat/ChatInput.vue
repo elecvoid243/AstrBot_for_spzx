@@ -31,7 +31,7 @@
           />
           <!-- Workspace entry — standalone again (2026-10-03, elecvoid243):
                the permission menu governs writes, this opens the read view.
-               Without a project, the same entry opens the Agent browser.
+               Without a project, the same entry opens host files and the Agent browser.
                Icon-only below the 768px breakpoint. -->
           <GitDiffChip
             v-if="

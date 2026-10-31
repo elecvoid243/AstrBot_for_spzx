@@ -1151,7 +1151,9 @@ function onRecentRemove(payload: { path: string }): void {
 }
 
 async function onSave(content: string) {
-  if (!selectedDoc.value) return;
+  if (!selectedDoc.value || !docMeta.value) return false;
+  const targetPath = docMeta.value.path;
+  const revision = docMeta.value.revision ?? undefined;
   saveError.value = null;
   // fileWrite.save expects a project-relative path (the backend
   // resolves it against projectRoot via _validate_repo_relative_file).
@@ -1159,9 +1161,13 @@ async function onSave(content: string) {
   // on the front. For docsRoot="." the file is already at the root
   // and projectRelativeFromDoc returns selectedDoc unchanged.
   const r = await fileWrite.save({
-    path: projectRelativeFromDoc(docsRoot.value, selectedDoc.value),
+    path: revision
+      ? targetPath
+      : projectRelativeFromDoc(docsRoot.value, selectedDoc.value),
+    baseRevision: revision,
     content,
   });
+  if (docMeta.value?.path !== targetPath) return false;
   if (r.ok) {
     // 2026-07-26 toolbar parity: stay in edit mode after save (matches
     // the workspace file browser's onSaveEdit). Two state flips keep
@@ -1193,27 +1199,28 @@ async function onSave(content: string) {
     saveError.value = `${tm(
       "spcodeProjectLoad.documentManager.editor.saveError",
     )}: ${r.reason}`;
-    // Drop the stale editBuffer so the editor reverts to whatever is
-    // actually on disk. The user can re-open the file and start over
-    // from the latest persisted content rather than the failed draft.
-    editBuffer.value = fileContent.value;
+    // Keep the draft when a save-before-management operation fails.
   }
+  return r.ok;
 }
 
 function onCancelEdit() {
   editMode.value = false;
 }
 
-async function onDelete() {
-  if (!selectedDoc.value) return;
+let managementGeneration = 0;
+watch([selectedDoc, docsRoot, () => props.projectRoot, editMode], () => {
+  managementGeneration += 1;
+});
+
+async function onDelete(path?: string) {
+  const target = path ?? docMeta.value?.path;
+  if (!target || fileRemove.isRemoving.value) return;
   deleteError.value = null;
-  // Same project-relative path fix as onSave: selectedDoc is
-  // docsRoot-relative, the backend needs the project-relative form.
-  // Use POST spcode/file-remove (accepts umo/worktree); the docs
-  // DELETE endpoint rejects umo/worktree with invalid_param.
-  const r = await fileRemove.remove({
-    path: projectRelativeFromDoc(docsRoot.value, selectedDoc.value),
-  });
+  const generation = managementGeneration;
+  const r = await fileRemove.remove({ path: target, host: true });
+  if (generation !== managementGeneration || previewAbsolutePath.value !== target)
+    return;
   if (r.ok) {
     selectedDoc.value = null;
     selectedRevision.value = null;
@@ -1227,38 +1234,26 @@ async function onDelete() {
   }
 }
 
-function onRename(newPath: string) {
-  if (!selectedDoc.value) return;
+async function onRename(newPath: string, path?: string) {
+  const target = path ?? docMeta.value?.path;
+  if (!target || fileRename.isRenaming.value) return;
   renameError.value = null;
-  // Use POST spcode/file-rename (accepts umo/worktree and only the
-  // new basename). The docs PATCH endpoint rejects umo/worktree
-  // with invalid_param, so we route through the same composable
-  // the workspace uses. selectedDoc is docsRoot-relative; the
-  // workspace endpoint expects the project-relative path for the
-  // existing file plus the bare new basename — extract that from
-  // the user-typed newPath (DocumentEditor already restricts input
-  // to .md names, so splitting on / or \ always gives a usable
-  // basename here).
-  const lastSep = Math.max(newPath.lastIndexOf("/"), newPath.lastIndexOf("\\"));
-  const newName = lastSep >= 0 ? newPath.slice(lastSep + 1) : newPath;
-  void fileRename
-    .rename({
-      path: projectRelativeFromDoc(docsRoot.value, selectedDoc.value),
-      newName,
-    })
-    .then((r) => {
-      if (r.ok) {
-        // Keep selectedDoc in docsRoot-relative form (it's still
-        // the same file, just with a new name).
-        selectedDoc.value = newPath;
-        void fileBrowser.refresh();
-        void treeRef.value?.refresh();
-      } else {
-        renameError.value = `${tm(
-          "spcodeProjectLoad.documentManager.editor.renameError",
-        )}: ${r.reason}`;
-      }
-    });
+  const generation = managementGeneration;
+  const newName = newPath.split(/[/\\]/).pop() ?? newPath;
+  const r = await fileRename.rename({ path: target, newName, host: true });
+  if (generation !== managementGeneration || previewAbsolutePath.value !== target)
+    return;
+  if (r.ok) {
+    selectedDoc.value = r.newPath
+      ? docsRootRelativePath(r.newPath, props.projectRoot, docsRoot.value)
+      : newPath;
+    void fileBrowser.refresh();
+    void treeRef.value?.refresh();
+  } else {
+    renameError.value = `${tm(
+      "spcodeProjectLoad.documentManager.editor.renameError",
+    )}: ${r.reason}`;
+  }
 }
 
 function onSelectRevision(sha: string) {
@@ -1975,6 +1970,8 @@ onBeforeUnmount(() => {
               <DocumentEditor
                 :initial-content="editBuffer"
                 :file-relative="selectedDoc"
+                :file-absolute="previewAbsolutePath ?? undefined"
+                :save-for-action="onSave"
                 :is-saving="fileWrite.isSaving.value"
                 :is-deleting="fileRemove.isRemoving.value"
                 :is-renaming="fileRename.isRenaming.value"

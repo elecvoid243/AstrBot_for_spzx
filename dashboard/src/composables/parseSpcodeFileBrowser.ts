@@ -43,6 +43,9 @@ export interface SpcodeFileBrowserDirectorySnapshot {
 
 export interface SpcodeFileBrowserFileSnapshot {
   meta: {
+    /** SHA-256 of the bytes actually read, independent of newline normalization. */
+    revision?: string;
+    newline?: string;
     path: string;
     name: string;
     size: number;
@@ -95,6 +98,8 @@ export interface SpcodeFileBrowserRawResponse {
    * or "latin-1" depending on the file's actual encoding.
    */
   encoding?: string | null;
+  revision?: string;
+  newline?: string;
   is_binary?: boolean | null;
   content?: string | null;
   max_bytes?: number;
@@ -181,6 +186,8 @@ export function parseSpcodeFileBrowser(data: SpcodeFileBrowserRawResponse): Spco
         meta: {
           path: data.path,
           name: data.name,
+          revision: data.revision,
+          newline: data.newline,
           size: data.size ?? 0,
           mtime: data.mtime ?? null,
           maxBytes: data.max_bytes ?? 5 * 1024 * 1024,

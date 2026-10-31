@@ -43,6 +43,98 @@ After starting AstrBot, you can access the admin panel by visiting `http://local
 
 For first-time login, AstrBot generates a random initial password and prints it in startup logs. Please read the startup log line containing the WebUI credential and use that password to log in (username is usually `astrbot`).
 
+## Open Agent file references
+
+In the main chat, click an explicit file link in an Agent reply to open the
+existing file pane. No loaded project is required; a host file outside the
+project opens at the same absolute location even after you switch projects.
+The pane reads the **current disk contents**, including when you reopen an old
+reply. This does not attach the file to the chat or change Agent permissions.
+
+Use `[name](G:/project/main.py)` for a whole file, `#L12` for one source line,
+or `#L12-L18` for a closed source-line range. POSIX host paths such as
+`[source](/home/user/main.py#L12)` are supported too. Use forward slashes and
+percent-encode spaces and special filename characters, for example
+`[notes](G:/My%20Project/notes%23draft.md#L2-L4)`. Plain path text, code blocks,
+relative links, and web links keep their existing behavior. Incomplete streamed
+links do not read files.
+
+![A file reference opens current source lines in the existing pane](./images/file-reference-preview.png)
+
+File references use authenticated spcode
+services and host account permissions, independently of the Agent's project,
+worktree, execution directory or permission mode. Install or enable spcode if
+the pane asks for it. Missing, unreadable, unsupported, oversized files and invalid
+line ranges display an explicit state; an invalid range is not highlighted.
+Markdown references with a line target show source text so line numbers remain
+meaningful. The existing project Files, Git, Documents, Terminal and Browser
+entries remain in the same workbench.
+With a project loaded, click **Files** to leave a reference and return to the
+project file list. From **Git Diff**, use a file's **Open → Open in file browser**
+menu to open that project file instead of the previous reference. These explicit
+actions preserve the existing check for unsaved edits; background project or
+worktree refreshes leave the reference in place.
+
+### Preview images, documents and spreadsheets
+
+Absolute references to images, PDF, DOCX, XLSX, CSV and Markdown open the
+existing viewers in the same file pane, inside or outside the loaded project,
+or with no project loaded. Whole CSV files open as tables; CSV and Markdown
+citations with line targets display **source text**, including quoted multiline
+CSV rows. Images, PDF and Office documents show an explicit message when a
+text line target cannot be located. These previews do not add Office, PDF or
+image editors.
+
+Binary previews retain the existing extension/MIME whitelist and 50 MiB limit;
+source text retains its 5 MiB limit. Encoded spaces, Chinese names, `#` and `%`
+refer to the actual filename. Reopening a citation reads current disk bytes.
+Changing targets cancels or ignores old byte/parse requests and releases image
+URLs and PDF tasks. spcode must remain enabled for both metadata and bytes.
+
+![A real PDF citation in the existing file pane](./images/file-reference-rich-preview.png)
+
+### Edit files and handle conflicts
+
+Click **Edit** in a text preview to edit and save text up to 2 MiB without loading its directory as a project. Manual saves use host account permissions even in Agent read-only or workspace mode. They leave Agent permissions, allowed directories, project and worktree unchanged and preserve the original encoding, BOM and dominant newline style.
+
+Leaving a draft through a citation, directory, path, workbench tab, sidebar or session offers **Save and open**, **Discard and open**, or **Cancel**. A failed or conflicting save stops navigation and keeps the complete draft. Browser refresh and closing use the browser's own leave warning.
+
+When another program changes the file, a normal save leaves disk contents intact. Choose **Reload from disk** to discard the draft, or **Overwrite confirmed version** to save it against the disk revision you confirmed. Another disk change causes another conflict. Text entered while a save is pending remains unsaved even after the earlier request succeeds.
+
+Background worktree changes, project unloads and project switches keep the displayed file and draft. Polling does not close the editor. Use an explicit citation, workbench tab or return to the current project files to leave through Save, Discard or Cancel.
+
+![A conflict preserves the complete editor draft](./images/file-edit-conflict.png)
+
+This is optimistic concurrency control: the service rechecks the disk revision after staging and before replacement, but cannot lock arbitrary external editors out of the final check-to-replace interval. Missing files, permission, encoding and write errors preserve the draft and show a failure. The old project-relative write API retains its original scope.
+
+### Rename files and use the recycle bin
+
+Choose **Rename** in the file preview or editor toolbar to change a file's name within its current directory, including files outside a project. Confirmation shows the fixed full target path. Name collisions, permission errors and missing targets are reported. The sidebar follows a successful rename; old chat citations keep their original paths.
+
+The former **Delete** action in file and document toolbars is now **Move to recycle bin**. Choose **Move to recycle bin** and confirm to use the operating system's trash, where you can restore the file. Project files, external files and the Docs sidebar use this behavior. If trash is unavailable or refuses the operation, the file is preserved; there is no permanent deletion fallback.
+
+For unsaved changes, first choose **Save and open**, **Discard and open** or **Cancel**. Cancellation, failed saves and conflicts stop the management action. The target stays fixed during the request. Manual management uses WebUI authentication and host account permissions without changing the Agent's project or permissions.
+
+Windows requires Windows 8 or later and the plugin's `pywin32` dependency for safe recycling on local fixed drives. Unsupported locations or missing native support return an error before deletion; no legacy deletion backend is used. Rename also fails if the operating system or filesystem cannot guarantee that an existing destination will be preserved.
+
+![ Confirm the actual file before moving it to the system recycle bin ](./images/file-trash-confirm.png)
+
+### Browse host folders and drives
+
+Without a project, open **Files & Browser** above the composer, choose **Files**, then select a host folder. **Browse host folders or drives** in the file pane reopens the existing folder picker: use **This PC** to select another Windows drive, or enter an absolute folder path. Selecting a location only changes the file pane; it does not load a project.
+
+Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing preview. Parent breadcrumbs and **Parent directory** can leave the project root. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
+
+With a project loaded, **Workspace → Files** still returns to its file list. Manual host browsing and file references share one navigation lifecycle and remain independent of Agent project, active worktree, execution directory and permissions, including read-only mode. Project polling, worktree-list changes and project unload preserve an open external target. Git Diff/History, Documents and Terminal retain their project context; Web Preview and the Agent browser remain available.
+
+| Previous entry | Current entry |
+| --- | --- |
+| Agent browser without a project | Files & Browser → Files / Web Preview |
+| Project-relative path input | File pane breadcrumb → host absolute path or path relative to the listed directory |
+| Files bounded by the project root | Parent breadcrumbs / Parent directory / Browse host folders or drives |
+
+![Actual host browsing on Windows in the isolated production ChatUI](./images/host-file-browser.png)
+
 ## Two-Factor Authentication
 
 AstrBot WebUI supports TOTP (Time-based One-Time Password) based two-factor authentication.
@@ -106,11 +198,17 @@ Under `Settings → Maintenance`, backup imports also show upload progress and o
 
 ### Side Chats and Branch Threads
 
-With a conversation open, use **New side chat** (the speech-bubble-plus button at the top right of the message area). The right panel is titled **Side chat** and labelled **Temporary chat · destroyed on close**. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
+With a conversation open, hover over or click **New side chat** (the speech-bubble-plus button at the top right of the message area). The menu lists the side chats saved for this conversation; choose **New side chat** to start another. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
 
-![Temporary side chat with an empty, separate message area](/images/chat-side-panel-en.jpg)
+![Retained side chat with file citations in the isolated production ChatUI](./images/side-chat-references.png)
 
-Closing the panel, switching conversations, or leaving the chat page ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
+Closing the panel, opening a file, switching conversations, or leaving the chat page hides the side chat and keeps its history. Return to the same main conversation and select its title in the side-chat menu to reopen it. A reply that is still streaming keeps its visible content and continues updating when reopened. Use the delete button explicitly to remove a side chat; deletion requires a successful backend connection.
+
+Agent file citations in side chats use the same host-absolute Markdown links and existing file pane as the main chat. Click a citation to hide the side chat, read the current file and highlight any valid source-line range. The file stays at its original absolute location after project or worktree changes. Viewing it does not change the Agent's project, execution directory or permissions. Reopen the side chat from the menu to continue.
+
+Before a switch would leave unsaved edits, choose **Save and open**, **Discard and open**, or **Cancel**. Cancellation, failed saves and conflicts keep the editor and draft in place. Missing files, unreadable targets and invalid line ranges show feedback in the file pane. If spcode is unavailable, enable the plugin and retry the citation.
+
+![Side-chat citation opens the existing file pane and source lines](./images/side-chat-file-pane.png)
 
 An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
 
@@ -118,13 +216,11 @@ An ordinary **Thread** still starts from selected reply text using **Ask in thre
 
 On desktop, drag the panel's **left edge** to change the width of either a branch thread or side chat. At narrow mobile widths the panel fills the screen and the resize handle is hidden.
 
-The desktop screenshots show resized panels with the conversation sidebar collapsed. On mobile, use **×** at the top right to return to the main conversation; closing a side chat still ends it, while an ordinary thread remains saved.
-
-![Side chat fills the screen in the narrow layout](/images/chat-side-mobile-en.jpg)
+On mobile, use **×** at the top right to return to the main conversation. Side-chat and ordinary-thread histories remain saved when their panels close.
 
 ### Project Workbench Web Preview
 
-With a project loaded for the current conversation, click **Workspace** above the composer (tooltip: **Browse workspace files, changes, and history**) to open **Project Workbench**, then select **Web Preview** beside **Terminal**. The tabs appear when the workbench recognizes the project as a Git repository or shows its non-Git project indicator; they may be absent while the project check fails or is pending.
+With a project loaded for the current conversation, click **Workspace** above the composer (tooltip: **Browse workspace files, changes, and history**) to open **Project Workbench**, then select **Web Preview** beside **Terminal**. Files and Web Preview are also available without a project. The other project tabs appear after the workbench recognizes a Git or non-Git project; they may be absent while its project check is pending or fails.
 
 1. Start the website's development server separately. The preview does not start it for you.
 2. Enter its HTTP(S) address and press **Enter**, or select a suggested local port. For example, `localhost:5173` becomes `http://localhost:5173/`; a bare public hostname defaults to HTTPS. Localhost refers to the machine running your browser, which may differ from the AstrBot server.
@@ -139,8 +235,9 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 | Previous entry or behavior | Current location or behavior |
 | --- | --- |
 | Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
-| No separate temporary-chat entry | Added: message area → New side chat; independent context, destroyed when closed |
-| No workbench entry without a project | Agent browser above the composer; the Workspace entry remains for loaded projects |
+| Temporary side chat, destroyed on close | Message area → side-chat menu → New side chat or a saved title; independent context, history retained until explicitly deleted |
+| Side-chat file citations | Open the shared file pane; reopen the side chat from its saved title in the menu |
+| No workbench entry without a project | Files & Browser above the composer; the Workspace entry remains for loaded projects |
 | Workspace → Files / Documents / Git Diff / History / Terminal | Existing tabs remain; Web Preview is added after Terminal in Project Workbench |
 
 > [!NOTE]
@@ -264,7 +361,7 @@ Windows offline deployment requires the Browser Use `0.2.0` complete plugin ZIP,
 
 After a production Dashboard build, maintainers can run `python scripts/package_browser_observer_dashboard.py --output <dashboard.zip>` to include version/revision metadata and a SHA256 sidecar. Run `python scripts/browser_observer_acceptance.py --plugin-zip <complete-plugin.zip> --dashboard-dir <dist> --evidence-dir <new-temporary-directory>` with AstrBot development dependencies and `aiohttp playwright psutil` to test final-ZIP installation, real login, the complete chat interface, a deterministic local model, real plugin management and Chromium. Local proxy isolation does not replace a physically offline target or real vLLM verification. For a missing entry, check matching builds and cached assets; for `runtime_unavailable`, inspect plugin startup logs and the private interpreter; for `busy`, close the browser in its owning chat; for 401/403, sign in and use a chat you own.
 
-With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Without a code project, click **Agent browser** above the composer to open observation directly. With a project loaded, use the existing **Workspace → Web Preview → Agent browser** entry. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
+With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Without a code project, use **Files & Browser → Web Preview → Agent browser** above the composer. With a project loaded, use the existing **Workspace → Web Preview → Agent browser** entry. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
 
 Below the image, the view shows the current action and up to 32 recent results for navigation, clicking, input, scrolling and tab operations. Running/waiting, success, failure, timeout and cancellation have distinct states. Input summaries always hide the content. When actual execution supplies reliable coordinates, a brief ring marks the operation position at the viewport scale. Navigation (including reloading the same URL), tab changes, scrolling, the next action or a two-second expiry invalidate the marker. Without reliable positioning, only the action summary appears. When an action reports a new scroll position or viewport before its image arrives, the view clears the old pixels and waits for a matching frame before showing the marker. Cancellation does not undo page operations that have already happened.
 

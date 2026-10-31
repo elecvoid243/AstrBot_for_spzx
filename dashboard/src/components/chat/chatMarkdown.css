@@ -3,6 +3,16 @@
   --ms-leading-body: 1.7;
 }
 
+/* The chat controller measures message heights to follow output and preserve
+   reading positions. Replacing an offscreen renderer with Markstream's 600px
+   intrinsic placeholder changes the scroll range and fights those corrections.
+   Keep chat geometry real; history paging and node virtualization still apply.
+   The extra class also wins over the library's scoped renderer rule. */
+.chat-markdown.markstream-vue.markdown-renderer {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
+
 @media (min-width: 761px) {
   .chat-markdown.markstream-vue {
     --ms-text-body: 0.9375rem;

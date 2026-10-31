@@ -34,6 +34,7 @@ const props = withDefaults(
      * code view after a search-result click. null / 0 = no scroll.
      */
     scrollToLine?: number | null;
+    scrollToEndLine?: number | null;
     /**
      * 2026-07-17 selection-comment: when false, the selection menu
      * shows only the "copy" item (no comment). Defaults to true.
@@ -479,9 +480,9 @@ watch(
 // `behavior: 'smooth'` is gated on the document's reduced-motion
 // preference to respect accessibility settings.
 watch(
-  [() => props.scrollToLine, () => props.filePath, () => props.highlightedHtml],
+  [() => props.scrollToLine, () => props.filePath, () => props.highlightedHtml,
+    () => props.scrollToEndLine, () => codeContentRef.value],
   async ([line, path, html]) => {
-    if (!line || line < 1) return;
     if (!codeContentRef.value || !html) return;
     // Wait for the v-for + v-html to commit the .line spans to the
     // DOM. The Shiki render is sync but v-for reconciliation runs
@@ -489,8 +490,13 @@ watch(
     await nextTick();
     if (!codeContentRef.value) return;
     const lineEls = codeContentRef.value.querySelectorAll<HTMLElement>(".line");
+    lineEls.forEach((element) => element.classList.remove("line-referenced"));
+    if (!line || line < 1 || line !== props.scrollToLine ||
+      path !== props.filePath || html !== props.highlightedHtml) return;
     const idx = line - 1;
-    if (idx >= lineEls.length) return;
+    const end = props.scrollToEndLine ?? line;
+    if (end > lineEls.length || end < line) return;
+    for (let i = idx; i < end; i++) lineEls[i].classList.add("line-referenced");
     const reduceMotion =
       typeof window !== "undefined" &&
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -797,6 +803,10 @@ watch(
   white-space: pre;
   min-height: 1.55em;
   line-height: 1.55;
+}
+.code-content :deep(.line.line-referenced) {
+  background: rgba(var(--v-theme-warning), 0.22);
+  box-shadow: inset 3px 0 rgb(var(--v-theme-warning));
 }
 @media (max-width: 760px) {
   .code-view {

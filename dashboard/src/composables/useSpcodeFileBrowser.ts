@@ -67,13 +67,20 @@ function classifyError(err: unknown): string {
  * Lifecycle: per-instance. Caller must invoke dispose() in
  * onBeforeUnmount to prevent state writes after unmount.
  */
-export function useSpcodeFileBrowser(pathRef: MaybeRef<string>): UseSpcodeFileBrowser {
+export function useSpcodeFileBrowser(
+  pathRef: MaybeRef<string>,
+  hostRead: MaybeRef<boolean> = false,
+  requestId: MaybeRef<number> = 0,
+): UseSpcodeFileBrowser {
   const state = ref<FileBrowserFetchState>({ kind: "idle" });
   let abortController: AbortController | null = null;
   let isMounted = true;
+  let generation = 0;
 
   async function refresh(targetPath?: string): Promise<void> {
     if (!isMounted) return;
+    const currentGeneration = ++generation;
+    abortController?.abort();
     const path = targetPath ?? toValue(pathRef);
     if (!path) {
       // Empty path → backend returns path_not_found. Short-circuit.
@@ -81,29 +88,39 @@ export function useSpcodeFileBrowser(pathRef: MaybeRef<string>): UseSpcodeFileBr
       state.value = { kind: "error", reason: "path_not_found", previousSnapshot: prev };
       return;
     }
-    abortController?.abort();
     abortController = new AbortController();
-    const isFirst = !isSnapshotState(state.value);
-    if (isFirst) state.value = { kind: "loading" };
+    // Never display another target's content under the newly selected path.
+    if (toValue(hostRead) || !isSnapshotState(state.value) || state.value.snapshot.meta.path !== path) {
+      state.value = { kind: "loading" };
+    }
     try {
       const resp = await pluginExtensionApi.get<SpcodeFileBrowserRawResponse>(
         "spcode/file-browser",
-        { params: { path }, signal: abortController.signal },
+        {
+          params: { path, ...(toValue(hostRead) ? { scope: "host" } : {}) },
+          signal: abortController.signal,
+        },
       );
-      if (!isMounted) return;
+      if (!isMounted || currentGeneration !== generation) return;
       const data = resp.data?.data;
-      if (!data) throw new Error("empty response data");
+      if (!data || resp.data?.status === "error") throw new Error("file service unavailable");
       const snapshot = parseSpcodeFileBrowser(data);
       state.value = snapshot;
     } catch (err) {
-      if (!isMounted) return;
+      if (!isMounted || currentGeneration !== generation) return;
       if ((err as { name?: string })?.name === "CanceledError") return;
       const prev = isSnapshotState(state.value) ? state.value.snapshot : undefined;
       if (err instanceof FileBrowserParseError) {
         state.value = { kind: "error", reason: err.reason, previousSnapshot: prev };
         return;
       }
-      state.value = { kind: "error", reason: classifyError(err), previousSnapshot: prev };
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      state.value = {
+        kind: "error",
+        reason: toValue(hostRead) && status !== 401 && status !== 403
+          ? "spcode_unavailable" : classifyError(err),
+        previousSnapshot: prev,
+      };
     }
   }
 
@@ -121,8 +138,8 @@ export function useSpcodeFileBrowser(pathRef: MaybeRef<string>): UseSpcodeFileBr
   // load). The watcher will fire again as soon as pathRef becomes
   // non-empty.
   watch(
-    () => toValue(pathRef),
-    (path) => {
+    () => [toValue(pathRef), toValue(hostRead), toValue(requestId)] as const,
+    ([path]) => {
       if (!isMounted) return;
       if (!path) return;
       void refresh(path);
@@ -132,6 +149,7 @@ export function useSpcodeFileBrowser(pathRef: MaybeRef<string>): UseSpcodeFileBr
 
   function dispose(): void {
     isMounted = false;
+    generation++;
     abortController?.abort();
     abortController = null;
   }

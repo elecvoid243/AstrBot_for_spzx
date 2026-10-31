@@ -871,6 +871,13 @@
       "expandAria": "Expand comments for {path}"
     },
     "fileBrowser": {
+      "reference": {
+        "pluginUnavailable": "File preview requires spcode. Install or enable the spcode plugin and check its service, then retry.",
+        "readOnly": "Current disk contents · Host file",
+        "lineUnavailable": "This format cannot be located by source text lines.",
+        "invalidRange": "The referenced source line range is outside the current file.",
+        "notAFile": "The reference does not point to a regular file."
+      },
       "viewMode": {
         "files": "Files",
         "diff": "Git Diff"
@@ -931,20 +938,40 @@
         "discardConfirm": "You have unsaved changes. Discard them?",
         "saveError": "Save failed",
         "saveSuccess": "Saved",
-        "encodingNotice": "This file is {encoding}-encoded; it will be saved as UTF-8",
+        "encodingNotice": "Saving preserves the existing {encoding} encoding, BOM and newline style.",
         "rename": "Rename",
         "renameDialogTitle": "Rename file",
         "newNameLabel": "New file name",
         "renameConfirm": "Rename",
         "renameSuccess": "Renamed to {name}",
         "renameFailed": "Rename failed: {reason}",
-        "delete": "Delete",
+        "delete": "Move to recycle bin",
         "deleteDialogTitle": "Delete file",
-        "deleteConfirmMessage": "Delete {name}? This cannot be undone.",
-        "deleteConfirm": "Delete",
+        "deleteConfirmMessage": "Move {name} to the system recycle bin? You can restore it using your operating system.",
+        "deleteConfirm": "Move to recycle bin",
         "deleteSuccess": "Deleted {name}",
         "deleteFailed": "Delete failed: {reason}",
-        "unsavedActionConfirm": "You have unsaved changes. Continue and lose them?"
+        "unsavedActionConfirm": "You have unsaved changes. Continue and lose them?",
+        "leaveTitle": "Unsaved changes",
+        "leaveBody": "Save your changes before opening the requested view?",
+        "leaveCancel": "Cancel",
+        "leaveDiscard": "Discard and open",
+        "leaveSave": "Save and open",
+        "conflict": "The file changed on disk. Your draft has been kept.",
+        "reload": "Reload from disk",
+        "overwrite": "Overwrite confirmed version",
+        "reloadConfirm": "Discard your draft and reload the current disk contents?",
+        "overwriteConfirm": "Overwrite the disk version detected by the last conflict? A further change will cause another conflict.",
+        "errors": {
+          "encoding_error": "The draft cannot be represented in the original encoding.",
+          "write_failed": "The file could not be saved. Your draft is kept.",
+          "conflict": "The disk file changed. Confirm reload or overwrite below.",
+          "target_changed": "The file was replaced during saving. Reload it before trying again.",
+          "file_too_large": "The file or edited content exceeds the size limit.",
+          "file_exists": "A file with that name already exists.",
+          "operation_failed": "The operation failed. The file was not permanently deleted."
+        },
+        "closePane": "Close file pane"
       },
       "codeTools": {
         "check": "Check",
@@ -1030,6 +1057,14 @@
         "removeTooltip": "Remove from list",
         "clearConfirmTitle": "Clear recent files?",
         "clearConfirmMessage": "This will remove all recently opened files from the list. It cannot be undone."
+      },
+      "host": {
+        "browse": "Browse host folders or drives",
+        "up": "Parent directory",
+        "entry": "Files & Browser",
+        "tab": "Files",
+        "pathInputPlaceholder": "Enter a host absolute path or a path relative to this directory",
+        "pathInputTooltip": "Click to enter a host file or directory path"
       }
     },
     "diffSidebar": {
@@ -2082,11 +2117,11 @@
         "saving": "Saving",
         "cancel": "Cancel",
         "cancelDirty": "You have unsaved changes. Discard them?",
-        "delete": "Delete",
+        "delete": "Move to recycle bin",
         "rename": "Rename",
         "renameUnavailable": "Rename is now available",
         "deleteConfirmTitle": "Delete document?",
-        "deleteConfirmBody": "Will permanently delete {path}",
+        "deleteConfirmBody": "Move {path} to the system recycle bin? You can restore it using your operating system.",
         "saveError": "Save failed",
         "saveSuccess": "Saved",
         "deleteError": "Delete failed"
@@ -2097,6 +2132,15 @@
       },
       "binary": {
         "errors": {
+          "not_found": "The file no longer exists.",
+          "network": "The file service cannot be reached.",
+          "server_error": "The file service failed to read this file.",
+          "client_error": "The file request was rejected.",
+          "unknown": "The file could not be read.",
+          "not_modified": "Reopen the file to read its current contents.",
+          "no_project_loaded": "Load a project to use project-relative previews.",
+          "permission_denied": "Permission denied by the host account.",
+          "plugin_unavailable": "Enable the spcode plugin to preview this file.",
           "fetch_failed": "Failed to fetch binary file",
           "decode_failed": "Failed to decode file",
           "too_large": "File exceeds the 50MB preview limit",

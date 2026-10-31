@@ -10,7 +10,7 @@
 // Author: elecvoid243, 2026-08-15
 // Spec: D:\AstrbotWorkSpace\spcode-目录选择器设计方案.md §4.2 / §4.3
 
-import { computed, ref } from "vue";
+import { computed, ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import {
   FileBrowserParseError,
@@ -34,15 +34,12 @@ function stripTrailingSeparators(p: string): string {
 }
 
 /** Parent of an absolute path via pure string-splitting; null at a root. */
-function parentOf(p: string): string | null {
+export function parentOf(p: string): string | null {
   const trimmed = stripTrailingSeparators(p);
   // Windows drive root ("C:" after stripping trailing sep) and POSIX root
   // ("") have no parent.
   if (trimmed === "" || /^[A-Za-z]:$/.test(trimmed)) return null;
-  const idx = Math.max(
-    trimmed.lastIndexOf("/"),
-    trimmed.lastIndexOf("\\"),
-  );
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   if (idx < 0) return null;
   const parent = trimmed.slice(0, idx);
   // POSIX root returns "/" (the stripped form of "/home" → "" handled above
@@ -73,11 +70,11 @@ function isWindowsDriveRoot(p: string): boolean {
  * Build breadcrumb segments for an absolute path, root first. Preserves the
  * input's OS separator for reconstructed segment paths.
  */
-function buildBreadcrumbs(p: string): DirectorySegment[] {
+export function buildBreadcrumbs(p: string): DirectorySegment[] {
   const norm = p.replace(/\\/g, "/");
   const isWin = /^[A-Za-z]:/.test(norm);
   const segs = norm.split("/").filter(Boolean);
-  if (!segs.length) return [];
+  if (!segs.length) return norm === "/" ? [{ label: "/", path: "/" }] : [];
   const sep = p.includes("\\") ? "\\" : "/";
   if (isWin) {
     const drive = segs[0];
@@ -103,7 +100,7 @@ function buildBreadcrumbs(p: string): DirectorySegment[] {
  * Reactive directory-browser controller. Instantiate per browser dialog;
  * each instance owns its own navigation state.
  */
-export function useSpcodeDirectoryBrowser() {
+export function useSpcodeDirectoryBrowser(hostRead: MaybeRef<boolean> = false) {
   const currentPath = ref("");
   /** Only `directory` entries are kept (files/symlinks are not selectable). */
   const entries = ref<SpcodeFileBrowserEntry[]>([]);
@@ -113,6 +110,7 @@ export function useSpcodeDirectoryBrowser() {
   /** Backend reason string (path_not_found / permission_denied / unknown). */
   const error = ref<string | null>(null);
   const truncated = ref(false);
+  let generation = 0;
 
   const breadcrumbs = computed<DirectorySegment[]>(() =>
     currentPath.value ? buildBreadcrumbs(currentPath.value) : [],
@@ -136,18 +134,26 @@ export function useSpcodeDirectoryBrowser() {
 
   /** List the single-level directory entries of `path` (dirs only). */
   async function list(path: string): Promise<void> {
+    const request = ++generation;
     loading.value = true;
     error.value = null;
     try {
       const resp = await pluginExtensionApi.get<unknown>(
         "spcode/file-browser",
-        { params: { path } },
+        { params: { path, ...(toValue(hostRead) ? { scope: "host" } : {}) } },
       );
-      const data = (
-        resp.data as { data?: SpcodeFileBrowserRawResponse } | undefined
-      )?.data;
-      if (!data) {
-        error.value = "path_not_found";
+      if (request !== generation) return;
+      const envelope = resp.data as
+        | {
+            status?: string;
+            data?: SpcodeFileBrowserRawResponse;
+          }
+        | undefined;
+      const data = envelope?.data;
+      if (!data || (toValue(hostRead) && envelope?.status === "error")) {
+        error.value = toValue(hostRead)
+          ? "spcode_unavailable"
+          : "path_not_found";
         return;
       }
       const snap = parseSpcodeFileBrowser(data);
@@ -166,25 +172,32 @@ export function useSpcodeDirectoryBrowser() {
       );
       truncated.value = snap.snapshot.meta.truncated;
     } catch (err) {
+      if (request !== generation) return;
       error.value =
-        err instanceof FileBrowserParseError ? err.reason : "unknown";
+        err instanceof FileBrowserParseError
+          ? err.reason
+          : toValue(hostRead)
+          ? "spcode_unavailable"
+          : "unknown";
     } finally {
-      loading.value = false;
+      if (request === generation) loading.value = false;
     }
   }
 
   /** Fetch the available drives/roots for the "This PC" view. */
   async function loadDrives(): Promise<void> {
+    const request = ++generation;
     loading.value = true;
     error.value = null;
     try {
       const resp = await pluginExtensionApi.get<unknown>("spcode/drives");
+      if (request !== generation) return;
       const list = (resp.data as { data?: { drives?: string[] } } | undefined)
         ?.data?.drives;
       // 响应里没有 drives 数组(如插件未重载、路由未注册)一律视为错误,
       // 让错误条暴露出来,而不是静默显示空目录。
       if (!Array.isArray(list)) {
-        error.value = "unknown";
+        error.value = toValue(hostRead) ? "spcode_unavailable" : "unknown";
         drives.value = [];
         return;
       }
@@ -193,10 +206,11 @@ export function useSpcodeDirectoryBrowser() {
       entries.value = [];
       truncated.value = false;
     } catch {
-      error.value = "unknown";
+      if (request !== generation) return;
+      error.value = toValue(hostRead) ? "spcode_unavailable" : "unknown";
       drives.value = [];
     } finally {
-      loading.value = false;
+      if (request === generation) loading.value = false;
     }
   }
 
@@ -207,19 +221,27 @@ export function useSpcodeDirectoryBrowser() {
 
   /** Jump to the host account home directory (start position). */
   async function goHome(): Promise<void> {
+    const request = ++generation;
     loading.value = true;
     error.value = null;
     try {
-      const resp = await pluginExtensionApi.get<unknown>("spcode/home-directory");
+      const resp = await pluginExtensionApi.get<unknown>(
+        "spcode/home-directory",
+      );
+      if (request !== generation) return;
       const home = (resp.data as { data?: { home?: string } } | undefined)?.data
         ?.home;
       if (!home) {
-        error.value = "path_not_found";
+        error.value = toValue(hostRead)
+          ? "spcode_unavailable"
+          : "path_not_found";
+        loading.value = false;
         return;
       }
       await list(home);
     } catch {
-      error.value = "unknown";
+      if (request !== generation) return;
+      error.value = toValue(hostRead) ? "spcode_unavailable" : "unknown";
       loading.value = false;
     }
   }
@@ -246,7 +268,14 @@ export function useSpcodeDirectoryBrowser() {
     await list(segment.path);
   }
 
+  /** Invalidate picker requests when the dialog closes or unmounts. */
+  function cancel(): void {
+    generation++;
+    loading.value = false;
+  }
+
   return {
+    cancel,
     currentPath,
     entries,
     drives,

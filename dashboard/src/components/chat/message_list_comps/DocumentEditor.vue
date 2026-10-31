@@ -14,6 +14,8 @@ import CodeMirrorEditor from "./CodeMirrorEditor.vue";
 
 const props = defineProps<{
   initialContent: string;
+  fileAbsolute?: string;
+  saveForAction?: (content: string) => Promise<boolean>;
   fileRelative: string;
   isSaving: boolean;
   isDeleting: boolean;
@@ -36,8 +38,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "save", content: string): void;
   (e: "cancel"): void;
-  (e: "delete"): void;
-  (e: "rename", newPath: string): void;
+  (e: "delete", path?: string): void;
+  (e: "rename", newPath: string, path?: string): void;
   (e: "rename-cancel"): void;
 }>();
 const { tm } = useModuleI18n("features/chat");
@@ -59,6 +61,7 @@ watch(
 );
 
 function onCancel() {
+  if (props.isSaving || props.isDeleting || props.isRenaming) return;
   if (isDirty.value) {
     const ok = window.confirm(
       tm("spcodeProjectLoad.documentManager.editor.cancelDirty"),
@@ -69,7 +72,8 @@ function onCancel() {
 }
 
 function onSave() {
-  if (!isDirty.value || props.isSaving) return;
+  if (!isDirty.value || props.isSaving || props.isDeleting || props.isRenaming || showDeleteConfirm.value || renameOpen.value)
+    return;
   emit("save", buffer.value);
 }
 
@@ -95,30 +99,56 @@ function onCopyRaw() {
   void copyToClipboard(buffer.value);
 }
 
-function onDeleteClick() {
-  // 2026-07-18 toolbar parity: deleting the on-disk file also drops
-  // the dirty buffer — guard with the same confirm as cancel.
+const actionPath = ref("");
+const leaveDialogOpen = ref(false);
+let leaveResolver: ((allowed: boolean) => void) | null = null;
+async function finishManagement(
+  choice: "save" | "discard" | "cancel",
+): Promise<void> {
+  const allowed =
+    choice === "discard" ||
+    (choice === "save" && !!(await props.saveForAction?.(buffer.value)));
+  if (choice === "discard") buffer.value = props.initialContent;
+  leaveDialogOpen.value = false;
+  leaveResolver?.(allowed);
+  leaveResolver = null;
+}
+watch(
+  () => props.fileAbsolute ?? props.fileRelative,
+  () => {
+    showDeleteConfirm.value = false;
+    renameOpen.value = false;
+    leaveDialogOpen.value = false;
+    leaveResolver?.(false);
+    leaveResolver = null;
+  },
+);
+onBeforeUnmount(() => {
+  leaveResolver?.(false);
+});
+async function onDeleteClick() {
+  if (props.isSaving || props.isRenaming || props.isDeleting || leaveResolver || showDeleteConfirm.value || renameOpen.value) return;
+  actionPath.value = props.fileAbsolute ?? props.fileRelative;
   if (isDirty.value) {
-    const ok = window.confirm(
-      tm("spcodeProjectLoad.documentManager.editor.cancelDirty"),
-    );
-    if (!ok) return;
+    leaveDialogOpen.value = true;
+    const allowed = await new Promise<boolean>((resolve) => { leaveResolver = resolve; });
+    if (!allowed) return;
   }
   showDeleteConfirm.value = true;
 }
 function onDeleteConfirm() {
+  if (props.isDeleting) return;
   showDeleteConfirm.value = false;
-  emit("delete");
+  emit("delete", actionPath.value);
 }
 
-function onRenameOpen() {
-  // 2026-07-18 toolbar parity: a successful rename swaps the file
-  // under the editor, so a dirty buffer would be lost — confirm first.
+async function onRenameOpen() {
+  if (props.isSaving || props.isRenaming || props.isDeleting || leaveResolver || showDeleteConfirm.value || renameOpen.value) return;
+  actionPath.value = props.fileAbsolute ?? props.fileRelative;
   if (isDirty.value) {
-    const ok = window.confirm(
-      tm("spcodeProjectLoad.documentManager.editor.cancelDirty"),
-    );
-    if (!ok) return;
+    leaveDialogOpen.value = true;
+    const allowed = await new Promise<boolean>((resolve) => { leaveResolver = resolve; });
+    if (!allowed) return;
   }
   renameDraft.value = props.fileRelative;
   renameError.value = null;
@@ -129,6 +159,7 @@ function onRenameCancel() {
   renameError.value = null;
 }
 function onRenameSubmit() {
+  if (props.isSaving || props.isRenaming || props.isDeleting) return;
   const trimmed = renameDraft.value.trim();
   if (!trimmed || trimmed === props.fileRelative) {
     renameOpen.value = false;
@@ -145,7 +176,7 @@ function onRenameSubmit() {
   // path_unsafe, file_exists, ...) if it does. The watcher
   // below closes the dialog on the success branch only.
   renameError.value = null;
-  emit("rename", trimmed);
+  emit("rename", trimmed, actionPath.value);
 }
 
 // Close the rename dialog AFTER the request resolves, but only
@@ -176,8 +207,41 @@ function onCodemirrorUpdate(v: string) {
 
 <template>
   <div class="document-editor">
+    <v-dialog v-model="leaveDialogOpen" persistent max-width="520">
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveTitle")
+        }}</v-card-title>
+        <v-card-text>{{
+          tm("spcodeProjectLoad.fileBrowser.editor.leaveBody")
+        }}</v-card-text>
+        <v-card-actions>
+          <v-btn
+            variant="text"
+            :disabled="isSaving"
+            @click="finishManagement('cancel')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveCancel") }}</v-btn
+          >
+          <v-btn
+            variant="text"
+            :disabled="isSaving"
+            @click="finishManagement('discard')"
+            >{{
+              tm("spcodeProjectLoad.fileBrowser.editor.leaveDiscard")
+            }}</v-btn
+          >
+          <v-btn
+            variant="tonal"
+            :loading="isSaving"
+            @click="finishManagement('save')"
+            >{{ tm("spcodeProjectLoad.fileBrowser.editor.leaveSave") }}</v-btn
+          >
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <CodeMirrorEditor
       v-if="!useTextarea"
+      :inert="isDeleting || isRenaming || isSaving || showDeleteConfirm || renameOpen || undefined"
       :model-value="buffer"
       :file-path="fileRelative"
       class="document-editor__cm"
@@ -186,6 +250,7 @@ function onCodemirrorUpdate(v: string) {
     <textarea
       v-else
       v-model="buffer"
+      :disabled="isDeleting || isRenaming || isSaving || showDeleteConfirm || renameOpen"
       class="document-editor__textarea"
       spellcheck="false"
     />
@@ -251,7 +316,7 @@ function onCodemirrorUpdate(v: string) {
       <span v-else class="document-editor__confirm">
         {{
           tm("spcodeProjectLoad.documentManager.editor.deleteConfirmBody", {
-            path: fileRelative,
+            path: actionPath,
           })
         }}
         <button

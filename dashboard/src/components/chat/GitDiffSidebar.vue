@@ -4,6 +4,8 @@
      Layout mirrors ReasoningSidebar.vue so resizing the sidebar takes
      space from .chat-main (flex sibling) instead of overlaying it. -->
 <script setup lang="ts">
+import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
+import { projectRelativePathStrict } from "@/composables/pathUtils";
 import {
   ref,
   watch,
@@ -113,6 +115,10 @@ import { pluginExtensionApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import GitDiffBodyContent from "@/components/chat/message_list_comps/GitDiffBodyContent.vue";
 import FileBrowserView from "@/components/chat/message_list_comps/FileBrowserView.vue";
+import { useSpcodeFileBrowser } from "@/composables/useSpcodeFileBrowser";
+import type { FileReferenceNavigation } from "@/composables/fileReference";
+import { parentOf } from "@/composables/useSpcodeDirectoryBrowser";
+import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
 import { useRecentFiles } from "@/composables/useRecentFiles";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import GitCommitBar from "@/components/chat/message_list_comps/GitCommitBar.vue";
@@ -319,6 +325,7 @@ const props = defineProps<{
   modelValue: boolean;
   isDark?: boolean;
   chatId?: string | null;
+  fileReference?: FileReferenceNavigation | null;
 }>();
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
@@ -405,9 +412,27 @@ const showClearConfirm = ref(false);
 // "docs" shows <DocumentManager> (spec 2026-07-11 document-manager §2 #1)。
 // Default: "files" per spec §2 decision #10 (the more general view;
 // first-time users likely want to "see what's in the project").
-const viewMode = ref<
+const fileBrowserRef = ref<{
+  refresh: () => Promise<void>;
+  confirmLeaveEditing: () => Promise<boolean>;
+} | null>(null);
+const activeViewMode = ref<
   "files" | "diff" | "history" | "docs" | "terminal" | "browser"
 >(loadViewMode());
+const viewMode = computed({
+  get: () => activeViewMode.value,
+  set: (mode: typeof activeViewMode.value) => {
+    if (mode === activeViewMode.value) return;
+    if (!fileBrowserRef.value) {
+      activeViewMode.value = mode;
+      return;
+    }
+    void (async () => {
+      if (await confirmLeaveEditing()) activeViewMode.value = mode;
+    })();
+  },
+});
+
 // Web preview mounts lazily on first activation, then stays mounted under
 // v-show so switching to another tab and back does not reload the page.
 const browserMounted = ref(viewMode.value === "browser");
@@ -450,6 +475,26 @@ watch(
 // not an auto-reopened file. Cleared on worktree / project switches,
 // breadcrumb clicks, and any directory navigation.
 const fileBrowserPreviewPath = ref<string | null>(null);
+// Host navigation survives project/worktree refreshes and carries its own identity.
+const hostFileTarget = ref<FileReferenceNavigation | null>(null);
+let hostNavigationId = 0;
+const hostFile = useSpcodeFileBrowser(
+  computed(() => hostFileTarget.value?.path ?? ""),
+  true,
+  computed(() => hostFileTarget.value?.requestId ?? 0),
+);
+const hostDirectoryPickerOpen = ref(false);
+const hostDirectory = computed(() => {
+  const state = hostFile.state.value;
+  if (state.kind === "directory") return state.snapshot.meta.path;
+  if (state.kind === "file") return parentOf(state.snapshot.meta.path) ?? "";
+  return parentOf(hostFileTarget.value?.path ?? "") ?? "";
+});
+const hostPreview = computed(() => {
+  const state = hostFile.state.value;
+  if (state.kind === "file") return state.snapshot.meta.path;
+  return state.kind === "directory" ? null : hostFileTarget.value?.path ?? null;
+});
 
 // 2026-07-02 sidebar-search: scroll target for the file preview, set
 // by onFileOpen() when the user clicks a search result. 1-based line
@@ -577,7 +622,9 @@ const branchPickerItems = computed<RefPickerItem[]>(() => {
   for (const [labelKey, names] of groups) {
     if (names.length === 0) continue;
     items.push({
-      title: tm(`spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`),
+      title: tm(
+        `spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`,
+      ),
       type: "subheader",
     });
     for (const name of names) items.push({ title: name, value: name });
@@ -760,7 +807,12 @@ const session = useSpcodeSession();
 watch(
   () => props.modelValue,
   (open) => {
-    if (open && !session.directory.value) {
+    if (
+      open &&
+      !session.directory.value &&
+      !hostFileTarget.value &&
+      !props.fileReference
+    ) {
       viewMode.value = "browser";
       browserMode.value = "agent";
     }
@@ -800,6 +852,7 @@ watch(
           projectRoot.value,
         );
         if (fileBrowserCurrentPath.value !== validated) {
+          if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
           fileBrowserCurrentPath.value = validated;
         }
       }
@@ -851,6 +904,9 @@ watch(
     ) {
       selectedWorktree.value = null;
     }
+    // Keep the manual target, but normalize project selection independently.
+    // Explicit navigation consults the editor guard before replacing the file.
+    if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
     // Validate currentPath against the (possibly new) root.
     // Fall back to projectRoot for non-git projects (no worktrees →
     // no main worktree path); otherwise fileBrowserCurrentPath would
@@ -883,6 +939,7 @@ watch(
 // different worktree. The preview path is also cleared: a preview
 // pointing into the old worktree is meaningless in the new one.
 watch(selectedWorktree, (newVal) => {
+  if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
   const root = newVal ?? mainWorktreePath.value;
   if (root && fileBrowserCurrentPath.value !== root) {
     fileBrowserCurrentPath.value = root;
@@ -928,7 +985,10 @@ const gitTag = useSpcodeGitTag();
 // still resets its filter on the switch, so entering History afterwards
 // (viewMode watcher below) fetches the default HEAD + 20 view.
 const gitLog = useSpcodeGitLog(
-  selectedWorktree,
+  // Freeze the absolute root in each request, including the main checkout.
+  computed(
+    () => selectedWorktree.value ?? mainWorktreePath.value ?? projectRoot.value,
+  ),
   computed(() => viewMode.value === "history"),
 );
 // 2026-07-17 git-revert: History-view per-commit revert. The sidebar
@@ -1275,7 +1335,8 @@ const isBulkRestoring = ref(false);
 //   - select  → open the file the user just clicked (no line jump)
 //   - remove  → drop one entry from the per-worktree bucket
 //   - clear   → already opened via the dialog; this confirms it
-function onRecentSelect(payload: { path: string }): void {
+async function onRecentSelect(payload: { path: string }): Promise<void> {
+  if (!(await showProjectFiles())) return;
   // Same navigation contract as onFileOpen but without a `line` field:
   // RecentFilesBlock emits `{ path }` only; we deliberately don't jump
   // to any anchor.
@@ -2072,7 +2133,80 @@ const isFetching = ref(false);
 // methods to the public type — defineExpose types are local to the
 // file that calls it. Mirroring the shape here keeps the consumer
 // honest about what it can call.
-const fileBrowserRef = ref<{ refresh: () => Promise<void> } | null>(null);
+
+async function confirmLeaveEditing(): Promise<boolean> {
+  return (await fileBrowserRef.value?.confirmLeaveEditing?.()) ?? true;
+}
+async function closeSidebar(): Promise<void> {
+  if (await confirmLeaveEditing()) emit("update:modelValue", false);
+}
+defineExpose({ confirmLeaveEditing });
+
+function onHostSaved(saved?: SavedFileSnapshot): void {
+  const state = hostFile.state.value;
+  if (
+    !saved?.revision ||
+    state.kind !== "file" ||
+    saved.path !== state.snapshot.meta.path ||
+    saved.requestId !== hostFileTarget.value?.requestId
+  )
+    return;
+  hostFile.state.value = {
+    kind: "file",
+    snapshot: {
+      content: saved.content,
+      meta: {
+        ...state.snapshot.meta,
+        revision: saved.revision,
+        encoding: saved.encoding ?? state.snapshot.meta.encoding,
+        newline: saved.newline ?? state.snapshot.meta.newline,
+        size: saved.size ?? state.snapshot.meta.size,
+        fetchedAt: Date.now(),
+      },
+    },
+  };
+}
+
+/** Enter project files only for an explicit user navigation, preserving dirty edits. */
+async function showProjectFiles(): Promise<boolean> {
+  if (!(await confirmLeaveEditing())) return false;
+  // Without a project, the Files tab still represents the open host reference.
+  if (currentRoot.value) {
+    hostFileTarget.value = null;
+    if (
+      fileBrowserPreviewPath.value &&
+      projectRelativePathStrict(
+        fileBrowserPreviewPath.value,
+        currentRoot.value,
+      ) === null
+    ) {
+      fileBrowserPreviewPath.value = null;
+      fileBrowserCurrentPath.value = currentRoot.value;
+    }
+  } else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
+  viewMode.value = "files";
+  return true;
+}
+/** Open a manual host target through the same lifecycle as a citation. */
+async function openHostPath(path: string): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
+  hostFileTarget.value = {
+    path,
+    startLine: null,
+    endLine: null,
+    requestId: ++hostNavigationId,
+  };
+  viewMode.value = "files";
+}
+watch(
+  () => props.fileReference,
+  async (target) => {
+    if (!target || !(await confirmLeaveEditing())) return;
+    hostFileTarget.value = { ...target, requestId: ++hostNavigationId };
+    viewMode.value = "files";
+  },
+  { flush: "post", immediate: true },
+);
 // Mirror of fileBrowserRef for <GitDiffBodyContent>. We need
 // `clearSelection` to drop the "selected N files" counter after a
 // successful bulk stage/unstage — the child owns the Set (it's a
@@ -2129,6 +2263,11 @@ async function refreshBranchesAndWorktrees(): Promise<void> {
   ]);
 }
 async function onManualRefresh(): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
+  if (viewMode.value === "files" && hostFileTarget.value) {
+    await hostFile.refresh();
+    return;
+  }
   if (isFetching.value) return;
   isFetching.value = true;
   try {
@@ -2646,7 +2785,11 @@ watch(
   (loaded) => {
     if (!loaded) {
       selectedWorktree.value = null;
-      if (viewMode.value !== "browser" || browserMode.value !== "agent")
+      if (
+        !hostFileTarget.value &&
+        !(viewMode.value === "files" && fileBrowserPreviewPath.value) &&
+        (viewMode.value !== "browser" || browserMode.value !== "agent")
+      )
         emit("update:modelValue", false);
     }
   },
@@ -2699,11 +2842,13 @@ watch(
 // context, so reset the scope to default. Done here (not in a
 // watcher) so project switches — which also reset selectedWorktree
 // via the directory watcher above — do NOT clobber scope.
-function onWorktreeChange(path: string | null): void {
+async function onWorktreeChange(path: string | null): Promise<void> {
+  if (!(await confirmLeaveEditing())) return;
   // Spec 2026-07-16: switching worktrees is a new "did the user already
   // dismiss the prompt?" boundary. Reset so a different non-Git
   // worktree re-presents the init flow.
   repoPromptDismissed.value = false;
+  fileBrowserPreviewPath.value = null;
   selectedWorktree.value = path;
   selectedScope.value = DEFAULT_SCOPE;
   pendingScope.value = null;
@@ -3147,7 +3292,10 @@ async function onStashSubmit(params: { message: string }): Promise<void> {
 // 2026-08-21 git-stash-pop: apply a stash entry back onto the working
 // tree (git drops the entry on a clean apply; on conflict the entry is
 // kept and the reason is stash_conflict).
-async function onStashPop(params: { index: number; ref: string }): Promise<void> {
+async function onStashPop(params: {
+  index: number;
+  ref: string;
+}): Promise<void> {
   const result = await gitStash.pop({
     index: params.index,
     ref: params.ref,
@@ -3183,7 +3331,10 @@ async function onStashPop(params: { index: number; ref: string }): Promise<void>
 
 // 2026-08-21 git-stash-drop: delete a stash entry. The worktree is
 // untouched, so only the stash list needs a refresh.
-async function onStashDrop(params: { index: number; ref: string }): Promise<void> {
+async function onStashDrop(params: {
+  index: number;
+  ref: string;
+}): Promise<void> {
   const result = await gitStash.drop({
     index: params.index,
     ref: params.ref,
@@ -3463,9 +3614,8 @@ async function onCreateSubmit(params: WorktreeAddParams): Promise<void> {
   if (result.ok) {
     // spec §7.4: 自动切到新 worktree + 切到 Files 视图
     const newWt = result.snapshot.worktrees.find((w) => w.path === params.path);
-    if (newWt) {
+    if (newWt && (await showProjectFiles())) {
       selectedWorktree.value = newWt.isMain ? null : newWt.path;
-      viewMode.value = "files";
       fileBrowserCurrentPath.value = newWt.path;
       fileBrowserPreviewPath.value = null;
     }
@@ -3685,10 +3835,19 @@ function onScopeChange(scope: GitDiffScope): void {
 // file to display in the right pane (null = show directory hint).
 // FileBrowserEntryList sends previewPath=null for directory clicks
 // and previewPath=file.path for file/symlink clicks.
-function onFileBrowserNavigate(payload: {
+async function onFileBrowserNavigate(payload: {
   dirPath: string;
   previewPath: string | null;
-}): void {
+}): Promise<void> {
+  const target = payload.previewPath ?? payload.dirPath;
+  if (
+    hostFileTarget.value ||
+    projectRelativePathStrict(target, currentRoot.value) === null
+  ) {
+    openHostPath(target);
+    return;
+  }
+  if (!(await showProjectFiles())) return;
   fileBrowserCurrentPath.value = payload.dirPath;
   fileBrowserPreviewPath.value = payload.previewPath;
   // 2026-07-02: clear any pending search-result scroll target.
@@ -3729,7 +3888,10 @@ function onFileBrowserNavigate(payload: {
 //      line. 0 (filename mode) is normalized to null (= no scroll).
 //      Propagated down to FileBrowserCodeView, which centers the
 //      target line in the code-view scroll container.
-function onFileOpen(payload: { path: string; line: number }): void {
+async function onFileOpen(payload: {
+  path: string;
+  line: number;
+}): Promise<void> {
   let abs = payload.path;
   // Drive-letter (C:\ / C:/), UNC (\\) and POSIX-rooted (/) paths are
   // already absolute; anything else is worktree-relative and must be
@@ -3748,6 +3910,7 @@ function onFileOpen(payload: { path: string; line: number }): void {
     const cleanPath = abs.replace(/^[\\/]+/, "").replace(/\//g, sep);
     abs = cleanPath ? `${cleanRoot}${sep}${cleanPath}` : cleanRoot;
   }
+  if (!(await showProjectFiles())) return;
   fileBrowserPreviewPath.value = abs;
   // POSIX + Windows separator: strip the trailing filename. Use a
   // single regex that matches either separator so the same code
@@ -3833,7 +3996,7 @@ function onFileRestore(path: string): void {
  *  silently breaks the multi-level breadcrumb and misroutes the
  *  directory listing. Anchor to currentRoot (the active worktree or
  *  project root) before computing the parent. */
-function onOpenFile(path: string): void {
+async function onOpenFile(path: string): Promise<void> {
   const root = currentRoot.value;
   // No project / worktree resolved yet → nothing to navigate to.
   // Skip silently rather than writing a relative path that would
@@ -3851,7 +4014,7 @@ function onOpenFile(path: string): void {
   const parent = absolute.includes(sep)
     ? absolute.substring(0, absolute.lastIndexOf(sep))
     : cleanRoot;
-  viewMode.value = "files";
+  if (!(await showProjectFiles())) return;
   fileBrowserCurrentPath.value = parent;
   fileBrowserPreviewPath.value = absolute;
   // Clear any pending search-result scroll target so the file does not
@@ -4660,6 +4823,7 @@ function onLogLoadMore(): void {
 }
 
 onBeforeUnmount(() => {
+  hostFile.dispose();
   onMouseUp();
   composable.dispose();
   gitStatus.dispose();
@@ -4791,8 +4955,6 @@ const directoryPath = computed(() => {
 // gone — the list endpoint no longer ships patch text, and per-file
 // truncation is flagged by the file endpoint (rendered in the row body).
 
-
-
 // Root path for FileBrowserView: the active worktree, then the main
 // worktree, then the loaded project's root directory. We pass this
 // to FileBrowserView so it can render the breadcrumb. The projectRoot
@@ -4867,7 +5029,11 @@ watch(
                  carry navigation semantics. -->
             <span class="git-diff-sidebar-title">
               {{
-                tm(session.directory.value ? "spcodeProjectLoad.diffSidebar.title" : "agentBrowser.title")
+                tm(
+                  session.directory.value || hostFileTarget
+                    ? "spcodeProjectLoad.diffSidebar.title"
+                    : "agentBrowser.title",
+                )
               }}
             </span>
             <!-- UI #5: directory path is now shown as a compact breadcrumb-style
@@ -4885,7 +5051,11 @@ watch(
                reads as a lightweight toolbar instead of three chunky
                "circle" buttons. Loading state is preserved (a small
                spinner replaces the icon while the request is in flight). -->
-            <v-tooltip v-if="isProjectLoaded" location="bottom" :open-delay="200">
+            <v-tooltip
+              v-if="isProjectLoaded || hostFileTarget"
+              location="bottom"
+              :open-delay="200"
+            >
               <template #activator="{ props: tipProps }">
                 <v-btn
                   v-bind="tipProps"
@@ -4927,7 +5097,8 @@ watch(
               icon="mdi-close"
               size="small"
               variant="text"
-              @click="emit('update:modelValue', false)"
+              :aria-label="tm('spcodeProjectLoad.fileBrowser.editor.closePane')"
+              @click="closeSidebar"
             />
           </div>
         </div>
@@ -4991,22 +5162,26 @@ watch(
           role="tablist"
           aria-label="Switch view"
         >
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="viewMode === 'files'"
+            :class="[
+              'git-diff-sidebar-view-tab',
+              { 'is-active': viewMode === 'files' },
+            ]"
+            @click="showProjectFiles()"
+          >
+            <v-icon size="14">mdi-folder-outline</v-icon>
+            <span>{{
+              tm(
+                session.directory.value
+                  ? "spcodeProjectLoad.fileBrowser.viewMode.files"
+                  : "spcodeProjectLoad.fileBrowser.host.tab",
+              )
+            }}</span>
+          </button>
           <template v-if="isGitRepo || showNotGitRepoChip">
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="viewMode === 'files'"
-              :class="[
-                'git-diff-sidebar-view-tab',
-                { 'is-active': viewMode === 'files' },
-              ]"
-              @click="viewMode = 'files'"
-            >
-              <v-icon size="14">mdi-folder-outline</v-icon>
-              <span>{{
-                tm("spcodeProjectLoad.fileBrowser.viewMode.files")
-              }}</span>
-            </button>
             <!-- 2026-07-11 document-manager:Documents 文档管理 sub-tab。 -->
             <button
               type="button"
@@ -5020,7 +5195,9 @@ watch(
               @click="viewMode = 'docs'"
             >
               <v-icon size="14">mdi-file-document-multiple-outline</v-icon>
-              <span>{{ tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs") }}</span>
+              <span>{{
+                tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs")
+              }}</span>
             </button>
             <button
               type="button"
@@ -5033,7 +5210,9 @@ watch(
               @click="viewMode = 'diff'"
             >
               <v-icon size="14">mdi-source-pull</v-icon>
-              <span>{{ tm("spcodeProjectLoad.fileBrowser.viewMode.diff") }}</span>
+              <span>{{
+                tm("spcodeProjectLoad.fileBrowser.viewMode.diff")
+              }}</span>
             </button>
             <!-- Spec 2026-06-24 §2 决策 #10:History 是第 3 个 viewMode。 -->
             <button
@@ -5824,8 +6003,12 @@ watch(
         <div
           ref="sidebarBodyRef"
           class="git-diff-sidebar-body"
-          :class="{ 'git-diff-sidebar-body--agent': viewMode === 'browser' && browserMode === 'agent' }"
-          v-show="!isProjectLoaded || !conflictBodyHidden"
+          :class="{
+            'git-diff-sidebar-body--agent':
+              (viewMode === 'browser' && browserMode === 'agent') ||
+              (viewMode === 'files' && !!hostFileTarget),
+          }"
+          v-show="!!hostFileTarget || !isProjectLoaded || !conflictBodyHidden"
         >
           <!-- 2026-07-18 workspace-search-parity: the files-view search
              toolbar moved INTO FileBrowserView (mirroring
@@ -5835,8 +6018,14 @@ watch(
           <FileBrowserView
             v-if="viewMode === 'files'"
             ref="fileBrowserRef"
-            :current-path="fileBrowserCurrentPath"
-            :preview-path="fileBrowserPreviewPath"
+            :current-path="
+              hostFileTarget ? hostDirectory : fileBrowserCurrentPath
+            "
+            :preview-path="
+              hostFileTarget ? hostPreview : fileBrowserPreviewPath
+            "
+            :host-reference="hostFileTarget"
+            :host-state="hostFile.state.value"
             :is-dark="!!isDark"
             :root-path="currentRoot"
             :scroll-to-line="fileSearchScrollToLine"
@@ -5846,6 +6035,10 @@ watch(
             :git-show="gitShow"
             :recent-entries="recentFiles.entries.value"
             @navigate="onFileBrowserNavigate"
+            @open-path="openHostPath"
+            @retry-host="hostFile.refresh()"
+            @saved-host="onHostSaved"
+            @browse-host="hostDirectoryPickerOpen = true"
             @open-file="onFileOpen"
             @recent-select="onRecentSelect"
             @recent-remove="(p) => recentFiles.remove(p.path)"
@@ -6721,6 +6914,11 @@ watch(
       </aside>
     </transition>
   </Teleport>
+  <ProjectDirectoryBrowser
+    v-model="hostDirectoryPickerOpen"
+    host-browsing
+    @select="openHostPath"
+  />
 </template>
 
 <style scoped>

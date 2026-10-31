@@ -27,8 +27,9 @@ import BinaryMarkdownPreview from "./BinaryMarkdownPreview.vue";
 import ImagePreview from "./ImagePreview.vue";
 
 const props = defineProps<{
-  /** Workspace- or docsRoot-relative path to the file. */
+  /** Absolute host path in host mode; otherwise a project-relative path. */
   path: string;
+  host?: boolean;
   /** Git ref (sha/branch/tag). Empty string = current working tree.
    *  Named `gitRef` (not `ref`) so Vue does not mistake it for the
    *  built-in template-ref attribute. */
@@ -39,13 +40,17 @@ const props = defineProps<{
 
 const { tm } = useModuleI18n("features/chat");
 
-const binary = useSpcodeFileBinary(computed(() => props.worktree));
+const binary = useSpcodeFileBinary(
+  computed(() => props.worktree),
+  computed(() => !!props.host),
+);
 const fetchToken = ref(0); // bump on path/ref change to re-trigger fetch
 
 watch(
-  () => [props.path, props.gitRef] as const,
+  () => [props.path, props.gitRef, props.host, props.worktree] as const,
   ([p, r]) => {
     if (!p) return;
+    binary.invalidateAll();
     fetchToken.value += 1;
     void binary.fetchBinary(p, r);
   },
@@ -57,7 +62,9 @@ onBeforeUnmount(() => binary.dispose());
 const state = computed(() => binary.getState(props.path, props.gitRef));
 const data = computed(() => binary.getData(props.path, props.gitRef));
 
-const previewKind = computed<FileBinaryKind | null>(() => data.value?.kind ?? null);
+const previewKind = computed<FileBinaryKind | null>(
+  () => data.value?.kind ?? null,
+);
 
 const sizeLabel = computed<string>(() => {
   const bytes = data.value?.size ?? 0;
@@ -77,7 +84,9 @@ const sizeLabel = computed<string>(() => {
     </div>
 
     <div
-      v-if="state.kind === 'loading' || (state.kind === 'idle' && fetchToken === 0)"
+      v-if="
+        state.kind === 'loading' || (state.kind === 'idle' && fetchToken === 0)
+      "
       class="binary-preview__placeholder"
     >
       <v-progress-circular indeterminate size="24" />

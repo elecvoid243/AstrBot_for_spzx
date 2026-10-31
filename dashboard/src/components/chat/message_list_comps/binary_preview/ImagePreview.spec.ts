@@ -70,3 +70,13 @@ describe("ImagePreview", () => {
     expect(wrapper.find("img").exists()).toBe(false);
   });
 });
+
+it("releases the previous image URL when a new blob arrives", async () => {
+  const wrapper = mount(ImagePreview, {
+    props: { blob: new Blob(["old"]), filename: "old.png" },
+  });
+  const previous = wrapper.find("img").attributes("src");
+  await wrapper.setProps({ blob: new Blob(["new"]), filename: "new.png" });
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith(previous);
+  wrapper.unmount();
+});

@@ -874,6 +874,7 @@
       "reference": {
         "pluginUnavailable": "文件预览需要 spcode。请安装或启用 spcode 插件并检查服务后重试。",
         "readOnly": "当前磁盘内容 · 文件引用只读预览",
+        "lineUnavailable": "此格式无法按源文本行号定位。",
         "invalidRange": "引用的源文本行范围超出当前文件。",
         "notAFile": "引用目标不是普通文件。"
       },
@@ -2144,6 +2145,15 @@
       },
       "binary": {
         "errors": {
+          "not_found": "文件已不存在。",
+          "network": "无法连接文件服务。",
+          "server_error": "文件服务读取失败。",
+          "client_error": "文件读取请求被拒绝。",
+          "unknown": "无法读取此文件。",
+          "not_modified": "请重新打开文件以读取当前内容。",
+          "no_project_loaded": "项目相对路径预览需要先加载项目。",
+          "permission_denied": "宿主账户无权读取此文件。",
+          "plugin_unavailable": "请启用 spcode 插件以预览此文件。",
           "fetch_failed": "无法下载文件",
           "decode_failed": "无法解析文件",
           "too_large": "文件超过 50MB 预览上限",

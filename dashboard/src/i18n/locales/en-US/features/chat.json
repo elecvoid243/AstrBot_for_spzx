@@ -874,6 +874,7 @@
       "reference": {
         "pluginUnavailable": "File preview requires spcode. Install or enable the spcode plugin and check its service, then retry.",
         "readOnly": "Current disk contents · Read-only reference preview",
+        "lineUnavailable": "This format cannot be located by source text lines.",
         "invalidRange": "The referenced source line range is outside the current file.",
         "notAFile": "The reference does not point to a regular file."
       },
@@ -2111,6 +2112,15 @@
       },
       "binary": {
         "errors": {
+          "not_found": "The file no longer exists.",
+          "network": "The file service cannot be reached.",
+          "server_error": "The file service failed to read this file.",
+          "client_error": "The file request was rejected.",
+          "unknown": "The file could not be read.",
+          "not_modified": "Reopen the file to read its current contents.",
+          "no_project_loaded": "Load a project to use project-relative previews.",
+          "permission_denied": "Permission denied by the host account.",
+          "plugin_unavailable": "Enable the spcode plugin to preview this file.",
           "fetch_failed": "Failed to fetch binary file",
           "decode_failed": "Failed to decode file",
           "too_large": "File exceeds the 50MB preview limit",

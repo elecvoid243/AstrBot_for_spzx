@@ -1,17 +1,14 @@
 <!-- Author: elecvoid243, 2026-07-22
      Spec: docs/superpowers/specs/2026-07-22-binary-preview-design.md §6.3
-     DOCX rendering via mammoth.browser. mammoth outputs plain HTML
-     with very limited tag surface (no <script>, no <iframe>); we
-     still render via v-html inside a constrained wrapper rather
-     than a full sanitization pass to keep the bundle small. The
-     unzipped source never includes arbitrary executable content,
-     so this is acceptable for the trusted-project workspace case. -->
+     DOCX rendering via mammoth.browser, with the shared DOMPurify
+     dependency sanitizing generated HTML before displaying host documents. -->
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 // mammoth.browser is the pre-bundled UMD entry; using it avoids
 // pulling in the Node-specific `argparse`/`path-is-absolute` deps.
 import * as mammoth from "mammoth/mammoth.browser";
+import DOMPurify from "dompurify";
 
 const props = defineProps<{ blob: Blob }>();
 const { tm } = useModuleI18n("features/chat");
@@ -36,7 +33,7 @@ async function loadDocument(): Promise<void> {
     if (token !== loadToken) return;
     const result = await mammoth.convertToHtml({ arrayBuffer: buf });
     if (token !== loadToken) return;
-    html.value = result.value;
+    html.value = DOMPurify.sanitize(result.value);
   } catch (e) {
     if (token !== loadToken) return;
     error.value = (e as Error)?.message ?? "decode_failed";
@@ -73,10 +70,7 @@ onBeforeUnmount(() => {
         })
       }}</span>
     </div>
-    <div
-      v-else-if="loading && !html"
-      class="docx-preview__placeholder"
-    >
+    <div v-else-if="loading && !html" class="docx-preview__placeholder">
       <v-progress-circular indeterminate size="20" />
       <span>{{ tm("spcodeProjectLoad.documentManager.raw.loading") }}</span>
     </div>

@@ -20,7 +20,10 @@ vi.mock("@/api/v1", () => ({
   },
 }));
 
-import { useSpcodeFileBinary, parseContentDisposition } from "../useSpcodeFileBinary";
+import {
+  useSpcodeFileBinary,
+  parseContentDisposition,
+} from "../useSpcodeFileBinary";
 
 interface MockResponse {
   status: number;
@@ -28,12 +31,17 @@ interface MockResponse {
   headers: Record<string, string>;
 }
 
-function okBlob(data: ArrayBuffer | string, headers: Record<string, string> = {}) {
+function okBlob(
+  data: ArrayBuffer | string,
+  headers: Record<string, string> = {},
+) {
   const buf =
     typeof data === "string" ? new TextEncoder().encode(data).buffer : data;
   return {
     status: 200,
-    data: new Blob([buf], { type: headers["content-type"] ?? "application/pdf" }),
+    data: new Blob([buf], {
+      type: headers["content-type"] ?? "application/pdf",
+    }),
     headers: { ...headers },
   };
 }
@@ -195,12 +203,14 @@ describe("useSpcodeFileBinary — shell", () => {
 
   it("dispose() aborts in-flight and clears caches", async () => {
     let abortSignal: AbortSignal | undefined;
-    mockGet.mockImplementationOnce((_path: string, cfg?: { signal?: AbortSignal }) => {
-      abortSignal = cfg?.signal;
-      return new Promise(() => {
-        // never resolves; abort is the only way out
-      });
-    });
+    mockGet.mockImplementationOnce(
+      (_path: string, cfg?: { signal?: AbortSignal }) => {
+        abortSignal = cfg?.signal;
+        return new Promise(() => {
+          // never resolves; abort is the only way out
+        });
+      },
+    );
     const c = withSetup(() => useSpcodeFileBinary(null));
     void c.fetchBinary("docs/doc.pdf", "");
     expect(abortSignal?.aborted).toBe(false);
@@ -218,7 +228,8 @@ describe("useSpcodeFileBinary — shell", () => {
 
 describe("parseContentDisposition", () => {
   it("decodes RFC 5987 filename* with UTF-8 percent-encoded", () => {
-    const cd = "attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87%E6%96%87%E4%BB%B6.pdf";
+    const cd =
+      "attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87%E6%96%87%E4%BB%B6.pdf";
     expect(parseContentDisposition(cd, "fallback")).toBe("中文文件.pdf");
   });
 
@@ -231,5 +242,75 @@ describe("parseContentDisposition", () => {
     expect(parseContentDisposition(null, "fb.pdf")).toBe("fb.pdf");
     expect(parseContentDisposition("", "fb.pdf")).toBe("fb.pdf");
     expect(parseContentDisposition("attachment", "fb.pdf")).toBe("fb.pdf");
+  });
+});
+
+describe("host binary lifecycle", () => {
+  beforeEach(() => mockGet.mockReset());
+  it("uses explicit host scope without project or Git parameters and rereads current bytes", async () => {
+    mockGet.mockResolvedValue(
+      okBlob("current", { etag: "disk", "content-type": "application/pdf" }),
+    );
+    const c = withSetup(() => useSpcodeFileBinary("ignored", true));
+    await c.fetchBinary("G:/中文 space.pdf", "");
+    await c.fetchBinary("G:/中文 space.pdf", "");
+    expect(mockGet.mock.calls[1][1].params).toEqual({
+      scope: "host",
+      path: "G:/中文 space.pdf",
+    });
+    expect(mockGet.mock.calls[1][1].headers).toEqual({});
+    expect(c.getState("G:/中文 space.pdf", "").kind).toBe("ok");
+  });
+  it("ignores an older same-path response even when transport ignores abort", async () => {
+    let finish!: (value: unknown) => void;
+    mockGet.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mockGet.mockResolvedValueOnce(okBlob("latest"));
+    const c = withSetup(() => useSpcodeFileBinary(null, true));
+    const old = c.fetchBinary("G:/file.pdf", "");
+    await c.fetchBinary("G:/file.pdf", "");
+    const current = c.getData("G:/file.pdf", "");
+    finish(okBlob("outdated"));
+    await old;
+    expect(c.getData("G:/file.pdf", "")).toBe(current);
+    expect(mockGet.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+  it("recognizes an actual disabled-plugin JSON envelope instead of rendering it", async () => {
+    const payload = JSON.stringify({
+      status: "error",
+      message: "spcode is disabled",
+      data: null,
+    });
+    const blob = new Blob([payload], { type: "application/json" });
+    blob.text = async () => payload;
+    mockGet.mockResolvedValueOnce({
+      status: 200,
+      data: blob,
+      headers: { "content-type": "application/json" },
+    });
+    const c = withSetup(() => useSpcodeFileBinary(null, true));
+    await c.fetchBinary("G:/file.pdf", "");
+    expect(c.getState("G:/file.pdf", "")).toEqual({
+      kind: "error",
+      reason: "plugin_unavailable",
+    });
+    expect(c.getData("G:/file.pdf", "")).toBeNull();
+  });
+  it("discards requests invalidated while waiting for bytes", async () => {
+    let finish!: (value: unknown) => void;
+    mockGet.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const c = withSetup(() => useSpcodeFileBinary(null, true));
+    const pending = c.fetchBinary("G:/file.pdf", "");
+    c.invalidateAll();
+    finish(okBlob("stale"));
+    await pending;
+    expect(c.getState("G:/file.pdf", "").kind).toBe("idle");
   });
 });

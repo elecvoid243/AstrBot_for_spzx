@@ -18,7 +18,7 @@ import {
 } from "@/utils/shiki";
 import { copyToClipboard } from "@/utils/clipboard";
 import type { FileBrowserFetchState } from "@/composables/useSpcodeFileBrowser";
-import type { FileReferenceTarget } from "@/composables/fileReference";
+import type { FileReferenceNavigation } from "@/composables/fileReference";
 import { useDisplay } from "vuetify";
 import {
   extractLineContext,
@@ -95,7 +95,7 @@ const props = defineProps<{
   scrollToLine?: number | null;
   scrollToEndLine?: number | null;
   /** Host references are read-only until the independent write contract is available. */
-  hostReference?: FileReferenceTarget | null;
+  hostReference?: FileReferenceNavigation | null;
   /**
    * 2026-07-17 workspace file editor: repo-relative path of the
    * previewed file (the same value FileBrowserView feeds to the
@@ -434,11 +434,28 @@ const IMAGE_EXTS = [
  *  working copy and historical-raw views route through BinaryPreview,
  *  which re-fetches bytes via /spcode/file-binary with ETag caching. */
 const isImageFile = computed<boolean>(() => {
-  if (props.hostReference) return false;
   if (props.state.kind !== "file") return false;
   const name = props.state.snapshot.meta.name.toLowerCase();
   return IMAGE_EXTS.some((ext) => name.endsWith(ext));
 });
+
+// Text citations use source lines; whole CSV files use the existing table viewer.
+const richPreview = computed(() => {
+  if (props.state.kind !== "file") return false;
+  if (isImageFile.value) return true;
+  if (!props.hostReference) return false;
+  const name = props.state.snapshot.meta.name.toLowerCase();
+  return (
+    [".pdf", ".docx", ".xlsx", ".csv"].some((ext) => name.endsWith(ext)) &&
+    !(name.endsWith(".csv") && props.hostReference.startLine)
+  );
+});
+const referenceLineUnavailable = computed(
+  () =>
+    !!props.hostReference?.startLine &&
+    (richPreview.value ||
+      (props.state.kind === "file" && props.state.snapshot.content === null)),
+);
 
 /** True when the body should render markdown instead of the code
  *  view. Binary / too-large / loading are excluded by the template
@@ -1411,7 +1428,10 @@ onBeforeUnmount(() => {
 
           <div v-if="hostReference" class="pa-2 text-caption" role="status">
             {{ hostReference.path }} · {{ tm('spcodeProjectLoad.fileBrowser.reference.readOnly') }}
-            <span v-if="referenceRangeInvalid" class="text-error">
+            <span v-if="referenceLineUnavailable" class="text-warning">
+              {{ tm('spcodeProjectLoad.fileBrowser.reference.lineUnavailable') }}
+            </span>
+            <span v-else-if="referenceRangeInvalid" class="text-error">
               {{ tm('spcodeProjectLoad.fileBrowser.reference.invalidRange') }}
             </span>
           </div>
@@ -1587,19 +1607,16 @@ onBeforeUnmount(() => {
         current file. We deliberately DO NOT register a comment
         gutter here — see the historicalContent watcher above.
       -->
-          <!-- 2026-07-31 workspace-image-preview: image files render
-               inline through <BinaryPreview> (fetches bytes via
-               /spcode/file-binary, dispatches to ImagePreview). Placed
-               right after the historical-DIFF branch so images win over
-               every generic "binary file" placeholder below, for both
-               the current working copy and historical-raw views.
-               Edit mode and historical diff mode still take precedence
-               above. -->
-          <div v-else-if="isImageFile" class="preview-image">
+          <!-- Reuse the binary viewers for host documents and existing
+               project images. Host targets never enter project/Git reads.
+               Edit mode and historical diff still take precedence. -->
+          <div v-else-if="richPreview" class="preview-image">
             <BinaryPreview
-              :path="props.fileRelativePath ?? ''"
-              :git-ref="props.selectedRevision ?? ''"
-              :worktree="props.worktree ?? null"
+              :key="hostReference?.requestId ?? props.fileRelativePath"
+              :host="!!hostReference"
+              :path="hostReference ? state.snapshot.meta.path : props.fileRelativePath ?? ''"
+              :git-ref="hostReference ? '' : props.selectedRevision ?? ''"
+              :worktree="hostReference ? null : props.worktree ?? null"
             />
           </div>
 

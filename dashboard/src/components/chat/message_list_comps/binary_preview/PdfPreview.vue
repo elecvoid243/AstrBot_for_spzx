@@ -14,6 +14,8 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type {
   PDFDocumentProxy,
   PDFPageProxy,
+  PDFDocumentLoadingTask,
+  RenderTask,
 } from "pdfjs-dist/types/src/display/api";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -30,14 +32,19 @@ const loading = ref<boolean>(false);
 
 let doc: PDFDocumentProxy | null = null;
 let loadToken = 0;
+let loadingTask: PDFDocumentLoadingTask | null = null;
+let renderTask: RenderTask | null = null;
+let renderToken = 0;
 
 async function loadDocument(): Promise<void> {
   const token = ++loadToken;
   // Tear down the previous document so we don't leak GPU buffers.
-  if (doc) {
-    doc.destroy();
-    doc = null;
-  }
+  renderToken++;
+  renderTask?.cancel();
+  renderTask = null;
+  void loadingTask?.destroy();
+  loadingTask = null;
+  doc = null;
   if (!props.blob || props.blob.size === 0) {
     error.value = "empty_pdf";
     return;
@@ -47,8 +54,14 @@ async function loadDocument(): Promise<void> {
   try {
     const buf = await props.blob.arrayBuffer();
     if (token !== loadToken) return;
-    doc = await pdfjsLib.getDocument({ data: buf }).promise;
-    if (token !== loadToken) return;
+    const task = pdfjsLib.getDocument({ data: buf });
+    loadingTask = task;
+    const loaded = await task.promise;
+    if (token !== loadToken) {
+      void loaded.destroy();
+      return;
+    }
+    doc = loaded;
     totalPages.value = doc.numPages;
     currentPage.value = 1;
     await renderPage();
@@ -61,18 +74,36 @@ async function loadDocument(): Promise<void> {
 }
 
 async function renderPage(): Promise<void> {
-  if (!doc || !canvasRef.value) return;
-  const page: PDFPageProxy = await doc.getPage(currentPage.value);
-  const viewport = page.getViewport({ scale: scale.value });
-  const canvas = canvasRef.value;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  // Replace the canvas backing-store each render so we don't keep a
-  // larger than-needed buffer when the user zooms out.
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  page.cleanup();
+  const token = ++renderToken;
+  renderTask?.cancel();
+  renderTask = null;
+  const currentDoc = doc;
+  if (!currentDoc || !canvasRef.value) return;
+  let page: PDFPageProxy | null = null;
+  try {
+    page = await currentDoc.getPage(currentPage.value);
+    if (token !== renderToken || currentDoc !== doc || !canvasRef.value) return;
+    const viewport = page.getViewport({ scale: scale.value });
+    const canvas = canvasRef.value;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const task = page.render({ canvasContext: ctx, viewport });
+    renderTask = task;
+    await task.promise;
+  } catch (e) {
+    if (
+      token === renderToken &&
+      currentDoc === doc &&
+      (e as Error)?.name !== "RenderingCancelledException"
+    ) {
+      error.value = (e as Error)?.message ?? "parse_failed";
+    }
+  } finally {
+    page?.cleanup();
+    if (token === renderToken) renderTask = null;
+  }
 }
 
 function prevPage(): void {
@@ -106,7 +137,10 @@ watch(
 
 onBeforeUnmount(() => {
   loadToken++;
-  doc?.destroy();
+  renderToken++;
+  renderTask?.cancel();
+  void loadingTask?.destroy();
+  loadingTask = null;
   doc = null;
 });
 </script>
@@ -153,7 +187,9 @@ onBeforeUnmount(() => {
         <v-btn
           size="small"
           variant="text"
-          :aria-label="tm('spcodeProjectLoad.documentManager.binary.pdf.zoomOut')"
+          :aria-label="
+            tm('spcodeProjectLoad.documentManager.binary.pdf.zoomOut')
+          "
           @click="zoomOut"
         >
           <v-icon icon="mdi-magnify-minus-outline" />
@@ -162,7 +198,9 @@ onBeforeUnmount(() => {
         <v-btn
           size="small"
           variant="text"
-          :aria-label="tm('spcodeProjectLoad.documentManager.binary.pdf.zoomIn')"
+          :aria-label="
+            tm('spcodeProjectLoad.documentManager.binary.pdf.zoomIn')
+          "
           @click="zoomIn"
         >
           <v-icon icon="mdi-magnify-plus-outline" />

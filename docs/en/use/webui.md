@@ -64,7 +64,7 @@ links do not read files.
 The first file-reference preview is read-only. It uses authenticated spcode
 services and host account permissions, independently of the Agent's project,
 worktree, execution directory or permission mode. Install or enable spcode if
-the pane asks for it. Missing, unreadable, binary, oversized files and invalid
+the pane asks for it. Missing, unreadable, unsupported, oversized files and invalid
 line ranges display an explicit state; an invalid range is not highlighted.
 Markdown references with a line target show source text so line numbers remain
 meaningful. The existing project Files, Git, Documents, Terminal and Browser
@@ -74,6 +74,24 @@ project file list. From **Git Diff**, use a file's **Open → Open in file brows
 menu to open that project file instead of the previous reference. These explicit
 actions preserve the existing check for unsaved edits; background project or
 worktree refreshes leave the reference in place.
+
+### Preview images, documents and spreadsheets
+
+Absolute references to images, PDF, DOCX, XLSX, CSV and Markdown open the
+existing viewers in the same file pane, inside or outside the loaded project,
+or with no project loaded. Whole CSV files open as tables; CSV and Markdown
+citations with line targets display **source text**, including quoted multiline
+CSV rows. Images, PDF and Office documents show an explicit message when a
+text line target cannot be located. These previews do not add Office, PDF or
+image editors.
+
+Binary previews retain the existing extension/MIME whitelist and 50 MiB limit;
+source text retains its 5 MiB limit. Encoded spaces, Chinese names, `#` and `%`
+refer to the actual filename. Reopening a citation reads current disk bytes.
+Changing targets cancels or ignores old byte/parse requests and releases image
+URLs and PDF tasks. spcode must remain enabled for both metadata and bytes.
+
+![A real PDF citation in the existing file pane](./images/file-reference-rich-preview.png)
 
 ### Browse host folders and drives
 

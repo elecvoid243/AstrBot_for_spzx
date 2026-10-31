@@ -31,6 +31,7 @@ async def main() -> None:
         RuntimeError: The isolated host cannot start.
     """
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rich-previews", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--chromium", type=Path, required=True)
@@ -80,6 +81,48 @@ async def main() -> None:
         f"[F01 large]({quote(large.as_posix(), safe='/:')})\n\n[F01 other]({quote(other.as_posix(), safe='/:')})\n\n"
         f"Plain {target.as_posix()}\n\n`[code]({href})`\n\n[web](https://example.com) [relative](src/main.py)\n\nF01_DONE"
     )
+    if args.rich_previews:
+        # Real document bytes, parsed by the existing production viewers.
+        from docx import Document
+        from openpyxl import Workbook
+        from PIL import Image
+        from reportlab.pdfgen.canvas import Canvas
+
+        rich = {}
+        for extension in ["png", "pdf", "docx", "xlsx", "csv", "md"]:
+            rich[extension] = files / f"预览 space#%文档.{extension}"
+        Image.new("RGB", (24, 16), "red").save(rich["png"])
+        canvas = Canvas(str(rich["pdf"]))
+        canvas.drawString(60, 750, "F03 PDF REAL DOCUMENT")
+        canvas.save()
+        document = Document()
+        document.add_paragraph("F03 DOCX REAL DOCUMENT")
+        document.save(rich["docx"])
+        workbook = Workbook()
+        workbook.active.append(["F03 XLSX REAL DOCUMENT", 42])
+        workbook.save(rich["xlsx"])
+        rich["csv"].write_text('name,value\n"F03 CSV\nmultiline",7\n', encoding="utf-8")
+        rich["md"].write_text("# F03 Markdown\n\nF03 SOURCE LINE 3\n", encoding="utf-8")
+        unsupported = files / "unsupported.zip"
+        unsupported.write_bytes(b"PK\x03\x04\x00")
+        oversized = files / "oversized.pdf"
+        with oversized.open("wb") as stream:
+            stream.truncate(50 * 1024 * 1024 + 1)
+        for prefix, folder in [
+            ("external", files),
+            ("inside", evidence / "project-one"),
+        ]:
+            for extension, path in rich.items():
+                links += f"\n\n[F03 {prefix} {extension}]({quote((folder / path.name).as_posix(), safe='/:')})"
+        for label, path, fragment in [
+            ("CSV source", rich["csv"], "#L3"),
+            ("MD source", rich["md"], "#L3"),
+            ("PDF line", rich["pdf"], "#L3"),
+            ("unsupported", unsupported, ""),
+            ("oversize", oversized, ""),
+        ]:
+            links += f"\n\n[F03 {label}]({quote(path.as_posix(), safe='/:')}{fragment})"
+
     requests = []
     stream_gate = asyncio.Event()
 
@@ -409,7 +452,9 @@ async def main() -> None:
                         .first.wait_for(timeout=15000)
                     )
                     assert not file_requests, file_requests
-                    assert await page.locator(".file-reference-link").count() == 7
+                    assert await page.locator(".file-reference-link").count() == (
+                        24 if args.rich_previews else 7
+                    )
                     checks.append(
                         "real Agent request contains protocol; streaming completion and rendering never auto-read"
                     )
@@ -423,6 +468,185 @@ async def main() -> None:
                         await page.get_by_role(
                             "link", name=label, exact=True
                         ).first.click()
+
+                    async def render_rich(prefix, scenario):
+                        """Render all six real files through actual Agent citation links.
+
+                        Args:
+                            prefix: Citation group (external or inside).
+                            scenario: Evidence label describing project context.
+                        """
+                        for extension in rich:
+                            await click(f"F03 {prefix} {extension}")
+                            if extension == "png":
+                                await page.wait_for_function(
+                                    "document.querySelector('.image-preview img')?.naturalWidth === 24"
+                                )
+                            elif extension == "pdf":
+                                await page.wait_for_function(
+                                    "document.querySelector('.pdf-preview canvas')?.width > 0"
+                                )
+                                await page.wait_for_function("""() => {
+                                    const c = document.querySelector('.pdf-preview canvas');
+                                    if (!c || c.width < 500) return false;
+                                    const pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+                                    return pixels.some((v, i) => i % 4 !== 3 && v < 200 && pixels[i - (i % 4) + 3] === 255);
+                                }""")
+                            elif extension == "docx":
+                                await (
+                                    page.locator(".docx-preview__body")
+                                    .get_by_text("F03 DOCX REAL DOCUMENT", exact=True)
+                                    .wait_for()
+                                )
+                            elif extension == "xlsx":
+                                await (
+                                    page.locator(".xlsx-preview table")
+                                    .get_by_text("F03 XLSX REAL DOCUMENT", exact=True)
+                                    .wait_for()
+                                )
+                            elif extension == "csv":
+                                await (
+                                    page.locator(".csv-preview table")
+                                    .get_by_text("F03 CSV multiline", exact=True)
+                                    .wait_for()
+                                )
+                            else:
+                                await (
+                                    page.locator(".preview-markdown h1")
+                                    .get_by_text("F03 Markdown", exact=True)
+                                    .wait_for()
+                                )
+                            await page.screenshot(
+                                path=str(evidence / f"rich-{scenario}-{extension}.png")
+                            )
+                            checks.append(
+                                f"F03 {scenario}: actual {extension} viewer rendered current real file via Agent citation"
+                            )
+
+                    if args.rich_previews:
+                        await render_rich("external", "no-project")
+                        Image.new("RGB", (32, 20), "blue").save(rich["png"])
+                        await click("F03 external png")
+                        await page.wait_for_function(
+                            "document.querySelector('.image-preview img')?.naturalWidth === 32"
+                        )
+                        Image.new("RGB", (24, 16), "red").save(rich["png"])
+                        await click("F03 external png")
+                        await page.wait_for_function(
+                            "document.querySelector('.image-preview img')?.naturalWidth === 24"
+                        )
+                        checks.append(
+                            "F03 same-path image citation rereads externally changed disk bytes on every click"
+                        )
+                        await click("F03 CSV source")
+                        await (
+                            page.locator(".line-referenced")
+                            .get_by_text('multiline",7', exact=True)
+                            .wait_for()
+                        )
+                        assert not await page.locator(".csv-preview").count()
+                        await click("F03 MD source")
+                        await (
+                            page.locator(".line-referenced")
+                            .get_by_text("F03 SOURCE LINE 3", exact=True)
+                            .wait_for()
+                        )
+                        await click("F03 PDF line")
+                        await page.get_by_text(
+                            "此格式无法按源文本行号定位。", exact=True
+                        ).wait_for()
+                        assert await page.locator(".line-referenced").count() == 0
+                        checks.append(
+                            "F03 CSV quoted multiline and Markdown citations locate source lines; PDF line citation gives explicit unavailable feedback"
+                        )
+                        await click("F03 unsupported")
+                        await page.locator(".preview-binary").wait_for()
+                        await click("F03 oversize")
+                        await page.get_by_text(
+                            "文件超过 50MB 预览上限", exact=True
+                        ).wait_for()
+                        await page.route(
+                            "**/plugins/extensions/spcode/file-binary*",
+                            lambda route: route.fulfill(
+                                status=403, json={"reason": "permission_denied"}
+                            ),
+                        )
+                        await click("F03 external pdf")
+                        await page.get_by_text(
+                            "宿主账户无权读取此文件。", exact=True
+                        ).wait_for()
+                        await page.unroute("**/plugins/extensions/spcode/file-binary*")
+                        checks.append(
+                            "F03 unsupported real binary and real oversized PDF show errors; permission denial is a transport boundary injection"
+                        )
+                        await page.route(
+                            "**/plugins/extensions/spcode/file-binary*",
+                            lambda route: route.fulfill(
+                                status=404, json={"reason": "path_not_found"}
+                            ),
+                        )
+                        await click("F03 external pdf")
+                        await page.get_by_text("文件已不存在。", exact=True).wait_for()
+                        await page.unroute("**/plugins/extensions/spcode/file-binary*")
+                        checks.append(
+                            "F03 missing-between-metadata-and-bytes error has localized UI feedback (transport boundary injection)"
+                        )
+                        started, release = asyncio.Event(), asyncio.Event()
+
+                        async def hold_binary(route):
+                            """Delay actual binary response to exercise plugin lifecycle.
+
+                            Args:
+                                route: Intercepted browser request to the real file service.
+                            """
+                            started.set()
+                            await release.wait()
+                            await route.continue_()
+
+                        await page.route(
+                            "**/plugins/extensions/spcode/file-binary*", hold_binary
+                        )
+                        await click("F03 external pdf")
+                        await asyncio.wait_for(started.wait(), 20)
+                        async with client.post(
+                            origin + "/api/plugin/off",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200
+                        release.set()
+                        await page.get_by_text(
+                            "请启用 spcode 插件以预览此文件。", exact=True
+                        ).wait_for()
+                        await page.unroute("**/plugins/extensions/spcode/file-binary*")
+                        async with client.post(
+                            origin + "/api/plugin/on",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200
+                        await click("F03 external pdf")
+                        await page.wait_for_function(
+                            "document.querySelector('.pdf-preview canvas')?.width > 20"
+                        )
+                        checks.append(
+                            "F03 actual plugin off/on between metadata and byte read produces enable feedback, then restores PDF"
+                        )
+                        started, release = asyncio.Event(), asyncio.Event()
+                        await page.route(
+                            "**/plugins/extensions/spcode/file-binary*", hold_binary
+                        )
+                        await click("F03 external pdf")
+                        await asyncio.wait_for(started.wait(), 20)
+                        await click("F03 external md")
+                        await page.locator(".preview-markdown h1").wait_for()
+                        release.set()
+                        await page.wait_for_timeout(300)
+                        assert not await page.locator(".pdf-preview").count()
+                        await page.unroute("**/plugins/extensions/spcode/file-binary*")
+                        checks.append(
+                            "F03 delayed binary transport followed by Markdown navigation cannot overwrite the latest target"
+                        )
 
                     await click("F01 whole")
                     await (
@@ -607,6 +831,9 @@ async def main() -> None:
                     for project_name in ["project-one", "project-two"]:
                         project = evidence / project_name
                         project.mkdir()
+                        if args.rich_previews and project_name == "project-one":
+                            for source in rich.values():
+                                shutil.copy2(source, project / source.name)
                         project_file = project / "project.txt"
                         project_file.write_text(
                             "ORIGINAL PROJECT CONTENT\n", encoding="utf-8"
@@ -660,6 +887,15 @@ async def main() -> None:
                             .get_by_text("CURRENT DISK CONTENT", exact=True)
                             .wait_for()
                         )
+                        if args.rich_previews:
+                            await render_rich(
+                                "inside"
+                                if project_name == "project-one"
+                                else "external",
+                                "project-inside"
+                                if project_name == "project-one"
+                                else "project-outside",
+                            )
                     checks.append(
                         "history links remain host-absolute across two real project loads"
                     )

@@ -11,6 +11,10 @@ import { parse } from "vue/compiler-sfc";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import type {
+  FileReferenceTarget,
+  FileReferenceNavigation,
+} from "@/composables/fileReference";
 import {
   computed,
   defineComponent,
@@ -44,6 +48,7 @@ const wanted = new Set([
   "openReasoningPanel",
   "toggleGitDiffSidebar",
   "closeTodoMenu",
+  "openFileReference",
 ]);
 const variables = new Set([
   "threadPanelOpen",
@@ -57,6 +62,8 @@ const variables = new Set([
   "goalSidebarOpen",
   "todoMenuOpen",
   "todoMenuPlacement",
+  "fileReferenceNavigation",
+  "fileReferenceRequestId",
 ]);
 const declarations = ast.statements.filter((node) => {
   if (ts.isFunctionDeclaration(node)) return wanted.has(node.name!.text);
@@ -138,6 +145,7 @@ function setup() {
     refsSidebarOpen: ref(false),
     selectedRefs: ref(null),
     gitDiffSidebarOpen: ref(false),
+    confirmFileNavigation: vi.fn().mockResolvedValue(true),
     threadSelection: { visible: false },
     toast: { error: vi.fn() },
     tm: (key: string) => key,
@@ -147,7 +155,6 @@ function setup() {
   // The real unmount callback also disposes unrelated viewport/media resources.
   const environment = {
     ...state,
-    confirmFileNavigation: async () => true,
     chatApi,
     ref,
     computed,
@@ -173,7 +180,7 @@ function setup() {
     `${code}
     return { threadPanelOpen, activeThread, sideChatThreadId, creatingSideChat,
       sideChats, sideChatMenuOpen, loadingSideChats,
-      goalSidebarOpen, todoMenuOpen,
+      goalSidebarOpen, todoMenuOpen, fileReferenceNavigation,
       ${[...wanted].join(", ")} };`,
   );
   let api!: {
@@ -186,6 +193,8 @@ function setup() {
     loadingSideChats: Ref<boolean>;
     goalSidebarOpen: Ref<boolean>;
     todoMenuOpen: Ref<boolean>;
+    fileReferenceNavigation: Ref<FileReferenceNavigation | null>;
+    openFileReference: (target: FileReferenceTarget) => Promise<void>;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
@@ -220,6 +229,84 @@ afterEach(() => {
 });
 
 describe("Chat side-chat lifecycle", () => {
+  it("waits for the editor before replacing a side chat with the shared file pane", async () => {
+    const ctx = setup();
+    await ctx.openThreadPanel({ thread_id: "side-a" });
+    ctx.sideChatThreadId.value = "side-a";
+    let allow!: (value: boolean) => void;
+    ctx.confirmFileNavigation.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        allow = resolve;
+      }),
+    );
+    const target = { path: "C:/outside/file.py", startLine: 12, endLine: 18 };
+    const pending = ctx.openFileReference(target);
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.fileReferenceNavigation.value).toBeNull();
+    expect(ctx.gitDiffSidebarOpen.value).toBe(false);
+    allow(true);
+    await pending;
+    expect(ctx.threadPanelOpen.value).toBe(false);
+    expect(ctx.gitDiffSidebarOpen.value).toBe(true);
+    expect(ctx.fileReferenceNavigation.value).toEqual({
+      ...target,
+      requestId: 1,
+    });
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+    await ctx.openThreadPanel({ thread_id: "side-a" });
+    expect(ctx.activeThread.value?.thread_id).toBe("side-a");
+  });
+
+  it("does not publish or replay a cancelled citation", async () => {
+    const ctx = setup();
+    await ctx.openThreadPanel({ thread_id: "side-a" });
+    ctx.confirmFileNavigation.mockResolvedValueOnce(false);
+    await ctx.openFileReference({
+      path: "G:/cancelled.py",
+      startLine: null,
+      endLine: null,
+    });
+    expect(ctx.fileReferenceNavigation.value).toBeNull();
+    expect(ctx.threadPanelOpen.value).toBe(true);
+    expect(ctx.activeThread.value?.thread_id).toBe("side-a");
+    expect(ctx.gitDiffSidebarOpen.value).toBe(false);
+    expect(ctx.chatApi.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it.each(["new citation", "session", "panel"])(
+    "discards a citation whose guard completes after a newer %s",
+    async (change) => {
+      const ctx = setup();
+      let allow!: (value: boolean) => void;
+      ctx.confirmFileNavigation.mockReturnValueOnce(
+        new Promise<boolean>((resolve) => {
+          allow = resolve;
+        }),
+      );
+      const pending = ctx.openFileReference({
+        path: "G:/old.py",
+        startLine: null,
+        endLine: null,
+      });
+      if (change === "new citation")
+        await ctx.openFileReference({
+          path: "C:/new.py",
+          startLine: 3,
+          endLine: 3,
+        });
+      if (change === "session") {
+        ctx.currSessionId.value = "session-b";
+        await nextTick();
+      }
+      if (change === "panel") ctx.closeThreadPanel();
+      allow(true);
+      await pending;
+      expect(ctx.fileReferenceNavigation.value?.path ?? null).toBe(
+        change === "new citation" ? "C:/new.py" : null,
+      );
+    },
+  );
+
   it("opens a same-session side chat with isolated context", async () => {
     const ctx = setup();
     ctx.goalSidebarOpen.value = true;
@@ -325,7 +412,8 @@ describe("Chat side-chat lifecycle", () => {
       const ctx = setup();
       const pending = ctx.openSideChat();
       if (sidebar === "refs") await ctx.openRefsSidebar({ title: "new refs" });
-      if (sidebar === "reasoning") await ctx.openReasoningPanel({ blockIndex: 1 });
+      if (sidebar === "reasoning")
+        await ctx.openReasoningPanel({ blockIndex: 1 });
       if (sidebar === "git") await ctx.toggleGitDiffSidebar();
       if (sidebar === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
       if (sidebar === "goal") ctx.goalSidebarOpen.value = true;

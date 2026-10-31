@@ -1334,7 +1334,11 @@ import RefsSidebar from "@/components/chat/message_list_comps/RefsSidebar.vue";
 import GoalSidebar from "@/components/chat/message_list_comps/GoalSidebar.vue";
 import TodoListPanel from "@/components/chat/message_list_comps/spcode_tools/TodoListPanel.vue";
 import GitDiffSidebar from "@/components/chat/GitDiffSidebar.vue";
-import { OPEN_FILE_REFERENCE, type FileReferenceNavigation } from "@/composables/fileReference";
+import {
+  OPEN_FILE_REFERENCE,
+  type FileReferenceNavigation,
+  type FileReferenceTarget,
+} from "@/composables/fileReference";
 import ChatMessageSearchDialog from "@/components/chat/ChatMessageSearchDialog.vue";
 import ArchivedSessionsDialog from "@/components/chat/ArchivedSessionsDialog.vue";
 import ImportSessionsDialog from "@/components/chat/ImportSessionsDialog.vue";
@@ -1904,10 +1908,30 @@ onBeforeRouteUpdate(() => confirmFileNavigation());
 const gitDiffSidebarOpen = ref(false);
 const fileReferenceNavigation = ref<FileReferenceNavigation | null>(null);
 let fileReferenceRequestId = 0;
-provide(OPEN_FILE_REFERENCE, (target) => {
-  fileReferenceNavigation.value = { ...target, requestId: ++fileReferenceRequestId };
-  if (!gitDiffSidebarOpen.value) toggleGitDiffSidebar();
-});
+/** Commit citation navigation only after the current editor permits leaving. */
+async function openFileReference(target: FileReferenceTarget): Promise<void> {
+  const requestId = ++fileReferenceRequestId;
+  const sessionId = currSessionId.value;
+  const generation = sideChatGeneration;
+  if (!(await confirmFileNavigation())) return;
+  if (
+    requestId !== fileReferenceRequestId ||
+    sessionId !== currSessionId.value ||
+    generation !== sideChatGeneration
+  )
+    return;
+  chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+  closeThreadPanel();
+  reasoningPanelOpen.value = false;
+  activeReasoningTarget.value = null;
+  refsSidebarOpen.value = false;
+  selectedRefs.value = null;
+  closeTodoMenu();
+  chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+  fileReferenceNavigation.value = { ...target, requestId };
+  gitDiffSidebarOpen.value = true;
+}
+provide(OPEN_FILE_REFERENCE, openFileReference);
 const gitDiffFullscreen = ref(false);
 
 /* ── todo summary bar 拖动 ───────────────────────────

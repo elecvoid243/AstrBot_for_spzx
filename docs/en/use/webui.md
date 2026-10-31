@@ -198,11 +198,17 @@ Under `Settings → Maintenance`, backup imports also show upload progress and o
 
 ### Side Chats and Branch Threads
 
-With a conversation open, use **New side chat** (the speech-bubble-plus button at the top right of the message area). The right panel is titled **Side chat** and labelled **Temporary chat · destroyed on close**. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
+With a conversation open, hover over or click **New side chat** (the speech-bubble-plus button at the top right of the message area). The menu lists the side chats saved for this conversation; choose **New side chat** to start another. It starts empty, without a quoted message or inherited main-conversation context. Include any background the separate question needs yourself.
 
-![Temporary side chat with an empty, separate message area](/images/chat-side-panel-en.jpg)
+![Retained side chat with file citations in the isolated production ChatUI](./images/side-chat-references.png)
 
-Closing the panel, switching conversations, or leaving the chat page ends the temporary chat and requests deletion of its thread. Opening an ordinary branch also replaces the side chat. Treat it as temporary: copy anything you need before leaving; it has no restore entry in the conversation list. Deletion requires a successful connection to the backend.
+Closing the panel, opening a file, switching conversations, or leaving the chat page hides the side chat and keeps its history. Return to the same main conversation and select its title in the side-chat menu to reopen it. Use the delete button explicitly to remove a side chat; deletion requires a successful backend connection.
+
+Agent file citations in side chats use the same host-absolute Markdown links and existing file pane as the main chat. Click a citation to hide the side chat, read the current file and highlight any valid source-line range. The file stays at its original absolute location after project or worktree changes. Viewing it does not change the Agent's project, execution directory or permissions. Reopen the side chat from the menu to continue.
+
+Before a switch would leave unsaved edits, choose **Save and open**, **Discard and open**, or **Cancel**. Cancellation, failed saves and conflicts keep the editor and draft in place. Missing files, unreadable targets and invalid line ranges show feedback in the file pane. If spcode is unavailable, enable the plugin and retry the citation.
+
+![Side-chat citation opens the existing file pane and source lines](./images/side-chat-file-pane.png)
 
 An ordinary **Thread** still starts from selected reply text using **Ask in thread**. It retains the quote and the context through that reply's checkpoint. Closing its panel keeps the thread, which you can reopen from the reply's thread marker or count; its delete button removes it explicitly. This is also distinct from branching an entire conversation into another session.
 
@@ -210,9 +216,7 @@ An ordinary **Thread** still starts from selected reply text using **Ask in thre
 
 On desktop, drag the panel's **left edge** to change the width of either a branch thread or side chat. At narrow mobile widths the panel fills the screen and the resize handle is hidden.
 
-The desktop screenshots show resized panels with the conversation sidebar collapsed. On mobile, use **×** at the top right to return to the main conversation; closing a side chat still ends it, while an ordinary thread remains saved.
-
-![Side chat fills the screen in the narrow layout](/images/chat-side-mobile-en.jpg)
+On mobile, use **×** at the top right to return to the main conversation. Side-chat and ordinary-thread histories remain saved when their panels close.
 
 ### Project Workbench Web Preview
 
@@ -231,7 +235,8 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 | Previous entry or behavior | Current location or behavior |
 | --- | --- |
 | Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
-| No separate temporary-chat entry | Added: message area → New side chat; independent context, destroyed when closed |
+| Temporary side chat, destroyed on close | Message area → side-chat menu → New side chat or a saved title; independent context, history retained until explicitly deleted |
+| Side-chat file citations | Open the shared file pane; reopen the side chat from its saved title in the menu |
 | No workbench entry without a project | Files & Browser above the composer; the Workspace entry remains for loaded projects |
 | Workspace → Files / Documents / Git Diff / History / Terminal | Existing tabs remain; Web Preview is added after Terminal in Project Workbench |
 

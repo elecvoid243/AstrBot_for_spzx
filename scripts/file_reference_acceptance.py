@@ -86,6 +86,7 @@ async def main() -> None:
     parser.add_argument("--editing", action="store_true")
     parser.add_argument("--review-corrections", action="store_true")
     parser.add_argument("--target-context-corrections", action="store_true")
+    parser.add_argument("--side-chat", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--chromium", type=Path, required=True)
@@ -93,6 +94,7 @@ async def main() -> None:
     args = parser.parse_args()
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=False)
+    shutil.copyfile(Path(__file__), evidence / "acceptance-source.py")
     runtime = evidence / "isolated-host"
     data = runtime / "data"
     installed = data / "plugins/astrbot_plugin_spcode_toolkit"
@@ -179,6 +181,14 @@ async def main() -> None:
 
     requests = []
     stream_gate = asyncio.Event()
+    side_stream_gate = asyncio.Event()
+    side_stream_release = asyncio.Event()
+    side_links = (
+        f"[F06 side range]({href}#L55-L58)\n\n"
+        f"[F06 side other]({quote(other.as_posix(), safe='/:')})\n\n"
+        f"[F06 side missing]({quote((files / 'missing.py').as_posix(), safe='/:')})\n\n"
+        f"[F06 side invalid]({href}#L900)\n\nF06_SIDE_DONE"
+    )
 
     async def completion(request):
         """Return deterministic replies without replacing the real Agent executor.
@@ -194,8 +204,15 @@ async def main() -> None:
         prompt = "\n".join(
             str(m.get("content", "")) for m in body["messages"] if m["role"] == "system"
         )
-        content = links if body.get("stream") or body.get("tools") else "F01 title"
-        if content == links:
+        latest_user = next(
+            str(message.get("content", ""))
+            for message in reversed(body["messages"])
+            if message["role"] == "user"
+        )
+        actual_reply = body.get("stream") or body.get("tools")
+        is_side = "F06_SIDE_REQUEST" in latest_user and actual_reply
+        content = (side_links if is_side else links) if actual_reply else "F01 title"
+        if actual_reply:
             assert "host-absolute path" in prompt and "#L12-L18" in prompt
         payload = {
             "id": "f01",
@@ -215,7 +232,8 @@ async def main() -> None:
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             # The incomplete link must never issue a file request.
-            for text in [f"[F01 whole]({href}", links[len(f"[F01 whole]({href}") :]]:
+            prefix = content.split(")", 1)[0]
+            for index, text in enumerate([prefix, content[len(prefix) :]]):
                 chunk = {
                     **payload,
                     "object": "chat.completion.chunk",
@@ -226,7 +244,10 @@ async def main() -> None:
                 await response.write(
                     f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
                 )
-                if not stream_gate.is_set():
+                if is_side and index == 0:
+                    side_stream_gate.set()
+                    await asyncio.wait_for(side_stream_release.wait(), 30)
+                elif not stream_gate.is_set():
                     stream_gate.set()
                     await asyncio.sleep(1)
             await response.write(b"data: [DONE]\n\n")
@@ -2002,6 +2023,403 @@ async def main() -> None:
                         .wait_for()
                     )
                     checks.append("re-enabled plugin restores the real host preview")
+                    if args.side_chat:
+                        # Use the actual side-chat composer, runner and persisted history.
+                        target.write_text(
+                            "".join(f"F06 source line {n}\n" for n in range(1, 81)),
+                            encoding="utf-8",
+                        )
+                        other.write_text("F06 SIDE ORIGINAL\n", encoding="utf-8")
+                        await page.locator(".side-chat-fab").click()
+                        async with page.expect_response(
+                            "**/api/v1/chat/threads"
+                        ) as created_side:
+                            await page.locator(".side-chat-menu-new").click()
+                        side_id = (await (await created_side.value).json())["data"][
+                            "thread_id"
+                        ]
+                        side_umo = "webchat:FriendMessage:webchat!f01!" + side_id
+                        panel = page.locator(".thread-panel")
+                        await panel.wait_for()
+                        await panel.locator(".chat-text-input, .chat-textarea").fill(
+                            "F06_SIDE_REQUEST"
+                        )
+                        before_side_requests = len(file_requests)
+                        await panel.locator(".send-btn").click()
+                        await asyncio.wait_for(side_stream_gate.wait(), 30)
+                        await page.wait_for_timeout(400)
+                        assert await panel.locator(".file-reference-link").count() == 0
+                        assert len(file_requests) == before_side_requests
+                        side_stream_release.set()
+                        await panel.get_by_text("F06_SIDE_DONE", exact=False).wait_for()
+                        await page.screenshot(
+                            path=str(evidence / "side-chat-reply-zh.png")
+                        )
+                        checks.append(
+                            "F06 real side Agent request includes citation guidance; incomplete streaming reference never reads a file"
+                        )
+
+                        async def reopen_side():
+                            """Reopen the same persistent side chat using its visible menu."""
+                            # Let the preceding side-panel width transition finish before hovering its moving entry.
+                            await page.wait_for_timeout(500)
+                            await page.mouse.move(10, 10)
+                            await page.locator(".side-chat-fab").hover()
+                            await (
+                                page.locator(".side-chat-menu-title")
+                                .filter(has_text="F06_SIDE_REQUEST")
+                                .wait_for()
+                            )
+                            await page.wait_for_timeout(250)
+                            await page.screenshot(
+                                path=str(evidence / "side-menu-open.png")
+                            )
+                            await (
+                                page.locator(".side-chat-menu-title")
+                                .filter(has_text="F06_SIDE_REQUEST")
+                                .click()
+                            )
+                            await panel.get_by_text(
+                                "F06_SIDE_DONE", exact=False
+                            ).wait_for()
+                            await page.wait_for_timeout(400)
+
+                        await panel.get_by_role(
+                            "link", name="F06 side range", exact=True
+                        ).click()
+                        await panel.wait_for(state="hidden")
+                        await page.wait_for_function(
+                            "document.querySelectorAll('.line-referenced').length === 4"
+                        )
+                        assert await page.locator(".git-diff-sidebar").count() == 1
+                        await page.screenshot(
+                            path=str(evidence / "side-chat-file-zh.png")
+                        )
+                        checks.append(
+                            "F06 actual streamed side citation hides the side chat and opens one existing file pane at source lines 55-58"
+                        )
+                        await reopen_side()
+                        await panel.get_by_role(
+                            "link", name="F06 side other", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F06 SIDE ORIGINAL", exact=True)
+                            .wait_for()
+                        )
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("F06 SIDE DRAFT")
+                        # Every path that could hide this editor must resolve its guard first.
+                        for outcome in ["cancel", "conflict", "save failure", "save"]:
+                            await page.locator(".side-chat-fab").click()
+                            await (
+                                page.locator(".side-chat-menu-title")
+                                .filter(has_text="F06_SIDE_REQUEST")
+                                .click()
+                            )
+                            dialog = page.get_by_role("dialog")
+                            await dialog.get_by_role(
+                                "button", name="取消", exact=True
+                            ).wait_for()
+                            assert await panel.count() == 0
+                            assert (
+                                await page.locator(".cm-content").inner_text()
+                                == "F06 SIDE DRAFT"
+                            )
+                            if outcome == "cancel":
+                                await dialog.get_by_role(
+                                    "button", name="取消", exact=True
+                                ).click()
+                            else:
+                                if outcome == "conflict":
+                                    other.write_text(
+                                        "F06 EXTERNAL CHANGE\n", encoding="utf-8"
+                                    )
+                                elif outcome == "save failure":
+                                    await page.route(
+                                        "**/plugins/extensions/spcode/host-file-write",
+                                        lambda route: route.fulfill(
+                                            status=503,
+                                            body="injected F06 transport failure",
+                                        ),
+                                    )
+                                async with page.expect_response(
+                                    "**/plugins/extensions/spcode/host-file-write"
+                                ):
+                                    await dialog.get_by_role(
+                                        "button", name="保存并打开", exact=True
+                                    ).click()
+                                await page.wait_for_timeout(300)
+                                if outcome != "save":
+                                    assert await panel.count() == 0
+                                    assert (
+                                        await page.locator(".cm-content").inner_text()
+                                        == "F06 SIDE DRAFT"
+                                    )
+                                    assert (
+                                        other.read_text(encoding="utf-8")
+                                        == "F06 EXTERNAL CHANGE\n"
+                                    )
+                                    await page.unroute(
+                                        "**/plugins/extensions/spcode/host-file-write"
+                                    )
+                                    if outcome == "conflict":
+                                        # Reload only after the user explicitly chooses it.
+                                        page.once(
+                                            "dialog", lambda message: message.accept()
+                                        )
+                                        await page.get_by_role(
+                                            "button", name="从磁盘重新加载", exact=True
+                                        ).click()
+                                        await page.get_by_role(
+                                            "button", name="编辑", exact=True
+                                        ).click()
+                                        await page.locator(".cm-content").fill(
+                                            "F06 SIDE DRAFT"
+                                        )
+                            if outcome != "save":
+                                assert await panel.count() == 0
+                                checks.append(
+                                    f"F06 opening retained side chat: {outcome} preserves full file draft and original pane"
+                                )
+                        await panel.wait_for()
+                        assert other.read_bytes() == b"F06 SIDE DRAFT"
+                        checks.append(
+                            "F06 save-and-open writes actual file bytes before reopening the same retained side conversation"
+                        )
+                        await page.reload()
+                        await page.locator(".side-chat-fab").wait_for(timeout=60000)
+                        await reopen_side()
+                        other.write_text("F06 CURRENT SIDE DISK\n", encoding="utf-8")
+                        await panel.get_by_role(
+                            "link", name="F06 side other", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F06 CURRENT SIDE DISK", exact=True)
+                            .wait_for()
+                        )
+                        checks.append(
+                            "F06 side history survives reload and opens current disk bytes, never a message snapshot"
+                        )
+                        for label, expected in [
+                            ("missing", "路径不存在"),
+                            ("invalid", "引用的源文本行范围超出当前文件。"),
+                        ]:
+                            await reopen_side()
+                            await panel.get_by_role(
+                                "link", name=f"F06 side {label}", exact=True
+                            ).click()
+                            await page.get_by_text(
+                                expected, exact=False
+                            ).first.wait_for()
+                            await panel.wait_for(state="hidden")
+                        checks.append(
+                            "F06 missing side target and invalid source range give explicit feedback in the existing pane"
+                        )
+                        await reopen_side()
+                        await page.route(
+                            "**/plugins/extensions/spcode/file-browser*",
+                            lambda route: route.fulfill(
+                                status=200,
+                                json={
+                                    "status": "ok",
+                                    "data": {
+                                        "success": False,
+                                        "type": None,
+                                        "reason": "permission_denied",
+                                    },
+                                },
+                            ),
+                        )
+                        await panel.get_by_role(
+                            "link", name="F06 side other", exact=True
+                        ).click()
+                        await page.get_by_text("权限不足", exact=True).wait_for()
+                        await page.unroute("**/plugins/extensions/spcode/file-browser*")
+                        checks.append(
+                            "F06 side read permission denial is visible (HTTP boundary injection)"
+                        )
+                        await reopen_side()
+                        async with client.post(
+                            origin + "/api/plugin/off",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200
+                        await panel.get_by_role(
+                            "link", name="F06 side other", exact=True
+                        ).click()
+                        await page.get_by_text(
+                            "文件预览需要 spcode", exact=False
+                        ).wait_for()
+                        await reopen_side()
+                        assert (
+                            await panel.get_by_role(
+                                "link", name="F06 side other", exact=True
+                            ).count()
+                            == 1
+                        )
+                        async with client.post(
+                            origin + "/api/plugin/on",
+                            headers=headers,
+                            json={"name": "astrbot_plugin_spcode_toolkit"},
+                        ) as response:
+                            assert response.status == 200
+                        await panel.get_by_role(
+                            "link", name="F06 side other", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F06 CURRENT SIDE DISK", exact=True)
+                            .wait_for()
+                        )
+                        checks.append(
+                            "F06 actual plugin disable/enable keeps side history and citations, with clear enable-plugin feedback and recovery"
+                        )
+                        await reopen_side()
+                        await page.screenshot(
+                            path=str(evidence / "side-chat-reopened-zh.png")
+                        )
+                        await page.evaluate(
+                            "localStorage.setItem('astrbot-locale', 'en-US')"
+                        )
+                        await page.reload()
+                        await page.locator(".side-chat-fab").wait_for(timeout=60000)
+                        await reopen_side()
+                        await page.screenshot(
+                            path=str(evidence / "side-chat-reply-en.png")
+                        )
+                        await panel.get_by_role(
+                            "link", name="F06 side range", exact=True
+                        ).click()
+                        await page.wait_for_function(
+                            "document.querySelectorAll('.line-referenced').length === 4"
+                        )
+                        await page.screenshot(
+                            path=str(evidence / "side-chat-file-en.png")
+                        )
+                        await page.evaluate(
+                            "localStorage.setItem('astrbot-locale', 'zh-CN')"
+                        )
+                        await page.reload()
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.wait_for(timeout=60000)
+                        for project_name in ["project-one", "project-two"]:
+                            async with client.post(
+                                origin
+                                + "/api/v1/plugins/extensions/spcode/project-load",
+                                headers=headers,
+                                json={
+                                    "umo": umo,
+                                    "directory": str(evidence / project_name),
+                                    "force": True,
+                                    "no_agentsmd": True,
+                                    "no_codegraph": True,
+                                },
+                            ) as response:
+                                assert (await response.json())["data"]["success"]
+                            await page.reload()
+                            await page.locator(".side-chat-fab").wait_for(timeout=60000)
+                            await reopen_side()
+                            side_context = await session_context()
+                            side_permissions = {}
+                            for reference_umo in [umo, side_umo]:
+                                async with client.get(
+                                    origin + "/api/v1/chat/file-access-mode",
+                                    headers=headers,
+                                    params={"umo": reference_umo},
+                                ) as response:
+                                    side_permissions[reference_umo] = (
+                                        await response.json()
+                                    )["data"]
+                            first_side_read = len(file_requests)
+                            await panel.get_by_role(
+                                "link", name="F06 side range", exact=True
+                            ).click()
+                            await page.wait_for_function(
+                                "document.querySelectorAll('.line-referenced').length === 4"
+                            )
+                            assert any(
+                                Path(parse_qs(urlparse(url).query)["path"][0]) == target
+                                for url in file_requests[first_side_read:]
+                            )
+                            assert await session_context() == side_context
+                            for reference_umo in [umo, side_umo]:
+                                async with client.get(
+                                    origin + "/api/v1/chat/file-access-mode",
+                                    headers=headers,
+                                    params={"umo": reference_umo},
+                                ) as response:
+                                    assert (await response.json())[
+                                        "data"
+                                    ] == side_permissions[reference_umo]
+                        checks.append(
+                            "F06 persisted side citations keep their absolute path through two actual main-project changes; opening preserves real project/worktree state and both main/side Agent permission settings"
+                        )
+                        await page.get_by_role("tab", name="终端", exact=True).click()
+                        await (
+                            page.locator(".terminal-view")
+                            .get_by_role("button", name="连接", exact=True)
+                            .click()
+                        )
+                        await page.locator(".terminal-status.is-running").wait_for()
+                        terminal_proof = evidence / "project-two/F06-terminal-proof.txt"
+                        terminal_path = str(terminal_proof).replace("'", "''")
+                        await page.locator(
+                            ".terminal-view .xterm-helper-textarea"
+                        ).press_sequentially(
+                            f"Set-Content -LiteralPath '{terminal_path}' -Value 'F06 REAL TERMINAL'"
+                        )
+                        await page.locator(
+                            ".terminal-view .xterm-helper-textarea"
+                        ).press("Enter")
+                        for _ in range(100):
+                            if terminal_proof.exists():
+                                break
+                            await asyncio.sleep(0.1)
+                        assert (
+                            terminal_proof.read_text(encoding="utf-8-sig").strip()
+                            == "F06 REAL TERMINAL"
+                        )
+                        await (
+                            page.locator(".terminal-view")
+                            .get_by_role("button", name="终止会话", exact=True)
+                            .click()
+                        )
+                        await page.locator(".terminal-status.is-running").wait_for(
+                            state="hidden"
+                        )
+                        checks.append(
+                            "F06 production Terminal starts, executes a real PowerShell command into a marked temporary file, and stops"
+                        )
+                        await page.get_by_role(
+                            "tab", name="Web 预览", exact=True
+                        ).click()
+                        await page.get_by_role(
+                            "button", name="Agent 浏览器", exact=True
+                        ).click()
+                        await page.locator(
+                            '.agent-browser-view[data-connection="disabled"], .agent-browser-view[data-connection="disconnected"]'
+                        ).wait_for()
+                        checks.append(
+                            "F06 production Agent browser retains missing-service feedback without a Browser Use plugin; live browser runtime is outside this fixture"
+                        )
+                        async with client.post(
+                            origin + "/api/v1/plugins/extensions/spcode/project-unload",
+                            headers=headers,
+                            json={"umo": umo},
+                        ) as response:
+                            assert (await response.json())["data"]["success"]
+                        await page.reload()
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.wait_for(timeout=60000)
+                        other.write_text("SECOND TARGET\n", encoding="utf-8")
+                        await click("F01 other")
                     if args.review_corrections:
                         await page.reload()
                         await page.get_by_role(
@@ -2553,60 +2971,45 @@ async def main() -> None:
                             "button", name="编辑", exact=True
                         ).click()
                         await page.locator(".cm-content").fill("SOURCE_A = 'A draft'\n")
-                        if rename_available:
-                            await (
-                                page.locator(".preview-editor-toolbar")
-                                .get_by_role("button", name="重命名", exact=True)
-                                .click()
-                            )
-                            await (
-                                page.get_by_role("dialog")
-                                .get_by_role("button", name="保存并打开", exact=True)
-                                .click()
-                            )
-                            dialog = page.get_by_role("dialog")
-                            await dialog.get_by_text(
-                                str(context_a / "same.py"), exact=True
-                            ).wait_for()
-                            await dialog.locator("input").fill(
-                                "renamed-in-wrong-project.py"
-                            )
-                            async with page.expect_response(
-                                "**/plugins/extensions/spcode/host-file-manage"
-                            ) as renamed:
-                                await dialog.get_by_role(
-                                    "button", name="重命名", exact=True
-                                ).click()
-                            rename_result = (await (await renamed.value).json())["data"]
-                            assert rename_result["renamed"]
-                            assert Path(rename_result["path"]) == context_a / "same.py"
-                            assert (context_a / "renamed-in-wrong-project.py").exists()
-                            assert not (
-                                context_b / "renamed-in-wrong-project.py"
-                            ).exists()
-                            await (
-                                page.locator(".code-content")
-                                .get_by_text("SOURCE_A = 'A draft'", exact=True)
-                                .wait_for()
-                            )
-                            await click("F01 whole")
-                            (context_a / "renamed-in-wrong-project.py").rename(
-                                context_a / "same.py"
-                            )
-                            context_results["detached_management_bound_to_A"] = True
-                        else:
-                            async with page.expect_response(
-                                "**/plugins/extensions/spcode/host-file-write"
-                            ) as saved:
-                                await (
-                                    page.locator(".preview-editor-toolbar")
-                                    .get_by_role("button", name="保存", exact=True)
-                                    .click()
-                                )
-                            assert (await (await saved.value).json())["data"]["saved"]
-                            context_results[
-                                "detached_rename_delete_unavailable"
-                            ] = not delete_available
+                        assert rename_available and delete_available
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="重命名", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="保存并打开", exact=True)
+                            .click()
+                        )
+                        dialog = page.get_by_role("dialog")
+                        await dialog.get_by_text(
+                            str(context_a / "same.py"), exact=True
+                        ).wait_for()
+                        await dialog.locator("input").fill(
+                            "renamed-in-wrong-project.py"
+                        )
+                        async with page.expect_response(
+                            "**/plugins/extensions/spcode/host-file-manage"
+                        ) as renamed:
+                            await dialog.get_by_role(
+                                "button", name="重命名", exact=True
+                            ).click()
+                        rename_result = (await (await renamed.value).json())["data"]
+                        assert rename_result["renamed"]
+                        assert Path(rename_result["path"]) == context_a / "same.py"
+                        assert (context_a / "renamed-in-wrong-project.py").exists()
+                        assert not (context_b / "renamed-in-wrong-project.py").exists()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("SOURCE_A = 'A draft'", exact=True)
+                            .wait_for()
+                        )
+                        await click("F01 whole")
+                        (context_a / "renamed-in-wrong-project.py").rename(
+                            context_a / "same.py"
+                        )
+                        context_results["detached_management_bound_to_A"] = True
                         context_results["only_A_manually_saved"] = (
                             (context_a / "same.py").read_bytes()
                             == original_a.replace(b"'A'", b"'A draft'")

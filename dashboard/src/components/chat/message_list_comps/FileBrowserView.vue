@@ -590,12 +590,14 @@ function onBackToCurrent(): void {
 // `navigate` contract so currentPath stays untouched.
 function onPreviewRenamed(newPath: string): void {
   dirComposable.refresh();
-  emit("navigate", { dirPath: props.currentPath, previewPath: newPath });
+  if (props.hostReference) emit("open-path", newPath);
+  else emit("navigate", { dirPath: props.currentPath, previewPath: newPath });
 }
 
 function onPreviewDeleted(): void {
   dirComposable.refresh();
-  emit("navigate", { dirPath: props.currentPath, previewPath: null });
+  if (props.hostReference) emit("open-path", props.currentPath);
+  else emit("navigate", { dirPath: props.currentPath, previewPath: null });
 }
 
 // ── Workspace search (2026-07-18 workspace-search-parity) ────────

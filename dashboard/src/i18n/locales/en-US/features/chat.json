@@ -945,10 +945,10 @@
         "renameConfirm": "Rename",
         "renameSuccess": "Renamed to {name}",
         "renameFailed": "Rename failed: {reason}",
-        "delete": "Delete",
+        "delete": "Move to recycle bin",
         "deleteDialogTitle": "Delete file",
-        "deleteConfirmMessage": "Delete {name}? This cannot be undone.",
-        "deleteConfirm": "Delete",
+        "deleteConfirmMessage": "Move {name} to the system recycle bin? You can restore it using your operating system.",
+        "deleteConfirm": "Move to recycle bin",
         "deleteSuccess": "Deleted {name}",
         "deleteFailed": "Delete failed: {reason}",
         "unsavedActionConfirm": "You have unsaved changes. Continue and lose them?",
@@ -967,7 +967,9 @@
           "write_failed": "The file could not be saved. Your draft is kept.",
           "conflict": "The disk file changed. Confirm reload or overwrite below.",
           "target_changed": "The file was replaced during saving. Reload it before trying again.",
-          "file_too_large": "The file or edited content exceeds the size limit."
+          "file_too_large": "The file or edited content exceeds the size limit.",
+          "file_exists": "A file with that name already exists.",
+          "operation_failed": "The operation failed. The file was not permanently deleted."
         },
         "closePane": "Close file pane"
       },
@@ -2115,11 +2117,11 @@
         "saving": "Saving",
         "cancel": "Cancel",
         "cancelDirty": "You have unsaved changes. Discard them?",
-        "delete": "Delete",
+        "delete": "Move to recycle bin",
         "rename": "Rename",
         "renameUnavailable": "Rename is now available",
         "deleteConfirmTitle": "Delete document?",
-        "deleteConfirmBody": "Will permanently delete {path}",
+        "deleteConfirmBody": "Move {path} to the system recycle bin? You can restore it using your operating system.",
         "saveError": "Save failed",
         "saveSuccess": "Saved",
         "deleteError": "Delete failed"

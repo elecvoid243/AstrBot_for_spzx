@@ -945,10 +945,10 @@
         "renameConfirm": "重命名",
         "renameSuccess": "已重命名为 {name}",
         "renameFailed": "重命名失败：{reason}",
-        "delete": "删除",
+        "delete": "移入回收站",
         "deleteDialogTitle": "删除文件",
-        "deleteConfirmMessage": "确定要删除 {name} 吗？此操作不可撤销。",
-        "deleteConfirm": "删除",
+        "deleteConfirmMessage": "将 {name} 移入系统回收站？可通过操作系统恢复。",
+        "deleteConfirm": "移入回收站",
         "deleteSuccess": "已删除 {name}",
         "deleteFailed": "删除失败：{reason}",
         "unsavedActionConfirm": "有未保存的修改，继续操作将丢失这些修改。是否继续？",
@@ -967,7 +967,9 @@
           "write_failed": "文件写入失败，草稿已保留。",
           "conflict": "磁盘文件已变化，请在下方选择重新加载或确认覆盖。",
           "target_changed": "保存期间文件被替换，请重新加载后再试。",
-          "file_too_large": "文件或编辑后的内容超出大小限制。"
+          "file_too_large": "文件或编辑后的内容超出大小限制。",
+          "file_exists": "同名文件已存在。",
+          "operation_failed": "操作失败，未执行永久删除。"
         },
         "closePane": "关闭文件侧栏"
       },
@@ -2148,11 +2150,11 @@
         "saving": "保存中",
         "cancel": "取消",
         "cancelDirty": "有未保存修改,确定放弃?",
-        "delete": "删除",
+        "delete": "移入回收站",
         "rename": "重命名",
         "renameUnavailable": "重命名功能已可用",
         "deleteConfirmTitle": "确认删除文档?",
-        "deleteConfirmBody": "将删除 {path},不可撤销",
+        "deleteConfirmBody": "将 {path} 移入系统回收站？可通过操作系统恢复。",
         "saveError": "保存失败",
         "saveSuccess": "已保存",
         "deleteError": "删除失败"

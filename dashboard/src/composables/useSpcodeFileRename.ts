@@ -9,13 +9,16 @@ import { ref, toValue, type MaybeRef } from "vue";
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 
-export type FileRenameResult = { ok: true } | { ok: false; reason: string };
+export type FileRenameResult =
+  | { ok: true; path?: string; newPath?: string }
+  | { ok: false; reason: string };
 
 export interface UseSpcodeFileRename {
   isRenaming: import("vue").Ref<boolean>;
   rename: (params: {
     path: string;
     newName: string;
+    host?: boolean;
   }) => Promise<FileRenameResult>;
   dispose: () => void;
 }
@@ -31,6 +34,7 @@ export function useSpcodeFileRename(
   async function rename(params: {
     path: string;
     newName: string;
+    host?: boolean;
   }): Promise<FileRenameResult> {
     if (!isMounted) return { ok: false, reason: "aborted" };
     ctrl?.abort();
@@ -38,33 +42,37 @@ export function useSpcodeFileRename(
     isRenaming.value = true;
     try {
       const resp = await pluginExtensionApi.post<unknown>(
-        "spcode/file-rename",
+        params.host ? "spcode/host-file-manage" : "spcode/file-rename",
         {
           path: params.path,
+          ...(params.host ? { operation: "rename" } : {}),
           new_name: params.newName,
-          umo: session.umo.value ?? undefined,
-          worktree: toValue(worktreeRef) ?? undefined,
+          umo: params.host ? undefined : session.umo.value ?? undefined,
+          worktree: params.host ? undefined : toValue(worktreeRef) ?? undefined,
         },
         { signal: ctrl.signal },
       );
       if (!isMounted) return { ok: false, reason: "aborted" };
-      // Envelope semantics mirror useSpcodeFileWrite: `renamed === true`
-      // is the success marker; a non-empty `reason` without the marker
-      // is a genuine failure; anything unrecognized is treated as success.
-      const data = (
-        resp.data as {
-          data?: { renamed?: boolean; reason?: string | null };
-        }
-      )?.data;
-      if (
-        data &&
-        data.renamed !== true &&
-        typeof data.reason === "string" &&
-        data.reason
-      ) {
-        return { ok: false, reason: data.reason };
+      const payload = resp.data as {
+        status?: string;
+        data?: {
+          renamed?: boolean;
+          deleted?: boolean;
+          path?: string;
+          new_path?: string;
+          reason?: string | null;
+        };
+      };
+      const data = payload?.data;
+      if (data?.renamed !== true || (params.host && !data.path)) {
+        return {
+          ok: false,
+          reason:
+            data?.reason ||
+            (payload?.status === "error" ? "spcode_unavailable" : "unknown"),
+        };
       }
-      return { ok: true };
+      return { ok: true, path: data.path, newPath: data.new_path };
     } catch (err) {
       if (!isMounted) return { ok: false, reason: "aborted" };
       const e = err as { name?: string; code?: string; message?: string };

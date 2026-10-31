@@ -84,7 +84,9 @@ function mountEditor(props: Record<string, unknown> = {}) {
   });
 }
 
-async function setBufferDirty(w: ReturnType<typeof mountEditor>): Promise<void> {
+async function setBufferDirty(
+  w: ReturnType<typeof mountEditor>,
+): Promise<void> {
   // Find the stubbed editor's textarea and type a character to
   // flip the parent DocumentEditor.isDirty to true.
   const ta = w.find("textarea");
@@ -92,9 +94,11 @@ async function setBufferDirty(w: ReturnType<typeof mountEditor>): Promise<void> 
   await w.vm.$nextTick();
 }
 
-function dispatchKeydown(
-  options: { key: string; ctrlKey?: boolean; metaKey?: boolean },
-) {
+function dispatchKeydown(options: {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}) {
   // The component's onKeyDown listener is attached on `document`
   // in capture phase. Dispatching a bubbling, cancelable keydown
   // on `document` directly hits the same code path the user's
@@ -118,6 +122,57 @@ describe("DocumentEditor", () => {
   afterEach(() => {
     wrapper?.unmount();
     wrapper = null;
+  });
+
+  it("stops dirty file management when save fails and preserves its draft", async () => {
+    const save = vi.fn().mockResolvedValue(false);
+    wrapper = mountEditor({
+      initialContent: "old",
+      fileAbsolute: "C:/A/doc.md",
+      saveForAction: save,
+    });
+    await setBufferDirty(wrapper);
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().endsWith("editor.delete"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("v-btn")
+      .find((button) => button.text().endsWith("editor.leaveSave"))!
+      .trigger("click");
+    await flushPromises();
+    expect(save).toHaveBeenCalledWith("x");
+    expect(wrapper.emitted("delete")).toBeUndefined();
+    expect(wrapper.find("textarea").element.value).toBe("x");
+  });
+
+  it("invalidates an open delete confirmation when the actual target changes", async () => {
+    wrapper = mountEditor({
+      initialContent: "old",
+      fileAbsolute: "C:/A/doc.md",
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().endsWith("editor.delete"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".document-editor__confirm").text()).toContain(
+      "C:/A/doc.md",
+    );
+    await wrapper.setProps({ fileAbsolute: "C:/B/doc.md" });
+    expect(wrapper.find(".document-editor__confirm").exists()).toBe(false);
+    expect(wrapper.emitted("delete")).toBeUndefined();
+  });
+
+  it("does not save a different draft while a delete confirmation is pending", async () => {
+    wrapper = mountEditor({ initialContent: "old", fileAbsolute: "C:/A/doc.md" });
+    await wrapper.findAll("button").find((button) => button.text().endsWith("editor.delete"))!.trigger("click");
+    await flushPromises();
+    await setBufferDirty(wrapper);
+    dispatchKeydown({ key: "s", ctrlKey: true });
+    await flushPromises();
+    expect(wrapper.emitted("save")).toBeUndefined();
   });
 
   it("Ctrl+S emits save with the current buffer when dirty", async () => {
@@ -184,7 +239,9 @@ describe("DocumentEditor", () => {
 
   it("workspace notice does not reserve the toolbar's leading space", () => {
     const source = readFileSync(
-      resolve("src/components/chat/message_list_comps/FileBrowserFilePreview.vue"),
+      resolve(
+        "src/components/chat/message_list_comps/FileBrowserFilePreview.vue",
+      ),
       "utf8",
     );
     const noticeRule =

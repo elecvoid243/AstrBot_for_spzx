@@ -23,6 +23,56 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
 
 
+async def restore_marked_file(path: Path, expected: bytes, record: Path) -> None:
+    """Restore exactly one marked fixture using Windows Shell's system restore.
+
+    Args:
+        path: Unique F05-recoverable absolute original target.
+        expected: Original file bytes to verify after restoration.
+        record: Evidence JSON output for this one restored item.
+
+    Raises:
+        AssertionError: The marked item is missing, ambiguous or not restored.
+    """
+    restore_script = r"""
+    $ErrorActionPreference = 'Stop'
+    $target = $env:F05_RECOVER_TARGET
+    if ([IO.Path]::GetFileName($target) -notlike 'F05-recoverable-*') { throw 'Unmarked target' }
+    $shell = New-Object -ComObject Shell.Application
+    $bin = $shell.NameSpace(10)
+    $markedItems = @($bin.Items() | Where-Object {
+        $_.Name -eq [IO.Path]::GetFileName($target) -and
+        $_.ExtendedProperty('System.Recycle.DeletedFrom') -eq [IO.Path]::GetDirectoryName($target)
+    })
+    if ($markedItems.Count -ne 1) { throw "Expected exactly one marked recycle item, got $($markedItems.Count)" }
+    $record = @{ original=$target; recyclePath=$markedItems[0].Path; systemRestore=$true }
+    $markedItems[0].InvokeVerb('undelete')
+    $record | ConvertTo-Json -Compress
+    """
+    restore = await asyncio.to_thread(
+        subprocess.run,
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            restore_script,
+        ],
+        env={**os.environ, "F05_RECOVER_TARGET": str(path)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert restore.returncode == 0, restore.stderr
+    for _ in range(100):
+        if path.exists():
+            break
+        await asyncio.sleep(0.1)
+    assert path.read_bytes() == expected
+    record.write_text(restore.stdout, encoding="utf-8")
+
+
 async def main() -> None:
     """Validate the production UI against an isolated, real plugin and filesystem.
 
@@ -32,6 +82,7 @@ async def main() -> None:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rich-previews", action="store_true")
+    parser.add_argument("--management", action="store_true")
     parser.add_argument("--editing", action="store_true")
     parser.add_argument("--review-corrections", action="store_true")
     parser.add_argument("--target-context-corrections", action="store_true")
@@ -685,6 +736,194 @@ async def main() -> None:
                     checks.append(
                         "no loaded project; Chinese space encoded Windows path; whole/single/closed range current source preview"
                     )
+                    if args.management:
+                        manage_endpoint = (
+                            origin
+                            + "/api/v1/plugins/extensions/spcode/host-file-manage"
+                        )
+                        async with client.post(
+                            manage_endpoint,
+                            json={"path": str(other), "operation": "trash"},
+                        ) as response:
+                            assert response.status in (401, 403)
+                        checks.append(
+                            "F05 management unauthenticated request rejected by real host"
+                        )
+                        await click("F01 other")
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("F05 preserved draft")
+                        await page.get_by_role(
+                            "button", name="重命名", exact=True
+                        ).click()
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="取消", exact=True)
+                            .click()
+                        )
+                        assert (
+                            await page.locator(".cm-content").inner_text()
+                            == "F05 preserved draft"
+                        )
+                        assert other.exists()
+                        checks.append(
+                            "F05 dirty management cancel keeps actual target and complete draft"
+                        )
+                        await page.get_by_role(
+                            "button", name="重命名", exact=True
+                        ).click()
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="保存并打开", exact=True)
+                            .click()
+                        )
+                        dialog = page.get_by_role("dialog")
+                        await dialog.get_by_text(str(other), exact=True).wait_for()
+                        renamed = other.with_name(
+                            "F05-recoverable-" + secrets.token_hex(8) + ".txt"
+                        )
+                        await dialog.locator("input").fill(target.name)
+                        await dialog.get_by_role(
+                            "button", name="重命名", exact=True
+                        ).click()
+                        await dialog.get_by_text(
+                            "同名文件已存在", exact=False
+                        ).wait_for()
+                        assert (
+                            other.read_text(encoding="utf-8") == "F05 preserved draft"
+                        )
+                        await dialog.locator("input").fill(renamed.name)
+                        await dialog.get_by_role(
+                            "button", name="重命名", exact=True
+                        ).click()
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F05 preserved draft", exact=True)
+                            .wait_for()
+                        )
+                        assert (
+                            renamed.read_bytes() == b"F05 preserved draft"
+                            and not other.exists()
+                        )
+                        checks.append(
+                            "F05 actual Agent citation outside project: save-before-rename, collision, canonical new target and directory refresh"
+                        )
+                        await click("F01 other")
+                        await page.get_by_text(
+                            "路径不存在", exact=False
+                        ).first.wait_for()
+                        checks.append(
+                            "F05 original historical citation retains its old absolute path after rename"
+                        )
+                        await jump_host(renamed)
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F05 preserved draft", exact=True)
+                            .wait_for()
+                        )
+                        await (
+                            page.locator(".file-browser-preview .d-flex")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_text(str(renamed), exact=False)
+                            .wait_for()
+                        )
+                        await page.wait_for_timeout(500)
+                        await page.screenshot(
+                            path=str(evidence / "trash-confirm-zh.png")
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="取消", exact=True)
+                            .click()
+                        )
+                        assert renamed.exists()
+
+                        async def trash_failure(route):
+                            await route.fulfill(
+                                json={
+                                    "status": "ok",
+                                    "data": {
+                                        "deleted": False,
+                                        "reason": "permission_denied",
+                                    },
+                                }
+                            )
+
+                        await page.route("**/spcode/host-file-manage", trash_failure)
+                        await (
+                            page.locator(".file-browser-preview .d-flex")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await page.get_by_text("权限不足", exact=False).first.wait_for()
+                        assert renamed.read_bytes() == b"F05 preserved draft"
+                        await page.unroute("**/spcode/host-file-manage", trash_failure)
+                        checks.append(
+                            "F05 UI transport-boundary trash failure preserves file and offers no permanent delete"
+                        )
+                        await page.screenshot(
+                            path=str(evidence / "trash-failure-zh.png")
+                        )
+                        trash_started = asyncio.Event()
+                        trash_release = asyncio.Event()
+
+                        async def delayed_trash(route):
+                            actual = await route.fetch()
+                            trash_started.set()
+                            await trash_release.wait()
+                            await route.fulfill(response=actual)
+
+                        await page.route("**/spcode/host-file-manage", delayed_trash)
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await asyncio.wait_for(trash_started.wait(), 15)
+                        # Public DOM event injection tests the guard even behind the modal.
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.dispatch_event("click")
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).dispatch_event("click")
+                        assert await page.locator(".cm-content").count() == 0
+                        assert await page.get_by_role("dialog").count() == 1
+                        assert target.exists()
+                        trash_release.set()
+                        await page.get_by_role("dialog").wait_for(state="hidden")
+                        await page.unroute("**/spcode/host-file-manage", delayed_trash)
+                        checks.append(
+                            "F05 delayed actual trash response: public navigation/edit intents are guarded and no newer draft is cleared (DOM/transport boundary injection)"
+                        )
+                        assert not renamed.exists()
+                        await restore_marked_file(
+                            renamed,
+                            b"F05 preserved draft",
+                            evidence / "system-trash-restoration.json",
+                        )
+                        checks.append(
+                            "F05 Windows x64 actual system recycle bin item and Shell undelete restore verified exact bytes; existing bin untouched"
+                        )
+                        # Restore the fixture for preceding/following ticket regression checks.
+                        renamed.rename(other)
+                        other.write_bytes(b"SECOND TARGET\n")
+                        await click("F01 whole")
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("F01 source line 80", exact=True)
+                            .wait_for()
+                        )
                     if args.editing:
                         edit_umo = "webchat:FriendMessage:webchat!f01!" + chat_id
                         permissions_url = origin + "/api/v1/chat/file-access-mode"
@@ -1274,6 +1513,146 @@ async def main() -> None:
                     ) as response:
                         assert response.status == 200
                     before_context = await session_context()
+                    if args.management:
+                        permission_endpoint = origin + "/api/v1/chat/file-access-mode"
+                        async with client.get(
+                            permission_endpoint, headers=headers, params={"umo": umo}
+                        ) as response:
+                            management_permissions = (await response.json())["data"]
+                        project_expected = project_file.read_bytes()
+                        await jump_host(project_file)
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("PROJECT FILE CONTENT", exact=True)
+                            .wait_for()
+                        )
+                        await page.get_by_role(
+                            "button", name="重命名", exact=True
+                        ).click()
+                        project_renamed = project_file.with_name(
+                            "F05-recoverable-" + secrets.token_hex(8) + ".txt"
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .locator("input")
+                            .fill(project_renamed.name)
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="重命名", exact=True)
+                            .click()
+                        )
+                        await page.get_by_role("dialog").wait_for(state="hidden")
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("PROJECT FILE CONTENT", exact=True)
+                            .wait_for()
+                        )
+                        await (
+                            page.locator(".file-browser-preview .d-flex")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await page.get_by_role("dialog").wait_for(state="hidden")
+                        await restore_marked_file(
+                            project_renamed,
+                            project_expected,
+                            evidence / "project-trash-restoration.json",
+                        )
+                        project_renamed.rename(project_file)
+                        assert await session_context() == before_context
+                        checks.append(
+                            "F05 real project-file rename/trash/system restore in readonly Agent mode preserves project/worktree/permission context"
+                        )
+                        doc = project_file.with_name(
+                            "F05-recoverable-" + secrets.token_hex(8) + ".md"
+                        )
+                        doc.write_bytes(b"F05 DOCS DELETE RESTORE\n")
+                        async with client.delete(
+                            origin + "/api/v1/plugins/extensions/spcode/docs",
+                            headers=headers,
+                            json={
+                                "path": doc.name,
+                                "umo": umo,
+                                "worktree": str(project_file.parent),
+                            },
+                        ) as response:
+                            doc_result = await response.json()
+                        # Exercise the actual handler through its registered extension route.
+                        assert doc_result["data"].get("deleted"), doc_result
+                        await restore_marked_file(
+                            doc,
+                            b"F05 DOCS DELETE RESTORE\n",
+                            evidence / "docs-trash-restoration.json",
+                        )
+                        checks.append(
+                            "F05 actual legacy docs DELETE retains project validation and uses recoverable system trash"
+                        )
+                        await page.get_by_role(
+                            "tab", name="文档管理", exact=True
+                        ).click()
+                        await page.locator(".breadcrumb-leaf").click()
+                        await page.locator(".breadcrumb-path-input").fill(doc.name)
+                        await page.locator(".breadcrumb-path-input").press("Enter")
+                        await page.wait_for_timeout(1500)
+                        await page.screenshot(
+                            path=str(evidence / "docs-before-edit.png")
+                        )
+                        (evidence / "docs-before-edit.html").write_text(
+                            await page.content(), encoding="utf-8"
+                        )
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".document-editor .cm-content").fill(
+                            "F05 DOCS SAVED BEFORE TRASH"
+                        )
+                        await (
+                            page.locator(".document-editor")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="保存并打开", exact=True)
+                            .click()
+                        )
+                        assert await page.locator(
+                            ".document-editor .cm-content"
+                        ).evaluate("element => !!element.closest('[inert]')")
+                        await (
+                            page.locator(".document-editor__confirm")
+                            .get_by_role("button", name="移入回收站", exact=True)
+                            .click()
+                        )
+                        await page.locator(".document-editor").wait_for(state="hidden")
+                        assert not doc.exists()
+                        await restore_marked_file(
+                            doc,
+                            b"F05 DOCS SAVED BEFORE TRASH",
+                            evidence / "docs-ui-trash-restoration.json",
+                        )
+                        doc.rename(evidence / doc.name)
+                        checks.append(
+                            "F05 real Docs sidebar dirty save-before-trash, frozen absolute confirmation and system restoration"
+                        )
+                        async with client.get(
+                            permission_endpoint, headers=headers, params={"umo": umo}
+                        ) as response:
+                            assert (await response.json())[
+                                "data"
+                            ] == management_permissions
+                        checks.append(
+                            "F05 real backend Agent permission settings unchanged across manual project and Docs management"
+                        )
+                        await page.get_by_role("tab", name="工作区", exact=True).click()
+                        await click("F01 whole")
+
                     if args.editing:
                         await jump_host(cross_file)
                         await page.get_by_role(
@@ -1373,6 +1752,22 @@ async def main() -> None:
                         .wait_for()
                     )
                     await page.screenshot(path=str(evidence / "host-browsing-en.png"))
+                    if args.management:
+                        await page.get_by_role(
+                            "button", name="Move to recycle bin", exact=True
+                        ).click()
+                        await page.get_by_role("dialog").wait_for()
+                        await page.wait_for_timeout(500)
+                        await page.screenshot(
+                            path=str(evidence / "trash-confirm-en.png")
+                        )
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="Cancel", exact=True)
+                            .click()
+                        )
+                        await page.get_by_role("dialog").wait_for(state="hidden")
+
                     await click("F01 whole")
                     await (
                         page.locator(".code-content")
@@ -2070,6 +2465,7 @@ async def main() -> None:
                             )[0]
                             if route_name not in {
                                 "file-rename",
+                                "host-file-manage",
                                 "file-remove",
                                 "code-check",
                                 "code-format",
@@ -2132,7 +2528,7 @@ async def main() -> None:
                         )
                         delete_available = (
                             await page.locator(".preview-editor-toolbar")
-                            .get_by_role("button", name="删除", exact=True)
+                            .get_by_role("button", name="移入回收站", exact=True)
                             .count()
                             > 0
                         )
@@ -2158,25 +2554,46 @@ async def main() -> None:
                         ).click()
                         await page.locator(".cm-content").fill("SOURCE_A = 'A draft'\n")
                         if rename_available:
-                            page.once("dialog", lambda dialog: dialog.accept())
                             await (
                                 page.locator(".preview-editor-toolbar")
                                 .get_by_role("button", name="重命名", exact=True)
                                 .click()
                             )
+                            await (
+                                page.get_by_role("dialog")
+                                .get_by_role("button", name="保存并打开", exact=True)
+                                .click()
+                            )
                             dialog = page.get_by_role("dialog")
+                            await dialog.get_by_text(
+                                str(context_a / "same.py"), exact=True
+                            ).wait_for()
                             await dialog.locator("input").fill(
                                 "renamed-in-wrong-project.py"
                             )
                             async with page.expect_response(
-                                "**/plugins/extensions/spcode/file-rename"
+                                "**/plugins/extensions/spcode/host-file-manage"
                             ) as renamed:
                                 await dialog.get_by_role(
                                     "button", name="重命名", exact=True
                                 ).click()
-                            assert (await (await renamed.value).json())["data"][
-                                "renamed"
-                            ]
+                            rename_result = (await (await renamed.value).json())["data"]
+                            assert rename_result["renamed"]
+                            assert Path(rename_result["path"]) == context_a / "same.py"
+                            assert (context_a / "renamed-in-wrong-project.py").exists()
+                            assert not (
+                                context_b / "renamed-in-wrong-project.py"
+                            ).exists()
+                            await (
+                                page.locator(".code-content")
+                                .get_by_text("SOURCE_A = 'A draft'", exact=True)
+                                .wait_for()
+                            )
+                            await click("F01 whole")
+                            (context_a / "renamed-in-wrong-project.py").rename(
+                                context_a / "same.py"
+                            )
+                            context_results["detached_management_bound_to_A"] = True
                         else:
                             async with page.expect_response(
                                 "**/plugins/extensions/spcode/host-file-write"
@@ -2187,9 +2604,9 @@ async def main() -> None:
                                     .click()
                                 )
                             assert (await (await saved.value).json())["data"]["saved"]
-                        context_results["detached_rename_delete_unavailable"] = (
-                            not rename_available and not delete_available
-                        )
+                            context_results[
+                                "detached_rename_delete_unavailable"
+                            ] = not delete_available
                         context_results["only_A_manually_saved"] = (
                             (context_a / "same.py").read_bytes()
                             == original_a.replace(b"'A'", b"'A draft'")
@@ -2211,6 +2628,10 @@ async def main() -> None:
                                 item["route"]
                                 in {"git-log", "git-file", "git-file-diff", "git-show"}
                                 and item["path"] == "same.py"
+                            )
+                            or (
+                                item["route"] == "host-file-manage"
+                                and Path(item["path"]).parent != context_a
                             )
                             for item in action_requests
                         )

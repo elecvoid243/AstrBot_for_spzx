@@ -547,6 +547,7 @@ const conflictRevision = ref<string | null>(null);
 let editGeneration = 0;
 
 function onStartEdit(): void {
+  if (managing.value) return;
   editGeneration += 1;
   editRevision.value =
     props.state.kind === "file"
@@ -701,105 +702,131 @@ function onCopyEdit(): void {
   void copyToClipboard(editorRef.value?.getValue() ?? "");
 }
 
-// ── 2026-07-18 rename / delete (editor toolbar parity) ──────────
-// Same-dir rename + hard delete backed by POST /spcode/file-rename
-// and POST /spcode/file-remove (the docs endpoints are .md-only).
-// Both actions operate on the on-disk file, so a dirty edit buffer
-// would be lost — guard with the same confirm semantics as cancel.
-const fileRename = useSpcodeFileRename(computed(() => props.worktree ?? null));
-const fileRemove = useSpcodeFileRemove(computed(() => props.worktree ?? null));
+// Manual management always binds the actual disk path, independent of project state.
+const fileRename = useSpcodeFileRename();
+const fileRemove = useSpcodeFileRemove();
 const renameOpen = ref(false);
 const renameName = ref("");
 const renameError = ref<string | null>(null);
 const deleteOpen = ref(false);
 const deleteError = ref<string | null>(null);
+const actionTarget = ref<{ path: string; requestId?: number } | null>(null);
+const managing = computed(
+  () => fileRename.isRenaming.value || fileRemove.isRemoving.value,
+);
 const projectActionsAvailable = computed(
   () => !props.hostReference && props.projectActionsAvailable !== false,
 );
-watch(projectActionsAvailable, (available) => {
-  if (available) return;
-  renameOpen.value = false;
-  deleteOpen.value = false;
+const canManage = computed(
+  () => props.state.kind === "file" && !props.selectedRevision,
+);
+const currentFileName = computed(() => {
+  const path = actionTarget.value?.path ?? currentFilePath() ?? "";
+  return path.split(/[/\\]/).pop() ?? path;
 });
 
-const currentFileName = computed<string>(() => {
-  const p = props.fileRelativePath ?? "";
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  return idx >= 0 ? p.slice(idx + 1) : p;
-});
-
-/** Dirty guard for destructive actions: returns true when the action
- *  may proceed (clean buffer, or the user confirmed losing edits). */
-function confirmDiscardForAction(): boolean {
-  if (!isEditDirty.value) return true;
-  return window.confirm(
-    tm("spcodeProjectLoad.fileBrowser.editor.unsavedActionConfirm"),
-  );
-}
-
-function onRenameClick(): void {
-  if (!projectActionsAvailable.value) return;
-  if (!confirmDiscardForAction()) return;
+async function onRenameClick(): Promise<void> {
+  if (
+    !canManage.value ||
+    managing.value ||
+    renameOpen.value ||
+    deleteOpen.value
+  )
+    return;
+  const path = currentFilePath();
+  if (!path) return;
+  const requestId = props.hostReference?.requestId;
+  if (
+    !(await confirmLeaveEditing()) ||
+    currentFilePath() !== path ||
+    props.hostReference?.requestId !== requestId
+  )
+    return;
+  actionTarget.value = { path, requestId };
   renameName.value = currentFileName.value;
   renameError.value = null;
   renameOpen.value = true;
 }
 
 async function onConfirmRename(): Promise<void> {
-  if (!projectActionsAvailable.value) return;
+  const target = actionTarget.value;
+  if (!target || !renameOpen.value || managing.value) return;
   const newName = renameName.value.trim();
   if (!newName || newName === currentFileName.value) return;
-  if (/[/\\\n\x00]/.test(newName)) {
+  const generation = editGeneration;
+  const r = await fileRename.rename({ path: target.path, newName, host: true });
+  if (
+    target !== actionTarget.value ||
+    generation !== editGeneration ||
+    currentFilePath() !== target.path ||
+    props.hostReference?.requestId !== target.requestId
+  )
+    return;
+  if (!r.ok || !r.newPath) {
     renameError.value = tm(
       "spcodeProjectLoad.fileBrowser.editor.renameFailed",
-      { reason: "path_unsafe" },
+      {
+        reason: localizedReason(r.ok ? "unknown" : r.reason),
+      },
     );
     return;
   }
-  const r = await fileRename.rename({
-    path: props.fileRelativePath ?? "",
-    newName,
-  });
-  if (!r.ok) {
-    renameError.value = tm(
-      "spcodeProjectLoad.fileBrowser.editor.renameFailed",
-      { reason: r.reason },
-    );
-    return;
-  }
-  // Compute the new repo-relative path (same dir, new basename) so the
-  // parent can switch the preview over without a second lookup.
-  const p = props.fileRelativePath ?? "";
-  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  const newRel = idx >= 0 ? `${p.slice(0, idx + 1)}${newName}` : newName;
   renameOpen.value = false;
-  editMode.value = false;
-  isEditDirty.value = false;
-  emit("renamed", newRel);
+  emit("renamed", r.newPath);
 }
 
-function onDeleteClick(): void {
-  if (!projectActionsAvailable.value) return;
-  if (!confirmDiscardForAction()) return;
+async function onDeleteClick(): Promise<void> {
+  if (
+    !canManage.value ||
+    managing.value ||
+    renameOpen.value ||
+    deleteOpen.value
+  )
+    return;
+  const path = currentFilePath();
+  if (!path) return;
+  const requestId = props.hostReference?.requestId;
+  if (
+    !(await confirmLeaveEditing()) ||
+    currentFilePath() !== path ||
+    props.hostReference?.requestId !== requestId
+  )
+    return;
+  actionTarget.value = { path, requestId };
   deleteError.value = null;
   deleteOpen.value = true;
 }
 
 async function onConfirmDelete(): Promise<void> {
-  if (!projectActionsAvailable.value) return;
-  const r = await fileRemove.remove({ path: props.fileRelativePath ?? "" });
+  const target = actionTarget.value;
+  if (!target || !deleteOpen.value || managing.value) return;
+  const generation = editGeneration;
+  const r = await fileRemove.remove({ path: target.path, host: true });
+  if (
+    target !== actionTarget.value ||
+    generation !== editGeneration ||
+    currentFilePath() !== target.path ||
+    props.hostReference?.requestId !== target.requestId
+  )
+    return;
   if (!r.ok) {
     deleteError.value = tm(
       "spcodeProjectLoad.fileBrowser.editor.deleteFailed",
-      { reason: r.reason },
+      {
+        reason: localizedReason(r.reason),
+      },
     );
     return;
   }
   deleteOpen.value = false;
-  editMode.value = false;
-  isEditDirty.value = false;
   emit("deleted");
 }
+watch([currentFilePath, () => props.hostReference?.requestId], () => {
+  actionTarget.value = null;
+  renameOpen.value = false;
+  deleteOpen.value = false;
+  editGeneration += 1;
+});
 
 /** Dirty guard consulted by the parent (FileBrowserView) before any
  *  navigation that would swap the previewed file. Returns true when
@@ -809,7 +836,7 @@ const leaveDialogOpen = ref(false);
 let leaveResolver: ((allowed: boolean) => void) | null = null;
 
 async function confirmLeaveEditing(): Promise<boolean> {
-  if (fileWrite.isSaving.value || leaveResolver) return false;
+  if (managing.value || fileWrite.isSaving.value || leaveResolver) return false;
   if (!editMode.value) return true;
   if (!isEditDirty.value) {
     editMode.value = false;
@@ -891,6 +918,10 @@ const REASON_I18N_KEYS: Record<string, string> = {
   not_a_file: "spcodeProjectLoad.fileBrowser.reference.notAFile",
   path_not_found: "spcodeProjectLoad.fileBrowser.error.pathNotFound",
   permission_denied: "spcodeProjectLoad.fileBrowser.error.permissionDenied",
+  file_exists: "spcodeProjectLoad.fileBrowser.editor.errors.file_exists",
+  operation_failed:
+    "spcodeProjectLoad.fileBrowser.editor.errors.operation_failed",
+  trash_failed: "spcodeProjectLoad.fileBrowser.editor.errors.operation_failed",
   special_file: "spcodeProjectLoad.fileBrowser.error.specialFile",
 };
 
@@ -1389,7 +1420,7 @@ onBeforeUnmount(() => {
             the document-manager UX and is consistent with the
             user-feedback request to align the two tabs.
           -->
-          <div
+      <div
             v-if="props.rangeActive || props.rangeDiff || props.selectedRevision"
             class="preview-file__banner"
           >
@@ -1436,10 +1467,10 @@ onBeforeUnmount(() => {
           </div>
           <!-- 元信息头 -->
           <div class="preview-file-meta">
-            <span class="preview-file-path" :title="state.snapshot.meta.path">{{
-              state.snapshot.meta.name
-            }}</span>
-            <!-- 2026-07-03 ANSI/GBK 支持:当文件编码不是 utf-8 时,
+        <span class="preview-file-path" :title="state.snapshot.meta.path">{{
+          state.snapshot.meta.name
+        }}</span>
+        <!-- 2026-07-03 ANSI/GBK 支持:当文件编码不是 utf-8 时,
              在元信息头显示一个 subtle 灰色 chip 提示用户。utf-8
              不显示(主流情况,避免视觉噪声);cp936/gbk/gb18030/
              latin-1/utf-8-sig 等显示完整编码名。 -->
@@ -1559,6 +1590,23 @@ onBeforeUnmount(() => {
             </v-btn>
           </div>
 
+      <div v-if="canManage && !editMode" class="d-flex ga-2 pa-2">
+        <v-btn
+          size="small"
+          variant="text"
+          :disabled="managing"
+          @click="onRenameClick"
+          >{{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}</v-btn
+        >
+        <v-btn
+          size="small"
+          variant="text"
+          color="error"
+          :disabled="managing"
+          @click="onDeleteClick"
+          >{{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}</v-btn
+        >
+      </div>
       <div v-if="hostReference" class="pa-2 text-caption" role="status">
         {{ hostReference.path }} ·
         {{ tm("spcodeProjectLoad.fileBrowser.reference.readOnly") }}
@@ -1646,7 +1694,7 @@ onBeforeUnmount(() => {
             type="button"
             class="editor-bar__btn"
             :disabled="fileWrite.isSaving.value"
-            v-if="projectActionsAvailable"
+            v-if="canManage"
             @click="onRenameClick"
           >
             <v-icon size="14">mdi-rename-outline</v-icon>
@@ -1685,7 +1733,7 @@ onBeforeUnmount(() => {
             type="button"
             class="editor-bar__btn editor-bar__btn--danger"
             :disabled="fileWrite.isSaving.value"
-            v-if="projectActionsAvailable"
+            v-if="canManage"
             @click="onDeleteClick"
           >
             <v-icon size="14">mdi-delete-outline</v-icon>
@@ -1694,21 +1742,24 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-          <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
-          <div
-            v-else-if="props.rangePending"
-            class="preview-file__range-pending"
-            :class="{ 'preview-file__range-pending--error': props.rangePending.kind === 'error' }"
-          >
-            <span v-if="props.rangePending.kind === 'error'">
-              {{
-                tm("spcodeProjectLoad.documentManager.history.rangeError", {
-                  reason: props.rangePending.reason,
-                })
-              }}
-            </span>
-          </div>
-          <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
+      <!-- I3:比较在飞 / 失败的占位(不得静默回落到当前文件) -->
+      <div
+        v-else-if="props.rangePending"
+        class="preview-file__range-pending"
+        :class="{
+          'preview-file__range-pending--error':
+            props.rangePending.kind === 'error',
+        }"
+      >
+        <span v-if="props.rangePending.kind === 'error'">
+          {{
+            tm("spcodeProjectLoad.documentManager.history.rangeError", {
+              reason: props.rangePending.reason,
+            })
+          }}
+        </span>
+      </div>
+      <!-- 2026-10-06 range-compare:优先于历史 diff 分支,
                compareRange 激活时 selectedRevision 必为 null -->
           <div
             v-else-if="props.rangeDiff"
@@ -1900,25 +1951,25 @@ onBeforeUnmount(() => {
           <!-- 2026-07-17 selection-comment: copy-only menu for the
                rendered-markdown containers above (fixed position,
                one shared instance is enough). -->
-          <SelectionActionMenu
-            v-if="renderedMenu"
-            :x="renderedMenu.x"
-            :y="renderedMenu.y"
-            :show-comment="false"
-            @copy="onRenderedCopy"
-            @close="renderedMenu = null"
-          />
-        </div>
-    <!-- 2026-07-18 editor toolbar parity: rename / delete dialogs.
-         Rename is same-dir only (bare file name); delete is a hard
-         unlink, so the confirm copy carries the cannot-undo warning. -->
-    <v-dialog v-model="renameOpen" max-width="420">
+      <SelectionActionMenu
+        v-if="renderedMenu"
+        :x="renderedMenu.x"
+        :y="renderedMenu.y"
+        :show-comment="false"
+        @copy="onRenderedCopy"
+        @close="renderedMenu = null"
+      />
+    </div>
+    <!-- Confirm the frozen absolute target before a manual filesystem action. -->
+    <v-dialog v-model="renameOpen" persistent max-width="520">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">
           {{ tm("spcodeProjectLoad.fileBrowser.editor.renameDialogTitle") }}
         </v-card-title>
         <v-card-text class="pt-4">
+          <div class="text-break mb-3">{{ actionTarget?.path }}</div>
           <v-text-field
+            :disabled="managing"
             v-model="renameName"
             :label="tm('spcodeProjectLoad.fileBrowser.editor.newNameLabel')"
             density="comfortable"
@@ -1929,7 +1980,11 @@ onBeforeUnmount(() => {
         </v-card-text>
         <v-card-actions class="pa-4 pt-0">
           <v-spacer />
-          <v-btn variant="text" @click="renameOpen = false">
+          <v-btn
+            :disabled="managing"
+            variant="text"
+            @click="renameOpen = false"
+          >
             {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
           </v-btn>
           <v-btn
@@ -1943,7 +1998,7 @@ onBeforeUnmount(() => {
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <v-dialog v-model="deleteOpen" max-width="420">
+    <v-dialog v-model="deleteOpen" persistent max-width="520">
       <v-card>
         <v-card-title class="text-h3 pa-4 pb-0 pl-6">
           {{ tm("spcodeProjectLoad.fileBrowser.editor.deleteDialogTitle") }}
@@ -1951,7 +2006,7 @@ onBeforeUnmount(() => {
         <v-card-text class="pt-4">
           {{
             tm("spcodeProjectLoad.fileBrowser.editor.deleteConfirmMessage", {
-              name: currentFileName,
+              name: actionTarget?.path ?? "",
             })
           }}
         </v-card-text>
@@ -1960,7 +2015,11 @@ onBeforeUnmount(() => {
             deleteError
           }}</span>
           <v-spacer />
-          <v-btn variant="text" @click="deleteOpen = false">
+          <v-btn
+            :disabled="managing"
+            variant="text"
+            @click="deleteOpen = false"
+          >
             {{ tm("spcodeProjectLoad.fileBrowser.editor.cancel") }}
           </v-btn>
           <v-btn

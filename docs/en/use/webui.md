@@ -107,6 +107,16 @@ Background worktree changes, project unloads and project switches keep the displ
 
 This is optimistic concurrency control: the service rechecks the disk revision after staging and before replacement, but cannot lock arbitrary external editors out of the final check-to-replace interval. Missing files, permission, encoding and write errors preserve the draft and show a failure. The old project-relative write API retains its original scope.
 
+### Rename files and use the recycle bin
+
+Choose **Rename** in the file preview or editor toolbar to change a file's name within its current directory, including files outside a project. Confirmation shows the fixed full target path. Name collisions, permission errors and missing targets are reported. The sidebar follows a successful rename; old chat citations keep their original paths.
+
+The former **Delete** action in file and document toolbars is now **Move to recycle bin**. Choose **Move to recycle bin** and confirm to use the operating system's trash, where you can restore the file. Project files, external files and the Docs sidebar use this behavior. If trash is unavailable or refuses the operation, the file is preserved; there is no permanent deletion fallback.
+
+For unsaved changes, first choose **Save and open**, **Discard and open** or **Cancel**. Cancellation, failed saves and conflicts stop the management action. The target stays fixed during the request. Manual management uses WebUI authentication and host account permissions without changing the Agent's project or permissions.
+
+![ Confirm the actual file before moving it to the system recycle bin ](./images/file-trash-confirm.png)
+
 ### Browse host folders and drives
 
 Without a project, open **Files & Browser** above the composer, choose **Files**, then select a host folder. **Browse host folders or drives** in the file pane reopens the existing folder picker: use **This PC** to select another Windows drive, or enter an absolute folder path. Selecting a location only changes the file pane; it does not load a project.

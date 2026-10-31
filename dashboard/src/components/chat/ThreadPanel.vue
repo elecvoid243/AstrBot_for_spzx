@@ -120,7 +120,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import {
@@ -175,14 +175,28 @@ const emit = defineEmits<{
 }>();
 
 const { tm } = useModuleI18n("features/chat");
-const messages = ref<ChatRecord[]>([]);
+// Keep stream records attached to their thread while its panel is hidden.
+const threadStates = reactive(
+  new Map<
+    string,
+    {
+      messages: ChatRecord[];
+      sending: boolean;
+      abort: AbortController | null;
+      generation: number;
+    }
+  >(),
+);
+const currentThreadState = computed(() =>
+  props.thread ? threadStates.get(props.thread.thread_id) : undefined,
+);
+const messages = computed(() => currentThreadState.value?.messages ?? []);
 const draft = ref("");
-const sending = ref(false);
+const sending = computed(() => currentThreadState.value?.sending ?? false);
 const messagesEl = ref<HTMLElement | null>(null);
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const enableStreaming = ref(true);
-let streamAbort: AbortController | null = null;
 
 const toast = useToast();
 const {
@@ -203,8 +217,11 @@ const {
   removeFile,
   clearStaged,
 } = useMediaHandling();
-const { isRecording, startRecording: startRecorder, stopRecording: stopRecorder } =
-  useRecording();
+const {
+  isRecording,
+  startRecording: startRecorder,
+  stopRecording: stopRecorder,
+} = useRecording();
 
 const panelTitle = computed(() =>
   props.sideChat
@@ -266,8 +283,6 @@ watch(
   (threadId) => {
     if (threadId) {
       loadThread(threadId);
-    } else {
-      messages.value = [];
     }
   },
   { immediate: true },
@@ -278,14 +293,27 @@ function close() {
 }
 
 async function loadThread(threadId: string) {
+  if (!threadStates.has(threadId)) {
+    threadStates.set(threadId, {
+      messages: [],
+      sending: false,
+      abort: null,
+      generation: 0,
+    });
+  }
+  const state = threadStates.get(threadId)!;
+  // Persisted history excludes an in-progress assistant reply. Keep its live
+  // reactive records so subsequent SSE events still update the visible list.
+  if (state.sending) return;
+  const generation = ++state.generation;
   try {
     const response = await chatApi.getThread(threadId);
+    if (generation !== state.generation || state.sending) return;
     const history = response.data?.data?.history || [];
-    messages.value = history.map(normalizeRecord);
-    scrollToBottom();
+    state.messages = history.map(normalizeRecord);
+    if (props.thread?.thread_id === threadId) scrollToBottom();
   } catch (error) {
     console.error("Failed to load thread:", error);
-    messages.value = [];
   }
 }
 
@@ -322,6 +350,11 @@ async function sendThreadParts(
   } = {},
 ) {
   if (!props.thread || sending.value || !parts.length) return;
+  const threadId = props.thread.thread_id;
+  const state = threadStates.get(threadId);
+  if (!state) return;
+  // Invalidate a history request that started before this local turn.
+  state.generation += 1;
   const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   const userRecord: ChatRecord = {
     id: `local-thread-user-${messageId}`,
@@ -341,17 +374,17 @@ async function sendThreadParts(
       isLoading: true,
     },
   };
-  messages.value.push(userRecord, botRecord);
-  const threadUserRecord = messages.value[messages.value.length - 2];
-  const threadBotRecord = messages.value[messages.value.length - 1];
+  state.messages.push(userRecord, botRecord);
+  const threadUserRecord = state.messages[state.messages.length - 2];
+  const threadBotRecord = state.messages[state.messages.length - 1];
   scrollToBottom();
 
   const abort = new AbortController();
-  streamAbort = abort;
-  sending.value = true;
+  state.abort = abort;
+  state.sending = true;
   try {
     const response = await fetchWithAuth(
-      chatApi.sendThreadMessageUrl(props.thread.thread_id),
+      chatApi.sendThreadMessageUrl(threadId),
       {
         method: "POST",
         headers: {
@@ -372,7 +405,7 @@ async function sendThreadParts(
     }
     await readSseStream(response.body, (payload) => {
       processPayload(threadBotRecord, threadUserRecord, payload);
-      scrollToBottom();
+      if (props.thread?.thread_id === threadId) scrollToBottom();
     });
   } catch (error) {
     if (abort.signal.aborted) return;
@@ -382,8 +415,10 @@ async function sendThreadParts(
     );
     console.error("Failed to send thread message:", error);
   } finally {
-    sending.value = false;
-    if (streamAbort === abort) streamAbort = null;
+    if (state.abort === abort) {
+      state.sending = false;
+      state.abort = null;
+    }
   }
 }
 
@@ -425,13 +460,16 @@ async function sendCommand(command: string) {
 
 async function stopThread() {
   if (!props.thread) return;
-  streamAbort?.abort();
+  const threadId = props.thread.thread_id;
+  const state = threadStates.get(threadId);
+  const abort = state?.abort;
+  abort?.abort();
   try {
-    await chatApi.stopThread(props.thread.thread_id);
+    await chatApi.stopThread(threadId);
   } catch (error) {
     console.error("Failed to stop thread:", error);
   } finally {
-    sending.value = false;
+    if (state && state.abort === abort) state.sending = false;
   }
 }
 
@@ -476,7 +514,10 @@ function normalizeRecord(record: any): ChatRecord {
     content: {
       type: content.type || (record.sender_id === "bot" ? "bot" : "user"),
       message: normalizedMessage,
-      reasoning: extractReasoningText(normalizedMessage, content.reasoning || ""),
+      reasoning: extractReasoningText(
+        normalizedMessage,
+        content.reasoning || "",
+      ),
       agentStats: content.agentStats || content.agent_stats,
       llmRequestInjections:
         content.llmRequestInjections || content.llm_request_injections,
@@ -514,7 +555,11 @@ async function readSseStream(
   }
 }
 
-function processPayload(botRecord: ChatRecord, userRecord: ChatRecord, payload: any) {
+function processPayload(
+  botRecord: ChatRecord,
+  userRecord: ChatRecord,
+  payload: any,
+) {
   const normalized =
     payload?.ct === "chat"
       ? { ...payload, type: payload.type || payload.t }
@@ -611,7 +656,9 @@ function processPayload(botRecord: ChatRecord, userRecord: ChatRecord, payload: 
     const storedFilename =
       separatorIndex >= 0 ? rawFilename.slice(0, separatorIndex) : rawFilename;
     const displayFilename =
-      separatorIndex >= 0 ? rawFilename.slice(separatorIndex + 1) : storedFilename;
+      separatorIndex >= 0
+        ? rawFilename.slice(separatorIndex + 1)
+        : storedFilename;
     const filename = displayFilename || storedFilename;
     const mediaPart: MessagePart = { type, filename };
     if (storedFilename && storedFilename !== filename) {
@@ -634,7 +681,8 @@ function scrollToBottom() {
 .thread-panel {
   height: calc(100% - var(--chat-panel-top-offset, 0px));
   margin-top: var(--chat-panel-top-offset, 0px);
-  border-left: 1px solid var(--chat-border, rgba(var(--v-theme-on-surface), 0.1));
+  border-left: 1px solid
+    var(--chat-border, rgba(var(--v-theme-on-surface), 0.1));
   background: var(--chat-page-bg, rgb(var(--v-theme-surface)));
   color: rgb(var(--v-theme-on-surface));
   display: flex;
@@ -865,7 +913,8 @@ function scrollToBottom() {
   .thread-panel-header {
     min-height: 52px;
     padding: calc(10px + env(safe-area-inset-top)) 12px 8px;
-    border-bottom: 1px solid var(--chat-border, rgba(var(--v-border-color), 0.12));
+    border-bottom: 1px solid
+      var(--chat-border, rgba(var(--v-border-color), 0.12));
   }
 
   .thread-selected-text {
@@ -904,5 +953,4 @@ function scrollToBottom() {
     font-size: 16px;
   }
 }
-
 </style>

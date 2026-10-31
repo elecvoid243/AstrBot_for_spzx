@@ -183,6 +183,9 @@ async def main() -> None:
     stream_gate = asyncio.Event()
     side_stream_gate = asyncio.Event()
     side_stream_release = asyncio.Event()
+    side_continue_release = asyncio.Event()
+    side_finish_release = asyncio.Event()
+    side_extra_sent = asyncio.Event()
     side_links = (
         f"[F06 side range]({href}#L55-L58)\n\n"
         f"[F06 side other]({quote(other.as_posix(), safe='/:')})\n\n"
@@ -212,6 +215,8 @@ async def main() -> None:
         actual_reply = body.get("stream") or body.get("tools")
         is_side = "F06_SIDE_REQUEST" in latest_user and actual_reply
         content = (side_links if is_side else links) if actual_reply else "F01 title"
+        if actual_reply and "F06_B_REQUEST" in latest_user:
+            content = "F06_B_ONLY"
         if actual_reply:
             assert "host-absolute path" in prompt and "#L12-L18" in prompt
         payload = {
@@ -250,6 +255,13 @@ async def main() -> None:
                 elif not stream_gate.is_set():
                     stream_gate.set()
                     await asyncio.sleep(1)
+            if is_side:
+                # Full references are visible while the actual Agent is still running.
+                await asyncio.wait_for(side_continue_release.wait(), 60)
+                chunk["choices"][0]["delta"] = {"content": "\n\nF06_SIDE_CONTINUED"}
+                await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                side_extra_sent.set()
+                await asyncio.wait_for(side_finish_release.wait(), 60)
             await response.write(b"data: [DONE]\n\n")
             await response.write_eof()
             return response
@@ -2100,6 +2112,51 @@ async def main() -> None:
                             "F06 actual streamed side citation hides the side chat and opens one existing file pane at source lines 55-58"
                         )
                         await reopen_side()
+                        assert await panel.locator(".file-reference-link").count() == 4
+                        assert "F06_SIDE_CONTINUED" not in await panel.inner_text()
+                        checks.append(
+                            "F06 ongoing Agent reply retains complete references when immediately reopened before further text or protocol completion"
+                        )
+                        await page.locator(".side-chat-fab").click()
+                        await page.locator(".side-chat-menu-new").click()
+                        await panel.locator(".chat-text-input, .chat-textarea").fill(
+                            "F06_B_REQUEST"
+                        )
+                        await panel.locator(".send-btn").click()
+                        await panel.get_by_text("F06_B_ONLY", exact=False).wait_for()
+                        side_continue_release.set()
+                        await asyncio.wait_for(side_extra_sent.wait(), 30)
+                        await page.wait_for_timeout(300)
+                        assert "F06_SIDE_CONTINUED" not in await panel.inner_text()
+                        assert "F06_SIDE_DONE" not in await panel.inner_text()
+                        checks.append(
+                            "F06 a hidden A stream cannot append its late text to the active B side chat"
+                        )
+                        await reopen_side()
+                        await panel.get_by_text(
+                            "F06_SIDE_CONTINUED", exact=False
+                        ).wait_for()
+                        assert (await panel.inner_text()).count(
+                            "F06_SIDE_CONTINUED"
+                        ) == 1
+                        assert "F06_B_ONLY" not in await panel.inner_text()
+                        side_finish_release.set()
+                        for _ in range(100):
+                            async with client.get(
+                                origin + f"/api/v1/chat/threads/{side_id}",
+                                headers=headers,
+                            ) as response:
+                                persisted = (await response.json())["data"]["history"]
+                            if "F06_SIDE_CONTINUED" in json.dumps(persisted):
+                                break
+                            await asyncio.sleep(0.1)
+                        assert "F06_SIDE_CONTINUED" in json.dumps(persisted)
+                        assert (await panel.inner_text()).count(
+                            "F06_SIDE_CONTINUED"
+                        ) == 1
+                        checks.append(
+                            "F06 reopening A shows its subsequent text and completion exactly once, with real backend persistence and no B content"
+                        )
                         await panel.get_by_role(
                             "link", name="F06 side other", exact=True
                         ).click()

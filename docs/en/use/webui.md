@@ -69,6 +69,11 @@ line ranges display an explicit state; an invalid range is not highlighted.
 Markdown references with a line target show source text so line numbers remain
 meaningful. The existing project Files, Git, Documents, Terminal and Browser
 entries remain in the same workbench.
+With a project loaded, click **Files** to leave a reference and return to the
+project file list. From **Git Diff**, use a file's **Open → Open in file browser**
+menu to open that project file instead of the previous reference. These explicit
+actions preserve the existing check for unsaved edits; background project or
+worktree refreshes leave the reference in place.
 
 ## Two-Factor Authentication
 

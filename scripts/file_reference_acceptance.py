@@ -379,6 +379,37 @@ async def main() -> None:
                     for project_name in ["project-one", "project-two"]:
                         project = evidence / project_name
                         project.mkdir()
+                        project_file = project / "project.txt"
+                        project_file.write_text(
+                            "ORIGINAL PROJECT CONTENT\n", encoding="utf-8"
+                        )
+                        for command in [
+                            ["git", "init"],
+                            ["git", "add", "project.txt"],
+                            [
+                                "git",
+                                "-c",
+                                "user.name=F01 Acceptance",
+                                "-c",
+                                "user.email=f01@example.invalid",
+                                "commit",
+                                "-m",
+                                "test: seed temporary project",
+                            ],
+                        ]:
+                            await asyncio.to_thread(
+                                subprocess.run,
+                                command,
+                                cwd=project,
+                                check=True,
+                                capture_output=True,
+                                creationflags=getattr(
+                                    subprocess, "CREATE_NO_WINDOW", 0
+                                ),
+                            )
+                        project_file.write_text(
+                            "PROJECT FILE CONTENT\n", encoding="utf-8"
+                        )
                         async with client.post(
                             origin + "/api/v1/plugins/extensions/spcode/project-load",
                             headers=headers,
@@ -403,6 +434,77 @@ async def main() -> None:
                         )
                     checks.append(
                         "history links remain host-absolute across two real project loads"
+                    )
+                    await page.get_by_role("tab", name="工作区", exact=True).click()
+                    await (
+                        page.locator(".file-tree-list .entry-name")
+                        .get_by_text("project.txt", exact=True)
+                        .wait_for()
+                    )
+                    assert not await page.get_by_text(
+                        "CURRENT DISK CONTENT", exact=True
+                    ).count()
+                    await page.screenshot(
+                        path=str(evidence / "reference-to-project-list.png")
+                    )
+                    checks.append(
+                        "citation -> existing Files tab restores the real project file list"
+                    )
+
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text="project.txt")
+                        .click()
+                    )
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("PROJECT FILE CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await page.get_by_role("button", name="编辑", exact=True).click()
+                    await page.locator(".cm-content").fill("UNSAVED PROJECT DRAFT")
+                    page.once("dialog", lambda dialog: dialog.dismiss())
+                    await click("F01 whole")
+                    assert (
+                        await page.locator(".cm-content").inner_text()
+                        == "UNSAVED PROJECT DRAFT"
+                    )
+                    assert (
+                        project_file.read_text(encoding="utf-8")
+                        == "PROJECT FILE CONTENT\n"
+                    )
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    await (
+                        page.locator(".preview-editor-toolbar")
+                        .get_by_role("button", name="取消", exact=True)
+                        .click()
+                    )
+                    checks.append(
+                        "cancelling the existing dirty guard preserves the project editor and draft"
+                    )
+
+                    await click("F01 whole")
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("CURRENT DISK CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await page.get_by_role("tab", name="Git 变更", exact=True).click()
+                    await page.locator(".git-diff-file-open").click()
+                    await page.get_by_text("在文件浏览器中打开", exact=True).click()
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("PROJECT FILE CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    assert not await page.get_by_text(
+                        "CURRENT DISK CONTENT", exact=True
+                    ).count()
+                    await page.screenshot(
+                        path=str(evidence / "reference-to-git-project-file.png")
+                    )
+                    checks.append(
+                        "citation -> Git diff -> actual open-file menu opens the selected project file"
                     )
                     # Simulate unavailable transport only at the browser boundary.
                     await page.route(

@@ -1287,6 +1287,7 @@ const isBulkRestoring = ref(false);
 //   - remove  → drop one entry from the per-worktree bucket
 //   - clear   → already opened via the dialog; this confirms it
 function onRecentSelect(payload: { path: string }): void {
+  if (!showProjectFiles()) return;
   // Same navigation contract as onFileOpen but without a `line` field:
   // RecentFilesBlock emits `{ path }` only; we deliberately don't jump
   // to any anchor.
@@ -2087,6 +2088,15 @@ const fileBrowserRef = ref<{
   refresh: () => Promise<void>;
   confirmLeaveEditing: () => boolean;
 } | null>(null);
+
+/** Enter project files only for an explicit user navigation, preserving dirty edits. */
+function showProjectFiles(): boolean {
+  if (!(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return false;
+  // Without a project, the Files tab still represents the open host reference.
+  if (currentRoot.value) hostFileTarget.value = null;
+  viewMode.value = "files";
+  return true;
+}
 watch(
   () => props.fileReference,
   (target) => {
@@ -3490,9 +3500,8 @@ async function onCreateSubmit(params: WorktreeAddParams): Promise<void> {
   if (result.ok) {
     // spec §7.4: 自动切到新 worktree + 切到 Files 视图
     const newWt = result.snapshot.worktrees.find((w) => w.path === params.path);
-    if (newWt) {
+    if (newWt && showProjectFiles()) {
       selectedWorktree.value = newWt.isMain ? null : newWt.path;
-      viewMode.value = "files";
       fileBrowserCurrentPath.value = newWt.path;
       fileBrowserPreviewPath.value = null;
     }
@@ -3716,7 +3725,7 @@ function onFileBrowserNavigate(payload: {
   dirPath: string;
   previewPath: string | null;
 }): void {
-  hostFileTarget.value = null;
+  if (!showProjectFiles()) return;
   fileBrowserCurrentPath.value = payload.dirPath;
   fileBrowserPreviewPath.value = payload.previewPath;
   // 2026-07-02: clear any pending search-result scroll target.
@@ -3758,7 +3767,6 @@ function onFileBrowserNavigate(payload: {
 //      Propagated down to FileBrowserCodeView, which centers the
 //      target line in the code-view scroll container.
 function onFileOpen(payload: { path: string; line: number }): void {
-  hostFileTarget.value = null;
   let abs = payload.path;
   // Drive-letter (C:\ / C:/), UNC (\\) and POSIX-rooted (/) paths are
   // already absolute; anything else is worktree-relative and must be
@@ -3777,6 +3785,7 @@ function onFileOpen(payload: { path: string; line: number }): void {
     const cleanPath = abs.replace(/^[\\/]+/, "").replace(/\//g, sep);
     abs = cleanPath ? `${cleanRoot}${sep}${cleanPath}` : cleanRoot;
   }
+  if (!showProjectFiles()) return;
   fileBrowserPreviewPath.value = abs;
   // POSIX + Windows separator: strip the trailing filename. Use a
   // single regex that matches either separator so the same code
@@ -3880,7 +3889,7 @@ function onOpenFile(path: string): void {
   const parent = absolute.includes(sep)
     ? absolute.substring(0, absolute.lastIndexOf(sep))
     : cleanRoot;
-  viewMode.value = "files";
+  if (!showProjectFiles()) return;
   fileBrowserCurrentPath.value = parent;
   fileBrowserPreviewPath.value = absolute;
   // Clear any pending search-result scroll target so the file does not
@@ -5030,7 +5039,7 @@ watch(
                 'git-diff-sidebar-view-tab',
                 { 'is-active': viewMode === 'files' },
               ]"
-              @click="viewMode = 'files'"
+              @click="(hostFileTarget || viewMode !== 'files') && showProjectFiles()"
             >
               <v-icon size="14">mdi-folder-outline</v-icon>
               <span>{{

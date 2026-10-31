@@ -17,6 +17,12 @@ vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get: getMock, post: postMock },
 }));
 
+vi.mock("vuetify", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("vuetify")>();
+  const { ref } = await import("vue");
+  return { ...actual, useDisplay: () => ({ width: ref(1600) }) };
+});
+
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
 import GitDiffSidebar from "./GitDiffSidebar.vue";
 
@@ -60,6 +66,13 @@ const STUBS = {
   AgentBrowserView: true,
   TerminalView: true,
 };
+
+const MenuStub = defineComponent({
+  setup(_props, { slots }) {
+    return () =>
+      h("div", [slots.activator?.({ props: {} }), slots.default?.()]);
+  },
+});
 
 async function mountSidebar() {
   const wrapper = mount(GitDiffSidebar, {
@@ -198,20 +211,153 @@ describe("GitDiffSidebar web preview tab", () => {
   });
 
   it("keeps a host reference independent of project and worktree status refreshes", async () => {
-    const target = { path: "G:/outside/source.py", startLine: 2, endLine: 4, requestId: 1 };
+    const target = {
+      path: "G:/outside/source.py",
+      startLine: 2,
+      endLine: 4,
+      requestId: 1,
+    };
     const wrapper = mount(GitDiffSidebar, {
       props: { modelValue: true, fileReference: target },
       global: { stubs: STUBS },
     });
     await flushPromises();
-    expect(wrapper.findComponent({ name: "FileBrowserFilePreview" }).props("hostReference")).toEqual(target);
+    expect(
+      wrapper
+        .findComponent({ name: "FileBrowserFilePreview" })
+        .props("hostReference"),
+    ).toEqual(target);
     const status = useSpcodeProjectStatus();
     status.setUnloaded();
     await flushPromises();
-    status.setLoaded(status.status.value.umo ?? "reference-test", "F:/another-project", 1);
+    status.setLoaded(
+      status.status.value.umo ?? "reference-test",
+      "F:/another-project",
+      1,
+    );
     await flushPromises();
-    expect(wrapper.findComponent({ name: "FileBrowserFilePreview" }).props("hostReference")).toEqual(target);
+    expect(
+      wrapper
+        .findComponent({ name: "FileBrowserFilePreview" })
+        .props("hostReference"),
+    ).toEqual(target);
     expect(wrapper.emitted("update:modelValue")).toBeUndefined();
     wrapper.unmount();
   });
+
+  it.each(["Files tab", "Git diff open file"])(
+    "leaves the citation through the public %s entry",
+    async (entry) => {
+      getMock.mockImplementation(
+        async (path: string, config?: { params?: { path?: string } }) => {
+          if (path === "spcode/git-repo-check") {
+            return okEnvelope({
+              is_git_repo: true,
+              git_available: true,
+              directory: "F:/github/testproj",
+              reason: null,
+            });
+          }
+          if (path === "spcode/git-worktrees")
+            return okEnvelope({ worktrees: [] });
+          if (path === "spcode/git-diff")
+            return okEnvelope({
+              loaded: true,
+              directory: "F:/github/testproj",
+              umo: "session:test",
+              scope: "unstaged",
+              files_changed: [
+                {
+                  path: "project.txt",
+                  status: "M",
+                  additions: 1,
+                  deletions: 1,
+                },
+              ],
+              elapsed_ms: 1,
+              reason: null,
+            });
+          if (path === "spcode/file-browser") {
+            const target = config?.params?.path ?? "";
+            if (target.endsWith(".txt"))
+              return okEnvelope({
+                type: "file",
+                path: target,
+                name: "project.txt",
+                is_binary: false,
+                content: target.startsWith("G:")
+                  ? "EXTERNAL CITATION"
+                  : "PROJECT FILE CONTENT",
+              });
+            return okEnvelope({
+              type: "directory",
+              path: target,
+              entries: [
+                {
+                  path: "F:/github/testproj/project.txt",
+                  name: "project.txt",
+                  type: "file",
+                  is_symlink: false,
+                },
+              ],
+            });
+          }
+          return okEnvelope({});
+        },
+      );
+      const wrapper = mount(GitDiffSidebar, {
+        props: {
+          modelValue: true,
+          fileReference: {
+            path: "G:/outside/reference.txt",
+            startLine: null,
+            endLine: null,
+            requestId: 1,
+          },
+        },
+        global: {
+          stubs: {
+            ...STUBS,
+            FileBrowserFilePreview: false,
+            FileBrowserView: false,
+            GitDiffBodyContent: false,
+            "v-menu": MenuStub,
+            DocumentHistoryPanel: true,
+            CodeCheckFormatBar: true,
+            RecentFilesBlock: true,
+          },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(wrapper.find(".code-content").text()).toContain(
+          "EXTERNAL CITATION",
+        ),
+      );
+      if (entry === "Files tab") {
+        await tabButtons(wrapper)[0].trigger("click");
+        await vi.waitFor(() =>
+          expect(wrapper.find(".file-tree-list").text()).toContain(
+            "project.txt",
+          ),
+        );
+      } else {
+        await tabButtons(wrapper)[2].trigger("click");
+        await flushPromises();
+        await wrapper.get(".git-diff-file-open").trigger("click");
+        const openItem = wrapper
+          .findAll("v-list-item")
+          .find((item) => item.text() === "在文件浏览器中打开");
+        expect(openItem).toBeDefined();
+        await openItem!.trigger("click");
+        await vi.waitFor(() =>
+          expect(wrapper.find(".code-content").text()).toContain(
+            "PROJECT FILE CONTENT",
+          ),
+        );
+      }
+      expect(wrapper.text()).not.toContain("EXTERNAL CITATION");
+      expect(wrapper.find(".file-browser-view").exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
 });

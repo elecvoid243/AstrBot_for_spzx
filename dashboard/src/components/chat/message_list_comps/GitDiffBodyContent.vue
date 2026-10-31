@@ -21,7 +21,6 @@ import type {
 } from "@/composables/useSpcodeGitDiff";
 import type { SpcodeGitDiffFile } from "@/composables/parseSpcodeGitDiff";
 import {
-  buildDirectoryChain,
   buildDirectorySections,
   walkSections,
   type DiffSection,
@@ -137,7 +136,12 @@ const fileDiffEntryFor = (path: string): FileDiffEntry | undefined => {
   if (!fd) return undefined;
   void fd.version.value;
   return fd.get(
-    fd.keyFor(path, props.selectedScope ?? "unstaged", props.worktree ?? null, props.diffEtag ?? null),
+    fd.keyFor(
+      path,
+      props.selectedScope ?? "unstaged",
+      props.worktree ?? null,
+      props.diffEtag ?? null,
+    ),
   );
 };
 // Spec §6.2.3: scope 派生按钮显隐(项目必须已加载 + scope=unstaged 显示 ↑)
@@ -284,13 +288,6 @@ const sections = computed<DiffSection[]>(() => {
 
 const collapsedGroups = ref<Set<string>>(new Set());
 
-// 2026-10-25 compact-directory-chains: single-child directory runs
-// (each level holds exactly one sub-directory and no files) render as
-// one breadcrumb row; this set holds the chain HEAD ids that the user
-// expanded into their real nested levels. Keyed by the head's stable
-// section id, same lifecycle as collapsedGroups.
-const expandedChains = ref<Set<string>>(new Set());
-
 function toggleGroup(id: string): void {
   const next = new Set(collapsedGroups.value);
   if (next.has(id)) next.delete(id);
@@ -298,22 +295,8 @@ function toggleGroup(id: string): void {
   collapsedGroups.value = next;
 }
 
-function toggleChain(id: string): void {
-  const next = new Set(expandedChains.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedChains.value = next;
-}
-
 function expandAll(): void {
   collapsedGroups.value = new Set();
-  // Reveal every compacted chain: collect all chain-link ids so
-  // "expand all" shows the real nested levels, not breadcrumbs.
-  const chainIds = new Set<string>();
-  walkSections(sections.value, (s) => {
-    if (buildDirectoryChain(s) !== null) chainIds.add(s.id);
-  });
-  expandedChains.value = chainIds;
   // Also expand every file row by emitting toggle for collapsed files.
   for (const f of files.value) {
     if (!props.expanded.has(f.path)) emit("toggle", f.path);
@@ -326,8 +309,6 @@ function collapseAll(): void {
   const ids = new Set<string>();
   walkSections(sections.value, (s) => ids.add(s.id));
   collapsedGroups.value = ids;
-  // Chains fold back to their one-row breadcrumb view.
-  expandedChains.value = new Set();
   // Also collapse every file row by emitting toggle for expanded files.
   for (const f of files.value) {
     if (props.expanded.has(f.path)) emit("toggle", f.path);
@@ -627,7 +608,9 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
             type="button"
             class="git-diff-toolbar-btn"
             :title="tm('spcodeProjectLoad.diffPreview.toolbar.collapseAll')"
-            :aria-label="tm('spcodeProjectLoad.diffPreview.toolbar.collapseAll')"
+            :aria-label="
+              tm('spcodeProjectLoad.diffPreview.toolbar.collapseAll')
+            "
             @click="collapseAll"
           >
             <v-icon size="14">mdi-unfold-less-horizontal</v-icon>
@@ -642,9 +625,7 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
                the bulk-restore flow. Label/icon flip between
                "all selected" and "not all selected" for clarity. -->
           <button
-            v-if="
-              showStageButton || showUnstageButton || showRestoreButton
-            "
+            v-if="showStageButton || showUnstageButton || showRestoreButton"
             type="button"
             class="git-diff-toolbar-btn"
             :class="{ 'is-active': allSelected }"
@@ -721,8 +702,16 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
             type="button"
             class="git-diff-toolbar-btn is-restore"
             :disabled="selectedFiles.size === 0"
-            :title="tm('spcodeProjectLoad.diffPreview.toolbar.restoreSelected', { count: selectedFiles.size })"
-            :aria-label="tm('spcodeProjectLoad.diffPreview.toolbar.restoreSelected', { count: selectedFiles.size })"
+            :title="
+              tm('spcodeProjectLoad.diffPreview.toolbar.restoreSelected', {
+                count: selectedFiles.size,
+              })
+            "
+            :aria-label="
+              tm('spcodeProjectLoad.diffPreview.toolbar.restoreSelected', {
+                count: selectedFiles.size,
+              })
+            "
             @click="onClickRestoreSelected"
           >
             <v-icon size="14">mdi-restore</v-icon>
@@ -736,7 +725,9 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
             type="button"
             class="git-diff-toolbar-btn"
             :title="tm('spcodeProjectLoad.diffPreview.toolbar.clearSelection')"
-            :aria-label="tm('spcodeProjectLoad.diffPreview.toolbar.clearSelection')"
+            :aria-label="
+              tm('spcodeProjectLoad.diffPreview.toolbar.clearSelection')
+            "
             @click="clearSelection"
           >
             <v-icon size="14">mdi-close</v-icon>
@@ -745,9 +736,9 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       </div>
       <!-- 2026-07-26 sticky-header: end of .git-diff-sticky-header
            wrapper that keeps the summary + toolbar pinned. -->
-      </div>
+    </div>
 
-      <!-- UI #1: recursive directory tree (replaces the previous
+    <!-- UI #1: recursive directory tree (replaces the previous
            top-level-only section block). Each <DiffDirectoryNode>
            renders one DiffSection — its direct files, then its
            children (nested sub-sections) — and routes events back
@@ -762,8 +753,6 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :depth="0"
       :expanded="expanded"
       :collapsed-groups="collapsedGroups"
-      :expanded-chains="expandedChains"
-      :on-toggle-chain="toggleChain"
       :is-dark="isDark"
       :show-stage="showStageButton"
       :show-unstage="showUnstageButton"
@@ -776,7 +765,8 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       :is-section-fully-selected="isSectionFullySelected"
       :is-section-partially-selected="isSectionPartiallySelected"
       :selectable-aria-label="
-        (p: string) => tm('spcodeProjectLoad.diffPreview.toolbar.selectFile', { path: p })
+        (p: string) =>
+          tm('spcodeProjectLoad.diffPreview.toolbar.selectFile', { path: p })
       "
       :file-diff-entry="fileDiffEntryFor"
       :on-toggle-group="toggleGroup"
@@ -818,7 +808,10 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
       </button>
     </div>
 
-    <div v-if="state.kind === 'error' && errorInfo" class="git-diff-banner-error">
+    <div
+      v-if="state.kind === 'error' && errorInfo"
+      class="git-diff-banner-error"
+    >
       <span>{{ localizedReason(errorInfo.reason) }}</span>
       <button class="git-diff-banner-retry" @click="emit('retry')">
         {{ tm("spcodeProjectLoad.diffSidebar.error.retry") }}
@@ -1064,7 +1057,9 @@ function isSectionPartiallySelected(section: DiffSection): boolean {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 .git-diff-load-more:hover:not(:disabled) {

@@ -137,6 +137,14 @@ With a project loaded, **Workspace → Files** still returns to its file list. M
 
 ![Back and return-to-project buttons in the file browser](./images/file-browser-navigation.png)
 
+## Compact Git changes
+
+In **Project Workbench → Git Diff**, smaller file checkboxes, text and action buttons reduce the space taken by large change lists. File checkboxes are smaller than directory checkboxes. Stage, Unstage, Restore and the Open menu remain available.
+
+Consecutive directories with no direct changed files and exactly one child stay combined in one row, such as `dashboard/src/components/chat/message_list_comps`. Clicking it expands or collapses the terminal directory's contents. Branching directories and directories with direct files keep their own rows. Previous **Expand levels → click the combined directory to expand files**; Expand all also preserves combined paths. Counts, change totals and directory selection cover the full subtree, while file actions retain their original full paths.
+
+![A compact Git change list with combined directory paths](./images/git-diff-compact-tree.png)
+
 ## Switch Git worktrees
 
 In the **Files / Git Diff / History** tabs of **Project Workbench**, the **Worktree** controls adapt to the sidebar width. Buttons remain visible when they fit within two rows. If they need more rows, a dropdown like **Current branch** shows the selected worktree. Open it to choose another worktree. Widening the sidebar or removing worktrees automatically restores the buttons when they fit.

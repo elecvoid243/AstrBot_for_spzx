@@ -219,12 +219,11 @@ export interface DiffDirectoryChain {
    *  terminal's label is included: it names the level that finally
    *  branches (or holds files). */
   segments: string[];
-  /** Ids of every chain LINK section (head included). Keys for the
-   *  expandedChains set; the terminal is not a link and never keyed. */
+  /** Ids of every chain link section, including the head but not the terminal. */
   linkIds: string[];
   /** The first section that breaks the chain (has direct files, or
-   *  more than one child). Owns the aggregated subtree; rendered as
-   *  the deepest real level once the chain is expanded. */
+   *  more than one child). Its contents render directly under the
+   *  combined directory header. */
   terminal: DiffSection;
 }
 

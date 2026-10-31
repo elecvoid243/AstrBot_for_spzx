@@ -148,9 +148,7 @@ const session = useSpcodeSession();
 /** Spec §6.2: button visible only when project is loaded + umo present. */
 const showRestoreButton = computed(() => {
   return Boolean(
-    props.onRestore &&
-      spcodeStatus.status.value.loaded &&
-      session.umo.value,
+    props.onRestore && spcodeStatus.status.value.loaded && session.umo.value,
   );
 });
 
@@ -196,9 +194,11 @@ const openOnDiskRoot = inject<ComputedRef<string | null> | null>(
   "openOnDiskRoot",
   null,
 );
-const { opening: openingOnDisk, openOnDisk, openFolder } = useOpenOnDisk(
-  "spcodeProjectLoad.fileBrowser.preview",
-);
+const {
+  opening: openingOnDisk,
+  openOnDisk,
+  openFolder,
+} = useOpenOnDisk("spcodeProjectLoad.fileBrowser.preview");
 
 // ─── 2026-10-06 diff/overlay 模式切换 ───────────────────────────────
 // overlay = 基准全文(HEAD blob)+ diff 叠加,复用 DiffPreview 的
@@ -206,9 +206,7 @@ const { opening: openingOnDisk, openOnDisk, openFolder } = useOpenOnDisk(
 // 语义:staged/all 作用域旧侧即 HEAD 精确匹配;unstaged 在未暂存时
 // index==HEAD 同样精确,部分暂存错位时 alignOverlay 自动降级纯 patch。
 const overlayMode = ref(false);
-const gitFile = useSpcodeGitFile(
-  computed(() => openOnDiskRoot?.value ?? null),
-);
+const gitFile = useSpcodeGitFile(computed(() => openOnDiskRoot?.value ?? null));
 /** overlay 模式的基准全文;未取到 / 未开启时为 undefined(纯 patch) */
 const overlayBaseContent = computed<string | undefined>(() => {
   if (!overlayMode.value) return undefined;
@@ -341,10 +339,12 @@ function rowKey(): string {
         @click.stop="emit('select', !isSelected)"
         @keydown.stop.enter.space.prevent="emit('select', !isSelected)"
       >
-        <v-icon v-if="isSelected" :size="14">mdi-check-bold</v-icon>
+        <v-icon v-if="isSelected" :size="10">mdi-check-bold</v-icon>
       </button>
-      <v-icon :size="16" :color="iconInfo.color">{{ iconInfo.icon }}</v-icon>
-      <span class="git-diff-file-path" :title="file.path">{{ displayName }}</span>
+      <v-icon :size="14" :color="iconInfo.color">{{ iconInfo.icon }}</v-icon>
+      <span class="git-diff-file-path" :title="file.path">{{
+        displayName
+      }}</span>
       <!-- Stats: diff rows show real additions/deletions from the
            patch. New-file stubs show +N −0 where N is the actual
            line count from the file-browser content cache
@@ -380,10 +380,10 @@ function rowKey(): string {
         <v-progress-circular
           v-if="isUnstaging"
           indeterminate
-          :size="14"
+          :size="12"
           :width="2"
         />
-        <v-icon v-else :size="16">mdi-arrow-down-bold-circle-outline</v-icon>
+        <v-icon v-else :size="12">mdi-arrow-down-bold-circle-outline</v-icon>
       </button>
       <button
         v-if="showStage"
@@ -407,10 +407,10 @@ function rowKey(): string {
         <v-progress-circular
           v-if="isStaging"
           indeterminate
-          :size="14"
+          :size="12"
           :width="2"
         />
-        <v-icon v-else :size="16">mdi-arrow-up-bold-circle-outline</v-icon>
+        <v-icon v-else :size="12">mdi-arrow-up-bold-circle-outline</v-icon>
       </button>
       <button
         v-if="showRestoreButton"
@@ -434,10 +434,10 @@ function rowKey(): string {
         <v-progress-circular
           v-if="isRestoring"
           indeterminate
-          :size="14"
+          :size="12"
           :width="2"
         />
-        <v-icon v-else :size="16">mdi-restore</v-icon>
+        <v-icon v-else :size="12">mdi-restore</v-icon>
       </button>
       <!-- 2026-08-14 open-menu: the former two icon buttons ("view in
            file browser" + "open on disk") crowded the row; they are now
@@ -462,38 +462,29 @@ function rowKey(): string {
             "
             @click.stop
           >
-            <v-icon :size="16">mdi-open-in-app</v-icon>
+            <v-icon :size="12">mdi-open-in-app</v-icon>
           </button>
         </template>
         <v-list density="compact">
-          <v-list-item
-            v-if="onOpenFile"
-            @click="onOpenFileClick"
-          >
+          <v-list-item v-if="onOpenFile" @click="onOpenFileClick">
             <template #prepend>
-              <v-icon :size="16">mdi-file-eye-outline</v-icon>
+              <v-icon :size="12">mdi-file-eye-outline</v-icon>
             </template>
             <v-list-item-title>
               {{ tm("spcodeProjectLoad.diffSidebar.openMenu.inFileBrowser") }}
             </v-list-item-title>
           </v-list-item>
-          <v-list-item
-            v-if="openOnDiskAbsPath"
-            @click="onOpenOnDiskClick"
-          >
+          <v-list-item v-if="openOnDiskAbsPath" @click="onOpenOnDiskClick">
             <template #prepend>
-              <v-icon :size="16">mdi-open-in-new</v-icon>
+              <v-icon :size="12">mdi-open-in-new</v-icon>
             </template>
             <v-list-item-title>
               {{ tm("spcodeProjectLoad.diffSidebar.openMenu.onDisk") }}
             </v-list-item-title>
           </v-list-item>
-          <v-list-item
-            v-if="openFolderAbsPath"
-            @click="onOpenFolderClick"
-          >
+          <v-list-item v-if="openFolderAbsPath" @click="onOpenFolderClick">
             <template #prepend>
-              <v-icon :size="16">mdi-folder-open-outline</v-icon>
+              <v-icon :size="12">mdi-folder-open-outline</v-icon>
             </template>
             <v-list-item-title>
               {{ tm("spcodeProjectLoad.diffSidebar.openMenu.openFolder") }}
@@ -502,7 +493,7 @@ function rowKey(): string {
         </v-list>
       </v-menu>
       <v-icon
-        :size="16"
+        :size="12"
         class="git-diff-file-chevron"
         :class="{ expanded: expanded }"
         >mdi-chevron-down</v-icon
@@ -578,10 +569,7 @@ function rowKey(): string {
         </button>
       </div>
       <template v-else>
-        <div
-          v-if="diffEntry.truncated"
-          class="git-diff-file-truncated-hint"
-        >
+        <div v-if="diffEntry.truncated" class="git-diff-file-truncated-hint">
           {{ tm("spcodeProjectLoad.diffSidebar.fileDiffTruncated") }}
         </div>
         <DiffPreview
@@ -616,9 +604,11 @@ function rowKey(): string {
 .git-diff-file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   width: 100%;
-  padding: 8px 12px;
+  min-height: 26px;
+  padding: 3px 8px;
+  line-height: 18px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -638,13 +628,13 @@ function rowKey(): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: monospace;
-  font-size: 13px;
+  font-size: 11px;
 }
 .git-diff-file-stats {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   font-family: monospace;
-  font-size: 12px;
+  font-size: 10.5px;
 }
 .git-diff-add {
   color: rgb(46, 160, 67);
@@ -658,8 +648,8 @@ function rowKey(): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -697,8 +687,8 @@ function rowKey(): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -728,7 +718,7 @@ function rowKey(): string {
   opacity: 0.3;
 }
 
-/* UI #3: selection checkbox at the start of the row. Square 16px,
+/* UI #3: selection checkbox at the start of the row. Square 12px,
    visible by default (NOT hover-gated like the action buttons)
    because checking is a primary action — the user needs to see the
    checkbox on every row, not just on hover. */
@@ -736,12 +726,12 @@ function rowKey(): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
   padding: 0;
   background: transparent;
-  border: 1.5px solid rgba(var(--v-theme-on-surface), 0.35);
-  border-radius: 3px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.35);
+  border-radius: 2px;
   color: rgb(var(--v-theme-on-surface));
   cursor: pointer;
   flex-shrink: 0;
@@ -767,8 +757,8 @@ function rowKey(): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;

@@ -10,6 +10,7 @@ const key = "features.chat.agentBrowser";
 
 interface BrowserState {
   available: boolean;
+  execution_state?: "active" | "stopped" | "closed" | "disabled";
   generation?: string;
   browser_session_id?: string;
   tab_id?: string;
@@ -48,6 +49,8 @@ interface BrowserAction {
 
 const state = ref<BrowserState | null>(null);
 const loading = ref(false);
+const controlling = ref(false);
+const controlError = ref(false);
 const connection = ref("loading");
 const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
@@ -248,7 +251,16 @@ async function follow(
                   : {}),
               };
         if (event.action_reset) resynchronized.value = true;
-        connection.value = "live";
+        connection.value =
+          event.execution_state === "stopped" ? "stopped" : "live";
+        if (
+          event.execution_state === "closed" ||
+          event.execution_state === "disabled"
+        ) {
+          state.value = { ...event, image: undefined, highlight: null };
+          connection.value = event.execution_state;
+          return;
+        }
         retryAttempts = 0;
       }
       if (buffer.length > 768 * 1024) throw new Error(t(`${key}.unavailable`));
@@ -305,7 +317,8 @@ async function refresh(resuming = false): Promise<void> {
     const current = initial.data.data;
     if (!current.available) {
       state.value = current;
-      connection.value = "idle";
+      connection.value =
+        current.execution_state === "closed" ? "closed" : "idle";
       retryAttempts = 0;
       delay = 3000;
       return;
@@ -342,7 +355,8 @@ async function refresh(resuming = false): Promise<void> {
     ]);
     if (lastIdentity && lastIdentity !== identity) resynchronized.value = true;
     lastIdentity = identity;
-    connection.value = "snapshot";
+    connection.value =
+      state.value.execution_state === "stopped" ? "stopped" : "snapshot";
     loading.value = false;
     await follow(snapshot.data.data, controller, chatId);
   } catch (err: any) {
@@ -370,6 +384,73 @@ async function refresh(resuming = false): Promise<void> {
       loading.value = false;
       if (retry) retryTimer = setTimeout(() => void refresh(true), delay);
     }
+  }
+}
+
+/**
+ * Send a lifetime-bound control and apply only its confirmed server result.
+ *
+ * Args:
+ *   operation: Stop execution or close the authorized browser lifetime.
+ *
+ * Returns:
+ *   Resolves after confirmed cleanup or a visible control error.
+ */
+async function control(operation: "stop" | "close"): Promise<void> {
+  const current = state.value;
+  const chatId = props.chatId;
+  const attempt = pending;
+  if (!current?.available || !chatId || controlling.value) return;
+  controlling.value = true;
+  controlError.value = false;
+  try {
+    const response = await pluginExtensionApi.post<BrowserState>(
+      `browser-use/${operation}`,
+      undefined,
+      {
+        params: {
+          chat_id: chatId,
+          generation: current.generation,
+          browser_session_id: current.browser_session_id,
+        },
+      },
+    );
+    if (
+      props.chatId !== chatId ||
+      pending !== attempt ||
+      attempt?.signal.aborted
+    )
+      return;
+    if (response.data.status !== "ok") throw new Error("Control failed.");
+    if (operation === "close") {
+      pending?.abort();
+      clearTimeout(retryTimer);
+      state.value = {
+        ...response.data.data,
+        image: undefined,
+        highlight: null,
+      };
+      connection.value = "closed";
+      loading.value = false;
+      retryTimer = setTimeout(() => void refresh(true), 3000);
+    } else {
+      if ((response.data.data.sequence ?? 0) >= (state.value?.sequence ?? 0))
+        state.value = {
+          ...response.data.data,
+          image: undefined,
+          highlight: null,
+        };
+      connection.value = "stopped";
+    }
+  } catch {
+    if (
+      props.chatId === chatId &&
+      pending === attempt &&
+      !attempt?.signal.aborted
+    )
+      controlError.value = true;
+  } finally {
+    controlling.value = false;
   }
 }
 
@@ -427,6 +508,26 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <v-btn
+        class="agent-browser-stop"
+        variant="text"
+        size="small"
+        :disabled="
+          !state?.available ||
+          state?.execution_state === 'stopped' ||
+          controlling
+        "
+        @click="control('stop')"
+        >{{ t(`${key}.stop`) }}</v-btn
+      >
+      <v-btn
+        class="agent-browser-close"
+        variant="text"
+        size="small"
+        :disabled="!state?.available || controlling"
+        @click="control('close')"
+        >{{ t(`${key}.close`) }}</v-btn
+      >
+      <v-btn
         variant="text"
         size="small"
         :loading="loading"
@@ -435,6 +536,16 @@ onBeforeUnmount(() => {
       >
         {{ t(`${key}.refresh`) }}
       </v-btn>
+    </div>
+    <div v-if="controlError" role="alert" class="pa-2 text-caption">
+      {{ t(`${key}.controlFailed`) }}
+    </div>
+    <div
+      v-if="connection === 'stopped'"
+      role="status"
+      class="pa-2 text-caption"
+    >
+      {{ t(`${key}.stoppedHint`) }}
     </div>
     <div v-if="resynchronized" role="status" class="pa-2 text-caption">
       {{ t(`${key}.resynchronized`) }}

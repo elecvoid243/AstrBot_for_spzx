@@ -1,6 +1,12 @@
 {
   "agentBrowser": {
+    "stop": "Stop execution",
+    "close": "Close browser",
+    "stoppedHint": "Execution stopped. Close the browser before starting a new task. Already completed page operations are not undone.",
+    "controlFailed": "Control failed. Refresh the state and retry.",
     "connectionStates": {
+      "stopped": "Execution stopped",
+      "closed": "Browser closed",
       "loading": "Connecting…",
       "snapshot": "Snapshot",
       "live": "Live",

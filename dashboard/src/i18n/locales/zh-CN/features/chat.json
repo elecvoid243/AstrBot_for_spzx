@@ -1,6 +1,12 @@
 {
   "agentBrowser": {
+    "stop": "停止执行",
+    "close": "关闭浏览器",
+    "stoppedHint": "执行已停止。关闭浏览器后可开始新任务；已发生的网页操作不会撤销。",
+    "controlFailed": "操作失败，请刷新状态后重试。",
     "connectionStates": {
+      "stopped": "执行已停止",
+      "closed": "浏览器已关闭",
       "loading": "正在连接…",
       "snapshot": "快照",
       "live": "实时观测",

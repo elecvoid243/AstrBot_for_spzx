@@ -270,6 +270,8 @@ Unloading a code project keeps the active Agent browser view open. Git, files, d
 
 The screenshot below shows the production workbench and live observation component without a project in the isolated local acceptance harness, with Chinese form text and a browser cookie marker. It is not a screenshot of a deployed AstrBot login session.
 
+**Stop execution** stops the current chat’s Agent run, waits for the in-flight browser action to finish or cancel, and rejects queued and subsequent browser actions. The browser remains visible for inspection. **Close browser** also closes its sessions and releases ownership; a new task starts with a fresh isolated profile. Completed page operations are not undone. Hiding the panel only stops observation. Disabling the plugin ends its owned browser, action, stream and MCP resources; retained requests cannot reactivate it. Re-enable the plugin to establish a new runtime generation without restarting AstrBot.
+
 ![Agent browser component showing the controlled page](./images/agent-browser-snapshot.png)
 
 ## Customizing WebUI Port

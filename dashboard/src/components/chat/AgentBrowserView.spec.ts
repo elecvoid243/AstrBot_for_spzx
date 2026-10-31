@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-const { get, fetchStream } = vi.hoisted(() => ({
+const { get, post, fetchStream } = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
   fetchStream: vi.fn(),
 }));
-vi.mock("@/api/v1", () => ({ pluginExtensionApi: { get } }));
+vi.mock("@/api/v1", () => ({ pluginExtensionApi: { get, post } }));
 vi.mock("@/api/http", () => ({ fetchWithAuth: fetchStream }));
 import AgentBrowserView from "./AgentBrowserView.vue";
 
@@ -18,6 +19,7 @@ const ok = (data: unknown) => ({ data: { status: "ok", data } });
 let stream: ReadableStreamDefaultController<Uint8Array>;
 beforeEach(() => {
   get.mockReset();
+  post.mockReset();
   fetchStream.mockReset();
   fetchStream.mockImplementation(async () => ({
     ok: true,
@@ -33,6 +35,103 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("finishes stop control without waiting for the observation stream to end", async () => {
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...current, sequence: 1 }));
+    post.mockResolvedValueOnce(
+      ok({
+        ...current,
+        sequence: 2,
+        execution_state: "stopped",
+        current_action: null,
+      }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    await view.get(".agent-browser-stop").trigger("click");
+    await flushPromises();
+    expect(view.attributes("data-connection")).toBe("stopped");
+    post.mockResolvedValueOnce(
+      ok({
+        ...current,
+        sequence: 3,
+        available: false,
+        execution_state: "closed",
+      }),
+    );
+    await view.get(".agent-browser-close").trigger("click");
+    await flushPromises();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(view.attributes("data-connection")).toBe("closed");
+    view.unmount();
+  });
+  it("closes the real lifetime only after confirmed control and rejects stale callbacks", async () => {
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...current, image: "pixels", sequence: 1 }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    post.mockRejectedValueOnce(new Error("cleanup failed"));
+    await view.get(".agent-browser-close").trigger("click");
+    await flushPromises();
+    expect(view.find('[role="alert"]').exists()).toBe(true);
+    expect(view.find("img").exists()).toBe(true);
+    post.mockResolvedValueOnce(
+      ok({
+        ...current,
+        available: false,
+        execution_state: "closed",
+        current_action: null,
+      }),
+    );
+    await view.get(".agent-browser-close").trigger("click");
+    await flushPromises();
+    expect(post).toHaveBeenLastCalledWith("browser-use/close", undefined, {
+      params: {
+        chat_id: "chat-1",
+        generation: "run-1",
+        browser_session_id: "browser-1",
+      },
+    });
+    expect(view.attributes("data-connection")).toBe("closed");
+    expect(view.find("img").exists()).toBe(false);
+    view.unmount();
+  });
+
+  it("applies authoritative stopped actions and keeps the image available for inspection", async () => {
+    get
+      .mockResolvedValueOnce(ok(current))
+      .mockResolvedValueOnce(ok({ ...current, image: "pixels", sequence: 1 }));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    stream.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({
+          ...current,
+          type: "state",
+          sequence: 2,
+          execution_state: "stopped",
+          current_action: null,
+          recent_actions: [
+            { action_id: "one", kind: "click", status: "cancelled" },
+          ],
+        })}\n\n`,
+      ),
+    );
+    await flushPromises();
+    expect(view.attributes("data-connection")).toBe("stopped");
+    expect(view.find('[data-action-status="cancelled"]').exists()).toBe(true);
+    expect(view.find('[data-action-status="running"]').exists()).toBe(false);
+    expect(view.find("img").exists()).toBe(true);
+    view.unmount();
+  });
   it("recovers a half-open stream after missing heartbeats", async () => {
     vi.useFakeTimers();
     get

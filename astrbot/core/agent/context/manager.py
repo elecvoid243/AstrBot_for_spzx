@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
 from astrbot import logger
+from astrbot.core.exceptions import ToolProtocolIntegrityError
 
 from ..message import Message
 from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
@@ -81,6 +82,9 @@ class ContextManager:
         Returns:
             The processed message list.
 
+        Raises:
+            ToolProtocolIntegrityError: Tool history cannot be paired unambiguously.
+
         Notes:
             Sets ``self.last_compression`` to this call's report (``None`` when
             nothing was compressed); the report never carries over between
@@ -119,7 +123,7 @@ class ContextManager:
         except Exception as e:
             from astrbot.core.agent_team_execution import ProcessPersistenceError
 
-            if isinstance(e, ProcessPersistenceError):
+            if isinstance(e, (ProcessPersistenceError, ToolProtocolIntegrityError)):
                 raise
             logger.error(f"Error during context processing: {e}", exc_info=True)
             return messages

@@ -1,8 +1,207 @@
 """Tests for ContextTruncator."""
 
+import copy
+
+import pytest
+
 from astrbot.core.agent.context.token_counter import EstimateTokenCounter
 from astrbot.core.agent.context.truncator import ContextTruncator
-from astrbot.core.agent.message import Message
+from astrbot.core.agent.message import (
+    ImageURLPart,
+    Message,
+    TextPart,
+    ToolCall,
+    ToolCallMessageSegment,
+)
+from astrbot.core.exceptions import ToolProtocolIntegrityError
+
+
+def pairing_batch(*call_ids):
+    """Create a batch for public-interface pairing tests.
+
+    Args:
+        *call_ids: Identities requested by this assistant message.
+
+    Returns:
+        An assistant message containing the requested calls.
+    """
+    return Message(
+        role="assistant",
+        tool_calls=[
+            {"id": call_id, "function": {"name": "probe", "arguments": "{}"}}
+            for call_id in call_ids
+        ],
+    )
+
+
+def pairing_result(call_id, content):
+    """Create a protocol result for pairing tests.
+
+    Args:
+        call_id: Identity referenced by the result.
+        content: Original result payload.
+
+    Returns:
+        A tool message with the specified content and identity.
+    """
+    return Message(role="tool", tool_call_id=call_id, content=content)
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        (
+            [pairing_batch("A", "B"), pairing_result("A", "real A")],
+            [("A", "real A"), ("B", None)],
+        ),
+        ([pairing_batch("A", "B")], [("A", None), ("B", None)]),
+        ([pairing_result("orphan", "saved")], []),
+        (
+            [
+                pairing_batch("A", "B"),
+                pairing_result("B", "real B"),
+                pairing_result("A", "real A"),
+            ],
+            [("B", "real B"), ("A", "real A")],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_result("A", "first"),
+                pairing_batch("A"),
+                pairing_result("A", "second"),
+            ],
+            [("A", "first"), ("A", "second")],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                Message(role="user", content="new request"),
+                pairing_result("A", "late"),
+            ],
+            [("A", None)],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_batch("B"),
+                pairing_result("A", "late"),
+                pairing_result("B", "real B"),
+            ],
+            [("A", None), ("B", "real B")],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_result("A", "same"),
+                pairing_result("A", "same"),
+            ],
+            [("A", "same")],
+        ),
+        (
+            [
+                pairing_batch("A"),
+                pairing_result("orphan", "saved"),
+                pairing_result("A", "real A"),
+            ],
+            [("A", "real A")],
+        ),
+    ],
+    ids=[
+        "partial",
+        "all-missing",
+        "orphan",
+        "reversed",
+        "id-reuse",
+        "user-boundary",
+        "batch-boundary",
+        "identical-duplicate",
+        "orphan-in-batch",
+    ],
+)
+def test_pairing_public_interface_is_scoped_and_idempotent(messages, expected):
+    original = copy.deepcopy(messages)
+    truncator = ContextTruncator()
+    fixed = truncator.fix_messages(messages)
+    results = [message for message in fixed if message.role == "tool"]
+    assert len(results) == len(expected)
+    for result, (call_id, content) in zip(results, expected):
+        assert result.tool_call_id == call_id
+        if content is None:
+            assert "execution status is unknown" in result.content
+            assert "No result was received" in result.content
+        else:
+            assert result.content == content
+    assert truncator.fix_messages(fixed) == fixed
+    assert messages == original
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [pairing_batch("A", "A")],
+        [pairing_batch("")],
+        [
+            Message(
+                role="assistant",
+                tool_calls=[{"function": {"name": "probe", "arguments": "{}"}}],
+            )
+        ],
+        [pairing_batch("A"), pairing_result(None, "no identity")],
+        [
+            pairing_batch("A"),
+            pairing_result("A", "first"),
+            pairing_result("A", "conflict"),
+        ],
+    ],
+    ids=[
+        "duplicate-call",
+        "empty-call",
+        "missing-call",
+        "missing-result",
+        "conflicting-result",
+    ],
+)
+def test_pairing_public_interface_rejects_ambiguous_history(messages):
+    with pytest.raises(ToolProtocolIntegrityError):
+        ContextTruncator().fix_messages(messages)
+
+
+def test_pairing_valid_typed_history_preserves_media_and_metadata():
+    call = Message(
+        role="assistant",
+        tool_calls=[
+            ToolCall(
+                id="A",
+                function=ToolCall.FunctionBody(name="probe", arguments="{}"),
+                extra_content={"signature": "signed"},
+            )
+        ],
+    )
+    result = pairing_result(
+        "A",
+        [
+            TextPart(text="evidence"),
+            ImageURLPart(
+                image_url=ImageURLPart.ImageURL(
+                    url="data:image/png;base64,AA==", id="image-evidence"
+                )
+            ),
+        ],
+    )
+    result._no_save = True
+    messages = [call, result]
+    fixed = ContextTruncator().fix_messages(messages)
+    assert fixed == messages
+    assert all(left is right for left, right in zip(messages, fixed))
+
+
+def test_pairing_duplicate_protocol_is_independent_of_python_message_type():
+    result = pairing_result("A", "same")
+    duplicate = ToolCallMessageSegment(tool_call_id="A", content="same")
+    fixed = ContextTruncator().fix_messages([pairing_batch("A"), result, duplicate])
+    assert len(fixed) == 2
+    assert fixed[1] is result
 
 
 class TestContextTruncator:

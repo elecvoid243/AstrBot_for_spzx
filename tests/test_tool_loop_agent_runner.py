@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import os
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunne
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_run_util import run_agent
 from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.exceptions import EmptyModelOutputError
+from astrbot.core.exceptions import EmptyModelOutputError, ToolProtocolIntegrityError
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
@@ -2867,3 +2868,640 @@ async def test_small_step_budgets_and_reset(
     )
     assert runner._step_budget_used == 0
     assert runner._step_budget_notified == set()
+
+
+class PairingProvider(MockProvider):
+    """Record immutable request snapshots and replay controlled responses."""
+
+    def __init__(self, responses=(), provider_id="pairing"):
+        super().__init__()
+        self.provider_config["id"] = provider_id
+        self.responses = list(responses)
+        self.received_contexts = []
+
+    async def text_chat(self, **kwargs):
+        self.call_count += 1
+        self.received_contexts.append(copy.deepcopy(kwargs["contexts"]))
+        if self.responses:
+            return self.responses.pop(0)
+        return LLMResponse(role="assistant", completion_text="finished")
+
+
+class PairingToolExecutor:
+    """Yield controlled results while recording actual execution counts."""
+
+    def __init__(self, outputs=None, *, wait_after_yield=False):
+        self.outputs = outputs or {}
+        self.calls = []
+        self.wait_after_yield = wait_after_yield
+        self.waiting = asyncio.Event()
+        self.proceed = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def execute(self, tool, run_context, **kwargs):
+        self.calls.append(tool.name)
+        try:
+            for output in self.outputs.get(tool.name, []):
+                yield output
+                if self.wait_after_yield:
+                    self.waiting.set()
+                    await self.proceed.wait()
+        finally:
+            self.closed.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "scenario", ["partial", "all-missing", "multi-yield", "media-error"]
+)
+async def test_pairing_actual_tool_loop(streaming, scenario):
+    from mcp.types import AudioContent, CallToolResult, ImageContent, TextContent
+
+    def text_result(text):
+        return CallToolResult(content=[TextContent(type="text", text=text)])
+
+    outputs = {"tool_a": [text_result("real A")], "tool_b": []}
+    if scenario == "all-missing":
+        outputs = {}
+    elif scenario == "multi-yield":
+        outputs["tool_a"] = [
+            text_result("first"),
+            text_result("same"),
+            text_result("same"),
+            text_result("last"),
+        ]
+    elif scenario == "media-error":
+        outputs["tool_a"] = [
+            CallToolResult(
+                content=[
+                    TextContent(type="text", text="first evidence"),
+                    ImageContent(type="image", data="Zmlyc3Q=", mimeType="image/png"),
+                ]
+            ),
+            CallToolResult(
+                content=[
+                    AudioContent(type="audio", data="YXVkaW8=", mimeType="audio/wav"),
+                    TextContent(type="text", text="last evidence"),
+                    ImageContent(type="image", data="bGFzdA==", mimeType="image/png"),
+                ],
+                isError=True,
+                structuredContent={"outcome": "failed"},
+                _meta={"evidence_id": "known-execution"},
+            ),
+        ]
+    provider = PairingProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=["tool_a", "tool_b"],
+                tools_call_args=[{}, {}],
+                tools_call_ids=["A", "B"],
+            )
+        ]
+    )
+    executor = PairingToolExecutor(outputs)
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="run tools",
+            func_tool=ToolSet(
+                tools=[
+                    FunctionTool(
+                        name=name,
+                        description=name,
+                        parameters={"type": "object", "properties": {}},
+                        handler=AsyncMock(),
+                    )
+                    for name in ("tool_a", "tool_b")
+                ]
+            ),
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+        streaming=streaming,
+    )
+    async for _ in runner.step_until_done(3):
+        pass
+    assert provider.call_count == 2
+    assert executor.calls == ["tool_a", "tool_b"]
+    results = {
+        message.tool_call_id: message
+        for message in provider.received_contexts[1]
+        if message.role == "tool"
+    }
+    assert list(results) == ["A", "B"]
+    assert (
+        len(
+            [
+                message
+                for message in provider.received_contexts[1]
+                if message.role == "tool"
+            ]
+        )
+        == 2
+    )
+    assert "execution status is unknown" in results["B"].content
+    if scenario == "partial":
+        assert results["A"].content == "real A"
+    elif scenario == "all-missing":
+        assert "execution status is unknown" in results["A"].content
+    elif scenario == "multi-yield":
+        assert results["A"].content == "first\n\nsame\n\nsame\n\nlast"
+    else:
+        content = results["A"].content
+        assert isinstance(content, list)
+        texts = "\n".join(part.text for part in content if part.type == "text")
+        assert texts.index("first evidence") < texts.index("last evidence")
+        assert "Tool result status: error" in texts
+        assert '"outcome": "failed"' in texts
+        assert "known-execution" not in texts
+        assert [part.audio_url.url for part in content if part.type == "audio_url"] == [
+            "data:audio/wav;base64,YXVkaW8="
+        ]
+        images = [
+            part.image_url.url
+            for message in provider.received_contexts[1]
+            if message.role == "user" and isinstance(message.content, list)
+            for part in message.content
+            if part.type == "image_url"
+        ]
+        assert images == [
+            "data:image/png;base64,Zmlyc3Q=",
+            "data:image/png;base64,bGFzdA==",
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "partial",
+        "reversed",
+        "reused-id",
+        "user-boundary",
+        "batch-boundary",
+        "duplicate",
+        "orphan",
+    ],
+)
+async def test_pairing_historical_requests_preserve_original_records(
+    streaming, scenario
+):
+    calls = lambda ids: {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "probe", "arguments": "{}"},
+            }
+            for call_id in ids
+        ],
+    }
+    result = lambda call_id, text: {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": text,
+    }
+    if scenario == "partial":
+        history = [calls(["A", "B"]), result("A", "real A")]
+        expected = [("A", "real A"), ("B", None)]
+    elif scenario == "reversed":
+        history = [calls(["A", "B"]), result("B", "real B"), result("A", "real A")]
+        expected = [("B", "real B"), ("A", "real A")]
+    elif scenario == "reused-id":
+        history = [
+            calls(["A"]),
+            result("A", "first"),
+            calls(["A"]),
+            result("A", "second"),
+        ]
+        expected = [("A", "first"), ("A", "second")]
+    elif scenario == "user-boundary":
+        history = [
+            calls(["A"]),
+            {"role": "user", "content": "new request"},
+            result("A", "late"),
+        ]
+        expected = [("A", None)]
+    elif scenario == "batch-boundary":
+        history = [
+            calls(["A"]),
+            calls(["B"]),
+            result("A", "late"),
+            result("B", "real B"),
+        ]
+        expected = [("A", None), ("B", "real B")]
+    elif scenario == "duplicate":
+        history = [calls(["A"]), result("A", "same"), result("A", "same")]
+        expected = [("A", "same")]
+    else:
+        history = [result("orphan", "saved record")]
+        expected = []
+    history.insert(0, {"role": "user", "content": "original request"})
+    original = copy.deepcopy(history)
+    provider = PairingProvider()
+    executor = PairingToolExecutor()
+    runner = ToolLoopAgentRunner()
+    request = ProviderRequest(prompt=None, contexts=history)
+    await runner.reset(
+        provider=provider,
+        request=request,
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+        streaming=streaming,
+    )
+    async for _ in runner.step_until_done(1):
+        pass
+    assert provider.call_count == 1
+    results = [
+        message for message in provider.received_contexts[0] if message.role == "tool"
+    ]
+    assert len(results) == len(expected)
+    for message, (call_id, text) in zip(results, expected):
+        assert message.tool_call_id == call_id
+        if text is None:
+            assert "execution status is unknown" in message.content
+        else:
+            assert message.content == text
+    assert executor.calls == []
+    assert request.contexts == original
+    assert [message.model_dump() for message in runner.run_context.messages[:-1]] == [
+        Message.model_validate(message).model_dump() for message in original
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("through_manager", [False, True])
+@pytest.mark.parametrize(
+    "invalid", ["conflict", "duplicate-call", "missing-call", "missing-result"]
+)
+async def test_pairing_protocol_error_blocks_all_providers(
+    streaming, through_manager, invalid
+):
+    call_ids = (
+        ["A", "A"]
+        if invalid == "duplicate-call"
+        else [""]
+        if invalid == "missing-call"
+        else ["A"]
+    )
+    history = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "current request"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": call_id, "function": {"name": "probe", "arguments": "{}"}}
+                for call_id in call_ids
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": None if invalid == "missing-result" else "A",
+            "content": "first",
+        },
+    ]
+    if invalid == "conflict":
+        history.append({"role": "tool", "tool_call_id": "A", "content": "conflict"})
+    primary = PairingProvider(provider_id="primary")
+    fallback = PairingProvider(provider_id="fallback")
+    executor = PairingToolExecutor()
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=primary,
+        request=ProviderRequest(prompt=None, contexts=history),
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+        streaming=streaming,
+        fallback_providers=[fallback],
+        enforce_max_turns=(2 if invalid == "conflict" else 1)
+        if through_manager
+        else -1,
+    )
+    with pytest.raises(ToolProtocolIntegrityError):
+        async for _ in runner.step_until_done(1):
+            pass
+    assert primary.call_count == fallback.call_count == 0
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", [False, True])
+async def test_pairing_waits_for_execution_end_and_honors_stop(stop):
+    from mcp.types import CallToolResult, TextContent
+
+    provider = PairingProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=["probe"],
+                tools_call_args=[{}],
+                tools_call_ids=["A"],
+            )
+        ]
+    )
+    executor = PairingToolExecutor(
+        {
+            "probe": [
+                CallToolResult(content=[TextContent(type="text", text="first")]),
+                CallToolResult(content=[TextContent(type="text", text="last")]),
+            ]
+        },
+        wait_after_yield=True,
+    )
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="execute",
+            func_tool=ToolSet(
+                tools=[
+                    FunctionTool(
+                        name="probe",
+                        description="probe",
+                        parameters={"type": "object", "properties": {}},
+                        handler=AsyncMock(),
+                    )
+                ]
+            ),
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+    )
+
+    async def consume():
+        async for _ in runner.step_until_done(3):
+            pass
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(executor.waiting.wait(), timeout=3)
+        assert provider.call_count == 1
+        assert not executor.closed.is_set()
+        if stop:
+            runner.request_stop()
+        else:
+            executor.proceed.set()
+        await asyncio.wait_for(task, timeout=3)
+        assert executor.calls == ["probe"]
+        assert executor.closed.is_set()
+        assert provider.call_count == (1 if stop else 2)
+        if not stop:
+            result = next(
+                message
+                for message in provider.received_contexts[1]
+                if message.role == "tool"
+            )
+            assert result.content == "first\n\nlast"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["duplicate", "missing", "count-mismatch"])
+async def test_pairing_invalid_live_plan_never_executes_tools(invalid):
+    ids = (
+        ["A", "A"]
+        if invalid == "duplicate"
+        else ["A"]
+        if invalid == "count-mismatch"
+        else ["A", ""]
+    )
+    provider = PairingProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=["probe", "probe"],
+                tools_call_args=[{}, {}],
+                tools_call_ids=ids,
+            )
+        ]
+    )
+    executor = PairingToolExecutor()
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="execute",
+            func_tool=ToolSet(
+                tools=[
+                    FunctionTool(
+                        name="probe",
+                        description="probe",
+                        parameters={"type": "object", "properties": {}},
+                        handler=AsyncMock(),
+                    )
+                ]
+            ),
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+    )
+    with pytest.raises(ToolProtocolIntegrityError):
+        async for _ in runner.step_until_done(3):
+            pass
+    assert provider.call_count == 1
+    assert executor.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unknown", [False, True])
+async def test_pairing_retains_authoritative_execution_evidence(unknown):
+    from mcp.types import CallToolResult, TextContent
+    from astrbot.core.agent_team_execution import (
+        CheckpointRecoveryError,
+        NodeExecutionBinding,
+        current_team_execution,
+    )
+
+    checkpoints = []
+    records = []
+
+    async def save_checkpoint(checkpoint):
+        checkpoints.append(copy.deepcopy(checkpoint))
+
+    async def record_process(record_id, kind, data):
+        records.append((record_id, kind, copy.deepcopy(data)))
+
+    class EvidenceExecutor(PairingToolExecutor):
+        async def execute(self, tool, run_context, **kwargs):
+            self.calls.append(tool.name)
+            yield CallToolResult(
+                content=[TextContent(type="text", text="partial")],
+                _meta={"execution_id": "kept-in-raw-record"},
+            )
+            if unknown:
+                raise RuntimeError("execution outcome is unknown")
+            yield CallToolResult(content=[TextContent(type="text", text="last")])
+
+    binding = NodeExecutionBinding(
+        run_id="run",
+        team_id="team",
+        member_id="member",
+        node_id=None,
+        umo="test:pairing",
+        owner_username="owner",
+        config_id=None,
+        save_checkpoint=save_checkpoint,
+        record_process=record_process,
+    )
+    provider = PairingProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=["probe"],
+                tools_call_args=[{}],
+                tools_call_ids=["A"],
+            )
+        ]
+    )
+    executor = EvidenceExecutor()
+    request = ProviderRequest(
+        prompt="execute",
+        func_tool=ToolSet(
+            tools=[
+                FunctionTool(
+                    name="probe",
+                    description="probe",
+                    parameters={"type": "object", "properties": {}},
+                    handler=AsyncMock(),
+                )
+            ]
+        ),
+    )
+    token = current_team_execution.set(binding)
+    try:
+        runner = ToolLoopAgentRunner()
+        await runner.reset(
+            provider=provider,
+            request=request,
+            run_context=ContextWrapper(context=None),
+            tool_executor=executor,
+            agent_hooks=MockHooks(),
+        )
+        if unknown:
+            with pytest.raises(CheckpointRecoveryError):
+                async for _ in runner.step_until_done(3):
+                    pass
+            saved = copy.deepcopy(checkpoints[-1])
+            assert saved["tool_calls"][0]["status"] == "unknown"
+            binding.checkpoint = saved
+            restored_provider = PairingProvider()
+            restored_executor = PairingToolExecutor()
+            restored = ToolLoopAgentRunner()
+            await restored.reset(
+                provider=restored_provider,
+                request=request,
+                run_context=ContextWrapper(context=None),
+                tool_executor=restored_executor,
+                agent_hooks=MockHooks(),
+            )
+            with pytest.raises(CheckpointRecoveryError):
+                async for _ in restored.step_until_done(3):
+                    pass
+            assert restored_provider.call_count == 0
+            assert restored_executor.calls == []
+            assert binding.checkpoint == saved
+        else:
+            async for _ in runner.step_until_done(3):
+                pass
+            applied = next(
+                checkpoint
+                for checkpoint in checkpoints
+                if checkpoint["phase"] == "tools_applied"
+            )
+            call = applied["tool_calls"][0]
+            assert call["status"] == "applied"
+            assert [raw["content"][0]["text"] for raw in call["raw_results"]] == [
+                "partial",
+                "last",
+            ]
+            assert len(call["protocol_results"]) == 2
+            assert call["raw_results"][0]["meta"] == {
+                "execution_id": "kept-in-raw-record"
+            }
+            assert call["context_position"] == 2
+            visible = [
+                message
+                for message in provider.received_contexts[1]
+                if message.role == "tool"
+            ]
+            assert len(visible) == 1
+            assert visible[0].content == "partial\n\nlast"
+            assert [
+                data["raw_result"]["content"][0]["text"]
+                for _, kind, data in records
+                if kind == "tool_result" and data.get("raw_result")
+            ] == ["partial", "last"]
+        assert executor.calls == ["probe"]
+    finally:
+        current_team_execution.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_pairing_unsafe_live_result_fails_before_next_request():
+    from mcp.types import CallToolResult, TextContent
+
+    provider = PairingProvider(
+        [
+            LLMResponse(
+                role="assistant",
+                completion_text="",
+                tools_call_name=["probe"],
+                tools_call_args=[{}],
+                tools_call_ids=["A"],
+            )
+        ]
+    )
+    executor = PairingToolExecutor(
+        {
+            "probe": [
+                CallToolResult(content=[TextContent(type="text", text="first")]),
+                CallToolResult(
+                    content=[TextContent(type="text", text="last")],
+                    structuredContent={"unrepresentable": object()},
+                ),
+            ]
+        }
+    )
+    runner = ToolLoopAgentRunner()
+    await runner.reset(
+        provider=provider,
+        request=ProviderRequest(
+            prompt="execute",
+            func_tool=ToolSet(
+                tools=[
+                    FunctionTool(
+                        name="probe",
+                        description="probe",
+                        parameters={"type": "object", "properties": {}},
+                        handler=AsyncMock(),
+                    )
+                ]
+            ),
+        ),
+        run_context=ContextWrapper(context=None),
+        tool_executor=executor,
+        agent_hooks=MockHooks(),
+    )
+    with pytest.raises(ToolProtocolIntegrityError, match="represented safely"):
+        async for _ in runner.step_until_done(3):
+            pass
+    assert provider.call_count == 1
+    assert executor.calls == ["probe"]

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from mcp.types import (
+    AudioContent,
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
@@ -31,7 +32,13 @@ from astrbot.core.agent.call_checkpoint import (
     dump_call_response,
     load_call_response,
 )
-from astrbot.core.agent.message import ContentPart, ImageURLPart, TextPart, ThinkPart
+from astrbot.core.agent.message import (
+    AudioURLPart,
+    ContentPart,
+    ImageURLPart,
+    TextPart,
+    ThinkPart,
+)
 from astrbot.core.agent.tool import (
     FunctionTool,
     ToolRecoveryResult,
@@ -46,7 +53,7 @@ from astrbot.core.agent_team_execution import (
     current_team_execution,
     model_delivery,
 )
-from astrbot.core.exceptions import EmptyModelOutputError
+from astrbot.core.exceptions import EmptyModelOutputError, ToolProtocolIntegrityError
 from astrbot.core.message.components import Json
 from astrbot.core.message.message_event_result import (
     MessageChain,
@@ -1099,7 +1106,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
     async def _iter_llm_responses(
         self, *, include_model: bool = True
     ) -> T.AsyncGenerator[LLMResponse, None]:
-        """Yields chunks *and* a final LLMResponse."""
+        """Yield chunks and a final response for a validated request view.
+
+        Args:
+            include_model: Include the explicit model selection in the payload.
+
+        Yields:
+            Provider response chunks and its completed response.
+
+        Raises:
+            ToolProtocolIntegrityError: The final request has ambiguous tool results.
+        """
         restored_request = self._restored_call
         message_context_position = len(self.run_context.messages)
         execution = current_team_execution.get()
@@ -1135,6 +1152,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             assert self._call_checkpoint is not None
             contexts = bind_checkpoint_messages(self._call_checkpoint["input_contexts"])
             self._restored_call = False
+        # Only the request view is repaired. Execution records and recovery
+        # evidence must not acquire synthetic results or lose orphan records.
+        if contexts and isinstance(contexts[0], dict):
+            messages = bind_checkpoint_messages(contexts)
+            fixed_messages = self.request_context_manager.truncator.fix_messages(
+                messages
+            )
+            if fixed_messages != messages:
+                contexts = [message.model_dump() for message in fixed_messages]
+        else:
+            contexts = self.request_context_manager.truncator.fix_messages(contexts)
         func_tool = self._func_tool_for_provider()
         # Fingerprint the payload-stage request so same-prefix flows (e.g. the
         # compact plugin's summary request) can diff against what the chat
@@ -1331,7 +1359,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     if self._is_stop_requested():
                         return
             except Exception as exc:  # noqa: BLE001
-                if isinstance(exc, ProcessPersistenceError):
+                if isinstance(
+                    exc, (ProcessPersistenceError, ToolProtocolIntegrityError)
+                ):
                     raise
                 last_exception = exc
                 logger.warning(
@@ -2019,7 +2049,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 for call in self._call_checkpoint["tool_calls"]:
                     call["status"] = "applied"
                     call["context_position"] = position
-                    position += len(call["protocol_results"])
+                    position += sum(
+                        block.tool_call_id == call["call_id"]
+                        for block in tool_call_result_blocks
+                    )
                 self._call_checkpoint["messages"] = dump_call_messages(
                     self.run_context.messages
                 )
@@ -2235,12 +2268,29 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         Raises:
             ProcessPersistenceError: A required result could not be saved.
             CheckpointRecoveryError: An external effect has no saved result.
+            ToolProtocolIntegrityError: Call identities or result contents cannot
+                be associated or represented safely.
         """
+        if (
+            len(llm_response.tools_call_ids) != len(llm_response.tools_call_name)
+            or len(llm_response.tools_call_ids) != len(llm_response.tools_call_args)
+            or any(
+                not isinstance(call_id, str) or not call_id.strip()
+                for call_id in llm_response.tools_call_ids
+            )
+            or len(set(llm_response.tools_call_ids)) != len(llm_response.tools_call_ids)
+        ):
+            raise ToolProtocolIntegrityError(
+                "Tool response has missing or duplicate call identities"
+            )
         tool_call_result_blocks: list[ToolCallMessageSegment] = []
         logger.info(f"Agent 使用工具: {llm_response.tools_call_name}")
 
         async def _append_tool_call_result(
-            tool_call_id: str, content: str, *, raw_result_saved: bool = False
+            tool_call_id: str,
+            content: str | list[ContentPart],
+            *,
+            raw_result_saved: bool = False,
         ) -> None:
             """Save distinct protocol results before appending model context.
 
@@ -2250,10 +2300,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 raw_result_saved: This content represents an already saved raw result.
             """
             execution = current_team_execution.get()
+            if isinstance(content, str):
+                visible_content = self._merge_follow_up_notice(content)
+            else:
+                notice = self._consume_follow_up_notice()
+                visible_content = [
+                    *content,
+                    *([TextPart(text=notice)] if notice else []),
+                ]
             block = ToolCallMessageSegment(
                 role="tool",
                 tool_call_id=tool_call_id,
-                content=self._merge_follow_up_notice(content),
+                content=visible_content,
             )
             record_id = (
                 call_state["record_id"] + ":protocol"
@@ -2350,21 +2408,25 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         )
                 # Restore image evidence from durable bytes even after temporary
                 # caches were cleared while the worker was stopped.
-                for raw in call_state["raw_results"]:
-                    for index, item in enumerate(
-                        CallToolResult.model_validate(raw).content
-                    ):
-                        cached_image = self._cache_tool_image(
-                            item, func_tool_id, func_tool_name, index
-                        )
-                        if cached_image:
-                            yield _HandleFunctionToolsResult.from_cached_image(
-                                cached_image
-                            )
-                tool_call_result_blocks.extend(
+                for index, item in enumerate(
+                    item
+                    for raw in call_state["raw_results"]
+                    for item in CallToolResult.model_validate(raw).content
+                ):
+                    cached_image = self._cache_tool_image(
+                        item, func_tool_id, func_tool_name, index
+                    )
+                    if cached_image:
+                        yield _HandleFunctionToolsResult.from_cached_image(cached_image)
+                restored_blocks = [
                     ToolCallMessageSegment.model_validate(block)
                     for block in call_state["protocol_results"]
-                )
+                ]
+                if any(block.tool_call_id != func_tool_id for block in restored_blocks):
+                    raise ToolProtocolIntegrityError(
+                        "Saved protocol results do not match their execution identity"
+                    )
+                tool_call_result_blocks.extend(restored_blocks)
                 continue
             tool_result_blocks_start = len(tool_call_result_blocks)
             tool_call_streak = (
@@ -2535,6 +2597,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
                 _final_resp: CallToolResult | None = None
                 replay_index = 0
+                content_offset = 0
                 async for resp in self._iter_tool_executor_results(
                     T.cast(T.AsyncGenerator[T.Any, None] | None, executor),
                     saved_results=call_state["raw_results"]
@@ -2564,6 +2627,18 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                         tool_failed = True
                         break
                     if isinstance(resp, CallToolResult):
+                        try:
+                            metadata = resp.model_dump(
+                                mode="json",
+                                by_alias=True,
+                                # Host metadata stays in the original raw record.
+                                include={"structuredContent"},
+                                exclude_none=True,
+                            )
+                        except (TypeError, ValueError) as exc:
+                            raise ToolProtocolIntegrityError(
+                                "Tool result metadata cannot be represented safely"
+                            ) from exc
                         raw_index = (
                             len(call_state["raw_results"])
                             if call_state and not reused and not known_result
@@ -2608,7 +2683,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             )
                         res = resp
                         _final_resp = resp
-                        if not res.content:
+                        if not res.content and not (res.isError or metadata):
                             await _append_tool_call_result(
                                 func_tool_id,
                                 "The tool returned no content.",
@@ -2616,10 +2691,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                             )
                             continue
 
-                        result_parts: list[str] = []
-                        for index, content_item in enumerate(res.content):
+                        result_parts: list[str | AudioURLPart] = []
+                        for index, content_item in enumerate(
+                            res.content, start=content_offset
+                        ):
                             if isinstance(content_item, TextContent):
                                 result_parts.append(content_item.text)
+                            elif isinstance(content_item, AudioContent):
+                                result_parts.append(
+                                    AudioURLPart(
+                                        audio_url=AudioURLPart.AudioURL(
+                                            url=f"data:{content_item.mimeType};base64,{content_item.data}"
+                                        )
+                                    )
+                                )
                             elif isinstance(content_item, ImageContent):
                                 # Cache the image instead of sending directly
                                 cached_img = self._cache_tool_image(
@@ -2665,8 +2750,36 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     result_parts.append(
                                         "The tool has returned a data type that is not supported."
                                     )
-                        if result_parts:
-                            inline_result = "\n\n".join(result_parts)
+                        content_offset += len(res.content)
+                        if res.isError:
+                            result_parts.append("[Tool result status: error]")
+                        if metadata:
+                            result_parts.append(
+                                "Tool result metadata: "
+                                + json.dumps(metadata, ensure_ascii=False)
+                            )
+                        if result_parts and any(
+                            isinstance(part, AudioURLPart) for part in result_parts
+                        ):
+                            await _append_tool_call_result(
+                                func_tool_id,
+                                [
+                                    TextPart(text=part)
+                                    if isinstance(part, str)
+                                    else part
+                                    for part in result_parts
+                                ]
+                                + [
+                                    TextPart(
+                                        text=self._build_repeated_tool_call_guidance(
+                                            func_tool_name, tool_call_streak
+                                        )
+                                    )
+                                ],
+                                raw_result_saved=True,
+                            )
+                        elif result_parts:
+                            inline_result = "\n\n".join(T.cast(list[str], result_parts))
                             inline_result = await self._materialize_large_tool_result(
                                 tool_call_id=func_tool_id,
                                 content=inline_result,
@@ -2741,7 +2854,14 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 except Exception as e:
                     logger.error(f"Error in on_tool_end hook: {e}", exc_info=True)
             except Exception as e:
-                if isinstance(e, (_ToolExecutionInterrupted, ProcessPersistenceError)):
+                if isinstance(
+                    e,
+                    (
+                        _ToolExecutionInterrupted,
+                        ProcessPersistenceError,
+                        ToolProtocolIntegrityError,
+                    ),
+                ):
                     raise
                 logger.warning(traceback.format_exc())
                 tool_failed = (
@@ -2820,8 +2940,37 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         # 处理函数调用响应
         if tool_call_result_blocks:
+            # Every block here belongs to a known execution in this batch.
+            # Historical duplicates without that provenance are checked by
+            # ContextTruncator instead and must never be guessed to be yields.
+            aggregated: dict[str, ToolCallMessageSegment] = {}
+            for block in tool_call_result_blocks:
+                call_id = block.tool_call_id
+                if call_id is None:
+                    raise ToolProtocolIntegrityError(
+                        "Tool result is missing its call ID"
+                    )
+                if call_id not in aggregated:
+                    aggregated[call_id] = block.model_copy(deep=True)
+                    continue
+                previous = aggregated[call_id]
+                if isinstance(previous.content, str) and isinstance(block.content, str):
+                    previous.content += "\n\n" + block.content
+                else:
+                    previous.content = [
+                        *(
+                            [TextPart(text=previous.content)]
+                            if isinstance(previous.content, str)
+                            else previous.content or []
+                        ),
+                        *(
+                            [TextPart(text=block.content)]
+                            if isinstance(block.content, str)
+                            else block.content or []
+                        ),
+                    ]
             yield _HandleFunctionToolsResult.from_tool_call_result_blocks(
-                tool_call_result_blocks
+                list(aggregated.values())
             )
 
     def _build_tool_requery_context(

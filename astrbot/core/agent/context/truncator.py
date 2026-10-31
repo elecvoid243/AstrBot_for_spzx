@@ -1,3 +1,5 @@
+from astrbot.core.exceptions import ToolProtocolIntegrityError
+
 from ..message import Message
 from .round_utils import split_into_rounds
 from .token_counter import TokenCounter
@@ -51,51 +53,81 @@ class ContextTruncator:
         return system_messages + [first_user] + truncated
 
     def fix_messages(self, messages: list[Message]) -> list[Message]:
-        """Fix the message list to ensure the validity of tool call and tool response pairing.
+        """Build a paired model view of completed tool-call batches.
 
-        This method ensures that:
-        1. Each `tool` message is preceded by an `assistant` message containing `tool_calls`.
-        2. Each `assistant` message containing `tool_calls` is followed by corresponding `
+        Args:
+            messages: History inspected only after execution has ended or stopped.
 
-        This is a requirement of the OpenAI Chat Completions API specification (Gemini enforces this strictly).
+        Returns:
+            Messages with one result per call, without modifying original records.
+            Missing results describe unknown execution state; orphan results are
+            excluded only from this view. Valid messages retain their order.
+
+        Raises:
+            ToolProtocolIntegrityError: Required identities are absent, repeated
+                within a batch, or associated with conflicting protocol results.
         """
         if not messages:
             return messages
 
         fixed_messages: list[Message] = []
-        pending_assistant: Message | None = None
-        pending_tools: list[Message] = []
-
-        def flush_pending_if_valid() -> None:
-            nonlocal pending_assistant, pending_tools
-            if pending_assistant is not None and pending_tools:
-                fixed_messages.append(pending_assistant)
-                fixed_messages.extend(pending_tools)
-            pending_assistant = None
-            pending_tools = []
-
-        for msg in messages:
+        index = 0
+        while index < len(messages):
+            msg = messages[index]
+            index += 1
             if msg.role == "tool":
-                # Only record tool responses when there is a pending assistant(tool_calls)
-                if pending_assistant is not None:
-                    pending_tools.append(msg)
-                # Isolated tool messages without a preceding assistant(tool_calls) are ignored
+                # Orphan results remain in the original execution history.
                 continue
 
-            if self._has_tool_calls(msg):
-                # When encountering a new assistant(tool_calls), first process the old pending chain
-                flush_pending_if_valid()
-                pending_assistant = msg
-                continue
-
-            # Non-tool messages that do not contain tool_calls will break the pending chain.
-            # Flush any pending chain first, then append the current message normally.
-            flush_pending_if_valid()
             fixed_messages.append(msg)
+            if not self._has_tool_calls(msg):
+                continue
 
-        # Flush the last pending chain at the end,
-        # ensuring that any remaining valid assistant(tool_calls) and its tools are included in the final list.
-        flush_pending_if_valid()
+            call_ids: dict[str, None] = {}
+            for call in msg.tool_calls or []:
+                call_id = call.get("id") if isinstance(call, dict) else call.id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    raise ToolProtocolIntegrityError("Tool call is missing its call ID")
+                if call_id in call_ids:
+                    raise ToolProtocolIntegrityError(
+                        f"Duplicate tool call ID in one assistant batch: {call_id}"
+                    )
+                call_ids[call_id] = None
+
+            results: dict[str, Message] = {}
+            # A real user message or any new assistant batch closes this scope.
+            while index < len(messages) and messages[index].role == "tool":
+                result = messages[index]
+                index += 1
+                call_id = result.tool_call_id
+                if not call_id or not call_id.strip():
+                    raise ToolProtocolIntegrityError(
+                        "Tool result is missing its call ID"
+                    )
+                if call_id not in call_ids:
+                    continue
+                if call_id in results:
+                    if results[call_id].model_dump() != result.model_dump():
+                        raise ToolProtocolIntegrityError(
+                            f"Conflicting tool results for call ID: {call_id}"
+                        )
+                    continue
+                results[call_id] = result
+                fixed_messages.append(result)
+
+            for call_id in call_ids:
+                if call_id not in results:
+                    fixed_messages.append(
+                        Message(
+                            role="tool",
+                            tool_call_id=call_id,
+                            content=(
+                                "No result was received for this tool call. "
+                                "Its execution status is unknown; do not assume "
+                                "that it succeeded or that it was not executed."
+                            ),
+                        )
+                    )
 
         return fixed_messages
 

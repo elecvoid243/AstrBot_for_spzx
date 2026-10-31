@@ -13,6 +13,10 @@ class EmptyModelOutputError(AstrBotError):
     """Raised when the model response contains no usable assistant output."""
 
 
+class ToolProtocolIntegrityError(AstrBotError):
+    """Raised when tool calls and results cannot be associated unambiguously."""
+
+
 class KnowledgeBaseUploadError(AstrBotError):
     """Raised when knowledge base upload fails with a user-facing message."""
 

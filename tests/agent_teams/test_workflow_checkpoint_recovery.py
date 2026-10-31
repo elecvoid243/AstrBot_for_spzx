@@ -210,8 +210,12 @@ def test_saved_model_plan_survives_forced_process_termination(tmp_path, scenario
             assert file_reads[0]["content"] is not None
             assert file_reads[0]["content"] == large_result
             assert file_reads[0]["content"].endswith("COMPLETE_END")
-            assert len([message for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]) == (2 if scenario == "overflow_generator" else 1)
+            protocol_results = [message for message in requests[1]["contexts"] if message.get("tool_call_id") == "evidence-original"]
+            assert len(protocol_results) == 1
             raw_results = evidence["before"]["tool_calls"][0]["raw_results"]
+            if scenario == "overflow_generator":
+                assert len(raw_results) == 2
+                assert "Complete verified evidence." in protocol_results[0]["content"]
             if scenario == "overflow_legacy_unaligned":
                 assert [raw["content"][0]["type"] for raw in raw_results] == ["resource_link", "text"]
             assert raw_results[-1 if scenario == "overflow_legacy_unaligned" else 0]["content"][0]["text"] == large_result

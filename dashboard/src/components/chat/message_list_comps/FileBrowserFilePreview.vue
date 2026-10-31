@@ -90,15 +90,16 @@ const props = defineProps<{
   scrollToEndLine?: number | null;
   /** Independent host target for manual editing and preview. */
   hostReference?: FileReferenceNavigation | null;
+  /** False when the resolved file is detached from the active project root. */
+  projectActionsAvailable?: boolean;
   /**
    * 2026-07-17 workspace file editor: repo-relative path of the
    * previewed file (the same value FileBrowserView feeds to the
-   * history panel as `file-relative`). The file-write endpoint
-   * requires a repo-relative path, so the edit affordance is hidden
-   * when this is empty.
+   * history panel as `file-relative`). Legacy project operations
+   * require this path; revision-backed editing uses the absolute snapshot path.
    */
   fileRelativePath?: string;
-  /** Current worktree root, forwarded to the file-write endpoint. */
+  /** Absolute project root, frozen in each legacy project request. */
   worktree?: string | null;
   /**
    * 2026-10-06 range-compare: 任意两版本比较数据(git-file-diff)。
@@ -523,7 +524,7 @@ const canEdit = computed<boolean>(() => {
   if (snap.meta.isBinary === true || typeof snap.content !== "string") {
     return false;
   }
-  if (!props.hostReference && !props.fileRelativePath) return false;
+  if (!props.fileRelativePath && !snap.meta.revision) return false;
   if (props.hostReference && !snap.meta.revision) return false;
   return new TextEncoder().encode(snap.content).length <= MAX_EDIT_BYTES;
 });
@@ -712,6 +713,14 @@ const renameName = ref("");
 const renameError = ref<string | null>(null);
 const deleteOpen = ref(false);
 const deleteError = ref<string | null>(null);
+const projectActionsAvailable = computed(
+  () => !props.hostReference && props.projectActionsAvailable !== false,
+);
+watch(projectActionsAvailable, (available) => {
+  if (available) return;
+  renameOpen.value = false;
+  deleteOpen.value = false;
+});
 
 const currentFileName = computed<string>(() => {
   const p = props.fileRelativePath ?? "";
@@ -729,6 +738,7 @@ function confirmDiscardForAction(): boolean {
 }
 
 function onRenameClick(): void {
+  if (!projectActionsAvailable.value) return;
   if (!confirmDiscardForAction()) return;
   renameName.value = currentFileName.value;
   renameError.value = null;
@@ -736,6 +746,7 @@ function onRenameClick(): void {
 }
 
 async function onConfirmRename(): Promise<void> {
+  if (!projectActionsAvailable.value) return;
   const newName = renameName.value.trim();
   if (!newName || newName === currentFileName.value) return;
   if (/[/\\\n\x00]/.test(newName)) {
@@ -768,12 +779,14 @@ async function onConfirmRename(): Promise<void> {
 }
 
 function onDeleteClick(): void {
+  if (!projectActionsAvailable.value) return;
   if (!confirmDiscardForAction()) return;
   deleteError.value = null;
   deleteOpen.value = true;
 }
 
 async function onConfirmDelete(): Promise<void> {
+  if (!projectActionsAvailable.value) return;
   const r = await fileRemove.remove({ path: props.fileRelativePath ?? "" });
   if (!r.ok) {
     deleteError.value = tm(
@@ -1561,7 +1574,7 @@ onBeforeUnmount(() => {
                only for the live working copy (not edit mode, not a
                historical revision); the bar itself hides non-code files. -->
           <CodeCheckFormatBar
-            v-if="!editMode && !props.selectedRevision && !hostReference"
+            v-if="!editMode && !props.selectedRevision && projectActionsAvailable"
             :file-path="props.fileRelativePath ?? ''"
             :worktree="props.worktree ?? null"
             :is-dark="isDark"
@@ -1633,7 +1646,7 @@ onBeforeUnmount(() => {
             type="button"
             class="editor-bar__btn"
             :disabled="fileWrite.isSaving.value"
-            v-if="!hostReference"
+            v-if="projectActionsAvailable"
             @click="onRenameClick"
           >
             <v-icon size="14">mdi-rename-outline</v-icon>
@@ -1672,7 +1685,7 @@ onBeforeUnmount(() => {
             type="button"
             class="editor-bar__btn editor-bar__btn--danger"
             :disabled="fileWrite.isSaving.value"
-            v-if="!hostReference"
+            v-if="projectActionsAvailable"
             @click="onDeleteClick"
           >
             <v-icon size="14">mdi-delete-outline</v-icon>
@@ -1748,10 +1761,10 @@ onBeforeUnmount(() => {
           <div v-else-if="richPreview" class="preview-image">
             <BinaryPreview
               :key="hostReference?.requestId ?? props.fileRelativePath"
-              :host="!!hostReference"
-              :path="hostReference ? state.snapshot.meta.path : props.fileRelativePath ?? ''"
-              :git-ref="hostReference ? '' : props.selectedRevision ?? ''"
-              :worktree="hostReference ? null : props.worktree ?? null"
+              :host="!projectActionsAvailable"
+              :path="!projectActionsAvailable ? state.snapshot.meta.path : props.fileRelativePath ?? ''"
+              :git-ref="!projectActionsAvailable ? '' : props.selectedRevision ?? ''"
+              :worktree="!projectActionsAvailable ? null : props.worktree ?? null"
             />
           </div>
 

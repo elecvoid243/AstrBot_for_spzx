@@ -5,6 +5,7 @@
      space from .chat-main (flex sibling) instead of overlaying it. -->
 <script setup lang="ts">
 import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
+import { projectRelativePathStrict } from "@/composables/pathUtils";
 import {
   ref,
   watch,
@@ -896,10 +897,6 @@ watch(
     prevWorktreePaths = newPaths;
     if (!topologyChanged) return;
 
-    // An open file remains a valid manual target even if its project changes.
-    // Explicit navigation consults the editor guard before replacing it.
-    if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
-
     // Validate selectedWorktree
     if (
       selectedWorktree.value &&
@@ -907,6 +904,9 @@ watch(
     ) {
       selectedWorktree.value = null;
     }
+    // Keep the manual target, but normalize project selection independently.
+    // Explicit navigation consults the editor guard before replacing the file.
+    if (viewMode.value === "files" && fileBrowserPreviewPath.value) return;
     // Validate currentPath against the (possibly new) root.
     // Fall back to projectRoot for non-git projects (no worktrees →
     // no main worktree path); otherwise fileBrowserCurrentPath would
@@ -985,7 +985,10 @@ const gitTag = useSpcodeGitTag();
 // still resets its filter on the switch, so entering History afterwards
 // (viewMode watcher below) fetches the default HEAD + 20 view.
 const gitLog = useSpcodeGitLog(
-  selectedWorktree,
+  // Freeze the absolute root in each request, including the main checkout.
+  computed(
+    () => selectedWorktree.value ?? mainWorktreePath.value ?? projectRoot.value,
+  ),
   computed(() => viewMode.value === "history"),
 );
 // 2026-07-17 git-revert: History-view per-commit revert. The sidebar
@@ -2170,14 +2173,13 @@ async function showProjectFiles(): Promise<boolean> {
   // Without a project, the Files tab still represents the open host reference.
   if (currentRoot.value) {
     hostFileTarget.value = null;
-    const root = currentRoot.value
-      .replace(/\\/g, "/")
-      .replace(/\/+$/, "")
-      .toLowerCase();
-    const preview = fileBrowserPreviewPath.value
-      ?.replace(/\\/g, "/")
-      .toLowerCase();
-    if (preview && preview !== root && !preview.startsWith(root + "/")) {
+    if (
+      fileBrowserPreviewPath.value &&
+      projectRelativePathStrict(
+        fileBrowserPreviewPath.value,
+        currentRoot.value,
+      ) === null
+    ) {
       fileBrowserPreviewPath.value = null;
       fileBrowserCurrentPath.value = currentRoot.value;
     }
@@ -3838,12 +3840,9 @@ async function onFileBrowserNavigate(payload: {
   previewPath: string | null;
 }): Promise<void> {
   const target = payload.previewPath ?? payload.dirPath;
-  const root = currentRoot.value?.replace(/\\/g, "/").replace(/\/+$/, "");
-  const normalized = target.replace(/\\/g, "/");
   if (
     hostFileTarget.value ||
-    !root ||
-    !(normalized === root || normalized.startsWith(root + "/"))
+    projectRelativePathStrict(target, currentRoot.value) === null
   ) {
     openHostPath(target);
     return;

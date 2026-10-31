@@ -5,11 +5,34 @@
 import { describe, expect, it } from "vitest";
 import {
   projectRelativePath,
+  projectRelativePathStrict,
   docsRootRelativePath,
   projectRelativeFromDoc,
   absoluteFromSelectedDoc,
   isPathInDocsRoot,
 } from "./pathUtils";
+
+describe("projectRelativePathStrict", () => {
+  it.each([
+    ["/tmp/A/same.py", "/tmp/A", "same.py"],
+    ["/tmp/A/same.py", "/tmp/a", null],
+    ["/tmp/A-old/same.py", "/tmp/A", null],
+    ["/tmp/A/../B/same.py", "/tmp/A", null],
+    ["/tmp/A/same.py", "/tmp/A/../A", null],
+    ["/tmp/A", "/tmp/A/", ""],
+    ["/tmp/A/same.py", "/", "tmp/A/same.py"],
+    ["f:\\repo\\Same.py", "F:/Repo", "Same.py"],
+    ["F:/Repo-old/Same.py", "f:/repo", null],
+    ["//SERVER/share/Repo/Same.py", "\\\\server\\SHARE\\repo", "Same.py"],
+    ["same.py", "/tmp/A", null],
+    ["/tmp/A/same.py", null, null],
+  ])(
+    "resolves %s against %s without a basename fallback",
+    (path, root, expected) => {
+      expect(projectRelativePathStrict(path, root)).toBe(expected);
+    },
+  );
+});
 
 describe("isPathInDocsRoot", () => {
   it("returns false when projectRoot is null / undefined / empty", () => {

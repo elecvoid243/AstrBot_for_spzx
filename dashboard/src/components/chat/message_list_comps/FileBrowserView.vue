@@ -28,7 +28,7 @@ import type { UseSpcodeGitShow } from "@/composables/useSpcodeGitShow";
 import { useSpcodeGitFile } from "@/composables/useSpcodeGitFile";
 import { useSpcodeGitFileDiff } from "@/composables/useSpcodeGitFileDiff";
 import { useResizableSplit } from "@/composables/useResizableSplit";
-import { projectRelativePath } from "@/composables/pathUtils";
+import { projectRelativePathStrict } from "@/composables/pathUtils";
 import FileBrowserBreadcrumb from "./FileBrowserBreadcrumb.vue";
 import FileBrowserFilePreview from "./FileBrowserFilePreview.vue";
 import FileTreeList from "./FileTreeList.vue";
@@ -372,12 +372,10 @@ watch(
 // `useSpcodeGitFile` instances don't share state, but git-show is
 // global anyway, and the document manager's cache lives across
 // file selections in a way we don't need here.)
-const gitFile = useSpcodeGitFile(computed(() => props.worktree ?? null));
+const gitFile = useSpcodeGitFile(computed(() => props.rootPath));
 
 // 2026-10-06 range-compare:任意两版本比较(git-file-diff 数据层)
-const gitFileDiff = useSpcodeGitFileDiff(
-  computed(() => props.worktree ?? null),
-);
+const gitFileDiff = useSpcodeGitFileDiff(computed(() => props.rootPath));
 /** 基准 SHA(第一次点选);第二次点选 = to。不做时间序纠正 */
 const rangeBase = ref<string | null>(null);
 const compareRange = ref<{ from: string; to: string } | null>(null);
@@ -387,14 +385,17 @@ const compareRange = ref<{ from: string; to: string } | null>(null);
  *  `<DocumentHistoryPanel>` as `file-relative`; the panel's
  *  `useSpcodeGitLog` watcher fires a refresh whenever this value
  *  changes, so switching between files re-fetches the commit list
- *  for the new path. `projectRelativePath` handles both absolute
- *  (tree-click) and already-relative (search-result-click) inputs
- *  and returns "" for the project root itself. */
+ *  for the new path. Only the resolved on-disk target may acquire
+ *  project actions; a retained preview outside this root stays manual. */
 const gitLogPath = computed<string>(() =>
-  props.hostReference
+  props.hostReference || previewState.value.kind !== "file"
     ? ""
-    : projectRelativePath(props.previewPath ?? "", props.rootPath),
+    : projectRelativePathStrict(
+        previewState.value.snapshot.meta.path,
+        props.rootPath,
+      ) ?? "",
 );
+const projectActionsAvailable = computed(() => !!gitLogPath.value);
 
 /** History pane resizer. Anchored to the right edge so the percent
  *  math matches the pane being on the right (mirrors the layout in
@@ -1090,6 +1091,7 @@ onBeforeUnmount(() => {
             class="file-browser-pane-right"
             :state="previewState"
             :host-reference="hostReference"
+            :project-actions-available="projectActionsAvailable"
             :scroll-to-end-line="hostReference?.endLine ?? null"
             :is-dark="!!isDark"
             :scroll-to-line="
@@ -1107,7 +1109,7 @@ onBeforeUnmount(() => {
             :range-active="!!compareRange"
             :range-pending="rangePending"
             :file-relative-path="gitLogPath"
-            :worktree="props.worktree ?? null"
+            :worktree="props.rootPath"
             @navigate-target="onPreviewTargetNavigate"
             @retry="
               hostReference ? emit('retry-host') : previewComposable.refresh()
@@ -1143,7 +1145,8 @@ onBeforeUnmount(() => {
             pattern (border-left, hover band).
           -->
           <div
-            v-show="!hostReference && !isHistoryCollapsed"
+            v-if="projectActionsAvailable"
+            v-show="!isHistoryCollapsed"
             class="file-browser-divider file-browser-divider--history"
             role="separator"
             aria-orientation="vertical"
@@ -1153,8 +1156,8 @@ onBeforeUnmount(() => {
             @mousedown="historySplit.startResize"
           />
           <div
-            v-if="!hostReference"
-            v-show="!hostReference && !isHistoryCollapsed"
+            v-if="projectActionsAvailable"
+            v-show="!isHistoryCollapsed"
             class="file-browser-history"
             :style="{ width: historySplit.percent.value + '%' }"
           >
@@ -1181,7 +1184,7 @@ onBeforeUnmount(() => {
             the border side).
           -->
           <button
-            v-if="!hostReference && isHistoryCollapsed"
+            v-if="projectActionsAvailable && isHistoryCollapsed"
             type="button"
             class="file-browser-expand-handle file-browser-expand-handle--history"
             :title="tm('spcodeProjectLoad.documentManager.pane.expandHistory')"

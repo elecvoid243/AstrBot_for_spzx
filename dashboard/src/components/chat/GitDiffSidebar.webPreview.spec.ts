@@ -423,6 +423,40 @@ describe("GitDiffSidebar web preview tab", () => {
   );
 });
 
+describe("explicit project return preserves platform path semantics", () => {
+  it.each([
+    ["/tmp/A", "/tmp/a", false],
+    ["F:/Repo", "f:/repo", true],
+  ])(
+    "returns from %s to %s through the public Files tab",
+    async (before, after, same) => {
+      const status = useSpcodeProjectStatus();
+      status.status.value = {
+        ...status.status.value,
+        loaded: true,
+        directory: before,
+      };
+      const wrapper = await mountSidebar();
+      const files = wrapper.findComponent({ name: "FileBrowserView" });
+      files.vm.$emit("navigate", {
+        dirPath: before,
+        previewPath: before + "/same.py",
+      });
+      await flushPromises();
+      expect(files.props("previewPath")).toBe(before + "/same.py");
+      status.status.value = { ...status.status.value, directory: after };
+      await flushPromises();
+      await tabButtons(wrapper)[0].trigger("click");
+      await flushPromises();
+      expect(files.props("previewPath")).toBe(
+        same ? before + "/same.py" : null,
+      );
+      expect(files.props("currentPath")).toBe(same ? before : after);
+      wrapper.unmount();
+    },
+  );
+});
+
 describe("host citation retry", () => {
   it.each([
     [40, 40],

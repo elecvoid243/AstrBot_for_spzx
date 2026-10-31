@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import aiohttp
 from aiohttp import web
@@ -34,6 +34,7 @@ async def main() -> None:
     parser.add_argument("--rich-previews", action="store_true")
     parser.add_argument("--editing", action="store_true")
     parser.add_argument("--review-corrections", action="store_true")
+    parser.add_argument("--target-context-corrections", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, required=True)
     parser.add_argument("--dashboard-dir", type=Path, required=True)
     parser.add_argument("--chromium", type=Path, required=True)
@@ -1993,6 +1994,397 @@ async def main() -> None:
                         assert all(review.values()), review
                         checks.extend(
                             f"F04 review correction: {name}" for name in review
+                        )
+                    if args.target_context_corrections:
+                        context_results = {}
+                        contexts = [evidence / "context-A", evidence / "context-B"]
+                        for directory, marker in zip(contexts, ["A", "B"]):
+                            directory.mkdir()
+                            (directory / "same.py").write_text(
+                                f"SOURCE_{marker} = '{marker}'\n", encoding="utf-8"
+                            )
+                            for command in [
+                                ["init", "-q"],
+                                ["config", "user.email", "fixture@example.invalid"],
+                                ["config", "user.name", "F04 fixture"],
+                                ["add", "same.py"],
+                                ["commit", "-qm", "fixture"],
+                            ]:
+                                await asyncio.to_thread(
+                                    subprocess.run,
+                                    ["git", "-C", str(directory), *command],
+                                    check=True,
+                                    capture_output=True,
+                                    creationflags=getattr(
+                                        subprocess, "CREATE_NO_WINDOW", 0
+                                    ),
+                                )
+                        context_a, context_b = contexts
+                        original_a = (context_a / "same.py").read_bytes()
+                        original_b = (context_b / "same.py").read_bytes()
+                        async with client.post(
+                            origin + "/api/v1/plugins/extensions/spcode/project-load",
+                            headers=headers,
+                            json={
+                                "umo": umo,
+                                "directory": str(context_a),
+                                "force": True,
+                                "no_agentsmd": True,
+                                "no_codegraph": True,
+                            },
+                        ) as response:
+                            assert (await response.json())["data"]["success"]
+                        await page.reload()
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.wait_for(timeout=60000)
+                        await click("F01 whole")
+                        await page.get_by_role("tab", name="工作区", exact=True).click()
+                        await (
+                            page.locator(".file-browser-entry")
+                            .filter(has_text="same.py")
+                            .click()
+                        )
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("SOURCE_A = 'A'", exact=True)
+                            .wait_for()
+                        )
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("SOURCE_A = 'A draft'\n")
+                        await page.wait_for_timeout(600)
+                        action_requests = []
+
+                        def trace_context_action(request):
+                            """Record file-operation targets without authentication headers.
+
+                            Args:
+                                request: Browser request emitted by the real ChatUI.
+                            """
+                            if "/spcode/" not in request.url:
+                                return
+                            route_name = request.url.split("/spcode/", 1)[1].split(
+                                "?", 1
+                            )[0]
+                            if route_name not in {
+                                "file-rename",
+                                "file-remove",
+                                "code-check",
+                                "code-format",
+                                "git-log",
+                                "git-file",
+                                "git-file-diff",
+                                "git-show",
+                                "host-file-write",
+                            }:
+                                return
+                            body = (
+                                request.post_data_json
+                                if request.method == "POST"
+                                else {
+                                    key: values[0]
+                                    for key, values in parse_qs(
+                                        urlparse(request.url).query
+                                    ).items()
+                                }
+                            )
+                            action_requests.append(
+                                {
+                                    "route": route_name,
+                                    "path": body.get("path"),
+                                    "worktree": body.get("worktree"),
+                                    "method": request.method,
+                                }
+                            )
+
+                        page.on("request", trace_context_action)
+                        async with client.post(
+                            origin + "/api/v1/plugins/extensions/spcode/project-load",
+                            headers=headers,
+                            json={
+                                "umo": umo,
+                                "directory": str(context_b),
+                                "force": True,
+                                "no_agentsmd": True,
+                                "no_codegraph": True,
+                            },
+                        ) as response:
+                            assert (await response.json())["data"]["success"]
+                        async with page.expect_response(
+                            lambda response: "/spcode/project-status" in response.url,
+                            timeout=90000,
+                        ):
+                            await page.locator(".chat-text-input, .chat-textarea").fill(
+                                "F04_TARGET_CONTEXT_SWITCH"
+                            )
+                            await page.locator(".send-btn").click()
+                        await page.wait_for_timeout(1200)
+                        context_results["draft_retained_after_A_to_B"] = (
+                            await page.locator(".cm-content").inner_text()
+                        ).rstrip("\n") == "SOURCE_A = 'A draft'"
+                        rename_available = (
+                            await page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="重命名", exact=True)
+                            .count()
+                            > 0
+                        )
+                        delete_available = (
+                            await page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="删除", exact=True)
+                            .count()
+                            > 0
+                        )
+                        page.once("dialog", lambda dialog: dialog.accept())
+                        await (
+                            page.locator(".preview-editor-toolbar")
+                            .get_by_role("button", name="取消", exact=True)
+                            .click()
+                        )
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("SOURCE_A = 'A'", exact=True)
+                            .wait_for()
+                        )
+                        context_results["detached_format_unavailable"] = (
+                            await page.locator(".code-check-format-bar").count() == 0
+                        )
+                        context_results["detached_history_unavailable"] = (
+                            await page.locator(".document-history-panel").count() == 0
+                        )
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill("SOURCE_A = 'A draft'\n")
+                        if rename_available:
+                            page.once("dialog", lambda dialog: dialog.accept())
+                            await (
+                                page.locator(".preview-editor-toolbar")
+                                .get_by_role("button", name="重命名", exact=True)
+                                .click()
+                            )
+                            dialog = page.get_by_role("dialog")
+                            await dialog.locator("input").fill(
+                                "renamed-in-wrong-project.py"
+                            )
+                            async with page.expect_response(
+                                "**/plugins/extensions/spcode/file-rename"
+                            ) as renamed:
+                                await dialog.get_by_role(
+                                    "button", name="重命名", exact=True
+                                ).click()
+                            assert (await (await renamed.value).json())["data"][
+                                "renamed"
+                            ]
+                        else:
+                            async with page.expect_response(
+                                "**/plugins/extensions/spcode/host-file-write"
+                            ) as saved:
+                                await (
+                                    page.locator(".preview-editor-toolbar")
+                                    .get_by_role("button", name="保存", exact=True)
+                                    .click()
+                                )
+                            assert (await (await saved.value).json())["data"]["saved"]
+                        context_results["detached_rename_delete_unavailable"] = (
+                            not rename_available and not delete_available
+                        )
+                        context_results["only_A_manually_saved"] = (
+                            (context_a / "same.py").read_bytes()
+                            == original_a.replace(b"'A'", b"'A draft'")
+                            and (context_b / "same.py").is_file()
+                            and (context_b / "same.py").read_bytes() == original_b
+                            and not (context_b / "renamed-in-wrong-project.py").exists()
+                        )
+                        context_results[
+                            "no_detached_project_action_requests"
+                        ] = not any(
+                            item["route"]
+                            in {
+                                "file-rename",
+                                "file-remove",
+                                "code-check",
+                                "code-format",
+                            }
+                            or (
+                                item["route"]
+                                in {"git-log", "git-file", "git-file-diff", "git-show"}
+                                and item["path"] == "same.py"
+                            )
+                            for item in action_requests
+                        )
+                        page.remove_listener("request", trace_context_action)
+                        evidence_a = {
+                            file.name: file.read_bytes().hex()
+                            for file in context_a.iterdir()
+                            if file.is_file()
+                        }
+                        evidence_b = {
+                            file.name: file.read_bytes().hex()
+                            for file in context_b.iterdir()
+                            if file.is_file()
+                        }
+                        (evidence / "target-context-actions.json").write_text(
+                            json.dumps(
+                                {
+                                    "checks": context_results,
+                                    "requests": action_requests,
+                                    "A": evidence_a,
+                                    "B": evidence_b,
+                                },
+                                indent=2,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                        async with client.post(
+                            origin + "/api/v1/plugins/extensions/spcode/project-load",
+                            headers=headers,
+                            json={
+                                "umo": umo,
+                                "directory": str(context_a),
+                                "force": True,
+                                "no_agentsmd": True,
+                                "no_codegraph": True,
+                            },
+                        ) as response:
+                            assert (await response.json())["data"]["success"]
+                        await page.reload()
+                        await page.get_by_role(
+                            "link", name="F01 whole", exact=True
+                        ).first.wait_for(timeout=60000)
+                        await click("F01 whole")
+                        await page.get_by_role("tab", name="工作区", exact=True).click()
+                        selected_tree = evidence / "selected-context-worktree"
+                        assert selected_tree.resolve().is_relative_to(evidence)
+                        await asyncio.to_thread(
+                            subprocess.run,
+                            [
+                                "git",
+                                "-C",
+                                str(context_a),
+                                "worktree",
+                                "add",
+                                "-b",
+                                "f04-current-target",
+                                str(selected_tree),
+                            ],
+                            check=True,
+                            capture_output=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        await page.locator(".git-diff-sidebar-bw-refresh").click()
+                        worktree_tab = page.locator(".git-diff-sidebar-tab").filter(
+                            has_text="f04-current-target"
+                        )
+                        await worktree_tab.wait_for()
+                        await worktree_tab.click()
+                        await (
+                            page.locator(".file-browser-entry")
+                            .filter(has_text="same.py")
+                            .click()
+                        )
+                        await (
+                            page.locator(".code-content")
+                            .get_by_text("SOURCE_A = 'A'", exact=True)
+                            .wait_for()
+                        )
+                        await page.get_by_role(
+                            "button", name="编辑", exact=True
+                        ).click()
+                        await page.locator(".cm-content").fill(
+                            "SELECTED WORKTREE COMPLETE DRAFT"
+                        )
+                        async with page.expect_response(
+                            lambda response: "/spcode/git-worktrees" in response.url,
+                            timeout=45000,
+                        ) as removed:
+                            await asyncio.to_thread(
+                                subprocess.run,
+                                [
+                                    "git",
+                                    "-C",
+                                    str(context_a),
+                                    "worktree",
+                                    "remove",
+                                    str(selected_tree),
+                                ],
+                                check=True,
+                                capture_output=True,
+                                creationflags=getattr(
+                                    subprocess, "CREATE_NO_WINDOW", 0
+                                ),
+                            )
+                        tree_paths = {
+                            Path(item["path"]).resolve()
+                            for item in (await (await removed.value).json())["data"][
+                                "worktrees"
+                            ]
+                        }
+                        assert selected_tree.resolve() not in tree_paths
+                        await page.wait_for_timeout(600)
+                        context_results["removed_selected_tree_draft_retained"] = (
+                            await page.locator(".cm-content").inner_text()
+                            == "SELECTED WORKTREE COMPLETE DRAFT"
+                        )
+                        context_results["removed_selected_tree_normalized"] = (
+                            await page.locator(".git-diff-sidebar-tab--active").count()
+                            == 1
+                        )
+                        await page.get_by_role("tab", name="工作区", exact=True).click()
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="取消", exact=True)
+                            .click()
+                        )
+                        context_results[
+                            "removed_selected_tree_cancel_retains_draft"
+                        ] = (
+                            await page.locator(".cm-content").inner_text()
+                            == "SELECTED WORKTREE COMPLETE DRAFT"
+                        )
+                        await page.get_by_role("tab", name="工作区", exact=True).click()
+                        await (
+                            page.get_by_role("dialog")
+                            .get_by_role("button", name="放弃并打开", exact=True)
+                            .click()
+                        )
+                        if context_results["removed_selected_tree_normalized"]:
+                            async with page.expect_response(
+                                lambda response: (
+                                    "/spcode/file-browser" in response.url
+                                    and "same.py" in response.url
+                                )
+                            ) as opened:
+                                await (
+                                    page.locator(".file-browser-entry")
+                                    .filter(has_text="same.py")
+                                    .click()
+                                )
+                            resolved = (await (await opened.value).json())["data"][
+                                "path"
+                            ]
+                            context_results[
+                                "removed_selected_tree_returns_main_root"
+                            ] = (
+                                Path(resolved).resolve()
+                                == (context_a / "same.py").resolve()
+                            )
+                        else:
+                            context_results[
+                                "removed_selected_tree_returns_main_root"
+                            ] = False
+                        await page.screenshot(
+                            path=str(evidence / "selected-worktree-removed.png")
+                        )
+                        (evidence / "target-context-results.json").write_text(
+                            json.dumps(context_results, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        assert all(context_results.values()), context_results
+                        checks.extend(
+                            f"F04 target context: {name}" for name in context_results
                         )
                     await browser.close()
         (evidence / "result.json").write_text(

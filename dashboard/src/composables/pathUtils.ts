@@ -47,6 +47,39 @@ export function projectRelativePath(
   return m ? m[0] : absPath;
 }
 
+/** Return a project-relative path only for an absolute target inside the root.
+ * Windows drive and UNC paths ignore case; POSIX paths preserve case.
+ * Unlike the display helper above, an unrelated target never becomes a basename.
+ */
+export function projectRelativePathStrict(
+  absPath: string,
+  projectRoot: string | null | undefined,
+): string | null {
+  if (!projectRoot) return null;
+  const windows =
+    /^[A-Za-z]:[\\/]/.test(projectRoot) || /^[\\/]{2}/.test(projectRoot);
+  const normRoot =
+    (windows ? projectRoot.replace(/\\/g, "/") : projectRoot).replace(
+      /\/+$/,
+      "",
+    ) || "/";
+  const normPath = windows ? absPath.replace(/\\/g, "/") : absPath;
+  if (
+    !(windows
+      ? /^(?:[A-Za-z]:\/|\/\/)/.test(normPath)
+      : normPath.startsWith("/")) ||
+    [...normRoot.split("/"), ...normPath.split("/")].some(
+      (part) => part === "." || part === "..",
+    )
+  )
+    return null;
+  const root = windows ? normRoot.toLowerCase() : normRoot;
+  const path = windows ? normPath.toLowerCase() : normPath;
+  if (path === root) return "";
+  const prefix = root === "/" ? "/" : root + "/";
+  return path.startsWith(prefix) ? normPath.slice(prefix.length) : null;
+}
+
 /**
  * Strip the (projectRoot + docsRoot) prefix from an absolute
  * path and return the docsRoot-relative path. The docsRoot

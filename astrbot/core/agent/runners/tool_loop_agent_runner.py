@@ -54,6 +54,7 @@ from astrbot.core.agent_team_execution import (
     model_delivery,
 )
 from astrbot.core.exceptions import (
+    AstrBotError,
     ContextCapacityError,
     EmptyModelOutputError,
     ToolProtocolIntegrityError,
@@ -1144,15 +1145,20 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         receipt: dict | None = None,
         previous_request: dict | None = None,
         check_output_limit: bool = True,
+        tools: ToolSet | None = None,
+        stage: str = "main",
     ) -> dict | None:
-        """Prepare and check one immutable provider-facing main-loop request.
+        """Prepare and check one immutable provider-facing request.
 
         Args:
-            contexts: Saved request view for an already authorized recovery.
+            contexts: Saved recovery view or the current auxiliary-stage input.
             include_model: Use the request's explicit model selection.
             receipt: Output ceiling returned by the existing execution admission.
             previous_request: View checked immediately before admission.
             check_output_limit: Reserve output only after admission can adjust it.
+            tools: Actual parameter schemas for an auxiliary request.
+            stage: Main generation or an existing parameter/repair stage. Auxiliary
+                views are estimated independently and never replace main history.
 
         Returns:
             Checked payload fields, or None when the user stopped preparation.
@@ -1165,6 +1171,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             contexts = self._sanitize_contexts_for_provider(
                 copy.deepcopy(self.run_context.messages)
             )
+        elif stage != "main":
+            contexts = self._sanitize_contexts_for_provider(copy.deepcopy(contexts))
         if contexts and isinstance(contexts[0], dict):
             contexts = bind_checkpoint_messages(contexts)
         # Initial extras were captured during reset, possibly before temporary
@@ -1227,7 +1235,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                 )
             self._assembled_extra_user_content_parts = copy.deepcopy(current_parts)
         contexts = self.request_context_manager.truncator.fix_messages(contexts)
-        func_tool = self._func_tool_for_provider()
+        func_tool = self._func_tool_for_provider() if stage == "main" else tools
         if func_tool:
             func_tool = copy.copy(func_tool)
             func_tool.tools = [copy.copy(tool) for tool in func_tool.tools]
@@ -1283,7 +1291,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self.request_context_manager = ContextManager(
                 self.request_context_manager_config
             )
-        usage_snapshot = self._context_usage_snapshot
+        # Auxiliary stages have their own messages and schemas. Fully estimate
+        # them without replacing the successful main-loop usage baseline.
+        usage_snapshot = self._context_usage_snapshot if stage == "main" else None
         if usage_snapshot and (
             usage_snapshot.provider is not self.provider
             or usage_snapshot.model != effective_model
@@ -1325,7 +1335,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             self._output_compression_report = (
                 self.request_context_manager.last_compression
             )
-        if checked != contexts:
+        if checked != contexts and stage == "main":
             receipts = self._member_message_receipts
             if previous_request and self._call_checkpoint:
                 receipts = self._call_checkpoint.get("member_messages", [])
@@ -2144,6 +2154,17 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         if llm_resp.tools_call_name:
             if self.tool_schema_mode == "skills_like":
                 requery_resp, _ = await self._resolve_tool_exec(llm_resp)
+                if self._output_compression_report is not None:
+                    yield AgentResponse(
+                        type="context_compression",
+                        data=AgentResponseData(
+                            chain=MessageChain(
+                                type="context_compression",
+                                chain=[Json(data=self._output_compression_report)],
+                            )
+                        ),
+                    )
+                    self._output_compression_report = None
                 if self._is_stop_requested():
                     yield await self._finalize_aborted_step()
                     return
@@ -3321,6 +3342,9 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
 
         Raises:
             ProcessPersistenceError: Saving the request or response failed.
+            ContextCapacityError: The parameter request cannot fit after compression.
+            ToolProtocolIntegrityError: Its history cannot be paired unambiguously.
+            AstrBotError: The provider returned an explicit parameter-stage error.
         """
         response = None
         resumed = self._resume_requery
@@ -3333,43 +3357,99 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                 self._reused_response = True
             else:
                 contexts = bind_checkpoint_messages(resumed["input_contexts"])
-        else:
-            contexts = self._sanitize_contexts_for_provider(contexts)
-            await self._save_call_checkpoint(
-                "request",
-                contexts=contexts,
-                stage=stage,
-                parent_response=parent,
-                previous_response=previous,
-            )
         if resumed is None or resumed["response"] is None:
-            receipt = await self._begin_metered_call(
-                "model",
-                (self._call_checkpoint or {}).get("invocation_id") or uuid.uuid4().hex,
-                name=self.provider.provider_config.get("id"),
-                contexts=contexts,
-                tools=tools,
-            )
-            params = dict(self.req.llm_params or {})
-            if receipt:
-                params[
-                    "max_completion_tokens"
-                    if "max_completion_tokens" in params
-                    else "max_tokens"
-                ] = receipt["max_output_tokens"]
+            invocation_id = resumed["invocation_id"] if resumed else uuid.uuid4().hex
+            receipt = None
             response = None
             try:
+                prepared = await self._prepare_llm_request(
+                    contexts=contexts,
+                    tools=tools,
+                    stage=stage,
+                    check_output_limit=False,
+                )
+                if prepared is None:
+                    return
+                before_admission = {
+                    "provider": self.provider,
+                    "model": prepared.get("model") or self.provider.get_model(),
+                    "messages": [
+                        message.model_dump(mode="json")
+                        if isinstance(message, Message)
+                        else copy.deepcopy(message)
+                        for message in prepared["contexts"]
+                    ],
+                    "tool_schema": prepared["func_tool"].openai_schema(),
+                }
+                history_before_admission = copy.deepcopy(self.run_context.messages)
+                if resumed is None:
+                    await self._save_call_checkpoint(
+                        "request",
+                        contexts=prepared["contexts"],
+                        stage=stage,
+                        parent_response=parent,
+                        previous_response=previous,
+                        invocation_id=invocation_id,
+                        llm_params=prepared["llm_params"],
+                    )
+                # Keep the same durable intent across admission and its final
+                # check, including when resuming a saved parameter request.
+                receipt = await self._begin_metered_call(
+                    "model",
+                    invocation_id,
+                    name=self.provider.provider_config.get("id"),
+                    contexts=prepared["contexts"],
+                    tools=prepared["func_tool"],
+                )
+                final_contexts = prepared["contexts"]
+                if (
+                    resumed is None
+                    and self.run_context.messages != history_before_admission
+                ):
+                    # Rebuild from current history when a late injection changes
+                    # it, preserving the existing stage's final instruction.
+                    final_contexts = [
+                        message.model_dump() for message in self.run_context.messages
+                    ] + [copy.deepcopy(contexts[-1])]
+                prepared = await self._prepare_llm_request(
+                    contexts=final_contexts,
+                    tools=tools,
+                    stage=stage,
+                    receipt=receipt,
+                    previous_request=before_admission,
+                )
+                if prepared is None:
+                    return
+                await self._save_call_checkpoint(
+                    "request",
+                    contexts=prepared["contexts"],
+                    stage=stage,
+                    parent_response=parent,
+                    previous_response=previous,
+                    invocation_id=invocation_id,
+                    llm_params=prepared["llm_params"],
+                    update_request=True,
+                )
+                if self._is_stop_requested():
+                    return
+                record_session_request(
+                    self.req.session_id or "",
+                    model=prepared.get("model") or self.provider.get_model(),
+                    func_tool=prepared["func_tool"],
+                    messages=prepared["contexts"],
+                    is_subagent=bool(
+                        (getattr(self.run_context.context, "extra", None) or {}).get(
+                            "is_subagent"
+                        )
+                    ),
+                )
                 with model_delivery(receipt):
                     response = await self._await_or_stop(
                         self.provider.text_chat(
-                            contexts=contexts,
-                            func_tool=tools,
-                            model=self.req.model,
+                            **prepared,
                             session_id=self.req.session_id,
-                            extra_user_content_parts=self.req.extra_user_content_parts,
                             abort_signal=self._abort_signal,
                             request_max_retries=self.request_max_retries,
-                            llm_params=params,
                         )
                     )
             finally:
@@ -3384,6 +3464,10 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         ):
             self.stats.token_usage += response.usage
             self.stats.current_context_tokens = response.usage.input
+        if response and response.role == "err":
+            raise AstrBotError(
+                f"Tool {stage} request failed: {response.completion_text or 'Unknown provider error'}"
+            )
         return response
 
     async def _resolve_tool_exec(

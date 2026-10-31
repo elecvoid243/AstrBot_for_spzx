@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "@/i18n/composables";
 import { pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
@@ -20,7 +20,29 @@ interface BrowserState {
   height?: number;
   image?: string;
   mime_type?: string;
-  type?: "state" | "frame" | "error";
+  type?: "state" | "frame" | "action" | "error";
+  document_id?: string;
+  viewport_width?: number;
+  viewport_height?: number;
+  scroll_x?: number;
+  scroll_y?: number;
+  current_action?: BrowserAction | null;
+  recent_actions?: BrowserAction[];
+  action_cursor?: number;
+  highlight?:
+    | (BrowserState & {
+        action_id: string;
+        x: number;
+        y: number;
+        expires_at: number;
+      })
+    | null;
+}
+
+interface BrowserAction {
+  action_id: string;
+  kind: "navigate" | "click" | "type" | "scroll" | "tab" | "close" | "inspect";
+  status: "running" | "succeeded" | "failed" | "timed_out" | "cancelled";
 }
 
 const state = ref<BrowserState | null>(null);
@@ -29,6 +51,73 @@ const loading = ref(false);
 const live = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
 let pending: AbortController | null = null;
+const now = ref(Date.now());
+let markerTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => state.value?.highlight,
+  (marker) => {
+    clearTimeout(markerTimer);
+    now.value = Date.now();
+    if (marker)
+      markerTimer = setTimeout(
+        () => {
+          now.value = Date.now();
+        },
+        Math.max(0, marker.expires_at * 1000 - Date.now()) + 1,
+      );
+  },
+);
+const marker = computed(() => {
+  const current = state.value;
+  const point = current?.highlight;
+  if (!point || !current?.image || point.expires_at * 1000 <= now.value)
+    return null;
+  if (
+    [
+      "generation",
+      "browser_session_id",
+      "tab_id",
+      "document_id",
+      "url",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+    ].some(
+      (field) =>
+        point[field as keyof BrowserState] !==
+        current[field as keyof BrowserState],
+    )
+  )
+    return null;
+  if (
+    ![point.x, point.y, point.viewport_width, point.viewport_height].every(
+      (value) => typeof value === "number" && Number.isFinite(value),
+    )
+  )
+    return null;
+  if (
+    point.x < 0 ||
+    point.y < 0 ||
+    point.x >= point.viewport_width! ||
+    point.y >= point.viewport_height!
+  )
+    return null;
+  if (
+    ![current.current_action, ...(current.recent_actions || [])].some(
+      (action) => action?.action_id === point.action_id,
+    )
+  )
+    return null;
+  return {
+    left: `${(point.x / point.viewport_width!) * 100}%`,
+    top: `${(point.y / point.viewport_height!) * 100}%`,
+  };
+});
+const actions = computed(() => [
+  ...(state.value?.current_action ? [state.value.current_action] : []),
+  ...(state.value?.recent_actions || []).slice(-32).reverse(),
+]);
 
 async function follow(
   current: BrowserState,
@@ -38,6 +127,7 @@ async function follow(
     chat_id: props.chatId!,
     generation: current.generation!,
     browser_session_id: current.browser_session_id!,
+    action_cursor: String(state.value?.action_cursor ?? 0),
   });
   const response = await fetchWithAuth(
     `/api/v1/plugins/extensions/browser-use/stream?${params}`,
@@ -73,7 +163,12 @@ async function follow(
         )
           continue;
         if (event.type === "error") throw new Error(t(`${key}.disconnected`));
-        if (event.type !== "frame" && event.type !== "state") continue;
+        if (
+          event.type !== "frame" &&
+          event.type !== "state" &&
+          event.type !== "action"
+        )
+          continue;
         if (
           event.type === "frame" &&
           (event.mime_type !== "image/jpeg" ||
@@ -91,7 +186,9 @@ async function follow(
         // A target/navigation state clears old pixels before its first new frame.
         const previous = state.value;
         const unchanged =
-          previous?.tab_id === event.tab_id && previous?.url === event.url;
+          previous?.tab_id === event.tab_id &&
+          previous?.url === event.url &&
+          previous?.document_id === event.document_id;
         state.value =
           event.type === "frame"
             ? event
@@ -190,6 +287,7 @@ const visibilityChanged = () => {
 };
 document.addEventListener("visibilitychange", visibilityChanged);
 onBeforeUnmount(() => {
+  clearTimeout(markerTimer);
   pending?.abort();
   document.removeEventListener("visibilitychange", visibilityChanged);
 });
@@ -233,12 +331,39 @@ onBeforeUnmount(() => {
       {{ loading ? t(`${key}.loading`) : t(`${key}.empty`) }}
     </div>
     <div v-else class="agent-browser-image">
-      <img
-        :src="`data:${state.mime_type};base64,${state.image}`"
-        :width="state.width"
-        :height="state.height"
-        :alt="state.title || t(`${key}.title`)"
-      />
+      <div class="agent-browser-viewport">
+        <img
+          :src="`data:${state.mime_type};base64,${state.image}`"
+          :width="state.width"
+          :height="state.height"
+          :alt="state.title || t(`${key}.title`)"
+        />
+        <span
+          v-if="marker"
+          class="agent-browser-target"
+          :style="marker"
+          :aria-label="t(`${key}.target`)"
+        />
+      </div>
+    </div>
+    <div
+      v-if="actions.length"
+      class="agent-browser-actions"
+      aria-live="polite"
+      :aria-label="t(`${key}.recentActions`)"
+    >
+      <strong>{{ t(`${key}.recentActions`) }}</strong>
+      <ol>
+        <li
+          v-for="action in actions"
+          :key="action.action_id"
+          :data-action-id="action.action_id"
+          :data-action-status="action.status"
+        >
+          {{ t(`${key}.actionKinds.${action.kind}`) }} ·
+          {{ t(`${key}.actionStatuses.${action.status}`) }}
+        </li>
+      </ol>
     </div>
   </section>
 </template>
@@ -281,5 +406,28 @@ onBeforeUnmount(() => {
   width: 100%;
   height: auto;
   pointer-events: none;
+}
+.agent-browser-viewport {
+  position: relative;
+}
+.agent-browser-target {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border: 3px solid #e65100;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px white;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.agent-browser-actions {
+  padding: 8px 12px;
+  font-size: 12px;
+  max-height: 150px;
+  overflow: auto;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+.agent-browser-actions ol {
+  padding-left: 20px;
 }
 </style>

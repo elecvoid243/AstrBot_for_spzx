@@ -10,7 +10,25 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot."
+    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot.",
+    "recentActions": "Recent actions",
+    "target": "Actual action position",
+    "actionKinds": {
+      "navigate": "Navigate",
+      "click": "Click",
+      "type": "Enter text (hidden)",
+      "scroll": "Scroll",
+      "tab": "Tab operation",
+      "close": "Close browser",
+      "inspect": "Read page"
+    },
+    "actionStatuses": {
+      "running": "Running / waiting",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "timed_out": "Timed out",
+      "cancelled": "Cancelled"
+    }
   },
   "title": "Let's Chat!",
   "subtitle": "Chat with AI Assistant",

@@ -30,6 +30,82 @@ beforeEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("renders safe action states and scales an actual marker, clearing it on reload and cancellation", async () => {
+    const page = {
+      ...current,
+      sequence: 1,
+      url: "/form",
+      document_id: "doc-1",
+      viewport_width: 1280,
+      viewport_height: 720,
+      scroll_x: 0,
+      scroll_y: 0,
+      image: "frame",
+      mime_type: "image/jpeg",
+      width: 1280,
+      height: 720,
+      action_cursor: 1,
+    };
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(ok(page));
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    await flushPromises();
+    expect(fetchStream.mock.calls[0][0]).toContain("action_cursor=1");
+    const action = { action_id: "actual", kind: "type", status: "running" };
+    const emit = async (event: unknown) => {
+      stream.enqueue(
+        new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`),
+      );
+      await flushPromises();
+    };
+    await emit({
+      ...page,
+      type: "action",
+      image: undefined,
+      sequence: 2,
+      current_action: action,
+      recent_actions: [],
+    });
+    expect(view.find('[data-action-status="running"]').exists()).toBe(true);
+    expect(view.find("img").exists()).toBe(true);
+    const terminal = {
+      ...page,
+      type: "action",
+      image: undefined,
+      sequence: 3,
+      current_action: null,
+      recent_actions: [{ ...action, status: "succeeded" }],
+      highlight: {
+        ...page,
+        action_id: "actual",
+        x: 640,
+        y: 360,
+        expires_at: Date.now() / 1000 + 2,
+      },
+    };
+    await emit(terminal);
+    expect(view.get(".agent-browser-target").attributes("style")).toContain(
+      "left: 50%",
+    );
+    expect(view.get(".agent-browser-target").attributes("style")).toContain(
+      "top: 50%",
+    );
+    expect(view.find('[data-action-status="succeeded"]').exists()).toBe(true);
+    await emit({ ...terminal, sequence: 4, document_id: "doc-2" });
+    expect(view.find(".agent-browser-target").exists()).toBe(false);
+    expect(view.find("img").exists()).toBe(false);
+    await emit({
+      ...page,
+      sequence: 5,
+      type: "frame",
+      recent_actions: [{ ...action, status: "cancelled" }],
+    });
+    expect(view.find('[data-action-status="cancelled"]').exists()).toBe(true);
+    expect(view.find(".agent-browser-target").exists()).toBe(false);
+    view.unmount();
+  });
+
   it("renders the owned frame and passes server identities to the snapshot request", async () => {
     get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
       ok({

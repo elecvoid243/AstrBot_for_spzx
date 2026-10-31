@@ -10,7 +10,25 @@
     "expired": "浏览器已变更，请刷新重连。",
     "unavailable": "浏览器不可用。",
     "loading": "正在读取快照…",
-    "empty": "请在当前聊天让 Agent 打开网页，然后刷新快照。"
+    "empty": "请在当前聊天让 Agent 打开网页，然后刷新快照。",
+    "recentActions": "最近动作",
+    "target": "实际操作位置",
+    "actionKinds": {
+      "navigate": "导航",
+      "click": "点击",
+      "type": "输入（内容已隐藏）",
+      "scroll": "滚动",
+      "tab": "标签页操作",
+      "close": "关闭浏览器",
+      "inspect": "读取页面"
+    },
+    "actionStatuses": {
+      "running": "执行中 / 等待",
+      "succeeded": "成功",
+      "failed": "失败",
+      "timed_out": "超时",
+      "cancelled": "已取消"
+    }
   },
   "title": "聊天吧!",
   "subtitle": "与AI助手进行对话",

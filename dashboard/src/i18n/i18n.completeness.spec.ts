@@ -41,7 +41,18 @@ describe("Agent browser i18n completeness", () => {
   const namespace = source.match(/const key = ["']([^"']+)["']/)?.[1];
   const suffixes = [
     ...new Set(
-      [...source.matchAll(/\$\{key\}\.([\w.]+)/g)].map((match) => match[1]),
+      [...source.matchAll(/\$\{key\}\.([\w.]+)/g)].flatMap((match) => {
+        const suffix = match[1];
+        if (suffix === "actionKinds.")
+          return Object.keys(chatEn.agentBrowser.actionKinds).map(
+            (kind) => suffix + kind,
+          );
+        if (suffix === "actionStatuses.")
+          return Object.keys(chatEn.agentBrowser.actionStatuses).map(
+            (status) => suffix + status,
+          );
+        return [suffix];
+      }),
     ),
   ];
   const { t, availableLocales } = useI18n();
@@ -116,9 +127,7 @@ describe("spcodeProjectLoad git-workflow history filter i18n completeness", () =
       const history = gitWorkflow?.history as
         | Record<string, unknown>
         | undefined;
-      const filter = history?.filter as
-        | Record<string, unknown>
-        | undefined;
+      const filter = history?.filter as Record<string, unknown> | undefined;
       expect(
         typeof filter?.apply,
         `${locale} missing history.filter.apply string`,

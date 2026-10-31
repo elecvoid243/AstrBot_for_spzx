@@ -10,7 +10,25 @@
     "expired": "Browser changed. Refresh to reconnect.",
     "unavailable": "Browser unavailable.",
     "loading": "Loading snapshot…",
-    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot."
+    "empty": "Ask the Agent to open a page in this chat, then refresh the snapshot.",
+    "recentActions": "Последние действия",
+    "target": "Фактическая позиция действия",
+    "actionKinds": {
+      "navigate": "Переход",
+      "click": "Нажатие",
+      "type": "Ввод текста (скрыт)",
+      "scroll": "Прокрутка",
+      "tab": "Действие с вкладкой",
+      "close": "Закрытие браузера",
+      "inspect": "Чтение страницы"
+    },
+    "actionStatuses": {
+      "running": "Выполняется / ожидание",
+      "succeeded": "Успешно",
+      "failed": "Ошибка",
+      "timed_out": "Время истекло",
+      "cancelled": "Отменено"
+    }
   },
   "title": "Давай пообщаемся!",
   "subtitle": "Общение с AI-помощником",

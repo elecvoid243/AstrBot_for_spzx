@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 
 from astrbot import logger
 from astrbot.core.exceptions import ContextCapacityError, ToolProtocolIntegrityError
+from astrbot.core.provider.modalities import sanitize_contexts_by_modalities
 
-from ..message import Message
+from ..message import Message, bind_checkpoint_messages
 from .compressor import LLMSummaryCompressor, TruncateByTurnsCompressor
 from .config import ContextConfig
 from .round_utils import split_into_rounds
@@ -95,6 +96,7 @@ class ContextManager:
         usage_snapshot: ContextUsageSnapshot | None = None,
         output_token_budget: int = 0,
         check_compression_threshold: bool = True,
+        modalities: list[str] | None = None,
     ) -> list[Message]:
         """Process the messages.
 
@@ -112,6 +114,8 @@ class ContextManager:
             check_compression_threshold: Check the normal compression trigger.
                 False only rechecks capacity after output admission, avoiding a
                 second futile compression of an already processed request.
+            modalities: Effective provider capabilities, also applied to any
+                replacement history before pairing and counting it.
 
         Returns:
             The processed message list.
@@ -129,6 +133,11 @@ class ContextManager:
         self.last_compression = None
         total_tokens = None
 
+        if modalities:
+            visible, stats = sanitize_contexts_by_modalities(messages, modalities)
+            if stats.changed:
+                messages = bind_checkpoint_messages(visible)
+        messages = self.truncator.fix_messages(messages)
         try:
             result = messages
 
@@ -160,7 +169,7 @@ class ContextManager:
                     > self.config.max_context_tokens
                 ):
                     result = await self._run_compression(
-                        result, total_tokens, func_tool, output_token_budget
+                        result, total_tokens, func_tool, output_token_budget, modalities
                     )
                     usage_snapshot = None
 
@@ -254,6 +263,7 @@ class ContextManager:
         prev_tokens: int,
         func_tool: "ToolSet | None" = None,
         output_token_budget: int = 0,
+        modalities: list[str] | None = None,
     ) -> list[Message]:
         """
         Compress/truncate the messages.
@@ -268,6 +278,7 @@ class ContextManager:
             prev_tokens: The token count before compression.
             func_tool: Tool set attached to the LLM summary request.
             output_token_budget: Output tokens reserved in the model window.
+            modalities: Effective provider capabilities for replacement history.
 
         Returns:
             The compressed/truncated message list.
@@ -290,7 +301,12 @@ class ContextManager:
             )
             messages = await self.compressor(messages)
 
-        # double check
+        # Validate the replacement view before counting or dropping any rounds.
+        if modalities:
+            visible, stats = sanitize_contexts_by_modalities(messages, modalities)
+            if stats.changed:
+                messages = bind_checkpoint_messages(visible)
+        messages = self.truncator.fix_messages(messages)
         tokens_after_summary = self._count_request_tokens(messages, func_tool)
 
         # calculate compress rate
@@ -345,6 +361,7 @@ class ContextManager:
                 rounds.pop(0)
                 dropped_rounds += 1
                 messages = system_messages + [msg for rnd in rounds for msg in rnd]
+                messages = self.truncator.fix_messages(messages)
                 tokens = self._count_request_tokens(messages, func_tool)
             logger.info(f"Dropped {dropped_rounds} oldest round(s).")
 

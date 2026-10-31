@@ -2,6 +2,8 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from astrbot.core.exceptions import ContextCapacityError, ToolProtocolIntegrityError
+
 from ...provider.modalities import (
     log_context_sanitize_stats,
     sanitize_contexts_by_modalities,
@@ -315,8 +317,8 @@ class LLMSummaryCompressor:
         """Use LLM to generate a summary of the conversation history.
 
         Uses round-based splitting to preserve user-assistant turn boundaries.
-        On LLM failure, returns the original messages unchanged (caller should
-        fall back to truncation).
+        On LLM failure, returns the paired input view so the caller can fall
+        back to truncation.
 
         Args:
             messages: The original message list.
@@ -327,6 +329,13 @@ class LLMSummaryCompressor:
                 the schema is visible but tools cannot run; if the model
                 still answers with a tool call (empty text), the request is
                 retried once without tools.
+
+        Returns:
+            Replacement history, or the paired input view when summarization
+            fails or its request cannot fit in the summary model window.
+
+        Raises:
+            ToolProtocolIntegrityError: History cannot be paired unambiguously.
         """
         from astrbot.core.agent_team_execution import (
             ProcessPersistenceError,
@@ -336,6 +345,11 @@ class LLMSummaryCompressor:
 
         from .round_utils import split_into_rounds
 
+        # Shared by automatic compression and direct kernel-compressor callers.
+        # Repair only the model view; execution records remain authoritative.
+        fixed_messages = ContextTruncator().fix_messages(messages)
+        if fixed_messages != messages:
+            messages = fixed_messages
         rounds = split_into_rounds(messages)
         message_rounds = [
             [seg for seg in rnd if isinstance(seg, Message)] for rnd in rounds
@@ -394,38 +408,48 @@ class LLMSummaryCompressor:
             self.provider.provider_config.get("modalities", None),
         )
         log_context_sanitize_stats(sanitize_stats)
+        sanitized_summary_contexts = [
+            message.model_dump()
+            for message in ContextTruncator().fix_messages(
+                bind_checkpoint_messages(sanitized_summary_contexts)
+            )
+        ]
+        modalities = self.provider.provider_config.get("modalities")
+        summary_tools = func_tool
+        if isinstance(modalities, list) and modalities and "tool_use" not in modalities:
+            summary_tools = None
 
         # Generate summary. A single attempt is enough: on failure the caller
         # falls back to truncation, so retrying (e.g. on an exhausted quota)
         # would only hold up the reply.
         summary_content = ""
         try:
-            for schemas in [func_tool, None] if func_tool is not None else [None]:
+            for schemas in (
+                [summary_tools, None] if summary_tools is not None else [None]
+            ):
                 execution = current_team_execution.get()
                 params = dict(self.llm_params or {})
                 receipt = None
-                input_tokens = EstimateTokenCounter().count_tokens(
+                input_tokens = self.token_counter.count_tokens(
                     bind_checkpoint_messages(sanitized_summary_contexts)
-                ) + (
-                    (
-                        len(
-                            json.dumps(
-                                [
-                                    {
-                                        "name": tool.name,
-                                        "description": tool.description,
-                                        "parameters": tool.parameters,
-                                    }
-                                    for tool in schemas.tools
-                                ]
-                            )
-                        )
-                        + 3
-                    )
-                    // 4
-                    if schemas
-                    else 0
                 )
+                if schemas:
+                    input_tokens += self.token_counter.count_tokens(
+                        [
+                            Message(
+                                role="system",
+                                content=json.dumps(
+                                    schemas.openai_schema(), ensure_ascii=False
+                                ),
+                            )
+                        ]
+                    )
+                window = self.provider.provider_config.get("max_context_tokens", 0)
+                if window > 0 and input_tokens > window:
+                    raise ContextCapacityError(
+                        f"Summary context capacity exceeded: {input_tokens} input "
+                        f"tokens cannot fit in the {window}-token window."
+                    )
                 if execution and execution.begin_usage:
                     receipt = await execution.begin_usage(
                         {
@@ -434,12 +458,48 @@ class LLMSummaryCompressor:
                             "kind": "model",
                             "name": self.provider.provider_config.get("id"),
                             "input_tokens": input_tokens,
-                            "max_output_tokens": params.get("max_tokens"),
+                            "max_output_tokens": params.get("max_completion_tokens")
+                            or params.get("max_tokens"),
                         }
                     )
-                    params["max_tokens"] = receipt["max_output_tokens"]
+                    params[
+                        "max_completion_tokens"
+                        if "max_completion_tokens" in params
+                        else "max_tokens"
+                    ] = receipt["max_output_tokens"]
                 response = None
                 try:
+                    output_budget = params.get("max_completion_tokens") or params.get(
+                        "max_tokens"
+                    )
+                    extra_body = self.provider.provider_config.get(
+                        "custom_extra_body", {}
+                    )
+                    configured_output = (
+                        extra_body.get("max_completion_tokens")
+                        or extra_body.get("max_tokens")
+                        if isinstance(extra_body, dict)
+                        else None
+                    )
+                    if isinstance(configured_output, int) and configured_output > 0:
+                        output_budget = (
+                            min(receipt["max_output_tokens"], configured_output)
+                            if receipt
+                            else configured_output
+                        )
+                    explicit_output = (
+                        isinstance(output_budget, int) and output_budget > 0
+                    )
+                    input_limit = (
+                        window - output_budget
+                        if explicit_output
+                        else int(window * self.compression_threshold)
+                    )
+                    if window > 0 and input_tokens > input_limit:
+                        raise ContextCapacityError(
+                            f"Summary context capacity exceeded: {input_tokens} input "
+                            f"tokens cannot fit with its output budget in the {window}-token window."
+                        )
                     with model_delivery(receipt):
                         if schemas is None and func_tool is not None:
                             # Tool-free recovery omits the original schema argument.
@@ -477,7 +537,7 @@ class LLMSummaryCompressor:
                 if summary_content:
                     break
         except Exception as e:
-            if isinstance(e, ProcessPersistenceError):
+            if isinstance(e, (ProcessPersistenceError, ToolProtocolIntegrityError)):
                 raise
             logger.error(f"Failed to generate summary: {e}")
             return messages

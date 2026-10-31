@@ -1314,6 +1314,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     and output_token_budget > 0
                     else 0,
                     check_compression_threshold=not unchanged,
+                    modalities=self.provider.provider_config.get("modalities"),
                 )
             )
         if checked is None:

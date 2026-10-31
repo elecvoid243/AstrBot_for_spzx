@@ -1415,6 +1415,7 @@ async def test_llm_compressor_passes_func_tool_to_summary_request():
         Message(role="user", content="u2"),
     ]
     toolset = MagicMock(name="chat_toolset")
+    toolset.openai_schema.return_value = []
 
     await compressor(messages, func_tool=toolset)  # type: ignore[arg-type]
 
@@ -1446,6 +1447,7 @@ async def test_llm_compressor_retries_without_tools_on_empty_completion():
         Message(role="user", content="u2"),
     ]
     toolset = MagicMock(name="chat_toolset")
+    toolset.openai_schema.return_value = []
 
     result = await compressor(messages, func_tool=toolset)  # type: ignore[arg-type]
 
@@ -1488,6 +1490,7 @@ async def test_summary_without_tools_fails_without_provider_retry():
         Message(role="user", content="current request"),
     ]
     toolset = MagicMock(name="chat_toolset")
+    toolset.openai_schema.return_value = []
 
     result = await compressor(messages, func_tool=toolset)
 

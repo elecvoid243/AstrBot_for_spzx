@@ -113,9 +113,10 @@ import { pluginExtensionApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import GitDiffBodyContent from "@/components/chat/message_list_comps/GitDiffBodyContent.vue";
 import FileBrowserView from "@/components/chat/message_list_comps/FileBrowserView.vue";
-import FileBrowserFilePreview from "@/components/chat/message_list_comps/FileBrowserFilePreview.vue";
 import { useSpcodeFileBrowser } from "@/composables/useSpcodeFileBrowser";
 import type { FileReferenceNavigation } from "@/composables/fileReference";
+import { parentOf } from "@/composables/useSpcodeDirectoryBrowser";
+import ProjectDirectoryBrowser from "./ProjectDirectoryBrowser.vue";
 import { useRecentFiles } from "@/composables/useRecentFiles";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import GitCommitBar from "@/components/chat/message_list_comps/GitCommitBar.vue";
@@ -456,11 +457,24 @@ watch(
 const fileBrowserPreviewPath = ref<string | null>(null);
 // Host navigation survives project/worktree refreshes and carries its own identity.
 const hostFileTarget = ref<FileReferenceNavigation | null>(null);
+let hostNavigationId = 0;
 const hostFile = useSpcodeFileBrowser(
   computed(() => hostFileTarget.value?.path ?? ""),
   true,
   computed(() => hostFileTarget.value?.requestId ?? 0),
 );
+const hostDirectoryPickerOpen = ref(false);
+const hostDirectory = computed(() => {
+  const state = hostFile.state.value;
+  if (state.kind === "directory") return state.snapshot.meta.path;
+  if (state.kind === "file") return parentOf(state.snapshot.meta.path) ?? "";
+  return parentOf(hostFileTarget.value?.path ?? "") ?? "";
+});
+const hostPreview = computed(() => {
+  const state = hostFile.state.value;
+  if (state.kind === "file") return state.snapshot.meta.path;
+  return state.kind === "directory" ? null : hostFileTarget.value?.path ?? null;
+});
 
 // 2026-07-02 sidebar-search: scroll target for the file preview, set
 // by onFileOpen() when the user clicks a search result. 1-based line
@@ -588,7 +602,9 @@ const branchPickerItems = computed<RefPickerItem[]>(() => {
   for (const [labelKey, names] of groups) {
     if (names.length === 0) continue;
     items.push({
-      title: tm(`spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`),
+      title: tm(
+        `spcodeProjectLoad.diffSidebar.gitWorkflow.history.${labelKey}`,
+      ),
       type: "subheader",
     });
     for (const name of names) items.push({ title: name, value: name });
@@ -771,7 +787,12 @@ const session = useSpcodeSession();
 watch(
   () => props.modelValue,
   (open) => {
-    if (open && !session.directory.value && !hostFileTarget.value && !props.fileReference) {
+    if (
+      open &&
+      !session.directory.value &&
+      !hostFileTarget.value &&
+      !props.fileReference
+    ) {
       viewMode.value = "browser";
       browserMode.value = "agent";
     }
@@ -2094,14 +2115,27 @@ function showProjectFiles(): boolean {
   if (!(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return false;
   // Without a project, the Files tab still represents the open host reference.
   if (currentRoot.value) hostFileTarget.value = null;
+  else if (!hostFileTarget.value) hostDirectoryPickerOpen.value = true;
   viewMode.value = "files";
   return true;
+}
+/** Open a manual host target through the same lifecycle as a citation. */
+function openHostPath(path: string): void {
+  if (!(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return;
+  hostFileTarget.value = {
+    path,
+    startLine: null,
+    endLine: null,
+    requestId: ++hostNavigationId,
+  };
+  viewMode.value = "files";
 }
 watch(
   () => props.fileReference,
   (target) => {
-    if (!target || !(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true)) return;
-    hostFileTarget.value = target;
+    if (!target || !(fileBrowserRef.value?.confirmLeaveEditing?.() ?? true))
+      return;
+    hostFileTarget.value = { ...target, requestId: ++hostNavigationId };
     viewMode.value = "files";
   },
   { flush: "post", immediate: true },
@@ -2683,7 +2717,10 @@ watch(
   (loaded) => {
     if (!loaded) {
       selectedWorktree.value = null;
-      if (!hostFileTarget.value && (viewMode.value !== "browser" || browserMode.value !== "agent"))
+      if (
+        !hostFileTarget.value &&
+        (viewMode.value !== "browser" || browserMode.value !== "agent")
+      )
         emit("update:modelValue", false);
     }
   },
@@ -3184,7 +3221,10 @@ async function onStashSubmit(params: { message: string }): Promise<void> {
 // 2026-08-21 git-stash-pop: apply a stash entry back onto the working
 // tree (git drops the entry on a clean apply; on conflict the entry is
 // kept and the reason is stash_conflict).
-async function onStashPop(params: { index: number; ref: string }): Promise<void> {
+async function onStashPop(params: {
+  index: number;
+  ref: string;
+}): Promise<void> {
   const result = await gitStash.pop({
     index: params.index,
     ref: params.ref,
@@ -3220,7 +3260,10 @@ async function onStashPop(params: { index: number; ref: string }): Promise<void>
 
 // 2026-08-21 git-stash-drop: delete a stash entry. The worktree is
 // untouched, so only the stash list needs a refresh.
-async function onStashDrop(params: { index: number; ref: string }): Promise<void> {
+async function onStashDrop(params: {
+  index: number;
+  ref: string;
+}): Promise<void> {
   const result = await gitStash.drop({
     index: params.index,
     ref: params.ref,
@@ -3725,6 +3768,17 @@ function onFileBrowserNavigate(payload: {
   dirPath: string;
   previewPath: string | null;
 }): void {
+  const target = payload.previewPath ?? payload.dirPath;
+  const root = currentRoot.value?.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = target.replace(/\\/g, "/");
+  if (
+    hostFileTarget.value ||
+    !root ||
+    !(normalized === root || normalized.startsWith(root + "/"))
+  ) {
+    openHostPath(target);
+    return;
+  }
   if (!showProjectFiles()) return;
   fileBrowserCurrentPath.value = payload.dirPath;
   fileBrowserPreviewPath.value = payload.previewPath;
@@ -4830,8 +4884,6 @@ const directoryPath = computed(() => {
 // gone — the list endpoint no longer ships patch text, and per-file
 // truncation is flagged by the file endpoint (rendered in the row body).
 
-
-
 // Root path for FileBrowserView: the active worktree, then the main
 // worktree, then the loaded project's root directory. We pass this
 // to FileBrowserView so it can render the breadcrumb. The projectRoot
@@ -4906,7 +4958,11 @@ watch(
                  carry navigation semantics. -->
             <span class="git-diff-sidebar-title">
               {{
-                tm(session.directory.value || hostFileTarget ? "spcodeProjectLoad.diffSidebar.title" : "agentBrowser.title")
+                tm(
+                  session.directory.value || hostFileTarget
+                    ? "spcodeProjectLoad.diffSidebar.title"
+                    : "agentBrowser.title",
+                )
               }}
             </span>
             <!-- UI #5: directory path is now shown as a compact breadcrumb-style
@@ -4924,7 +4980,11 @@ watch(
                reads as a lightweight toolbar instead of three chunky
                "circle" buttons. Loading state is preserved (a small
                spinner replaces the icon while the request is in flight). -->
-            <v-tooltip v-if="isProjectLoaded || hostFileTarget" location="bottom" :open-delay="200">
+            <v-tooltip
+              v-if="isProjectLoaded || hostFileTarget"
+              location="bottom"
+              :open-delay="200"
+            >
               <template #activator="{ props: tipProps }">
                 <v-btn
                   v-bind="tipProps"
@@ -5030,22 +5090,25 @@ watch(
           role="tablist"
           aria-label="Switch view"
         >
-            <button
-              v-if="isGitRepo || showNotGitRepoChip || hostFileTarget"
-              type="button"
-              role="tab"
-              :aria-selected="viewMode === 'files'"
-              :class="[
-                'git-diff-sidebar-view-tab',
-                { 'is-active': viewMode === 'files' },
-              ]"
-              @click="(hostFileTarget || viewMode !== 'files') && showProjectFiles()"
-            >
-              <v-icon size="14">mdi-folder-outline</v-icon>
-              <span>{{
-                tm("spcodeProjectLoad.fileBrowser.viewMode.files")
-              }}</span>
-            </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="viewMode === 'files'"
+            :class="[
+              'git-diff-sidebar-view-tab',
+              { 'is-active': viewMode === 'files' },
+            ]"
+            @click="showProjectFiles()"
+          >
+            <v-icon size="14">mdi-folder-outline</v-icon>
+            <span>{{
+              tm(
+                session.directory.value
+                  ? "spcodeProjectLoad.fileBrowser.viewMode.files"
+                  : "spcodeProjectLoad.fileBrowser.host.tab",
+              )
+            }}</span>
+          </button>
           <template v-if="isGitRepo || showNotGitRepoChip">
             <!-- 2026-07-11 document-manager:Documents 文档管理 sub-tab。 -->
             <button
@@ -5060,7 +5123,9 @@ watch(
               @click="viewMode = 'docs'"
             >
               <v-icon size="14">mdi-file-document-multiple-outline</v-icon>
-              <span>{{ tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs") }}</span>
+              <span>{{
+                tm("spcodeProjectLoad.gitDiffSidebar.tabs.docs")
+              }}</span>
             </button>
             <button
               type="button"
@@ -5073,7 +5138,9 @@ watch(
               @click="viewMode = 'diff'"
             >
               <v-icon size="14">mdi-source-pull</v-icon>
-              <span>{{ tm("spcodeProjectLoad.fileBrowser.viewMode.diff") }}</span>
+              <span>{{
+                tm("spcodeProjectLoad.fileBrowser.viewMode.diff")
+              }}</span>
             </button>
             <!-- Spec 2026-06-24 §2 决策 #10:History 是第 3 个 viewMode。 -->
             <button
@@ -5864,7 +5931,11 @@ watch(
         <div
           ref="sidebarBodyRef"
           class="git-diff-sidebar-body"
-          :class="{ 'git-diff-sidebar-body--agent': (viewMode === 'browser' && browserMode === 'agent') || (viewMode === 'files' && !!hostFileTarget) }"
+          :class="{
+            'git-diff-sidebar-body--agent':
+              (viewMode === 'browser' && browserMode === 'agent') ||
+              (viewMode === 'files' && !!hostFileTarget),
+          }"
           v-show="!!hostFileTarget || !isProjectLoaded || !conflictBodyHidden"
         >
           <!-- 2026-07-18 workspace-search-parity: the files-view search
@@ -5873,10 +5944,16 @@ watch(
              fullscreen Teleport instead of being left behind in the
              sidebar. The body now renders FileBrowserView directly. -->
           <FileBrowserView
-            v-if="viewMode === 'files' && !hostFileTarget"
+            v-if="viewMode === 'files'"
             ref="fileBrowserRef"
-            :current-path="fileBrowserCurrentPath"
-            :preview-path="fileBrowserPreviewPath"
+            :current-path="
+              hostFileTarget ? hostDirectory : fileBrowserCurrentPath
+            "
+            :preview-path="
+              hostFileTarget ? hostPreview : fileBrowserPreviewPath
+            "
+            :host-reference="hostFileTarget"
+            :host-state="hostFile.state.value"
             :is-dark="!!isDark"
             :root-path="currentRoot"
             :scroll-to-line="fileSearchScrollToLine"
@@ -5886,19 +5963,12 @@ watch(
             :git-show="gitShow"
             :recent-entries="recentFiles.entries.value"
             @navigate="onFileBrowserNavigate"
+            @open-path="openHostPath"
+            @browse-host="hostDirectoryPickerOpen = true"
             @open-file="onFileOpen"
             @recent-select="onRecentSelect"
             @recent-remove="(p) => recentFiles.remove(p.path)"
             @recent-clear="showClearConfirm = true"
-          />
-          <FileBrowserFilePreview
-            v-else-if="viewMode === 'files' && hostFileTarget"
-            :state="hostFile.state.value"
-            :is-dark="!!isDark"
-            :host-reference="hostFileTarget"
-            :scroll-to-line="hostFileTarget.startLine"
-            :scroll-to-end-line="hostFileTarget.endLine"
-            @retry="hostFile.refresh()"
           />
           <GitDiffBodyContent
             v-else-if="viewMode === 'diff'"
@@ -6770,6 +6840,11 @@ watch(
       </aside>
     </transition>
   </Teleport>
+  <ProjectDirectoryBrowser
+    v-model="hostDirectoryPickerOpen"
+    host-browsing
+    @select="openHostPath"
+  />
 </template>
 
 <style scoped>

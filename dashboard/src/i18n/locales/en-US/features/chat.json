@@ -1036,6 +1036,14 @@
         "removeTooltip": "Remove from list",
         "clearConfirmTitle": "Clear recent files?",
         "clearConfirmMessage": "This will remove all recently opened files from the list. It cannot be undone."
+      },
+      "host": {
+        "browse": "Browse host folders or drives",
+        "up": "Parent directory",
+        "entry": "Files & Browser",
+        "tab": "Files",
+        "pathInputPlaceholder": "Enter a host absolute path or a path relative to this directory",
+        "pathInputTooltip": "Click to enter a host file or directory path"
       }
     },
     "diffSidebar": {

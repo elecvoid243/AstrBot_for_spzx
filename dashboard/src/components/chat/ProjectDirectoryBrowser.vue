@@ -16,13 +16,14 @@
       不崩溃、可返回上级
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import type { SpcodeFileBrowserEntry } from "@/composables/parseSpcodeFileBrowser";
 import { useSpcodeDirectoryBrowser } from "@/composables/useSpcodeDirectoryBrowser";
 
 const props = defineProps<{
   modelValue: boolean;
+  hostBrowsing?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -33,7 +34,7 @@ const emit = defineEmits<{
 
 const { tm } = useModuleI18n("features/chat");
 
-const browser = useSpcodeDirectoryBrowser();
+const browser = useSpcodeDirectoryBrowser(computed(() => !!props.hostBrowsing));
 /** Currently clicked directory (null = the browsed folder itself is the pick). */
 const selectedPath = ref<string | null>(null);
 /** Manual jump input (absolute path, Enter or button triggers). */
@@ -67,10 +68,11 @@ watch(
     if (open) {
       selectedPath.value = null;
       void browser.goHome();
-    }
+    } else browser.cancel();
   },
   { immediate: true },
 );
+onBeforeUnmount(browser.cancel);
 
 // Navigating resets the transient selection (currentPath becomes the pick).
 watch(
@@ -101,6 +103,8 @@ function onConfirm(): void {
 
 const errorText = computed<string>(() => {
   switch (browser.error.value) {
+    case "spcode_unavailable":
+      return tm("spcodeProjectLoad.fileBrowser.reference.unavailable");
     case "path_not_found":
       return tm("spcodeProjectLoad.directoryBrowser.errorPathNotFound");
     case "permission_denied":
@@ -112,9 +116,13 @@ const errorText = computed<string>(() => {
 </script>
 
 <template>
-  <v-dialog :model-value="modelValue" max-width="640" @update:model-value="emit('update:modelValue', $event)">
+  <v-dialog
+    :model-value="modelValue"
+    max-width="640"
+    @update:model-value="emit('update:modelValue', $event)"
+  >
     <v-card>
-      <v-card-title class="text-h3 pa-4 pb-2 pl-6">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">
         {{ tm("spcodeProjectLoad.directoryBrowser.title") }}
       </v-card-title>
       <v-card-text>
@@ -158,11 +166,7 @@ const errorText = computed<string>(() => {
                 v-for="(seg, i) in browser.breadcrumbs.value"
                 :key="seg.path"
               >
-                <v-icon
-                  icon="mdi-chevron-right"
-                  size="x-small"
-                  class="mx-1"
-                />
+                <v-icon icon="mdi-chevron-right" size="x-small" class="mx-1" />
                 <button
                   type="button"
                   class="breadcrumb-seg"
@@ -173,7 +177,9 @@ const errorText = computed<string>(() => {
               </template>
             </template>
             <span
-              v-if="!browser.computerMode.value && !browser.breadcrumbs.value.length"
+              v-if="
+                !browser.computerMode.value && !browser.breadcrumbs.value.length
+              "
               class="text-caption text-medium-emphasis"
             >
               {{ tm("spcodeProjectLoad.directoryBrowser.loading") }}
@@ -190,7 +196,9 @@ const errorText = computed<string>(() => {
             hide-details
             class="flex-grow-1"
             data-testid="dir-path-input"
-            :placeholder="tm('spcodeProjectLoad.directoryBrowser.pathInputPlaceholder')"
+            :placeholder="
+              tm('spcodeProjectLoad.directoryBrowser.pathInputPlaceholder')
+            "
             :error="pathInputError"
             @update:model-value="pathInputError = false"
             @keydown.enter="onJumpInput"
@@ -204,10 +212,7 @@ const errorText = computed<string>(() => {
             {{ tm("spcodeProjectLoad.directoryBrowser.jump") }}
           </v-btn>
         </div>
-        <div
-          v-if="pathInputError"
-          class="text-caption text-error mb-2"
-        >
+        <div v-if="pathInputError" class="text-caption text-error mb-2">
           {{ tm("spcodeProjectLoad.directoryBrowser.pathInputError") }}
         </div>
 
@@ -222,7 +227,12 @@ const errorText = computed<string>(() => {
         >
           {{ errorText }}
           <template #close>
-            <v-btn icon="mdi-refresh" variant="text" size="x-small" @click="browser.goHome">
+            <v-btn
+              icon="mdi-refresh"
+              variant="text"
+              size="x-small"
+              @click="browser.goHome"
+            >
               {{ tm("spcodeProjectLoad.directoryBrowser.retry") }}
             </v-btn>
           </template>

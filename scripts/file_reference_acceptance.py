@@ -1,4 +1,4 @@
-"""Exercise F01 through real login, Agent replies and the installed spcode service."""
+"""Exercise file references and host browsing through the real authenticated ChatUI."""
 
 import argparse
 import asyncio
@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -54,6 +55,14 @@ async def main() -> None:
             ".scratch",
         ),
     )
+    cross_drive = tempfile.TemporaryDirectory(prefix="astrbot-f02-")
+    cross_folder = Path(cross_drive.name)
+    cross_file = cross_folder / "C-drive.txt"
+    cross_file.write_text("F02 REAL C DRIVE\n", encoding="utf-8")
+    overlimit = cross_folder / "overlimit"
+    overlimit.mkdir()
+    for index in range(1002):
+        (overlimit / f"temporary-{index:04}.txt").touch()
     files = evidence / "宿主 外部文件"
     files.mkdir()
     target = files / "源 文件#%.py"
@@ -278,6 +287,112 @@ async def main() -> None:
                         await page.get_by_role("button", name="关闭", exact=True).click(
                             timeout=2500
                         )
+
+                    async def jump_host(path):
+                        """Enter a real host target through the production path bar.
+
+                        Args:
+                            path: Absolute filesystem path to browse or preview.
+                        """
+                        await page.locator(".breadcrumb-leaf").click()
+                        await page.locator(".breadcrumb-path-input").fill(str(path))
+                        await page.locator(".breadcrumb-path-input").press("Enter")
+
+                    await page.get_by_role(
+                        "button", name="文件与浏览器", exact=True
+                    ).click()
+                    await page.get_by_role("tab", name="文件", exact=True).click()
+                    picker = page.locator(".v-dialog")
+                    await picker.locator('[data-testid="dir-path-input"] input').fill(
+                        str(files)
+                    )
+                    await picker.locator('[data-testid="dir-path-input"] input').press(
+                        "Enter"
+                    )
+                    await picker.get_by_text(files.name, exact=True).first.wait_for()
+                    await picker.locator('[data-testid="dir-confirm"]').click()
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text="second.txt")
+                        .click()
+                    )
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("SECOND TARGET", exact=True)
+                        .wait_for()
+                    )
+                    assert (
+                        files.drive.lower() == "g:"
+                        and cross_folder.drive.lower() == "c:"
+                    )
+                    await page.get_by_role(
+                        "button", name="浏览宿主目录或切换盘符", exact=True
+                    ).click()
+                    await picker.locator('[data-testid="dir-computer"]').click()
+                    await picker.locator(".dir-item").filter(has_text="C:\\").dblclick()
+                    await picker.locator('[data-testid="dir-path-input"] input').fill(
+                        str(cross_folder)
+                    )
+                    await picker.locator('[data-testid="dir-path-input"] input').press(
+                        "Enter"
+                    )
+                    await picker.get_by_text(
+                        cross_folder.name, exact=True
+                    ).first.wait_for()
+                    await picker.locator('[data-testid="dir-confirm"]').click()
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text="C-drive.txt")
+                        .click()
+                    )
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    await page.screenshot(path=str(evidence / "host-browsing-zh.png"))
+                    await jump_host(target)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F01 source line 80", exact=True)
+                        .wait_for()
+                    )
+                    await page.get_by_role(
+                        "button", name="上一级目录", exact=True
+                    ).click()
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text=files.name)
+                        .wait_for()
+                    )
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text=files.name)
+                        .dblclick()
+                    )
+                    await (
+                        page.locator(".file-browser-entry")
+                        .filter(has_text="second.txt")
+                        .wait_for()
+                    )
+                    checks.append(
+                        "F02 no project manual Files entry; real G:/C: drive picker, directory items, parent navigation and file path input"
+                    )
+                    await jump_host(overlimit)
+                    await page.get_by_text(
+                        "⚠ 列表已截断,仅显示前 1000 项", exact=True
+                    ).wait_for()
+                    await jump_host(cross_folder / "missing-folder")
+                    await page.get_by_text("路径不存在", exact=False).first.wait_for()
+                    checks.append(
+                        "F02 real missing manual target and real 1002-entry directory show explicit error and truncation"
+                    )
+                    await page.get_by_role(
+                        "button", name="文件与浏览器", exact=True
+                    ).click()
+                    await page.wait_for_timeout(250)
+                    file_requests.clear()
+
                     await page.locator(".chat-text-input, .chat-textarea").fill(
                         "F01_RUN"
                     )
@@ -435,6 +550,122 @@ async def main() -> None:
                     checks.append(
                         "history links remain host-absolute across two real project loads"
                     )
+
+                    # Manual host browsing must leave the actual session context unchanged.
+                    async def session_context():
+                        """Read the real project and worktree state for this conversation.
+
+                        Returns:
+                            Stable project directory and active worktree values.
+                        """
+                        values = []
+                        for route in ["project-status", "git-worktrees"]:
+                            async with client.get(
+                                origin + "/api/v1/plugins/extensions/spcode/" + route,
+                                headers=headers,
+                                params={"umo": umo},
+                            ) as response:
+                                state = (await response.json())["data"]
+                                values.append(
+                                    (
+                                        state.get("directory"),
+                                        state.get("active_worktree"),
+                                    )
+                                )
+                        return values
+
+                    async with client.post(
+                        origin + "/api/v1/plugins/extensions/spcode/worktree-activate",
+                        headers=headers,
+                        json={"umo": umo, "path": str(project)},
+                    ) as response:
+                        assert (await response.json())["data"]["success"]
+                    async with client.post(
+                        origin + "/api/v1/chat/file-access-mode",
+                        headers=headers,
+                        json={"umo": umo, "mode": "readonly"},
+                    ) as response:
+                        assert response.status == 200
+                    before_context = await session_context()
+                    async with client.get(
+                        origin + "/api/v1/chat/file-access-mode",
+                        headers=headers,
+                        params={"umo": umo},
+                    ) as response:
+                        before_permissions = (await response.json())["data"]
+                    await jump_host(cross_file)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    await jump_host(project_file)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("PROJECT FILE CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await jump_host(cross_file)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    await page.get_by_role(
+                        "button", name="Refresh worktrees", exact=False
+                    ).count()
+                    # The existing branch/worktree refresh control invokes real polling services.
+                    await page.locator(".git-diff-sidebar-bw-refresh").click()
+                    await page.wait_for_timeout(1200)
+                    assert await session_context() == before_context
+                    async with client.get(
+                        origin + "/api/v1/chat/file-access-mode",
+                        headers=headers,
+                        params={"umo": umo},
+                    ) as response:
+                        assert (await response.json())["data"] == before_permissions
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    checks.append(
+                        "F02 project -> external drive -> project -> external; actual project, active worktree and permission capsule unchanged across real status refresh"
+                    )
+                    await page.evaluate(
+                        "localStorage.setItem('astrbot-locale', 'en-US')"
+                    )
+                    await page.reload()
+                    await page.get_by_role(
+                        "link", name="F01 whole", exact=True
+                    ).first.wait_for(timeout=60000)
+                    await click("F01 whole")
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("CURRENT DISK CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await jump_host(cross_file)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    await page.screenshot(path=str(evidence / "host-browsing-en.png"))
+                    await page.evaluate(
+                        "localStorage.setItem('astrbot-locale', 'zh-CN')"
+                    )
+                    await page.reload()
+                    await page.get_by_role(
+                        "link", name="F01 whole", exact=True
+                    ).first.wait_for(timeout=60000)
+                    await click("F01 whole")
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("CURRENT DISK CONTENT", exact=True)
+                        .wait_for()
+                    )
+
                     await page.get_by_role("tab", name="工作区", exact=True).click()
                     await (
                         page.locator(".file-tree-list .entry-name")
@@ -506,6 +737,66 @@ async def main() -> None:
                     checks.append(
                         "citation -> Git diff -> actual open-file menu opens the selected project file"
                     )
+                    await click("F01 whole")
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("CURRENT DISK CONTENT", exact=True)
+                        .wait_for()
+                    )
+                    await jump_host(cross_file)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    temporary_worktree = evidence / "temporary-worktree"
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        [
+                            "git",
+                            "-C",
+                            str(project),
+                            "worktree",
+                            "add",
+                            "-b",
+                            "f02-fixture",
+                            str(temporary_worktree),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    await page.locator(".git-diff-sidebar-bw-refresh").click()
+                    await page.wait_for_timeout(1500)
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    assert await session_context() == before_context
+                    await page.locator(".sp-capsule").click()
+                    await page.get_by_role(
+                        "button", name="切换或重新加载项目…", exact=True
+                    ).click()
+                    async with page.expect_response(
+                        "**/plugins/extensions/spcode/project-unload"
+                    ) as unload:
+                        await page.get_by_role(
+                            "button", name="卸载当前加载目录", exact=True
+                        ).click()
+                    assert (await (await unload.value).json())["data"]["success"]
+                    await page.get_by_text("未加载项目", exact=True).first.wait_for(
+                        timeout=30000
+                    )
+                    await (
+                        page.locator(".code-content")
+                        .get_by_text("F02 REAL C DRIVE", exact=True)
+                        .wait_for()
+                    )
+                    checks.append(
+                        "F02 real worktree topology change and actual project unload preserve the external browser target"
+                    )
+
                     # Simulate unavailable transport only at the browser boundary.
                     await page.route(
                         "**/plugins/extensions/spcode/file-browser*",
@@ -577,6 +868,7 @@ async def main() -> None:
                 await asyncio.to_thread(process.wait, 15)
             if process.poll() is None:
                 process.kill()
+        cross_drive.cleanup()
         await runner.cleanup()
 
 

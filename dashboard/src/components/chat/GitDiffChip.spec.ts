@@ -4,9 +4,9 @@ import { mount } from '@vue/test-utils'
 import GitDiffChip from './GitDiffChip.vue'
 
 describe('GitDiffChip (status-row workspace capsule)', () => {
-  it('opens the Agent browser when no project is loaded', async () => {
+  it('opens host files and the Agent browser when no project is loaded', async () => {
     const wrapper = mount(GitDiffChip, { props: { browserOnly: true } })
-    expect(wrapper.find('.sp-ghost-btn__label').text()).toBe('Agent 浏览器')
+    expect(wrapper.find('.sp-ghost-btn__label').text()).toBe('文件与浏览器')
     await wrapper.find('button').trigger('click')
     expect(wrapper.emitted('toggle-diff-sidebar')).toHaveLength(1)
     wrapper.unmount()

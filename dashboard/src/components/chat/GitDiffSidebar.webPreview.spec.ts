@@ -156,7 +156,7 @@ describe("GitDiffSidebar web preview tab", () => {
     };
     const wrapper = await mountSidebar();
     await wrapper.setProps({ chatId: "chat-1" });
-    expect(tabButtons(wrapper)).toHaveLength(1);
+    expect(tabButtons(wrapper)).toHaveLength(2);
     expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(
       true,
     );
@@ -223,9 +223,7 @@ describe("GitDiffSidebar web preview tab", () => {
     });
     await flushPromises();
     expect(
-      wrapper
-        .findComponent({ name: "FileBrowserFilePreview" })
-        .props("hostReference"),
+      wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference"),
     ).toEqual(target);
     const status = useSpcodeProjectStatus();
     status.setUnloaded();
@@ -237,11 +235,56 @@ describe("GitDiffSidebar web preview tab", () => {
     );
     await flushPromises();
     expect(
-      wrapper
-        .findComponent({ name: "FileBrowserFilePreview" })
-        .props("hostReference"),
+      wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference"),
     ).toEqual(target);
     expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("uses the citation lifecycle for manual host directories and files without changing project context", async () => {
+    const wrapper = await mountSidebar();
+    const project = useSpcodeProjectStatus().status.value.directory;
+    wrapper
+      .findComponent({ name: "FileBrowserView" })
+      .vm.$emit("open-path", "C:/outside");
+    await flushPromises();
+    const files = wrapper.findComponent({ name: "FileBrowserView" });
+    expect(files.props("hostReference")).toMatchObject({
+      path: "C:/outside",
+      startLine: null,
+      requestId: 1,
+    });
+    files.vm.$emit("navigate", {
+      dirPath: "G:/other",
+      previewPath: "G:/other/file.py",
+    });
+    await flushPromises();
+    expect(files.props("hostReference")).toMatchObject({
+      path: "G:/other/file.py",
+      requestId: 2,
+    });
+    expect(useSpcodeProjectStatus().status.value.directory).toBe(project);
+    useSpcodeProjectStatus().setUnloaded();
+    await flushPromises();
+    expect(files.props("hostReference").path).toBe("G:/other/file.py");
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("provides the existing host folder picker from Files without loading a project", async () => {
+    useSpcodeProjectStatus().setUnloaded();
+    const wrapper = await mountSidebar();
+    await wrapper.setProps({ chatId: "host-chat" });
+    await tabButtons(wrapper)[0].trigger("click");
+    const picker = wrapper.findComponent({ name: "ProjectDirectoryBrowser" });
+    expect(picker.props("modelValue")).toBe(true);
+    picker.vm.$emit("select", "C:/temporary");
+    await flushPromises();
+    expect(
+      wrapper.findComponent({ name: "FileBrowserView" }).props("hostReference")
+        .path,
+    ).toBe("C:/temporary");
+    expect(postMock).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
@@ -340,6 +383,23 @@ describe("GitDiffSidebar web preview tab", () => {
             "project.txt",
           ),
         );
+        await wrapper.get(".file-browser-search-trigger").trigger("click");
+        await wrapper.setProps({
+          fileReference: {
+            path: "G:/outside/reference.txt",
+            startLine: null,
+            endLine: null,
+            requestId: 99,
+          },
+        });
+        await vi.waitFor(() =>
+          expect(wrapper.find(".code-content").text()).toContain(
+            "EXTERNAL CITATION",
+          ),
+        );
+        expect(wrapper.find(".file-browser-search-input").exists()).toBe(false);
+        await tabButtons(wrapper)[0].trigger("click");
+        await flushPromises();
       } else {
         await tabButtons(wrapper)[2].trigger("click");
         await flushPromises();

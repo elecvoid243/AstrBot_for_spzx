@@ -75,6 +75,22 @@ menu to open that project file instead of the previous reference. These explicit
 actions preserve the existing check for unsaved edits; background project or
 worktree refreshes leave the reference in place.
 
+### Browse host folders and drives
+
+Without a project, open **Files & Browser** above the composer, choose **Files**, then select a host folder. **Browse host folders or drives** in the file pane reopens the existing folder picker: use **This PC** to select another Windows drive, or enter an absolute folder path. Selecting a location only changes the file pane; it does not load a project.
+
+Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing read-only preview. Parent breadcrumbs and **Parent directory** can leave the project root. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
+
+With a project loaded, **Workspace → Files** still returns to its file list. Manual host browsing and file references share one navigation lifecycle and remain independent of Agent project, active worktree, execution directory and permissions, including read-only mode. Project polling, worktree-list changes and project unload preserve an open external target. Git Diff/History, Documents and Terminal retain their project context; Web Preview and the Agent browser remain available.
+
+| Previous entry | Current entry |
+| --- | --- |
+| Agent browser without a project | Files & Browser → Files / Web Preview |
+| Project-relative path input | File pane breadcrumb → host absolute path or path relative to the listed directory |
+| Files bounded by the project root | Parent breadcrumbs / Parent directory / Browse host folders or drives |
+
+![Actual host browsing on Windows in the isolated production ChatUI](./images/host-file-browser.png)
+
 ## Two-Factor Authentication
 
 AstrBot WebUI supports TOTP (Time-based One-Time Password) based two-factor authentication.
@@ -156,7 +172,7 @@ The desktop screenshots show resized panels with the conversation sidebar collap
 
 ### Project Workbench Web Preview
 
-With a project loaded for the current conversation, click **Workspace** above the composer (tooltip: **Browse workspace files, changes, and history**) to open **Project Workbench**, then select **Web Preview** beside **Terminal**. The tabs appear when the workbench recognizes the project as a Git repository or shows its non-Git project indicator; they may be absent while the project check fails or is pending.
+With a project loaded for the current conversation, click **Workspace** above the composer (tooltip: **Browse workspace files, changes, and history**) to open **Project Workbench**, then select **Web Preview** beside **Terminal**. Files and Web Preview are also available without a project. The other project tabs appear after the workbench recognizes a Git or non-Git project; they may be absent while its project check is pending or fails.
 
 1. Start the website's development server separately. The preview does not start it for you.
 2. Enter its HTTP(S) address and press **Enter**, or select a suggested local port. For example, `localhost:5173` becomes `http://localhost:5173/`; a bare public hostname defaults to HTTPS. Localhost refers to the machine running your browser, which may differ from the AstrBot server.
@@ -172,7 +188,7 @@ This is an embedded page, with no back/forward controls. Its address bar keeps t
 | --- | --- |
 | Select reply text → Ask in thread | Unchanged: opens a saved branch thread; drag its left edge to resize on desktop |
 | No separate temporary-chat entry | Added: message area → New side chat; independent context, destroyed when closed |
-| No workbench entry without a project | Agent browser above the composer; the Workspace entry remains for loaded projects |
+| No workbench entry without a project | Files & Browser above the composer; the Workspace entry remains for loaded projects |
 | Workspace → Files / Documents / Git Diff / History / Terminal | Existing tabs remain; Web Preview is added after Terminal in Project Workbench |
 
 > [!NOTE]
@@ -296,7 +312,7 @@ Windows offline deployment requires the Browser Use `0.2.0` complete plugin ZIP,
 
 After a production Dashboard build, maintainers can run `python scripts/package_browser_observer_dashboard.py --output <dashboard.zip>` to include version/revision metadata and a SHA256 sidecar. Run `python scripts/browser_observer_acceptance.py --plugin-zip <complete-plugin.zip> --dashboard-dir <dist> --evidence-dir <new-temporary-directory>` with AstrBot development dependencies and `aiohttp playwright psutil` to test final-ZIP installation, real login, the complete chat interface, a deterministic local model, real plugin management and Chromium. Local proxy isolation does not replace a physically offline target or real vLLM verification. For a missing entry, check matching builds and cached assets; for `runtime_unavailable`, inspect plugin startup logs and the private interpreter; for `busy`, close the browser in its owning chat; for 401/403, sign in and use a chat you own.
 
-With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Without a code project, click **Agent browser** above the composer to open observation directly. With a project loaded, use the existing **Workspace → Web Preview → Agent browser** entry. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
+With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Without a code project, use **Files & Browser → Web Preview → Agent browser** above the composer. With a project loaded, use the existing **Workspace → Web Preview → Agent browser** entry. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
 
 Below the image, the view shows the current action and up to 32 recent results for navigation, clicking, input, scrolling and tab operations. Running/waiting, success, failure, timeout and cancellation have distinct states. Input summaries always hide the content. When actual execution supplies reliable coordinates, a brief ring marks the operation position at the viewport scale. Navigation (including reloading the same URL), tab changes, scrolling, the next action or a two-second expiry invalidate the marker. Without reliable positioning, only the action summary appears. When an action reports a new scroll position or viewport before its image arrives, the view clears the old pixels and waits for a matching frame before showing the marker. Cancellation does not undo page operations that have already happened.
 

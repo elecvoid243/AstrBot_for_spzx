@@ -4,10 +4,22 @@
      so the left pane keeps showing the parent directory while the right
      pane previews a file inside it. -->
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import {
+  computed,
+  ref,
+  watch,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+} from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
-import { useSpcodeFileBrowser } from "@/composables/useSpcodeFileBrowser";
+import {
+  useSpcodeFileBrowser,
+  type FileBrowserFetchState,
+} from "@/composables/useSpcodeFileBrowser";
+import type { FileReferenceNavigation } from "@/composables/fileReference";
+import { parentOf } from "@/composables/useSpcodeDirectoryBrowser";
 import { useSpcodeFileSearch } from "@/composables/useSpcodeFileSearch";
 import type { SpcodeFileBrowserEntry } from "@/composables/parseSpcodeFileBrowser";
 import type { UseSpcodeGitLog } from "@/composables/useSpcodeGitLog";
@@ -27,6 +39,8 @@ import type { RecentEntry } from "@/composables/useRecentFiles";
 const props = defineProps<{
   /** Directory whose entries are shown in the left pane. */
   currentPath: string;
+  hostReference?: FileReferenceNavigation | null;
+  hostState?: FileBrowserFetchState;
   /** File path to preview in the right pane; null = show hint. */
   previewPath: string | null;
   isDark?: boolean;
@@ -81,6 +95,8 @@ const props = defineProps<{
  * directory / breadcrumb clicks send { dirPath: <clicked>, previewPath: null }.
  */
 const emit = defineEmits<{
+  (e: "open-path", path: string): void;
+  (e: "browse-host"): void;
   (
     e: "navigate",
     payload: { dirPath: string; previewPath: string | null },
@@ -104,9 +120,25 @@ const spcodeStatus = useSpcodeProjectStatus();
 // `dirComposable` always fetches `currentPath`; `previewComposable`
 // only fetches when `previewPath` is non-empty (its watch has an
 // empty-path short-circuit to avoid spurious path_not_found errors).
-const dirComposable = useSpcodeFileBrowser(computed(() => props.currentPath));
+const dirComposable = useSpcodeFileBrowser(
+  computed(() =>
+    props.hostReference && props.hostState?.kind === "directory"
+      ? ""
+      : props.currentPath,
+  ),
+  computed(() => !!props.hostReference),
+  computed(() => props.hostReference?.requestId ?? 0),
+);
+const directoryState = computed(() =>
+  props.hostReference && props.hostState?.kind === "directory"
+    ? props.hostState
+    : dirComposable.state.value,
+);
 const previewComposable = useSpcodeFileBrowser(
-  computed(() => props.previewPath ?? ""),
+  computed(() => (props.hostReference ? "" : props.previewPath ?? "")),
+);
+const previewState = computed(() =>
+  props.hostReference ? props.hostState! : previewComposable.state.value,
 );
 
 // 2026-07-17 workspace file editor: the preview owns the edit state
@@ -148,14 +180,6 @@ const breadcrumbPath = computed<string>(() => {
   );
 });
 
-/** Compute the parent directory of a path (POSIX + Windows separators). */
-function parentOf(p: string): string {
-  const isWindows = p.includes("\\");
-  const lastSep = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
-  if (lastSep <= 0) return isWindows ? "\\" : "/";
-  return p.slice(0, lastSep);
-}
-
 function onEntryNavigate(entry: SpcodeFileBrowserEntry): void {
   if (!confirmLeaveEditing()) return;
   // Dangling symlink: EntryList already filters clicks on these.
@@ -165,7 +189,7 @@ function onEntryNavigate(entry: SpcodeFileBrowserEntry): void {
     // File or symlink: navigate to the parent (left pane shows the
     // directory listing) and preview the clicked path on the right.
     emit("navigate", {
-      dirPath: parentOf(entry.path),
+      dirPath: parentOf(entry.path) ?? props.currentPath,
       previewPath: entry.path,
     });
   }
@@ -194,7 +218,7 @@ function onPreviewTargetNavigate(resolvedTarget: string): void {
   // previewComposable will land on a directory state and the user
   // can then click the entry in the right pane to navigate into it.
   emit("navigate", {
-    dirPath: parentOf(resolvedTarget),
+    dirPath: parentOf(resolvedTarget) ?? props.currentPath,
     previewPath: resolvedTarget,
   });
 }
@@ -354,7 +378,9 @@ const compareRange = ref<{ from: string; to: string } | null>(null);
  *  (tree-click) and already-relative (search-result-click) inputs
  *  and returns "" for the project root itself. */
 const gitLogPath = computed<string>(() =>
-  projectRelativePath(props.previewPath ?? "", props.rootPath),
+  props.hostReference
+    ? ""
+    : projectRelativePath(props.previewPath ?? "", props.rootPath),
 );
 
 /** History pane resizer. Anchored to the right edge so the percent
@@ -513,17 +539,17 @@ const rangeDiffData = computed(() => {
 });
 
 /** I3:比较请求在飞 / 失败的呈现态(有数据后为 null) */
-const rangePending = computed<{ kind: "loading" } | { kind: "error"; reason: string } | null>(
-  () => {
-    const path = gitLogPath.value;
-    const cr = compareRange.value;
-    if (!path || !cr) return null;
-    if (gitFileDiff.getData(path, cr.from, cr.to)) return null;
-    const s = gitFileDiff.getState(path, cr.from, cr.to);
-    if (s.kind === "error") return { kind: "error", reason: s.reason };
-    return { kind: "loading" };
-  },
-);
+const rangePending = computed<
+  { kind: "loading" } | { kind: "error"; reason: string } | null
+>(() => {
+  const path = gitLogPath.value;
+  const cr = compareRange.value;
+  if (!path || !cr) return null;
+  if (gitFileDiff.getData(path, cr.from, cr.to)) return null;
+  const s = gitFileDiff.getState(path, cr.from, cr.to);
+  if (s.kind === "error") return { kind: "error", reason: s.reason };
+  return { kind: "loading" };
+});
 
 function onSetRangeBase(sha: string | null): void {
   rangeBase.value = sha;
@@ -586,6 +612,13 @@ function loadSearchOpen(): boolean {
   }
 }
 const searchOpen = ref<boolean>(loadSearchOpen());
+watch(
+  () => props.hostReference,
+  (target) => {
+    if (target) searchOpen.value = false;
+  },
+  { immediate: true },
+);
 
 const { query: fileSearchQuery, search: fileSearchSearch } =
   useSpcodeFileSearch();
@@ -776,7 +809,7 @@ onBeforeUnmount(() => {
            user always sees a mouse-friendly exit when the input
            has focus. -->
       <div
-        v-if="spcodeStatus.status.value.loaded"
+        v-if="spcodeStatus.status.value.loaded && !hostReference"
         class="file-browser-search-toolbar"
         data-testid="file-browser-search-toolbar"
       >
@@ -788,9 +821,11 @@ onBeforeUnmount(() => {
           :aria-label="tm('spcodeProjectLoad.diffSidebar.search.button')"
           @click="searchOpen = true"
         >
-          <v-icon size="16" class="file-browser-search-trigger__icon">mdi-magnify</v-icon>
+          <v-icon size="16" class="file-browser-search-trigger__icon"
+            >mdi-magnify</v-icon
+          >
           <span class="file-browser-search-trigger__placeholder">
-            {{ tm('spcodeProjectLoad.diffSidebar.search.placeholder') }}
+            {{ tm("spcodeProjectLoad.diffSidebar.search.placeholder") }}
           </span>
         </button>
         <input
@@ -825,10 +860,7 @@ onBeforeUnmount(() => {
            is gated on the project being loaded (same condition the
            breadcrumb used to carry), which also hides the fullscreen
            affordance when there is nothing to browse. -->
-      <div
-        v-if="spcodeStatus.status.value.loaded"
-        class="file-browser-topbar"
-      >
+      <div class="file-browser-topbar">
         <!-- 2026-07-02: breadcrumb lifted out of the v-if="!searchOpen"
            block so it stays visible even while the search panel is
            open. Previously the SearchPanel REPLACED the file browser
@@ -841,11 +873,41 @@ onBeforeUnmount(() => {
            file-list/preview body remain mutually exclusive below. -->
         <FileBrowserBreadcrumb
           class="file-browser-topbar-breadcrumb"
-          :current-path="breadcrumbPath"
-          :root-path="rootPath"
+          :current-path="
+            hostReference
+              ? hostState && 'snapshot' in hostState
+                ? hostState.snapshot.meta.path
+                : hostReference.path
+              : breadcrumbPath
+          "
+          host-browsing
+          :root-path="currentPath"
           :preview-path="props.previewPath"
           :is-dark="!!isDark"
           @navigate="onBreadcrumbNavigate"
+          @open-path="emit('open-path', $event)"
+        />
+        <v-btn
+          variant="text"
+          size="small"
+          icon="mdi-arrow-up"
+          :disabled="!parentOf(currentPath)"
+          :title="tm('spcodeProjectLoad.fileBrowser.host.up')"
+          :aria-label="tm('spcodeProjectLoad.fileBrowser.host.up')"
+          @click="
+            onBreadcrumbNavigate({
+              dirPath: parentOf(currentPath)!,
+              previewPath: null,
+            })
+          "
+        />
+        <v-btn
+          variant="text"
+          size="small"
+          icon="mdi-folder-search-outline"
+          :title="tm('spcodeProjectLoad.fileBrowser.host.browse')"
+          :aria-label="tm('spcodeProjectLoad.fileBrowser.host.browse')"
+          @click="emit('browse-host')"
         />
         <!-- File-area fullscreen toggle (2026-07-18). Icon-only v-btn
              matching the sidebar header chrome; the icon swaps between
@@ -881,7 +943,10 @@ onBeforeUnmount(() => {
         @open-file="onSearchOpenFile"
       />
       <template v-else>
-        <div v-if="!spcodeStatus.status.value.loaded" class="file-browser-empty">
+        <div
+          v-if="!spcodeStatus.status.value.loaded && !hostReference"
+          class="file-browser-empty"
+        >
           <v-icon size="36" color="grey">mdi-folder-open-outline</v-icon>
           <span class="empty-text">{{
             tm("spcodeProjectLoad.fileBrowser.placeholder")
@@ -946,7 +1011,7 @@ onBeforeUnmount(() => {
                  tree. v-if="rootPath" so we never render the panel
                  when there's no project context (spec §4.1). -->
             <RecentFilesBlock
-              v-if="rootPath"
+              v-if="rootPath && !hostReference"
               :entries="recentEntries ?? []"
               :current-root="rootPath"
               @select="onRecentSelect"
@@ -954,7 +1019,7 @@ onBeforeUnmount(() => {
               @clear="onRecentClear"
             />
             <FileTreeList
-              :state="dirComposable.state.value"
+              :state="directoryState"
               :selected-path="previewPath"
               :root-path="rootPath"
               :preview-path="previewPath"
@@ -1009,9 +1074,15 @@ onBeforeUnmount(() => {
             v-if="previewPath"
             ref="previewRef"
             class="file-browser-pane-right"
-            :state="previewComposable.state.value"
+            :state="previewState"
+            :host-reference="hostReference"
+            :scroll-to-end-line="hostReference?.endLine ?? null"
             :is-dark="!!isDark"
-            :scroll-to-line="props.scrollToLine ?? null"
+            :scroll-to-line="
+              hostReference
+                ? hostReference.startLine
+                : props.scrollToLine ?? null
+            "
             :selected-revision="selectedRevision"
             :view-mode="viewMode"
             :historical-content="historicalFileContent"
@@ -1024,13 +1095,20 @@ onBeforeUnmount(() => {
             :file-relative-path="gitLogPath"
             :worktree="props.worktree ?? null"
             @navigate-target="onPreviewTargetNavigate"
-            @retry="() => previewComposable.refresh()"
+            @retry="
+              hostReference
+                ? emit('open-path', hostReference.path)
+                : previewComposable.refresh()
+            "
             @saved="() => previewComposable.refresh()"
             @renamed="onPreviewRenamed"
             @deleted="onPreviewDeleted"
             @back-to-current="onBackToCurrent"
           />
-          <div v-else class="file-browser-pane-right file-browser-preview-empty">
+          <div
+            v-else
+            class="file-browser-pane-right file-browser-preview-empty"
+          >
             <v-icon size="32" color="grey">mdi-folder-open-outline</v-icon>
             <span class="preview-hint">
               {{ tm("spcodeProjectLoad.fileBrowser.preview.selectFromLeft") }}
@@ -1053,7 +1131,7 @@ onBeforeUnmount(() => {
             pattern (border-left, hover band).
           -->
           <div
-            v-show="!isHistoryCollapsed"
+            v-show="!hostReference && !isHistoryCollapsed"
             class="file-browser-divider file-browser-divider--history"
             role="separator"
             aria-orientation="vertical"
@@ -1063,7 +1141,8 @@ onBeforeUnmount(() => {
             @mousedown="historySplit.startResize"
           />
           <div
-            v-show="!isHistoryCollapsed"
+            v-if="!hostReference"
+            v-show="!hostReference && !isHistoryCollapsed"
             class="file-browser-history"
             :style="{ width: historySplit.percent.value + '%' }"
           >
@@ -1090,7 +1169,7 @@ onBeforeUnmount(() => {
             the border side).
           -->
           <button
-            v-if="isHistoryCollapsed"
+            v-if="!hostReference && isHistoryCollapsed"
             type="button"
             class="file-browser-expand-handle file-browser-expand-handle--history"
             :title="tm('spcodeProjectLoad.documentManager.pane.expandHistory')"

@@ -945,7 +945,7 @@
         "renameConfirm": "重命名",
         "renameSuccess": "已重命名为 {name}",
         "renameFailed": "重命名失败：{reason}",
-        "delete": "移入回收站",
+        "delete": "删除",
         "deleteDialogTitle": "删除文件",
         "deleteConfirmMessage": "将 {name} 移入系统回收站？可通过操作系统恢复。",
         "deleteConfirm": "移入回收站",

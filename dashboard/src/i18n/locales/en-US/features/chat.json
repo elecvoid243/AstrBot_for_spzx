@@ -945,7 +945,7 @@
         "renameConfirm": "Rename",
         "renameSuccess": "Renamed to {name}",
         "renameFailed": "Rename failed: {reason}",
-        "delete": "Move to recycle bin",
+        "delete": "Delete",
         "deleteDialogTitle": "Delete file",
         "deleteConfirmMessage": "Move {name} to the system recycle bin? You can restore it using your operating system.",
         "deleteConfirm": "Move to recycle bin",

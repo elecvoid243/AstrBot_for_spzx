@@ -2094,7 +2094,20 @@ async function confirmLeaveEditing(): Promise<boolean> {
 async function closeSidebar(): Promise<void> {
   if (await confirmLeaveEditing()) emit("update:modelValue", false);
 }
-defineExpose({ confirmLeaveEditing });
+/** Select the Agent browser for an automatic open without replacing an open view. */
+async function prepareAgentBrowser(): Promise<boolean> {
+  const chatId = props.chatId;
+  if (
+    props.modelValue ||
+    !(await confirmLeaveEditing()) ||
+    props.modelValue ||
+    props.chatId !== chatId
+  ) return false;
+  browserMode.value = "agent";
+  activeViewMode.value = "browser";
+  return true;
+}
+defineExpose({ confirmLeaveEditing, prepareAgentBrowser });
 
 function onHostSaved(saved?: SavedFileSnapshot): void {
   const state = hostFile.state.value;

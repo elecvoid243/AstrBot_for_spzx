@@ -1572,6 +1572,17 @@ onBeforeUnmount(() => {
             >
               {{ copyButtonText }}
             </v-btn>
+            <v-btn
+              v-if="canManage && !editMode"
+              size="x-small"
+              variant="text"
+              color="error"
+              prepend-icon="mdi-delete-outline"
+              :disabled="managing"
+              @click="onDeleteClick"
+            >
+              {{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}
+            </v-btn>
             <!-- 2026-08-14 open-on-disk: open the previewed file on
                  the AstrBot host with the OS default application.
                  Available for the current file and historical views
@@ -1590,26 +1601,11 @@ onBeforeUnmount(() => {
             </v-btn>
           </div>
 
-      <div v-if="canManage && !editMode" class="d-flex ga-2 pa-2">
-        <v-btn
-          size="small"
-          variant="text"
-          :disabled="managing"
-          @click="onRenameClick"
-          >{{ tm("spcodeProjectLoad.fileBrowser.editor.rename") }}</v-btn
-        >
-        <v-btn
-          size="small"
-          variant="text"
-          color="error"
-          :disabled="managing"
-          @click="onDeleteClick"
-          >{{ tm("spcodeProjectLoad.fileBrowser.editor.delete") }}</v-btn
-        >
-      </div>
-      <div v-if="hostReference" class="pa-2 text-caption" role="status">
-        {{ hostReference.path }} ·
-        {{ tm("spcodeProjectLoad.fileBrowser.reference.readOnly") }}
+      <div
+        v-if="hostReference && (referenceLineUnavailable || referenceRangeInvalid)"
+        class="pa-2 text-caption"
+        role="status"
+      >
         <span v-if="referenceLineUnavailable" class="text-warning">
           {{ tm("spcodeProjectLoad.fileBrowser.reference.lineUnavailable") }}
         </span>

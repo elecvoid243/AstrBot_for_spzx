@@ -326,6 +326,8 @@ interface UseMessagesOptions {
   currentSessionId: Ref<string>;
   onSessionsChanged?: () => Promise<void> | void;
   onStreamUpdate?: (sessionId: string) => void;
+  /** Live tool calls only; persisted history and result events never fire this hook. */
+  onToolCall?: (sessionId: string, tool: ToolCall, runId: string) => void;
   /**
    * Fired exactly once when a streaming response for a given session
    * ends — either because the server closed the stream normally, an
@@ -2226,6 +2228,13 @@ export function useMessages(options: UseMessagesOptions) {
           return;
         }
         upsertToolCall(botRecord, parsed);
+        if (sessionId && parsed && typeof parsed === "object") {
+          options.onToolCall?.(
+            sessionId,
+            parsed,
+            connection?.runId || connection?.messageId || String(botRecord.id),
+          );
+        }
         return;
       }
       // Author: elecvoid243

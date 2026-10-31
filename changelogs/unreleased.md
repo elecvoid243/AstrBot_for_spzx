@@ -1,5 +1,9 @@
 # Unreleased
 
+- Auto-open **Web Preview → Agent Browser** once per live browser-using reply when the current chat's workspace is closed. Preserve open views and manual dismissal; ignore history and background chats. / 当前主聊天调用浏览器工具时，工作区未打开则自动进入 **Web 预览 → Agent 浏览器**，每轮一次，尊重已打开页面及手动关闭。
+
+- Compact file preview actions: **Preview → Rename** moves to **Preview → Edit → Rename**; **Move to recycle bin → Delete** is a red action beside Edit and Copy, with explicit recycle-bin confirmation. Remove the extra host-path/current-disk summary row. / 精简文件预览操作：**预览 → 重命名** 移至 **预览 → 编辑 → 重命名**；**移入回收站 → 删除**，以红字与编辑、复制同排显示，二次确认仍说明移入回收站，移除额外的宿主路径与当前磁盘内容说明行。
+
 - Main and side-chat file citations share guarded navigation into the existing file pane. Side chats retain history when hidden and reopen from their menu: **Temporary chat destroyed on close → saved side-chat title**. Cancelled navigation, failed saves and conflicts preserve the current editor. / 主聊与侧聊引用共用草稿守卫和文件侧栏；**关闭即销毁的临时侧聊 → 菜单中的已保存侧聊**，取消、保存失败或冲突时保留编辑状态。
 
 - Preserve the last Data & Logs tab when leaving the workspace, and restore playback and downloads for sent ChatUI audio and video attachments.

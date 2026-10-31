@@ -1285,7 +1285,7 @@ import {
   Trash2,
   Upload,
 } from "@lucide/vue";
-import { chatApi, providerApi } from "@/api/v1";
+import { chatApi, pluginExtensionApi, providerApi } from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
 import { useShellSessions } from "@/composables/useShellSessions";
 import ShellSessionWindow from "@/components/chat/ShellSessionWindow.vue";
@@ -1361,6 +1361,7 @@ import {
   useMessages,
   type ChatRecord,
   type ChatThread,
+  type ToolCall,
   type MessagePart,
   type ThinkingEffort,
   type TransportMode,
@@ -1899,6 +1900,7 @@ function formatTodoUpdatedAt(value: string | undefined): string {
 }
 const gitDiffSidebarRef = ref<{
   confirmLeaveEditing: () => Promise<boolean>;
+  prepareAgentBrowser: () => Promise<boolean>;
 } | null>(null);
 async function confirmFileNavigation(): Promise<boolean> {
   return (await gitDiffSidebarRef.value?.confirmLeaveEditing?.()) ?? true;
@@ -1932,6 +1934,55 @@ async function openFileReference(target: FileReferenceTarget): Promise<void> {
   gitDiffSidebarOpen.value = true;
 }
 provide(OPEN_FILE_REFERENCE, openFileReference);
+let lastAgentBrowserRun = "";
+
+/** Reveal live browser work once per reply, respecting existing and dismissed panels. */
+async function autoOpenAgentBrowser(
+  sessionId: string,
+  tool: ToolCall,
+  runId: string,
+): Promise<void> {
+  if (
+    sessionId !== currSessionId.value ||
+    !/^browser_(navigate|click|type|get_state|get_html|screenshot|scroll|go_back|list_tabs|switch_tab|close_tab)$/.test(tool.name ?? "")
+  ) return;
+  const runKey = JSON.stringify([sessionId, runId]);
+  if (lastAgentBrowserRun === runKey) return;
+  lastAgentBrowserRun = runKey;
+  if (gitDiffSidebarOpen.value) return;
+  const navigationGeneration = sideChatGeneration;
+  try {
+    // Check that Browser Use is enabled and accessible to this chat. This status
+    // request never starts a browser, including the first idle navigation.
+    const response = await pluginExtensionApi.get("browser-use/status", {
+      params: { chat_id: sessionId },
+    });
+    if (
+      response.data?.status !== "ok" ||
+      typeof response.data?.data?.available !== "boolean" ||
+      sessionId !== currSessionId.value ||
+      navigationGeneration !== sideChatGeneration ||
+      runKey !== lastAgentBrowserRun ||
+      gitDiffSidebarOpen.value ||
+      !(await gitDiffSidebarRef.value?.prepareAgentBrowser()) ||
+      sessionId !== currSessionId.value ||
+      navigationGeneration !== sideChatGeneration ||
+      runKey !== lastAgentBrowserRun ||
+      gitDiffSidebarOpen.value
+    ) return;
+    chatHeader.SET_WORKSPACE_FILES_OPEN(false);
+    closeThreadPanel();
+    reasoningPanelOpen.value = false;
+    activeReasoningTarget.value = null;
+    refsSidebarOpen.value = false;
+    selectedRefs.value = null;
+    closeTodoMenu();
+    chatHeader.SET_GOAL_SIDEBAR_OPEN(false);
+    gitDiffSidebarOpen.value = true;
+  } catch {
+    // Optional observation must not interrupt the agent or show missing-plugin errors.
+  }
+}
 const gitDiffFullscreen = ref(false);
 
 /* ── todo summary bar 拖动 ───────────────────────────
@@ -2262,6 +2313,9 @@ const {
   latestTodoSnapshotBySession,
 } = useMessages({
   currentSessionId: currSessionId,
+  onToolCall: (sessionId, tool, runId) => {
+    void autoOpenAgentBrowser(sessionId, tool, runId);
+  },
   onSessionsChanged: getSessions,
   onGoalStateChanged: applyPushedGoal,
   onShellSessionsChanged: applyPushedShellSessions,

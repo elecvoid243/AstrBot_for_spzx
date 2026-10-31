@@ -127,6 +127,32 @@ beforeEach(() => {
 });
 
 describe("GitDiffSidebar web preview tab", () => {
+  it("selects the Agent browser before automatic opening even when Files was persisted", async () => {
+    localStorage.setItem(VIEW_MODE_STORAGE_KEY, "files");
+    localStorage.setItem("astrbot.agentBrowser.mode", "preview");
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: false, chatId: "chat-auto" },
+      global: { stubs: STUBS },
+    });
+    await flushPromises();
+    expect(await wrapper.vm.prepareAgentBrowser()).toBe(true);
+    await wrapper.setProps({ modelValue: true });
+    await flushPromises();
+    const browser = wrapper.findComponent({ name: "AgentBrowserView" });
+    expect(browser.exists()).toBe(true);
+    expect(browser.props()).toMatchObject({ chatId: "chat-auto", visible: true });
+    expect(localStorage.getItem(VIEW_MODE_STORAGE_KEY)).toBe("browser");
+    wrapper.unmount();
+  });
+
+  it("does not replace an open Files view for an automatic browser request", async () => {
+    const wrapper = await mountSidebar();
+    expect(await wrapper.vm.prepareAgentBrowser()).toBe(false);
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("retains each project view and the mounted iframe while navigating", async () => {
     const wrapper = await mountSidebar();
     await tabButtons(wrapper)[5].trigger("click");

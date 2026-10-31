@@ -49,6 +49,7 @@ const wanted = new Set([
   "toggleGitDiffSidebar",
   "closeTodoMenu",
   "openFileReference",
+  "autoOpenAgentBrowser",
 ]);
 const variables = new Set([
   "threadPanelOpen",
@@ -64,6 +65,7 @@ const variables = new Set([
   "todoMenuPlacement",
   "fileReferenceNavigation",
   "fileReferenceRequestId",
+  "lastAgentBrowserRun",
 ]);
 const declarations = ast.statements.filter((node) => {
   if (ts.isFunctionDeclaration(node)) return wanted.has(node.name!.text);
@@ -146,6 +148,16 @@ function setup() {
     selectedRefs: ref(null),
     gitDiffSidebarOpen: ref(false),
     confirmFileNavigation: vi.fn().mockResolvedValue(true),
+    gitDiffSidebarRef: ref({
+      prepareAgentBrowser: vi.fn().mockResolvedValue(true),
+    }),
+    pluginExtensionApi: {
+      get: vi
+        .fn()
+        .mockResolvedValue({
+          data: { status: "ok", data: { available: false } },
+        }),
+    },
     threadSelection: { visible: false },
     toast: { error: vi.fn() },
     tm: (key: string) => key,
@@ -195,6 +207,11 @@ function setup() {
     todoMenuOpen: Ref<boolean>;
     fileReferenceNavigation: Ref<FileReferenceNavigation | null>;
     openFileReference: (target: FileReferenceTarget) => Promise<void>;
+    autoOpenAgentBrowser: (
+      sessionId: string,
+      tool: { name: string },
+      runId: string,
+    ) => Promise<void>;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
@@ -229,6 +246,132 @@ afterEach(() => {
 });
 
 describe("Chat side-chat lifecycle", () => {
+  it("opens the Agent browser for the current live reply, including an idle runtime", async () => {
+    const ctx = setup();
+    ctx.refsSidebarOpen.value = true;
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_navigate" },
+      "run-1",
+    );
+    expect(ctx.pluginExtensionApi.get).toHaveBeenCalledWith(
+      "browser-use/status",
+      {
+        params: { chat_id: "session-a" },
+      },
+    );
+    expect(
+      ctx.gitDiffSidebarRef.value.prepareAgentBrowser,
+    ).toHaveBeenCalledOnce();
+    expect(ctx.gitDiffSidebarOpen.value).toBe(true);
+    expect(ctx.refsSidebarOpen.value).toBe(false);
+  });
+
+  it("keeps an already open workspace view and ignores background or unrelated tools", async () => {
+    const ctx = setup();
+    await ctx.autoOpenAgentBrowser(
+      "session-b",
+      { name: "browser_click" },
+      "background",
+    );
+    await ctx.autoOpenAgentBrowser("session-a", { name: "shell" }, "shell");
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_close_all" },
+      "close",
+    );
+    ctx.gitDiffSidebarOpen.value = true;
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_navigate" },
+      "open",
+    );
+    expect(ctx.pluginExtensionApi.get).not.toHaveBeenCalled();
+    expect(
+      ctx.gitDiffSidebarRef.value.prepareAgentBrowser,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("honors a manual close for the rest of the reply and allows the next reply", async () => {
+    const ctx = setup();
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_navigate" },
+      "run-1",
+    );
+    ctx.gitDiffSidebarOpen.value = false;
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_click" },
+      "run-1",
+    );
+    expect(ctx.gitDiffSidebarOpen.value).toBe(false);
+    expect(ctx.pluginExtensionApi.get).toHaveBeenCalledOnce();
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_navigate" },
+      "run-2",
+    );
+    expect(ctx.gitDiffSidebarOpen.value).toBe(true);
+  });
+
+  it.each(["session switch", "manual open", "another panel"])(
+    "drops an automatic open after a %s",
+    async (change) => {
+      const ctx = setup();
+      let finish!: (value: unknown) => void;
+      ctx.pluginExtensionApi.get.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }) as never,
+      );
+      const pending = ctx.autoOpenAgentBrowser(
+        "session-a",
+        { name: "browser_navigate" },
+        "run-1",
+      );
+      if (change === "session switch") ctx.currSessionId.value = "session-b";
+      else if (change === "manual open") ctx.gitDiffSidebarOpen.value = true;
+      else await ctx.openRefsSidebar({ title: "manual refs" });
+      finish({
+        data: { status: "ok", data: { available: true, generation: "g" } },
+      });
+      await pending;
+      expect(
+        ctx.gitDiffSidebarRef.value.prepareAgentBrowser,
+      ).not.toHaveBeenCalled();
+      expect(ctx.gitDiffSidebarOpen.value).toBe(change === "manual open");
+    },
+  );
+
+  it("keeps plugin failures and declined navigation from changing panels", async () => {
+    const ctx = setup();
+    ctx.pluginExtensionApi.get.mockRejectedValueOnce(new Error("busy"));
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_click" },
+      "busy",
+    );
+    ctx.pluginExtensionApi.get.mockResolvedValueOnce({
+      data: { status: "error", data: {} },
+    } as never);
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_click" },
+      "missing",
+    );
+    ctx.gitDiffSidebarRef.value.prepareAgentBrowser.mockResolvedValueOnce(
+      false,
+    );
+    await ctx.autoOpenAgentBrowser(
+      "session-a",
+      { name: "browser_click" },
+      "denied",
+    );
+    expect(ctx.gitDiffSidebarOpen.value).toBe(false);
+    expect(ctx.toast.error).not.toHaveBeenCalled();
+  });
+
   it("waits for the editor before replacing a side chat with the shared file pane", async () => {
     const ctx = setup();
     await ctx.openThreadPanel({ thread_id: "side-a" });

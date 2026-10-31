@@ -60,4 +60,30 @@ describe("host file references", () => {
     expect(wrapper.findAll(".file-reference-link")).toHaveLength(0);
     wrapper.unmount();
   });
+
+  it("keeps literal path labels and descriptive labels intact in file chips", async () => {
+    registerChatMarkdownComponents();
+    const wrapper = mount(MarkdownRender, {
+      props: {
+        customId: "chat-message",
+        final: true,
+        content:
+          "[astrbot/__init__.py#L3](G:/repo/astrbot/__init__.py#L3) [请求处理逻辑](G:/repo/main.py#L20-L35)",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(wrapper.findAll(".file-reference-link")).toHaveLength(2),
+    );
+    const [path, description] = wrapper.findAll(".file-reference-link");
+    expect(path.get(".file-reference-label").text()).toBe(
+      "astrbot/__init__.py",
+    );
+    expect(path.get(".file-reference-lines").text()).toBe("L3");
+    expect(path.attributes("title")).toBe("G:/repo/astrbot/__init__.py#L3");
+    expect(description.get(".file-reference-label").text()).toBe(
+      "请求处理逻辑",
+    );
+    expect(description.get(".file-reference-lines").text()).toBe("L20–35");
+    wrapper.unmount();
+  });
 });

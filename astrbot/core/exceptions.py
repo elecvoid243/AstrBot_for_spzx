@@ -13,6 +13,10 @@ class EmptyModelOutputError(AstrBotError):
     """Raised when the model response contains no usable assistant output."""
 
 
+class ContextCapacityError(AstrBotError):
+    """Raised when the existing compression strategies cannot fit a request."""
+
+
 class KnowledgeBaseUploadError(AstrBotError):
     """Raised when knowledge base upload fails with a user-facing message."""
 

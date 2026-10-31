@@ -610,7 +610,7 @@ async def test_max_step_final_request_includes_limit_prompt(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -641,7 +641,7 @@ async def test_denied_tool_call_returns_error_without_execution(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -678,7 +678,7 @@ async def test_context_scoped_denied_tools_are_enforced(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager
@@ -709,7 +709,7 @@ async def test_tool_loop_next_request_includes_tool_result(
         streaming=False,
     )
 
-    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None):
+    async def snapshot_context_manager(messages, trusted_token_usage=0, func_tool=None, **kwargs):
         return list(messages)
 
     runner.request_context_manager.process = snapshot_context_manager

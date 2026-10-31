@@ -359,7 +359,9 @@ async def run_worker(
             provider = ProviderGoogleGenAI({"id": "model-original", "type": "googlegenai_chat_completion", "model": "model-original", "api_base": endpoint, "key": ["test-key"], "modalities": ["text", "tool_use"]}, {})
     provider.set_model("model-original")
     if scenario == "usage_compression":
-        provider.provider_config["max_context_tokens"] = 512
+        # Leave room for the real system/tool prefix; the long completed reply
+        # still forces compression before the next task's model request.
+        provider.provider_config["max_context_tokens"] = 4096
     providers.inst_map["model-original"] = provider
     providers.provider_insts.append(provider)
     conversations = ConversationManager(db)
@@ -576,7 +578,7 @@ async def run_worker(
         sql_event.listen(Session, "after_flush", after_flush)
         sql_event.listen(Session, "after_commit", after_commit)
         role = await roles.save_role("alice", {
-            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 512} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
+            "definition": {"name": "Writer", "prompt": "Original role prompt.", "persona_slot": "persona", "tools": ["evidence", "read"] if scenario.startswith("overflow") else ["evidence"], "max_steps": 4, **({"context_length": 4096} if scenario == "usage_compression" else {}), **({"max_parallel": 2} if scenario == "control_mixed" else {}), **({"max_instances": 3} if scenario in {"manual_graph", "control_capacity", "control_mixed"} else {})},
             "installation": {"bindings": {"model": "model-original", "persona": "writer", "evidence": "external_evidence", **({"read": "astrbot_file_read_tool"} if scenario.startswith("overflow") else {})}},
         })
         definition = {"name": "Original report", "role_id": role["role_id"], "role_version": 1, "task": "Read evidence and submit a report."}

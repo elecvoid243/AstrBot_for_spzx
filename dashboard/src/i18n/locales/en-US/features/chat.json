@@ -1,5 +1,22 @@
 {
   "agentBrowser": {
+    "waitingUrl": "Waiting for the Agent to open a page",
+    "readOnly": "Read-only observation",
+    "emptyActions": "Browser actions will appear here when a task starts",
+    "statusLabels": {
+      "live": "Live",
+      "snapshot": "Snapshot",
+      "loading": "Connecting",
+      "reconnecting": "Reconnecting",
+      "disconnected": "Disconnected",
+      "idle": "Ready for a task",
+      "busy": "In use by another chat",
+      "disabled": "Not enabled",
+      "unavailable": "Runtime unavailable",
+      "denied": "Access denied",
+      "closed": "Closed",
+      "stopped": "Stopped"
+    },
     "stop": "Stop execution",
     "close": "Close browser",
     "stoppedHint": "Execution stopped. Close the browser before starting a new task. Already completed page operations are not undone.",

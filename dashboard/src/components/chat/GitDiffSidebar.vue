@@ -4,6 +4,7 @@
      Layout mirrors ReasoningSidebar.vue so resizing the sidebar takes
      space from .chat-main (flex sibling) instead of overlaying it. -->
 <script setup lang="ts">
+import { Globe, Bot } from "@lucide/vue";
 import type { SavedFileSnapshot } from "@/composables/useSpcodeFileWrite";
 import { projectRelativePathStrict } from "@/composables/pathUtils";
 import {
@@ -5944,21 +5945,29 @@ watch(
           />
           <!-- 2026-10-22 web-preview: mount the browser body on first activation;
               v-show keeps it alive so switching tabs does not reload the page. -->
-          <div v-if="viewMode === 'browser'" class="d-flex ga-2 pa-2">
+          <div v-if="viewMode === 'browser'" class="browser-mode-switch" role="group" :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.browser')">
             <v-btn
+              class="browser-mode-button"
+              :class="{ 'is-active': browserMode === 'preview' }"
               variant="text"
               size="small"
               :active="browserMode === 'preview'"
+              :aria-pressed="browserMode === 'preview'"
               @click="browserMode = 'preview'"
             >
+              <Globe :size="14" aria-hidden="true" />
               {{ tm("agentBrowser.preview") }}
             </v-btn>
             <v-btn
+              class="browser-mode-button"
+              :class="{ 'is-active': browserMode === 'agent' }"
               variant="text"
               size="small"
               :active="browserMode === 'agent'"
+              :aria-pressed="browserMode === 'agent'"
               @click="browserMode = 'agent'"
             >
+              <Bot :size="15" aria-hidden="true" />
               {{ tm("agentBrowser.title") }}
             </v-btn>
           </div>
@@ -6714,6 +6723,34 @@ watch(
 </template>
 
 <style scoped>
+.browser-mode-switch {
+  display: inline-flex;
+  align-self: flex-start;
+  flex-shrink: 0;
+  gap: 3px;
+  margin: 12px 12px 0;
+  padding: 3px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.browser-mode-button {
+  min-width: 0;
+  padding-inline: 12px;
+  border-radius: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.browser-mode-button :deep(.v-btn__content) { gap: 6px; }
+.browser-mode-button :deep(.v-btn__overlay) { opacity: 0; }
+.browser-mode-button.is-active {
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-primary));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+.browser-mode-button:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
 /* 2026-07-17 git-revert: secondary hint line inside the revert
    confirmation dialog (explains the new-commit behavior). */
 .git-diff-sidebar__revert-hint {

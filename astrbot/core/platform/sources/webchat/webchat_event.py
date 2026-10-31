@@ -112,6 +112,20 @@ class WebChatMessageEvent(AstrMessageEvent):
         emit_complete: bool = False,
         mirror_system: bool = True,
     ) -> str | None:
+        """Send components without exposing media markers as reply text.
+
+        Args:
+            message_id: Request identifier used by the response queue.
+            message: Components to send, or None to end the request.
+            session_id: Session identifier used for conversation mirroring.
+            streaming: Whether the components belong to a streamed reply.
+            emit_complete: Whether to emit a completion containing only text.
+            mirror_system: Whether to mirror to the conversation event channel.
+
+        Returns:
+            Concatenated plain text, or None if the request ended or rejected a
+            component. Media markers remain in their typed payloads only.
+        """
         request_id = str(message_id)
         system_cid = _extract_conversation_id(session_id) if mirror_system else None
         if not message:
@@ -125,7 +139,7 @@ class WebChatMessageEvent(AstrMessageEvent):
             await WebChatMessageEvent._mirror_system(system_cid, payload)
             return
 
-        data = ""
+        plain_text = ""
         for comp in message.chain:
             if isinstance(comp, Plain):
                 data = comp.text
@@ -143,6 +157,7 @@ class WebChatMessageEvent(AstrMessageEvent):
                 await WebChatMessageEvent._mirror_system(system_cid, payload)
                 if not accepted:
                     return None
+                plain_text += comp.text
             elif isinstance(comp, Json):
                 payload = {
                     "type": "plain",
@@ -240,7 +255,7 @@ class WebChatMessageEvent(AstrMessageEvent):
         if emit_complete:
             payload = {
                 "type": "complete",
-                "data": data,
+                "data": plain_text,
                 "streaming": streaming,
                 "chain_type": message.type,
                 "message_id": message_id,
@@ -248,7 +263,7 @@ class WebChatMessageEvent(AstrMessageEvent):
             await webchat_queue_mgr.put_back_queue(request_id, payload)
             await WebChatMessageEvent._mirror_system(system_cid, payload)
 
-        return data
+        return plain_text
 
     async def send(self, message: MessageChain | None) -> None:
         message_id = self.message_obj.message_id

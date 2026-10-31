@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 397 icons */
+/* Auto-generated MDI subset – 398 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -730,6 +730,10 @@
 
 .mdi-folder-edit-outline::before {
   content: "\F0DCE";
+}
+
+.mdi-folder-home-outline::before {
+  content: "\F10B6";
 }
 
 .mdi-folder-move::before {

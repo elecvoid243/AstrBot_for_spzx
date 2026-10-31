@@ -1,5 +1,22 @@
 {
   "agentBrowser": {
+    "waitingUrl": "等待 Agent 打开网页",
+    "readOnly": "只读观测",
+    "emptyActions": "任务开始后，浏览器操作会显示在这里",
+    "statusLabels": {
+      "live": "实时观测",
+      "snapshot": "当前快照",
+      "loading": "连接中",
+      "reconnecting": "重连中",
+      "disconnected": "已断开",
+      "idle": "等待任务",
+      "busy": "其他聊天占用",
+      "disabled": "未启用",
+      "unavailable": "环境不可用",
+      "denied": "无访问权限",
+      "closed": "已关闭",
+      "stopped": "已停止"
+    },
     "stop": "停止执行",
     "close": "关闭浏览器",
     "stoppedHint": "执行已停止。关闭浏览器后可开始新任务；已发生的网页操作不会撤销。",

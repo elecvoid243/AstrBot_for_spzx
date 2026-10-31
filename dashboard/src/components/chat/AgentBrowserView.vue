@@ -1,5 +1,31 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type Component } from "vue";
+import {
+  Globe,
+  Monitor,
+  Square,
+  X,
+  RefreshCw,
+  Eye,
+  PanelsTopLeft,
+  Scan,
+  Hash,
+  ListChecks,
+  MousePointer2,
+  TextCursorInput,
+  ArrowUpDown,
+  Check,
+  CircleX,
+  Clock3,
+  Ban,
+  LoaderCircle,
+  CircleAlert,
+  Info,
+  Power,
+  Unplug,
+  ShieldAlert,
+  UsersRound,
+} from "@lucide/vue";
 import { useI18n } from "@/i18n/composables";
 import { pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
@@ -126,6 +152,33 @@ const actions = computed(() => [
   ...(state.value?.current_action ? [state.value.current_action] : []),
   ...(state.value?.recent_actions || []).slice(-32).reverse(),
 ]);
+const actionIcons: Record<BrowserAction["kind"], Component> = {
+  navigate: Globe,
+  click: MousePointer2,
+  type: TextCursorInput,
+  scroll: ArrowUpDown,
+  tab: PanelsTopLeft,
+  close: X,
+  inspect: Scan,
+};
+const resultIcons: Record<BrowserAction["status"], Component> = {
+  running: LoaderCircle,
+  succeeded: Check,
+  failed: CircleX,
+  timed_out: Clock3,
+  cancelled: Ban,
+};
+const stateIcons: Record<string, Component> = {
+  busy: UsersRound,
+  loading: LoaderCircle,
+  reconnecting: LoaderCircle,
+  disconnected: Unplug,
+  unavailable: CircleAlert,
+  denied: ShieldAlert,
+  disabled: Power,
+  stopped: Square,
+  closed: Monitor,
+};
 
 /**
  * Follow one authorized lifetime after applying its consistent snapshot.
@@ -493,140 +546,441 @@ onBeforeUnmount(() => {
     :data-sequence="state?.sequence"
     :data-connection="connection"
   >
-    <div class="agent-browser-toolbar">
-      <div class="agent-browser-page">
-        <strong>{{ state?.title || t(`${key}.title`) }}</strong>
-        <div class="agent-browser-url">{{ state?.url }}</div>
-        <div class="agent-browser-status" aria-live="polite">
-          {{ t(`${key}.connectionStates.${connection}`) }}
-          <span v-if="state?.tab_id">
-            · {{ t(`${key}.tab`) }} {{ state.tab_id.slice(-4) }}</span
+    <header class="agent-browser-toolbar">
+      <div class="agent-browser-heading">
+        <span class="agent-browser-brand"
+          ><Globe :size="19" aria-hidden="true"
+        /></span>
+        <strong class="agent-browser-page" :title="state?.title">{{
+          state?.title || t(`${key}.title`)
+        }}</strong>
+        <span
+          class="agent-browser-status"
+          :title="t(`${key}.connectionStates.${connection}`)"
+          aria-live="polite"
+        >
+          <span class="agent-browser-status-dot" aria-hidden="true" />
+          {{ t(`${key}.statusLabels.${connection}`) }}
+        </span>
+      </div>
+      <div class="agent-browser-address">
+        <Globe :size="14" aria-hidden="true" />
+        <span class="agent-browser-url" :title="state?.url">{{
+          state?.url || t(`${key}.waitingUrl`)
+        }}</span>
+        <button
+          class="agent-browser-refresh"
+          type="button"
+          :title="t(`${key}.refresh`)"
+          :aria-label="t(`${key}.refresh`)"
+          :aria-busy="loading"
+          :disabled="!chatId"
+          @click="refresh()"
+        >
+          <RefreshCw
+            :size="14"
+            :class="{ 'is-spinning': loading }"
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+      <div class="agent-browser-toolbar-bottom">
+        <div class="agent-browser-controls">
+          <button
+            type="button"
+            class="agent-browser-stop agent-browser-button"
+            :disabled="
+              !state?.available ||
+              state?.execution_state === 'stopped' ||
+              controlling
+            "
+            @click="control('stop')"
           >
-          <span v-if="state?.width">
-            · {{ state.width }}×{{ state.height }} · #{{ state.sequence }}</span
+            <Square :size="13" aria-hidden="true" />{{ t(`${key}.stop`) }}
+          </button>
+          <button
+            type="button"
+            class="agent-browser-close agent-browser-button"
+            :disabled="!state?.available || controlling"
+            @click="control('close')"
           >
+            <X :size="15" aria-hidden="true" />{{ t(`${key}.close`) }}
+          </button>
+        </div>
+        <div
+          v-if="state?.tab_id"
+          class="agent-browser-meta"
+          :title="state.tab_id"
+        >
+          <PanelsTopLeft :size="12" aria-hidden="true" />
+          {{ t(`${key}.tab`) }} {{ state.tab_id.slice(-4) }}
         </div>
       </div>
-      <v-btn
-        class="agent-browser-stop"
-        variant="text"
-        size="small"
-        :disabled="
-          !state?.available ||
-          state?.execution_state === 'stopped' ||
-          controlling
-        "
-        @click="control('stop')"
-        >{{ t(`${key}.stop`) }}</v-btn
-      >
-      <v-btn
-        class="agent-browser-close"
-        variant="text"
-        size="small"
-        :disabled="!state?.available || controlling"
-        @click="control('close')"
-        >{{ t(`${key}.close`) }}</v-btn
-      >
-      <v-btn
-        variant="text"
-        size="small"
-        :loading="loading"
-        :disabled="!chatId"
-        @click="refresh()"
-      >
-        {{ t(`${key}.refresh`) }}
-      </v-btn>
-    </div>
-    <div v-if="controlError" role="alert" class="pa-2 text-caption">
-      {{ t(`${key}.controlFailed`) }}
+    </header>
+
+    <div
+      v-if="controlError"
+      role="alert"
+      class="agent-browser-notice agent-browser-notice--error"
+    >
+      <CircleAlert :size="15" aria-hidden="true" /><span>{{
+        t(`${key}.controlFailed`)
+      }}</span>
     </div>
     <div
       v-if="connection === 'stopped'"
       role="status"
-      class="pa-2 text-caption"
+      class="agent-browser-notice agent-browser-notice--warning"
     >
-      {{ t(`${key}.stoppedHint`) }}
+      <Info :size="15" aria-hidden="true" /><span>{{
+        t(`${key}.stoppedHint`)
+      }}</span>
     </div>
-    <div v-if="resynchronized" role="status" class="pa-2 text-caption">
-      {{ t(`${key}.resynchronized`) }}
+    <div v-if="resynchronized" role="status" class="agent-browser-notice">
+      <RefreshCw :size="14" aria-hidden="true" /><span>{{
+        t(`${key}.resynchronized`)
+      }}</span>
     </div>
-    <div v-if="!state?.image" role="status" class="pa-4">
-      {{
-        connection === "idle"
-          ? t(`${key}.empty`)
-          : t(`${key}.connectionStates.${connection}`)
-      }}
-    </div>
-    <div v-else class="agent-browser-image">
-      <div class="agent-browser-viewport">
-        <img
-          :src="`data:${state.mime_type};base64,${state.image}`"
-          :width="state.width"
-          :height="state.height"
-          :alt="state.title || t(`${key}.title`)"
-        />
-        <span
-          v-if="marker"
-          class="agent-browser-target"
-          :style="marker"
-          :aria-label="t(`${key}.target`)"
-        />
+
+    <div class="agent-browser-stage">
+      <div v-if="!state?.image" role="status" class="agent-browser-empty">
+        <span class="agent-browser-empty-icon">
+          <component
+            :is="stateIcons[connection] || Globe"
+            :size="27"
+            :stroke-width="1.5"
+            :class="{ 'is-spinning': loading }"
+            aria-hidden="true"
+          />
+        </span>
+        <strong>{{ t(`${key}.statusLabels.${connection}`) }}</strong>
+        <p>
+          {{
+            connection === "idle"
+              ? t(`${key}.empty`)
+              : t(`${key}.connectionStates.${connection}`)
+          }}
+        </p>
       </div>
+      <div v-else class="agent-browser-image">
+        <div class="agent-browser-viewport">
+          <img
+            :src="`data:${state.mime_type};base64,${state.image}`"
+            :width="state.width"
+            :height="state.height"
+            :alt="state.title || t(`${key}.title`)"
+          />
+          <span
+            v-if="marker"
+            class="agent-browser-target"
+            :style="marker"
+            :aria-label="t(`${key}.target`)"
+          />
+        </div>
+      </div>
+      <footer class="agent-browser-caption">
+        <span
+          ><Eye :size="12" aria-hidden="true" />{{ t(`${key}.readOnly`) }}</span
+        >
+        <span v-if="state?.width" class="agent-browser-capture-meta">
+          <span
+            ><Scan :size="12" aria-hidden="true" />{{ state.width }} ×
+            {{ state.height }}</span
+          >
+          <span
+            ><Hash :size="11" aria-hidden="true" />{{ state.sequence }}</span
+          >
+        </span>
+      </footer>
     </div>
-    <div
-      v-if="actions.length"
+
+    <section
       class="agent-browser-actions"
-      aria-live="polite"
       :aria-label="t(`${key}.recentActions`)"
     >
-      <strong>{{ t(`${key}.recentActions`) }}</strong>
-      <ol>
+      <header class="agent-browser-actions-heading">
+        <ListChecks :size="15" aria-hidden="true" />
+        <strong>{{ t(`${key}.recentActions`) }}</strong>
+        <span class="agent-browser-action-count">{{ actions.length }}</span>
+      </header>
+      <ol v-if="actions.length" aria-live="polite">
         <li
           v-for="action in actions"
           :key="action.action_id"
           :data-action-id="action.action_id"
           :data-action-status="action.status"
         >
-          {{ t(`${key}.actionKinds.${action.kind}`) }} ·
-          {{ t(`${key}.actionStatuses.${action.status}`) }}
+          <span class="agent-browser-action-icon"
+            ><component
+              :is="actionIcons[action.kind] || Eye"
+              :size="14"
+              aria-hidden="true"
+          /></span>
+          <span class="agent-browser-action-label">{{
+            t(`${key}.actionKinds.${action.kind}`)
+          }}</span>
+          <span class="agent-browser-action-result">
+            <component
+              :is="resultIcons[action.status] || Info"
+              :size="12"
+              :class="{ 'is-spinning': action.status === 'running' }"
+              aria-hidden="true"
+            />
+            {{ t(`${key}.actionStatuses.${action.status}`) }}
+          </span>
         </li>
       </ol>
-    </div>
+      <div v-else class="agent-browser-actions-empty">
+        <MousePointer2 :size="15" aria-hidden="true" />{{
+          t(`${key}.emptyActions`)
+        }}
+      </div>
+    </section>
   </section>
 </template>
 
 <style scoped>
 .agent-browser-view {
+  --browser-ink: var(--v-theme-on-surface, 28, 35, 45);
+  --browser-accent: var(--v-theme-primary, 60, 150, 202);
+  --browser-surface: var(--v-theme-surface, 255, 255, 255);
+  --browser-status: var(--browser-ink);
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
+  gap: 12px;
   min-height: 0;
-  overflow: hidden;
+  min-width: 0;
+  padding: 12px;
+  overflow: auto;
+  background: rgba(var(--browser-ink), 0.025);
+  color: rgb(var(--browser-ink));
+}
+.agent-browser-view[data-connection="live"] {
+  --browser-status: var(--v-theme-success, 0, 158, 96);
+}
+.agent-browser-view,
+.agent-browser-image,
+.agent-browser-actions ol {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--browser-ink), 0.2) transparent;
+}
+.agent-browser-view:is(
+    [data-connection="loading"],
+    [data-connection="snapshot"],
+    [data-connection="reconnecting"]
+  ) {
+  --browser-status: var(--browser-accent);
+}
+.agent-browser-view:is([data-connection="busy"], [data-connection="stopped"]) {
+  --browser-status: var(--v-theme-warning, 206, 135, 25);
+}
+.agent-browser-view:is(
+    [data-connection="unavailable"],
+    [data-connection="denied"],
+    [data-connection="disconnected"]
+  ) {
+  --browser-status: var(--v-theme-error, 229, 77, 77);
+}
+.agent-browser-toolbar,
+.agent-browser-stage,
+.agent-browser-actions {
+  border: 1px solid rgba(var(--browser-ink), 0.09);
+  border-radius: 12px;
+  background: rgb(var(--browser-surface));
 }
 .agent-browser-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+.agent-browser-heading,
+.agent-browser-toolbar-bottom,
+.agent-browser-controls,
+.agent-browser-meta,
+.agent-browser-caption,
+.agent-browser-caption span,
+.agent-browser-actions-heading,
+.agent-browser-action-result {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+.agent-browser-heading {
+  gap: 10px;
+  min-width: 0;
+}
+.agent-browser-brand {
+  display: grid;
+  flex: 0 0 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(var(--browser-accent), 0.12);
+  border-radius: 10px;
+  background: rgba(var(--browser-accent), 0.09);
+  color: rgb(var(--browser-accent));
 }
 .agent-browser-page {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-}
-.agent-browser-url {
-  font-size: 12px;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
 }
 .agent-browser-status {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--browser-status), 0.12);
+  border-radius: 20px;
+  background: rgba(var(--browser-status), 0.07);
+  color: rgba(var(--browser-ink), 0.82);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.agent-browser-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--browser-status));
+}
+.agent-browser-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px 0 10px;
+  border: 1px solid rgba(var(--browser-ink), 0.08);
+  border-radius: 7px;
+  background: rgba(var(--browser-ink), 0.025);
+  color: rgba(var(--browser-ink), 0.42);
+}
+.agent-browser-address > svg {
+  flex: 0 0 auto;
+}
+.agent-browser-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(var(--browser-ink), 0.68);
+  font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 11px;
-  opacity: 0.7;
+  line-height: 34px;
+}
+.agent-browser-button,
+.agent-browser-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--browser-ink), 0.66);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background-color 150ms,
+    color 150ms;
+}
+.agent-browser-refresh {
+  padding: 7px;
+}
+.agent-browser-button {
+  border-color: rgba(var(--browser-ink), 0.08);
+  background: rgba(var(--browser-ink), 0.025);
+}
+.agent-browser-button:hover:not(:disabled),
+.agent-browser-refresh:hover:not(:disabled) {
+  background: rgba(var(--browser-ink), 0.05);
+  color: rgb(var(--browser-ink));
+}
+.agent-browser-stop:hover:not(:disabled),
+.agent-browser-close:hover:not(:disabled) {
+  background: rgba(var(--v-theme-error, 229, 77, 77), 0.07);
+  color: rgb(var(--v-theme-error, 229, 77, 77));
+}
+.agent-browser-button:disabled,
+.agent-browser-refresh:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.agent-browser-button:focus-visible,
+.agent-browser-refresh:focus-visible {
+  outline: 2px solid rgb(var(--browser-accent));
+  outline-offset: 2px;
+}
+.agent-browser-toolbar-bottom {
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agent-browser-controls {
+  gap: 6px;
+}
+.agent-browser-meta {
+  gap: 5px;
+  color: rgba(var(--browser-ink), 0.46);
+  font-size: 10.5px;
+}
+.agent-browser-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--browser-accent), 0.13);
+  border-radius: 9px;
+  background: rgba(var(--browser-accent), 0.06);
+  color: rgba(var(--browser-ink), 0.76);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.agent-browser-notice > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: rgb(var(--browser-accent));
+}
+.agent-browser-notice--error {
+  border-color: rgba(var(--v-theme-error), 0.2);
+  background: rgba(var(--v-theme-error), 0.05);
+}
+.agent-browser-notice--error > svg {
+  color: rgb(var(--v-theme-error));
+}
+.agent-browser-notice--warning {
+  border-color: rgba(var(--v-theme-warning), 0.25);
+  background: rgba(var(--v-theme-warning), 0.06);
+}
+.agent-browser-notice--warning > svg {
+  color: rgb(var(--v-theme-warning));
+}
+.agent-browser-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 180px;
+  min-height: 180px;
+  overflow: hidden;
 }
 .agent-browser-image {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: 12px;
+  background: rgba(var(--browser-ink), 0.035);
 }
 .agent-browser-image img {
   display: block;
@@ -636,6 +990,14 @@ onBeforeUnmount(() => {
 }
 .agent-browser-viewport {
   position: relative;
+  flex: 0 0 auto;
+  margin-block: auto;
+  overflow: hidden;
+  border-radius: 6px;
+  background: white;
+  box-shadow:
+    0 2px 12px rgba(0, 0, 0, 0.06),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
 }
 .agent-browser-target {
   position: absolute;
@@ -648,13 +1010,212 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .agent-browser-actions {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+  max-height: 220px;
+}
+.agent-browser-caption {
+  flex: 0 0 auto;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 8px 12px;
+  border-top: 1px solid rgba(var(--browser-ink), 0.06);
+  color: rgba(var(--browser-ink), 0.46);
+  font-size: 10px;
+}
+.agent-browser-caption span {
+  gap: 5px;
+}
+.agent-browser-capture-meta {
+  gap: 12px !important;
+  font-variant-numeric: tabular-nums;
+}
+.agent-browser-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 12px;
+  padding: 28px 22px;
+  text-align: center;
+}
+.agent-browser-empty-icon {
+  display: grid;
+  width: 60px;
+  height: 60px;
+  place-items: center;
+  border: 1px solid rgba(var(--browser-accent), 0.1);
+  border-radius: 18px;
+  background: rgba(var(--browser-accent), 0.06);
+  color: rgb(var(--browser-accent));
+}
+.agent-browser-empty strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-browser-empty p {
+  margin: 0;
+  max-width: 32ch;
+  color: rgba(var(--browser-ink), 0.5);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.agent-browser-actions-heading {
+  flex: 0 0 auto;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(var(--browser-ink), 0.06);
+  color: rgba(var(--browser-ink), 0.62);
   font-size: 12px;
-  max-height: 150px;
-  overflow: auto;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+.agent-browser-actions-heading strong {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.agent-browser-action-count {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(var(--browser-ink), 0.05);
+  color: rgba(var(--browser-ink), 0.48);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 .agent-browser-actions ol {
-  padding-left: 20px;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 0;
+  overflow: auto;
+  list-style: none;
+}
+.agent-browser-actions li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+}
+.agent-browser-actions li:not(:last-child)::before {
+  position: absolute;
+  content: "";
+  left: 25px;
+  top: 34px;
+  bottom: -8px;
+  width: 1px;
+  background: rgba(var(--browser-ink), 0.1);
+}
+.agent-browser-action-icon {
+  z-index: 1;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgba(var(--browser-ink), 0.08);
+  border-radius: 8px;
+  background: rgb(var(--browser-surface));
+  color: rgba(var(--browser-ink), 0.52);
+}
+.agent-browser-action-label {
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.agent-browser-action-result {
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(var(--browser-ink), 0.04);
+  color: rgba(var(--browser-ink), 0.55);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.agent-browser-action-result > svg {
+  flex: 0 0 auto;
+}
+[data-action-status="running"] {
+  background: rgba(var(--browser-accent), 0.035);
+}
+[data-action-status="running"] .agent-browser-action-result {
+  color: rgb(var(--browser-accent));
+  color: color-mix(
+    in srgb,
+    rgb(var(--browser-accent)) 65%,
+    rgb(var(--browser-ink))
+  );
+  background: rgba(var(--browser-accent), 0.08);
+}
+[data-action-status="succeeded"] .agent-browser-action-result {
+  color: rgb(var(--v-theme-success, 0, 158, 96));
+  color: color-mix(
+    in srgb,
+    rgb(var(--v-theme-success, 0, 158, 96)) 65%,
+    rgb(var(--browser-ink))
+  );
+  background: rgba(var(--v-theme-success, 0, 158, 96), 0.08);
+}
+[data-action-status="failed"] .agent-browser-action-result {
+  color: rgb(var(--v-theme-error, 229, 77, 77));
+  color: color-mix(
+    in srgb,
+    rgb(var(--v-theme-error, 229, 77, 77)) 65%,
+    rgb(var(--browser-ink))
+  );
+  background: rgba(var(--v-theme-error, 229, 77, 77), 0.07);
+}
+[data-action-status="timed_out"] .agent-browser-action-result {
+  color: rgb(var(--v-theme-warning, 190, 125, 25));
+  color: color-mix(
+    in srgb,
+    rgb(var(--v-theme-warning, 190, 125, 25)) 65%,
+    rgb(var(--browser-ink))
+  );
+  background: rgba(var(--v-theme-warning, 190, 125, 25), 0.09);
+}
+.agent-browser-actions-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  color: rgba(var(--browser-ink), 0.42);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.is-spinning {
+  animation: browser-spin 1.3s linear infinite;
+}
+@keyframes browser-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 600px) {
+  .agent-browser-view {
+    padding: 8px;
+    gap: 8px;
+  }
+  .agent-browser-toolbar {
+    padding: 12px;
+    gap: 10px;
+  }
+  .agent-browser-image {
+    padding: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning {
+    animation: none;
+  }
+  .agent-browser-button,
+  .agent-browser-refresh {
+    transition: none;
+  }
 }
 </style>

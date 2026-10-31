@@ -1,5 +1,9 @@
 # Unreleased
 
+- Keep internal image attachment markers out of ChatUI reply text, completion events and recovery snapshots while preserving image display and surrounding text. / 修复 ChatUI 图片附件内部标记泄漏到回复正文、结束事件与恢复快照的问题，保留图片显示及前后文字。
+
+- Restyle the Agent browser with icon segments, an address bar, connection badges, a framed read-only viewport and an action timeline. **Refresh snapshot → address-bar refresh icon**; light, dark, idle and narrow layouts share the same observation lifecycle. / 美化 Agent 浏览器，加入分段切换、地址栏、连接状态徽标、只读画面与动作时间线；**刷新快照 → 地址栏刷新图标**，适配浅色、深色、空闲与窄侧栏布局。
+
 - Auto-open **Web Preview → Agent Browser** once per live browser-using reply when the current chat's workspace is closed. Preserve open views and manual dismissal; ignore history and background chats. / 当前主聊天调用浏览器工具时，工作区未打开则自动进入 **Web 预览 → Agent 浏览器**，每轮一次，尊重已打开页面及手动关闭。
 
 - Compact file preview actions: **Preview → Rename** moves to **Preview → Edit → Rename**; **Move to recycle bin → Delete** is a red action beside Edit and Copy, with explicit recycle-bin confirmation. Remove the extra host-path/current-disk summary row. / 精简文件预览操作：**预览 → 重命名** 移至 **预览 → 编辑 → 重命名**；**移入回收站 → 删除**，以红字与编辑、复制同排显示，二次确认仍说明移入回收站，移除额外的宿主路径与当前磁盘内容说明行。

@@ -94,7 +94,9 @@ function record(id: number, type: "user" | "bot", text: string) {
   return { id, content: { type, message: [{ type: "plain", text }] } };
 }
 
-function recordText(parts: Array<{ type?: string; text?: string }> | undefined) {
+function recordText(
+  parts: Array<{ type?: string; text?: string }> | undefined,
+) {
   return (parts || [])
     .filter((part) => part.type === "plain")
     .map((part) => part.text || "")
@@ -141,6 +143,57 @@ describe("useMessages placeholder terminal state", () => {
     });
     return { userRecord, botRecord };
   }
+
+  it("splits a streaming reply around a follow-up without replaying its prefix", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(value) {
+            controller = value;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const composable = createComposable();
+    const { botRecord } = sendMessage(composable);
+    const push = (payload: unknown) =>
+      controller.enqueue(new TextEncoder().encode(sseFrame(payload)));
+    push({ type: "run_started", data: { run_id: "r1" } });
+    push({ type: "plain", data: "before", streaming: true });
+    await vi.waitFor(() =>
+      expect(recordText(botRecord.content.message)).toBe("before"),
+    );
+    composable.createLocalExchange({
+      sessionId: "s1",
+      messageId: "m2",
+      parts: [{ type: "plain", text: "follow-up" }],
+    });
+    expect(composable.activeMessages.value.map((r) => r.content.type)).toEqual([
+      "user",
+      "bot",
+      "user",
+    ]);
+    push({
+      type: "message_segment",
+      data: {
+        previous: record(2, "bot", "before"),
+        user: record(3, "user", "follow-up"),
+        segment_id: "seg2",
+        client_message_id: "m2",
+      },
+    });
+    push({ type: "plain", data: "after", streaming: true });
+    push({ type: "complete", data: "beforeafter", streaming: true });
+    push({ type: "end" });
+    controller.close();
+    await vi.waitFor(() => expect(onStreamEnd).toHaveBeenCalled());
+    expect(
+      composable.activeMessages.value.map((r) => recordText(r.content.message)),
+    ).toEqual(["hi", "before", "follow-up", "after"]);
+    composable.cleanupConnections();
+  });
 
   it("surfaces a JSON rejection instead of spinning forever", async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(
@@ -236,7 +289,9 @@ describe("useMessages placeholder terminal state", () => {
     const { botRecord } = sendMessage(composable);
     composable.cleanupConnections();
 
-    await vi.waitFor(() => expect(composable.isSessionRunning("s1")).toBe(false));
+    await vi.waitFor(() =>
+      expect(composable.isSessionRunning("s1")).toBe(false),
+    );
     expect(botRecord.content.isLoading).toBe(true);
     expect(composable.activeMessages.value).toContain(botRecord);
     expect(api.getSession).not.toHaveBeenCalled();

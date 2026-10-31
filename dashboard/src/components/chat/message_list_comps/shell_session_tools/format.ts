@@ -46,6 +46,7 @@ export interface ShellSessionWriteResult {
 
 /** list 结果中的单个会话摘要。 */
 export interface ShellSessionListItem {
+    command?: string;
     session_id: string;
     pid: number;
     status: string;

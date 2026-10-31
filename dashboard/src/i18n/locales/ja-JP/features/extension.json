@@ -321,6 +321,7 @@
     "enterUrl": "プラグインリポジトリの URL を入力"
   },
   "skills": {
+    "store": "Skill ストア",
     "searchPlaceholder": "スキルを検索…",
     "noSearchResult": "一致するスキルが見つかりません",
     "modeLocal": "ローカルスキル",

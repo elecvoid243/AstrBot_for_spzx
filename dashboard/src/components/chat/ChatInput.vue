@@ -1507,6 +1507,7 @@ watch(
 
 const canSend = computed(() => {
   return (
+    skillGuide.queued.value.length > 0 ||
     (props.prompt && props.prompt.trim()) ||
     props.stagedImagesUrl.length > 0 ||
     props.stagedAudioUrl ||
@@ -1781,6 +1782,7 @@ function handleKeyDown(e: KeyboardEvent) {
   // load/unload rewrites the system prompt.
   if (
     !localPrompt.value.trim() &&
+    skillGuide.queued.value.length === 0 &&
     !sendLocked.value &&
     pendingFollowUpItems.value.length
   ) {

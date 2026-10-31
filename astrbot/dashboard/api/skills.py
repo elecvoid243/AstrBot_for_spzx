@@ -118,6 +118,15 @@ async def list_skills(
     return await _run(service.get_skills)
 
 
+@router.get("/skills/store")
+async def get_skill_store(
+    _auth: AuthContext = Depends(require_skill_scope),
+    service: SkillsService = Depends(get_service),
+):
+    """Resolve and probe the skill store configured by the update source."""
+    return await _run(service.get_store)
+
+
 @router.post("/skills")
 async def upload_skill(
     request: Request,

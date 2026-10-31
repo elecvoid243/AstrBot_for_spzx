@@ -14,9 +14,18 @@
       }}</span>
       <span class="srq-chip">{{ block.skills.length }}</span>
     </div>
-    <div v-for="(name, i) in block.skills" :key="i" class="srq-row">
-      <v-icon size="14" class="srq-skill-icon">mdi-lightbulb-on-outline</v-icon>
-      <span class="srq-name">{{ name }}</span>
+    <div class="srq-skills">
+      <div
+        v-for="name in block.skills"
+        :key="name"
+        class="srq-row"
+        :title="name"
+      >
+        <v-icon size="14" class="srq-skill-icon"
+          >mdi-lightbulb-on-outline</v-icon
+        >
+        <span class="srq-name">{{ name }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -32,59 +41,65 @@ const { tm } = useModuleI18n("features/chat");
 
 <style scoped>
 .srq {
-  width: 100%;
-  margin-top: 4px;
-  background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  border-left: 3px solid rgb(var(--v-theme-primary));
-  border-radius: 12px;
-  overflow: hidden;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.16);
+  border-radius: 14px;
+  background: linear-gradient(
+    120deg,
+    rgba(var(--v-theme-primary), 0.07),
+    rgba(var(--v-theme-primary), 0.02)
+  );
   text-align: left;
 }
 .srq-head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 14px;
-  background: rgb(var(--v-theme-mcpCardBg));
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  gap: 7px;
+  margin-bottom: 10px;
 }
 .srq-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: rgb(var(--v-theme-on-surface));
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 .srq-chip {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10.5px;
-  font-weight: 600;
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 6px;
   color: rgb(var(--v-theme-primary));
-  background: rgba(var(--v-theme-primary), 0.12);
-  border-radius: 99px;
-  padding: 2px 9px;
-  white-space: nowrap;
+  background: rgba(var(--v-theme-primary), 0.1);
+  font-size: 10px;
+  font-weight: 700;
+}
+.srq-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .srq-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
-}
-.srq-row:last-child {
-  border-bottom: 0;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.18);
+  border-radius: 8px;
+  background: rgba(var(--v-theme-surface), 0.75);
+  color: rgb(var(--v-theme-primary));
 }
 .srq-skill-icon {
   flex: none;
-  color: rgba(var(--v-theme-on-surface), 0.55);
+  opacity: 0.7;
 }
 .srq-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: rgb(var(--v-theme-on-surface));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 500;
 }
 </style>

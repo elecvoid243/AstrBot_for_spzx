@@ -12,7 +12,9 @@
   <div class="frc">
     <div class="frc-head">
       <v-icon size="15" color="primary">mdi-comment-text-outline</v-icon>
-      <span class="frc-title">{{ tm("spcodeProjectLoad.fileReviewCard.title") }}</span>
+      <span class="frc-title">{{
+        tm("spcodeProjectLoad.fileReviewCard.title")
+      }}</span>
       <span class="frc-chip">
         {{
           tm("spcodeProjectLoad.fileReviewCard.commentsCount", {
@@ -28,7 +30,9 @@
         }}
       </span>
       <span class="frc-spacer" />
-      <span class="frc-note">{{ tm("spcodeProjectLoad.fileReviewCard.note") }}</span>
+      <span class="frc-note">{{
+        tm("spcodeProjectLoad.fileReviewCard.note")
+      }}</span>
     </div>
 
     <section
@@ -91,7 +95,11 @@
           >
             <div v-for="(c, ci) in file.comments" :key="ci" class="frc-hc">
               <span class="frc-hcln">
-                {{ tm("spcodeProjectLoad.fileReviewCard.lineBadge", { line: c.line }) }}
+                {{
+                  tm("spcodeProjectLoad.fileReviewCard.lineBadge", {
+                    line: c.line,
+                  })
+                }}
               </span>
               <div class="frc-hctext">{{ c.text }}</div>
             </div>
@@ -151,11 +159,10 @@ function sign(line: ReviewLine): string {
 <style scoped>
 .frc {
   width: 100%;
-  margin-top: 4px;
+  margin-top: 10px;
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  border-left: 3px solid rgb(var(--v-theme-primary));
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   text-align: left;
 }
@@ -164,13 +171,18 @@ function sign(line: ReviewLine): string {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 9px 14px;
-  background: rgb(var(--v-theme-mcpCardBg));
+  padding: 12px 14px;
+  flex-wrap: wrap;
+  background: linear-gradient(
+    120deg,
+    rgba(var(--v-theme-primary), 0.07),
+    transparent
+  );
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .frc-title {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   color: rgb(var(--v-theme-on-surface));
 }
 .frc-chip {
@@ -193,7 +205,7 @@ function sign(line: ReviewLine): string {
 .frc-note {
   font-size: 10.5px;
   color: rgba(var(--v-theme-on-surface), 0.45);
-  white-space: nowrap;
+  white-space: normal;
 }
 
 /* ── file section ── */
@@ -221,9 +233,9 @@ function sign(line: ReviewLine): string {
 }
 .frc-dot {
   flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
   background: rgb(var(--v-theme-primary));
 }
 .frc-path {
@@ -348,7 +360,7 @@ function sign(line: ReviewLine): string {
 /* ── inline comment callout (window sections) ── */
 .frc-callout {
   margin: 4px 12px 8px 60px;
-  border-left: 2px solid rgb(var(--v-theme-primary));
+  border-left: 2px solid rgba(var(--v-theme-primary), 0.5);
   background: rgba(var(--v-theme-primary), 0.07);
   border-radius: 0 6px 6px 0;
   padding: 8px 12px;
@@ -357,11 +369,9 @@ function sign(line: ReviewLine): string {
   display: inline-block;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: rgb(var(--v-theme-primary));
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-primary), 0.4);
+  border: 1px solid rgba(var(--v-theme-primary), 0.16);
   border-radius: 4px;
   padding: 1px 6px;
   margin-bottom: 5px;
@@ -396,7 +406,7 @@ function sign(line: ReviewLine): string {
   font-weight: 700;
   color: rgb(var(--v-theme-primary));
   background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-primary), 0.4);
+  border: 1px solid rgba(var(--v-theme-primary), 0.16);
   border-radius: 4px;
   padding: 1px 7px;
 }
@@ -405,5 +415,22 @@ function sign(line: ReviewLine): string {
   line-height: 1.55;
   white-space: pre-wrap;
   color: rgba(var(--v-theme-on-surface), 0.88);
+}
+@media (max-width: 600px) {
+  .frc-note,
+  .frc-meta {
+    display: none;
+  }
+  .frc-fhead {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .frc-path {
+    flex: 1;
+    min-width: 80px;
+  }
+  .frc-callout {
+    margin-left: 16px;
+  }
 }
 </style>

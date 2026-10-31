@@ -321,6 +321,7 @@
     "enterUrl": "Enter extension repository URL"
   },
   "skills": {
+    "store": "Skill store",
     "searchPlaceholder": "Search skills...",
     "noSearchResult": "No matching skills found",
     "modeLocal": "Local Skills",

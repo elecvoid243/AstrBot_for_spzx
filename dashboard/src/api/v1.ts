@@ -1835,6 +1835,9 @@ export const knowledgeApi = {
 };
 
 export const skillApi = {
+  store() {
+    return typed<{ available: boolean; url: string }>(openApiV1.getSkillStore());
+  },
   list(params?: SkillListParams) {
     return typed<any>(openApiV1.listSkills({ query: params }));
   },

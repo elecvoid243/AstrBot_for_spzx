@@ -181,6 +181,7 @@ outline: deep
 | `POST` | `/api/v1/chat/sessions/{session_id}/archive` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/export` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/goal` | — |
+| `POST` | `/api/v1/chat/sessions/{session_id}/goal` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/goal/actions` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/history` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/markers` | — |
@@ -191,6 +192,7 @@ outline: deep
 | `POST` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/discard` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/output` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/shell-sessions/{shell_session_id}/terminate` | — |
+| `GET` | `/api/v1/chat/sessions/{session_id}/side-threads` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/stop` | — |
 | `GET` | `/api/v1/chat/sessions/{session_id}/system-stream` | — |
 | `POST` | `/api/v1/chat/sessions/{session_id}/unarchive` | — |
@@ -199,6 +201,7 @@ outline: deep
 | `GET` | `/api/v1/chat/threads/{thread_id}` | — |
 | `DELETE` | `/api/v1/chat/threads/{thread_id}` | — |
 | `POST` | `/api/v1/chat/threads/{thread_id}/messages` | — |
+| `POST` | `/api/v1/chat/threads/{thread_id}/stop` | — |
 | `GET` | `/api/v1/chat/ui-settings` | — |
 | `PUT` | `/api/v1/chat/ui-settings/value` | — |
 | `GET` | `/api/v1/chat/ws` | `chat:admin` |
@@ -338,6 +341,9 @@ outline: deep
 
 | 方法 | 接口 | 条件性敏感子权限 |
 | --- | --- | --- |
+| `GET` | `/api/v1/skill-guide/active` | — |
+| `POST` | `/api/v1/skill-guide/clear` | — |
+| `POST` | `/api/v1/skill-guide/load` | — |
 | `GET` | `/api/v1/skills` | — |
 | `POST` | `/api/v1/skills` | — |
 | `GET` | `/api/v1/skills/archive` | — |
@@ -356,6 +362,7 @@ outline: deep
 | `POST` | `/api/v1/skills/neo/releases/delete` | — |
 | `POST` | `/api/v1/skills/neo/rollback` | — |
 | `POST` | `/api/v1/skills/neo/sync` | — |
+| `GET` | `/api/v1/skills/store` | — |
 | `PATCH` | `/api/v1/skills/{skill_name}` | — |
 | `DELETE` | `/api/v1/skills/{skill_name}` | — |
 | `GET` | `/api/v1/skills/{skill_name}/archive` | — |

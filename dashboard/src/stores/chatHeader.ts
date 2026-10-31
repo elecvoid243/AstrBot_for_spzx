@@ -31,6 +31,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     // stacking order — the last entry renders topmost; FOCUS moves an entry
     // to the end. Reopening an existing id raises instead of duplicating.
     openShellWindows: [] as string[],
+    shellWindowSize: { width: 560, height: 420 },
   }),
 
   actions: {

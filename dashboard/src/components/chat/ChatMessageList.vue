@@ -1,6 +1,7 @@
 <template>
   <div
     ref="listRoot"
+    @mousedown="toggleDetailedTimestamps"
     class="chat-message-list"
     :class="[`variant-${variant}`, { 'is-dark': isDark }]"
   >
@@ -1835,9 +1836,31 @@ function closeImage() {
   imagePreview.url = "";
 }
 
+const detailedTimestamps = ref(false);
+
+function toggleDetailedTimestamps(event: MouseEvent) {
+  if (event.button !== 1 || !(event.target instanceof Element)) return;
+  if (
+    !event.target.matches(
+      ".chat-message-list, .messages-list, .message-row, .message-stack, .message-rail",
+    )
+  )
+    return;
+  event.preventDefault();
+  detailedTimestamps.value = !detailedTimestamps.value;
+}
+
 function formatTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
+  if (detailedTimestamps.value) {
+    const pad = (number: number) => String(number).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+      date.getDate(),
+    )} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+      date.getSeconds(),
+    )}`;
+  }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 

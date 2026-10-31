@@ -525,9 +525,9 @@ describe("DiffPreview del-line comments (old side, spec 2026-08-13)", () => {
     await nextTick();
 
     // Written under the absolute path...
-    expect(
-      useFileComments().commentsForFile("F:\\repo\\a.txt"),
-    ).toHaveLength(1);
+    expect(useFileComments().commentsForFile("F:\\repo\\a.txt")).toHaveLength(
+      1,
+    );
     // ...not under the repo-relative display/discard path.
     expect(useFileComments().commentsForFile("a.txt")).toHaveLength(0);
     // ...and the row reads it back through the same key.
@@ -722,7 +722,6 @@ describe("DiffPreview intra-line highlight (2026-08-14)", () => {
   });
 });
 
-
 // ─── Overlay mode (2026-10-06, range-compare full-file overlay) ─────
 // Spec: docs/superpowers/specs/2026-10-06-git-file-range-diff-frontend-design.md §4
 
@@ -804,8 +803,7 @@ describe("overlay mode (baseContent provided)", () => {
   it("shows base line numbers on ctx/del rows, blank on add rows", () => {
     const wrapper = mountOverlay({ overlayMode: true });
     const rows = wrapper.findAll(".overlay-body .diff-line");
-    const num = (i: number) =>
-      rows[i].find(".line-number.old").text();
+    const num = (i: number) => rows[i].find(".line-number.old").text();
     expect(num(1)).toBe("2");
     expect(num(2)).toBe("3");
     expect(rows[3].find(".line-number.old").text()).toBe("");
@@ -832,7 +830,9 @@ describe("overlay mode (baseContent provided)", () => {
     expect(gap.exists()).toBe(true);
     expect(gap.text()).toContain("24");
     // 折叠时:l4..l27 不渲染;可见 = 6 基准行 + 2 add 行(L2/L29)
-    expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(30 - 24 + 2);
+    expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(
+      30 - 24 + 2,
+    );
     await gap.trigger("click");
     expect(wrapper.find(".overlay-gap").exists()).toBe(false);
     expect(wrapper.findAll(".overlay-body .diff-line").length).toBe(32);
@@ -884,9 +884,7 @@ describe("overlay mode (baseContent provided)", () => {
     const slot = wrapper.findAll(".diff-view-toggle button")[2];
 
     expect(slot.attributes("disabled")).toBeDefined();
-    expect(slot.attributes("title")).toBe(
-      zh.diffPreview.overlay.unavailable,
-    );
+    expect(slot.attributes("title")).toBe(zh.diffPreview.overlay.unavailable);
 
     await slot.trigger("click");
     expect(wrapper.emitted("update:overlayMode")).toBeUndefined();
@@ -947,6 +945,31 @@ describe("overlay mode (baseContent provided)", () => {
     expect(wrapper.emitted("update:overlayMode")).toBeUndefined();
   });
 
+  it("emphasizes changed words in overlay mode including fullscreen", async () => {
+    const wrapper = mount(DiffPreview, {
+      props: {
+        content:
+          "@@ -1,2 +1,2 @@\n-const count = 1;\n+const count = 2;\n stable",
+        baseContent: "const count = 1;\nstable\n",
+        filePath: "sample.ts",
+        isDark: false,
+        overlayMode: true,
+        overlaySupported: true,
+      },
+      global: { stubs: STUB_CHILDREN },
+    });
+    expect(wrapper.find(".overlay-body .intra-hl-del").text()).toBe("1");
+    expect(wrapper.find(".overlay-body .intra-hl-add").text()).toBe("2");
+    expect(wrapper.find(".overlay-body .ctx .intra-hl").exists()).toBe(false);
+    await wrapper.find(".diff-fullscreen-btn").trigger("click");
+    const overlays = document.body.querySelectorAll(".diff-fullscreen-overlay");
+    expect(
+      overlays[overlays.length - 1]?.querySelector(".intra-hl-add")
+        ?.textContent,
+    ).toBe("2");
+    wrapper.unmount();
+  });
+
   it("overlay rows receive shiki syntax highlighting", async () => {
     // I1(final review):overlay 行也必须走 Shiki token 高亮
     // (此前 overlayLineHtml 新建 DiffLine 字面量,高亮 Map 按对象身份
@@ -964,7 +987,7 @@ describe("overlay mode (baseContent provided)", () => {
     });
     await vi.waitFor(
       () => {
-        const cell = wrapper.find(".overlay-body .diff-line .line-content");
+        const cell = wrapper.find(".overlay-body .diff-line.ctx .line-content");
         expect(cell.exists()).toBe(true);
         expect(cell.html()).toContain("color:");
       },

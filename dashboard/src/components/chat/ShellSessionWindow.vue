@@ -13,7 +13,15 @@
   <div
     ref="winEl"
     class="shell-win"
-    :style="{ zIndex, right: `${pos.x}px`, bottom: `${pos.y}px` }"
+    :style="{
+      zIndex,
+      right: `${pos.x}px`,
+      bottom: `${pos.y}px`,
+      width: `${chatHeader.shellWindowSize.width}px`,
+      height: `${chatHeader.shellWindowSize.height}px`,
+      maxWidth: `calc(100vw - ${pos.x}px)`,
+      maxHeight: `calc(100vh - ${pos.y}px)`,
+    }"
     @mousedown="chatHeader.FOCUS_SHELL_WINDOW(shellSessionId)"
   >
     <div class="win-head" @mousedown="startDrag">
@@ -27,26 +35,49 @@
         {{ tm(`shellSession.stateLabels.${statusMeta.i18nKey}`) }}
       </span>
       <span v-if="meta?.pid" class="meta">pid {{ meta.pid }}</span>
-      <span v-if="meta?.started_at" class="meta">{{ formatRelativeTime(meta.started_at) }}</span>
+      <span v-if="meta?.started_at" class="meta">{{
+        formatRelativeTime(meta.started_at)
+      }}</span>
       <button
         v-if="canTerminate"
         class="win-btn term"
         :class="{ confirm: confirmTerminate }"
         @click="onTerminate"
       >
-        {{ confirmTerminate ? tm("shellSession.window.terminateConfirm") : tm("shellSession.window.terminate") }}
+        {{
+          confirmTerminate
+            ? tm("shellSession.window.terminateConfirm")
+            : tm("shellSession.window.terminate")
+        }}
       </button>
-      <button class="win-btn" :title="tm('shellSession.window.close')" @click="close">✕</button>
+      <button
+        class="win-btn"
+        :title="tm('shellSession.window.close')"
+        @click="close"
+      >
+        ✕
+      </button>
     </div>
-    <div ref="logRef" class="win-body">{{ outputText || tm("shellSession.window.noOutput") }}</div>
+    <div v-if="meta?.command" class="win-command" :title="meta.command">
+      {{ meta.command }}
+    </div>
+    <div ref="logRef" class="win-body">
+      {{ outputText || tm("shellSession.window.noOutput") }}
+    </div>
     <div class="win-foot">
       <label class="follow">
         <input v-model="follow" type="checkbox" />
         {{ tm("shellSession.window.followOutput") }}
       </label>
       <span class="win-foot-spacer" />
-      <span>{{ sessionClosed ? tm("shellSession.window.closed") : tm("shellSession.window.polling") }}</span>
-      <span>{{ tm("shellSession.window.readBytes", { size: formatBytes(byteCount) }) }}</span>
+      <span>{{
+        sessionClosed
+          ? tm("shellSession.window.closed")
+          : tm("shellSession.window.polling")
+      }}</span>
+      <span>{{
+        tm("shellSession.window.readBytes", { size: formatBytes(byteCount) })
+      }}</span>
     </div>
   </div>
 </template>
@@ -75,8 +106,9 @@ const { tm } = useModuleI18n("features/chat");
 // Snapshot list metadata at mount: a reaped session leaves the push list,
 // but the window must keep showing its last-known identity.
 const meta = ref(
-  chatHeader.shellSessions?.find((s) => s.session_id === props.shellSessionId) ??
-    null,
+  chatHeader.shellSessions?.find(
+    (s) => s.session_id === props.shellSessionId,
+  ) ?? null,
 );
 
 const { outputText, status, sessionClosed, follow, start, stop } =
@@ -144,7 +176,10 @@ function close() {
 // ── Dragging (header), same interaction as the todo summary bar ────
 // Position is stored as right/bottom offsets so the window stays anchored
 // to the composer corner across resizes; the nth window cascades inward.
-const idx = Math.max(chatHeader.openShellWindows.indexOf(props.shellSessionId), 0);
+const idx = Math.max(
+  chatHeader.openShellWindows.indexOf(props.shellSessionId),
+  0,
+);
 const pos = ref({ x: 24 + idx * 28, y: 120 + idx * 28 });
 
 function startDrag(e: MouseEvent) {
@@ -158,11 +193,21 @@ function startDrag(e: MouseEvent) {
     // Clamp both directions: right/bottom offsets only grow when dragging
     // left/up, so an unclamped window could leave the viewport entirely.
     const el = winEl.value;
-    const maxX = el ? window.innerWidth - el.offsetWidth : Number.MAX_SAFE_INTEGER;
-    const maxY = el ? window.innerHeight - el.offsetHeight : Number.MAX_SAFE_INTEGER;
+    const maxX = el
+      ? window.innerWidth - el.offsetWidth
+      : Number.MAX_SAFE_INTEGER;
+    const maxY = el
+      ? window.innerHeight - el.offsetHeight
+      : Number.MAX_SAFE_INTEGER;
     pos.value = {
-      x: Math.min(Math.max(0, origin.x - (ev.clientX - startX)), Math.max(0, maxX)),
-      y: Math.min(Math.max(0, origin.y - (ev.clientY - startY)), Math.max(0, maxY)),
+      x: Math.min(
+        Math.max(0, origin.x - (ev.clientX - startX)),
+        Math.max(0, maxX),
+      ),
+      y: Math.min(
+        Math.max(0, origin.y - (ev.clientY - startY)),
+        Math.max(0, maxY),
+      ),
     };
   };
   const onUp = () => {
@@ -173,10 +218,44 @@ function startDrag(e: MouseEvent) {
   document.addEventListener("mouseup", onUp);
 }
 
+let resizeObserver: ResizeObserver | null = null;
 onMounted(() => {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem("chat.shellWindowSize") || "null",
+    );
+    if (Number.isFinite(saved?.width) && Number.isFinite(saved?.height)) {
+      chatHeader.shellWindowSize = {
+        width: Math.max(320, saved.width),
+        height: Math.max(220, saved.height),
+      };
+    }
+  } catch {
+    /* Ignore invalid or unavailable saved preferences. */
+  }
+  if (winEl.value) {
+    resizeObserver = new ResizeObserver(() => {
+      const el = winEl.value;
+      if (!el || el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      const size = { width: el.offsetWidth, height: el.offsetHeight };
+      if (
+        size.width === chatHeader.shellWindowSize.width &&
+        size.height === chatHeader.shellWindowSize.height
+      )
+        return;
+      chatHeader.shellWindowSize = size;
+      try {
+        localStorage.setItem("chat.shellWindowSize", JSON.stringify(size));
+      } catch {
+        /* Storage may be disabled. */
+      }
+    });
+    resizeObserver.observe(winEl.value);
+  }
   void start();
 });
 onUnmounted(() => {
+  resizeObserver?.disconnect();
   stop();
   if (confirmTimer) clearTimeout(confirmTimer);
 });
@@ -185,8 +264,9 @@ onUnmounted(() => {
 <style scoped>
 .shell-win {
   position: fixed;
-  width: 560px;
-  max-width: calc(100vw - 48px);
+  resize: both;
+  min-width: min(320px, calc(100vw - 24px));
+  min-height: min(220px, calc(100vh - 24px));
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 12px;
@@ -197,6 +277,8 @@ onUnmounted(() => {
 }
 
 .win-head {
+  flex-shrink: 0;
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -280,7 +362,8 @@ onUnmounted(() => {
   /* The terminal log is the window's main content: it claims most of the
      vertical space instead of a fixed short strip. (Trimmed 30% from the
      first cut, which read as too tall.) */
-  height: clamp(250px, 40vh, 450px);
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 10px 12px;
   background: #0d1117;
@@ -293,6 +376,7 @@ onUnmounted(() => {
 }
 
 .win-foot {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -314,5 +398,19 @@ onUnmounted(() => {
    ~200px-tall box with the text centered — the "blank area" bug. */
 .win-foot-spacer {
   flex: 1;
+}
+.win-command {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
 }
 </style>

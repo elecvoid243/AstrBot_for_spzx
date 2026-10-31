@@ -1217,15 +1217,16 @@ class ChatRunState:
     revision: int = 0
     status: str = "running"
     task: asyncio.Task[None] | None = None
+    preceding_plain_text: str = ""
+    segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     history_record: PlatformMessageHistory | None = None
-    """History row this turn owns.
+    """History row for the current chronological segment.
 
-    Created by the turn's first save and rewritten by every later one, so a
-    turn that saves mid-way (an `interactive_choice` event saves the record it
-    lands in) still persists as a single history record.
+    Mid-segment saves rewrite the same row. A user follow-up closes this
+    segment and starts a new row after the user's chronological boundary.
     """
     history_parts: list[dict] = field(default_factory=list)
-    """Parts already written into `history_record` — the whole turn so far."""
+    """Parts already written into the current segment history row."""
 
 
 class ChatService:
@@ -1792,6 +1793,11 @@ class ChatService:
                     "llm_checkpoint_id": run.llm_checkpoint_id,
                     "status": run.status,
                     "revision": run.revision,
+                    "segment_id": run.segment_id,
+                    "preceding_plain_text": run.preceding_plain_text,
+                    "history_record_id": run.history_record.id
+                    if run.history_record
+                    else None,
                     "content": build_bot_history_content(
                         deepcopy(run.message_parts),
                         agent_stats=deepcopy(run.agent_stats),
@@ -1892,6 +1898,11 @@ class ChatService:
                 "llm_checkpoint_id": run.llm_checkpoint_id,
                 "status": run.status,
                 "revision": run.revision,
+                "segment_id": run.segment_id,
+                "preceding_plain_text": run.preceding_plain_text,
+                "history_record_id": run.history_record.id
+                if run.history_record
+                else None,
                 "content": build_bot_history_content(
                     deepcopy(run.message_parts),
                     agent_stats=deepcopy(run.agent_stats),
@@ -2080,12 +2091,8 @@ class ChatService:
                 extracted_refs = pending_refs
 
             run.refs = extracted_refs
-            # The row holds the whole turn: every save appends its own segment
-            # and rewrites the row the turn already owns. A turn must stay one
-            # history record — a mid-turn save (the `interactive_choice` event
-            # lands here, and the user may answer several of them in one turn)
-            # that started a new row made a hard refresh render the turn as one
-            # bubble, with its own capsule, per save.
+            # Mid-segment saves, including interactive choices, rewrite the
+            # existing row. Only a user message starts a chronological segment.
             run.history_parts.extend(message_parts_to_save)
             if run.history_record is None:
                 # First save of the turn: create the row this turn owns.
@@ -2132,6 +2139,51 @@ class ChatService:
                     continue
                 if result.get("message_id") and str(result["message_id"]) != run.run_id:
                     logger.warning("webchat stream message_id mismatch")
+                    continue
+
+                if result.get("type") == "_user_message_boundary":
+                    completion = result["completion"]
+                    try:
+                        saved = await flush_pending_bot_message(
+                            freeze_pending_tool_calls=False
+                        )
+                        saved = saved or run.history_record
+                        previous = serialize_history_entry(saved) if saved else None
+                        user = await self.platform_history_mgr.insert(
+                            **result["history"]
+                        )
+                        run.history_record = None
+                        run.preceding_plain_text += (
+                            collect_plain_text_from_message_parts(run.history_parts)
+                        )
+                        run.history_parts = []
+                        run.message_parts = []
+                        run.segment_id = str(uuid.uuid4())
+                        display_accumulator = BotMessageAccumulator(
+                            filtered_tool_call_ids=suppressed_tool_call_ids,
+                            pending_tool_calls=pending_accumulator.pending_tool_calls.copy(),
+                        )
+                        self._publish_chat_run(
+                            run,
+                            {
+                                "type": "message_segment",
+                                "data": {
+                                    "previous": previous,
+                                    "segment_id": run.segment_id,
+                                    "preceding_plain_text": run.preceding_plain_text,
+                                    "user": serialize_history_entry(user),
+                                    "client_message_id": result.get(
+                                        "client_message_id"
+                                    ),
+                                },
+                            },
+                        )
+                        if not completion.done():
+                            completion.set_result(user)
+                    except Exception as exc:
+                        if not completion.done():
+                            completion.set_exception(exc)
+                        raise
                     continue
 
                 result_text = result.get("data", "")
@@ -2708,14 +2760,46 @@ class ChatService:
 
         message_parts_for_storage = strip_message_parts_path_fields(message_parts)
         if not skip_user_history:
-            saved_user_record = await self.platform_history_mgr.insert(
-                platform_id=platform_history_id,
-                user_id=webchat_conv_id,
-                content={"type": "user", "message": message_parts_for_storage},
-                sender_id=username,
-                sender_name=username,
-                llm_checkpoint_id=llm_checkpoint_id,
+            history = {
+                "platform_id": platform_history_id,
+                "user_id": webchat_conv_id,
+                "content": {"type": "user", "message": message_parts_for_storage},
+                "sender_id": username,
+                "sender_name": username,
+                "llm_checkpoint_id": llm_checkpoint_id,
+            }
+            # Serialize the user row with output, preserving database order.
+            active_run = next(
+                (
+                    candidate
+                    for candidate in self.chat_runs.values()
+                    if candidate.session_id == webchat_conv_id
+                    and candidate.username == username
+                    and candidate.task is not None
+                    and not candidate.task.done()
+                ),
+                None,
             )
+            if active_run is not None:
+                completion = asyncio.get_running_loop().create_future()
+                active_run.back_queue.put_nowait(
+                    {
+                        "type": "_user_message_boundary",
+                        "history": history,
+                        "client_message_id": post_data.get(
+                            "_client_message_id", post_data.get("message_id")
+                        ),
+                        "completion": completion,
+                    }
+                )
+                await asyncio.wait(
+                    {completion, active_run.task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if completion.done():
+                    saved_user_record = completion.result()
+            if saved_user_record is None:
+                saved_user_record = await self.platform_history_mgr.insert(**history)
 
         back_queue = webchat_queue_mgr.get_or_create_back_queue(
             message_id,
@@ -2752,6 +2836,10 @@ class ChatService:
                         "selected_provider": selected_provider,
                         "selected_model": selected_model,
                         "thinking_effort": thinking_effort,
+                        "selected_stt_provider": post_data.get("selected_stt_provider"),
+                        "selected_tts_provider": post_data.get("selected_tts_provider"),
+                        "persona_prompt": post_data.get("persona_prompt"),
+                        "show_reasoning": post_data.get("show_reasoning"),
                         "flags": flags,
                         "message_id": message_id,
                         "llm_checkpoint_id": llm_checkpoint_id,

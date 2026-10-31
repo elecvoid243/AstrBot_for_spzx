@@ -3687,6 +3687,10 @@ export type UploadSkillResponse = (SuccessEnvelope);
 
 export type UploadSkillError = unknown;
 
+export type GetSkillStoreResponse = (SuccessEnvelope);
+
+export type GetSkillStoreError = unknown;
+
 export type UploadSkillsBatchData = {
     body: {
         files: Array<((Blob | File))>;

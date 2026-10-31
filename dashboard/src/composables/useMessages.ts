@@ -1,7 +1,10 @@
 import { computed, onBeforeUnmount, reactive, ref, watch, type Ref } from "vue";
 import { chatApi, fileApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
-import { collectFileChanges, parseFileChangesPayload } from "@/utils/fileChangeTool";
+import {
+  collectFileChanges,
+  parseFileChangesPayload,
+} from "@/utils/fileChangeTool";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
 import { useInteractiveChoiceStore } from "@/stores/interactiveChoice";
 import {
@@ -272,6 +275,8 @@ interface ActiveChatRun {
   llm_checkpoint_id?: string | null;
   status?: string;
   revision?: number;
+  segment_id?: string;
+  history_record_id?: number | null;
   content?: ChatContent;
 }
 
@@ -287,9 +292,7 @@ interface ActiveConnection {
   completed?: boolean;
   errorShown?: boolean;
   botVisible?: boolean;
-  deferredBeforeBot?: ChatRecord;
-  followUpCaptured?: boolean;
-  followUpTargetRunId?: string;
+  precedingPlainText?: string;
 }
 
 interface SendMessageStreamOptions {
@@ -400,7 +403,6 @@ export function useMessages(options: UseMessagesOptions) {
   const activeConnections = reactive<Record<string, ActiveConnection>>({});
   const chatWebSockets: Record<string, WebSocket> = {};
   const closingChatWebSockets = new WeakSet<WebSocket>();
-  const deferredBotAnchors = new WeakMap<ChatRecord, ChatRecord>();
   const attachmentBlobCache = new Map<string, Promise<string>>();
   const sessionProjects = reactive<Record<string, ChatSessionProject | null>>(
     {},
@@ -449,7 +451,9 @@ export function useMessages(options: UseMessagesOptions) {
       if (type === "branch_info") turn = null;
       if (type !== "user" && type !== "bot") continue;
       const text = messageParts(message)
-        .filter((part) => part.type === "plain" && typeof part.text === "string")
+        .filter(
+          (part) => part.type === "plain" && typeof part.text === "string",
+        )
         .map((part) => part.text)
         .join("")
         .replace(/\s+/g, " ")
@@ -467,7 +471,9 @@ export function useMessages(options: UseMessagesOptions) {
         }
       } else if (turn) {
         if (text)
-          turn.replyPreview = `${turn.replyPreview} ${text}`.trim().slice(0, 160);
+          turn.replyPreview = `${turn.replyPreview} ${text}`
+            .trim()
+            .slice(0, 160);
         turn.replyLoading ||= Boolean(
           messageContent(message).isLoading || isMessageStreaming(message, i),
         );
@@ -812,24 +818,22 @@ export function useMessages(options: UseMessagesOptions) {
           if (!recordId) return true;
           const numericId = Number(recordId);
           if (Number.isFinite(numericId)) {
-            return (
-              newestSnapshotId === null || numericId > newestSnapshotId
-            );
+            return newestSnapshotId === null || numericId > newestSnapshotId;
           }
           // Temp ids (`local-*`, `active-run-*`, ...) are in-flight bubbles
           // the snapshot cannot contain yet.
           return !historyIds.has(recordId);
         });
         if (live.length) {
-          // 2026-09-01 (elecvoid243): no cross-format timestamp sorting here.
-          // Live records necessarily postdate the persisted snapshot, so
-          // appending preserves the visual order (user message first, then
-          // the streaming bot reply). Sorting strings mixes server-side
-          // "+00:00" isoformat timestamps with local `new Date().toISOString()`
-          // "Z" values; localeCompare then groups by format instead of time,
-          // which reordered the streaming reply above its user message after
-          // switching back to a session mid-stream.
-          messagesBySession[sessionId] = [...snapshot, ...live];
+          // Parse timestamps numerically: live segments can precede a saved
+          // follow-up, and UTC timestamps may use either Z or +00:00.
+          messagesBySession[sessionId] = [...snapshot, ...live].sort((a, b) => {
+            const first = Date.parse(a.created_at || "");
+            const second = Date.parse(b.created_at || "");
+            return Number.isFinite(first) && Number.isFinite(second)
+              ? first - second
+              : 0;
+          });
         }
       }
       sessionProjects[sessionId] = normalizeSessionProject(payload.project);
@@ -1029,12 +1033,14 @@ export function useMessages(options: UseMessagesOptions) {
     const records = (messagesBySession[sessionId] || []).filter((record) => {
       return !(
         checkpointId &&
-        record.llm_checkpoint_id === checkpointId &&
+        (run.history_record_id != null
+          ? String(record.id) === String(run.history_record_id)
+          : !run.segment_id && record.llm_checkpoint_id === checkpointId) &&
         messageContent(record).type === "bot"
       );
     });
     const botRecord = normalizeHistoryRecord({
-      id: `active-run-${run.run_id}`,
+      id: run.history_record_id ?? `active-run-${run.run_id}`,
       content: run.content || { type: "bot", message: [] },
       llm_checkpoint_id: checkpointId,
       created_at: new Date().toISOString(),
@@ -1079,26 +1085,8 @@ export function useMessages(options: UseMessagesOptions) {
     });
 
     const sessionMessages = messagesBySession[sessionId];
-    if (isSessionRunning(sessionId)) {
-      const activeBotConnections = Object.values(activeConnections).filter(
-        (connection) =>
-          connection.sessionId === sessionId &&
-          connection.botVisible !== false &&
-          connection.botRecord &&
-          sessionMessages.includes(connection.botRecord),
-      );
-      const activeBotRecord =
-        activeBotConnections[activeBotConnections.length - 1]?.botRecord;
-      if (activeBotRecord) {
-        const activeBotIndex = sessionMessages.indexOf(activeBotRecord);
-        sessionMessages.splice(activeBotIndex, 0, userRecord);
-        deferredBotAnchors.set(botRecord, activeBotRecord);
-      } else {
-        sessionMessages.push(userRecord);
-      }
-    } else {
-      sessionMessages.push(userRecord, botRecord);
-    }
+    sessionMessages.push(userRecord);
+    if (!isSessionRunning(sessionId)) sessionMessages.push(botRecord);
 
     return {
       userRecord,
@@ -1405,7 +1393,6 @@ export function useMessages(options: UseMessagesOptions) {
       botRecord,
       userRecord,
       botVisible: messagesBySession[sessionId]?.includes(botRecord) ?? false,
-      deferredBeforeBot: deferredBotAnchors.get(botRecord),
     };
     activeConnections[messageId] = connection;
 
@@ -1421,6 +1408,7 @@ export function useMessages(options: UseMessagesOptions) {
         selected_provider: selectedProvider,
         selected_model: selectedModel,
         thinking_effort: thinkingEffort,
+        _client_message_id: messageId,
         _skip_user_history: skipUserHistory,
         _llm_checkpoint_id: llmCheckpointId || undefined,
       }),
@@ -1654,7 +1642,6 @@ export function useMessages(options: UseMessagesOptions) {
       completed: false,
       errorShown: false,
       botVisible: messagesBySession[sessionId]?.includes(botRecord) ?? false,
-      deferredBeforeBot: deferredBotAnchors.get(botRecord),
     };
     activeConnections[messageId] = connection;
 
@@ -1663,6 +1650,7 @@ export function useMessages(options: UseMessagesOptions) {
       t: "send",
       session_id: sessionId,
       message_id: messageId,
+      _client_message_id: messageId,
       message: parts.map(partToPayload),
       flags: buildChatRequestFlags(enableStreaming),
       selected_provider: selectedProvider,
@@ -1971,29 +1959,7 @@ export function useMessages(options: UseMessagesOptions) {
     const userIndex = userRecord
       ? records.findIndex((r) => String(r.id) === String(userRecord.id))
       : -1;
-    let insertionAnchor = connection.deferredBeforeBot;
-    if (insertionAnchor) {
-      for (const candidate of Object.values(activeConnections)) {
-        if (candidate.messageId === connection.messageId) break;
-        if (
-          candidate.sessionId === connection.sessionId &&
-          candidate.deferredBeforeBot === connection.deferredBeforeBot &&
-          candidate.botVisible &&
-          candidate.botRecord &&
-          records.some(
-            (r) => String(r.id) === String(candidate.botRecord?.id ?? ""),
-          )
-        ) {
-          insertionAnchor = candidate.botRecord;
-        }
-      }
-    }
-    const anchorIndex = insertionAnchor
-      ? records.findIndex((r) => String(r.id) === String(insertionAnchor?.id))
-      : -1;
-    if (anchorIndex >= 0) {
-      records.splice(anchorIndex + 1, 0, botRecord);
-    } else if (userIndex >= 0) {
+    if (userIndex >= 0) {
       records.splice(userIndex + 1, 0, botRecord);
     } else {
       records.push(botRecord);
@@ -2016,33 +1982,46 @@ export function useMessages(options: UseMessagesOptions) {
     const chainType = normalized?.chain_type;
     const data = normalized?.data ?? "";
 
-    if (msgType === "follow_up_captured") {
-      if (connection) {
-        connection.followUpCaptured = true;
-        connection.followUpTargetRunId = String(data?.target_run_id || "");
-        const target = Object.values(activeConnections).find(
-          (candidate) =>
-            candidate.runId === connection.followUpTargetRunId &&
-            candidate.botRecord,
-        );
-        const records = messagesBySession[connection.sessionId] || [];
-        if (target?.botRecord && connection.userRecord) {
-          const userIndex = records.indexOf(connection.userRecord);
-          const targetIndex = records.indexOf(target.botRecord);
-          if (targetIndex >= 0) {
-            if (userIndex > targetIndex) {
-              records.splice(userIndex, 1);
-              const updatedTargetIndex = records.indexOf(target.botRecord);
-              records.splice(updatedTargetIndex, 0, connection.userRecord);
-            } else if (userIndex < 0) {
-              records.splice(targetIndex, 0, connection.userRecord);
-            }
-            connection.deferredBeforeBot = target.botRecord;
-          } else if (userIndex < 0) {
-            records.push(connection.userRecord);
-          }
+    if (msgType === "follow_up_captured") return;
+    if (msgType === "message_segment" && connection && sessionId) {
+      const records = messagesBySession[sessionId] || [];
+      const oldIndex = records.indexOf(botRecord);
+      // Retain the reactive handle for subsequent chunks; freeze the old row.
+      if (oldIndex >= 0) {
+        if (data.previous) {
+          records.splice(oldIndex, 1, normalizeHistoryRecord(data.previous));
+        } else {
+          records.splice(oldIndex, 1);
         }
       }
+      const savedUser = data.user;
+      let boundaryUser = records.find(
+        (record) =>
+          String(record.id) === String(savedUser?.id) ||
+          (data.client_message_id &&
+            String(record.id) === `local-user-${data.client_message_id}`),
+      );
+      if (savedUser && !boundaryUser) {
+        boundaryUser = normalizeHistoryRecord(savedUser);
+        records.push(boundaryUser);
+      } else if (savedUser && boundaryUser) {
+        boundaryUser.id = savedUser.id;
+        boundaryUser.created_at = savedUser.created_at;
+      }
+      connection.precedingPlainText = String(data.preceding_plain_text || "");
+      botRecord.id = `active-segment-${data.segment_id}`;
+      botRecord.created_at = savedUser?.created_at || new Date().toISOString();
+      botRecord.content = {
+        type: "bot",
+        message: [],
+        reasoning: "",
+        isLoading: true,
+      };
+      const userIndex = boundaryUser
+        ? records.indexOf(boundaryUser)
+        : records.length - 1;
+      records.splice(userIndex + 1, 0, botRecord);
+      connection.botVisible = true;
       return;
     }
     if (msgType === "run_started") {
@@ -2066,6 +2045,10 @@ export function useMessages(options: UseMessagesOptions) {
       snapshotRecord.content.isLoading =
         snapshot.status === "running" &&
         snapshotRecord.content.message.length === 0;
+      if (snapshot.history_record_id != null)
+        botRecord.id = snapshot.history_record_id;
+      if (connection)
+        connection.precedingPlainText = snapshot.preceding_plain_text || "";
       botRecord.content = snapshotRecord.content;
       botRecord.llm_checkpoint_id = snapshotRecord.llm_checkpoint_id;
       void resolveRecordMedia([botRecord]);
@@ -2120,7 +2103,12 @@ export function useMessages(options: UseMessagesOptions) {
     }
     if (msgType === "complete" || msgType === "break") {
       markMessageStarted(botRecord);
-      const finalText = payloadText(data);
+      const completeText = payloadText(data);
+      const prefix = connection?.precedingPlainText || "";
+      const finalText =
+        prefix && completeText.startsWith(prefix)
+          ? completeText.slice(prefix.length)
+          : completeText;
       const existingText = botRecord.content.message
         .filter((part) => part.type === "plain")
         .map((part) => part.text || "")

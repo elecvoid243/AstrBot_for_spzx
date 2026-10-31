@@ -2290,6 +2290,48 @@
           }
         },
         "description": "**Required scope:** `chat`"
+      },
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Set (or replace) the session's standing goal and kick off the loop",
+        "operationId": "setChatSessionGoal",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "goal"
+                ],
+                "properties": {
+                  "goal": {
+                    "type": "string",
+                    "description": "The goal description; becomes the loop's first turn."
+                  },
+                  "max_turns": {
+                    "type": "integer",
+                    "description": "Optional turn-budget override; omitted follows the goal.max_turns config."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
       }
     },
     "/api/v1/chat/sessions/{session_id}/goal/actions": {
@@ -3155,6 +3197,58 @@
         "responses": {
           "200": {
             "description": "Server-sent chat stream or an error envelope"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/threads/{thread_id}/stop": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Stop the active run of a webchat side thread",
+        "operationId": "stopChatThread",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/side-threads": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "List the persistent side chats of a webchat session",
+        "operationId": "listChatSideThreads",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
           }
         },
         "description": "**Required scope:** `chat`"
@@ -5913,6 +6007,84 @@
         "description": "**Required scope:** `mcp`"
       }
     },
+    "/api/v1/skill-guide/active": {
+      "get": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "List the skills effective for a session, for the skill-guide menu",
+        "operationId": "getSkillGuideActive",
+        "x-astrbot-scope": "skill",
+        "parameters": [
+          {
+            "name": "umo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `skill`"
+      }
+    },
+    "/api/v1/skill-guide/load": {
+      "post": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Queue a one-shot skill nudge for a session",
+        "operationId": "loadSkillGuide",
+        "x-astrbot-scope": "skill",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillGuideLoadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `skill`"
+      }
+    },
+    "/api/v1/skill-guide/clear": {
+      "post": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Drop the unconsumed skill-guide queue of a session",
+        "operationId": "clearSkillGuide",
+        "x-astrbot-scope": "skill",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillGuideClearRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `skill`"
+      }
+    },
     "/api/v1/skills": {
       "get": {
         "tags": [
@@ -5961,6 +6133,22 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `skill`"
+      }
+    },
+    "/api/v1/skills/store": {
+      "get": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "Resolve an available inline skill store from the update source",
+        "operationId": "getSkillStore",
+        "x-astrbot-scope": "skill",
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
@@ -8053,6 +8241,35 @@
       }
     },
     "schemas": {
+      "SkillGuideLoadRequest": {
+        "type": "object",
+        "required": [
+          "umo",
+          "skill_name"
+        ],
+        "properties": {
+          "umo": {
+            "type": "string",
+            "description": "Unified message origin of the session."
+          },
+          "skill_name": {
+            "type": "string",
+            "description": "Name of the skill to nudge (any skill on disk)."
+          }
+        }
+      },
+      "SkillGuideClearRequest": {
+        "type": "object",
+        "required": [
+          "umo"
+        ],
+        "properties": {
+          "umo": {
+            "type": "string",
+            "description": "Unified message origin of the session."
+          }
+        }
+      },
       "SuccessEnvelope": {
         "type": "object",
         "required": [
@@ -8781,6 +8998,9 @@
             "type": "string"
           },
           "selected_model": {
+            "type": "string"
+          },
+          "thinking_effort": {
             "type": "string"
           },
           "enable_streaming": {

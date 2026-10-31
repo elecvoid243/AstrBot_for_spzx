@@ -29,10 +29,17 @@
         :title="summary"
         :aria-label="summary"
       >
-        <v-icon size="18" :class="{ 'shell-pulse': runningCount > 0 }" :color="runningCount > 0 ? '#2da44e' : undefined">
+        <v-icon
+          size="18"
+          :class="{ 'shell-pulse': runningCount > 0 }"
+          :color="runningCount > 0 ? '#2da44e' : undefined"
+        >
           mdi-console
         </v-icon>
-        <span class="shell-trigger-count" :class="{ dimmed: runningCount === 0 }">
+        <span
+          class="shell-trigger-count"
+          :class="{ dimmed: runningCount === 0 }"
+        >
           {{ sessions.length }}
         </span>
       </v-btn>
@@ -40,7 +47,9 @@
 
     <v-card class="shell-session-popover" elevation="8" rounded="lg">
       <div class="popover-header">
-        <div class="popover-title">{{ tm("shellSession.indicator.title") }}</div>
+        <div class="popover-title">
+          {{ tm("shellSession.indicator.title") }}
+        </div>
         <button
           v-if="finishedCount > 0"
           type="button"
@@ -49,18 +58,26 @@
           :disabled="clearing || !conversationId"
           :title="
             cleanupConfirmId === CLEAR_ALL_KEY
-              ? tm('shellSession.labels.cleanupAllConfirm', { count: finishedCount })
+              ? tm('shellSession.labels.cleanupAllConfirm', {
+                  count: finishedCount,
+                })
               : tm('shellSession.labels.cleanupAll')
           "
           @click="onClearFinished"
         >
           <v-icon size="14">
-            {{ cleanupConfirmId === CLEAR_ALL_KEY ? "mdi-check" : "mdi-delete-sweep-outline" }}
+            {{
+              cleanupConfirmId === CLEAR_ALL_KEY
+                ? "mdi-check"
+                : "mdi-delete-sweep-outline"
+            }}
           </v-icon>
           <span>
             {{
               cleanupConfirmId === CLEAR_ALL_KEY
-                ? tm("shellSession.labels.cleanupAllConfirm", { count: finishedCount })
+                ? tm("shellSession.labels.cleanupAllConfirm", {
+                    count: finishedCount,
+                  })
                 : tm("shellSession.labels.cleanupAll")
             }}
           </span>
@@ -79,7 +96,9 @@
             class="status-dot"
             :class="{ 'shell-pulse': statusMeta(s.status).pulse }"
             :style="{ backgroundColor: statusMeta(s.status).color }"
-            :title="tm(`shellSession.stateLabels.${statusMeta(s.status).i18nKey}`)"
+            :title="
+              tm(`shellSession.stateLabels.${statusMeta(s.status).i18nKey}`)
+            "
           />
           <span class="session-id" @click.stop>
             <CopyableText
@@ -88,14 +107,18 @@
               mode="code"
             />
           </span>
-          <span class="status-label" :style="{ color: statusMeta(s.status).color }">
+          <span
+            class="status-label"
+            :style="{ color: statusMeta(s.status).color }"
+          >
             {{ tm(`shellSession.stateLabels.${statusMeta(s.status).i18nKey}`) }}
           </span>
           <span
             v-if="s.exit_code !== null && s.exit_code !== undefined"
             class="exit-code"
             :class="s.exit_code === 0 ? 'success' : 'error'"
-          >exit {{ s.exit_code }}</span>
+            >exit {{ s.exit_code }}</span
+          >
           <button
             v-if="s.status !== 'running'"
             class="row-cleanup"
@@ -109,9 +132,16 @@
             @click.stop="onCleanup(s.session_id)"
           >
             <v-icon size="13">
-              {{ cleanupConfirmId === s.session_id ? "mdi-check" : "mdi-delete-outline" }}
+              {{
+                cleanupConfirmId === s.session_id
+                  ? "mdi-check"
+                  : "mdi-delete-outline"
+              }}
             </v-icon>
           </button>
+        </div>
+        <div v-if="s.command" class="session-command" :title="s.command">
+          {{ s.command }}
         </div>
         <div class="session-row-meta">
           <span>pid {{ s.pid }}</span>
@@ -121,7 +151,10 @@
           </template>
           <template v-if="s.unread_output_bytes > 0">
             <span class="meta-sep">·</span>
-            <span>{{ tm("shellSession.labels.unread") }} {{ formatBytes(s.unread_output_bytes) }}</span>
+            <span
+              >{{ tm("shellSession.labels.unread") }}
+              {{ formatBytes(s.unread_output_bytes) }}</span
+            >
           </template>
         </div>
       </div>
@@ -462,5 +495,19 @@ onUnmounted(() => {
   50% {
     opacity: 0.35;
   }
+}
+.session-command {
+  margin: 5px 0 5px 16px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 </style>

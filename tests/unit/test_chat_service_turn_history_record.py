@@ -1,4 +1,4 @@
-"""One agent turn must persist as a single history record.
+"""Keep turn saves together, splitting only at chronological user boundaries.
 
 Author: elecvoid243
 Date: 2026-09-28
@@ -13,7 +13,8 @@ stream accumulates the whole turn into one bubble, so the ChatUI only showed
 the split after a refresh: one bubble — each with its own "worked for ..."
 capsule — per save, while the agent had run a single turn. The row is now
 created once and rewritten by every later save, with the parts accumulated
-turn-wide.
+segment-wide. Follow-ups deliberately start a new segment so live display
+and restored history share the same chronology.
 """
 
 from __future__ import annotations
@@ -44,7 +45,12 @@ class _FakeHistoryManager:
         row_id = self._next_id
         self._next_id += 1
         self.rows[row_id] = kwargs["content"]
-        return SimpleNamespace(id=row_id, created_at=datetime.now(timezone.utc))
+        return SimpleNamespace(
+            id=row_id,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            model_dump=lambda: {"id": row_id, **kwargs},
+        )
 
     async def update(self, message_id, content=None, llm_checkpoint_id=None):
         self.updates += 1
@@ -166,3 +172,45 @@ async def test_turn_without_a_mid_turn_save_writes_one_record_without_updates() 
     assert manager.updates == 0
     [content] = manager.rows.values()
     assert [part["type"] for part in content["message"]] == ["think", "plain"]
+
+
+@pytest.mark.asyncio
+async def test_followups_split_stream_into_chronological_durable_rows() -> None:
+    completions = [asyncio.get_running_loop().create_future() for _ in range(2)]
+    boundaries = [
+        {
+            "type": "_user_message_boundary",
+            "completion": completion,
+            "history": {
+                "platform_id": "webchat",
+                "user_id": "session-1",
+                "content": {"type": "user", "message": [{"type": "plain", "text": text}]},
+            },
+        }
+        for completion, text in zip(completions, ["follow-up 1", "follow-up 2"])
+    ]
+    manager = await _drive_turn([
+        _text("before"), boundaries[0], _text("middle"), boundaries[1],
+        _text("after"), _text("beforemiddleafter", msg_type="complete"),
+        {"type": "end", "message_id": RUN_ID},
+    ])
+    assert [row["type"] for row in manager.rows.values()] == ["bot", "user", "bot", "user", "bot"]
+    assert [row["message"][0]["text"] for row in manager.rows.values()] == [
+        "before", "follow-up 1", "middle", "follow-up 2", "after",
+    ]
+    assert all(completion.done() and completion.exception() is None for completion in completions)
+
+
+@pytest.mark.asyncio
+async def test_boundary_preserves_a_previously_saved_choice_segment() -> None:
+    completion = asyncio.get_running_loop().create_future()
+    manager = await _drive_turn([
+        _choice_event("r1"),
+        {"type": "_user_message_boundary", "completion": completion, "history": {
+            "platform_id": "webchat", "user_id": "session-1",
+            "content": {"type": "user", "message": [{"type": "plain", "text": "follow-up"}]},
+        }},
+        _text("answer"), {"type": "end", "message_id": RUN_ID},
+    ])
+    assert [row["type"] for row in manager.rows.values()] == ["bot", "user", "bot"]
+    assert manager.rows[1]["message"][0]["request_id"] == "r1"

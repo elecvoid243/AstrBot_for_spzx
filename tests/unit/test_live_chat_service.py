@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,7 +16,7 @@ def _service() -> LiveChatService:
         plugin_manager=SimpleNamespace(),
         platform_message_history_manager=SimpleNamespace(),
     )
-    return LiveChatService(SimpleNamespace(), core_lifecycle)
+    return LiveChatService(SimpleNamespace(), core_lifecycle, chat_service=SimpleNamespace())
 
 
 @pytest.mark.asyncio
@@ -240,58 +240,35 @@ async def test_handle_chat_interrupt_without_message_id_targets_all_requests():
 
 
 @pytest.mark.asyncio
-async def test_handle_chat_message_scopes_events_to_request_by_default():
+async def test_chat_websocket_forwards_shared_segments_under_client_request_id():
     service = _service()
     session = service.create_session("alice")
-    session_id = "multiplexed-chat-session"
-    message_id = "request-1"
-    sent: list[dict] = []
-    service.platform_history_mgr.insert = AsyncMock(
-        return_value=SimpleNamespace(id=1, created_at=datetime.now(UTC))
-    )
-    service.build_chat_message_parts = AsyncMock(
-        return_value=[{"type": "plain", "text": "hello"}]
-    )
-    service.ensure_chat_subscription = AsyncMock(return_value="subscription-1")
+    events = [
+        {"type": "user_message_saved", "data": {"id": 1}},
+        {"type": "message_segment", "data": {"segment_id": "segment-2"}},
+        {"type": "end"},
+    ]
 
-    async def send_json(payload: dict) -> None:
+    async def stream():
+        for event in events:
+            yield f"data: {json.dumps(event)}\n\n"
+
+    service.chat_service.build_chat_stream = AsyncMock(return_value=stream())
+    sent = []
+
+    async def send_json(payload):
         sent.append(payload)
 
-    task = asyncio.create_task(
-        service.handle_chat_message(
-            session,
-            {
-                "t": "send",
-                "session_id": session_id,
-                "message_id": message_id,
-                "message": [{"type": "plain", "text": "hello"}],
-            },
-            send_json,
-        )
-    )
-
     try:
-        input_queue = webchat_queue_mgr.get_or_create_queue(session_id)
-        await asyncio.wait_for(input_queue.get(), timeout=1)
-
-        await webchat_queue_mgr.put_back_queue(
-            message_id,
-            {
-                "type": "end",
-                "data": "",
-                "streaming": False,
-                "message_id": message_id,
-            },
-        )
-        await asyncio.wait_for(task, timeout=1)
-
-        assert sent[0]["type"] == "user_message_saved"
-        assert sent[0]["message_id"] == message_id
-        assert sent[-1]["type"] == "end"
-        assert sent[-1]["message_id"] == message_id
+        await service.handle_chat_message(session, {
+            "t": "send", "session_id": "chat-session", "message_id": "request-1",
+            "message": [{"type": "plain", "text": "hello"}],
+        }, send_json)
+        assert [event["type"] for event in sent] == [event["type"] for event in events]
+        assert all(event["ct"] == "chat" and event["message_id"] == "request-1" for event in sent)
+        call = service.chat_service.build_chat_stream.await_args
+        assert call.args[0] == "alice"
+        assert call.args[1]["_client_message_id"] == "request-1"
+        assert call.args[1]["session_id"] == "chat-session"
     finally:
-        if not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
         await service.cleanup_session(session)
-        webchat_queue_mgr.remove_queues(session_id)

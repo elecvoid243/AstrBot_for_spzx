@@ -514,6 +514,7 @@ async def test_managed_shell_allows_creator_and_conversation_admin():
         )["sessions"]
         assert [item["session_id"] for item in sessions] == [session_id]
         assert sessions[0]["sandboxed"] is True
+        assert "time.sleep(30)" in sessions[0]["command"]
 
         admin_sessions = (
             await shell.list_sessions(

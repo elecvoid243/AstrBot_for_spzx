@@ -8,12 +8,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+import aiohttp
 
 from astrbot.core import DEMO_MODE, logger
 from astrbot.core.computer.computer_client import (
     _discover_bay_credentials,
     sync_skills_to_active_sandboxes,
 )
+from astrbot.core.config.update_config import UpdateConfig
 from astrbot.core.skills.neo_skill_sync import NeoSkillSyncManager
 from astrbot.core.skills.skill_manager import SkillManager
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
@@ -89,6 +93,34 @@ def _next_available_temp_path(temp_dir: str, filename: str) -> str:
 
 
 class SkillsService:
+    async def get_store(self) -> dict:
+        """Return the sibling skill store URL only when it serves an HTML page.
+
+        Returns:
+            Availability and the resolved URL, or an empty URL if unavailable.
+        """
+        source = urlsplit(UpdateConfig().get_core_release_api_url())
+        if source.scheme not in {"http", "https"} or not source.netloc:
+            return {"available": False, "url": ""}
+        parent = source.path.rstrip("/").rsplit("/", 1)[0]
+        url = urlunsplit((source.scheme, source.netloc, f"{parent}/skills", "", ""))
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=3)
+            ) as client:
+                async with client.get(url, allow_redirects=True) as response:
+                    available = (
+                        response.status == 200 and response.content_type == "text/html"
+                    )
+                    if response.headers.get("X-Frame-Options", "").upper() in {
+                        "DENY",
+                        "SAMEORIGIN",
+                    }:
+                        available = False
+                    return {"available": available, "url": url if available else ""}
+        except (aiohttp.ClientError, TimeoutError):
+            return {"available": False, "url": ""}
+
     def __init__(self, core_lifecycle) -> None:
         self.core_lifecycle = core_lifecycle
 

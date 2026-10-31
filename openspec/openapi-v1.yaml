@@ -3983,6 +3983,16 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/skills/store:
+    get:
+      tags: [Skills]
+      summary: Resolve an available inline skill store from the update source
+      operationId: getSkillStore
+      x-astrbot-scope: skill
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/skills/batch:
     post:
       tags: [Skills]

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from astrbot.core.db.po import PlatformMessageHistory
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
 from astrbot.dashboard.api.chat import resume_chat_run
@@ -19,9 +20,10 @@ def chat_service_instance(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_service, "get_astrbot_data_path", lambda: str(tmp_path))
     platform_history_mgr = Mock()
     platform_history_mgr.insert = AsyncMock(
-        return_value=SimpleNamespace(
-            id=1,
-            created_at=datetime.now(UTC),
+        return_value=PlatformMessageHistory(
+            id=1, platform_id="webchat", user_id="existing-session",
+            content={"type": "user", "message": [{"type": "plain", "text": "hello"}]},
+            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
         )
     )
     core_lifecycle = SimpleNamespace(
@@ -42,9 +44,10 @@ def chat_service_instance(monkeypatch, tmp_path):
         return_value=[{"type": "plain", "text": "hello"}]
     )
     service.save_bot_message = AsyncMock(
-        return_value=SimpleNamespace(
-            id=2,
-            created_at=datetime.now(UTC),
+        return_value=PlatformMessageHistory(
+            id=2, platform_id="webchat", user_id="existing-session",
+            content={"type": "bot", "message": []},
+            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
         )
     )
     return service
@@ -721,3 +724,50 @@ async def test_save_uploaded_file_rejects_oversized_saved_file(
         await chat_service_instance.save_uploaded_file(FakeUpload())
 
     assert not list(Path(chat_service_instance.attachments_dir).iterdir())
+
+
+@pytest.mark.asyncio
+async def test_followup_timeline_survives_database_reopen(chat_service_instance, tmp_path):
+    """Recover chronological reply segments and follow-ups from real storage."""
+    service = chat_service_instance
+    db_path = tmp_path / "timeline.db"
+    service.db = SQLiteDatabase(str(db_path))
+    await service.db.initialize()
+    service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
+    del service.save_bot_message
+    service.build_user_message_parts = AsyncMock(
+        side_effect=lambda text: [{"type": "plain", "text": text}]
+    )
+    session_id = "timeline-session"
+    first = await service.build_chat_stream("alice", {"message": "initial", "session_id": session_id})
+    run = next(iter(service.chat_runs.values()))
+    second = None
+    try:
+        run.back_queue.put_nowait({"type": "plain", "data": "before", "streaming": True})
+        second = await service.build_chat_stream("alice", {"message": "follow-up", "session_id": session_id})
+        resumed = service.get_active_chat_runs("alice", session_id)[0]
+        assert resumed["content"]["message"] == []
+        assert resumed["preceding_plain_text"] == "before"
+        run.back_queue.put_nowait({"type": "plain", "data": "after", "streaming": True})
+        runs = list(service.chat_runs.values())
+        for active in runs:
+            active.back_queue.put_nowait({"type": "end"})
+        await asyncio.wait_for(asyncio.gather(*(active.task for active in runs)), 3)
+        await service.db.engine.dispose()
+        service.db = SQLiteDatabase(str(db_path))
+        await service.db.initialize()
+        service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
+        restored = await service.get_session("alice", session_id)
+        rows = restored["history"]
+        assert [row["content"]["type"] for row in rows] == ["user", "bot", "user", "bot"]
+        assert [row["content"]["message"][0]["text"] for row in rows] == ["initial", "before", "follow-up", "after"]
+        assert rows[1]["llm_checkpoint_id"] == rows[3]["llm_checkpoint_id"]
+    finally:
+        await first.aclose()
+        if second is not None:
+            await second.aclose()
+        for active in list(service.chat_runs.values()):
+            active.task.cancel()
+            await asyncio.gather(active.task, return_exceptions=True)
+        await service.db.engine.dispose()
+        chat_service.webchat_queue_mgr.remove_queues(session_id)

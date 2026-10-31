@@ -1473,6 +1473,19 @@ const overlayHighlights = computed<{
 
 /** overlay 行渲染:高亮表命中 → token 色;未命中 → escapeHtml 兜底 */
 function overlayLineHtml(l: OverlayLine, addIdx: number): string {
+  const segments = overlayIntraLineSegments.value.get(
+    `${l.kind}:${l.kind === "del" ? l.baseLineno : l.newLineno}`,
+  );
+  if (segments) {
+    const cls = l.kind === "del" ? "intra-hl-del" : "intra-hl-add";
+    return segments
+      .map((segment) =>
+        segment.changed
+          ? `<span class="intra-hl ${cls}">${escapeHtml(segment.text)}</span>`
+          : escapeHtml(segment.text),
+      )
+      .join("");
+  }
   const hl = overlayHighlights.value;
   if (hl) {
     const hit =
@@ -2553,6 +2566,23 @@ const intraLineSegments = computed<Map<DiffLine, IntraLineSegment[]>>(() => {
     flush();
   }
   return map;
+});
+
+// Overlay rows use separate objects; match paired segments by side and
+// line number so repeated text and multiple hunks retain the right pairing.
+const overlayIntraLineSegments = computed(() => {
+  const segments = new Map<string, IntraLineSegment[]>();
+  for (const hunk of parsedHunks.value) {
+    for (const line of hunk.lines) {
+      const paired = intraLineSegments.value.get(line);
+      if (paired)
+        segments.set(
+          `${line.type}:${line.type === "del" ? line.oldNo : line.newNo}`,
+          paired,
+        );
+    }
+  }
+  return segments;
 });
 
 /** HTML for a diff line's content: intra-line segments for paired

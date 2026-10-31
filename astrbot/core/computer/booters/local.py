@@ -504,6 +504,7 @@ class _LocalShellSession:
     reader_task: asyncio.Task[None]
     wait_task: asyncio.Task[int]
     shell_family: str
+    command: str = ""
     timeout_task: asyncio.Task[None] | None = None
     cursor: int = 0
     timed_out: bool = False
@@ -796,6 +797,7 @@ class LocalShellComponent(ShellComponent):
             reader_task=reader_task,
             wait_task=wait_task,
             shell_family=spec.family,
+            command=command,
         )
 
         if timeout is not None:
@@ -885,6 +887,7 @@ class LocalShellComponent(ShellComponent):
             items.append(
                 {
                     "session_id": session.session_id,
+                    "command": session.command,
                     "pid": session.process.pid,
                     "status": status,
                     "exit_code": exit_code,

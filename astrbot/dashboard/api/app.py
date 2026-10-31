@@ -207,7 +207,7 @@ def create_dashboard_asgi_app(
         cron=CronService(core_lifecycle),
         files=FileService(),
         knowledge_bases=KnowledgeBaseService(core_lifecycle),
-        live_chat=LiveChatService(db, core_lifecycle),
+        live_chat=LiveChatService(db, core_lifecycle, chat_service=chat),
         logs=LogService(log_broker, core_lifecycle.astrbot_config),
         bots=BotConfigService(core_lifecycle),
         platforms=PlatformService(core_lifecycle),

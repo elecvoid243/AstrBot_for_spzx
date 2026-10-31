@@ -115,6 +115,8 @@ The former **Delete** action in file and document toolbars is now **Move to recy
 
 For unsaved changes, first choose **Save and open**, **Discard and open** or **Cancel**. Cancellation, failed saves and conflicts stop the management action. The target stays fixed during the request. Manual management uses WebUI authentication and host account permissions without changing the Agent's project or permissions.
 
+Windows requires Windows 8 or later and the plugin's `pywin32` dependency for safe recycling on local fixed drives. Unsupported locations or missing native support return an error before deletion; no legacy deletion backend is used. Rename also fails if the operating system or filesystem cannot guarantee that an existing destination will be preserved.
+
 ![ Confirm the actual file before moving it to the system recycle bin ](./images/file-trash-confirm.png)
 
 ### Browse host folders and drives

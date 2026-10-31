@@ -257,15 +257,15 @@ You can also use the `/dashboard_update` command to manually update the admin pa
 
 Admin panel files are located in the data/dist directory. If you need to manually replace them, download `dist.zip` from https://github.com/AstrBotDevs/AstrBot/releases/ and extract it to the data directory.
 
-## Agent browser snapshots
+## Agent browser live observation
 
-With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Open the workspace sidebar, select **Web preview → Agent browser**, then **Refresh snapshot** to see the actual Chromium viewport, URL and title. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
+With the matching Browser Use plugin enabled, ask the Agent to open a page in the current chat. Open the workspace sidebar and select **Web preview → Agent browser**. The current snapshot appears first, followed by live updates from the actual Chromium viewport. The view follows the Agent's selected tab, including when that tab closes. Its toolbar shows the URL, title, tab, image size, observation sequence and **Live** status. Login state and entered form values come from the browser controlled by the Agent. The image is read-only and is not added to the model context.
 
-The previous iframe entry maps from **Web preview** to **Web preview → Web preview**; its bookmarks retain their existing behavior. Another chat cannot view or operate an occupied browser. Ask the owning chat to close all browser sessions before handing it to another chat. Hiding the view does not stop execution.
+The previous iframe entry maps from **Web preview** to **Web preview → Web preview**; its bookmarks retain their existing behavior. Another chat cannot view or operate an occupied browser. Ask the owning chat to close all browser sessions before handing it to another chat. Hiding the sidebar, switching workbench tabs, or putting the Dashboard browser tab in the background stops its observation subscription while execution continues. Reopening obtains a fresh snapshot and stream. If the stream disconnects, use **Refresh snapshot** to reconnect.
 
-This initial slice requires a loaded code project to open the workspace. An entry without a project, continuous frames and action status are provided by subsequent slices. If the runtime changes or the plugin is re-enabled, refresh the snapshot to obtain the new browser identity.
+This entry currently requires a loaded code project to open the workspace. An entry without a project, automatic recovery and action status are provided by subsequent slices. Observation sends at most about four frames per second and keeps only the newest pending image; static pages may send no new frames. Actual rate and delay depend on the page and environment. If the runtime changes or the plugin is re-enabled, refresh the snapshot to obtain the new browser identity.
 
-The screenshot below shows the production observation component in the isolated local acceptance harness, with Chinese form text and a browser cookie marker. It is not a screenshot of a deployed AstrBot login session.
+The screenshot below shows the production live observation component in the isolated local acceptance harness, with Chinese form text and a browser cookie marker. It is not a screenshot of a deployed AstrBot login session.
 
 ![Agent browser component showing the controlled page](./images/agent-browser-snapshot.png)
 

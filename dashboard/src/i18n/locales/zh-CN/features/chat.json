@@ -1,5 +1,9 @@
 {
   "agentBrowser": {
+    "live": "实时观测",
+    "snapshot": "快照",
+    "tab": "标签页",
+    "disconnected": "观测已断开，请刷新重连。",
     "title": "Agent 浏览器",
     "preview": "网页预览",
     "refresh": "刷新快照",

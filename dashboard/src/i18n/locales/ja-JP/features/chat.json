@@ -1,5 +1,9 @@
 {
   "agentBrowser": {
+    "live": "Live",
+    "snapshot": "Snapshot",
+    "tab": "Tab",
+    "disconnected": "Observation disconnected. Refresh to reconnect.",
     "title": "Agent browser",
     "preview": "Web preview",
     "refresh": "Refresh snapshot",

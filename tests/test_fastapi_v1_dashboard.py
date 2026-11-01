@@ -96,6 +96,7 @@ class FakeDb:
         self.touched_key_ids: list[str] = []
         self.umo_ids = ["webchat:FriendMessage:webchat!user!session-1"]
         self.preferences: list[object] = []
+        self.platform_sessions: dict[str, object] = {}
 
     async def get_active_api_key_by_hash(self, key_hash: str) -> FakeApiKey | None:
         return self.api_keys.get(key_hash)
@@ -105,6 +106,9 @@ class FakeDb:
 
     async def get_attachment_by_id(self, _attachment_id: str):
         return None
+
+    async def get_platform_session_by_id(self, session_id: str):
+        return self.platform_sessions.get(session_id)
 
     def get_db(self) -> _FakeDbContext:
         return _FakeDbContext(self)
@@ -1965,7 +1969,19 @@ async def test_v1_active_umos_uses_session_service(
     asgi_client: httpx.AsyncClient,
     fake_db: FakeDb,
 ):
-    fake_db.umo_ids = ["webchat:FriendMessage:webchat!fastapi-v1-test!session-1"]
+    fake_db.umo_ids = [
+        "webchat:FriendMessage:webchat!fastapi-v1-test!session-1",
+        "webchat:FriendMessage:session-2",
+        "webchat:FriendMessage:missing-session",
+    ]
+    fake_db.platform_sessions = {
+        "session-1": SimpleNamespace(
+            session_id="session-1", platform_id="webchat", creator="fastapi-v1-test"
+        ),
+        "session-2": SimpleNamespace(
+            session_id="session-2", platform_id="webchat", creator="another-account"
+        ),
+    }
     response = await asgi_client.get(
         "/api/v1/sessions/active-umos",
         headers=_jwt_headers(),
@@ -1974,7 +1990,9 @@ async def test_v1_active_umos_uses_session_service(
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["data"]["umos"] == ["webchat:FriendMessage:webchat!fastapi-v1-test!session-1"]
+    assert data["data"]["umos"] == [
+        "webchat:FriendMessage:webchat!fastapi-v1-test!session-1"
+    ]
     assert data["data"]["umo_infos"][0]["platform"] == "webchat"
 
 

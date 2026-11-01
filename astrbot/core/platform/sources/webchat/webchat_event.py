@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
-from astrbot.api.message_components import File, Image, Json, Plain, Record
+from astrbot.api.message_components import File, Image, Json, Plain, Record, Video
 from astrbot.core import db_helper
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id
@@ -15,8 +15,12 @@ from astrbot.core.utils.media_utils import (
     MEDIA_MIME_EXTENSIONS,
     detect_image_mime_type_async,
 )
+from astrbot.core.utils.webchat_access import webchat_resource_owner
 
-from .message_parts_helper import message_chain_to_storage_message_parts
+from .message_parts_helper import (
+    create_attachment_part_from_existing_file,
+    message_chain_to_storage_message_parts,
+)
 from .webchat_queue_mgr import (
     _extract_conversation_id,
     orphan_run_registry,
@@ -24,6 +28,33 @@ from .webchat_queue_mgr import (
 )
 
 attachments_dir = os.path.join(get_astrbot_data_path(), "attachments")
+
+
+async def _register_output_attachment(
+    session_id: str, filename: str, kind: str
+) -> None:
+    """Own media before publishing its filename to any stream consumer.
+
+    Args:
+        session_id: Trusted runtime WebChat session identifier.
+        filename: Generated filename inside the attachment directory.
+        kind: Existing Chat attachment type.
+    """
+    session = await db_helper.get_platform_session_by_id(
+        _extract_conversation_id(session_id)
+    )
+    if session is None or session.platform_id != "webchat":
+        return
+    owner_token = webchat_resource_owner.set(session.creator)
+    try:
+        await create_attachment_part_from_existing_file(
+            filename,
+            attach_type=kind,
+            insert_attachment=db_helper.insert_attachment,
+            attachments_dir=attachments_dir,
+        )
+    finally:
+        webchat_resource_owner.reset(owner_token)
 
 
 async def _persist_bot_reply_if_orphan(
@@ -57,11 +88,20 @@ async def _persist_bot_reply_if_orphan(
             "llm_request_injections",
         ):
             return
-        parts = await message_chain_to_storage_message_parts(
-            message_chain,
-            insert_attachment=db_helper.insert_attachment,
-            attachments_dir=attachments_dir,
+        owned_session = await db_helper.get_platform_session_by_id(cid)
+        owner_token = webchat_resource_owner.set(
+            owned_session.creator
+            if owned_session is not None
+            else webchat_resource_owner.get()
         )
+        try:
+            parts = await message_chain_to_storage_message_parts(
+                message_chain,
+                insert_attachment=db_helper.insert_attachment,
+                attachments_dir=attachments_dir,
+            )
+        finally:
+            webchat_resource_owner.reset(owner_token)
     else:
         parts = []
         if reasoning_text:
@@ -185,6 +225,7 @@ class WebChatMessageEvent(AstrMessageEvent):
                 filename = f"{generate_timestamp_id()}{suffix}"
                 path = os.path.join(attachments_dir, filename)
                 await asyncio.to_thread(Path(path).write_bytes, image_bytes)
+                await _register_output_attachment(session_id, filename, "image")
                 data = f"[IMAGE]{filename}"
                 payload = {
                     "type": "image",
@@ -206,6 +247,7 @@ class WebChatMessageEvent(AstrMessageEvent):
                 record_base64 = await comp.convert_to_base64()
                 record_bytes = base64.b64decode(record_base64)
                 await asyncio.to_thread(Path(path).write_bytes, record_bytes)
+                await _register_output_attachment(session_id, filename, "record")
                 data = f"[RECORD]{filename}"
                 payload = {
                     "type": "record",
@@ -220,10 +262,17 @@ class WebChatMessageEvent(AstrMessageEvent):
                 await WebChatMessageEvent._mirror_system(system_cid, payload)
                 if not accepted:
                     return None
-            elif isinstance(comp, File):
-                # save file to local
-                file_path = await comp.get_file()
-                raw_original_name = comp.name or os.path.basename(file_path)
+            elif isinstance(comp, (File, Video)):
+                # Preserve each media type while using the same owned file path.
+                kind = "video" if isinstance(comp, Video) else "file"
+                file_path = (
+                    await comp.convert_to_file_path()
+                    if isinstance(comp, Video)
+                    else await comp.get_file()
+                )
+                raw_original_name = getattr(comp, "name", None) or os.path.basename(
+                    file_path
+                )
                 original_name = (
                     PurePosixPath(str(raw_original_name).replace("\\", "/"))
                     .name.replace("\x00", "")
@@ -235,9 +284,10 @@ class WebChatMessageEvent(AstrMessageEvent):
                 filename = f"{generate_timestamp_id()}{ext}"
                 dest_path = os.path.join(attachments_dir, filename)
                 shutil.copy2(file_path, dest_path)
-                data = f"[FILE]{filename}|{original_name}"
+                await _register_output_attachment(session_id, filename, kind)
+                data = f"[{kind.upper()}]{filename}|{original_name}"
                 payload = {
-                    "type": "file",
+                    "type": kind,
                     "data": data,
                     "streaming": streaming,
                     "message_id": message_id,

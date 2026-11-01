@@ -197,7 +197,12 @@ async def get_file(
 async def delete_file(
     attachment_id: str,
     _auth: AuthContext = Depends(require_file_scope),
+    service: ChatService = Depends(get_chat_service),
 ):
+    # Validate even this compatibility no-op; it must not confirm foreign IDs.
+    result = await _run_file(lambda: service.resolve_attachment_file(attachment_id))
+    if isinstance(result, dict) and result.get("status") == "error":
+        return result
     return ok({"attachment_id": attachment_id})
 
 

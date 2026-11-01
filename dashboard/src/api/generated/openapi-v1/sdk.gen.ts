@@ -1476,6 +1476,7 @@ export const listImBots = <ThrowOnError extends boolean = false>(options?: Optio
 
 /**
  * Upload a file
+ * Dashboard uploads are owned by the authenticated account, including before a chat session exists.
  */
 export const uploadFile = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<UploadFileData, ThrowOnError>) => {
     return (options?.client ?? client).post<UploadFileResponse, UploadFileError, ThrowOnError>({
@@ -1571,6 +1572,7 @@ export const downloadOpenApiFile = <ThrowOnError extends boolean = false>(option
 
 /**
  * Get an uploaded file by stored filename
+ * Dashboard accounts can consume only their own chat files. Legacy unowned files remain available only to the original administrator.
  */
 export const getFileByName = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetFileByNameData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetFileByNameResponse, GetFileByNameError, ThrowOnError>({
@@ -1580,7 +1582,8 @@ export const getFileByName = <ThrowOnError extends boolean = false>(options: Opt
 };
 
 /**
- * Get a tokenized public file
+ * Get a tokenized file
+ * Account-bound chat tokens require a current login for the same owner. Public assets and independent platform tokens retain their existing access rules.
  */
 export const getTokenFile = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetTokenFileData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetTokenFileResponse, GetTokenFileError, ThrowOnError>({

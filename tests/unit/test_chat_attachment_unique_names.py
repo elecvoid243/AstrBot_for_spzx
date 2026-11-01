@@ -41,10 +41,10 @@ class FakeDatabase:
         self.attachments[attachment_id] = attachment
         return attachment
 
-    async def get_attachments(self, attachment_ids):
+    async def get_attachments(self, attachment_ids, *, owner=None):
         return [self.attachments[i] for i in attachment_ids]
 
-    async def delete_attachments(self, attachment_ids):
+    async def delete_attachments(self, attachment_ids, *, owner=None):
         for attachment_id in attachment_ids:
             self.attachments.pop(attachment_id)
 
@@ -53,6 +53,7 @@ def make_service(tmp_path):
     service = ChatService.__new__(ChatService)
     service.db = FakeDatabase()
     service.attachments_dir = str(tmp_path)
+    service.webchat_img_dir = str(tmp_path / "imgs")
     return service
 
 

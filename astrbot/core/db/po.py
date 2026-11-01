@@ -763,6 +763,7 @@ class Attachment(TimestampMixin, SQLModel, table=True):
         unique=True,
         default_factory=lambda: str(uuid.uuid4()),
     )
+    owner: str | None = Field(default=None, index=True)
     path: str = Field(nullable=False)  # Path to the file on disk
     type: str = Field(nullable=False)  # Type of the file (e.g., 'image', 'file')
     mime_type: str = Field(nullable=False)  # MIME type of the file

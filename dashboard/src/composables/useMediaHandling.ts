@@ -1,4 +1,5 @@
-import { ref, shallowRef, computed } from 'vue';
+import { ref, shallowRef, computed, getCurrentScope, onScopeDispose } from 'vue';
+import { accountSessionRevision, assertCurrentAccount } from '@/utils/accountSession';
 import { fileApi } from '@/api/v1';
 import { useChunkedUpload } from '@/composables/useChunkedUpload';
 
@@ -34,6 +35,8 @@ interface UploadEntry {
 }
 
 export function useMediaHandling() {
+    const revision = accountSessionRevision.value;
+    let disposed = false;
     const stagedFiles = ref<StagedFileInfo[]>([]);
     const mediaCache = ref<Record<string, string>>({});
     const pendingFileSignatures = new Set<string>();
@@ -101,6 +104,8 @@ export function useMediaHandling() {
         try {
             const response = await fileApi.getByName(filename);
 
+            assertCurrentAccount(revision);
+            if (disposed) return '';
             const blobUrl = URL.createObjectURL(response.data);
             mediaCache.value[filename] = blobUrl;
             return blobUrl;
@@ -110,7 +115,8 @@ export function useMediaHandling() {
         }
     }
 
-    function stageUploaded(file: File, data: any, signature: string): StagedFileInfo {
+    function stageUploaded(file: File, data: any, signature: string): StagedFileInfo | undefined {
+        if (disposed || revision !== accountSessionRevision.value) return undefined;
         const stagedFile = {
             attachment_id: data.attachment_id,
             filename: data.filename,
@@ -124,7 +130,9 @@ export function useMediaHandling() {
     }
 
     async function uploadStagedFile(file: File): Promise<StagedFileInfo | undefined> {
+        if (disposed || revision !== accountSessionRevision.value) return undefined;
         const signature = await getFileSignature(file);
+        if (disposed || revision !== accountSessionRevision.value) return undefined;
         if (isDuplicateFile(signature)) return undefined;
 
         pendingFileSignatures.add(signature);
@@ -135,9 +143,10 @@ export function useMediaHandling() {
             const formData = new FormData();
             formData.append('file', file);
             const response = await fileApi.upload(formData);
+            if (response.data?.status !== 'ok') throw new Error(response.data?.message || 'Upload failed');
             return stageUploaded(file, response.data.data, signature);
         } catch (err) {
-            console.error('Error uploading file:', err);
+            if (!disposed && revision === accountSessionRevision.value) console.error('Error uploading file:', err);
             return undefined;
         } finally {
             pendingFileSignatures.delete(signature);
@@ -163,7 +172,7 @@ export function useMediaHandling() {
         if (result) {
             return stageUploaded(file, result, signature);
         }
-        if (uploader.status.value === 'error') {
+        if (!disposed && revision === accountSessionRevision.value && uploader.status.value === 'error') {
             failedUploads.value = [...failedUploads.value, entry];
         }
         return undefined;
@@ -178,6 +187,7 @@ export function useMediaHandling() {
     }
 
     async function retryFailedUpload(index: number): Promise<StagedFileInfo | undefined> {
+        if (disposed || revision !== accountSessionRevision.value) return undefined;
         const entry = failedUploads.value[index];
         if (!entry) return undefined;
         // Move to active: blocks a second click from running resume()
@@ -187,7 +197,7 @@ export function useMediaHandling() {
         const result = await entry.uploader.resume();
         activeUploads.value = activeUploads.value.filter(e => e !== entry);
         if (!result) {
-            if (entry.uploader.status.value === 'error') {
+            if (!disposed && revision === accountSessionRevision.value && entry.uploader.status.value === 'error') {
                 failedUploads.value = [...failedUploads.value, entry];
             }
             return undefined;
@@ -289,9 +299,13 @@ export function useMediaHandling() {
     }
 
     function cleanupMediaCache() {
+        disposed = true;
+        clearStaged();
+        pendingFileSignatures.clear();
         for (const entry of [...activeUploads.value, ...failedUploads.value]) {
             void entry.uploader.cancel();
         }
+        activeUploads.value = [];
         failedUploads.value = [];
         Object.values(mediaCache.value).forEach(url => {
             if (url.startsWith('blob:')) {
@@ -300,6 +314,12 @@ export function useMediaHandling() {
         });
         mediaCache.value = {};
     }
+
+    window.addEventListener('astrbot:account-changed', cleanupMediaCache);
+    if (getCurrentScope()) onScopeDispose(() => {
+        window.removeEventListener('astrbot:account-changed', cleanupMediaCache);
+        cleanupMediaCache();
+    });
 
     // 计算属性：获取图片的 URL 列表（用于预览）
     const stagedImagesUrl = computed(() => 

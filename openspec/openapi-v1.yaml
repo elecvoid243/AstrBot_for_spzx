@@ -2478,6 +2478,7 @@ paths:
     post:
       tags: [Files]
       summary: Upload a file
+      description: Dashboard uploads are owned by the authenticated account, including before a chat session exists.
       operationId: uploadFile
       x-astrbot-scope: file
       requestBody:
@@ -2605,6 +2606,7 @@ paths:
     get:
       tags: [Files]
       summary: Get an uploaded file by stored filename
+      description: Dashboard accounts can consume only their own chat files. Legacy unowned files remain available only to the original administrator.
       operationId: getFileByName
       x-astrbot-scope: file
       parameters:
@@ -2625,7 +2627,8 @@ paths:
   /api/v1/files/tokens/{file_token}:
     get:
       tags: [Files]
-      summary: Get a tokenized public file
+      summary: Get a tokenized file
+      description: Account-bound chat tokens require a current login for the same owner. Public assets and independent platform tokens retain their existing access rules.
       operationId: getTokenFile
       security: []
       parameters:

@@ -460,8 +460,30 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_attachments(self, attachment_ids: list[str]) -> list[Attachment]:
-        """Get multiple attachments by their IDs."""
+    async def get_attachment_by_path(self, path: str) -> Attachment | None:
+        """Find a visible attachment by its canonical local path.
+
+        Args:
+            path: Canonical attachment path.
+
+        Returns:
+            An accessible attachment or None.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def get_attachments(
+        self, attachment_ids: list[str], *, owner: str | None = None
+    ) -> list[Attachment]:
+        """Get the authorized subset of candidate attachment references.
+
+        Args:
+            attachment_ids: Candidate IDs from chat history.
+            owner: Explicit trusted owner, otherwise the current runtime owner.
+
+        Returns:
+            Accessible attachment records.
+        """
         ...
 
     @abc.abstractmethod
@@ -473,10 +495,17 @@ class BaseDatabase(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def delete_attachments(self, attachment_ids: list[str]) -> int:
-        """Delete multiple attachments by their IDs.
+    async def delete_attachments(
+        self, attachment_ids: list[str], *, owner: str | None = None
+    ) -> int:
+        """Delete only candidate records authorized for the same owner.
 
-        Returns the number of attachments deleted.
+        Args:
+            attachment_ids: Previously authorized candidate IDs.
+            owner: Explicit trusted owner, otherwise the current runtime owner.
+
+        Returns:
+            Number of records deleted.
         """
         ...
 

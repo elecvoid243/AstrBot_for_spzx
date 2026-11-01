@@ -54,7 +54,11 @@ The existing single-account login remains the original administrator's entry poi
 
 ![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
 
-Ordinary users see only chat navigation. Select **New Chat**, enter text, and select **Send** to receive a streamed reply using the default profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts currently support basic text conversations. Attachments, projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+
+Use **Upload files** (the paperclip), drag files into Chat, or paste an image to send images, audio, video, and files. The microphone retains the existing recorded-audio upload flow. Large files retain chunk progress, retry, and cancellation. Preview or remove staged attachments before sending; reopen your history to preview media or select **Download** for uploaded and model-generated files. Legacy administrator attachments remain with the original administrator. Knowing another account's attachment ID, upload task, stored filename, or download token does not grant access, message reuse, or cleanup permission.
+
+![An ordinary user sending and downloading owned attachments](./images/multi-user-attachments.png)
 
 ![An ordinary user's isolated text conversation](./images/multi-user-chat.png)
 
@@ -62,7 +66,7 @@ On narrow screens, use the sidebar button at the top left of Chat to open your c
 
 ![An ordinary user's mobile chat sidebar](./images/multi-user-chat-mobile.png)
 
-Select **Log out** before switching accounts in the same browser. Conversation lists, unsent text drafts, and old requests are cleared or invalidated. Daily WebChat queries and operations enforce ownership for every account, including administrators. Administrators retain full backups and operational logs, so this feature does not promise confidentiality from trusted server maintainers.
+Select **Log out** before switching accounts in the same browser. Conversation lists, unsent text drafts, staged attachments, upload queues, media previews, and old requests are cleared or invalidated. Daily WebChat queries and operations enforce ownership for every account, including administrators. Administrators retain full backups and operational logs, so this feature does not promise confidentiality from trusted server maintainers.
 
 ### Reset passwords and disable ordinary accounts
 
@@ -72,7 +76,7 @@ Select **Disable account** and review the target login name and consequences bef
 
 ![Administrator password reset and account disable controls](./images/multi-user-account-controls.png)
 
-When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Attachments and stream recovery remain unavailable to ordinary users at this stage. Revocation checks also protect these endpoints without opening those features.
+When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Revoked credentials also lose access to protected attachments. Stream recovery remains unavailable to ordinary users at this stage.
 
 ### Choose a profile and chat input parameters
 

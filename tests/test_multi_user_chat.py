@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-from urllib.parse import urlencode
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -278,8 +278,15 @@ async def test_two_users_chat_reopen_and_cannot_exchange_sessions(
             response = await client.get(
                 f"/api/v1/files/tokens/{token}", headers=headers
             )
-            assert response.status_code in {401, 403}
-            assert "private generated content" not in response.text
+            if (
+                caller
+                and caller["resource_owner"] == file_token_service.account_owners[token]
+            ):
+                assert response.status_code == 200
+                assert "private generated content" in response.text
+            else:
+                assert response.status_code in {401, 403}
+                assert "private generated content" not in response.text
     # Reopen both the actual DB and HTTP app; new login retains original resources.
     await db.engine.dispose()
     reopened = SQLiteDatabase(db.db_path)
@@ -349,9 +356,6 @@ async def test_unadapted_operations_default_deny_and_internal_fields_are_not_inp
         ("GET", "/api/v1/chat/projects"),
         ("GET", f"/api/v1/chat/sessions/{session_id}/system-stream"),
         ("GET", "/api/v1/chat/runs/fake/stream"),
-        ("GET", "/api/v1/files/tokens/opaque"),
-        ("GET", "/api/file/opaque"),
-        ("POST", "/api/v1/files/upload/init"),
         ("POST", "/api/v1/chat/import/stage"),
         ("POST", "/api/v1/chat/import/confirm"),
         ("GET", "/api/skill-guide/active"),
@@ -489,43 +493,103 @@ async def test_admin_daily_conversations_are_owner_scoped_before_pagination(
 
 
 @pytest.mark.asyncio
-async def test_websocket_entry_points_deny_unadapted_users_and_admin_foreign_bind(ordinary_chat, monkeypatch):
+async def test_websocket_entry_points_deny_unadapted_users_and_admin_foreign_bind(
+    ordinary_chat, monkeypatch
+):
     """Drive real ASGI WebSocket routes without replacing authentication."""
     client, server, core, db, admin, users = ordinary_chat
-    monkeypatch.setattr(core.astrbot_config_mgr, "get_conf_list", lambda: [], raising=False)
-    for path in ("/api/v1/live-chat/ws", "/api/v1/unified-chat/ws", "/api/live_chat/ws", "/api/unified_chat/ws", "/api/v1/chat/ws"):
+    monkeypatch.setattr(
+        core.astrbot_config_mgr, "get_conf_list", lambda: [], raising=False
+    )
+    for path in (
+        "/api/v1/live-chat/ws",
+        "/api/v1/unified-chat/ws",
+        "/api/live_chat/ws",
+        "/api/unified_chat/ws",
+        "/api/v1/chat/ws",
+    ):
         incoming = asyncio.Queue()
         outgoing = []
         await incoming.put({"type": "websocket.connect"})
+
         async def send(event):
             outgoing.append(event)
-        task = asyncio.create_task(server.asgi_app({
-            "type": "websocket", "asgi": {"version": "3.0"}, "scheme": "ws", "root_path": "",
-            "path": path, "raw_path": path.encode(),
-            "query_string": urlencode({"token": users[0]["token"], "api_key": users[0]["token"]}).encode(),
-            "headers": [], "client": ("127.0.0.1", 1234), "server": ("testserver", 80), "subprotocols": [],
-        }, incoming.get, send))
+
+        task = asyncio.create_task(
+            server.asgi_app(
+                {
+                    "type": "websocket",
+                    "asgi": {"version": "3.0"},
+                    "scheme": "ws",
+                    "root_path": "",
+                    "path": path,
+                    "raw_path": path.encode(),
+                    "query_string": urlencode(
+                        {"token": users[0]["token"], "api_key": users[0]["token"]}
+                    ).encode(),
+                    "headers": [],
+                    "client": ("127.0.0.1", 1234),
+                    "server": ("testserver", 80),
+                    "subprotocols": [],
+                },
+                incoming.get,
+                send,
+            )
+        )
         await asyncio.wait_for(task, timeout=10)
-        assert any(event.get("type") == "websocket.close" and event["code"] == 1008 for event in outgoing), outgoing
-        assert not any(event.get("type") == "websocket.send" and "private" in event.get("text", "") for event in outgoing)
-    foreign = await db.create_platform_session(creator=users[0]["resource_owner"], platform_id="webchat")
+        assert any(
+            event.get("type") == "websocket.close" and event["code"] == 1008
+            for event in outgoing
+        ), outgoing
+        assert not any(
+            event.get("type") == "websocket.send" and "private" in event.get("text", "")
+            for event in outgoing
+        )
+    foreign = await db.create_platform_session(
+        creator=users[0]["resource_owner"], platform_id="webchat"
+    )
     incoming = asyncio.Queue()
     outgoing = []
     for event in [
         {"type": "websocket.connect"},
-        {"type": "websocket.receive", "text": json.dumps({"ct":"chat", "t":"bind", "session_id":foreign.session_id})},
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {"ct": "chat", "t": "bind", "session_id": foreign.session_id}
+            ),
+        },
         {"type": "websocket.disconnect", "code": 1000},
     ]:
         await incoming.put(event)
+
     async def send_admin(event):
         outgoing.append(event)
-    await asyncio.wait_for(server.asgi_app({
-        "type": "websocket", "asgi": {"version":"3.0"}, "scheme":"ws", "root_path":"",
-        "path":"/api/v1/unified-chat/ws", "raw_path":b"/api/v1/unified-chat/ws",
-        "query_string":urlencode({"token":admin["token"]}).encode(), "headers":[],
-        "client":("127.0.0.1",1234), "server":("testserver",80), "subprotocols":[],
-    }, incoming.get, send_admin), timeout=10)
-    payloads = [json.loads(event["text"]) for event in outgoing if event["type"] == "websocket.send"]
+
+    await asyncio.wait_for(
+        server.asgi_app(
+            {
+                "type": "websocket",
+                "asgi": {"version": "3.0"},
+                "scheme": "ws",
+                "root_path": "",
+                "path": "/api/v1/unified-chat/ws",
+                "raw_path": b"/api/v1/unified-chat/ws",
+                "query_string": urlencode({"token": admin["token"]}).encode(),
+                "headers": [],
+                "client": ("127.0.0.1", 1234),
+                "server": ("testserver", 80),
+                "subprotocols": [],
+            },
+            incoming.get,
+            send_admin,
+        ),
+        timeout=10,
+    )
+    payloads = [
+        json.loads(event["text"])
+        for event in outgoing
+        if event["type"] == "websocket.send"
+    ]
     assert any(payload.get("code") == "PERMISSION_DENIED" for payload in payloads)
     assert not any(payload.get("type") == "session_bound" for payload in payloads)
     assert not server.asgi_app.state.services.live_chat.sessions

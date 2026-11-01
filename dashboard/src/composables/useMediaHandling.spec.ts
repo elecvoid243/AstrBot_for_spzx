@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fileApi } from "@/api/v1";
 import { useMediaHandling } from "./useMediaHandling";
+import { resetAccountSession } from "@/utils/accountSession";
 
 vi.mock("@/api/v1", () => ({
   fileApi: {
@@ -27,6 +28,35 @@ afterEach(() => {
 });
 
 describe("staged attachment uploads", () => {
+  it("clears previews and rejects an upload that finishes after account switch", async () => {
+    let finish!: (value: any) => void;
+    const media = useMediaHandling();
+    vi.mocked(fileApi.upload).mockResolvedValueOnce(
+      ok({ attachment_id: "first", filename: "first.txt", type: "file" }),
+    );
+    await media.processAndUploadFile(new File(["one"], "first.txt"));
+    vi.mocked(fileApi.upload).mockImplementationOnce(
+      () => new Promise((resolve) => { finish = resolve; }),
+    );
+    const pending = media.processAndUploadFile(new File(["two"], "second.txt"));
+    await vi.waitFor(() => expect(fileApi.upload).toHaveBeenCalledTimes(2));
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    resetAccountSession();
+    expect(media.stagedFiles.value).toEqual([]);
+    expect(revoke).toHaveBeenCalledWith("blob:preview");
+    finish(ok({ attachment_id: "second", filename: "second.txt", type: "file" }));
+    expect(await pending).toBeUndefined();
+    expect(media.stagedFiles.value).toEqual([]);
+    expect(useMediaHandling().stagedFiles.value).toEqual([]);
+  });
+
+  it("does not turn a rejected upload envelope into a staged draft", async () => {
+    vi.mocked(fileApi.upload).mockResolvedValue({ data: { status: "error", message: "Not available" } } as any);
+    const media = useMediaHandling();
+    expect(await media.processAndUploadFile(new File(["x"], "x.txt"))).toBeUndefined();
+    expect(media.stagedFiles.value).toEqual([]);
+  });
+
   it("keeps small-file upload, image previews and duplicate detection", async () => {
     vi.mocked(fileApi.upload).mockResolvedValue(
       ok({ attachment_id: "image", filename: "image.png", type: "image" }),

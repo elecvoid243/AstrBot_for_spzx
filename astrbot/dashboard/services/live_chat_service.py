@@ -9,6 +9,7 @@ import time
 import uuid
 import wave
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import jwt
@@ -18,15 +19,19 @@ from astrbot import logger
 from astrbot.core import sp
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
-    build_webchat_message_parts,
     create_attachment_part_from_existing_file,
 )
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id
+from astrbot.core.utils.webchat_access import (
+    dashboard_account_context,
+    webchat_resource_owner,
+)
 from astrbot.dashboard.services.account_service import AccountService
 from astrbot.dashboard.services.chat_service import (
     ChatService,
+    LocalUploadFile,
     build_bot_history_content,
 )
 
@@ -45,6 +50,7 @@ class LiveChatSession:
     def __init__(self, session_id: str, username: str) -> None:
         self.session_id = session_id
         self.username = username
+        self.principal = dashboard_account_context.get()
         self.conversation_id = str(uuid.uuid4())
         self.is_speaking = False
         self.is_processing = False
@@ -293,16 +299,38 @@ class LiveChatService:
             logger.info(f"[Live Chat] WebSocket 连接关闭: {username}")
 
     async def create_attachment_from_file(
-        self, filename: str, attach_type: str, display_name: str | None = None
+        self,
+        filename: str,
+        attach_type: str,
+        display_name: str | None = None,
+        *,
+        owner: str | None = None,
     ) -> dict | None:
-        return await create_attachment_part_from_existing_file(
-            filename,
-            attach_type=attach_type,
-            insert_attachment=self.db.insert_attachment,
-            attachments_dir=self.attachments_dir,
-            fallback_dirs=[self.webchat_img_dir],
-            display_name=display_name,
+        """Persist output media with its trusted live-session owner.
+
+        Args:
+            filename: Server-created file name in the attachment directories.
+            attach_type: Existing Chat media type.
+            display_name: Optional display-only name.
+            owner: Authenticated resource owner, never a message field.
+
+        Returns:
+            Owned attachment metadata if the generated file exists.
+        """
+        owner_token = webchat_resource_owner.set(
+            owner if owner is not None else webchat_resource_owner.get()
         )
+        try:
+            return await create_attachment_part_from_existing_file(
+                filename,
+                attach_type=attach_type,
+                insert_attachment=self.db.insert_attachment,
+                attachments_dir=self.attachments_dir,
+                fallback_dirs=[self.webchat_img_dir],
+                display_name=display_name,
+            )
+        finally:
+            webchat_resource_owner.reset(owner_token)
 
     @staticmethod
     def extract_web_search_refs(accumulated_text: str, accumulated_parts: list) -> dict:
@@ -611,12 +639,25 @@ class LiveChatService:
                 await stream.aclose()
             session.interrupted_chat_requests.discard(message_id)
 
-    async def build_chat_message_parts(self, message: list[dict]) -> list[dict]:
-        return await build_webchat_message_parts(
-            message,
-            get_attachment_by_id=self.db.get_attachment_by_id,
-            strict=False,
+    async def build_chat_message_parts(
+        self, message: list[dict], *, owner: str | None = None
+    ) -> list[dict]:
+        """Validate input attachments under a trusted live-session identity.
+
+        Args:
+            message: Chat input parts containing attachment IDs.
+            owner: Server-resolved owner, or the current authenticated context.
+
+        Returns:
+            Normalized parts with authorized local paths.
+        """
+        owner_token = webchat_resource_owner.set(
+            owner if owner is not None else webchat_resource_owner.get()
         )
+        try:
+            return await self.chat_service.build_user_message_parts(message)
+        finally:
+            webchat_resource_owner.reset(owner_token)
 
     async def handle_live_message(
         self,
@@ -670,6 +711,7 @@ class LiveChatService:
         assemble_duration: float,
         send_json: SendJson,
     ) -> None:
+        owner_token = webchat_resource_owner.set(session.username)
         try:
             await send_json(
                 {"t": "metrics", "data": {"wav_assemble_time": assemble_duration}}
@@ -704,6 +746,38 @@ class LiveChatService:
             )
 
             conversation_id = session.conversation_id
+            owned = await self.db.get_platform_session_by_id(conversation_id)
+            if owned is not None and (
+                owned.creator != session.username or owned.platform_id != "webchat"
+            ):
+                raise PermissionError("Resource is unavailable")
+            if owned is None:
+                await self.db.create_platform_session(
+                    creator=session.username,
+                    platform_id="webchat",
+                    session_id=conversation_id,
+                    is_group=0,
+                )
+            audio = await self.chat_service.save_uploaded_file(
+                LocalUploadFile(Path(audio_path), "voice.wav", "audio/wav")
+            )
+            await self.platform_history_mgr.insert(
+                platform_id="webchat",
+                user_id=conversation_id,
+                sender_id=session.username,
+                sender_name=session.username,
+                content={
+                    "type": "user",
+                    "message": [
+                        {"type": "plain", "text": user_text},
+                        {
+                            "type": "record",
+                            "attachment_id": audio["attachment_id"],
+                            "filename": audio["filename"],
+                        },
+                    ],
+                },
+            )
             queue = webchat_queue_mgr.get_or_create_queue(conversation_id)
 
             message_id = str(uuid.uuid4())
@@ -711,6 +785,7 @@ class LiveChatService:
                 "message_id": message_id,
                 "message": [{"type": "plain", "text": user_text}],
                 "action_type": "live",
+                "_dashboard_account": session.principal,
             }
 
             await queue.put((session.username, conversation_id, payload))
@@ -788,6 +863,26 @@ class LiveChatService:
                     if result_type == "plain":
                         bot_text += data
 
+                    elif result_type in {"image", "record", "video", "file"}:
+                        prefix = {
+                            "image": "[IMAGE]",
+                            "record": "[RECORD]",
+                            "video": "[VIDEO]",
+                            "file": "[FILE]",
+                        }[result_type]
+                        filename = str(data).removeprefix(prefix)
+                        display_name = None
+                        if result_type in {"file", "video"} and "|" in filename:
+                            filename, display_name = filename.split("|", 1)
+                        part = await self.create_attachment_from_file(
+                            filename, result_type, display_name, owner=session.username
+                        )
+                        if part:
+                            await self.save_bot_message(
+                                session.conversation_id, [part], {}, {}
+                            )
+                            await send_json({"t": "attachment", "data": part})
+
                     elif result_type == "audio_chunk":
                         if not audio_playing:
                             audio_playing = True
@@ -855,6 +950,7 @@ class LiveChatService:
         finally:
             session.is_processing = False
             session.should_interrupt = False
+            webchat_resource_owner.reset(owner_token)
 
     @staticmethod
     async def save_interrupted_message(

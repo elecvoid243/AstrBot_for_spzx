@@ -1414,7 +1414,7 @@ export function useMessages(options: UseMessagesOptions) {
       },
       body: JSON.stringify(options.accountRole === "user" ? {
         session_id: sessionId,
-        message: parts.filter((part) => part.type === "plain").map((part) => part.text || "").join(""),
+        message: parts.map(partToPayload),
         message_id: messageId,
         config_id: configId,
         thinking_effort: thinkingEffort,

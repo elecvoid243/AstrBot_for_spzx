@@ -504,12 +504,19 @@
         </div>
         <div class="composer-toolbar">
           <div class="composer-toolbar__left" :class="{ 'composer-toolbar__left--user': isOrdinaryUser }">
-            <input v-if="!isOrdinaryUser"
+            <input
               type="file"
               ref="imageInputRef"
               @change="handleFileSelect"
               style="display: none"
               multiple
+            />
+            <v-btn
+              v-if="isOrdinaryUser"
+              icon="mdi-paperclip"
+              variant="text"
+              :aria-label="tm('input.upload')"
+              @click="triggerImageInput"
             />
             <!-- "+" ghost button: upload / skill / project / config / streaming -->
             <StyledMenu v-if="!isOrdinaryUser"
@@ -723,7 +730,6 @@
               <span class="token-usage-tooltip">{{ tokenUsageTooltip }}</span>
             </v-tooltip>
             <v-btn
-              v-if="!isOrdinaryUser"
               @click="handleRecordClick"
               icon
               variant="text"
@@ -1520,7 +1526,6 @@ watch(
 );
 
 const canSend = computed(() => {
-  if (isOrdinaryUser.value) return !props.disabled && Boolean(props.prompt?.trim());
   return (
     skillGuide.queued.value.length > 0 ||
     (props.prompt && props.prompt.trim()) ||
@@ -2312,7 +2317,7 @@ function handlePaste(e: ClipboardEvent) {
       autoResize();
     });
   }
-  if (!isOrdinaryUser.value) emit("pasteImage", e);
+  emit("pasteImage", e);
 }
 
 // 2026-07-18 drag-to-chat (elecvoid243): custom MIME type used by
@@ -2325,7 +2330,6 @@ function handlePaste(e: ClipboardEvent) {
 const SIDEBAR_FILE_MIME = "application/x-astrbot-file-path";
 
 function handleDragOver(e: DragEvent) {
-  if (isOrdinaryUser.value) return;
   // 清除之前的 leave timeout
   if (dragLeaveTimeout) {
     clearTimeout(dragLeaveTimeout);
@@ -2339,7 +2343,7 @@ function handleDragOver(e: DragEvent) {
   if (types?.includes("Files")) {
     dragKind.value = "upload";
     isDragging.value = true;
-  } else if (types?.includes(SIDEBAR_FILE_MIME)) {
+  } else if (!isOrdinaryUser.value && types?.includes(SIDEBAR_FILE_MIME)) {
     dragKind.value = "reference";
     isDragging.value = true;
   }

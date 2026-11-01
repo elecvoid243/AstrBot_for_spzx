@@ -18,7 +18,7 @@ from astrbot.core.platform import (
 )
 from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-from astrbot.core.utils.webchat_access import DashboardPrincipal
+from astrbot.core.utils.webchat_access import DashboardPrincipal, webchat_resource_owner
 
 from ...register import register_platform_adapter
 from .message_parts_helper import (
@@ -143,11 +143,20 @@ class WebChatAdapter(Platform):
         conversation_id: str,
         message_chain: MessageChain,
     ) -> None:
-        message_parts = await message_chain_to_storage_message_parts(
-            message_chain,
-            insert_attachment=db_helper.insert_attachment,
-            attachments_dir=self.attachments_dir,
+        owned_session = await db_helper.get_platform_session_by_id(conversation_id)
+        owner_token = webchat_resource_owner.set(
+            owned_session.creator
+            if owned_session is not None
+            else webchat_resource_owner.get()
         )
+        try:
+            message_parts = await message_chain_to_storage_message_parts(
+                message_chain,
+                insert_attachment=db_helper.insert_attachment,
+                attachments_dir=self.attachments_dir,
+            )
+        finally:
+            webchat_resource_owner.reset(owner_token)
         if not message_parts:
             return
 

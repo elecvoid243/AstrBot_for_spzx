@@ -1,8 +1,10 @@
 import asyncio
 import json
+import mimetypes
 import sqlite3
 import threading
 import typing as T
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ from astrbot.core.db.po import (
     CommandConflict,
     ConversationV2,
     CronJob,
+    DashboardAccount,
     Persona,
     PersonaFolder,
     PlatformMessageHistory,
@@ -47,6 +50,7 @@ from astrbot.core.db.po import (
     Stats as DeprecatedStats,
 )
 from astrbot.core.sentinels import NOT_GIVEN
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core.utils.webchat_access import webchat_resource_owner
 
 
@@ -73,6 +77,29 @@ def _dashboard_conversation_visibility():
         & ~col(ConversationV2.user_id).startswith("webchat:"),
         col(ConversationV2.user_id).in_(owned),
         col(ConversationV2.user_id).in_(owned_short),
+    )
+
+
+def _dashboard_attachment_visibility(owner: str | None = None):
+    """Limit attachment access to the trusted owner, including legacy data.
+
+    Args:
+        owner: Explicit trusted owner, otherwise the current runtime identity.
+
+    Returns:
+        SQL condition preserving unowned legacy files for the original admin.
+    """
+    owner = owner if owner is not None else webchat_resource_owner.get()
+    if owner is None:
+        return literal(True)
+    legacy_owner = (
+        select(DashboardAccount.legacy_owner)
+        .where(DashboardAccount.bootstrap_key == "dashboard")
+        .scalar_subquery()
+    )
+    return or_(
+        Attachment.owner == owner,
+        (Attachment.owner.is_(None)) & (legacy_owner == owner),
     )
 
 
@@ -146,6 +173,65 @@ class SQLiteDatabase(BaseDatabase):
             # The table-level unique constraint already provides an index for UMO
             # lookups. Older schemas also created this redundant explicit index.
             await conn.execute(text("DROP INDEX IF EXISTS ix_umo_aliases_umo"))
+            # Existing rows remain unowned and visible only to the bootstrap admin.
+            attachment_columns = await conn.execute(
+                text("PRAGMA table_info(attachments)")
+            )
+            if "owner" not in {row[1] for row in attachment_columns}:
+                # sqlite3 legacy transaction mode does not BEGIN for DDL.
+                # Keep the new column and legacy inventory in one retryable
+                # transaction even when no earlier statement started one.
+                raw_connection = await conn.get_raw_connection()
+                if not raw_connection.driver_connection.in_transaction:
+                    await conn.exec_driver_sql("BEGIN IMMEDIATE")
+                await conn.execute(
+                    text("ALTER TABLE attachments ADD COLUMN owner TEXT")
+                )
+                data_root = Path(get_astrbot_data_path())
+                for directory in (
+                    data_root / "attachments",
+                    data_root / "webchat" / "imgs",
+                ):
+                    root = directory.resolve()
+                    if not root.is_dir():
+                        continue
+                    for candidate in root.iterdir():
+                        path = candidate.resolve()
+                        if not path.is_relative_to(root) or not path.is_file():
+                            continue
+                        existing = await conn.execute(
+                            select(Attachment.attachment_id).where(
+                                Attachment.path == str(path)
+                            )
+                        )
+                        if existing.first() is not None:
+                            continue
+                        mime_type = (
+                            mimetypes.guess_type(path.name)[0]
+                            or "application/octet-stream"
+                        )
+                        kind = {
+                            "image": "image",
+                            "audio": "record",
+                            "video": "video",
+                        }.get(mime_type.partition("/")[0], "file")
+                        now = datetime.now(timezone.utc)
+                        await conn.execute(
+                            sqlite_insert(Attachment).values(
+                                attachment_id=str(uuid.uuid4()),
+                                path=str(path),
+                                type=kind,
+                                mime_type=mime_type,
+                                owner=None,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_attachments_owner ON attachments (owner)"
+                )
+            )
             await conn.commit()
 
     async def _ensure_conversation_indexes(self, conn) -> None:
@@ -1305,8 +1391,18 @@ class SQLiteDatabase(BaseDatabase):
         async with self.get_db() as session:
             session: AsyncSession
             async with session.begin():
+                if webchat_resource_owner.get() is not None:
+                    foreign = await session.execute(
+                        select(Attachment.attachment_id).where(
+                            Attachment.path == path,
+                            _dashboard_attachment_visibility().is_not(True),
+                        )
+                    )
+                    if foreign.first() is not None:
+                        raise PermissionError("Attachment is unavailable")
                 new_attachment = Attachment(
                     path=path,
+                    owner=webchat_resource_owner.get(),
                     type=type,
                     mime_type=mime_type,
                 )
@@ -1317,18 +1413,49 @@ class SQLiteDatabase(BaseDatabase):
         """Get an attachment by its ID."""
         async with self.get_db() as session:
             session: AsyncSession
-            query = select(Attachment).where(Attachment.attachment_id == attachment_id)
+            query = select(Attachment).where(
+                Attachment.attachment_id == attachment_id,
+                _dashboard_attachment_visibility(),
+            )
             result = await session.execute(query)
             return result.scalar_one_or_none()
 
-    async def get_attachments(self, attachment_ids: list[str]) -> list:
-        """Get multiple attachments by their IDs."""
+    async def get_attachment_by_path(self, path: str) -> Attachment | None:
+        """Resolve an owned attachment for the legacy filename download entry.
+
+        Args:
+            path: Canonical path inside a Chat attachment directory.
+
+        Returns:
+            An accessible attachment, or None without exposing foreign metadata.
+        """
+        async with self.get_db() as session:
+            result = await session.execute(
+                select(Attachment).where(
+                    Attachment.path == path, _dashboard_attachment_visibility()
+                )
+            )
+            return result.scalars().first()
+
+    async def get_attachments(
+        self, attachment_ids: list[str], *, owner: str | None = None
+    ) -> list:
+        """Get the authorized subset of candidate attachment references.
+
+        Args:
+            attachment_ids: Candidate IDs from chat history.
+            owner: Explicit trusted owner, otherwise the current runtime owner.
+
+        Returns:
+            Accessible attachment records.
+        """
         if not attachment_ids:
             return []
         async with self.get_db() as session:
             session: AsyncSession
             query = select(Attachment).where(
-                col(Attachment.attachment_id).in_(attachment_ids)
+                col(Attachment.attachment_id).in_(attachment_ids),
+                _dashboard_attachment_visibility(owner),
             )
             result = await session.execute(query)
             return list(result.scalars().all())
@@ -1342,15 +1469,23 @@ class SQLiteDatabase(BaseDatabase):
             session: AsyncSession
             async with session.begin():
                 query = delete(Attachment).where(
-                    col(Attachment.attachment_id) == attachment_id
+                    col(Attachment.attachment_id) == attachment_id,
+                    _dashboard_attachment_visibility(),
                 )
                 result = T.cast(CursorResult, await session.execute(query))
                 return result.rowcount > 0
 
-    async def delete_attachments(self, attachment_ids: list[str]) -> int:
-        """Delete multiple attachments by their IDs.
+    async def delete_attachments(
+        self, attachment_ids: list[str], *, owner: str | None = None
+    ) -> int:
+        """Delete only candidate records authorized for the same owner.
 
-        Returns the number of attachments deleted.
+        Args:
+            attachment_ids: Previously authorized candidate IDs.
+            owner: Explicit trusted owner, otherwise the current runtime owner.
+
+        Returns:
+            Number of records deleted.
         """
         if not attachment_ids:
             return 0
@@ -1358,7 +1493,8 @@ class SQLiteDatabase(BaseDatabase):
             session: AsyncSession
             async with session.begin():
                 query = delete(Attachment).where(
-                    col(Attachment.attachment_id).in_(attachment_ids)
+                    col(Attachment.attachment_id).in_(attachment_ids),
+                    _dashboard_attachment_visibility(owner),
                 )
                 result = T.cast(CursorResult, await session.execute(query))
                 return result.rowcount

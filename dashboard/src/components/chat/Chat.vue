@@ -712,7 +712,7 @@
     <main
       class="chat-main"
       :class="{ 'empty-chat': isEmptyChat }"
-      v-on="isOrdinaryUser ? {} : dragEvents"
+      v-on="dragEvents"
     >
       <transition name="drop-fade">
         <div
@@ -4396,7 +4396,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts: MessagePart[] = isOrdinaryUser.value ? [{ type: "plain", text: userText }] : buildOutgoingParts(text);
+    const outgoingParts: MessagePart[] = buildOutgoingParts(isOrdinaryUser.value ? userText : text);
     const selection = getSelectedProviderSelection();
     writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({

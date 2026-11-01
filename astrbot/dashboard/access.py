@@ -9,8 +9,25 @@ from starlette.routing import Match
 
 from astrbot.dashboard.responses import ApiError
 
+FILE_OPERATIONS = {
+    "upload_file",
+    "init_file_upload",
+    "upload_file_chunk",
+    "complete_file_upload",
+    "abort_file_upload",
+    "status_file_upload",
+    "get_file_by_name",
+    "get_file",
+    "delete_file",
+    "dashboard_post_file",
+    "dashboard_get_file",
+    "dashboard_get_attachment",
+    "get_token_file",
+    "get_dashboard_token_file",
+}
+
 # Endpoint names, rather than URL prefixes or the broad API-key chat scope.
-USER_OPERATIONS = {
+USER_OPERATIONS = FILE_OPERATIONS | {
     "login",
     "dashboard_login",
     "logout",
@@ -97,6 +114,11 @@ async def validate_account_request(request: Request, account) -> None:
                     "Internal chat fields are not accepted",
                     status_code=400,
                 )
+    operation = getattr(request.state, "dashboard_operation", None)
+    if operation in FILE_OPERATIONS:
+        # Typed upload schemas and multipart parsers validate file operations.
+        # Ownership is enforced by the upload service and attachment database.
+        return
     if account.role != "admin":
         if any(
             k
@@ -128,8 +150,28 @@ async def validate_account_request(request: Request, account) -> None:
             }:
                 raise ApiError("Unsupported chat fields", status_code=400)
             message = payload.get("message")
-            if not isinstance(message, str) or not message.strip():
-                raise ApiError("Only text messages are available", status_code=400)
+            if not isinstance(message, (str, list)) or not message:
+                raise ApiError("Invalid message", status_code=400)
+            if isinstance(message, list):
+                for part in message:
+                    if (
+                        not isinstance(part, dict)
+                        or part.get("type")
+                        not in {"plain", "image", "record", "audio", "video", "file"}
+                        or set(part)
+                        - {
+                            "type",
+                            "text",
+                            "attachment_id",
+                            "filename",
+                            "stored_filename",
+                        }
+                    ):
+                        raise ApiError("Unsupported message part", status_code=400)
+                    if part["type"] != "plain" and not isinstance(
+                        part.get("attachment_id"), str
+                    ):
+                        raise ApiError("Attachment ID is required", status_code=400)
             session_id = payload.get("session_id", payload.get("conversation_id"))
             if not isinstance(session_id, str) or not session_id:
                 raise ApiError("Invalid session ID", status_code=400)

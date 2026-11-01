@@ -50,6 +50,7 @@ from astrbot.core.utils.upload import UploadTooLargeError
 from astrbot.core.utils.webchat_access import (
     dashboard_account_context,
     webchat_account_role,
+    webchat_resource_owner,
 )
 from astrbot.dashboard.services.chatui_settings import (
     normalize_quick_messages,
@@ -1416,6 +1417,23 @@ class ChatService:
         return await self.db.get_branch_relations()
 
     async def build_user_message_parts(self, message: str | list) -> list[dict]:
+        if isinstance(message, list) and webchat_resource_owner.get() is not None:
+            # Reject the whole message before history or queues are modified.
+            for part in message:
+                if isinstance(part, dict) and part.get("type") in {
+                    "image",
+                    "record",
+                    "audio",
+                    "video",
+                    "file",
+                }:
+                    attachment_id = part.get("attachment_id")
+                    if (
+                        not attachment_id
+                        or await self.db.get_attachment_by_id(str(attachment_id))
+                        is None
+                    ):
+                        raise ChatServiceError("Attachment is unavailable")
         return await build_webchat_message_parts(
             message,
             get_attachment_by_id=self.db.get_attachment_by_id,
@@ -1440,7 +1458,13 @@ class ChatService:
         if not filename:
             raise ChatServiceError("Missing key: filename")
 
-        safe_name = os.path.basename(filename)
+        if (
+            Path(filename).name != filename
+            or "\\" in filename
+            or filename in {".", ".."}
+        ):
+            raise ChatServiceError("Invalid filename")
+        safe_name = filename
         attachments_dir = Path(self.attachments_dir).resolve(strict=False)
         file_path = (attachments_dir / safe_name).resolve(strict=False)
         file_root = attachments_dir
@@ -1456,6 +1480,12 @@ class ChatService:
             raise ChatServiceError("Invalid file path")
         if not file_path.exists():
             raise ChatServiceError("File access error")
+
+        principal = dashboard_account_context.get()
+        if principal is not None:
+            attachment = await self.db.get_attachment_by_path(str(file_path))
+            if attachment is None:
+                raise ChatServiceError("File access error")
 
         filename_ext = file_path.suffix.lower()
         if filename_ext == ".wav":
@@ -1482,6 +1512,11 @@ class ChatService:
             raise ChatServiceError("Attachment not found")
 
         file_path = Path(attachment.path).resolve(strict=False)
+        if not any(
+            file_path.is_relative_to(Path(root).resolve())
+            for root in (self.attachments_dir, self.webchat_img_dir)
+        ):
+            raise ChatServiceError("File access error")
         if not file_path.exists():
             raise ChatServiceError("File access error")
         return str(file_path), attachment.mime_type
@@ -3182,25 +3217,30 @@ class ChatService:
             "failed_items": failed_items,
         }
 
-    async def delete_attachments(self, attachment_ids: list[str]) -> None:
-        try:
-            attachments = await self.db.get_attachments(attachment_ids)
-            for attachment in attachments:
-                if not os.path.exists(attachment.path):
-                    continue
-                try:
-                    os.remove(attachment.path)
-                except OSError as e:
-                    logger.warning(
-                        f"Failed to delete attachment file {attachment.path}: {e}"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to get attachments: {e}")
+    async def delete_attachments(
+        self, attachment_ids: list[str], *, owner: str | None = None
+    ) -> None:
+        """Remove only files and records authorized for the same trusted owner.
 
-        try:
-            await self.db.delete_attachments(attachment_ids)
-        except Exception as e:
-            logger.warning(f"Failed to delete attachments: {e}")
+        Args:
+            attachment_ids: Candidate references from chat history.
+            owner: Explicit server-resolved owner, or the current runtime owner.
+        """
+        owner = owner if owner is not None else webchat_resource_owner.get()
+        attachments = await self.db.get_attachments(attachment_ids, owner=owner)
+        authorized_ids = [attachment.attachment_id for attachment in attachments]
+        for attachment in attachments:
+            path = Path(attachment.path).resolve()
+            if not any(
+                path.is_relative_to(Path(root).resolve())
+                for root in (self.attachments_dir, self.webchat_img_dir)
+            ):
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Failed to delete attachment file %s: %s", path, exc)
+        await self.db.delete_attachments(authorized_ids, owner=owner)
 
     async def new_session(self, username: str, platform_id: str) -> dict:
         session = await self.db.create_platform_session(

@@ -217,6 +217,7 @@ def create_dashboard_asgi_app(
         plugin_pages=PluginPageService(
             core_lifecycle.plugin_manager,
             core_lifecycle=core_lifecycle,
+            db=db,
         ),
         open_api=OpenApiService(db, core_lifecycle),
         sessions=SessionManagementService(core_lifecycle, db),

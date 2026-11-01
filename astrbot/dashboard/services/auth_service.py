@@ -7,11 +7,13 @@ from dataclasses import dataclass
 
 import jwt
 import pyotp
+from sqlmodel import select
 
 from astrbot import logger
 from astrbot.core import DEMO_MODE
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.desktop_runtime import (
     is_desktop_session_auth_enabled,
     is_loopback_client_host,
@@ -51,6 +53,7 @@ from astrbot.dashboard.password_state import (
     set_password_change_required,
     set_password_storage_upgraded,
 )
+from astrbot.dashboard.services.account_service import AccountService
 
 CHAT_ADMIN_SCOPE = "chat:admin"
 CONFIG_EDIT_ADMIN_SCOPE = "config:edit_admin"
@@ -125,6 +128,7 @@ class AuthService:
         self.db = db
         self.config = config
         self.demo_mode = demo_mode
+        self.accounts = AccountService(db, config)
 
     async def setup_status(self) -> AuthServiceResult:
         if is_desktop_session_auth_enabled():
@@ -159,11 +163,15 @@ class AuthService:
             return self.error("Invalid desktop session", status_code=401)
 
         username = self.config["dashboard"]["username"]
-        token = self.generate_jwt(username, auth_source="desktop")
+        account = await self.accounts.ensure_admin()
+        token = self.generate_jwt(username, account=account, auth_source="desktop")
         return AuthServiceResult(
             data={
                 "token": token,
                 "username": username,
+                "account_id": account.account_id,
+                "role": account.role,
+                "resource_owner": account.resource_owner,
                 "change_pwd_hint": False,
                 "md5_pwd_hint": False,
                 "password_upgrade_required": False,
@@ -246,6 +254,7 @@ class AuthService:
         if not isinstance(post_data, dict):
             return self.error("Invalid request payload")
 
+        account = await self.accounts.ensure_admin()
         new_username = post_data.get("username")
         new_password = post_data.get("password")
         confirm_password = post_data.get("confirm_password")
@@ -262,17 +271,32 @@ class AuthService:
             return self.error(str(exc))
 
         username = new_username.strip()
+        async with self.db.get_db() as session:
+            conflict = (
+                await session.execute(
+                    select(DashboardAccount).where(
+                        DashboardAccount.username == username,
+                        DashboardAccount.account_id != account.account_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if conflict is not None:
+            return self.error("Username is already in use")
         self.config["dashboard"]["username"] = username
         set_dashboard_password_hashes(self.config, new_password)
         await set_password_storage_upgraded(self.db, self.config, True)
         await set_password_change_required(self.db, self.config, False)
         self.config.save_config()
 
-        token = self.generate_jwt(username)
+        account = await self.accounts.ensure_admin()
+        token = self.generate_jwt(username, account=account)
         return AuthServiceResult(
             data={
                 "token": token,
                 "username": username,
+                "account_id": account.account_id,
+                "role": account.role,
+                "resource_owner": account.resource_owner,
                 "change_pwd_hint": False,
                 "md5_pwd_hint": False,
                 "password_upgrade_required": False,
@@ -287,7 +311,8 @@ class AuthService:
         *,
         trusted_device_cookie_token: str,
     ) -> AuthServiceResult:
-        username = self.config["dashboard"]["username"]
+        account = await self.accounts.ensure_admin()
+        username = account.username
         storage_upgraded = await is_password_storage_upgraded(self.db, self.config)
         password = get_dashboard_password_hash(self.config, upgraded=storage_upgraded)
 
@@ -306,9 +331,13 @@ class AuthService:
         if not isinstance(req_username, str) or not isinstance(req_password, str):
             return self.error("Invalid request payload")
 
-        login_verified = req_username == username and verify_dashboard_password(
-            password,
-            req_password,
+        login_verified = (
+            account.enabled
+            and req_username == username
+            and verify_dashboard_password(
+                password,
+                req_password,
+            )
         )
 
         if not login_verified:
@@ -370,11 +399,16 @@ class AuthService:
             logger.warning("为了保证安全，请尽快修改默认密码。")
         if password_change_required and not self.demo_mode:
             change_pwd_hint = True
-        token = self.generate_jwt(username)
+        # Bind the token to the credentials verified above. Concurrent resets
+        # must not upgrade an in-flight login to the new credential version.
+        token = self.generate_jwt(username, account=account)
         result = AuthServiceResult(
             data={
                 "token": token,
                 "username": username,
+                "account_id": account.account_id,
+                "role": account.role,
+                "resource_owner": account.resource_owner,
                 "change_pwd_hint": change_pwd_hint,
                 "md5_pwd_hint": md5_pwd_hint,
                 "password_upgrade_required": not storage_upgraded,
@@ -393,6 +427,7 @@ class AuthService:
         if self.demo_mode:
             return self.error("You are not permitted to do this operation in demo mode")
 
+        account = await self.accounts.ensure_admin()
         storage_upgraded = await is_password_storage_upgraded(self.db, self.config)
         password = get_dashboard_password_hash(self.config, upgraded=storage_upgraded)
         if not isinstance(post_data, dict):
@@ -421,6 +456,17 @@ class AuthService:
             if not isinstance(new_username, str) or len(new_username.strip()) < 3:
                 return self.error("用户名长度至少3位")
             username_to_save = new_username.strip()
+            async with self.db.get_db() as session:
+                conflict = (
+                    await session.execute(
+                        select(DashboardAccount).where(
+                            DashboardAccount.username == username_to_save,
+                            DashboardAccount.account_id != account.account_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+            if conflict is not None:
+                return self.error("Username is already in use")
 
         if new_pwd:
             if not isinstance(new_pwd, str):
@@ -442,11 +488,29 @@ class AuthService:
 
         self.config.save_config()
 
+        await self.accounts.ensure_admin()
         return AuthServiceResult(message="Updated account successfully")
 
-    def generate_jwt(self, username: str, *, auth_source: str = "password"):
+    def generate_jwt(
+        self, username: str, *, account: DashboardAccount, auth_source: str = "password"
+    ):
+        """Issue a session bound to a persisted identity and credential version.
+
+        Args:
+            username: Current login name, retained for older dashboard clients.
+            account: Trusted persisted account, never supplied by the client.
+            auth_source: Existing desktop or password authentication flow.
+
+        Returns:
+            Signed dashboard JWT.
+
+        Raises:
+            ValueError: The dashboard JWT secret is missing.
+        """
         payload = {
             "username": username,
+            "sub": account.account_id,
+            "ver": account.token_version,
             "exp": datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(days=7),
         }

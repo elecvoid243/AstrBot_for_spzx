@@ -43,6 +43,23 @@ class LoginRequest(OpenModel):
     trust_device_flag: bool | None = None
 
 
+class AuthSessionData(OpenModel):
+    token: str
+    username: str
+    account_id: str
+    role: Literal["admin", "user"]
+    resource_owner: str
+    change_pwd_hint: bool = False
+    md5_pwd_hint: bool = False
+    password_upgrade_required: bool = False
+
+
+class AuthSessionResponse(BaseModel):
+    status: str
+    message: str | None = None
+    data: AuthSessionData | None = None
+
+
 class AuthSetupRequest(OpenModel):
     username: str | None = None
     password: str | None = None

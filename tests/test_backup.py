@@ -72,6 +72,10 @@ def mock_main_db():
 
     # 模拟异步上下文管理器
     session = AsyncMock()
+    session.begin = MagicMock(return_value=AsyncMock())
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=result)
     db.get_db = MagicMock(
         return_value=AsyncMock(__aenter__=AsyncMock(return_value=session))
     )

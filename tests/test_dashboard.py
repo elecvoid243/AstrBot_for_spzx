@@ -448,7 +448,7 @@ async def _restore_dashboard_password_state(
     )
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture
 async def authenticated_header(
     app: FastAPIAppAdapter, core_lifecycle_td: AstrBotCoreLifecycle
 ):

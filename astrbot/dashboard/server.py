@@ -379,9 +379,14 @@ class AstrBotDashboard:
         for token in token_candidates:
             payload, token_error = self._validate_dashboard_token(token, path)
             if payload is not None:
-                current_request.state.dashboard_g.username = cast(
-                    str, payload["username"]
+                account = await self.asgi_app.state.services.auth.accounts.resolve(
+                    payload
                 )
+                if account is None:
+                    token_errors.append("Token 无效")
+                    continue
+                current_request.state.dashboard_account = account
+                current_request.state.dashboard_g.username = account.resource_owner
                 return None
             token_errors.append(token_error)
 

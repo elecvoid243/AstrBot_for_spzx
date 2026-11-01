@@ -21,6 +21,34 @@ class TimestampMixin(SQLModel):
     )
 
 
+class DashboardAccount(TimestampMixin, SQLModel, table=True):
+    """Persistent login identity with an immutable WebChat resource owner."""
+
+    __tablename__: str = "dashboard_accounts"
+
+    account_id: str = Field(
+        default_factory=lambda: f"account_{uuid.uuid4().hex}", primary_key=True
+    )
+    username: str = Field(nullable=False, unique=True)
+    password_hash: str = Field(nullable=False)
+    role: str = Field(default="user", nullable=False)
+    enabled: bool = Field(default=True, nullable=False)
+    token_version: int = Field(default=0, nullable=False)
+    # Only the migrated administrator has a legacy owner. Never recompute it
+    # from the mutable login name or assign unowned data to new accounts.
+    legacy_owner: str | None = Field(default=None, unique=True)
+    bootstrap_key: str | None = Field(default=None, unique=True)
+
+    @property
+    def resource_owner(self) -> str:
+        """Return the stable sender and resource identity.
+
+        Returns:
+            Original administrator owner or the new account's internal ID.
+        """
+        return self.legacy_owner if self.legacy_owner is not None else self.account_id
+
+
 class PlatformStat(SQLModel, table=True):
     """This class represents the statistics of bot usage across different platforms.
 

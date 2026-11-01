@@ -14,9 +14,12 @@ from urllib.parse import quote, urlencode, urlunsplit
 import aiofiles
 import jwt
 from aiofiles import ospath as aio_ospath
+from sqlmodel import select
 
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
+from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.star.star import StarMetadata
 from astrbot.core.star.star_manager import PluginManager
 
@@ -70,7 +73,9 @@ class PluginPageService:
         plugin_manager: PluginManager,
         core_lifecycle: AstrBotCoreLifecycle | None = None,
         config: AstrBotConfig | None = None,
+        db: BaseDatabase | None = None,
     ) -> None:
+        self.db = db
         self.plugin_manager = plugin_manager
         self.config = config or (
             core_lifecycle.astrbot_config if core_lifecycle is not None else None
@@ -254,7 +259,7 @@ class PluginPageService:
         if include_content_path:
             plugin_name = plugin.name.strip() if isinstance(plugin.name, str) else ""
             asset_token = (
-                self.issue_plugin_page_asset_token(
+                await self.issue_plugin_page_asset_token(
                     plugin_name=plugin_name,
                     view_name=view_name,
                     jwt_secret=jwt_secret or self._jwt_secret(),
@@ -270,7 +275,7 @@ class PluginPageService:
             asset_token=asset_token,
         )
 
-    def prepare_plugin_page_query_params(
+    async def prepare_plugin_page_query_params(
         self,
         plugin_name: str,
         view_name: str,
@@ -283,7 +288,7 @@ class PluginPageService:
     ) -> dict[str, str] | None:
         if not asset_token:
             asset_token = (
-                self.issue_plugin_page_asset_token(
+                await self.issue_plugin_page_asset_token(
                     plugin_name=plugin_name,
                     view_name=view_name,
                     jwt_secret=jwt_secret or self._jwt_secret(),
@@ -364,7 +369,7 @@ class PluginPageService:
                 status_code=404,
             ) from exc
 
-        extra_query_params = self.prepare_plugin_page_query_params(
+        extra_query_params = await self.prepare_plugin_page_query_params(
             plugin_name,
             page.name,
             asset_token=asset_token,
@@ -683,7 +688,7 @@ class PluginPageService:
                 pages.append(page_data)
         return pages
 
-    def issue_plugin_page_asset_token(
+    async def issue_plugin_page_asset_token(
         self,
         *,
         plugin_name: str,
@@ -711,6 +716,19 @@ class PluginPageService:
             "iat": now,
             "exp": now + timedelta(seconds=PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS),
         }
+        if self.db is not None:
+            async with self.db.get_db() as session:
+                account = (
+                    await session.execute(
+                        select(DashboardAccount).where(
+                            (DashboardAccount.legacy_owner == username)
+                            | (DashboardAccount.account_id == username)
+                        )
+                    )
+                ).scalar_one_or_none()
+            if account is None or not account.enabled or account.role != "admin":
+                return None
+            payload.update(sub=account.account_id, ver=account.token_version)
         return cast(str, jwt.encode(payload, jwt_secret, algorithm="HS256"))
 
 

@@ -99,7 +99,10 @@ async def require_plugin_view_token(request: Request) -> str:
     username = payload.get("username")
     if not isinstance(username, str) or not username.strip():
         raise ApiError("Token 无效", status_code=401)
-    return username
+    account = await request.app.state.services.auth.accounts.resolve(payload)
+    if account is None or account.role != "admin":
+        raise ApiError("Token 无效", status_code=401)
+    return account.resource_owner
 
 
 def get_service(request: Request) -> PluginService:

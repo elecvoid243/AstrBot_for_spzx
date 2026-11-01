@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import datetime
 import typing as T
 from contextlib import asynccontextmanager
@@ -64,6 +65,8 @@ class BaseDatabase(abc.ABC):
         # this db instance sees the same cache; `branch_session` updates it
         # incrementally to avoid the expensive full-table scan.
         self._branch_relations: dict[str, dict] | None = None
+        # Account bootstrap must not race replacement of the restored identities.
+        self.dashboard_account_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """初始化数据库连接"""

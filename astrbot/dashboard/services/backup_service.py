@@ -517,13 +517,26 @@ class BackupService:
 
         return response_data
 
-    def prepare_download(
+    async def prepare_download(
         self,
         *,
         filename: str | None,
         token: str | None,
         jwt_secret: str | None,
     ) -> BackupDownload:
+        """Authorize an administrator before returning a backup download.
+
+        Args:
+            filename: Backup archive name.
+            token: Current dashboard session JWT.
+            jwt_secret: Configured dashboard signing secret.
+
+        Returns:
+            The authorized backup archive path and name.
+
+        Raises:
+            BackupServiceError: Credentials or the requested archive are invalid.
+        """
         if not filename:
             raise BackupServiceError("缺少参数 filename")
         if not token:
@@ -532,7 +545,7 @@ class BackupService:
             raise BackupServiceError("服务器配置错误")
 
         try:
-            jwt.decode(
+            payload = jwt.decode(
                 token,
                 jwt_secret,
                 algorithms=["HS256"],
@@ -547,6 +560,11 @@ class BackupService:
         except jwt.InvalidTokenError as exc:
             raise BackupServiceError("Token 无效") from exc
 
+        from astrbot.dashboard.services.account_service import AccountService
+
+        account = await AccountService(self.db, self.config).resolve(payload)
+        if account is None or account.role != "admin" or payload.get("token_type"):
+            raise BackupServiceError("Token 无效")
         filename = self._validate_backup_filename(filename, missing="缺少参数 filename")
         file_path = os.path.join(self.backup_dir, filename)
         if not os.path.exists(file_path):

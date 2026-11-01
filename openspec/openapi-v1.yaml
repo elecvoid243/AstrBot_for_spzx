@@ -111,7 +111,11 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          $ref: "#/components/responses/Ok"
+          description: Authenticated persisted dashboard account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionResponse"
         "401":
           $ref: "#/components/responses/Error"
 
@@ -148,7 +152,11 @@ paths:
               $ref: "#/components/schemas/SetupAuthRequest"
       responses:
         "200":
-          $ref: "#/components/responses/Ok"
+          description: Authenticated persisted dashboard account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionResponse"
 
   /api/v1/auth/totp/setup:
     post:
@@ -8059,6 +8067,25 @@ components:
       schema: { type: string }
 
   schemas:
+    AuthSessionResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status: { type: string }
+        message: { type: string, nullable: true }
+        data:
+          type: object
+          nullable: true
+          required: [token, username, account_id, role, resource_owner]
+          properties:
+            token: { type: string }
+            username: { type: string, description: Mutable login name for display }
+            account_id: { type: string, description: Stable internal account ID }
+            role: { type: string, enum: [admin, user] }
+            resource_owner: { type: string, description: Stable WebChat sender and resource owner }
+            change_pwd_hint: { type: boolean }
+            md5_pwd_hint: { type: boolean }
+            password_upgrade_required: { type: boolean }
     MigrationState:
       additionalProperties: false
       description: Unresolved legacy semantics retained until a reviewed definition version.

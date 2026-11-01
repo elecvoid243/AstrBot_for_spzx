@@ -16,7 +16,9 @@ def _service() -> LiveChatService:
         plugin_manager=SimpleNamespace(),
         platform_message_history_manager=SimpleNamespace(),
     )
-    return LiveChatService(SimpleNamespace(), core_lifecycle, chat_service=SimpleNamespace())
+    return LiveChatService(
+        SimpleNamespace(), core_lifecycle, chat_service=SimpleNamespace()
+    )
 
 
 @pytest.mark.asyncio
@@ -56,7 +58,7 @@ async def test_run_websocket_session_routes_messages_and_cleans_session(monkeypa
     )
     routed: list[tuple[str, str, dict]] = []
 
-    monkeypatch.setattr(service, "authenticate_token", lambda _token: "alice")
+    monkeypatch.setattr(service, "authenticate_token", AsyncMock(return_value="alice"))
 
     async def handle_chat_message(session, message, _send_json) -> None:
         routed.append(("chat", session.username, message))
@@ -102,7 +104,7 @@ async def test_run_websocket_session_handles_disconnect_without_error_log(
     messages = iter([{"ct": "chat", "t": "bind", "session_id": "chat-session"}])
     routed: list[dict] = []
 
-    monkeypatch.setattr(service, "authenticate_token", lambda _token: "alice")
+    monkeypatch.setattr(service, "authenticate_token", AsyncMock(return_value="alice"))
 
     async def handle_chat_message(session, message, _send_json) -> None:
         routed.append({"username": session.username, "message": message})
@@ -170,7 +172,7 @@ async def test_run_websocket_session_multiplexes_chat_requests_by_default(
         ]
     )
 
-    monkeypatch.setattr(service, "authenticate_token", lambda _token: "alice")
+    monkeypatch.setattr(service, "authenticate_token", AsyncMock(return_value="alice"))
 
     async def handle_chat_message(_session, message, _send_json) -> None:
         started_requests.append(message["message_id"])
@@ -260,12 +262,21 @@ async def test_chat_websocket_forwards_shared_segments_under_client_request_id()
         sent.append(payload)
 
     try:
-        await service.handle_chat_message(session, {
-            "t": "send", "session_id": "chat-session", "message_id": "request-1",
-            "message": [{"type": "plain", "text": "hello"}],
-        }, send_json)
+        await service.handle_chat_message(
+            session,
+            {
+                "t": "send",
+                "session_id": "chat-session",
+                "message_id": "request-1",
+                "message": [{"type": "plain", "text": "hello"}],
+            },
+            send_json,
+        )
         assert [event["type"] for event in sent] == [event["type"] for event in events]
-        assert all(event["ct"] == "chat" and event["message_id"] == "request-1" for event in sent)
+        assert all(
+            event["ct"] == "chat" and event["message_id"] == "request-1"
+            for event in sent
+        )
         call = service.chat_service.build_chat_stream.await_args
         assert call.args[0] == "alice"
         assert call.args[1]["_client_message_id"] == "request-1"

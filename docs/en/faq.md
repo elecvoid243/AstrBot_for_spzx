@@ -25,6 +25,12 @@ Set dashboard.host in data/cmd_config.json to enable remote access.
 
 `UiYVpZxnW8k22IWqf0ru5pOy` is the default password.
 
+### Existing Administrator Accounts After Upgrade
+
+The existing Dashboard login becomes a persistent administrator account on first authentication. Keep using the same login, password, two-factor verification, Bot pages and Chat entry. Changing the login name in the existing account dialog preserves the original Chat sessions, projects, attachments and configuration bindings. Sign in again after changing credentials; earlier sessions are invalidated.
+
+The administrator password configuration and the existing CLI/password recovery procedure remain authoritative. The database stores a stable account ID and a frozen resource owner separately from the login name. Back up the database together with the configuration. Upgrading again or restarting does not create another administrator or assign unclaimed resources to new accounts. The old single-account login maps to this original administrator; no new account settings page is required.
+
 ### Forgot Dashboard Password
 
 If you forgot your AstrBot dashboard password, choose the reset method that matches your deployment method.

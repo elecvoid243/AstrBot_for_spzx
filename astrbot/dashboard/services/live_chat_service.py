@@ -24,6 +24,7 @@ from astrbot.core.platform.sources.webchat.message_parts_helper import (
 from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id
+from astrbot.dashboard.services.account_service import AccountService
 from astrbot.dashboard.services.chat_service import (
     ChatService,
     build_bot_history_content,
@@ -134,17 +135,34 @@ class LiveChatService:
         self.webchat_img_dir = os.path.join(get_astrbot_data_path(), "webchat", "imgs")
         os.makedirs(self.attachments_dir, exist_ok=True)
 
-    def authenticate_token(
+    async def authenticate_token(
         self,
         token: str | None,
         jwt_secret: str | None = None,
     ) -> str:
+        """Resolve a WebSocket credential against current persisted state.
+
+        Args:
+            token: Dashboard JWT submitted by the WebSocket client.
+            jwt_secret: Optional signing secret override.
+
+        Returns:
+            The stable resource identity of the enabled account.
+
+        Raises:
+            LiveChatAuthError: The session is missing, invalid or revoked.
+        """
         if not token:
             raise LiveChatAuthError("Missing authentication token")
         jwt_secret = jwt_secret or self.config["dashboard"].get("jwt_secret")
         try:
             payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-            return payload["username"]
+            if payload.get("token_type") is not None:
+                raise LiveChatAuthError("Invalid token")
+            account = await AccountService(self.db, self.config).resolve(payload)
+            if account is None:
+                raise LiveChatAuthError("Invalid token")
+            return account.resource_owner
         except jwt.ExpiredSignatureError as exc:
             raise LiveChatAuthError("Token expired") from exc
         except jwt.InvalidTokenError as exc:
@@ -172,7 +190,7 @@ class LiveChatService:
         close: CloseWebSocket,
     ) -> None:
         try:
-            username = self.authenticate_token(token)
+            username = await self.authenticate_token(token)
         except LiveChatAuthError as exc:
             await close(1008, str(exc))
             return
@@ -205,6 +223,11 @@ class LiveChatService:
         try:
             while True:
                 message = await receive_json()
+                try:
+                    await self.authenticate_token(token)
+                except LiveChatAuthError as exc:
+                    await close(1008, str(exc))
+                    break
                 ct = force_ct or message.get("ct", "live")
                 if ct == "chat":
                     if message.get("t") == "send":

@@ -21,6 +21,8 @@ export const useAuthStore = defineStore("auth", {
     async finishAuthenticatedSession(data: any): Promise<void> {
       this.username = data.username;
       localStorage.setItem('user', this.username);
+      localStorage.setItem('resource_owner', data.resource_owner || data.username);
+      localStorage.setItem('account_id', data.account_id || '');
       localStorage.setItem('token', data.token);
       const passwordUpgradeRequired = !!data?.password_upgrade_required;
       const md5PwdHint = !!data?.md5_pwd_hint;
@@ -174,6 +176,8 @@ export const useAuthStore = defineStore("auth", {
     logout() {
       this.username = '';
       localStorage.removeItem('user');
+      localStorage.removeItem('resource_owner');
+      localStorage.removeItem('account_id');
       localStorage.removeItem('token');
       localStorage.removeItem('change_pwd_hint');
       localStorage.removeItem('md5_pwd_hint');

@@ -11,16 +11,19 @@ import json
 import os
 import shutil
 import zipfile
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from astrbot.core import logger
 from astrbot.core.config.default import VERSION
 from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
     get_astrbot_knowledge_base_path,
@@ -419,11 +422,79 @@ class AstrBotImporter:
                     main_data_content = zf.read("databases/main_db.json")
                     main_data = json.loads(main_data_content)
 
-                    if mode == "replace":
-                        await self._clear_main_db()
+                    async with (
+                        self.main_db.dashboard_account_lock,
+                        self.main_db.get_db() as restore_session,
+                        restore_session.begin(),
+                    ):
+                        if mode == "replace":
+                            if "dashboard_accounts" not in main_data:
+                                accounts = (
+                                    (
+                                        await restore_session.execute(
+                                            select(DashboardAccount)
+                                        )
+                                    )
+                                    .scalars()
+                                    .all()
+                                )
+                                if "config/cmd_config.json" in zf.namelist():
+                                    # Old archives have no account table. Their own
+                                    # configuration defines the restored owner;
+                                    # the running process may still use a renamed login.
+                                    dashboard = json.loads(
+                                        zf.read("config/cmd_config.json")
+                                    )["dashboard"]
+                                    owner = dashboard["username"]
+                                    # Derive upgrade state from the archived hash,
+                                    # matching login rather than trusting saved flags.
+                                    password_hash = dashboard.get("password", "")
+                                    pbkdf2 = dashboard.get("pbkdf2_password", "")
+                                    if isinstance(pbkdf2, str) and pbkdf2.startswith(
+                                        "pbkdf2_sha256$"
+                                    ):
+                                        pieces = pbkdf2.split("$")
+                                        if len(pieces) == 4:
+                                            try:
+                                                int(pieces[1])
+                                                bytes.fromhex(pieces[2])
+                                                bytes.fromhex(pieces[3])
+                                            except ValueError:
+                                                pass
+                                            else:
+                                                password_hash = pbkdf2
+                                    account = DashboardAccount(
+                                        username=owner,
+                                        password_hash=password_hash,
+                                        role="admin",
+                                        legacy_owner=owner,
+                                        bootstrap_key="dashboard",
+                                    )
+                                    for current in accounts:
+                                        if (
+                                            current.bootstrap_key == "dashboard"
+                                            and current.legacy_owner == owner
+                                        ):
+                                            account.account_id = current.account_id
+                                            account.token_version = (
+                                                current.token_version + 1
+                                            )
+                                            break
+                                    main_data["dashboard_accounts"] = [
+                                        account.model_dump(mode="json")
+                                    ]
+                                else:
+                                    # A data-only archive does not replace credentials.
+                                    main_data["dashboard_accounts"] = [
+                                        account.model_dump(mode="json")
+                                        for account in accounts
+                                    ]
+                            await self._clear_main_db(session=restore_session)
 
-                    imported = await self._import_main_database(main_data)
-                    result.imported_tables.update(imported)
+                        imported = await self._import_main_database(
+                            main_data, session=restore_session
+                        )
+                        result.imported_tables.update(imported)
                 except DatabaseClearError as e:
                     result.add_error(f"清空主数据库失败: {e}")
                     return result
@@ -528,10 +599,20 @@ class AstrBotImporter:
         if version_check["status"] == "minor_diff":
             logger.warning(f"版本差异警告: {version_check['message']}")
 
-    async def _clear_main_db(self) -> None:
-        """清空主数据库所有表"""
-        async with self.main_db.get_db() as session:
-            async with session.begin():
+    async def _clear_main_db(self, session: AsyncSession | None = None) -> None:
+        """Clear main tables, optionally inside the caller's restore transaction.
+
+        Args:
+            session: Shared transaction used to replace data and identities atomically.
+
+        Raises:
+            DatabaseClearError: A main table cannot be cleared.
+        """
+        owns_transaction = session is None
+        async with (
+            self.main_db.get_db() if owns_transaction else nullcontext(session)
+        ) as session:
+            async with session.begin() if owns_transaction else nullcontext():
                 for table_name, model_class in MAIN_DB_MODELS.items():
                     try:
                         await session.execute(delete(model_class))
@@ -569,13 +650,23 @@ class AstrBotImporter:
         self.kb_manager.kb_insts.clear()
 
     async def _import_main_database(
-        self, data: dict[str, list[dict]]
+        self, data: dict[str, list[dict]], session: AsyncSession | None = None
     ) -> dict[str, int]:
-        """导入主数据库数据"""
-        imported: dict[str, int] = {}
+        """Import main tables using the caller's transaction when provided.
 
-        async with self.main_db.get_db() as session:
-            async with session.begin():
+        Args:
+            data: Backup rows indexed by table name.
+            session: Shared transaction used to replace data and identities atomically.
+
+        Returns:
+            The number of imported rows per table.
+        """
+        imported: dict[str, int] = {}
+        owns_transaction = session is None
+        async with (
+            self.main_db.get_db() if owns_transaction else nullcontext(session)
+        ) as session:
+            async with session.begin() if owns_transaction else nullcontext():
                 for table_name, rows in data.items():
                     model_class = MAIN_DB_MODELS.get(table_name)
                     if not model_class:

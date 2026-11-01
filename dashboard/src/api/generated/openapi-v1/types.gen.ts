@@ -57,6 +57,32 @@ export type ArtifactRevisionRequest = {
     };
 };
 
+export type AuthSessionResponse = {
+    status: string;
+    message?: (string) | null;
+    data: {
+        token: string;
+        /**
+         * Mutable login name for display
+         */
+        username: string;
+        /**
+         * Stable internal account ID
+         */
+        account_id: string;
+        role: 'admin' | 'user';
+        /**
+         * Stable WebChat sender and resource owner
+         */
+        resource_owner: string;
+        change_pwd_hint?: boolean;
+        md5_pwd_hint?: boolean;
+        password_upgrade_required?: boolean;
+    } | null;
+};
+
+export type role = 'admin' | 'user';
+
 /**
  * A coordinator and allowed role templates sharing the workflow executor.
  */
@@ -1408,7 +1434,7 @@ export type LoginData = {
     body: LoginRequest;
 };
 
-export type LoginResponse = (SuccessEnvelope);
+export type LoginResponse = (AuthSessionResponse);
 
 export type LoginError = (ErrorEnvelope);
 
@@ -1424,7 +1450,7 @@ export type SetupAuthData = {
     body: SetupAuthRequest;
 };
 
-export type SetupAuthResponse = (SuccessEnvelope);
+export type SetupAuthResponse = (AuthSessionResponse);
 
 export type SetupAuthError = unknown;
 

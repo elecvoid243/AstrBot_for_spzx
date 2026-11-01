@@ -10,6 +10,7 @@ from astrbot.core.workspace import API_KEY_USERNAME_PREFIX
 from astrbot.dashboard.responses import ApiError
 from astrbot.dashboard.schemas import (
     AccountUpdateRequest,
+    AuthSessionResponse,
     AuthSetupRequest,
     LoginRequest,
     TotpSetupRequest,
@@ -43,6 +44,9 @@ class AuthContext:
     scopes: list[str]
     api_key_id: str | None = None
     via: str = "jwt"
+    account_id: str | None = None
+    login_name: str | None = None
+    role: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,28 +109,34 @@ def _extract_dashboard_jwt(request: Request) -> str | None:
 
 
 async def require_dashboard_user(request: Request) -> str:
-    if username := _get_dashboard_state_username(request):
-        return username
+    """Authenticate a session and return its stable resource identity.
 
+    Args:
+        request: Current FastAPI request.
+
+    Returns:
+        Frozen legacy owner or internal account ID of the enabled account.
+
+    Raises:
+        ApiError: The credential is absent, invalid, expired or revoked.
+    """
+    account = getattr(request.state, "dashboard_account", None)
+    if account is not None:
+        return account.resource_owner
     token = _extract_dashboard_jwt(request)
     if not token:
         raise ApiError("未授权", status_code=401)
-
     try:
-        payload = jwt.decode(
-            token,
-            request.app.state.jwt_secret,
-            algorithms=["HS256"],
-        )
-    except jwt.ExpiredSignatureError as exc:
-        raise ApiError("Token 过期", status_code=401) from exc
+        payload = jwt.decode(token, request.app.state.jwt_secret, algorithms=["HS256"])
     except jwt.InvalidTokenError as exc:
         raise ApiError("Token 无效", status_code=401) from exc
-
-    username = payload.get("username")
-    if not isinstance(username, str) or not username.strip():
+    if payload.get("token_type") is not None:
+        raise ApiError("Invalid token", status_code=401)
+    account = await request.app.state.services.auth.accounts.resolve(payload)
+    if account is None:
         raise ApiError("Token 无效", status_code=401)
-    return username
+    request.state.dashboard_account = account
+    return account.resource_owner
 
 
 async def _require_api_key_scope(
@@ -189,10 +199,22 @@ async def require_scope(request: Request, scope: str) -> AuthContext:
                 raise api_key_exc from exc
         raise ApiError("Invalid token", status_code=401) from exc
 
-    username = payload.get("username")
-    if not isinstance(username, str) or not username.strip():
+    if payload.get("token_type") is not None:
         raise ApiError("Invalid token", status_code=401)
-    return AuthContext(username=username, scopes=["*"], via="jwt")
+    account = await request.app.state.services.auth.accounts.resolve(payload)
+    if account is None:
+        raise ApiError("Invalid token", status_code=401)
+    if account.role != "admin" and scope != "chat":
+        raise ApiError("Insufficient account permission", status_code=403)
+    request.state.dashboard_account = account
+    return AuthContext(
+        username=account.resource_owner,
+        scopes=["*"] if account.role == "admin" else ["chat"],
+        via="jwt",
+        account_id=account.account_id,
+        login_name=account.username,
+        role=account.role,
+    )
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -346,7 +368,9 @@ async def _setup(
     if auth is None:
         result = await service.setup(_payload(payload))
     else:
-        result = await service.setup_authenticated(_payload(payload), auth.username)
+        result = await service.setup_authenticated(
+            _payload(payload), auth.login_name or auth.username
+        )
     return _auth_service_response(
         request,
         result,
@@ -382,7 +406,7 @@ async def _update_account(
     )
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", response_model=AuthSessionResponse)
 async def login(
     request: Request,
     payload: LoginRequest,
@@ -441,7 +465,7 @@ async def dashboard_setup_status(
     return _auth_service_response_from_result(await service.setup_status())
 
 
-@router.post("/auth/setup")
+@router.post("/auth/setup", response_model=AuthSessionResponse)
 async def setup(
     request: Request,
     payload: AuthSetupRequest,

@@ -33,8 +33,11 @@ function setToLocalStorage(key: string, value: string): void {
   }
 }
 
+/** Return the stable WebChat resource owner; the legacy name is kept for callers.
+ * Use the auth store's username or the `user` storage key for the display login.
+ */
 export function getStoredDashboardUsername(): string {
-  return getFromLocalStorage('user', '').trim() || 'guest';
+  return getFromLocalStorage('resource_owner', '').trim() || getFromLocalStorage('user', '').trim() || 'guest';
 }
 
 export function getStoredSelectedChatConfigId(): string {

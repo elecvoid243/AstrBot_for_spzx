@@ -18,7 +18,9 @@ import astrbot.dashboard.services.config_service as config_service
 import astrbot.dashboard.services.stat_service as stat_service
 from astrbot.core import file_token_service
 from astrbot.core.config.default import VERSION
+from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.utils import llm_metadata
+from astrbot.core.utils.auth_password import hash_md5_dashboard_password
 from astrbot.dashboard.api.app import create_dashboard_asgi_app
 from astrbot.dashboard.api.backups import download_backup as download_backup_route
 from astrbot.dashboard.asgi_runtime import (
@@ -30,7 +32,7 @@ from astrbot.dashboard.asgi_runtime import (
 )
 from astrbot.dashboard.responses import ok
 from astrbot.dashboard.services.api_key_service import ApiKeyService
-from astrbot.dashboard.services.auth_service import DASHBOARD_JWT_COOKIE_NAME
+from astrbot.dashboard.services.auth_service import DASHBOARD_JWT_COOKIE_NAME, AuthService
 from astrbot.dashboard.services.backup_service import BackupDownload
 from astrbot.dashboard.services.plugin_service import (
     PLUGIN_UPDATE_SOURCE_REQUIRED_MESSAGE,
@@ -618,14 +620,21 @@ class FakeAstrBotUpdater:
 
 
 class FakeAstrBotConfig(dict):
-    def save_config(self, post_config: dict) -> None:
-        self.clear()
-        self.update(copy.deepcopy(post_config))
+    def save_config(self, post_config: dict | None = None) -> None:
+        if post_config is not None:
+            self.clear()
+            self.update(copy.deepcopy(post_config))
 
 
 def _build_fake_config() -> dict:
     return FakeAstrBotConfig(
         {
+            "dashboard": {
+                "username": "fastapi-v1-test",
+                "password": hash_md5_dashboard_password("test-password"),
+                "password_storage_upgraded": False,
+                "jwt_secret": JWT_SECRET,
+            },
             "platform": [
                 {
                     "id": "webchat-main",
@@ -1016,13 +1025,26 @@ def fake_core_lifecycle():
     )
 
 
-@pytest.fixture
-def asgi_app(fake_core_lifecycle, fake_db: FakeDb):
+@pytest_asyncio.fixture
+async def account_db(tmp_path):
+    db = SQLiteDatabase(str(tmp_path / "accounts.db"))
+    await db.initialize()
+    db.inited = True
+    yield db
+    await db.engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def asgi_app(fake_core_lifecycle, fake_db: FakeDb, account_db):
     app = create_dashboard_asgi_app(
         core_lifecycle=fake_core_lifecycle,
         db=fake_db,
         jwt_secret=JWT_SECRET,
     )
+    app.state.services.auth = AuthService(
+        account_db, fake_core_lifecycle.astrbot_config
+    )
+    app.state.services.plugin_pages.db = account_db
     app.state.dashboard_app_adapter = FastAPIAppAdapter(app)
     _register_dashboard_alias_routes(
         app,
@@ -1120,7 +1142,13 @@ async def test_v1_chunked_file_upload_preserves_auth_and_attachment_flow(
 @pytest.mark.parametrize("desktop_auth", [False, True])
 @pytest.mark.parametrize("status", ["missing", "unavailable", "detected"])
 async def test_version_routes_return_startup_runtime_snapshot(
-    monkeypatch, tmp_path, fake_core_lifecycle, fake_db: FakeDb, desktop_auth, status
+    monkeypatch,
+    tmp_path,
+    fake_core_lifecycle,
+    fake_db: FakeDb,
+    account_db,
+    desktop_auth,
+    status,
 ):
     """Both version routes and auth modes expose the same startup snapshot."""
     platform = SimpleNamespace(
@@ -1156,6 +1184,9 @@ async def test_version_routes_return_startup_runtime_snapshot(
     )
     app = create_dashboard_asgi_app(
         core_lifecycle=fake_core_lifecycle, db=fake_db, jwt_secret=JWT_SECRET
+    )
+    app.state.services.auth = AuthService(
+        account_db, fake_core_lifecycle.astrbot_config
     )
 
     # Environment changes take effect in this snapshot after restarting AstrBot.
@@ -1204,6 +1235,7 @@ async def test_version_routes_and_update_checks_use_static_folder(
     tmp_path: Path,
     desktop_auth,
     asset_version,
+    account_db,
 ):
     """Use served assets even when an unrelated dist has a readable marker."""
     static_folder = tmp_path / "dist"
@@ -1244,6 +1276,9 @@ async def test_version_routes_and_update_checks_use_static_folder(
         db=fake_db,
         jwt_secret=JWT_SECRET,
         static_folder=str(static_folder),
+    )
+    app.state.services.auth = AuthService(
+        account_db, fake_core_lifecycle.astrbot_config
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
@@ -1298,7 +1333,7 @@ async def test_v1_scope_dependencies_accept_dashboard_cookie(
     asgi_client: httpx.AsyncClient,
 ):
     token = jwt.encode(
-        {"username": "fastapi-v1-cookie-test"},
+        {"username": "fastapi-v1-test"},
         JWT_SECRET,
         algorithm="HS256",
     )

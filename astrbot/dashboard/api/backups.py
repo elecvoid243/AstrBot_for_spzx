@@ -82,7 +82,7 @@ def _download_response(download) -> FileResponse:
     )
 
 
-def _download_backup(
+async def _download_backup(
     *,
     filename: str | None,
     token: str | None,
@@ -91,10 +91,12 @@ def _download_backup(
     try:
         filename = _safe_backup_filename(filename)
         return _download_response(
-            service.prepare_download(
-                filename=filename,
-                token=token,
-                jwt_secret=service.config.get("dashboard", {}).get("jwt_secret"),
+            await run_maybe_async(
+                lambda: service.prepare_download(
+                    filename=filename,
+                    token=token,
+                    jwt_secret=service.config.get("dashboard", {}).get("jwt_secret"),
+                )
             )
         )
     except BackupServiceError as exc:
@@ -337,7 +339,7 @@ async def download_backup(
         scheme, separator, credentials = auth_header.partition(" ")
         if separator and scheme.lower() == "bearer":
             token = credentials.strip() or None
-    return _download_backup(filename=filename, token=token, service=service)
+    return await _download_backup(filename=filename, token=token, service=service)
 
 
 @legacy_router.get("/download")
@@ -346,7 +348,7 @@ async def download_dashboard_backup(
     token: str | None = Query(default=None),
     service: BackupService = Depends(get_service),
 ):
-    return _download_backup(filename=filename, token=token, service=service)
+    return await _download_backup(filename=filename, token=token, service=service)
 
 
 @router.patch("/backups/{filename:path}")

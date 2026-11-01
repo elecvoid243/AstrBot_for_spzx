@@ -575,6 +575,6 @@ Modify the `password` in the `dashboard` configuration in the data/cmd_config.js
 Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, **Role templates → Assets → Role templates**, **Independent Runs → Runs → All runs / In progress / Needs attention / History**. Versioned assets are the default; the previous creation and execution workspace is retired. The top notice lists original owned legacy runs, including normal pauses, and blocks new launches until they finish or are explicitly stopped. **Previous History / member long-term conversations → Runs → History** preserves original records. Ownerless unfinished history is shown as interrupted and cannot resume; migrated assets prepare a separate fresh run. See the [asset and run workspace](./agent-team-workflows.md#navigation-and-previous-entry-points) for current screenshots and controls.
 
 
-## Inline Skill Store
+## Skill Store
 
-In `Extensions → Skills`, open the available `Skill Store` section without leaving the admin panel. Its address follows the Core release API in `Settings → Update Sources`. The standalone `/skills` entry now maps to this inline page; see [steps and screenshot](./skills.md#inline-skill-store).
+In `Extensions → Skills`, click `Open Skill Store` to navigate to the store in the current browser tab. Its address follows the Core release API in `Settings → Update Sources`. This link replaces the previous inline store; see [steps and screenshot](./skills.md#skill-store).

@@ -322,6 +322,7 @@
   },
   "skills": {
     "store": "Skill ストア",
+    "openStore": "Skill ストアを開く",
     "searchPlaceholder": "スキルを検索…",
     "noSearchResult": "一致するスキルが見つかりません",
     "modeLocal": "ローカルスキル",

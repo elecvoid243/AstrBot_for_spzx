@@ -1,20 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { onMounted, ref } from "vue";
 import { skillApi } from "@/api/v1";
-import { useCustomizerStore } from "@/stores/customizer";
 import SkillsSection from "@/components/extension/SkillsSection.vue";
 import { useModuleI18n } from "@/i18n/composables";
 
 const { tm } = useModuleI18n("features/extension");
-const customizer = useCustomizerStore();
 const storeUrl = ref("");
-const section = ref("installed");
-const iframeSrc = computed(() => {
-  if (!storeUrl.value) return "";
-  const url = new URL(storeUrl.value);
-  url.searchParams.set("theme", customizer.isDark ? "dark" : "light");
-  return url.toString();
-});
 
 onMounted(async () => {
   try {
@@ -38,27 +29,16 @@ onMounted(async () => {
         </div>
       </div>
     </div>
-    <v-btn-toggle
+    <v-btn
       v-if="storeUrl"
-      v-model="section"
-      mandatory
-      density="comfortable"
+      :href="storeUrl"
+      variant="tonal"
+      append-icon="mdi-arrow-right"
       class="mb-4"
     >
-      <v-btn value="installed" variant="text">{{
-        tm("status.installed")
-      }}</v-btn>
-      <v-btn value="store" variant="text">{{ tm("skills.store") }}</v-btn>
-    </v-btn-toggle>
-    <SkillsSection v-show="section === 'installed'" />
-    <iframe
-      v-if="storeUrl && section === 'store'"
-      :src="iframeSrc"
-      :title="tm('skills.store')"
-      class="skill-store-frame"
-      referrerpolicy="no-referrer"
-      sandbox="allow-scripts allow-forms allow-downloads allow-same-origin allow-popups"
-    />
+      {{ tm("skills.openStore") }}
+    </v-btn>
+    <SkillsSection />
   </div>
 </template>
 
@@ -68,14 +48,5 @@ onMounted(async () => {
   max-width: 1200px;
   padding: 0 12px;
   width: 100%;
-}
-.skill-store-frame {
-  display: block;
-  width: 100%;
-  height: calc(100dvh - 240px);
-  min-height: 480px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  border-radius: 12px;
-  background: rgb(var(--v-theme-surface));
 }
 </style>

@@ -16,7 +16,8 @@ from astrbot.dashboard.services import skills_service
         (200, "text/html", "", True),
         (404, "text/html", "", False),
         (200, "application/json", "", False),
-        (200, "text/html", "DENY", False),
+        (200, "text/html", "DENY", True),
+        (200, "text/html", "SAMEORIGIN", True),
     ],
 )
 async def test_store_uses_release_source_parent(

@@ -112,11 +112,6 @@ class SkillsService:
                     available = (
                         response.status == 200 and response.content_type == "text/html"
                     )
-                    if response.headers.get("X-Frame-Options", "").upper() in {
-                        "DENY",
-                        "SAMEORIGIN",
-                    }:
-                        available = False
                     return {"available": available, "url": url if available else ""}
         except (aiohttp.ClientError, TimeoutError):
             return {"available": False, "url": ""}

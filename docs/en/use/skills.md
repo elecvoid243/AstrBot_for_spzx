@@ -20,15 +20,15 @@ You can upload Skills with the following requirements:
 2. After extraction, it can contain one or more Skill folders. Each folder name is used as the Skill identifier in AstrBot. Use English letters, numbers, dots, underscores, or hyphens.
 3. Each Skill folder must include a file named exactly `SKILL.md`. The filename is case-sensitive. Its contents should preferably follow the Anthropic Skills specification. You can refer to Anthropic's documentation: https://code.claude.com/docs/en/skills
 
-## Inline Skill Store
+## Skill Store
 
-Open `Extensions → Skills → Skill Store` to browse your update server's store inside the current page. This entry appears only when the store is reachable and permits embedding; installed skill management and uploads remain available when it is offline.
+In `Extensions → Skills`, click `Open Skill Store` to navigate to your update server's store in the current browser tab. This link appears only when the store is reachable; installed skill management and uploads remain available when it is offline.
 
 The URL follows the Core release API address in `Settings → Update Sources`: the sibling `skills` path replaces `releases`. For example, `http://127.0.0.1:11000/releases` resolves to `http://127.0.0.1:11000/skills`. Save a changed source and reopen Skills to probe the new address.
 
-Entry mapping: visiting the standalone `/skills` store → `Extensions → Skills → Skill Store` inline page. Manage installed skills in the `Installed` section of the same page. After downloading a skill ZIP, return to `Installed` and use the upload button to install it.
+Entry mapping: the previous `Extensions → Skills → Skill Store` inline page → the `Open Skill Store` link on the Skills page. After downloading a skill ZIP, use the browser's Back button to return to Skills and upload it for installation.
 
-![Inline Skill Store](./images/inline-skill-store.png)
+![Skill Store link](./images/skill-store-link.png)
 
 ## Skill Sources and Priority
 

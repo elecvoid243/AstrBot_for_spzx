@@ -6253,7 +6253,7 @@
         "tags": [
           "Skills"
         ],
-        "summary": "Resolve an available inline skill store from the update source",
+        "summary": "Resolve an available skill store link from the update source",
         "operationId": "getSkillStore",
         "x-astrbot-scope": "skill",
         "responses": {

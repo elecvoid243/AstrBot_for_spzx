@@ -322,6 +322,7 @@
   },
   "skills": {
     "store": "Skill store",
+    "openStore": "Open Skill Store",
     "searchPlaceholder": "Search skills...",
     "noSearchResult": "No matching skills found",
     "modeLocal": "Local Skills",

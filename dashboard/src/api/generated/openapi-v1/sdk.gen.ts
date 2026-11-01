@@ -2508,7 +2508,7 @@ export const uploadSkill = <ThrowOnError extends boolean = false>(options: Optio
 };
 
 /**
- * Resolve an available inline skill store from the update source
+ * Resolve an available skill store link from the update source
  */
 export const getSkillStore = <ThrowOnError extends boolean = false>(options?: OptionsLegacyParser<unknown, ThrowOnError>) => {
     return (options?.client ?? client).get<GetSkillStoreResponse, GetSkillStoreError, ThrowOnError>({

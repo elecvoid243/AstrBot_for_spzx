@@ -20,7 +20,11 @@ from astrbot.core.db.po import (
     AgentRoleVersion,
     AgentWorkflowPackage,
 )
-from astrbot.core.tools.file_tool_mode import file_tool_allowed, resolve_file_tool_mode
+from astrbot.core.tools.file_tool_mode import (
+    DEFAULT_FILE_TOOL_MODE,
+    file_tool_allowed,
+    resolve_file_tool_mode,
+)
 
 SlotName = Annotated[str, Field(min_length=1, max_length=128)]
 
@@ -839,9 +843,11 @@ class RoleAssetService:
                         or profile_id
                         not in matches[0].get("enabled_profiles", [profile_id])
                     ):
+                        file_mode = profile.get(
+                            "file_tool_mode", DEFAULT_FILE_TOOL_MODE
+                        )
                         mode_excluded = field == "tools" and not file_tool_allowed(
-                            resource_id or reference,
-                            profile.get("file_tool_mode", "legacy"),
+                            resource_id or reference, file_mode
                         )
                         code = (
                             "AMBIGUOUS"
@@ -858,7 +864,7 @@ class RoleAssetService:
                                 "code": code,
                                 "message": (
                                     f"Tool {resource_id or reference} is excluded by "
-                                    f"file_tool_mode={profile.get('file_tool_mode', 'legacy')} "
+                                    f"file_tool_mode={file_mode} "
                                     f"in profile {profile_id}"
                                     if mode_excluded
                                     else f"Resource is unavailable: {resource_id or reference}"

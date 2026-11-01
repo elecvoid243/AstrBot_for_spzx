@@ -1,4 +1,4 @@
-"""Patch injection requires patch mode; registration alone does not select it."""
+"""Patch mode is selected by default for local and sandbox file tools."""
 
 from __future__ import annotations
 
@@ -69,8 +69,8 @@ def test_tool_set_accepts_apply_patch() -> None:
 
 
 @pytest.mark.parametrize("runtime", ["local", "sandbox"])
-def test_default_runtime_keeps_legacy_group(runtime: str) -> None:
-    """Default mode does not silently inject the alternate file capability.
+def test_default_runtime_selects_patch_group(runtime: str) -> None:
+    """Default mode exposes patch tools instead of the legacy file group.
 
     Args:
         runtime: Supported computer environment.
@@ -78,6 +78,6 @@ def test_default_runtime_keeps_legacy_group(runtime: str) -> None:
     tools = FunctionToolExecutor._get_runtime_computer_tools(
         runtime, FunctionToolManager()
     )
-    assert _PATCH_TOOL_NAME not in tools
-    assert "astrbot_file_write_tool" in tools
-    assert "astrbot_file_edit_tool" in tools
+    assert _PATCH_TOOL_NAME in tools
+    assert "astrbot_file_write_tool" not in tools
+    assert "astrbot_file_edit_tool" not in tools

@@ -11,14 +11,17 @@ from astrbot.core.tools.file_tool_mode import (
 )
 
 
-def test_default_is_legacy():
-    assert resolve_file_tool_mode({}) == "legacy"
-    assert resolve_file_tool_mode(None) == "legacy"
+def test_default_is_patch():
+    assert resolve_file_tool_mode({}) == "patch"
+    assert resolve_file_tool_mode(None) == "patch"
+    assert resolve_file_tool_mode({"file_tool_mode": ""}) == "patch"
+    assert resolve_file_tool_mode({"file_tool_mode": None}) == "patch"
 
 
 def test_patch_mode_and_invalid_fallback():
     assert resolve_file_tool_mode({"file_tool_mode": "patch"}) == "patch"
-    assert resolve_file_tool_mode({"file_tool_mode": "bogus"}) == "legacy"
+    assert resolve_file_tool_mode({"file_tool_mode": "legacy"}) == "legacy"
+    assert resolve_file_tool_mode({"file_tool_mode": "bogus"}) == "patch"
 
 
 def test_file_tool_names():
@@ -39,7 +42,7 @@ def test_file_tool_allowed():
 def test_default_config_has_mode():
     from astrbot.core.config.default import DEFAULT_CONFIG
 
-    assert DEFAULT_CONFIG["provider_settings"]["file_tool_mode"] == "legacy"
+    assert DEFAULT_CONFIG["provider_settings"]["file_tool_mode"] == "patch"
 
 
 class FakeMgr:
@@ -64,12 +67,10 @@ def test_runtime_tools_legacy_vs_patch():
     assert "astrbot_file_edit_tool" not in patch
 
 
-def test_sandbox_patch_includes_apply_patch():
+def test_sandbox_default_includes_apply_patch():
     from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 
-    tools = FunctionToolExecutor._get_runtime_computer_tools(
-        "sandbox", FakeMgr(), mode="patch"
-    )
+    tools = FunctionToolExecutor._get_runtime_computer_tools("sandbox", FakeMgr())
     assert "astrbot_apply_patch" in tools
     assert "astrbot_file_write_tool" not in tools
 
@@ -80,7 +81,7 @@ def test_local_assembly_uses_mode():
 
     class FakePluginCtx:
         def get_config(self, umo=None):
-            return {"provider_settings": {"file_tool_mode": "patch"}}
+            return {"provider_settings": {}}
 
         def get_llm_tool_manager(self):
             return FakeMgr()

@@ -57,7 +57,7 @@ from astrbot.core.tools.computer_tools import (
     ShellSessionTool,
 )
 from astrbot.core.tools.file_tool_mode import (
-    FILE_TOOL_MODE_LEGACY,
+    DEFAULT_FILE_TOOL_MODE,
     file_tool_allowed,
     file_tool_classes,
     file_tool_names,
@@ -382,7 +382,7 @@ class FunctionToolExecutor(BaseFunctionToolExecutor[AstrAgentContext]):
         runtime: str,
         tool_mgr,
         booter: str | None = None,
-        mode: str = FILE_TOOL_MODE_LEGACY,
+        mode: str = DEFAULT_FILE_TOOL_MODE,
     ) -> dict[str, FunctionTool]:
         booter = "" if booter is None else str(booter).lower()
         if runtime == "sandbox":

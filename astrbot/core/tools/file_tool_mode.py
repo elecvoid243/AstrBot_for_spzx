@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 FILE_TOOL_MODE_KEY = "file_tool_mode"
 FILE_TOOL_MODE_LEGACY = "legacy"
 FILE_TOOL_MODE_PATCH = "patch"
-DEFAULT_FILE_TOOL_MODE = FILE_TOOL_MODE_LEGACY
+DEFAULT_FILE_TOOL_MODE = FILE_TOOL_MODE_PATCH
 
 _LEGACY_TOOLS = ("astrbot_file_write_tool", "astrbot_file_edit_tool")
 _PATCH_TOOLS = ("astrbot_apply_patch",)
@@ -26,7 +26,7 @@ _warned_modes: set[str] = set()
 
 
 def resolve_file_tool_mode(provider_settings: dict | None) -> str:
-    """Return the configured mode, falling back to ``legacy``.
+    """Return the configured mode, falling back to ``patch``.
 
     Args:
         provider_settings: The ``provider_settings`` config section.

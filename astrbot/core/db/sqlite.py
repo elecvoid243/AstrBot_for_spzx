@@ -1341,9 +1341,21 @@ class SQLiteDatabase(BaseDatabase):
     async def delete_webchat_threads_by_parent_session(
         self,
         parent_session_id: str,
+        *,
+        creator: str | None = None,
     ) -> list[str]:
-        """Delete side threads for a parent WebChat session."""
-        threads = await self.get_webchat_threads_by_parent_session(parent_session_id)
+        """Delete side threads owned by the caller under a parent session.
+
+        Args:
+            parent_session_id: Parent session identifier.
+            creator: Required owner for account-backed deletion, or None for maintenance.
+
+        Returns:
+            Identifiers of the deleted threads.
+        """
+        threads = await self.get_webchat_threads_by_parent_session(
+            parent_session_id, creator=creator
+        )
         thread_ids = [thread.thread_id for thread in threads]
         if not thread_ids:
             return []
@@ -1361,18 +1373,30 @@ class SQLiteDatabase(BaseDatabase):
         self,
         parent_session_id: str,
         parent_message_ids: list[int],
+        *,
+        creator: str | None = None,
     ) -> list[str]:
-        """Delete side threads linked to parent message IDs."""
+        """Delete owned threads linked to messages in one parent session.
+
+        Args:
+            parent_session_id: Parent session identifier.
+            parent_message_ids: Message identifiers whose threads should be removed.
+            creator: Required owner for account-backed deletion, or None for maintenance.
+
+        Returns:
+            Identifiers of the deleted threads.
+        """
         if not parent_message_ids:
             return []
         async with self.get_db() as session:
             session: AsyncSession
-            result = await session.execute(
-                select(WebChatThread.thread_id).where(
-                    WebChatThread.parent_session_id == parent_session_id,
-                    col(WebChatThread.parent_message_id).in_(parent_message_ids),
-                )
+            query = select(WebChatThread.thread_id).where(
+                WebChatThread.parent_session_id == parent_session_id,
+                col(WebChatThread.parent_message_id).in_(parent_message_ids),
             )
+            if creator is not None:
+                query = query.where(WebChatThread.creator == creator)
+            result = await session.execute(query)
             thread_ids = list(result.scalars().all())
         if not thread_ids:
             return []

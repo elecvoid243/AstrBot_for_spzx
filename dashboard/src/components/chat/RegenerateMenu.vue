@@ -21,6 +21,7 @@
     </v-list-item>
 
     <v-menu
+      v-if="auth.role !== 'user'"
       location="end"
       offset="8"
       transition="none"
@@ -138,6 +139,7 @@
 </template>
 
 <script setup lang="ts">
+import { useAuthStore } from "@/stores/auth";
 import { ref } from "vue";
 import { RotateCw } from "@lucide/vue";
 import { providerApi } from "@/api/v1";
@@ -166,6 +168,7 @@ const emit = defineEmits<{
   retryWithModel: [selection: RegenerateModelSelection];
 }>();
 
+const auth = useAuthStore();
 const { tm } = useModuleI18n("features/chat");
 const { tm: providerTm } = useModuleI18n("features/provider");
 const providerConfigs = ref<ProviderConfig[]>([]);
@@ -196,13 +199,13 @@ async function loadProviderConfigs(force = false) {
 }
 
 function handleMenuToggle(isOpen: boolean) {
-  if (isOpen) {
+  if (isOpen && auth.role !== "user") {
     loadProviderConfigs();
   }
 }
 
 function handleModelMenuToggle(isOpen: boolean) {
-  if (isOpen) {
+  if (isOpen && auth.role !== "user") {
     loadProviderConfigs();
   }
 }

@@ -50,6 +50,23 @@ USER_OPERATIONS = FILE_OPERATIONS | {
     "update_chat_session_config",
     "chat_ui_settings",
     "update_chat_ui_effort_value",
+    "batch_delete_chat_sessions",
+    "batch_archive_chat_sessions",
+    "batch_unarchive_chat_sessions",
+    "get_archived_chat_sessions",
+    "archive_chat_session",
+    "unarchive_chat_session",
+    "get_chat_session_markers",
+    "update_chat_session",
+    "delete_chat_session",
+    "update_chat_message",
+    "regenerate_chat_message",
+    "search_messages",
+    "dashboard_delete_session",
+    "dashboard_batch_delete_sessions",
+    "dashboard_update_session_display_name",
+    "dashboard_update_message",
+    "dashboard_regenerate_message",
 }
 
 
@@ -75,6 +92,10 @@ def require_account_operation(request: Request, account) -> None:
         )
     operation = getattr(route, "name", None)
     request.state.dashboard_operation = operation
+    # Middleware admission runs before FastAPI populates request.path_params.
+    request.state.dashboard_path_params = (
+        route.matches(request.scope)[1].get("path_params", {}) if route else {}
+    )
     if account.role != "admin" and operation not in USER_OPERATIONS:
         raise ApiError(
             "This operation is not available for this account", status_code=403
@@ -100,8 +121,8 @@ async def validate_account_request(request: Request, account) -> None:
         for key, value in payload.items():
             if key.startswith("_") and key != "_client_message_id":
                 # The chat service validates edited continuations against the
-                # latest persisted user message in the administrator's session.
-                if account.role == "admin" and key in {
+                # latest persisted user message in the authenticated session.
+                if key in {
                     "_skip_user_history",
                     "_llm_checkpoint_id",
                 }:
@@ -118,6 +139,86 @@ async def validate_account_request(request: Request, account) -> None:
     if operation in FILE_OPERATIONS:
         # Typed upload schemas and multipart parsers validate file operations.
         # Ownership is enforced by the upload service and attachment database.
+        return
+    if account.role != "admin" and operation in {
+        "batch_delete_chat_sessions",
+        "batch_archive_chat_sessions",
+        "batch_unarchive_chat_sessions",
+        "get_archived_chat_sessions",
+        "archive_chat_session",
+        "unarchive_chat_session",
+        "get_chat_session_markers",
+        "update_chat_session",
+        "delete_chat_session",
+        "update_chat_message",
+        "regenerate_chat_message",
+        "search_messages",
+        "dashboard_delete_session",
+        "dashboard_batch_delete_sessions",
+        "dashboard_update_session_display_name",
+        "dashboard_update_message",
+        "dashboard_regenerate_message",
+    }:
+        query_fields = {
+            "get_archived_chat_sessions": {
+                "page",
+                "page_size",
+                "search",
+                "platform_id",
+            },
+            "search_messages": {"q", "page", "page_size"},
+            "dashboard_delete_session": {"session_id"},
+        }.get(operation, set())
+        if set(request.query_params) - query_fields:
+            raise ApiError("Unsupported chat query", status_code=400)
+        if request.query_params.get("platform_id", "webchat") != "webchat":
+            raise ApiError("Unsupported chat platform", status_code=403)
+        if request.method in {"POST", "PATCH"}:
+            try:
+                payload = await request.json() if await request.body() else {}
+            except ValueError as exc:
+                raise ApiError("Invalid chat payload", status_code=400) from exc
+            fields = {
+                "batch_delete_chat_sessions": {"session_ids"},
+                "batch_archive_chat_sessions": {"session_ids"},
+                "batch_unarchive_chat_sessions": {"session_ids"},
+                "dashboard_batch_delete_sessions": {"session_ids"},
+                "update_chat_session": {"display_name", "starred"},
+                "update_chat_message": {"content"},
+                "dashboard_update_session_display_name": {"session_id", "display_name"},
+                "dashboard_update_message": {"session_id", "message_id", "content"},
+                "dashboard_regenerate_message": {
+                    "session_id",
+                    "message_id",
+                    "config_id",
+                    "thinking_effort",
+                    "selected_provider",
+                    "selected_model",
+                },
+                "regenerate_chat_message": {
+                    "config_id",
+                    "thinking_effort",
+                    "selected_provider",
+                    "selected_model",
+                },
+            }.get(operation, set())
+            if not isinstance(payload, dict) or set(payload) - fields:
+                raise ApiError("Unsupported chat fields", status_code=400)
+        else:
+            payload = {}
+        session_id = (
+            request.state.dashboard_path_params.get("session_id")
+            or payload.get("session_id")
+            or request.query_params.get("session_id")
+        )
+        if session_id:
+            session = await request.app.state.db.get_platform_session_by_id(session_id)
+            if (
+                session is None
+                or session.creator != account.resource_owner
+                or session.platform_id != "webchat"
+            ):
+                raise ApiError("Resource is unavailable", status_code=403)
         return
     if account.role != "admin":
         if any(
@@ -147,8 +248,14 @@ async def validate_account_request(request: Request, account) -> None:
                 "thinking_effort",
                 "selected_provider",
                 "selected_model",
+                "_skip_user_history",
+                "_llm_checkpoint_id",
             }:
                 raise ApiError("Unsupported chat fields", status_code=400)
+            if payload.get("_skip_user_history") is True and not isinstance(
+                payload.get("_llm_checkpoint_id"), str
+            ):
+                raise ApiError("Invalid edited continuation", status_code=400)
             message = payload.get("message")
             if not isinstance(message, (str, list)) or not message:
                 raise ApiError("Invalid message", status_code=400)
@@ -157,7 +264,15 @@ async def validate_account_request(request: Request, account) -> None:
                     if (
                         not isinstance(part, dict)
                         or part.get("type")
-                        not in {"plain", "image", "record", "audio", "video", "file"}
+                        not in {
+                            "plain",
+                            "reply",
+                            "image",
+                            "record",
+                            "audio",
+                            "video",
+                            "file",
+                        }
                         or set(part)
                         - {
                             "type",
@@ -165,10 +280,12 @@ async def validate_account_request(request: Request, account) -> None:
                             "attachment_id",
                             "filename",
                             "stored_filename",
+                            "message_id",
+                            "selected_text",
                         }
                     ):
                         raise ApiError("Unsupported message part", status_code=400)
-                    if part["type"] != "plain" and not isinstance(
+                    if part["type"] not in {"plain", "reply"} and not isinstance(
                         part.get("attachment_id"), str
                     ):
                         raise ApiError("Attachment ID is required", status_code=400)

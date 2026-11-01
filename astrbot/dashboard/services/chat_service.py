@@ -2820,6 +2820,24 @@ class ChatService:
                         exc,
                     )
 
+        if dashboard_account_context.get() is not None:
+            # A quote is a child resource, even when paired with an owned session.
+            for part in message_parts:
+                if part.get("type") != "reply":
+                    continue
+                try:
+                    record = await self.db.get_platform_message_history_by_id(
+                        int(part.get("message_id"))
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ChatServiceError("Invalid reply message") from exc
+                if (
+                    record is None
+                    or record.platform_id != platform_history_id
+                    or record.user_id != webchat_conv_id
+                ):
+                    raise ChatServiceError("Message does not belong to the session")
+
         if thinking_effort is not None:
             try:
                 thinking_effort = normalize_thinking_effort_value(thinking_effort)
@@ -2869,8 +2887,7 @@ class ChatService:
             # session's checkpoint. Regeneration also prepares this record.
             session = await self.db.get_platform_session_by_id(webchat_conv_id)
             if (
-                webchat_account_role.get() != "admin"
-                or post_data.get("_skip_user_history") is not True
+                post_data.get("_skip_user_history") is not True
                 or session is None
                 or session.creator != username
                 or session.platform_id != "webchat"
@@ -3049,14 +3066,20 @@ class ChatService:
         )
         attachment_ids = extract_attachment_ids(history_list)
         if attachment_ids:
-            await self.delete_attachments(attachment_ids)
+            principal = dashboard_account_context.get()
+            await self.delete_attachments(
+                attachment_ids,
+                owner=principal.resource_owner if principal is not None else None,
+            )
 
         await self.platform_history_mgr.delete(
             platform_id=session.platform_id,
             user_id=session_id,
             offset_sec=99999999,
         )
-        thread_ids = await self.db.delete_webchat_threads_by_parent_session(session_id)
+        thread_ids = await self.db.delete_webchat_threads_by_parent_session(
+            session_id, creator=username
+        )
         await self.delete_threads_by_ids(thread_ids, username)
 
         try:
@@ -3107,7 +3130,10 @@ class ChatService:
             if not session:
                 failed_items.append({"session_id": session_id, "reason": "not found"})
                 continue
-            if session.creator != username:
+            if session.creator != username or (
+                webchat_account_role.get() == "user"
+                and session.platform_id != "webchat"
+            ):
                 failed_items.append(
                     {"session_id": session_id, "reason": "permission denied"}
                 )
@@ -3429,6 +3455,8 @@ class ChatService:
         if not session:
             raise ChatServiceError(f"Session {session_id} not found")
         if session.creator != username:
+            raise ChatServiceError("Permission denied")
+        if webchat_account_role.get() == "user" and session.platform_id != "webchat":
             raise ChatServiceError("Permission denied")
         await self.db.update_platform_session(session_id, archived=1 if archived else 0)
 
@@ -4542,6 +4570,29 @@ class ChatService:
             raise ChatServiceError("Message type cannot be changed")
         if content.get("type") != "user":
             raise ChatServiceError("Only user messages can be edited")
+        message_parts = await self.build_user_message_parts(content.get("message", []))
+        if not webchat_message_parts_have_content(message_parts):
+            raise ChatServiceError(
+                "Message content is empty (reply only is not allowed)"
+            )
+        quoted_message_ids = set()
+        if dashboard_account_context.get() is not None:
+            for part in message_parts:
+                if not isinstance(part, dict) or part.get("type") != "reply":
+                    continue
+                try:
+                    quoted = await self.db.get_platform_message_history_by_id(
+                        int(part.get("message_id"))
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ChatServiceError("Invalid reply message") from exc
+                if (
+                    quoted is None
+                    or quoted.platform_id != session.platform_id
+                    or quoted.user_id != session_id
+                ):
+                    raise ChatServiceError("Message does not belong to the session")
+                quoted_message_ids.add(quoted.id)
 
         platform_history = await self.get_sorted_platform_history(session)
         latest_user_record = next(
@@ -4554,6 +4605,12 @@ class ChatService:
         )
         if not latest_user_record or latest_user_record.id != message_id:
             raise ChatServiceError("Only the latest user message can be edited")
+        source_index = platform_history.index(latest_user_record)
+        if any(
+            item.id in quoted_message_ids
+            for item in platform_history[source_index + 1 :]
+        ):
+            raise ChatServiceError("Referenced message would be removed by edit")
 
         checkpoint_id = record.llm_checkpoint_id
         if not checkpoint_id:
@@ -4586,6 +4643,7 @@ class ChatService:
         thread_ids = await self.db.delete_webchat_threads_by_parent_message_ids(
             session_id,
             deleted_message_ids,
+            creator=username,
         )
         await self.delete_threads_by_ids(thread_ids, username)
         await self.conv_mgr.update_conversation(
@@ -4673,6 +4731,16 @@ class ChatService:
         )
         if not source_user_record:
             raise ChatServiceError("Linked user display message not found")
+        latest_user_record = next(
+            (
+                item
+                for item in reversed(platform_history)
+                if isinstance(item.content, dict) and item.content.get("type") == "user"
+            ),
+            None,
+        )
+        if latest_user_record is None or latest_user_record.id != source_user_record.id:
+            raise ChatServiceError("Only the latest user turn can be regenerated")
 
         old_bot_record_ids = [
             item.id
@@ -4685,6 +4753,68 @@ class ChatService:
         if not old_bot_record_ids:
             raise ChatServiceError("Linked bot display message not found")
 
+        message_parts = await self.build_user_message_parts(
+            source_user_record.content.get("message", [])
+        )
+        if not webchat_message_parts_have_content(message_parts):
+            raise ChatServiceError(
+                "Message content is empty (reply only is not allowed)"
+            )
+        if dashboard_account_context.get() is not None:
+            for part in message_parts:
+                if part.get("type") != "reply":
+                    continue
+                try:
+                    quoted = await self.db.get_platform_message_history_by_id(
+                        int(part.get("message_id"))
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ChatServiceError("Invalid reply message") from exc
+                if (
+                    quoted is None
+                    or quoted.platform_id != session.platform_id
+                    or quoted.user_id != session_id
+                ):
+                    raise ChatServiceError("Message does not belong to the session")
+                # The retry cannot quote a reply that it is about to remove.
+                if quoted.id in old_bot_record_ids:
+                    raise ChatServiceError(
+                        "Referenced message would be removed by retry"
+                    )
+        selected_provider = data.get("selected_provider")
+        selected_model = data.get("selected_model")
+        thinking_effort = data.get("thinking_effort")
+        if thinking_effort is not None:
+            try:
+                thinking_effort = normalize_thinking_effort_value(thinking_effort)
+            except ValueError as exc:
+                raise ChatServiceError(str(exc)) from exc
+        if webchat_account_role.get() == "user" and (
+            selected_provider or selected_model
+        ):
+            sources = {
+                source["id"]: source.get("provider_type", "chat_completion")
+                for source in self.core_lifecycle.provider_manager.provider_sources_config
+            }
+            provider = next(
+                (
+                    config
+                    for config in self.core_lifecycle.provider_manager.providers_config
+                    if config.get("id") == selected_provider
+                    and config.get("enable", False)
+                    and config.get(
+                        "provider_type", sources.get(config.get("provider_source_id"))
+                    )
+                    == "chat_completion"
+                    and (not selected_model or config.get("model") == selected_model)
+                ),
+                None,
+            )
+            if provider is None:
+                raise ChatServiceError("Chat model is unavailable")
+        if dashboard_account_context.get() is not None:
+            await self.session_config(username, session_id, data.get("config_id"))
+
         new_checkpoint_id = str(uuid.uuid4())
         new_history = history[:start] + history[end + 1 :]
         await self.conv_mgr.update_conversation(
@@ -4695,6 +4825,7 @@ class ChatService:
         thread_ids = await self.db.delete_webchat_threads_by_parent_message_ids(
             session_id,
             old_bot_record_ids,
+            creator=username,
         )
         await self.delete_threads_by_ids(thread_ids, username)
         for old_bot_record_id in old_bot_record_ids:
@@ -4708,9 +4839,10 @@ class ChatService:
             "session_id": session_id,
             "message": source_user_record.content.get("message", []),
             "flags": resolve_webchat_request_flags(data),
-            "selected_provider": data.get("selected_provider"),
-            "selected_model": data.get("selected_model"),
-            "thinking_effort": data.get("thinking_effort"),
+            "config_id": data.get("config_id"),
+            "selected_provider": selected_provider,
+            "selected_model": selected_model,
+            "thinking_effort": thinking_effort,
             "_skip_user_history": True,
             "_llm_checkpoint_id": new_checkpoint_id,
         }

@@ -6,7 +6,9 @@
   >
     <v-card class="archived-dialog">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
-        <span class="flex-grow-1">{{ tm("conversation.archivedDialogTitle") }}</span>
+        <span class="flex-grow-1">{{
+          tm("conversation.archivedDialogTitle")
+        }}</span>
         <v-btn
           size="small"
           variant="tonal"
@@ -37,7 +39,9 @@
             :indeterminate="someChecked"
             density="compact"
             class="batch-select-all"
-            :title="allChecked ? tm('batch.deselectAll') : tm('batch.selectAll')"
+            :title="
+              allChecked ? tm('batch.deselectAll') : tm('batch.selectAll')
+            "
             @update:model-value="toggleSelectAll"
           />
           <span class="archived-batch-count">
@@ -148,11 +152,20 @@
               </div>
             </div>
             <Transition name="archived-preview">
-              <div v-if="expandedId === session.session_id" class="archived-preview">
-                <div v-if="previewLoading[session.session_id]" class="archived-preview-status">
+              <div
+                v-if="expandedId === session.session_id"
+                class="archived-preview"
+              >
+                <div
+                  v-if="previewLoading[session.session_id]"
+                  class="archived-preview-status"
+                >
                   <v-progress-circular indeterminate size="16" width="2" />
                 </div>
-                <p v-else-if="previews[session.session_id]" class="archived-preview-text">
+                <p
+                  v-else-if="previews[session.session_id]"
+                  class="archived-preview-text"
+                >
                   {{ previews[session.session_id] }}
                 </p>
                 <p v-else class="archived-preview-empty">
@@ -215,6 +228,10 @@
 </template>
 
 <script setup lang="ts">
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { computed, reactive, ref, watch } from "vue";
 import {
   ArchiveRestore,
@@ -227,10 +244,7 @@ import { useI18n, useModuleI18n } from "@/i18n/composables";
 import { useToast } from "@/utils/toast";
 import { askForConfirmation, useConfirmDialog } from "@/utils/confirmDialog";
 import { chatApi } from "@/api/v1";
-import {
-  useSessions,
-  type ArchivedSession,
-} from "@/composables/useSessions";
+import { useSessions, type ArchivedSession } from "@/composables/useSessions";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -252,6 +266,7 @@ const toast = useToast();
 const confirmDialog = useConfirmDialog();
 const { getArchivedSessions, setSessionArchived } = useSessions();
 
+const accountRevision = accountSessionRevision.value;
 const items = ref<ArchivedSession[]>([]);
 const pagination = ref({
   page: 1,
@@ -260,6 +275,7 @@ const pagination = ref({
   total_pages: 1,
 });
 const loading = ref(false);
+let loadRevision = 0;
 const searchInput = ref("");
 const searchQuery = ref("");
 const pageSizeOptions = [20, 30, 50];
@@ -276,6 +292,21 @@ const expandedId = ref<string | null>(null);
 const previewLoading = reactive<Record<string, boolean>>({});
 const previews = reactive<Record<string, string>>({});
 
+watch(
+  accountSessionRevision,
+  () => {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    items.value = [];
+    checkedIds.value = new Set();
+    selectionMode.value = false;
+    searchInput.value = "";
+    searchQuery.value = "";
+    expandedId.value = null;
+    for (const key of Object.keys(previews)) delete previews[key];
+  },
+  { flush: "sync" },
+);
+
 const allChecked = computed(
   () =>
     items.value.length > 0 &&
@@ -286,6 +317,7 @@ const someChecked = computed(
 );
 
 async function load() {
+  const revision = ++loadRevision;
   loading.value = true;
   try {
     const payload = await getArchivedSessions({
@@ -293,14 +325,19 @@ async function load() {
       page_size: pageSize.value,
       search: searchQuery.value,
     });
+    assertCurrentAccount(accountRevision);
+    if (revision !== loadRevision) return;
     items.value = payload.items;
     pagination.value = {
       ...pagination.value,
       ...payload.pagination,
       page_size: pageSize.value,
     };
+  } catch (error) {
+    if (accountRevision === accountSessionRevision.value)
+      toast.error(tm("batch.requestFailed"));
   } finally {
-    loading.value = false;
+    if (revision === loadRevision) loading.value = false;
   }
 }
 
@@ -352,13 +389,17 @@ async function restoreSession(session: ArchivedSession) {
 }
 
 async function deleteSession(session: ArchivedSession) {
-  const title = session.display_name?.trim() || tm("conversation.newConversation");
+  const title =
+    session.display_name?.trim() || tm("conversation.newConversation");
   const message = tm("conversation.confirmDelete", { name: title });
   if (!(await askForConfirmation(message, confirmDialog))) return;
   try {
     // Direct API call: useSessions.deleteSession would reset the active
     // session id, which is wrong when removing an archived session.
-    await chatApi.deleteSession(session.session_id);
+    const response = await chatApi.deleteSession(session.session_id);
+    assertCurrentAccount(accountRevision);
+    if (response.data?.status !== "ok")
+      throw new Error(response.data?.message || "Failed to delete session");
   } catch (err) {
     console.error("Failed to delete archived session:", err);
     toast.error(tm("batch.requestFailed"));
@@ -371,7 +412,9 @@ async function deleteSession(session: ArchivedSession) {
 async function batchRestore() {
   const ids = [...checkedIds.value];
   if (!ids.length) return;
-  const message = tm("conversation.batchUnarchiveConfirm", { count: ids.length });
+  const message = tm("conversation.batchUnarchiveConfirm", {
+    count: ids.length,
+  });
   if (!(await askForConfirmation(message, confirmDialog))) return;
 
   batchLoading.value = true;
@@ -383,10 +426,14 @@ async function batchRestore() {
     const data = response.data?.data || {};
     const failedCount = data.failed_count || 0;
     if (failedCount > 0) {
-      toast.error(tm("batch.partialFailure", { failed: failedCount, total: ids.length }));
+      toast.error(
+        tm("batch.partialFailure", { failed: failedCount, total: ids.length }),
+      );
     } else {
       toast.success(
-        tm("conversation.batchUnarchiveSuccess", { count: data.unarchived_count }),
+        tm("conversation.batchUnarchiveSuccess", {
+          count: data.unarchived_count,
+        }),
       );
     }
     // Parent refreshes sidebar/project lists for the restored set.
@@ -416,7 +463,9 @@ async function batchDelete() {
     const data = response.data?.data || {};
     const failedCount = data.failed_count || 0;
     if (failedCount > 0) {
-      toast.error(tm("batch.partialFailure", { failed: failedCount, total: ids.length }));
+      toast.error(
+        tm("batch.partialFailure", { failed: failedCount, total: ids.length }),
+      );
     } else {
       toast.success(tm("batch.deleteSuccess", { count: data.deleted_count }));
     }
@@ -437,10 +486,14 @@ async function toggleExpanded(session: ArchivedSession) {
     return;
   }
   expandedId.value = session.session_id;
-  if (previews[session.session_id] || previewLoading[session.session_id]) return;
+  if (previews[session.session_id] || previewLoading[session.session_id])
+    return;
   previewLoading[session.session_id] = true;
   try {
     const response = await chatApi.getSession(session.session_id);
+    assertCurrentAccount(accountRevision);
+    if (response.data?.status === "error")
+      throw new Error(response.data?.message || "History is unavailable");
     const history = response.data?.data?.history || [];
     previews[session.session_id] = truncatePreview(
       extractFirstUserText(history),
@@ -448,7 +501,8 @@ async function toggleExpanded(session: ArchivedSession) {
     );
   } catch (err) {
     console.error("Failed to load archived session preview:", err);
-    previews[session.session_id] = "";
+    if (accountRevision === accountSessionRevision.value)
+      previews[session.session_id] = "";
   } finally {
     previewLoading[session.session_id] = false;
   }

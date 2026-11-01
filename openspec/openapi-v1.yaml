@@ -1417,6 +1417,10 @@ paths:
       tags: [Chat]
       summary: Delete multiple webchat sessions
       operationId: batchDeleteChatSessions
+      description: >-
+        Operates only on sessions owned by the authenticated account, including
+        administrators. Mixed batches report per-item failures without changing
+        foreign sessions; inspect failed_items before updating local state.
       x-astrbot-scope: chat
       requestBody:
         required: true
@@ -1433,6 +1437,10 @@ paths:
       tags: [Chat]
       summary: Archive multiple webchat sessions
       operationId: batchArchiveChatSessions
+      description: >-
+        Operates only on sessions owned by the authenticated account, including
+        administrators. Mixed batches report per-item failures without changing
+        foreign sessions; inspect failed_items before updating local state.
       x-astrbot-scope: chat
       requestBody:
         required: true
@@ -1449,6 +1457,10 @@ paths:
       tags: [Chat]
       summary: Restore multiple archived webchat sessions
       operationId: batchUnarchiveChatSessions
+      description: >-
+        Operates only on sessions owned by the authenticated account, including
+        administrators. Mixed batches report per-item failures without changing
+        foreign sessions; inspect failed_items before updating local state.
       x-astrbot-scope: chat
       requestBody:
         required: true
@@ -1465,6 +1477,9 @@ paths:
       tags: [Chat]
       summary: List archived webchat sessions
       operationId: listArchivedChatSessions
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - name: platform_id
@@ -1495,6 +1510,9 @@ paths:
       tags: [Chat]
       summary: Archive a webchat session
       operationId: archiveChatSession
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1507,6 +1525,9 @@ paths:
       tags: [Chat]
       summary: Restore an archived webchat session
       operationId: unarchiveChatSession
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1519,6 +1540,9 @@ paths:
       tags: [Chat]
       summary: Get a webchat session and its messages
       operationId: getChatSession
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1537,6 +1561,9 @@ paths:
       tags: [Chat]
       summary: Update a webchat session
       operationId: updateChatSession
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1553,6 +1580,9 @@ paths:
       tags: [Chat]
       summary: Delete a webchat session
       operationId: deleteChatSession
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1565,6 +1595,9 @@ paths:
       tags: [Chat]
       summary: Page one batch of history older than before_id for a session
       operationId: getChatSessionHistory
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1587,6 +1620,9 @@ paths:
       tags: [Chat]
       summary: Return the user-message marker index for a session
       operationId: getChatSessionMarkers
+      description: >-
+        Ordinary accounts and administrators may access only their own WebChat
+        sessions. History, markers and associated resources retain that ownership.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1957,6 +1993,9 @@ paths:
       tags: [Chat]
       summary: Update the latest user message in a webchat session
       operationId: updateChatMessage
+      description: >-
+        The message must belong to the authenticated account and the specified
+        session. Only the latest linked turn can be edited or regenerated.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1980,6 +2019,9 @@ paths:
       tags: [Chat]
       summary: Regenerate a bot message in a webchat session
       operationId: regenerateChatMessage
+      description: >-
+        The message must belong to the authenticated account and the specified
+        session. Only the latest linked turn can be edited or regenerated.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -8730,10 +8772,10 @@ components:
           $ref: "#/components/schemas/ChatFlags"
         _skip_user_history:
           type: boolean
-          description: Internal WebUI flag for edit/regenerate flows.
+          description: Edited continuation flag. Account-backed requests must match the latest saved user message, its checkpoint and normalized content.
         _llm_checkpoint_id:
           type: string
-          description: Internal WebUI checkpoint override.
+          description: Saved checkpoint for an edited continuation; validated against the latest user message in the owned session.
         _platform_history_id:
           type: string
           description: Internal WebUI platform history override.
@@ -8886,6 +8928,12 @@ components:
     ChatMessageRegenerateRequest:
       type: object
       properties:
+        config_id:
+          type: string
+          description: Existing administrator-created profile to use for the owned session.
+        thinking_effort:
+          type: string
+          description: Per-request thinking effort; does not change shared preset definitions.
         selected_provider:
           type: string
         selected_model:

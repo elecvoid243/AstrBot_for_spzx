@@ -1949,6 +1949,7 @@
         ],
         "summary": "Delete multiple webchat sessions",
         "operationId": "batchDeleteChatSessions",
+        "description": "Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -1964,8 +1965,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/batch-archive": {
@@ -1975,6 +1975,7 @@
         ],
         "summary": "Archive multiple webchat sessions",
         "operationId": "batchArchiveChatSessions",
+        "description": "Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -1990,8 +1991,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/batch-unarchive": {
@@ -2001,6 +2001,7 @@
         ],
         "summary": "Restore multiple archived webchat sessions",
         "operationId": "batchUnarchiveChatSessions",
+        "description": "Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -2016,8 +2017,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/archived": {
@@ -2027,6 +2027,7 @@
         ],
         "summary": "List archived webchat sessions",
         "operationId": "listArchivedChatSessions",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2065,8 +2066,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/archive": {
@@ -2076,6 +2076,7 @@
         ],
         "summary": "Archive a webchat session",
         "operationId": "archiveChatSession",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2086,8 +2087,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/unarchive": {
@@ -2097,6 +2097,7 @@
         ],
         "summary": "Restore an archived webchat session",
         "operationId": "unarchiveChatSession",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2107,8 +2108,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}": {
@@ -2118,6 +2118,7 @@
         ],
         "summary": "Get a webchat session and its messages",
         "operationId": "getChatSession",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2139,8 +2140,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       },
       "patch": {
         "tags": [
@@ -2148,6 +2148,7 @@
         ],
         "summary": "Update a webchat session",
         "operationId": "updateChatSession",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2168,8 +2169,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       },
       "delete": {
         "tags": [
@@ -2177,6 +2177,7 @@
         ],
         "summary": "Delete a webchat session",
         "operationId": "deleteChatSession",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2187,8 +2188,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/history": {
@@ -2198,6 +2198,7 @@
         ],
         "summary": "Page one batch of history older than before_id for a session",
         "operationId": "getChatSessionHistory",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2227,8 +2228,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/markers": {
@@ -2238,6 +2238,7 @@
         ],
         "summary": "Return the user-message marker index for a session",
         "operationId": "getChatSessionMarkers",
+        "description": "Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2267,8 +2268,7 @@
               }
             }
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/goal": {
@@ -2865,6 +2865,7 @@
         ],
         "summary": "Update the latest user message in a webchat session",
         "operationId": "updateChatMessage",
+        "description": "The message must belong to the authenticated account and the specified session. Only the latest linked turn can be edited or regenerated.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2893,8 +2894,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/messages/{message_id}/regenerate": {
@@ -2904,6 +2904,7 @@
         ],
         "summary": "Regenerate a bot message in a webchat session",
         "operationId": "regenerateChatMessage",
+        "description": "The message must belong to the authenticated account and the specified session. Only the latest linked turn can be edited or regenerated.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2932,8 +2933,7 @@
           "200": {
             "description": "Server-sent chat stream or an error envelope"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/messages/{message_id}/branch": {
@@ -8792,11 +8792,11 @@
           },
           "_skip_user_history": {
             "type": "boolean",
-            "description": "Internal WebUI flag for edit/regenerate flows."
+            "description": "Edited continuation flag. Account-backed requests must match the latest saved user message, its checkpoint and normalized content."
           },
           "_llm_checkpoint_id": {
             "type": "string",
-            "description": "Internal WebUI checkpoint override."
+            "description": "Saved checkpoint for an edited continuation; validated against the latest user message in the owned session."
           },
           "_platform_history_id": {
             "type": "string",
@@ -9027,6 +9027,14 @@
       "ChatMessageRegenerateRequest": {
         "type": "object",
         "properties": {
+          "config_id": {
+            "type": "string",
+            "description": "Existing administrator-created profile to use for the owned session."
+          },
+          "thinking_effort": {
+            "type": "string",
+            "description": "Per-request thinking effort; does not change shared preset definitions."
+          },
           "selected_provider": {
             "type": "string"
           },

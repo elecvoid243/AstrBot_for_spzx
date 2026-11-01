@@ -847,6 +847,7 @@ export const createChatSession = <ThrowOnError extends boolean = false>(options?
 
 /**
  * Delete multiple webchat sessions
+ * Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.
  */
 export const batchDeleteChatSessions = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<BatchDeleteChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).post<BatchDeleteChatSessionsResponse, BatchDeleteChatSessionsError, ThrowOnError>({
@@ -857,6 +858,7 @@ export const batchDeleteChatSessions = <ThrowOnError extends boolean = false>(op
 
 /**
  * Archive multiple webchat sessions
+ * Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.
  */
 export const batchArchiveChatSessions = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<BatchArchiveChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).post<BatchArchiveChatSessionsResponse, BatchArchiveChatSessionsError, ThrowOnError>({
@@ -867,6 +869,7 @@ export const batchArchiveChatSessions = <ThrowOnError extends boolean = false>(o
 
 /**
  * Restore multiple archived webchat sessions
+ * Operates only on sessions owned by the authenticated account, including administrators. Mixed batches report per-item failures without changing foreign sessions; inspect failed_items before updating local state.
  */
 export const batchUnarchiveChatSessions = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<BatchUnarchiveChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).post<BatchUnarchiveChatSessionsResponse, BatchUnarchiveChatSessionsError, ThrowOnError>({
@@ -877,6 +880,7 @@ export const batchUnarchiveChatSessions = <ThrowOnError extends boolean = false>
 
 /**
  * List archived webchat sessions
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const listArchivedChatSessions = <ThrowOnError extends boolean = false>(options?: OptionsLegacyParser<ListArchivedChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).get<ListArchivedChatSessionsResponse, ListArchivedChatSessionsError, ThrowOnError>({
@@ -887,6 +891,7 @@ export const listArchivedChatSessions = <ThrowOnError extends boolean = false>(o
 
 /**
  * Archive a webchat session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const archiveChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ArchiveChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).post<ArchiveChatSessionResponse, ArchiveChatSessionError, ThrowOnError>({
@@ -897,6 +902,7 @@ export const archiveChatSession = <ThrowOnError extends boolean = false>(options
 
 /**
  * Restore an archived webchat session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const unarchiveChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<UnarchiveChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).post<UnarchiveChatSessionResponse, UnarchiveChatSessionError, ThrowOnError>({
@@ -907,6 +913,7 @@ export const unarchiveChatSession = <ThrowOnError extends boolean = false>(optio
 
 /**
  * Get a webchat session and its messages
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const getChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetChatSessionResponse, GetChatSessionError, ThrowOnError>({
@@ -917,6 +924,7 @@ export const getChatSession = <ThrowOnError extends boolean = false>(options: Op
 
 /**
  * Update a webchat session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const updateChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<UpdateChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).patch<UpdateChatSessionResponse, UpdateChatSessionError, ThrowOnError>({
@@ -927,6 +935,7 @@ export const updateChatSession = <ThrowOnError extends boolean = false>(options:
 
 /**
  * Delete a webchat session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const deleteChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<DeleteChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).delete<DeleteChatSessionResponse, DeleteChatSessionError, ThrowOnError>({
@@ -937,6 +946,7 @@ export const deleteChatSession = <ThrowOnError extends boolean = false>(options:
 
 /**
  * Page one batch of history older than before_id for a session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const getChatSessionHistory = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetChatSessionHistoryData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetChatSessionHistoryResponse, GetChatSessionHistoryError, ThrowOnError>({
@@ -947,6 +957,7 @@ export const getChatSessionHistory = <ThrowOnError extends boolean = false>(opti
 
 /**
  * Return the user-message marker index for a session
+ * Ordinary accounts and administrators may access only their own WebChat sessions. History, markers and associated resources retain that ownership.
  */
 export const getChatSessionMarkers = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetChatSessionMarkersData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetChatSessionMarkersResponse, GetChatSessionMarkersError, ThrowOnError>({
@@ -1162,6 +1173,7 @@ export const streamChatSessionSystemEvents = <ThrowOnError extends boolean = fal
 
 /**
  * Update the latest user message in a webchat session
+ * The message must belong to the authenticated account and the specified session. Only the latest linked turn can be edited or regenerated.
  */
 export const updateChatMessage = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<UpdateChatMessageData, ThrowOnError>) => {
     return (options?.client ?? client).patch<UpdateChatMessageResponse, UpdateChatMessageError, ThrowOnError>({
@@ -1172,6 +1184,7 @@ export const updateChatMessage = <ThrowOnError extends boolean = false>(options:
 
 /**
  * Regenerate a bot message in a webchat session
+ * The message must belong to the authenticated account and the specified session. Only the latest linked turn can be edited or regenerated.
  */
 export const regenerateChatMessage = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<RegenerateChatMessageData, ThrowOnError>) => {
     return (options?.client ?? client).post<RegenerateChatMessageResponse, RegenerateChatMessageError, ThrowOnError>({

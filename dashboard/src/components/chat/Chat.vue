@@ -127,7 +127,7 @@
 
         <!-- 2026-08-13 (elecvoid243): batch-manage and message-search moved
              to the top of the sidebar (above the project section). -->
-        <div v-if="!isOrdinaryUser && !isSidebarCollapsed" class="sidebar-top-actions">
+        <div v-if="!isSidebarCollapsed" class="sidebar-top-actions">
           <button
             type="button"
             class="sidebar-top-action-btn"
@@ -150,6 +150,7 @@
           <button
             type="button"
             class="sidebar-top-action-btn"
+            v-if="!isOrdinaryUser"
             :title="tm('import.entry')"
             @click="importDialogOpen = true"
           >
@@ -387,7 +388,7 @@
                menu. Star / export / archive / delete / mark-unread already
                exist in sessionContextMenu, so the overflow button routes to
                that same state instead of duplicating the item list. -->
-            <div v-if="!isOrdinaryUser && !selectionMode" class="session-actions" @click.stop>
+            <div v-if="!selectionMode" class="session-actions" @click.stop>
               <v-btn
                 icon
                 size="x-small"
@@ -425,7 +426,6 @@
              session row; opened with pointer coordinates from
              openSessionContextMenu(). -->
           <StyledMenu
-            v-if="!isOrdinaryUser"
             v-model="sessionContextMenu.show"
             :target="sessionContextMenu.target"
             location="end"
@@ -446,6 +446,7 @@
                actions (rename / export / archive / delete) above, and the two
                lightweight markers (star / unread) below the divider. -->
             <SessionExportButton
+              v-if="!isOrdinaryUser"
               :session-id="sessionContextMenu.session!.session_id"
               variant="menu-item"
               :size="16"
@@ -533,7 +534,6 @@
           {{ accountText("accounts.logout") }}
         </v-btn>
         <button
-          v-if="!isOrdinaryUser"
           type="button"
           class="archive-toggle-btn"
           :class="{
@@ -993,13 +993,13 @@
                 )
               "
               :enable-edit="
-                !isOrdinaryUser && !Boolean(
+                !Boolean(
                   currSessionId &&
                     (isSessionRunning(currSessionId) ||
                       hasLiveSystemRecord(currSessionId)),
                 )
               "
-              :enable-regenerate="!isOrdinaryUser"
+              :enable-regenerate="true"
               :enable-branch="!isOrdinaryUser"
               :enable-thread-selection="!isOrdinaryUser"
               :manage-refs-sidebar="false"
@@ -1247,8 +1247,8 @@
     />
   </div>
 
-  <ChatMessageSearchDialog v-if="!isOrdinaryUser" v-model="searchDialogOpen" />
-  <ArchivedSessionsDialog v-if="!isOrdinaryUser"
+  <ChatMessageSearchDialog v-model="searchDialogOpen" />
+  <ArchivedSessionsDialog
     v-model="archivedDialogOpen"
     @restore="onArchivedRestored"
     @delete="onArchivedDeleted"
@@ -2811,7 +2811,8 @@ onMounted(async () => {
   try {
     await Promise.all([
       getSessions(),
-      ...(isOrdinaryUser.value ? [] : [getArchivedSessions(), getProjects(), loadTokenProviders()]),
+      getArchivedSessions().catch(() => undefined),
+      ...(isOrdinaryUser.value ? [] : [getProjects(), loadTokenProviders()]),
     ]);
     const routeSessionId = getRouteSessionId();
     if (routeSessionId === "models") {
@@ -3654,9 +3655,12 @@ async function saveSessionTitleDialog() {
   try {
     const sessionId = editingSessionTitleId.value;
     const displayName = sessionTitleDraft.value.trim();
-    await chatApi.updateSession(sessionId, {
+    const response = await chatApi.updateSession(sessionId, {
       display_name: displayName,
     });
+    if (response.data?.status !== "ok") {
+      throw new Error(response.data?.message || "Failed to rename session");
+    }
     updateSessionTitle(sessionId, displayName);
     const projectSession = projectSessions.value.find(
       (session) => session.session_id === sessionId,
@@ -3676,6 +3680,8 @@ async function saveSessionTitleDialog() {
       await loadProjectSessions();
     }
     sessionTitleDialogOpen.value = false;
+  } catch (error) {
+    toast.error(String((error as Error)?.message || tm("batch.requestFailed")));
   } finally {
     savingSessionTitle.value = false;
   }
@@ -3695,7 +3701,6 @@ const sessionContextMenu = reactive({
 });
 
 function openSessionContextMenu(session: Session, event: MouseEvent) {
-  if (isOrdinaryUser.value) return;
   // Keyboard activation reports (0, 0), which would pin the menu to the
   // viewport corner; anchor to the activator box instead.
   const hasPointerCoords = event.clientX !== 0 || event.clientY !== 0;
@@ -3857,7 +3862,7 @@ async function archiveCheckedSessions() {
     // session lists.
     await Promise.all([
       getSessions(),
-      getArchivedSessions(),
+      getArchivedSessions().catch(() => undefined),
       ...Object.keys(projectSessionsById.value)
         .filter((projectId) =>
           (projectSessionsById.value[projectId] || []).some((session) =>
@@ -4027,7 +4032,10 @@ async function deleteSidebarSession(session: Session) {
   // 2026-09-01: session deleted — drop its "already loaded" dirty tag.
   clearSessionLoadedTag(session.session_id);
   const wasCurrent = currSessionId.value === session.session_id;
-  await deleteSession(session.session_id);
+  if (!(await deleteSession(session.session_id))) {
+    toast.error(tm("batch.requestFailed"));
+    return;
+  }
   if (wasCurrent) {
     selectedProjectId.value = null;
     await router.push(basePath());
@@ -5278,6 +5286,7 @@ async function saveMessageEdit() {
   savingMessageEdit.value = true;
   try {
     const target = editingMessage.value;
+    const configId = await inputRef.value?.prepareConfig?.();
     const result = await editMessage(
       currSessionId.value,
       target,
@@ -5288,6 +5297,7 @@ async function saveMessageEdit() {
     if (result.needsRegenerate && result.truncatedAfterMessage) {
       const selection = getSelectedProviderSelection();
       continueEditedMessage({
+        configId,
         sessionId: currSessionId.value,
         sourceRecord: target,
         enableStreaming: enableStreaming.value,
@@ -5319,17 +5329,22 @@ async function handleRegenerateMessage(
   selection?: RegenerateModelSelection,
 ) {
   if (!currSessionId.value || isUserMessage(message)) return;
-  message.threads = [];
   const effectiveSelection = selection ?? getSelectedProviderSelection();
-  writeSessionProviderSelection(currSessionId.value, effectiveSelection);
-  await regenerateMessage(
-    currSessionId.value,
-    message,
-    effectiveSelection?.providerId || "",
-    effectiveSelection?.modelName || "",
-    enableStreaming.value,
-    getCurrentThinkingEffort(),
-  );
+  if (!isOrdinaryUser.value) writeSessionProviderSelection(currSessionId.value, effectiveSelection);
+  try {
+    const configId = await inputRef.value?.prepareConfig?.();
+    await regenerateMessage(
+      currSessionId.value,
+      message,
+      effectiveSelection?.providerId || "",
+      effectiveSelection?.modelName || "",
+      enableStreaming.value,
+      getCurrentThinkingEffort(),
+      configId,
+    );
+  } catch (error) {
+    toast.error(String((error as Error)?.message || tm("batch.requestFailed")));
+  }
 }
 
 async function handleBranch(message: ChatRecord) {

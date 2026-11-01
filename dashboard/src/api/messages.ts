@@ -1,4 +1,8 @@
-import type { AxiosRequestConfig } from 'axios';
+import { fetchWithAuth } from "@/api/http";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 
 export interface SearchMatch {
   message_index: number;
@@ -30,16 +34,17 @@ export const messageApi = {
     page: number = 1,
     pageSize: number = 20,
   ): Promise<MessageSearchResponse> {
-    const url = new URL('/api/v1/messages/search', window.location.origin);
-    url.searchParams.set('q', q);
-    url.searchParams.set('page', String(page));
-    url.searchParams.set('page_size', String(pageSize));
+    const revision = accountSessionRevision.value;
+    const url = new URL("/api/v1/messages/search", window.location.origin);
+    url.searchParams.set("q", q);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("page_size", String(pageSize));
 
-    const token = localStorage.getItem('token') || '';
-    const response = await fetch(url.toString(), {
-      method: 'GET',
+    const token = localStorage.getItem("token") || "";
+    const response = await fetchWithAuth(url.toString(), {
+      method: "GET",
       headers: {
-        Authorization: token ? `Bearer ${token}` : '',
+        Authorization: token ? `Bearer ${token}` : "",
       },
     });
 
@@ -51,7 +56,7 @@ export const messageApi = {
       let detail = response.statusText;
       try {
         const errData = await response.json();
-        if (errData && typeof errData.message === 'string' && errData.message) {
+        if (errData && typeof errData.message === "string" && errData.message) {
           detail = errData.message;
         }
       } catch {
@@ -61,9 +66,10 @@ export const messageApi = {
     }
 
     const data = await response.json();
-    if (data.status === 'ok' && data.data) {
+    assertCurrentAccount(revision);
+    if (data.status === "ok" && data.data) {
       return data.data as MessageSearchResponse;
     }
-    throw new Error('Invalid response format');
+    throw new Error("Invalid response format");
   },
 };

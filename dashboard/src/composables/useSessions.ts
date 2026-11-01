@@ -1,4 +1,8 @@
-import { ref, computed } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
+import { ref, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { chatApi } from "@/api/v1";
 import {
@@ -46,6 +50,7 @@ export interface ArchivedSessionsPayload {
 
 export function useSessions(chatboxMode: boolean = false) {
   const router = useRouter();
+  const accountRevision = accountSessionRevision.value;
   const sessions = ref<Session[]>([]);
   const archivedSessions = ref<ArchivedSession[]>([]);
   const archivedPagination = ref<ArchivedPagination>({
@@ -70,6 +75,9 @@ export function useSessions(chatboxMode: boolean = false) {
   async function getSessions() {
     try {
       const response = await chatApi.listSessions();
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status !== "ok")
+        throw new Error(response.data?.message || "Sessions are unavailable");
       sessions.value = response.data.data;
     } catch (err: any) {
       if (err.response?.status === 401) {
@@ -93,6 +101,9 @@ export function useSessions(chatboxMode: boolean = false) {
       try {
         const selectedConfigId = getStoredSelectedChatConfigId();
         const response = await chatApi.createSession();
+        assertCurrentAccount(accountRevision);
+        if (response.data?.status !== "ok")
+          throw new Error(response.data?.message || "Failed to create session");
         const sessionId = response.data.data.session_id;
         const platformId = response.data.data.platform_id;
 
@@ -122,14 +133,21 @@ export function useSessions(chatboxMode: boolean = false) {
     return sessionCreationPromise;
   }
 
-  async function deleteSession(sessionId: string) {
+  async function deleteSession(sessionId: string): Promise<boolean> {
     try {
-      await chatApi.deleteSession(sessionId);
+      const response = await chatApi.deleteSession(sessionId);
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status !== "ok")
+        throw new Error(response.data?.message || "Failed to delete session");
+      if (currSessionId.value === sessionId) {
+        currSessionId.value = "";
+        selectedSessions.value = [];
+      }
       await getSessions();
-      currSessionId.value = "";
-      selectedSessions.value = [];
+      return true;
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 
@@ -140,6 +158,9 @@ export function useSessions(chatboxMode: boolean = false) {
   }): Promise<ArchivedSessionsPayload> {
     try {
       const response = await chatApi.listArchivedSessions(params);
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status !== "ok")
+        throw new Error(response.data?.message || "Archive is unavailable");
       const data = response.data.data || {};
       const items: ArchivedSession[] = Array.isArray(data.items)
         ? data.items
@@ -155,15 +176,7 @@ export function useSessions(chatboxMode: boolean = false) {
       return { items, pagination };
     } catch (err) {
       console.error(err);
-      return {
-        items: [],
-        pagination: {
-          page: 1,
-          page_size: params?.page_size ?? 20,
-          total: 0,
-          total_pages: 1,
-        },
-      };
+      throw err;
     }
   }
 
@@ -178,14 +191,14 @@ export function useSessions(chatboxMode: boolean = false) {
       const response = archived
         ? await chatApi.archiveSession(sessionId)
         : await chatApi.unarchiveSession(sessionId);
+      assertCurrentAccount(accountRevision);
       if (response.data?.status !== "ok") {
         console.error(
           response.data?.message || "Failed to update archive state",
         );
         return false;
       }
-      await getSessions();
-      await getArchivedSessions();
+      await Promise.allSettled([getSessions(), getArchivedSessions()]);
       return true;
     } catch (err) {
       console.error(err);
@@ -203,10 +216,9 @@ export function useSessions(chatboxMode: boolean = false) {
   ): Promise<boolean> {
     try {
       const response = await chatApi.updateSession(sessionId, { starred });
+      assertCurrentAccount(accountRevision);
       if (response.data?.status !== "ok") {
-        console.error(
-          response.data?.message || "Failed to update star state",
-        );
+        console.error(response.data?.message || "Failed to update star state");
         return false;
       }
       const session = sessions.value.find((s) => s.session_id === sessionId);
@@ -254,6 +266,7 @@ export function useSessions(chatboxMode: boolean = false) {
       const response = await chatApi.batchDeleteSessions({
         session_ids: sessionIds,
       });
+      assertCurrentAccount(accountRevision);
       if (response.data?.status !== "ok") {
         throw new Error(
           response.data?.message || "Failed to batch delete sessions",
@@ -304,9 +317,12 @@ export function useSessions(chatboxMode: boolean = false) {
 
     const trimmedTitle = editingTitle.value.trim();
     try {
-      await chatApi.updateSession(editingSessionId.value, {
+      const response = await chatApi.updateSession(editingSessionId.value, {
         display_name: trimmedTitle,
       });
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status !== "ok")
+        throw new Error(response.data?.message || "Failed to rename session");
 
       // 更新本地会话标题
       const session = sessions.value.find(
@@ -327,6 +343,21 @@ export function useSessions(chatboxMode: boolean = false) {
       session.display_name = title;
     }
   }
+
+  watch(
+    accountSessionRevision,
+    () => {
+      sessions.value = [];
+      archivedSessions.value = [];
+      selectedSessions.value = [];
+      currSessionId.value = "";
+      pendingSessionId.value = null;
+      editTitleDialog.value = false;
+      editingTitle.value = "";
+      editingSessionId.value = "";
+    },
+    { flush: "sync" },
+  );
 
   return {
     sessions,

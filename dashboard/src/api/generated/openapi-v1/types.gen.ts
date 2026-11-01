@@ -291,6 +291,14 @@ export type ChatMessagePatchRequest = {
 };
 
 export type ChatMessageRegenerateRequest = {
+    /**
+     * Existing administrator-created profile to use for the owned session.
+     */
+    config_id?: string;
+    /**
+     * Per-request thinking effort; does not change shared preset definitions.
+     */
+    thinking_effort?: string;
     selected_provider?: string;
     selected_model?: string;
     /**
@@ -361,11 +369,11 @@ export type ChatRequest = {
     enable_streaming?: boolean;
     flags?: ChatFlags;
     /**
-     * Internal WebUI flag for edit/regenerate flows.
+     * Edited continuation flag. Account-backed requests must match the latest saved user message, its checkpoint and normalized content.
      */
     _skip_user_history?: boolean;
     /**
-     * Internal WebUI checkpoint override.
+     * Saved checkpoint for an edited continuation; validated against the latest user message in the owned session.
      */
     _llm_checkpoint_id?: string;
     /**

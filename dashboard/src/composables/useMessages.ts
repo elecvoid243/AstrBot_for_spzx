@@ -1,6 +1,9 @@
 import { computed, onBeforeUnmount, reactive, ref, watch, type Ref } from "vue";
 import { chatApi, fileApi } from "@/api/v1";
-import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { fetchWithAuth } from "@/api/http";
 import {
   collectFileChanges,
@@ -313,6 +316,7 @@ interface SendMessageStreamOptions {
 }
 
 interface ContinueEditedMessageOptions {
+  configId?: string;
   sessionId: string;
   sourceRecord: ChatRecord;
   enableStreaming?: boolean;
@@ -487,6 +491,24 @@ export function useMessages(options: UseMessagesOptions) {
     return previews;
   });
 
+  watch(
+    accountSessionRevision,
+    () => {
+      cleanupConnections();
+      for (const state of [
+        messagesBySession,
+        loadedSessions,
+        sessionProjects,
+        historyPagingBySession,
+        historyOffsetBySession,
+        sessionMarkersBySession,
+      ]) {
+        for (const key of Object.keys(state)) delete state[key];
+      }
+    },
+    { flush: "sync" },
+  );
+
   onBeforeUnmount(() => {
     cleanupConnections();
     for (const promise of attachmentBlobCache.values()) {
@@ -596,10 +618,18 @@ export function useMessages(options: UseMessagesOptions) {
             if (consumed) options.onStreamUpdate?.(sessionId);
           });
         } catch (error) {
-          if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
+          if (
+            abort.signal.aborted ||
+            accountRevision !== accountSessionRevision.value
+          )
+            return;
           console.error("System event stream failed:", error);
         }
-        if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
+        if (
+          abort.signal.aborted ||
+          accountRevision !== accountSessionRevision.value
+        )
+          return;
         // Server closed the stream: back off briefly, then reconnect.
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -733,12 +763,15 @@ export function useMessages(options: UseMessagesOptions) {
       const response = await chatApi.getSession(sessionId, {
         limit: HISTORY_PAGE_SIZE,
       });
-      if (response.data.status !== "ok") throw new Error(response.data.message || "Session is unavailable");
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status === "error")
+        throw new Error(response.data?.message || "Resource is unavailable");
       const payload = response.data?.data || {};
       const history = payload.history || [];
       const records: ChatRecord[] = history.map(normalizeHistoryRecord);
       attachThreads(records, payload.threads || []);
       await resolveRecordMedia(records);
+      assertCurrentAccount(accountRevision);
       // History windowing: remember the window bounds so older pages can be
       // fetched with a before_id cursor, and so the rendered absolute index
       // (historyOffset + local index) stays aligned with the search endpoint.
@@ -758,7 +791,7 @@ export function useMessages(options: UseMessagesOptions) {
       );
       // Marker index for the scroll strip — non-blocking, degrades to the
       // DOM-measured fallback on failure.
-      if (options.accountRole !== "user") void loadSessionMarkers(sessionId);
+      void loadSessionMarkers(sessionId);
       // Live records (system stream / run resume) may have arrived while the
       // history snapshot was in flight; the snapshot then overwrote them.
       // Re-append anything the snapshot cannot cover so no live message is
@@ -866,11 +899,17 @@ export function useMessages(options: UseMessagesOptions) {
           writeTodoSnapshot(sessionId, replayedTodoSnapshot);
         }
       }
-      if (options.accountRole !== "user" && resumeRuns && Array.isArray(payload.active_runs)) {
+      if (
+        options.accountRole !== "user" &&
+        resumeRuns &&
+        Array.isArray(payload.active_runs)
+      ) {
         await restoreNextActiveRun(sessionId, payload.active_runs);
       }
     } catch (error) {
+      if (accountRevision !== accountSessionRevision.value) return;
       options.onError?.(String(error), sessionId);
+      if (accountRevision !== accountSessionRevision.value) return;
       console.error("Failed to load session messages:", error);
       messagesBySession[sessionId] = messagesBySession[sessionId] || [];
     } finally {
@@ -903,12 +942,16 @@ export function useMessages(options: UseMessagesOptions) {
         before_id: paging.oldestLoadedId ?? undefined,
         limit: HISTORY_PAGE_SIZE,
       });
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status === "error")
+        throw new Error(response.data?.message || "Resource is unavailable");
       const payload = response.data?.data || {};
       const olderRecords: ChatRecord[] = (payload.history || []).map(
         normalizeHistoryRecord,
       );
       attachThreads(olderRecords, payload.threads || []);
       await resolveRecordMedia(olderRecords);
+      assertCurrentAccount(accountRevision);
       const existing: ChatRecord[] = messagesBySession[sessionId] || [];
       // Cursor pages are exclusive, so fetched records cannot overlap with the
       // loaded window; the id filter is a belt-and-suspenders guard.
@@ -932,6 +975,7 @@ export function useMessages(options: UseMessagesOptions) {
         (historyOffsetBySession[sessionId] || 0) - deduped.length,
       );
     } catch (error) {
+      if (accountRevision !== accountSessionRevision.value) return;
       console.error("Failed to load older messages:", error);
       // Pause automatic loading until the user retries explicitly.
       paging.error = String(
@@ -959,6 +1003,9 @@ export function useMessages(options: UseMessagesOptions) {
     };
     try {
       const response = await chatApi.getMarkers(sessionId);
+      assertCurrentAccount(accountRevision);
+      if (response.data?.status === "error")
+        throw new Error(response.data?.message || "Resource is unavailable");
       const payload = response.data?.data || {};
       sessionMarkersBySession[sessionId] = {
         markers: (payload.markers || []).map((m: any) => ({
@@ -974,6 +1021,7 @@ export function useMessages(options: UseMessagesOptions) {
         loading: false,
       };
     } catch (error) {
+      if (accountRevision !== accountSessionRevision.value) return;
       console.error("Failed to load session markers:", error);
       sessionMarkersBySession[sessionId] = {
         markers: prev?.markers || [],
@@ -1157,6 +1205,9 @@ export function useMessages(options: UseMessagesOptions) {
     const response = await chatApi.updateMessage(sessionId, record.id, {
       content: content as unknown as Record<string, unknown>,
     });
+    assertCurrentAccount(accountRevision);
+    if (response.data?.status === "error")
+      throw new Error(response.data?.message || "Resource is unavailable");
     const payload = response.data?.data || {};
     const updated = payload.message
       ? normalizeHistoryRecord(payload.message)
@@ -1167,6 +1218,7 @@ export function useMessages(options: UseMessagesOptions) {
     }
     if (payload.truncated_after_message) {
       truncateMessagesAfter(sessionId, record);
+      void loadSessionMarkers(sessionId);
     }
     return {
       needsRegenerate: Boolean(payload.needs_regenerate),
@@ -1185,6 +1237,7 @@ export function useMessages(options: UseMessagesOptions) {
   }
 
   function continueEditedMessage({
+    configId,
     sessionId,
     sourceRecord,
     enableStreaming = true,
@@ -1229,6 +1282,7 @@ export function useMessages(options: UseMessagesOptions) {
       thinkingEffort,
       true,
       sourceRecord.llm_checkpoint_id || null,
+      configId,
     );
   }
 
@@ -1239,9 +1293,12 @@ export function useMessages(options: UseMessagesOptions) {
     selectedModel = "",
     enableStreaming = true,
     thinkingEffort = "auto",
+    configId?: string,
   ) {
     if (!sessionId || botRecord.id == null) return;
     const targetMessageId = botRecord.id;
+    const originalRecord = { ...botRecord };
+    let streamAccepted = false;
 
     botRecord.id = `local-regenerate-${Date.now()}`;
     botRecord.created_at = new Date().toISOString();
@@ -1271,12 +1328,22 @@ export function useMessages(options: UseMessagesOptions) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            selected_provider: selectedProvider,
-            selected_model: selectedModel,
-            thinking_effort: thinkingEffort,
-            flags: buildChatRequestFlags(enableStreaming),
-          }),
+          body: JSON.stringify(
+            options.accountRole === "user"
+              ? {
+                  config_id: configId,
+                  thinking_effort: thinkingEffort,
+                  selected_provider: selectedProvider || undefined,
+                  selected_model: selectedModel || undefined,
+                }
+              : {
+                  config_id: configId,
+                  selected_provider: selectedProvider,
+                  selected_model: selectedModel,
+                  thinking_effort: thinkingEffort,
+                  flags: buildChatRequestFlags(enableStreaming),
+                },
+          ),
           signal: abort.signal,
         },
       );
@@ -1288,23 +1355,38 @@ export function useMessages(options: UseMessagesOptions) {
         const payload = await response.json().catch(() => null);
         throw new Error(payload?.message || "Regenerate failed.");
       }
+      streamAccepted = true;
+      botRecord.threads = [];
       await readSseStream(response.body, (payload) => {
         processStreamPayload(botRecord, payload, undefined, connection);
         options.onStreamUpdate?.(sessionId);
       });
     } catch (error) {
+      if (accountRevision !== accountSessionRevision.value) return;
+      if (!streamAccepted) {
+        Object.assign(botRecord, originalRecord);
+        if (!("created_at" in originalRecord)) delete botRecord.created_at;
+      }
       if (!abort.signal.aborted) {
-        appendPlain(
-          botRecord,
-          `\n\n${String((error as Error)?.message || error)}`,
+        options.onError?.(
+          String((error as Error)?.message || error),
+          sessionId,
         );
+        if (streamAccepted)
+          appendPlain(
+            botRecord,
+            `\n\n${String((error as Error)?.message || error)}`,
+          );
         console.error("Regenerate failed:", error);
       }
     } finally {
       if (activeConnections[connection.messageId]?.abort === abort) {
         delete activeConnections[connection.messageId];
       }
-      await options.onSessionsChanged?.();
+      if (accountRevision === accountSessionRevision.value) {
+        await options.onSessionsChanged?.();
+        void loadSessionMarkers(sessionId);
+      }
       options.onStreamEnd?.(sessionId);
     }
   }
@@ -1412,26 +1494,36 @@ export function useMessages(options: UseMessagesOptions) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(options.accountRole === "user" ? {
-        session_id: sessionId,
-        message: parts.map(partToPayload),
-        message_id: messageId,
-        config_id: configId,
-        thinking_effort: thinkingEffort,
-        selected_provider: selectedProvider,
-        selected_model: selectedModel,
-      } : {
-        session_id: sessionId,
-        message: parts.map(partToPayload),
-        flags: buildChatRequestFlags(enableStreaming),
-        selected_provider: selectedProvider,
-        selected_model: selectedModel,
-        thinking_effort: thinkingEffort,
-        config_id: configId,
-        _client_message_id: messageId,
-        _skip_user_history: skipUserHistory,
-        _llm_checkpoint_id: llmCheckpointId || undefined,
-      }),
+      body: JSON.stringify(
+        options.accountRole === "user"
+          ? {
+              session_id: sessionId,
+              message: parts.map(partToPayload),
+              message_id: messageId,
+              config_id: configId,
+              thinking_effort: thinkingEffort,
+              selected_provider: selectedProvider,
+              selected_model: selectedModel,
+              ...(skipUserHistory
+                ? {
+                    _skip_user_history: true,
+                    _llm_checkpoint_id: llmCheckpointId,
+                  }
+                : {}),
+            }
+          : {
+              session_id: sessionId,
+              message: parts.map(partToPayload),
+              flags: buildChatRequestFlags(enableStreaming),
+              selected_provider: selectedProvider,
+              selected_model: selectedModel,
+              thinking_effort: thinkingEffort,
+              config_id: configId,
+              _client_message_id: messageId,
+              _skip_user_history: skipUserHistory,
+              _llm_checkpoint_id: llmCheckpointId || undefined,
+            },
+      ),
       signal: abort.signal,
     })
       .then(async (response) => {
@@ -1467,7 +1559,11 @@ export function useMessages(options: UseMessagesOptions) {
         });
       })
       .catch((error) => {
-        if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
+        if (
+          abort.signal.aborted ||
+          accountRevision !== accountSessionRevision.value
+        )
+          return;
         ensureBotRecordVisible(connection);
         appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
         // The appended text is invisible while `isLoading` is still set: the
@@ -1608,7 +1704,11 @@ export function useMessages(options: UseMessagesOptions) {
           if (receivedEnd) break;
           lastError = new Error("Resume stream closed before completion.");
         } catch (error) {
-          if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
+          if (
+            abort.signal.aborted ||
+            accountRevision !== accountSessionRevision.value
+          )
+            return;
           lastError = error;
         }
 

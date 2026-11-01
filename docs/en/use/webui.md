@@ -54,13 +54,17 @@ The existing single-account login remains the original administrator's entry poi
 
 ![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
 
-Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Ordinary accounts can also rename, star, archive, restore and delete their own sessions, use batch operations, search messages, and browse older history pages and message markers. Edit and continue the latest user turn or retry the latest reply. Quoted messages must belong to the same owned session. Existing owned attachments and the selected profile, model and thinking effort are retained when editing and retrying. Projects, branches, ZIP import/export and stream recovery remain unavailable until their corresponding slices are enabled. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
 
 Use **Upload files** (the paperclip), drag files into Chat, or paste an image to send images, audio, video, and files. The microphone retains the existing recorded-audio upload flow. Large files retain chunk progress, retry, and cancellation. Preview or remove staged attachments before sending; reopen your history to preview media or select **Download** for uploaded and model-generated files. Legacy administrator attachments remain with the original administrator. Knowing another account's attachment ID, upload task, stored filename, or download token does not grant access, message reuse, or cleanup permission.
 
 ![An ordinary user sending and downloading owned attachments](./images/multi-user-attachments.png)
 
 ![An ordinary user's isolated text conversation](./images/multi-user-chat.png)
+
+The previous basic Chat entry now exposes **Select conversations**, **Search messages**, the session **More actions** menu and **View Archive** in the same sidebar. These controls operate on the current account's data; administrators follow the same ownership rule in daily Chat. Mixed batches report unsuccessful items rather than treating them as deleted or archived. Signing out or switching accounts clears history pages, search results, unread markers and batch selections.
+
+![Organizing an ordinary account's sessions and history](./images/multi-user-history.png)
 
 On narrow screens, use the sidebar button at the top left of Chat to open your conversation list. **New Chat**, saved conversations, and **Log out** remain available in that drawer; Bot navigation stays hidden.
 

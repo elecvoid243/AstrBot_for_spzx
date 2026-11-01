@@ -431,8 +431,18 @@ class BaseDatabase(abc.ABC):
     async def delete_webchat_threads_by_parent_session(
         self,
         parent_session_id: str,
+        *,
+        creator: str | None = None,
     ) -> list[str]:
-        """Delete side threads for a parent WebChat session."""
+        """Delete side threads under a parent session.
+
+        Args:
+            parent_session_id: Parent session identifier.
+            creator: Optional owner restricting the deleted threads.
+
+        Returns:
+            Identifiers of the deleted threads.
+        """
         ...
 
     @abc.abstractmethod
@@ -440,8 +450,19 @@ class BaseDatabase(abc.ABC):
         self,
         parent_session_id: str,
         parent_message_ids: list[int],
+        *,
+        creator: str | None = None,
     ) -> list[str]:
-        """Delete side threads linked to parent message IDs."""
+        """Delete side threads linked to messages in a parent session.
+
+        Args:
+            parent_session_id: Parent session identifier.
+            parent_message_ids: Message identifiers whose threads should be removed.
+            creator: Optional owner restricting the deleted threads.
+
+        Returns:
+            Identifiers of the deleted threads.
+        """
         ...
 
     @abc.abstractmethod

@@ -78,49 +78,70 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, watch, nextTick } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
+import { useRouter } from "vue-router";
 import { Search, X, ChevronDown } from "@lucide/vue";
-import { messageApi, type SearchConversation, type SearchMatch } from '@/api/messages';
-import { useModuleI18n } from '@/i18n/composables';
+import {
+  messageApi,
+  type SearchConversation,
+  type SearchMatch,
+} from "@/api/messages";
+import { useModuleI18n } from "@/i18n/composables";
 
 const props = defineProps<{ modelValue: boolean }>();
-const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>();
+const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
 
-const { tm } = useModuleI18n('features/chat');
+const { tm } = useModuleI18n("features/chat");
 const router = useRouter();
 
 const inputRef = ref<HTMLInputElement | null>(null);
-const query = ref('');
+const query = ref("");
 const loading = ref(false);
-const error = ref('');
+const error = ref("");
 const hasSearched = ref(false);
 const results = ref<SearchConversation[]>([]);
 const expanded = ref<Record<string, boolean>>({});
 const pag = ref({ page: 1, page_size: 20, total: 0, total_pages: 1 });
 
-let lastQ = '';
+let lastQ = "";
+let searchRevision = 0;
+const accountRevision = accountSessionRevision.value;
+watch(accountSessionRevision, reset, { flush: "sync" });
 
-watch(() => props.modelValue, (v) => {
-  if (v) nextTick(() => inputRef.value?.focus());
-  else reset();
-});
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (v) nextTick(() => inputRef.value?.focus());
+    else reset();
+  },
+);
 
-function closeDialog() { emit('update:modelValue', false); }
+function closeDialog() {
+  emit("update:modelValue", false);
+}
 
 function reset() {
-  query.value = '';
-  lastQ = '';
+  searchRevision += 1;
+  query.value = "";
+  lastQ = "";
   results.value = [];
   hasSearched.value = false;
   loading.value = false;
-  error.value = '';
+  error.value = "";
   pag.value = { page: 1, page_size: 20, total: 0, total_pages: 1 };
   expanded.value = {};
 }
 
 function clearQuery() {
-  query.value = '';
+  searchRevision += 1;
+  loading.value = false;
+  error.value = "";
+  lastQ = "";
+  query.value = "";
   results.value = [];
   hasSearched.value = false;
   inputRef.value?.focus();
@@ -129,31 +150,55 @@ function clearQuery() {
 async function onSearch() {
   const q = query.value.trim();
   if (!q || loading.value) return;
+  const revision = ++searchRevision;
   loading.value = true;
-  error.value = '';
+  error.value = "";
   hasSearched.value = true;
   try {
     const data = await messageApi.searchMessages(q, 1, 20);
+    assertCurrentAccount(accountRevision);
+    if (revision !== searchRevision) return;
     results.value = data.results || [];
     pag.value = data.pagination || pag.value;
-    if (results.value.length > 0) expanded.value[results.value[0].session_id] = true;
+    if (results.value.length > 0)
+      expanded.value[results.value[0].session_id] = true;
     lastQ = q;
   } catch (e: any) {
-    error.value = e?.message || tm('search.error');
+    if (
+      accountRevision !== accountSessionRevision.value ||
+      revision !== searchRevision
+    )
+      return;
+    error.value = e?.message || tm("search.error");
     results.value = [];
   } finally {
-    loading.value = false;
+    if (revision === searchRevision) loading.value = false;
   }
 }
 
-function toggleGroup(sid: string) { expanded.value[sid] = !expanded.value[sid]; }
+function toggleGroup(sid: string) {
+  expanded.value[sid] = !expanded.value[sid];
+}
 
-function goPage(p: number) {
+async function goPage(p: number) {
   if (!lastQ) return;
-  messageApi.searchMessages(lastQ, p, 20).then((d) => {
-    results.value = d.results || [];
-    pag.value = d.pagination || pag.value;
-  });
+  const revision = ++searchRevision;
+  loading.value = true;
+  try {
+    const data = await messageApi.searchMessages(lastQ, p, 20);
+    assertCurrentAccount(accountRevision);
+    if (revision !== searchRevision) return;
+    results.value = data.results || [];
+    pag.value = data.pagination || pag.value;
+  } catch (e: any) {
+    if (
+      accountRevision === accountSessionRevision.value &&
+      revision === searchRevision
+    )
+      error.value = e?.message || tm("search.error");
+  } finally {
+    if (revision === searchRevision) loading.value = false;
+  }
 }
 
 function goTo(conv: SearchConversation, m: SearchMatch) {
@@ -162,7 +207,7 @@ function goTo(conv: SearchConversation, m: SearchMatch) {
   // inside its thinking text) only becomes readable if the list knows what
   // was searched for.
   router.push({
-    name: 'ChatDetail',
+    name: "ChatDetail",
     params: { conversationId: conv.session_id },
     query: {
       scrollToIndex: String(m.message_index),
@@ -173,18 +218,18 @@ function goTo(conv: SearchConversation, m: SearchMatch) {
 
 function highlight(snippet: string, kw: string): string {
   if (!kw.trim()) return esc(snippet);
-  const re = new RegExp(escRE(esc(kw)), 'gi');
-  return esc(snippet).replace(re, '<mark>$&</mark>');
+  const re = new RegExp(escRE(esc(kw)), "gi");
+  return esc(snippet).replace(re, "<mark>$&</mark>");
 }
 
 function esc(s: string): string {
-  const d = document.createElement('div');
+  const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
 }
 
 function escRE(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 </script>
 

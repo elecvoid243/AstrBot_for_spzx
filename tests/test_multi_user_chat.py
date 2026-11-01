@@ -352,7 +352,6 @@ async def test_unadapted_operations_default_deny_and_internal_fields_are_not_inp
         ("POST", "/api/v1/api-keys"),
         ("POST", "/api/auth/setup"),
         ("PATCH", "/api/v1/auth/account"),
-        ("GET", "/api/v1/chat/sessions/archived"),
         ("GET", "/api/v1/chat/projects"),
         ("GET", f"/api/v1/chat/sessions/{session_id}/system-stream"),
         ("GET", "/api/v1/chat/runs/fake/stream"),

@@ -70,6 +70,17 @@ def _clean_state(monkeypatch: pytest.MonkeyPatch):
     fs_access.reset()
 
 
+@pytest.fixture(autouse=True)
+def isolated_recycle_records(monkeypatch, tmp_path):
+    """Keep deletion evidence scans inside the test's synthetic trash directory."""
+    from astrbot.core.tools.computer_tools import recycle_restore
+
+    monkeypatch.setattr(
+        recycle_restore, "_windows_drive_roots", lambda: [tmp_path / "recycle"]
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+
 class _TrashRecorder:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -345,9 +356,7 @@ async def test_remove_dir_unreadable_child_skipped(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_max_items", [0, -5, "abc", None])
-async def test_max_items_invalid_falls_back_to_50(
-    tmp_path, fake_trash, bad_max_items
-):
+async def test_max_items_invalid_falls_back_to_50(tmp_path, fake_trash, bad_max_items):
     directory = tmp_path / "small"
     directory.mkdir()
     for i in range(3):

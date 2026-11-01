@@ -142,13 +142,60 @@ Only administrators can create or edit profiles, providers, model definitions, t
 
 ![An ordinary account selects a profile, model and thinking effort](./images/chat-profile-selection.png)
 
+### Consume tools and their results in your own chat
+
+The chat input keeps the existing **Skills** menu, managed-terminal indicator,
+project status and workspace entry. A skill selection is a one-shot request for
+this conversation; it does not edit a skill, plugin or shared configuration.
+Tool availability still comes from the administrator's selected profile and the
+existing enablement rules. Service management remains administrator-only.
+
+Open a terminal from the indicator to follow its output, stop it or clean up a
+finished record. These actions belong to both the conversation and the terminal
+task; knowing another task ID does not grant access. Switching accounts closes
+old output windows and clears skill queues, result cards and extension caches.
+
+File-change cards use their original conversation and generated message/run.
+Diff and undo reject a different path, backup or source record. If the file has
+changed since that result, the old card cannot read the replacement contents or
+overwrite them. A deletion can be undone only when its exact recycle entry and
+original file or directory evidence are still available. Old deletion records,
+ambiguous concurrent deletions and changed recycle objects keep their display
+but have no undo action. Imported history is display-only for these actions.
+The same ownership rules apply to an administrator's everyday Chat use.
+
+![An ordinary account reviews a file result, terminal output and skill guidance](./images/chat-tool-results-en.png)
+
+Update the spcode and Browser Use plugins together with the host when using
+these extensions. The host accepts only the actual handlers that advertise the
+ownership guard; an older installed handler cannot gain access through the same
+URL. The old `/api/plug/…` entry points use the same checks. The deleted-file
+restore alias delegates to the core's exact-record check. spcode filesystem
+consumption stays inside the owned conversation's resolved workspace; its
+home/drive shortcuts point to that workspace. Git revision exports download as
+owned attachments. Ordinary accounts do not gain plugin management, global
+service status, arbitrary server-file browsing or permission-root editing.
+
+| Previous entry or behavior | Current account-aware behavior |
+| --- | --- |
+| Chat tools hidden while multi-account support was introduced | The same Chat input and workspace expose supported consumption controls |
+| Skill palette reads the Skills management list | Owned-conversation skill inventory, with management still in Extensions |
+| File-change request uses only a path/backup/hash | Original owned message or run authorizes the recorded file |
+| Deleted-file undo selects the newest matching path | Only the exact recorded recycle object can be restored |
+| Git historical file opens on the server | Export downloads through the account's attachment boundary |
+
+The instance still shares its configured tools and runtime. This is application
+resource ownership, not a separate filesystem or execution sandbox per account.
+Administrators retain the documented operational backup and log capabilities.
+
 ## Open Agent file references
 
 In the main chat, click an explicit file link in an Agent reply to open the
-existing file pane. No loaded project is required; a host file outside the
-project opens at the same absolute location even after you switch projects.
-The pane reads the **current disk contents**, including when you reopen an old
-reply. This does not attach the file to the chat or change Agent permissions.
+existing file pane. File consumption validates the current account and the
+conversation's resolved workspace. An arbitrary server path or a reference
+copied from another account does not authorize a file read. Reopening a supported
+reference reads the current owned workspace file; generated attachments use the
+separate owned preview/download boundary. This does not change Agent permissions.
 
 Use `[name](G:/project/main.py)` for a whole file, `#L12` for one source line,
 or `#L12-L18` for a closed source-line range. POSIX host paths such as
@@ -161,8 +208,7 @@ links do not read files.
 ![A file reference opens current source lines in the existing pane](./images/file-reference-preview.png)
 
 File references use authenticated spcode
-services and host account permissions, independently of the Agent's project,
-worktree, execution directory or permission mode. Install or enable spcode if
+services with the trusted conversation identity and resolved workspace. Install or enable spcode if
 the pane asks for it. Missing, unreadable, unsupported, oversized files and invalid
 line ranges display an explicit state; an invalid range is not highlighted.
 Markdown references with a line target show source text so line numbers remain
@@ -177,8 +223,7 @@ worktree refreshes leave the reference in place.
 ### Preview images, documents and spreadsheets
 
 Absolute references to images, PDF, DOCX, XLSX, CSV and Markdown open the
-existing viewers in the same file pane, inside or outside the loaded project,
-or with no project loaded. Whole CSV files open as tables; CSV and Markdown
+existing viewers in the same file pane, inside the owned project or conversation workspace. Whole CSV files open as tables; CSV and Markdown
 citations with line targets display **source text**, including quoted multiline
 CSV rows. Images, PDF and Office documents show an explicit message when a
 text line target cannot be located. These previews do not add Office, PDF or
@@ -194,7 +239,7 @@ URLs and PDF tasks. spcode must remain enabled for both metadata and bytes.
 
 ### Edit files and handle conflicts
 
-Click **Edit** in a text preview to edit and save text up to 2 MiB without loading its directory as a project. Manual saves use host account permissions even in Agent read-only or workspace mode. They leave Agent permissions, allowed directories, project and worktree unchanged and preserve the original encoding, BOM and dominant newline style.
+Click **Edit** in a text preview to edit and save text up to 2 MiB within the conversation's resolved workspace, including its session workspace when no project is loaded. Manual saves validate the signed-in account and workspace and preserve the original encoding, BOM and dominant newline style. They leave Agent permissions, allowed directories, project and worktree unchanged.
 
 Leaving a draft through a citation, directory, path, workbench tab, sidebar or session offers **Save and open**, **Discard and open**, or **Cancel**. A failed or conflicting save stops navigation and keeps the complete draft. Browser refresh and closing use the browser's own leave warning.
 
@@ -208,15 +253,15 @@ This is optimistic concurrency control: the service rechecks the disk revision a
 
 ### Rename files and use the recycle bin
 
-Choose **Edit** at the top of the file preview, then **Rename** in the editor toolbar to change a file's name within its current directory, including files outside a project. Entry mapping: **Preview → Rename** moves to **Preview → Edit → Rename**. Confirmation shows the fixed full target path. Name collisions, permission errors and missing targets are reported. The sidebar follows a successful rename; old chat citations keep their original paths.
+Choose **Edit** at the top of the file preview, then **Rename** in the editor toolbar to change a file's name within its current directory, within the owned conversation workspace. Entry mapping: **Preview → Rename** moves to **Preview → Edit → Rename**. Confirmation shows the fixed full target path. Name collisions, permission errors and missing targets are reported. The sidebar follows a successful rename; old chat citations keep their original paths.
 
-The file preview toolbar uses a red **Delete** button (previously **Move to recycle bin**). Its confirmation still states that the file will move to the system recycle bin, offers **Move to recycle bin**, and explains recovery through the operating system. Project files, external files and the Docs sidebar use this behavior. If trash is unavailable or refuses the operation, the file is preserved; there is no permanent deletion fallback.
+The file preview toolbar uses a red **Delete** button (previously **Move to recycle bin**). Its confirmation still states that the file will move to the system recycle bin, offers **Move to recycle bin**, and explains recovery through the operating system. Owned workspace files and the Docs sidebar use this behavior. If trash is unavailable or refuses the operation, the file is preserved; there is no permanent deletion fallback.
 
 The file preview puts **Edit**, **Copy**, and **Delete** in one row and removes the extra path and current-disk-content summary. Hover over the filename to see its full path. Invalid or unsupported citation line ranges still display a notice.
 
 ![Compact file preview actions](./images/file-preview-toolbar.png)
 
-For unsaved changes, first choose **Save and open**, **Discard and open** or **Cancel**. Cancellation, failed saves and conflicts stop the management action. The target stays fixed during the request. Manual management uses WebUI authentication and host account permissions without changing the Agent's project or permissions.
+For unsaved changes, first choose **Save and open**, **Discard and open** or **Cancel**. Cancellation, failed saves and conflicts stop the management action. The target stays fixed during the request. Manual management uses WebUI authentication and the owned workspace boundary without changing the Agent's project or permissions.
 
 Windows requires Windows 8 or later and the plugin's `pywin32` dependency for safe recycling on local fixed drives. Unsupported locations or missing native support return an error before deletion; no legacy deletion backend is used. Rename also fails if the operating system or filesystem cannot guarantee that an existing destination will be preserved.
 
@@ -224,19 +269,19 @@ Windows requires Windows 8 or later and the plugin's `pywin32` dependency for sa
 
 ### Browse host folders and drives
 
-Without a project, open **Files & Browser** above the composer, choose **Files**, then select a host folder. **Browse host folders or drives** in the file pane reopens the existing folder picker: use **This PC** to select another Windows drive, or enter an absolute folder path. Selecting a location only changes the file pane; it does not load a project.
+Without a project, open **Files & Browser** above the composer, then choose **Files**. The existing folder picker and home/drive shortcuts open the conversation's resolved workspace. Selecting a location changes the file pane without loading a project.
 
-Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing preview. Parent breadcrumbs and **Parent directory** can leave the project root. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
+Click the last breadcrumb to type an absolute file or directory path, or a path relative to the currently listed directory, and press **Enter**. Files open in the existing preview. Paths and parent navigation must stay inside the owned workspace; outside paths are rejected. The path bar shows the actual resolved location. Missing or unreadable paths display an error; large directory listings show the existing 1000-entry limit.
 
 To the right of the path, **Back to the previous directory** (left arrow) retraces directories visited in the current file browser, independently of **Parent directory**. Opening files within the same directory and failed directory loads do not add history; Back is disabled when history is empty. **Return to the loaded project directory** (folder with a house) opens the loaded project's root and is disabled without a project. Both actions check unsaved edits first; cancelling preserves the current file and back history.
 
-With a project loaded, **Workspace → Files** still returns to its file list. Manual host browsing and file references share one navigation lifecycle and remain independent of Agent project, active worktree, execution directory and permissions, including read-only mode. Project polling, worktree-list changes and project unload preserve an open external target. Git Diff/History, Documents and Terminal retain their project context; Web Preview and the Agent browser remain available.
+With a project loaded, **Workspace → Files** still returns to its file list. File browsing and file references share one navigation lifecycle. Background polling preserves an open file or draft, while each read or save validates the current account and workspace. Git Diff/History, Documents and Terminal retain their project context; Web Preview and the Agent browser remain available.
 
 | Previous entry | Current entry |
 | --- | --- |
 | Agent browser without a project | Files & Browser → Files / Web Preview |
 | Project-relative path input | File pane breadcrumb → host absolute path or path relative to the listed directory |
-| Files bounded by the project root | Parent breadcrumbs / Parent directory / Browse host folders or drives |
+| Unrestricted host folder and drive shortcuts | Existing shortcuts open the owned conversation workspace |
 
 ![Back and return-to-project buttons in the file browser](./images/file-browser-navigation.png)
 

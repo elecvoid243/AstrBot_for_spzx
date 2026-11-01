@@ -183,3 +183,5 @@ export function useSpcodePlanMode() {
     reset,
   }
 }
+
+window.addEventListener?.("astrbot:account-changed", () => { useSpcodePlanMode().reset(); });

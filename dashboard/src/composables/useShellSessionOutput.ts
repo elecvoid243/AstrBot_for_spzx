@@ -1,4 +1,5 @@
-import { ref, type Ref } from "vue";
+import { ref, watch, type Ref } from "vue";
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import { chatApi } from "@/api/v1";
 import type { ShellSessionPollResult } from "@/components/chat/message_list_comps/shell_session_tools/format";
 
@@ -30,6 +31,12 @@ export function useShellSessionOutput(
 
   let cursor = 0;
   let stopped = false;
+  const revision = accountSessionRevision.value;
+  watch(accountSessionRevision, () => {
+    stopped = true;
+    outputText.value = "";
+    sessionClosed.value = true;
+  }, { flush: "sync" });
 
   /**
    * Run the peek loop until the session closes, errors, or stop() is
@@ -46,6 +53,7 @@ export function useShellSessionOutput(
         );
         // AstrBot business errors are HTTP 200 with {status:"error"} — axios
         // resolves them, so branch on the envelope, not on rejection.
+        assertCurrentAccount(revision);
         const envelope = resp.data as {
           status?: string;
           data?: ShellSessionPollResult;

@@ -91,3 +91,5 @@ export function useTcMemoryStatus() {
     reset: resetTcMemoryStatus,
   }
 }
+
+window.addEventListener?.("astrbot:account-changed", () => { resetTcMemoryStatus(); });

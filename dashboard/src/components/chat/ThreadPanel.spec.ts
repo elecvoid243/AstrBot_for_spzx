@@ -107,6 +107,136 @@ afterEach(() => {
 });
 
 describe("ThreadPanel", () => {
+  it("preserves persisted file sources and imported restrictions when reopened", async () => {
+    const files = [
+      {
+        path: "/owned/result.txt",
+        runtime: "local",
+        kind: "edit",
+        backup_id: "backup",
+        sha256: "checksum",
+        diff_available: true,
+      },
+    ];
+    getThreadMock.mockResolvedValue({
+      data: {
+        data: {
+          history: [
+            {
+              id: 81,
+              content: { type: "bot", message: [], file_changes: { files } },
+            },
+            {
+              id: 82,
+              content: {
+                type: "bot",
+                message: [],
+                file_changes: { files },
+                _imported: true,
+              },
+            },
+          ],
+        },
+      },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    for (let reopening = 0; reopening < 2; reopening += 1) {
+      const list = wrapper.getComponent({ name: "ChatMessageList" });
+      expect(list.props("sessionId")).toBe(THREAD.thread_id);
+      const records = list.props("messages");
+      expect(records[0].id).toBe(81);
+      expect(records[0].content.fileChangeSummary).toEqual(files);
+      expect(records[0].content.fileChangeSourceUnavailable).toBe(false);
+      expect(records[1].content.fileChangeSourceUnavailable).toBe(true);
+      if (reopening === 0) {
+        await wrapper.setProps({ modelValue: false, thread: null });
+        await wrapper.setProps({ modelValue: true, thread: THREAD });
+        await flushPromises();
+      }
+    }
+    wrapper.unmount();
+  });
+
+  it.each([false, true])(
+    "keeps live file results tied to the thread and server run (sideChat=%s)",
+    async (sideChat) => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      fetchMock.mockResolvedValue({
+        ok: true,
+        body: new ReadableStream({
+          start(value) {
+            controller = value;
+          },
+        }),
+      });
+      const wrapper = mountPanel({ sideChat });
+      await flushPromises();
+      if (sideChat)
+        wrapper
+          .getComponent({ name: "ChatInput" })
+          .vm.$emit("send-command", "Run the tool");
+      else {
+        await wrapper.get(".thread-input").setValue("Run the tool");
+        await wrapper.get("form").trigger("submit");
+      }
+      await flushPromises();
+      const files = [
+        {
+          path: "/owned/live.txt",
+          kind: "edit",
+          sha256: "checksum",
+          runtime: "local",
+          backup_id: "backup",
+          diff_available: true,
+        },
+      ];
+      const frames = [
+        {
+          type: "session_id",
+          session_id: THREAD.thread_id,
+          run_id: "server-thread-run",
+        },
+        { type: "file_changes", data: { files } },
+      ];
+      controller.enqueue(
+        new TextEncoder().encode(
+          frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""),
+        ),
+      );
+      await flushPromises();
+      const list = wrapper.getComponent({ name: "ChatMessageList" });
+      expect(list.props("sessionId")).toBe(THREAD.thread_id);
+      const bot = list.props("messages").at(-1);
+      expect(bot.content.fileChangeSummary).toEqual(files);
+      expect(bot.content.fileChangeRunId).toBe("server-thread-run");
+      controller.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({
+            type: "run_snapshot",
+            data: {
+              run_id: "server-thread-run",
+              history_record_id: 85,
+              content: {
+                type: "bot",
+                file_changes: { files },
+                _imported: true,
+              },
+            },
+          })}\n\n`,
+        ),
+      );
+      await flushPromises();
+      expect(bot.id).toBe(85);
+      expect(bot.content.fileChangeSummary).toEqual(files);
+      expect(bot.content.fileChangeSourceUnavailable).toBe(true);
+      expect(bot.content.fileChangeRunId).toBe("server-thread-run");
+      controller.close();
+      await flushPromises();
+      wrapper.unmount();
+    },
+  );
+
   it("retains live A records across hiding and reopening, and isolates B's stream and stop action", async () => {
     const streams = new Map<
       string,

@@ -12,9 +12,10 @@
       capsule. The workspace entry was briefly folded into the mode menu and
       is independent again so the menu stays purely about permissions.
     -->
-    <div v-if="!isOrdinaryUser" class="input-area__status-row">
+    <div class="input-area__status-row">
       <div v-if="showSpcodeIndicator" class="input-area__status-row__left">
         <SpcodeProjectIndicator
+          :consumer-only="isOrdinaryUser"
           @open-load-dialog="openLoadDialog"
           @open-codegraph-dialog="openCodegraphLoadDialog"
         />
@@ -25,7 +26,7 @@
                composer status row next to the other ambient chips; the
                component hides itself when no sessions exist. -->
           <ShellSessionIndicator :conversation-id="sessionId" />
-          <FileAccessModeChip
+          <FileAccessModeChip v-if="!isOrdinaryUser"
             :umo="currentSessionUmo"
             @change="handleFileAccessModeChange"
           />
@@ -414,7 +415,7 @@
       -->
       <transition name="attachments">
         <div
-          v-if="!isOrdinaryUser && skillGuide.queued.value.length > 0"
+          v-if="skillGuide.queued.value.length > 0"
           class="skill-guide-preview"
         >
           <span class="skill-guide-preview__label">
@@ -509,6 +510,7 @@
                 <v-btn v-bind="activatorProps" icon="mdi-plus" variant="text" class="composer-ghost-btn" />
               </template>
               <GoalMenuItem :session-id="sessionId || null" :disabled="disabled" />
+              <SkillGuideMenuItem :session-id="sessionId || null" :disabled="disabled" />
               <v-list-item class="styled-menu-item" rounded="md" prepend-icon="mdi-microphone" :title="tm('voice.liveMode')" @click="emit('openLiveMode')" />
             </StyledMenu>
             <input
@@ -1367,7 +1369,7 @@ const codegraphLoadDialogRef = ref<{
 // See :func:`useSpcodeProjectLoad` for the full rationale.
 const { isProjectLoadAvailable, refreshPluginState } =
   useSpcodeProjectLoad(allCommands);
-const showSpcodeIndicator = computed(() => !isOrdinaryUser.value && isProjectLoadAvailable.value);
+const showSpcodeIndicator = computed(() => isOrdinaryUser.value ? spcodeStatus.status.value.loaded : isProjectLoadAvailable.value);
 
 // Singleton state for the file access mode chip (full / readonly /
 // workspace), keyed per-umo by AstrBot core. Exposed here so the
@@ -1522,7 +1524,6 @@ const skillCommands = computed<SuggestionCommand[]>(() => {
 watch(
   () => [props.sessionId, sessionIsGroup.value] as const,
   async ([sessionId, isGroup]) => {
-    if (isOrdinaryUser.value) { await skillGuide.setSession(null); return; }
     if (!sessionId) {
       await skillGuide.setSession(null);
       return;
@@ -1750,14 +1751,6 @@ watch(inputIsMultiline, () => {
 });
 
 function handleKeyDown(e: KeyboardEvent) {
-  if (isOrdinaryUser.value) {
-    if (isComposingEnter(e, isComposing.value, lastCompositionEndAt.value)) return;
-    if (e.key === "Enter" && ((props.sendShortcut === "enter" && !e.shiftKey) || (props.sendShortcut === "shift_enter" && e.shiftKey))) {
-      e.preventDefault();
-      sendMessage();
-    }
-    return;
-  }
   // 命令提示激活时，拦截方向键和 Enter/Esc
   if (showCommandSuggestion.value && filteredCommands.value.length > 0) {
     if (e.key === "ArrowDown") {
@@ -2070,7 +2063,11 @@ function handleSendClick(): void {
  */
 function sendMessage(): void {
   if (isOrdinaryUser.value) {
-    if (canSend.value) emit("send", []);
+    if (canSend.value) {
+      const skills = [...skillGuide.queued.value];
+      skillGuide.consumeQueued();
+      emit("send", skills);
+    }
     return;
   }
   const skillNames = [...skillGuide.queued.value];
@@ -2567,7 +2564,7 @@ const vivadoStatus = useSpcodeVivadoStatus();
 // we never issue a request for users who have the spcode plugin off
 // (or who have already logged out / unmounted this component).
 const onVisibilityChange = () => {
-  if (document.visibilityState === "visible" && showSpcodeIndicator.value) {
+  if (!isOrdinaryUser.value && document.visibilityState === "visible" && showSpcodeIndicator.value) {
     void codegraphStatus.refresh();
   void tcMemoryStatus.refresh();
     void vivadoStatus.refresh();
@@ -2576,7 +2573,7 @@ const onVisibilityChange = () => {
 watch(
   showSpcodeIndicator,
   async (visible) => {
-    if (visible) {
+    if (visible && !isOrdinaryUser.value) {
       await codegraphStatus.refresh();
       await vivadoStatus.refresh();
     }

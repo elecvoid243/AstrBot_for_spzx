@@ -5,8 +5,8 @@
 // watcher (Task 14) every time the active session changes.
 //
 // Behavior contract (mirrors spcode endpoint spec):
-//   - workspace_type !== "custom"  -> return null (no-op)
-//   - missing workspace_path        -> return null (no-op)
+//   - custom path or server-resolved project workspace -> load that directory
+//   - missing resolved directory -> return null (no-op)
 //   - the AGENTS.md / Codegraph load steps follow the project's
 //     spcode_no_agentsmd / spcode_no_codegraph flags (same chips the
 //     project dialog shows). Silent loading itself is always on since
@@ -234,15 +234,19 @@ export function useSpcodeProjectAutoLoad() {
   async function silentLoad(
     req: SilentLoadRequest,
   ): Promise<ProjectLoadData | null> {
-    const { project, umo } = req;
-    // spcode integration lives on the CUSTOM workspace type (2026-08-07):
-    // custom's workspace_path is the session cwd AND the spcode mount
-    // target, which is the only coherent binding. "project"-type paths
-    // never affect cwd, so spcode no longer attaches to them.
-    //
+    const project =
+      req.project.workspace_type === "project"
+        ? {
+            ...req.project,
+            workspace_path: req.project.resolved_workspace_path,
+          }
+        : req.project;
+    const { umo } = req;
+    req = { ...req, project };
     // Silent loading is always on (2026-09-09): the spcode_auto_load
     // switch was removed from the UI and is no longer read here.
-    if (project.workspace_type !== "custom") return null;
+    if (!["custom", "project"].includes(project.workspace_type ?? "session"))
+      return null;
     if (!project.workspace_path) return null;
 
     const key = inflightKey(project, umo);

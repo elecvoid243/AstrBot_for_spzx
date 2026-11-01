@@ -571,6 +571,12 @@ class BotMessageAccumulator:
                 )
             except (TypeError, json.JSONDecodeError):
                 self.pending_file_changes = {}
+            if not isinstance(self.pending_file_changes, dict):
+                self.pending_file_changes = {}
+            files = self.pending_file_changes.get("files")
+            for item in files if isinstance(files, list) else []:
+                if isinstance(item, dict) and isinstance(item.get("path"), str):
+                    item["_canonical_path"] = str(Path(item["path"]).resolve())
             return
 
         if streaming:
@@ -2024,6 +2030,7 @@ class ChatService:
                         "type": "session_id",
                         "data": None,
                         "session_id": run.session_id,
+                        "run_id": run.run_id,
                     }
                     yield f"data: {json.dumps(session_info, ensure_ascii=False)}\n\n"
                     if saved_user_record:
@@ -2353,6 +2360,12 @@ class ChatService:
                         run.file_changes = json.loads(result_text)
                     except (TypeError, json.JSONDecodeError):
                         run.file_changes = {}
+                    if not isinstance(run.file_changes, dict):
+                        run.file_changes = {}
+                    files = run.file_changes.get("files")
+                    for item in files if isinstance(files, list) else []:
+                        if isinstance(item, dict) and isinstance(item.get("path"), str):
+                            item["_canonical_path"] = str(Path(item["path"]).resolve())
                     pending_file_changes = run.file_changes
                     self._publish_chat_run(
                         run,
@@ -3802,6 +3815,126 @@ class ChatService:
         state = await goal_service.goals.get(umo)
         return {"goal": state.to_public_dict() if state else None}
 
+    async def require_file_change_source(
+        self, username: str, source: object, files: list[dict], *, removed: bool = False
+    ) -> list[dict]:
+        """Authorize every file against an owned, server-produced chat result.
+
+        Args:
+            username: Trusted account resource owner.
+            source: Request identifying a conversation and message or active run.
+            files: Requested paths and optional backup/checksum identifiers.
+            removed: Require a recorded deletion before accessing the recycle bin.
+
+        Returns:
+            Trusted recorded descriptors, in the requested order.
+
+        Raises:
+            ChatServiceError: The source or any requested file is unavailable.
+        """
+        session_id = source.session_id
+        resource = await self.require_owned_chat_session(
+            username, session_id, allow_thread=True
+        )
+        platform_id = (
+            "webchat_thread" if isinstance(resource, WebChatThread) else "webchat"
+        )
+        changes = None
+        if source.run_id:
+            run = self.chat_runs.get(source.run_id)
+            if run and run.username == username and run.session_id == session_id:
+                changes = run.file_changes
+        elif source.message_id is not None:
+            try:
+                record = await self.db.get_platform_message_history_by_id(
+                    int(source.message_id)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ChatServiceError("File change is unavailable") from exc
+            if (
+                record
+                and record.platform_id == platform_id
+                and record.user_id == session_id
+                and isinstance(record.content, dict)
+                and record.content.get("type") == "bot"
+                and not record.content.get("_imported")
+            ):
+                changes = record.content.get("file_changes")
+        if not isinstance(changes, dict) or not isinstance(changes.get("files"), list):
+            raise ChatServiceError("File change is unavailable")
+        authorized = []
+        for requested in files:
+            raw_path = str(requested.get("path") or "").strip()
+            entry = next(
+                (
+                    item
+                    for item in changes["files"]
+                    if isinstance(item, dict) and item.get("path") == raw_path
+                ),
+                None,
+            )
+            if entry is None or entry.get("runtime") != "local":
+                raise ChatServiceError("File change is unavailable")
+            target = Path(raw_path)
+            # Bind the canonical target at publication. Later symlink changes
+            # cannot redirect a card to an unrelated server file.
+            canonical = entry.get("_canonical_path")
+            if not target.is_absolute() or (
+                canonical and str(target.resolve()) != canonical
+            ):
+                raise ChatServiceError("File change is unavailable")
+            if not canonical:
+                for item in [target, *target.parents]:
+                    try:
+                        attributes = item.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if (
+                        item.is_symlink()
+                        or getattr(attributes, "st_file_attributes", 0) & 0x400
+                    ):
+                        raise ChatServiceError("File change is unavailable")
+            if removed and entry.get("kind") != "remove":
+                raise ChatServiceError("File change is unavailable")
+            for key, recorded_key in (
+                ("backup_id", "backup_id"),
+                ("expect_sha256", "sha256"),
+            ):
+                if key in requested and requested[key] != (
+                    entry.get(recorded_key) or ""
+                ):
+                    raise ChatServiceError("File change is unavailable")
+            authorized.append(entry)
+        return authorized
+
+    async def shell_resource_origin(self, username: str, session_id: str) -> str:
+        """Resolve the shell's real conversation before accessing task IDs.
+
+        Args:
+            username: Authenticated resource identity.
+            session_id: Conversation or owned side-thread identifier.
+
+        Returns:
+            Origin constructed from the persisted resource. Independent API
+            keys retain their previous non-WebChat platform-session behavior.
+
+        Raises:
+            ChatServiceError: The resource or its parent is unavailable.
+        """
+        if dashboard_account_context.get() is not None:
+            resource = await self.require_owned_chat_session(
+                username, session_id, allow_thread=True
+            )
+        else:
+            resource = await self.db.get_platform_session_by_id(session_id)
+            if resource is None or resource.creator != username:
+                raise ChatServiceError("Permission denied")
+        return (
+            build_thread_unified_msg_origin(username, session_id)
+            if isinstance(resource, WebChatThread)
+            else build_webchat_unified_msg_origin(resource)
+        )
+
     async def get_session_shell_sessions(self, username: str, session_id: str) -> dict:
         """Return managed local shell sessions for a ChatUI session.
 
@@ -3819,11 +3952,7 @@ class ChatService:
         Raises:
             ChatServiceError: Session missing or owned by another user.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        umo = await self.shell_resource_origin(username, session_id)
 
         # Function-local imports: the computer runtime is only reachable once
         # the core lifecycle created the local booter.
@@ -3834,7 +3963,7 @@ class ChatService:
         if booter is None or not isinstance(booter.shell, LocalShellComponent):
             return {"sessions": []}
         return await booter.shell.list_sessions(
-            owner_id=build_webchat_unified_msg_origin(session),
+            owner_id=umo,
             requester_id=username,
             # Dashboard session owners see the full conversation view; the
             # creator check above is the authorization boundary.
@@ -3870,11 +3999,7 @@ class ChatService:
             ChatServiceError: Session missing/foreign, runtime unavailable,
                 or the shell session is gone (reaped by an agent poll).
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        umo = await self.shell_resource_origin(username, session_id)
 
         from astrbot.core.computer import computer_client
         from astrbot.core.computer.booters.local import LocalShellComponent
@@ -3884,7 +4009,7 @@ class ChatService:
             raise ChatServiceError("Shell session runtime is unavailable")
         try:
             return await booter.shell.peek_session_output(
-                owner_id=build_webchat_unified_msg_origin(session),
+                owner_id=umo,
                 requester_id=username,
                 requester_is_admin=True,
                 session_id=shell_session_id,
@@ -3918,11 +4043,7 @@ class ChatService:
             ChatServiceError: Session missing/foreign, runtime unavailable,
                 or the shell session is gone.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        umo = await self.shell_resource_origin(username, session_id)
 
         from astrbot.core.computer import computer_client
         from astrbot.core.computer.booters.local import LocalShellComponent
@@ -3930,7 +4051,6 @@ class ChatService:
         booter = computer_client.local_booter
         if booter is None or not isinstance(booter.shell, LocalShellComponent):
             raise ChatServiceError("Shell session runtime is unavailable")
-        umo = build_webchat_unified_msg_origin(session)
         try:
             result = await booter.shell.terminate_session(
                 owner_id=umo,
@@ -3979,11 +4099,7 @@ class ChatService:
             ChatServiceError: Session missing/foreign, runtime unavailable,
                 or the shell session is gone/still running.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        umo = await self.shell_resource_origin(username, session_id)
 
         from astrbot.core.computer import computer_client
         from astrbot.core.computer.booters.local import LocalShellComponent
@@ -3993,7 +4109,7 @@ class ChatService:
             raise ChatServiceError("Shell session runtime is unavailable")
         try:
             return await booter.shell.discard_session(
-                owner_id=build_webchat_unified_msg_origin(session),
+                owner_id=umo,
                 requester_id=username,
                 requester_is_admin=True,
                 session_id=shell_session_id,

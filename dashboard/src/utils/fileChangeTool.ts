@@ -525,6 +525,7 @@ export function collectFileChanges(
 /** One aggregated file entry from the backend end-of-turn
  * `file_changes` event (net diff vs the turn's baseline backup). */
 export interface FileChangeSummaryFile {
+    restore_available?: boolean;
     path: string;
     kind: "edit" | "write" | "created" | "rollback" | "remove";
     adds: number | null;

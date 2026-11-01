@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from astrbot.core.workspace import API_KEY_USERNAME_PREFIX
-from astrbot.dashboard.access import FILE_OPERATIONS, require_account_operation
+from astrbot.dashboard.access import (
+    CHAT_EXTENSION_OPERATIONS,
+    CHAT_TOOL_OPERATIONS,
+    FILE_OPERATIONS,
+    require_account_operation,
+)
 from astrbot.dashboard.responses import ApiError
 from astrbot.dashboard.schemas import (
     AccountUpdateRequest,
@@ -218,6 +223,16 @@ async def require_scope(request: Request, scope: str) -> AuthContext:
         and not (
             scope == "file"
             and getattr(request.state, "dashboard_operation", None) in FILE_OPERATIONS
+        )
+        and not (
+            scope == "skill"
+            and getattr(request.state, "dashboard_operation", None)
+            in CHAT_TOOL_OPERATIONS
+        )
+        and not (
+            scope == "plugin"
+            and getattr(request.state, "dashboard_operation", None)
+            in CHAT_EXTENSION_OPERATIONS
         )
     ):
         raise ApiError("Insufficient account permission", status_code=403)

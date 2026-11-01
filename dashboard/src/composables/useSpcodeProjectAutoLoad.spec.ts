@@ -45,6 +45,23 @@ function envelope(extra: Record<string, unknown>) {
 describe("useSpcodeProjectAutoLoad silentLoad", () => {
   beforeEach(() => postMock().mockReset());
 
+  it("uses the server-resolved personal project directory", async () => {
+    postMock().mockResolvedValueOnce(
+      envelope({ success: true, loaded: true, directory: "/owned/workspace" }),
+    );
+    const { silentLoad } = useSpcodeProjectAutoLoad();
+    const result = await silentLoad({
+      project: makeProject({
+        workspace_type: "project",
+        workspace_path: null,
+        resolved_workspace_path: "/owned/workspace",
+      }),
+      umo: "owned-chat",
+    });
+    expect(result?.loaded).toBe(true);
+    expect(postMock().mock.calls[0][1].directory).toBe("/owned/workspace");
+  });
+
   it("treats same-directory path variants as idempotent success", async () => {
     // Backend resolved "F:\proj"; workspace_path is "f:/proj/" — same dir.
     postMock().mockResolvedValueOnce(

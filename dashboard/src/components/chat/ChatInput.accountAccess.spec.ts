@@ -33,11 +33,9 @@ describe("shared ChatInput for ordinary accounts", () => {
   it("sends text through the existing composer and does not initialize management APIs", async () => {
     const profileList = vi.spyOn(configProfileApi, "list");
     const routes = vi.spyOn(configRouteApi, "list");
-    const settings = vi
-      .spyOn(chatApi, "getUiSettings")
-      .mockResolvedValue({
-        data: { status: "ok", data: { can_edit: false } },
-      } as never);
+    const settings = vi.spyOn(chatApi, "getUiSettings").mockResolvedValue({
+      data: { status: "ok", data: { can_edit: false } },
+    } as never);
     vi.spyOn(chatApi, "listModels").mockResolvedValue({
       data: { status: "ok", data: [] },
     } as never);
@@ -75,7 +73,10 @@ describe("shared ChatInput for ordinary accounts", () => {
     });
     await wrapper.get('button[aria-label="发送"]').trigger("click");
     expect(wrapper.emitted("send")).toEqual([[[]]]);
-    expect(wrapper.find(".input-area__status-row").exists()).toBe(false);
+    expect(wrapper.find(".input-area__status-row").exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "FileAccessModeChip" }).exists()).toBe(
+      false,
+    );
     expect(wrapper.find(".composer-toolbar__left").exists()).toBe(true);
     expect(profileList).not.toHaveBeenCalled();
     expect(routes).not.toHaveBeenCalled();

@@ -1254,7 +1254,6 @@
       :session-id="currSessionId"
     />
     <GitDiffSidebar
-      v-if="!isOrdinaryUser"
       ref="gitDiffSidebarRef"
       v-model="gitDiffSidebarOpen"
       :file-reference="fileReferenceNavigation"
@@ -1431,6 +1430,7 @@ import { useProjects } from "@/composables/useProjects";
 import { useDragUpload } from "@/composables/useDragUpload";
 import { useProviderModelSelection } from "@/composables/useProviderModelSelection";
 import { useChatHeaderStore } from "@/stores/chatHeader";
+import { projectRelativePathStrict } from "@/composables/pathUtils";
 import { useCustomizerStore } from "@/stores/customizer";
 import ProviderChatCompletionPanel from "@/components/provider/ProviderChatCompletionPanel.vue";
 import {
@@ -1570,9 +1570,6 @@ const {
 // ── goal 循环状态 (右上角 Goal 按钮 + GoalSidebar) ─────────────
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
-const managementSessionId = computed(() =>
-  isOrdinaryUser.value ? "" : currSessionId.value,
-);
 const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 
 // ── Background shell session awareness (app-bar indicator) ──────
@@ -1580,7 +1577,7 @@ const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 // stream on every session lifecycle transition; GET /shell-sessions is only
 // the cold-start path on session switch.
 const { currentSessions: shellSessions, applyPushedShellSessions } =
-  useShellSessions(managementSessionId);
+  useShellSessions(currSessionId);
 const goalSidebarOpen = computed({
   get: () => chatHeader.goalSidebarOpen,
   set: (open: boolean) => chatHeader.SET_GOAL_SIDEBAR_OPEN(open),
@@ -2382,8 +2379,7 @@ const {
     if (sessionId === currSessionId.value) chatError.value = message;
   },
   onToolCall: (sessionId, tool, runId) => {
-    if (!isOrdinaryUser.value)
-      void autoOpenAgentBrowser(sessionId, tool, runId);
+    void autoOpenAgentBrowser(sessionId, tool, runId);
   },
   onSessionsChanged: getSessions,
   onGoalStateChanged: applyPushedGoal,
@@ -2446,7 +2442,7 @@ const {
     // follow-up tickets. Runs for any session, not just the visible
     // one.
     void flushPendingFollowUps(sessionId);
-    if (!isOrdinaryUser.value && sessionId === currSessionId.value) {
+    if (sessionId === currSessionId.value) {
       // Bug fix (2026-06-23, elecvoid243): spcodeStatus.refresh()
       // must receive the full umo (not be called bare). Without it,
       // backend's fallback branch returns the most-recently-loaded
@@ -2477,7 +2473,7 @@ const {
       // it in lockstep with the plan/build state above. Unlike the
       // plugin endpoints, the core route requires a umo — no bare
       // refresh fallback — so guard with the resolved value.
-      if (resolvedUmo) {
+      if (resolvedUmo && !isOrdinaryUser.value) {
         void fileAccessMode.refresh(resolvedUmo);
       } else {
         fileAccessMode.reset();
@@ -2486,10 +2482,10 @@ const {
       // Mirrors project/plan: stream-end is the authoritative sync
       // point — the bot has just finished processing any
       // `/codegraph start|stop|set` command the user dispatched.
-      void codegraphStatus.refresh();
+      if (!isOrdinaryUser.value) void codegraphStatus.refresh();
       // Vivado MCP state is also global. Refresh on stream-end so the
       // chip catches up after the bot processes any `/vivado` command.
-      void vivadoStatus.refresh();
+      if (!isOrdinaryUser.value) void vivadoStatus.refresh();
     }
   },
 });
@@ -2799,12 +2795,13 @@ async function scrollToMessageFromQuery() {
 }
 
 watch(
-  [chatHeaderTitle, chatHeaderSubtitle, activeProject],
-  ([title, subtitle, project]) => {
+  [chatHeaderTitle, chatHeaderSubtitle, activeProject, currSessionId],
+  ([title, subtitle, project, sessionId]) => {
     chatHeader.SET_CONTEXT({
       title,
       subtitle,
       projectId: project?.project_id,
+      sessionId,
     });
   },
   { immediate: true },
@@ -2833,6 +2830,8 @@ watch(
 watch(
   accountSessionRevision,
   () => {
+    fileComments.resetForSession();
+    fileReferences.resetForSession();
     closeThreadPanel();
     sideChats.value = [];
     projectSessions.value = [];
@@ -3070,7 +3069,6 @@ watch(
 watch(
   currSessionId,
   async (next) => {
-    if (isOrdinaryUser.value) return;
     if (!next) {
       spcodeStatus.reset();
       // Plan/build is strictly per-umo; clearing the session wipes
@@ -3127,7 +3125,7 @@ watch(
     // session switch so the chip matches the core backend. The core
     // route requires a umo, so mirror the guard above: reset in the
     // unresolved-umo window rather than refresh bare.
-    if (resolvedUmo) {
+    if (resolvedUmo && !isOrdinaryUser.value) {
       await fileAccessMode.refresh(resolvedUmo);
     } else {
       fileAccessMode.reset();
@@ -3167,8 +3165,10 @@ async function tryAutoLoadSpcodeForSession(
   assertCurrentAccount(chatAccountRevision);
   const project = resolveProjectForAutoLoad(sessionId);
   if (!project) return;
-  if (project.workspace_type !== "custom") return;
-  if (!project.workspace_path) return;
+  if (project.workspace_type !== "custom" && project.workspace_type !== "project") return;
+  const directory = project.workspace_type === "project"
+    ? project.resolved_workspace_path : project.workspace_path;
+  if (!directory) return;
 
   // Dirty tag fast path (2026-09-01): if this session already completed a
   // project load for the same project under the SAME backend process,
@@ -3184,6 +3184,7 @@ async function tryAutoLoadSpcodeForSession(
   const statusBeforeLoad = await spcodeStatus.refresh(umo);
   assertCurrentAccount(chatAccountRevision);
   if (
+    projectRelativePathStrict(statusBeforeLoad.directory ?? "", directory) === "" &&
     isSessionLoadedTag(sessionId, project.project_id, statusBeforeLoad.bootId)
   ) {
     return;
@@ -4417,13 +4418,11 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const userText = draft.value.trim();
-    const commentText = isOrdinaryUser.value ? "" : fileComments.formatForLLM();
+    const commentText = fileComments.formatForLLM();
     // 2026-08-09 drag-reference: references block goes last (after the
     // comments block) — UserPlainMessagePart parses them back in this
     // same order.
-    const referenceText = isOrdinaryUser.value
-      ? ""
-      : fileReferences.formatForLLM();
+    const referenceText = fileReferences.formatForLLM();
     // 2026-10-01 skill-guide: queued one-shot skill nudges (consumed by
     // ChatInput's send funnel) ride along as a final "[Requested skills]"
     // block so the history view shows what was queued — the plugin's
@@ -4432,7 +4431,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     // contract parsed back by utils/parseSkillRequests.ts — keep the two
     // byte-for-byte aligned.
     const skillText =
-      !isOrdinaryUser.value && skillNames.length
+      skillNames.length
         ? [
             "[Requested skills]",
             "The user explicitly queued the following skill(s) for this request.",
@@ -4470,9 +4469,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts: MessagePart[] = buildOutgoingParts(
-      isOrdinaryUser.value ? userText : text,
-    );
+    const outgoingParts: MessagePart[] = buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
     writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({

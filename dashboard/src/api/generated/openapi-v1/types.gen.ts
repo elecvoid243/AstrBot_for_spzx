@@ -218,16 +218,52 @@ export type ChatChunkUploadRequest = {
 };
 
 export type ChatFileChangeDiffRequest = {
+    /**
+     * Owned WebChat conversation identifier, required for account sessions.
+     */
+    session_id?: string;
+    /**
+     * Server-produced bot history record in this conversation.
+     */
+    message_id?: (number | string);
+    /**
+     * Active owned generation, used before its history record is saved.
+     */
+    run_id?: string;
     path: string;
     backup_id?: string;
     expect_sha256?: string;
 };
 
 export type ChatFileChangeRestoreRemovedRequest = {
+    /**
+     * Owned WebChat conversation identifier, required for account sessions.
+     */
+    session_id?: string;
+    /**
+     * Server-produced bot history record in this conversation.
+     */
+    message_id?: (number | string);
+    /**
+     * Active owned generation, used before its history record is saved.
+     */
+    run_id?: string;
     path: string;
 };
 
 export type ChatFileChangeRestoreRequest = {
+    /**
+     * Owned WebChat conversation identifier, required for account sessions.
+     */
+    session_id?: string;
+    /**
+     * Server-produced bot history record in this conversation.
+     */
+    message_id?: (number | string);
+    /**
+     * Active owned generation, used before its history record is saved.
+     */
+    run_id?: string;
     path: string;
     backup_id: string;
     expect_sha256?: string;
@@ -239,6 +275,18 @@ export type ChatFileChangeStatusItem = {
 };
 
 export type ChatFileChangeStatusRequest = {
+    /**
+     * Owned WebChat conversation identifier, required for account sessions.
+     */
+    session_id?: string;
+    /**
+     * Server-produced bot history record in this conversation.
+     */
+    message_id?: (number | string);
+    /**
+     * Active owned generation, used before its history record is saved.
+     */
+    run_id?: string;
     files?: Array<ChatFileChangeStatusItem>;
 };
 
@@ -3785,6 +3833,16 @@ export type SyncModelScopeMcpServersData = {
 export type SyncModelScopeMcpServersResponse = (SuccessEnvelope);
 
 export type SyncModelScopeMcpServersError = unknown;
+
+export type GetSkillGuideInventoryData = {
+    query: {
+        umo: string;
+    };
+};
+
+export type GetSkillGuideInventoryResponse = (SuccessEnvelope);
+
+export type GetSkillGuideInventoryError = unknown;
 
 export type GetSkillGuideActiveData = {
     query: {

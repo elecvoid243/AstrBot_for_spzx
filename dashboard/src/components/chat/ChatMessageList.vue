@@ -472,6 +472,10 @@
                 <FileChangeSummaryCard
                   v-if="messageContent(msg).fileChangeSummary?.length"
                   :files="messageContent(msg).fileChangeSummary || []"
+                  :session-id="sessionId"
+                  :message-id="msg.id"
+                  :run-id="messageContent(msg).fileChangeRunId"
+                  :source-unavailable="messageContent(msg).fileChangeSourceUnavailable"
                   :is-dark="isDark"
                 />
               </template>

@@ -5,11 +5,24 @@ import ts from "typescript";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick, ref } from "vue";
 import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
+import { pluginExtensionApi } from "@/api/v1";
+import { projectRelativePathStrict } from "@/composables/pathUtils";
+import { useSpcodeProjectStatus } from "@/composables/useSpcodeProjectStatus";
+import {
+  useSpcodeProjectAutoLoad,
+  isSessionLoadedTag,
+  markSessionLoadedTag,
+  ProjectLoadError,
+} from "@/composables/useSpcodeProjectAutoLoad";
 import {
   accountSessionRevision,
   assertCurrentAccount,
   resetAccountSession,
 } from "@/utils/accountSession";
+
+vi.mock("@/api/v1", () => ({
+  pluginExtensionApi: { get: vi.fn(), post: vi.fn() },
+}));
 
 const script = parse(
   readFileSync(resolve("src/components/chat/Chat.vue"), "utf8"),
@@ -29,6 +42,7 @@ const code = ast.statements
         "openLiveMode",
         "flushPendingFollowUps",
         "flushOldestPendingFollowUp",
+        "tryAutoLoadSpcodeForSession",
       ].includes(node.name!.text),
   )
   .map(
@@ -92,6 +106,93 @@ beforeEach(() => {
 });
 
 describe("queued follow-ups and live mode use the target's prepared configuration", () => {
+  it.each(["project", "custom"])(
+    "repairs a changed %s workspace even when status is rejected and the old load tag exists",
+    async (workspaceType) => {
+      const origin = "webchat:FriendMessage:webchat!owner!session";
+      const project = {
+        project_id: "same-project",
+        workspace_type: workspaceType,
+        workspace_path: "C:/owned/current",
+        resolved_workspace_path: "C:/owned/current",
+      };
+      const spcodeStatus = useSpcodeProjectStatus();
+      const get = vi.mocked(pluginExtensionApi.get);
+      const post = vi.mocked(pluginExtensionApi.post);
+      get.mockReset();
+      post.mockReset();
+      get.mockResolvedValueOnce({
+        data: {
+          data: {
+            loaded: true,
+            directory: "C:/owned/old",
+            umo: origin,
+            boot_id: "same-boot",
+          },
+        },
+      } as never);
+      await spcodeStatus.refresh(origin);
+      markSessionLoadedTag("session", project.project_id, "same-boot");
+      get.mockRejectedValueOnce({ response: { status: 403 } });
+      get.mockResolvedValueOnce({
+        data: {
+          data: {
+            loaded: true,
+            directory: "C:/owned/current",
+            umo: origin,
+            boot_id: "same-boot",
+          },
+        },
+      } as never);
+      post.mockResolvedValueOnce({
+        data: {
+          data: {
+            success: false,
+            reason: "no_project_loaded",
+            previous_directory: "C:/owned/old",
+          },
+        },
+      } as never);
+      post.mockResolvedValueOnce({
+        data: {
+          data: { success: true, loaded: true, directory: "C:/owned/current" },
+        },
+      } as never);
+      const dependencies = {
+        resolveProjectForAutoLoad: () => project,
+        chatAccountRevision: accountSessionRevision.value,
+        accountSessionRevision,
+        assertCurrentAccount,
+        spcodeStatus,
+        projectRelativePathStrict,
+        isSessionLoadedTag,
+        markSessionLoadedTag,
+        silentLoad: useSpcodeProjectAutoLoad().silentLoad,
+        operationProgress: { startPolling: vi.fn() },
+        ProjectLoadError,
+        toast: { error: vi.fn() },
+        tm: (key: string) => key,
+      };
+      const autoLoad = new Function(
+        ...Object.keys(dependencies),
+        `${code}; return tryAutoLoadSpcodeForSession;`,
+      )(...Object.values(dependencies));
+      await autoLoad(origin, "session");
+      expect(post.mock.calls.map((call) => [call[0], call[1]])).toMatchObject([
+        [
+          "spcode/project-load",
+          { directory: "C:/owned/current", umo: origin, force: false },
+        ],
+        [
+          "spcode/project-load",
+          { directory: "C:/owned/current", umo: origin, force: true },
+        ],
+      ]);
+      expect(spcodeStatus.status.value.directory).toBe("C:/owned/current");
+      expect(dependencies.toast.error).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["flushPendingFollowUps", "flushOldestPendingFollowUp"])(
     "retains unsent queued text when %s cannot prepare configuration",
     async (action) => {
@@ -101,7 +202,9 @@ describe("queued follow-ups and live mode use the target's prepared configuratio
       s.fail(new Error("Configuration unavailable"));
       await pending;
       expect(
-        s.pendingFollowUps.itemsFor("current").map((item: { text: string }) => item.text),
+        s.pendingFollowUps
+          .itemsFor("current")
+          .map((item: { text: string }) => item.text),
       ).toEqual(["private queued text"]);
       expect(s.sendMessageStream).not.toHaveBeenCalled();
     },

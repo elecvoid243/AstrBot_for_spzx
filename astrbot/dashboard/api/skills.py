@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from astrbot.core import logger
 from astrbot.core.skills.skill_guide import (
+    _filter_plugin_skills,
     build_active_payload,
     guide_state,
     resolve_active_skills,
@@ -14,12 +15,17 @@ from astrbot.core.skills.skill_guide import (
     validate_load_skill,
 )
 from astrbot.dashboard.async_utils import run_maybe_async
-from astrbot.dashboard.responses import error, ok
+from astrbot.dashboard.responses import ApiError, error, ok
 from astrbot.dashboard.schemas import (
     SkillByNameUpdateRequest,
     SkillFileUpdateRequest,
     SkillNeoRequest,
     SkillUpdateRequest,
+)
+from astrbot.dashboard.services.chat_service import (
+    ChatServiceError,
+    build_thread_unified_msg_origin,
+    build_webchat_unified_msg_origin,
 )
 from astrbot.dashboard.services.skills_service import (
     SkillArchive,
@@ -580,8 +586,83 @@ async def delete_dashboard_neo_skill_release(
 # --- Skill guide (one-shot skill nudges) ------------------------------------
 
 
+async def _owned_skill_origin(request: Request, auth: AuthContext, umo: str) -> str:
+    """Resolve the real conversation before consuming or queuing skill state.
+
+    Args:
+        request: Current Dashboard request.
+        auth: Trusted account or independent scoped API key.
+        umo: Requested unified message origin.
+
+    Returns:
+        The verified origin, constructed from its persisted owner.
+
+    Raises:
+        ApiError: The origin is malformed, foreign or unavailable.
+    """
+    if auth.via == "api_key":
+        return umo
+    session_id = umo.rsplit("!", 1)[-1]
+    try:
+        session = await request.app.state.services.chat.require_owned_chat_session(
+            auth.username, session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    origin = (
+        build_thread_unified_msg_origin(auth.username, session_id)
+        if hasattr(session, "thread_id")
+        else build_webchat_unified_msg_origin(session)
+    )
+    if umo != origin:
+        raise ApiError("Resource is unavailable", status_code=403)
+    return origin
+
+
+@router.get("/skill-guide/inventory")
+async def skill_guide_inventory(
+    request: Request,
+    umo: str,
+    auth: AuthContext = Depends(require_skill_scope),
+    service: SkillsService = Depends(get_service),
+):
+    """List skill consumption metadata without granting skill management.
+
+    Args:
+        request: Current Dashboard request.
+        umo: Requested owned conversation origin.
+        auth: Authenticated caller.
+        service: Existing skill resolver.
+
+    Returns:
+        Skill names and descriptions used by the existing command palette.
+    """
+    umo = await _owned_skill_origin(request, auth, umo)
+    context = service.core_lifecycle.star_context
+    skills = await resolve_all_skills(context, umo)
+    from astrbot.core.star.star import star_registry
+
+    available = {
+        skill.name
+        for skill in _filter_plugin_skills(
+            skills,
+            context.get_config(umo=umo)
+            .get("provider_settings", {})
+            .get("plugin_set", ["*"]),
+            star_registry,
+        )
+    }
+    payload = build_active_payload(skills, None)
+    for item, skill in zip(payload["skills"], skills):
+        item["active"] = bool(getattr(skill, "active", True))
+        if skill.source_type == "plugin":
+            item["plugin_active"] = skill.name in available
+    return ok(payload)
+
+
 @router.get("/skill-guide/active")
 async def skill_guide_active(
+    request: Request,
     umo: str,
     _auth: AuthContext = Depends(require_skill_scope),
     service: SkillsService = Depends(get_service),
@@ -591,6 +672,7 @@ async def skill_guide_active(
     Args:
         umo: Unified message origin of the session.
     """
+    umo = await _owned_skill_origin(request, _auth, umo)
     context = service.core_lifecycle.star_context
     try:
         skills, persona = await run_maybe_async(
@@ -621,6 +703,7 @@ async def skill_guide_load(
     if not skill_name:
         return error("missing skill_name")
 
+    umo = await _owned_skill_origin(request, _auth, umo)
     context = service.core_lifecycle.star_context
     try:
         all_skills = await run_maybe_async(lambda: resolve_all_skills(context, umo))
@@ -644,4 +727,5 @@ async def skill_guide_clear(
     umo = str(body.get("umo") or "").strip()
     if not umo:
         return error("missing umo")
+    umo = await _owned_skill_origin(request, _auth, umo)
     return ok({"cleared": guide_state.clear(umo)})

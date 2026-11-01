@@ -512,6 +512,8 @@ async def build_turn_change_summary(
             if entry.get("kind") == "remove":
                 by_path[path]["kind"] = "remove"
                 by_path[path]["backup_id"] = ""
+                by_path[path]["_recycle_entry"] = entry.get("_recycle_entry")
+                by_path[path]["_removed_sha256"] = entry.get("_removed_sha256")
             elif by_path[path]["kind"] == "remove" and path in created_paths:
                 # Removed and then written again, so the file is back and the
                 # removal no longer describes the net change.
@@ -538,6 +540,10 @@ async def build_turn_change_summary(
             summaries.append(summary)
             continue
         if summary["kind"] == "remove":
+            summary["restore_available"] = bool(entry.get("_recycle_entry"))
+            if entry.get("_recycle_entry"):
+                summary["_recycle_entry"] = entry["_recycle_entry"]
+                summary["_removed_sha256"] = entry.get("_removed_sha256")
             # The file no longer exists: nothing to hash or diff. The card
             # renders a removal row and offers recycle-bin restore — unless the
             # turn is the one that created it, in which case create-then-remove

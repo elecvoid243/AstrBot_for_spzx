@@ -15,7 +15,9 @@
 import { computed, inject, nextTick, ref, watch, type ComputedRef } from "vue";
 import { storeToRefs } from "pinia";
 import { useCustomizerStore } from "@/stores/customizer";
-import { pluginExtensionApi } from "@/api/v1";
+import { fileApi, pluginExtensionApi } from "@/api/v1";
+import { httpClient } from "@/api/http";
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import { useSpcodeSession } from "@/composables/useSpcodeSession";
 import { useToast } from "@/utils/toast";
 import { useModuleI18n } from "@/i18n/composables";
@@ -187,6 +189,7 @@ async function onViewRevisionClick(
 ): Promise<void> {
   e.stopPropagation();
   if (exporting.value) return;
+  const revision = accountSessionRevision.value;
   exporting.value = true;
   try {
     const worktree = openOnDiskRoot?.value ?? null;
@@ -201,9 +204,10 @@ async function onViewRevisionClick(
       ...(worktree ? { worktree } : {}),
     });
     const envelope = resp.data as {
-      data?: { success?: boolean; abs_path?: string; reason?: string };
+      data?: { success?: boolean; abs_path?: string; reason?: string; attachment_id?: string };
     };
     const payload = envelope?.data;
+    assertCurrentAccount(revision);
     if (!payload?.success || !payload.abs_path) {
       toast.error(
         tm("spcodeProjectLoad.diffSidebar.viewRevision.exportFailed", {
@@ -213,7 +217,18 @@ async function onViewRevisionClick(
       return;
     }
     // 打开成功的 toast 由 useOpenOnDisk 统一负责(复用同一通道)
-    void openOnDisk(payload.abs_path, f.path);
+    if (payload.attachment_id) {
+      const file = await httpClient.get(fileApi.contentUrl(payload.attachment_id), { responseType: "blob" });
+      assertCurrentAccount(revision);
+      const url = URL.createObjectURL(file.data);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = f.path.split("/").pop() || "file";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } else if (localStorage.getItem("role") === "admin") {
+      void openOnDisk(payload.abs_path, f.path);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     toast.error(

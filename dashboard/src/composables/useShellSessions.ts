@@ -1,4 +1,5 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import { chatApi } from "@/api/v1";
 import type { ShellSessionListItem } from "@/components/chat/message_list_comps/shell_session_tools/format";
 
@@ -21,6 +22,11 @@ import type { ShellSessionListItem } from "@/components/chat/message_list_comps/
 export function useShellSessions(currentSessionId: Ref<string | undefined>) {
   const sessionsBySession = ref<Record<string, ShellSessionListItem[]>>({});
   const inflight = new Set<string>();
+  const revision = accountSessionRevision.value;
+  watch(accountSessionRevision, () => {
+    sessionsBySession.value = {};
+    inflight.clear();
+  }, { flush: "sync" });
 
   /** Sessions of the active session; empty when absent/unknown. */
   const currentSessions: ComputedRef<ShellSessionListItem[]> = computed(() => {
@@ -41,7 +47,7 @@ export function useShellSessions(currentSessionId: Ref<string | undefined>) {
     sessionId: string,
     sessions: ShellSessionListItem[],
   ) {
-    if (!sessionId) return;
+    if (!sessionId || revision !== accountSessionRevision.value) return;
     sessionsBySession.value = {
       ...sessionsBySession.value,
       [sessionId]: sessions,
@@ -54,6 +60,7 @@ export function useShellSessions(currentSessionId: Ref<string | undefined>) {
     inflight.add(sessionId);
     try {
       const response = await chatApi.getSessionShellSessions(sessionId);
+      assertCurrentAccount(revision);
       applyPushedShellSessions(sessionId, response.data?.data?.sessions ?? []);
     } catch (error) {
       // Keep the previous cached state; the next push or session switch

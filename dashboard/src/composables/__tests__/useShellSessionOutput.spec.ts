@@ -11,8 +11,22 @@ vi.mock("@/api/v1", () => ({
 
 import { chatApi } from "@/api/v1";
 import { useShellSessionOutput } from "../useShellSessionOutput";
+import { resetAccountSession } from "@/utils/accountSession";
 
 const getOutput = vi.mocked(chatApi.getShellSessionOutput);
+
+it("removes retained output and discards an in-flight response on account switch", async () => {
+  let finish!: (value: unknown) => void;
+  getOutput.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }) as any);
+  const output = useShellSessionOutput("private-session", "private-shell");
+  output.outputText.value = "old private output";
+  const pending = output.start();
+  resetAccountSession(false);
+  finish(peek("late private output", 19));
+  await pending;
+  expect(output.outputText.value).toBe("");
+  expect(output.sessionClosed.value).toBe(true);
+});
 
 function peek(
   stdout: string,

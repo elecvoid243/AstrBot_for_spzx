@@ -228,6 +228,8 @@ export interface ChatContent {
    * delivered via the `file_changes` stream event and persisted as
    * `content.file_changes`. */
   fileChangeSummary?: FileChangeSummaryFile[];
+  fileChangeRunId?: string;
+  fileChangeSourceUnavailable?: boolean;
   /** Plugin context injections observed on `on_llm_request`, delivered via
    * the `llm_request_injections` stream event and persisted as
    * `content.llm_request_injections`. */
@@ -1433,6 +1435,7 @@ export function useMessages(options: UseMessagesOptions) {
         parseLlmRequestInjections(
           content.llm_request_injections ?? content.llmRequestInjections,
         ) ?? undefined,
+      fileChangeSourceUnavailable: Boolean(content._imported),
       fileChangeSummary:
         (content.fileChangeSummary as FileChangeSummaryFile[] | undefined) ||
         (content.file_changes?.files as FileChangeSummaryFile[] | undefined),
@@ -2173,6 +2176,7 @@ export function useMessages(options: UseMessagesOptions) {
       if (connection)
         connection.precedingPlainText = snapshot.preceding_plain_text || "";
       botRecord.content = snapshotRecord.content;
+      botRecord.content.fileChangeRunId = snapshot.run_id;
       botRecord.llm_checkpoint_id = snapshotRecord.llm_checkpoint_id;
       void resolveRecordMedia([botRecord]);
       return;
@@ -2216,6 +2220,7 @@ export function useMessages(options: UseMessagesOptions) {
       const files = parseFileChangesPayload(data);
       if (files.length) {
         messageContent(botRecord).fileChangeSummary = files;
+        messageContent(botRecord).fileChangeRunId = connection?.runId;
       }
       return;
     }

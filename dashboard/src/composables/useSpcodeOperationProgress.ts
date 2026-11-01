@@ -55,19 +55,21 @@ const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS = 200_000; // codegraph MCP restart can take 180 s
 let timer: ReturnType<typeof setTimeout> | null = null;
 let deadline = 0;
+let pollingRevision = 0;
 
 function stopTimer(): void {
+  pollingRevision += 1;
   if (timer !== null) {
     clearTimeout(timer);
     timer = null;
   }
 }
 
-function scheduleNext(umo: string): void {
-  timer = setTimeout(() => void pollOnce(umo), POLL_INTERVAL_MS);
+function scheduleNext(umo: string, revision: number): void {
+  timer = setTimeout(() => void pollOnce(umo, revision), POLL_INTERVAL_MS);
 }
 
-async function pollOnce(umo: string): Promise<void> {
+async function pollOnce(umo: string, revision: number): Promise<void> {
   let terminal = false;
   try {
     const res = await pluginExtensionApi.get<{
@@ -77,6 +79,7 @@ async function pollOnce(umo: string): Promise<void> {
       messages?: string[];
       reason?: string | null;
     }>("spcode/operation-progress", { params: { umo } });
+    if (revision !== pollingRevision) return;
     const data = res.data?.data;
     if (data && data.status !== "idle") {
       progress.value = {
@@ -92,6 +95,7 @@ async function pollOnce(umo: string): Promise<void> {
     // Network hiccup: keep polling until the deadline; the POST's own
     // error handling covers real failures.
   }
+  if (revision !== pollingRevision) return;
   if (!terminal && Date.now() > deadline) {
     progress.value = { ...progress.value, status: "failed", reason: "network_timeout" };
     terminal = true;
@@ -100,7 +104,7 @@ async function pollOnce(umo: string): Promise<void> {
     stopTimer();
     return;
   }
-  scheduleNext(umo);
+  scheduleNext(umo, revision);
 }
 
 export function useSpcodeOperationProgress() {
@@ -120,7 +124,7 @@ export function useSpcodeOperationProgress() {
     stopTimer();
     progress.value = { ...IDLE, status: "running" };
     deadline = Date.now() + timeoutMs;
-    void pollOnce(umo); // immediate first poll; chain continues via scheduleNext
+    void pollOnce(umo, pollingRevision);
   }
 
   function stopPolling(): void {
@@ -135,3 +139,8 @@ export function useSpcodeOperationProgress() {
 
   return { progress, isProjectOpRunning, startPolling, stopPolling, clear };
 }
+
+window.addEventListener?.("astrbot:account-changed", () => {
+  stopTimer();
+  progress.value = { ...IDLE };
+});

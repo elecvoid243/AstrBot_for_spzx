@@ -292,6 +292,7 @@ function handleEnter(): void {
     // inside the same open cycle does not refetch). refresh() soft-fails,
     // so an unreachable plugin renders the inline load-failed state.
     void guide.refresh();
+    void guide.refreshAllSkills();
   }
 }
 

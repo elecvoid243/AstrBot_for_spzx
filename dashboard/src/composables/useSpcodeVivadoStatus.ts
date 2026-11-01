@@ -186,3 +186,5 @@ export function useSpcodeVivadoStatus() {
     reset: resetVivadoStatus,
   }
 }
+
+window.addEventListener?.("astrbot:account-changed", () => { resetVivadoStatus(); });

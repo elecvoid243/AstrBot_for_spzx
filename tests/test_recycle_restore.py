@@ -8,14 +8,17 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import pytest
 
 from astrbot.core.tools.computer_tools import recycle_restore as frr
-
 
 # ── 合成回收站工具 ────────────────────────────────────
 
@@ -173,8 +176,7 @@ def test_restore_linux_xdg_trashinfo(tmp_path: Path, monkeypatch) -> None:
     files_dir.mkdir()
     info = info_dir / "b.txt.trashinfo"
     info.write_text(
-        f"[Trash Info]\nPath={quote(str(original))}\n"
-        "DeletionDate=20260914T10:00:00\n",
+        f"[Trash Info]\nPath={quote(str(original))}\nDeletionDate=20260914T10:00:00\n",
         encoding="utf-8",
     )
     (files_dir / "b.txt").write_bytes(b"trashed")
@@ -240,3 +242,142 @@ def test_restore_unsupported_platform(monkeypatch) -> None:
     result = frr.restore_from_recycle_bin("/tmp/somefile")
     assert result["ok"] is False
     assert "不支持" in result["error"]
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_concurrent_deletions_never_guess_an_ambiguous_new_entry(
+    tmp_path, monkeypatch, directory
+):
+    """Hold A after its trash move while B recreates and deletes the same path."""
+    from astrbot.core.tools.computer_tools import fs
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    recycle_root = tmp_path / "recycle"
+    folder = recycle_root / "$Recycle.Bin" / "synthetic-sid"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(frr, "_windows_drive_roots", lambda: [recycle_root])
+    original = tmp_path / "same-path"
+    if directory:
+        original.mkdir()
+        (original / "empty").mkdir()
+        (original / "content.txt").write_text("A original")
+    else:
+        original.write_text("A original")
+    a_moved, b_captured = Event(), Event()
+
+    def trash(path):
+        number = 2 if a_moved.is_set() else 1
+        (folder / f"$I{number}.bin").write_bytes(_make_i_bytes_v4(str(original)))
+        Path(path).replace(folder / f"$R{number}.bin")
+        if number == 1:
+            a_moved.set()
+            assert b_captured.wait(10)
+
+    monkeypatch.setattr(
+        fs, "_load_send2trash", lambda: SimpleNamespace(send2trash=trash)
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        a = executor.submit(fs._remove_path, str(original), confirm=True, max_items=50)
+        assert a_moved.wait(10)
+        if directory:
+            original.mkdir()
+            (original / "content.txt").write_text("B newer")
+        else:
+            original.write_text("B newer")
+        b = executor.submit(fs._remove_path, str(original), confirm=True, max_items=50)
+        b_result = b.result(timeout=10)
+        b_captured.set()
+        a_result = a.result(timeout=10)
+    assert a_result["ok"] and a_result["_recycle_entry"] is None
+    assert b_result["ok"] and b_result["_recycle_entry"]
+    restored = frr.restore_from_recycle_bin(
+        str(original),
+        expected_entry=b_result["_recycle_entry"],
+        expected_sha256=b_result["_removed_sha256"],
+    )
+    assert restored["ok"]
+    assert (folder / "$R1.bin").exists()
+    assert (
+        (original / "content.txt").read_text() == "B newer"
+        if directory
+        else original.read_text() == "B newer"
+    )
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_exact_recycle_evidence_rejects_modified_data_occupied_destination_and_links(
+    tmp_path, monkeypatch, directory
+):
+    """A stale card never selects another item or overwrites an occupied path."""
+    from astrbot.core.tools.computer_tools import fs
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    recycle_root = tmp_path / "recycle"
+    folder = recycle_root / "$Recycle.Bin" / "synthetic-sid"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(frr, "_windows_drive_roots", lambda: [recycle_root])
+    original = tmp_path / "original"
+    if directory:
+        original.mkdir()
+        (original / "nested.txt").write_text("original")
+    else:
+        original.write_text("original")
+
+    def trash(path):
+        (folder / "$I1.bin").write_bytes(_make_i_bytes_v4(str(original)))
+        Path(path).replace(folder / "$R1.bin")
+
+    monkeypatch.setattr(
+        fs, "_load_send2trash", lambda: SimpleNamespace(send2trash=trash)
+    )
+    deleted = fs._remove_path(str(original), confirm=True, max_items=50)
+    assert deleted["ok"] and deleted["_recycle_entry"]
+    original.write_text("occupied")
+    refused = frr.restore_from_recycle_bin(
+        str(original),
+        expected_entry=deleted["_recycle_entry"],
+        expected_sha256=deleted["_removed_sha256"],
+    )
+    assert not refused["ok"]
+    assert original.read_text() == "occupied"
+    original.unlink()
+    data = folder / "$R1.bin"
+    changed = data / "nested.txt" if directory else data
+    changed.write_text("other account changed content")
+    refused = frr.restore_from_recycle_bin(
+        str(original),
+        expected_entry=deleted["_recycle_entry"],
+        expected_sha256=deleted["_removed_sha256"],
+    )
+    assert not refused["ok"]
+    assert not original.exists()
+    assert changed.read_text() == "other account changed content"
+    # Metadata reuse cannot reuse the proof, even if the raw original path matches.
+    (folder / "$I1.bin").write_bytes(_make_i_bytes_v4(str(original), size=999))
+    assert not frr.restore_from_recycle_bin(
+        str(original),
+        expected_entry=deleted["_recycle_entry"],
+        expected_sha256=deleted["_removed_sha256"],
+    )["ok"]
+
+
+def test_directory_evidence_refuses_links_without_following_the_target(tmp_path):
+    root = tmp_path / "directory"
+    root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "private.txt").write_text("private")
+    try:
+        (root / "link").symlink_to(external, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            pytest.skip("Creating a test symlink is unavailable")
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(root / "link"), str(external)],
+            check=True,
+            capture_output=True,
+            creationflags=0x08000000,
+        )
+    with pytest.raises(OSError, match="identity|Linked"):
+        frr.recycle_content_evidence(root)
+    assert (external / "private.txt").read_text() == "private"

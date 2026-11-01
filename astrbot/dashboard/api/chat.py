@@ -667,10 +667,37 @@ async def open_chat_local_folder(
     return ok({"path": str(folder)})
 
 
+async def _authorize_file_change(payload, auth, service, files, *, removed=False):
+    """Validate a whole request before reading or modifying any file.
+
+    Args:
+        payload: Source conversation and message/run reference.
+        auth: Authenticated caller; independent API keys retain their semantics.
+        service: Chat business service.
+        files: All requested file descriptors.
+        removed: Whether a deletion result is required.
+
+    Returns:
+        Trusted descriptors, or an empty list for independent API keys.
+
+    Raises:
+        ApiError: The source or any requested file is unavailable.
+    """
+    if auth is not None and auth.via != "api_key":
+        try:
+            return await service.require_file_change_source(
+                auth.username, payload, files, removed=removed
+            )
+        except (ChatServiceError, OSError, ValueError) as exc:
+            raise ApiError("File change is unavailable", status_code=403) from exc
+    return []
+
+
 @router.post("/chat/file-changes/diff")
 async def chat_file_change_diff(
     payload: ChatFileChangeDiffRequest,
     _auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
 ):
     """Unified diff between a turn's baseline backup and the current file.
 
@@ -684,6 +711,7 @@ async def chat_file_change_diff(
     so this adds no extra I/O; binary, oversized or truncated-patch cases
     omit the key and the UI disables the overlay slot.
     """
+    await _authorize_file_change(payload, _auth, service, [payload.model_dump()])
     raw_path = payload.path.strip()
     if not raw_path:
         return error("Missing file path")
@@ -714,6 +742,12 @@ async def chat_file_change_diff(
         current_bytes = await asyncio.to_thread(target.read_bytes)
     except OSError as exc:
         return error(f"Failed to read file: {exc}")
+    if (
+        _auth is not None
+        and _auth.via != "api_key"
+        and (hashlib.sha256(current_bytes).hexdigest() != payload.expect_sha256)
+    ):
+        return error("File has changed since this result; reload its latest result")
     result = render_unified_diff(baseline_bytes, current_bytes, raw_path)
     # A truncated patch cannot drive a faithful overlay: the missing hunks
     # would silently disappear from the full-file view. Binary baselines have
@@ -733,6 +767,7 @@ async def chat_file_change_diff(
 async def chat_file_change_restore(
     payload: ChatFileChangeRestoreRequest,
     _auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
 ):
     """Restore a file to its pre-turn baseline backup (undo one file).
 
@@ -740,6 +775,9 @@ async def chat_file_change_restore(
     a pre-restore snapshot before overwriting, and a checksum mismatch
     (file changed after the agent run) aborts the restore.
     """
+    await _authorize_file_change(payload, _auth, service, [payload.model_dump()])
+    if _auth is not None and _auth.via != "api_key" and not payload.expect_sha256:
+        return error("A recorded checksum is required to restore this file")
     raw_path = payload.path.strip()
     if not raw_path:
         return error("Missing file path")
@@ -781,16 +819,31 @@ async def chat_file_change_restore(
 async def chat_file_change_restore_removed(
     payload: ChatFileChangeRestoreRemovedRequest,
     _auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
 ):
     """Restore a file that was removed via the recycle bin (undo one delete).
 
     Delegates to the recycle-bin backend; a whitespace-only path is rejected
     before any filesystem work.
     """
+    entries = await _authorize_file_change(
+        payload, _auth, service, [{"path": payload.path}], removed=True
+    )
     raw_path = payload.path.strip()
     if not raw_path:
         return error("Missing file path")
-    result = await asyncio.to_thread(restore_from_recycle_bin, raw_path)
+    if _auth is not None and _auth.via != "api_key":
+        entry_id = entries[0].get("_recycle_entry") if entries else None
+        if not entry_id:
+            raise ApiError("Exact deletion record is unavailable", status_code=403)
+        result = await asyncio.to_thread(
+            restore_from_recycle_bin,
+            raw_path,
+            expected_entry=entry_id,
+            expected_sha256=entries[0].get("_removed_sha256"),
+        )
+    else:
+        result = await asyncio.to_thread(restore_from_recycle_bin, raw_path)
     if result.get("ok"):
         return ok({"restored_path": result["restored_path"]})
     return error(result["error"])
@@ -800,6 +853,7 @@ async def chat_file_change_restore_removed(
 async def chat_file_change_status(
     payload: ChatFileChangeStatusRequest,
     _auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
 ):
     """Report which turn-changed files already match their baseline.
 
@@ -809,6 +863,9 @@ async def chat_file_change_status(
     rollback tool, or a manual revert). Derived per request, so the badge
     survives reloads and never goes stale.
     """
+    await _authorize_file_change(
+        payload, _auth, service, [item.model_dump() for item in payload.files]
+    )
     history = get_history_manager()
     result: list[dict] = []
     for item in payload.files[:50]:

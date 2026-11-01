@@ -733,6 +733,8 @@ def _record_changed_file(
     kind: str,
     runtime: str,
     backup_id: str,
+    recycle_entry: str | None = None,
+    removed_sha256: str | None = None,
 ) -> None:
     """Record one successful file mutation for the turn summary.
 
@@ -748,6 +750,8 @@ def _record_changed_file(
             ``remove``.
         runtime: ``local`` or ``sandbox``.
         backup_id: Id of the pre-change backup; empty when none exists.
+        recycle_entry: Exact platform trash record for a successful deletion.
+        removed_sha256: Digest of the regular file before deletion.
     """
     extra = getattr(context.context, "extra", None)
     if not isinstance(extra, dict):
@@ -758,6 +762,11 @@ def _record_changed_file(
             "kind": kind,
             "runtime": runtime,
             "backup_id": backup_id,
+            **(
+                {"_recycle_entry": recycle_entry, "_removed_sha256": removed_sha256}
+                if recycle_entry
+                else {}
+            ),
             "ts": time.time(),
         }
     )
@@ -1544,13 +1553,38 @@ def _remove_path(resolved: str, *, confirm: bool, max_items: int) -> dict:
     directories need ``confirm`` and are refused with a proposal when they hold
     more than ``max_items`` files.
     """
+    from .recycle_restore import (
+        get_recycle_entries,
+        get_recycle_entry,
+        recycle_content_evidence,
+    )
+
     p = Path(resolved)
+    previous_entries = get_recycle_entries(resolved)
+    try:
+        source_stat = p.lstat()
+        source_identity = (source_stat.st_dev, source_stat.st_ino)
+        original_sha256 = recycle_content_evidence(p)
+    except OSError:
+        source_identity = None
+        original_sha256 = None
 
     if p.is_file():
         try:
             size = p.stat().st_size
             _load_send2trash().send2trash(str(p))
-            return {"ok": True, "deleted": 1, "freed": _human_size(size)}
+            return {
+                "ok": True,
+                "deleted": 1,
+                "freed": _human_size(size),
+                "_recycle_entry": get_recycle_entry(
+                    resolved,
+                    previous_entries,
+                    original_sha256,
+                    source_identity=source_identity,
+                ),
+                "_removed_sha256": original_sha256,
+            }
         except FileNotFoundError:
             return {"ok": False, "error": f"路径不存在: {resolved}"}
         except PermissionError:
@@ -1610,6 +1644,13 @@ def _remove_path(resolved: str, *, confirm: bool, max_items: int) -> dict:
             return {
                 "ok": True,
                 "deleted": file_count,
+                "_recycle_entry": get_recycle_entry(
+                    resolved,
+                    previous_entries,
+                    original_sha256,
+                    source_identity=source_identity,
+                ),
+                "_removed_sha256": original_sha256,
                 "freed": _human_size(total_size),
             }
         except FileNotFoundError:
@@ -1823,7 +1864,15 @@ class FileRemoveTool(FunctionTool):
             max_items=max_items_value,
         )
         if result.get("ok"):
-            _record_changed_file(context, resolved, "remove", "local", "")
+            _record_changed_file(
+                context,
+                resolved,
+                "remove",
+                "local",
+                "",
+                recycle_entry=result.pop("_recycle_entry", None),
+                removed_sha256=result.pop("_removed_sha256", None),
+            )
         return _json_result(result)
 
 

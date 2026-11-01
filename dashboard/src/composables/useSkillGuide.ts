@@ -33,7 +33,8 @@
 // Last-Modified: 2026-10-25
 
 import { computed, ref } from 'vue'
-import { skillApi, skillGuideApi } from '@/api/v1'
+import { skillGuideApi } from '@/api/v1'
+import { accountSessionRevision, assertCurrentAccount } from '@/utils/accountSession'
 
 /** One entry of GET /api/v1/skill-guide/active -> data.skills[]. */
 export interface SkillGuideSkill {
@@ -106,7 +107,7 @@ const queued = ref<string[]>([])
  */
 const showAll = ref(false)
 try {
-  showAll.value = localStorage.getItem(SHOW_ALL_KEY) === '1'
+  showAll.value = localStorage.getItem(`${SHOW_ALL_KEY}:${localStorage.getItem("resource_owner") || "anonymous"}`) === '1'
 } catch {
   showAll.value = false
 }
@@ -173,6 +174,8 @@ export function useSkillGuide() {
       return // same session — nothing to reload
     }
     sessionUmo.value = umo
+    allSkills.value = []
+    allSkillsFetched = false
     queued.value = []
     persona.value = null
     skills.value = []
@@ -201,8 +204,11 @@ export function useSkillGuide() {
     if (!umo) return
     loading.value = true
     loadFailed.value = false
+    const revision = accountSessionRevision.value
     try {
       const res = await skillGuideApi.active<SkillGuideActivePayload>(umo)
+      assertCurrentAccount(revision)
+      if (umo !== sessionUmo.value) return
       const data = res.data?.data
       if (!data || !Array.isArray(data.skills)) {
         throw new Error('malformed /skill-guide/active payload')
@@ -212,9 +218,9 @@ export function useSkillGuide() {
       available.value = true
     } catch {
       // Soft-fail: transient network error or backend without the feature.
-      loadFailed.value = true
+      if (revision === accountSessionRevision.value && umo === sessionUmo.value) loadFailed.value = true
     } finally {
-      loading.value = false
+      if (revision === accountSessionRevision.value && umo === sessionUmo.value) loading.value = false
     }
   }
 
@@ -226,7 +232,7 @@ export function useSkillGuide() {
   async function setShowAll(value: boolean): Promise<void> {
     showAll.value = value
     try {
-      localStorage.setItem(SHOW_ALL_KEY, value ? '1' : '0')
+      localStorage.setItem(`${SHOW_ALL_KEY}:${localStorage.getItem("resource_owner") || "anonymous"}`, value ? '1' : '0')
     } catch {
       // Ignore localStorage failures (private mode etc.).
     }
@@ -241,10 +247,15 @@ export function useSkillGuide() {
    * legacy array and the {skills: []} envelope shapes.
    */
   async function refreshAllSkills(): Promise<void> {
+    const umo = sessionUmo.value
+    if (!umo) return
+    const revision = accountSessionRevision.value
     allSkillsLoading.value = true
     allSkillsFailed.value = false
     try {
-      const res = await skillApi.list()
+      const res = await skillGuideApi.inventory<SkillGuideActivePayload>(umo)
+      assertCurrentAccount(revision)
+      if (umo !== sessionUmo.value) return
       const payload = res?.data?.data
       const list = Array.isArray(payload) ? payload : payload?.skills
       if (!Array.isArray(list)) {
@@ -277,9 +288,9 @@ export function useSkillGuide() {
       allSkillsFetched = true
     } catch {
       // Soft-fail: the menu keeps showing the persona-mounted list state.
-      allSkillsFailed.value = true
+      if (revision === accountSessionRevision.value && umo === sessionUmo.value) allSkillsFailed.value = true
     } finally {
-      allSkillsLoading.value = false
+      if (revision === accountSessionRevision.value && umo === sessionUmo.value) allSkillsLoading.value = false
     }
   }
 
@@ -316,7 +327,10 @@ export function useSkillGuide() {
     const umo = sessionUmo.value
     if (!umo) return false
     try {
+      const revision = accountSessionRevision.value
       const res = await skillGuideApi.load<SkillGuideLoadPayload>(umo, name)
+      assertCurrentAccount(revision)
+      if (umo !== sessionUmo.value) return false
       if (res.data?.status !== 'ok' || !res.data?.data?.queued) {
         throw new Error(res.data?.message ?? 'load failed')
       }
@@ -394,3 +408,12 @@ export function useSkillGuide() {
     reset,
   }
 }
+
+window.addEventListener?.('astrbot:account-changed', () => {
+  useSkillGuide().reset()
+  allSkills.value = []
+  allSkillsFetched = false
+  allSkillsLoading.value = false
+  allSkillsFailed.value = false
+  showAll.value = false
+})

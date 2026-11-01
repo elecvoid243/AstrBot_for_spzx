@@ -6088,6 +6088,32 @@
         "description": "**Required scope:** `mcp`"
       }
     },
+    "/api/v1/skill-guide/inventory": {
+      "get": {
+        "tags": [
+          "Skills"
+        ],
+        "summary": "List skill consumption metadata for an owned session",
+        "operationId": "getSkillGuideInventory",
+        "x-astrbot-scope": "skill",
+        "parameters": [
+          {
+            "name": "umo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `skill`"
+      }
+    },
     "/api/v1/skill-guide/active": {
       "get": {
         "tags": [
@@ -8886,6 +8912,25 @@
           "path"
         ],
         "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Owned WebChat conversation identifier, required for account sessions."
+          },
+          "message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Server-produced bot history record in this conversation."
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Active owned generation, used before its history record is saved."
+          },
           "path": {
             "type": "string"
           },
@@ -8905,6 +8950,25 @@
           "backup_id"
         ],
         "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Owned WebChat conversation identifier, required for account sessions."
+          },
+          "message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Server-produced bot history record in this conversation."
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Active owned generation, used before its history record is saved."
+          },
           "path": {
             "type": "string"
           },
@@ -8923,6 +8987,25 @@
           "path"
         ],
         "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Owned WebChat conversation identifier, required for account sessions."
+          },
+          "message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Server-produced bot history record in this conversation."
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Active owned generation, used before its history record is saved."
+          },
           "path": {
             "type": "string"
           }
@@ -8947,6 +9030,25 @@
       "ChatFileChangeStatusRequest": {
         "type": "object",
         "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Owned WebChat conversation identifier, required for account sessions."
+          },
+          "message_id": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Server-produced bot history record in this conversation."
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Active owned generation, used before its history record is saved."
+          },
           "files": {
             "type": "array",
             "items": {

@@ -43,6 +43,7 @@
         <div class="thread-messages-shell">
           <ChatMessageList
             :messages="messages"
+            :session-id="thread.thread_id"
             :is-dark="isDark"
             :is-streaming="sending"
           />
@@ -152,6 +153,7 @@ import { useMediaHandling } from "@/composables/useMediaHandling";
 import { useRecording } from "@/composables/useRecording";
 import { useToast } from "@/utils/toast";
 import type { Session } from "@/composables/useSessions";
+import { parseFileChangesPayload } from "@/utils/fileChangeTool";
 
 const accountRevision = accountSessionRevision.value;
 const props = defineProps<{
@@ -344,6 +346,7 @@ async function loadThread(threadId: string) {
       else state.messages.push(botRecord);
       const resumedBot =
         state.messages[existing >= 0 ? existing : state.messages.length - 1];
+      resumedBot.content.fileChangeRunId = run.run_id;
       const userRecord =
         [...state.messages]
           .reverse()
@@ -608,6 +611,12 @@ function normalizeRecord(record: any): ChatRecord {
       llmRequestInjections:
         content.llmRequestInjections || content.llm_request_injections,
       refs: content.refs,
+      fileChangeSummary:
+        content.fileChangeSummary || parseFileChangesPayload(content.file_changes),
+      fileChangeRunId: content.fileChangeRunId,
+      fileChangeSourceUnavailable: Boolean(
+        content._imported || content.fileChangeSourceUnavailable,
+      ),
     },
   };
 }
@@ -661,10 +670,23 @@ function processPayload(
     });
     botRecord.id = snapshot.id;
     botRecord.content = snapshot.content;
+    botRecord.content.fileChangeRunId = data.run_id;
     botRecord.llm_checkpoint_id = data.llm_checkpoint_id;
     return;
   }
-  if (type === "session_id" || type === "session_bound") return;
+  if (
+    type === "session_id" || type === "session_bound" || type === "run_started"
+  ) {
+    botRecord.content.fileChangeRunId =
+      normalized.run_id || data?.run_id || botRecord.content.fileChangeRunId;
+    return;
+  }
+
+  if (type === "file_changes" || chainType === "file_changes") {
+    markMessageStarted(botRecord);
+    botRecord.content.fileChangeSummary = parseFileChangesPayload(data);
+    return;
+  }
 
   if (type === "user_message_saved") {
     userRecord.id = data?.id || userRecord.id;

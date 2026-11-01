@@ -346,6 +346,7 @@ outline: deep
 | --- | --- | --- |
 | `GET` | `/api/v1/skill-guide/active` | — |
 | `POST` | `/api/v1/skill-guide/clear` | — |
+| `GET` | `/api/v1/skill-guide/inventory` | — |
 | `POST` | `/api/v1/skill-guide/load` | — |
 | `GET` | `/api/v1/skills` | — |
 | `POST` | `/api/v1/skills` | — |

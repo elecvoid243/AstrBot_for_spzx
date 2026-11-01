@@ -27,6 +27,7 @@
 -->
 <template>
   <div
+    v-if="accountRevision === accountSessionRevision"
     class="fcs-card"
     :class="{ 'fcs-card--dark': isDark, 'fcs-card--collapsed': collapsed }"
   >
@@ -115,7 +116,7 @@
             @click.stop="openOnDisk(file.path, basename(file.path))"
           />
           <v-btn
-            v-if="file.runtime === 'local'"
+            v-if="file.runtime === 'local' && isAdmin"
             icon="mdi-folder-open-outline"
             size="x-small"
             variant="text"
@@ -168,16 +169,41 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import DiffPreview from "./DiffPreview.vue";
-import { chatApi, pluginExtensionApi } from "@/api/v1";
+import { chatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 import { useOpenOnDisk } from "@/composables/useOpenOnDisk";
 import { useToast } from "@/utils/toast";
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import type { FileChangeSummaryFile } from "@/utils/fileChangeTool";
 
 const props = defineProps<{
   files: FileChangeSummaryFile[];
+  sessionId?: string;
+  messageId?: string | number;
+  runId?: string;
+  sourceUnavailable?: boolean;
   isDark?: boolean;
 }>();
+
+const accountRevision = accountSessionRevision.value;
+const isAdmin = localStorage.getItem("role") === "admin";
+const hasSource = computed(() => Boolean(props.sessionId && (
+  (props.messageId != null && /^\d+$/.test(String(props.messageId))) || props.runId
+)));
+const source = computed(() => ({
+  session_id: props.sessionId,
+  ...(props.messageId != null && /^\d+$/.test(String(props.messageId))
+    ? { message_id: props.messageId }
+    : { run_id: props.runId }),
+}));
+watch(accountSessionRevision, () => {
+  expanded.clear();
+  reverted.clear();
+  for (const cache of [diffs, baseContents, overlayModes]) {
+    for (const key of Object.keys(cache)) delete cache[key];
+  }
+  confirmingPath.value = "";
+}, { flush: "sync" });
 
 const { tm } = useModuleI18n("features/chat");
 const { openOnDisk, openFolder } = useOpenOnDisk("fileChange");
@@ -242,7 +268,7 @@ function isReverted(file: FileChangeSummaryFile): boolean {
 }
 
 function canExpand(file: FileChangeSummaryFile): boolean {
-  return file.diff_available && !isReverted(file);
+  return hasSource.value && !props.sourceUnavailable && !!file.sha256 && file.diff_available && !isReverted(file);
 }
 
 /** 叠加需要非空基准原文;created / 空基准没有可叠在下面的旧内容。 */
@@ -252,17 +278,19 @@ function canOverlay(file: FileChangeSummaryFile): boolean {
 
 /** Removals have no file to open (only the parent folder survives). */
 function canOpenFile(file: FileChangeSummaryFile): boolean {
-  return file.runtime === "local" && file.kind !== "remove";
+  return localStorage.getItem("role") === "admin" && file.runtime === "local" && file.kind !== "remove";
 }
 
 function canUndo(file: FileChangeSummaryFile): boolean {
+  if (props.sourceUnavailable || !hasSource.value) return false;
   if (file.kind === "remove") {
     // Recycle-bin restore does not depend on a baseline backup.
-    return file.runtime === "local" && !statusPending.value;
+    return file.runtime === "local" && file.restore_available === true && !statusPending.value;
   }
   return (
     file.runtime === "local" &&
     !!file.backup_id &&
+    !!file.sha256 &&
     !isReverted(file) &&
     !statusPending.value
   );
@@ -285,7 +313,9 @@ async function loadDiff(file: FileChangeSummaryFile) {
       file.path,
       file.backup_id,
       file.sha256,
+      source.value,
     );
+    assertCurrentAccount(accountRevision);
     const envelope = resp.data;
     if (envelope?.status === "error") {
       toast.error(
@@ -311,19 +341,6 @@ async function loadDiff(file: FileChangeSummaryFile) {
   }
 }
 
-// Old cores without /chat/file-changes/restore-removed answer 404; a transport
-// failure (no HTTP response) is treated the same so the plugin endpoint gets a
-// chance on older deployments. Business-level error envelopes resolve normally
-// (HTTP 200) and never reach here, so they do not trigger the fallback.
-function isMissingCoreRouteError(error: unknown): boolean {
-  const err = error as {
-    response?: { status?: number };
-    request?: unknown;
-  };
-  if (err?.response?.status === 404) return true;
-  return err?.response === undefined && err?.request !== undefined;
-}
-
 async function undoFile(file: FileChangeSummaryFile) {
   // Two-click inline confirmation: first click arms, second click fires.
   if (confirmingPath.value !== file.path) {
@@ -335,28 +352,18 @@ async function undoFile(file: FileChangeSummaryFile) {
   try {
     let envelope: any;
     if (file.kind === "remove") {
-      // Removals are undone through the core recycle-bin route. Cores that
-      // predate /chat/file-changes/restore-removed answer 404 (or fail at the
-      // network layer); fall back to the spcode plugin endpoint then.
-      try {
-        const resp = await chatApi.restoreRemovedFileChange(file.path);
-        envelope = resp.data;
-      } catch (error) {
-        if (!isMissingCoreRouteError(error)) throw error;
-        const resp = await pluginExtensionApi.post(
-          "spcode/file-remove/restore",
-          { path: file.path },
-        );
-        envelope = resp.data;
-      }
+      const resp = await chatApi.restoreRemovedFileChange(file.path, source.value);
+      envelope = resp.data;
     } else {
       const resp = await chatApi.restoreFileChange(
         file.path,
         file.backup_id,
         file.sha256,
+        source.value,
       );
       envelope = resp.data;
     }
+    assertCurrentAccount(accountRevision);
     if (envelope?.status === "error" || envelope?.data?.success === false) {
       const message =
         envelope?.data?.stderr || envelope?.message || envelope?.data?.reason || "";
@@ -387,6 +394,7 @@ function markReverted(path: string) {
  * current bytes equal its baseline backup is reverted, however that
  * happened (our undo, the LLM's rollback tool, or a manual revert). */
 async function refreshRevertStatus() {
+  if (props.sourceUnavailable || !hasSource.value) return;
   const candidates = props.files.filter(
     (f) => f.runtime === "local" && f.backup_id && !reverted.has(f.path),
   );
@@ -395,7 +403,9 @@ async function refreshRevertStatus() {
   try {
     const resp = await chatApi.fileChangeStatus(
       candidates.map((f) => ({ path: f.path, backup_id: f.backup_id })),
+      source.value,
     );
+    assertCurrentAccount(accountRevision);
     const envelope = resp.data;
     if (envelope?.status === "ok" && Array.isArray(envelope.data?.files)) {
       for (const item of envelope.data.files) {
@@ -412,9 +422,9 @@ async function refreshRevertStatus() {
 }
 
 watch(
-  () => props.files,
-  (files) => {
-    if (files.length) void refreshRevertStatus();
+  () => [props.files, props.messageId, props.runId],
+  () => {
+    if (props.files.length) void refreshRevertStatus();
   },
   { immediate: true },
 );

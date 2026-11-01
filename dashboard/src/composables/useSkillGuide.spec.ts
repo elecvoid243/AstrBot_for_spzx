@@ -10,18 +10,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/api/v1", () => ({
   skillGuideApi: {
     active: vi.fn(),
+    inventory: vi.fn(),
     load: vi.fn(),
     clear: vi.fn(),
   },
   skillApi: { list: vi.fn() },
 }));
 
-import { skillGuideApi, skillApi } from "@/api/v1";
+import { skillGuideApi } from "@/api/v1";
+import { resetAccountSession } from "@/utils/accountSession";
 import { useSkillGuide } from "@/composables/useSkillGuide";
 
 const activeMock = skillGuideApi.active as ReturnType<typeof vi.fn>;
 const loadMock = skillGuideApi.load as ReturnType<typeof vi.fn>;
-const listMock = skillApi.list as ReturnType<typeof vi.fn>;
+const listMock = skillGuideApi.inventory as ReturnType<typeof vi.fn>;
 
 const UMO = "webchat:FriendMessage:webchat!alice!sess-1";
 
@@ -91,6 +93,19 @@ async function primeSession() {
 function candidateNames(): string[] {
   return guide.candidateSkills.value.map((skill) => skill.name);
 }
+
+it("clears all skill results and rejects a late queue response after account switch", async () => {
+  await primeSession();
+  let finish!: (value: unknown) => void;
+  loadMock.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const pending = guide.queueSkill("pdf");
+  resetAccountSession(false);
+  finish({ data: { status: "ok", data: { queued: true } } });
+  expect(await pending).toBe(false);
+  expect(guide.queued.value).toEqual([]);
+  expect(guide.allSkills.value).toEqual([]);
+  expect(guide.skills.value).toEqual([]);
+});
 
 beforeEach(async () => {
   activeMock.mockReset();

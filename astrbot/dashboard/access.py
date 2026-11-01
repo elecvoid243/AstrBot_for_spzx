@@ -37,6 +37,21 @@ PROJECT_FIELDS = {
     "spcode_no_agentsmd",
     "spcode_no_codegraph",
 }
+
+CHAT_TOOL_OPERATIONS = {
+    "get_chat_session_shell_sessions",
+    "get_chat_shell_session_output",
+    "terminate_chat_shell_session",
+    "discard_chat_shell_session",
+    "chat_file_change_diff",
+    "chat_file_change_restore",
+    "chat_file_change_restore_removed",
+    "chat_file_change_status",
+    "skill_guide_active",
+    "skill_guide_inventory",
+    "skill_guide_load",
+    "skill_guide_clear",
+}
 PROJECT_THREAD_OPERATIONS = {
     "list_chat_projects": (set(), set()),
     "list_dashboard_chat_projects": (set(), set()),
@@ -102,10 +117,21 @@ PROJECT_THREAD_OPERATIONS = {
     ),
 }
 
+CHAT_EXTENSION_OPERATIONS = {
+    "get_plugin_extension_route",
+    "post_plugin_extension_route",
+    "put_plugin_extension_route",
+    "patch_plugin_extension_route",
+    "delete_plugin_extension_route",
+    "dashboard_plugin_extension_route",
+}
+
 # Endpoint names, rather than URL prefixes or the broad API-key chat scope.
 USER_OPERATIONS = (
     FILE_OPERATIONS
     | PROJECT_THREAD_OPERATIONS.keys()
+    | CHAT_TOOL_OPERATIONS
+    | CHAT_EXTENSION_OPERATIONS
     | {
         "login",
         "dashboard_login",
@@ -266,6 +292,58 @@ async def validate_account_request(request: Request, account) -> None:
                 or any(not isinstance(value, bool) for value in flags.values())
             ):
                 raise ApiError("Unsupported chat flags", status_code=400)
+        return
+    if operation in CHAT_EXTENSION_OPERATIONS:
+        # The shared dispatcher validates exact methods, fields, owned origins
+        # and secondary resources before invoking an audited consumer handler.
+        return
+    if operation in CHAT_TOOL_OPERATIONS:
+        query_fields = {
+            "get_chat_shell_session_output": {"cursor", "max_chars", "yield_time_ms"},
+            "skill_guide_active": {"umo"},
+            "skill_guide_inventory": {"umo"},
+        }.get(operation, set())
+        if set(request.query_params) - query_fields:
+            raise ApiError("Unsupported chat query", status_code=400)
+        if request.method == "POST":
+            fields = {
+                "skill_guide_load": {"umo", "skill_name"},
+                "skill_guide_clear": {"umo"},
+                "chat_file_change_diff": {
+                    "session_id",
+                    "message_id",
+                    "run_id",
+                    "path",
+                    "backup_id",
+                    "expect_sha256",
+                },
+                "chat_file_change_restore": {
+                    "session_id",
+                    "message_id",
+                    "run_id",
+                    "path",
+                    "backup_id",
+                    "expect_sha256",
+                },
+                "chat_file_change_restore_removed": {
+                    "session_id",
+                    "message_id",
+                    "run_id",
+                    "path",
+                },
+                "chat_file_change_status": {
+                    "session_id",
+                    "message_id",
+                    "run_id",
+                    "files",
+                },
+            }.get(operation, set())
+            try:
+                payload = await request.json() if await request.body() else {}
+            except ValueError as exc:
+                raise ApiError("Invalid chat payload", status_code=400) from exc
+            if not isinstance(payload, dict) or set(payload) - fields:
+                raise ApiError("Unsupported chat fields", status_code=400)
         return
     runtime_fields = {
         "stop_chat_session": set(),

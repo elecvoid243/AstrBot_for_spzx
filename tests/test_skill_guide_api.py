@@ -88,6 +88,7 @@ def client(monkeypatch):
     )
     app.dependency_overrides[require_skill_scope] = lambda: SimpleNamespace(
         username="alice",
+        via="api_key",
     )
     with TestClient(app) as test_client:
         yield test_client

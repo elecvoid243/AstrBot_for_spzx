@@ -24,8 +24,10 @@ None,Windows 枚举所有盘符,Linux 取 XDG 数据目录。
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
+import stat as stat_module
 import sys
 import urllib.parse
 from pathlib import Path
@@ -118,37 +120,116 @@ def _iter_windows_meta_files(root: Path):
         return
 
 
-def _restore_windows(raw: str, recycle_root: str | None) -> dict:
-    if recycle_root is not None:
-        roots = [Path(recycle_root)]
-    else:
-        roots = _windows_drive_roots()
+def recycle_content_evidence(path: Path) -> str:
+    """Describe a file's bytes or the identities of a directory's own contents.
 
+    Args:
+        path: Source or recycled object, without following directory symlinks.
+
+    Returns:
+        File SHA256, or a directory metadata digest prefixed with ``dir:``.
+
+    Raises:
+        OSError: Object evidence cannot be read completely.
+    """
+    root_stat = path.lstat()
+    if (
+        stat_module.S_ISLNK(root_stat.st_mode)
+        or getattr(root_stat, "st_file_attributes", 0) & 0x400
+    ):
+        raise OSError("Linked recycled objects cannot provide stable evidence")
+    if stat_module.S_ISREG(root_stat.st_mode):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    if not path.is_dir():
+        raise OSError("Unsupported recycled object")
+    digest = hashlib.sha256()
+    # Moving a directory within its filesystem preserves these object IDs.
+    # Metadata is sufficient to detect replacement without hashing every file.
+    pending = [path]
+    while pending:
+        item = pending.pop()
+        stat = item.lstat()
+        if (
+            not stat.st_ino
+            or stat_module.S_ISLNK(stat.st_mode)
+            or getattr(stat, "st_file_attributes", 0) & 0x400
+        ):
+            raise OSError("Stable directory object identity is unavailable")
+        if stat_module.S_ISDIR(stat.st_mode):
+            pending.extend(sorted(item.iterdir(), reverse=True))
+        elif not stat_module.S_ISREG(stat.st_mode):
+            raise OSError("Unsupported directory object")
+        digest.update(
+            f"{item.relative_to(path)}:{stat.st_dev}:{stat.st_ino}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode()
+        )
+    return "dir:" + digest.hexdigest()
+
+
+def _recycle_entry_identity(meta: Path, data_file: Path) -> str:
+    """Bind a recycle record to its metadata and actual recycled object.
+
+    Args:
+        meta: Platform recycle metadata file.
+        data_file: Recycled file or directory referred to by that metadata.
+
+    Returns:
+        Opaque identity including object identity, size and modification time.
+
+    Raises:
+        OSError: Stable identity is unavailable or either object is linked.
+    """
+    meta_stat = meta.lstat()
+    data_stat = data_file.lstat()
+    for attributes in (meta_stat, data_stat):
+        if (
+            not attributes.st_ino
+            or stat_module.S_ISLNK(attributes.st_mode)
+            or getattr(attributes, "st_file_attributes", 0) & 0x400
+        ):
+            raise OSError("Stable recycle object identity is unavailable")
+    identity = f"{meta.resolve()}:{meta_stat.st_dev}:{meta_stat.st_ino}:{meta_stat.st_mtime_ns}:{data_stat.st_dev}:{data_stat.st_ino}:{data_stat.st_mtime_ns}:{data_stat.st_size}"
+    return hashlib.sha256(identity.encode() + b"\0" + meta.read_bytes()).hexdigest()
+
+
+def _restore_windows(
+    raw: str,
+    recycle_root: str | None,
+    *,
+    expected_entry: str | None = None,
+    expected_sha256: str | None = None,
+    inspect_only: bool = False,
+) -> dict:
+    roots = [Path(recycle_root)] if recycle_root is not None else _windows_drive_roots()
     target = _normalize(raw)
-    candidates: list[tuple[float, Path, str, int]] = []
+    candidates = []
+    entries = {}
     for root in roots:
         for meta in _iter_windows_meta_files(root):
             parsed = _parse_i_file(meta)
-            if parsed is None:
+            if parsed is None or _normalize(parsed[0]) != target:
                 continue
-            original, size = parsed
-            if _normalize(original) != target:
-                continue
-            try:
-                mtime = meta.stat().st_mtime
-            except OSError:
-                mtime = 0.0
-            candidates.append((mtime, meta, original, size))
-
+            original, _ = parsed
+            data_file = meta.with_name("$R" + meta.name[2:])
+            if inspect_only or expected_entry:
+                identity = _recycle_entry_identity(meta, data_file)
+                entries[identity] = str(data_file)
+                if expected_entry and identity != expected_entry:
+                    continue
+            candidates.append((meta.stat().st_mtime, meta, original, data_file))
+    if inspect_only:
+        return {"ok": True, "entries": entries}
     if not candidates:
         return {
             "ok": False,
             "error": "回收站中未找到该路径的删除记录(可能已被清空或永久删除)",
         }
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, meta, original, _size = candidates[0]
-    data_file = meta.with_name("$R" + meta.name[2:])
+    _, meta, original, data_file = max(candidates, key=lambda item: item[0])
+    if expected_sha256 and (recycle_content_evidence(data_file) != expected_sha256):
+        return {"ok": False, "error": "Recycled content has changed"}
     return _move_back(data_file, meta, original)
 
 
@@ -157,7 +238,7 @@ def _move_back(data_file: Path, meta: Path, original: str) -> dict:
     dest = Path(original)
     if not data_file.exists():
         return {"ok": False, "error": "回收站记录存在但数据文件已丢失"}
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         return {"ok": False, "error": f"目标位置已存在同名文件: {original}"}
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -189,60 +270,159 @@ def _parse_trashinfo(info: Path) -> str | None:
     return None
 
 
-def _restore_linux(raw: str, recycle_root: str | None) -> dict:
-    if recycle_root is not None:
-        trash_root = Path(recycle_root)
-    else:
-        data_home = os.environ.get("XDG_DATA_HOME") or str(
-            Path.home() / ".local" / "share"
-        )
-        trash_root = Path(data_home).expanduser() / "Trash"
+def _restore_linux(
+    raw: str,
+    recycle_root: str | None,
+    *,
+    expected_entry: str | None = None,
+    expected_sha256: str | None = None,
+    inspect_only: bool = False,
+) -> dict:
+    data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    trash_root = (
+        Path(recycle_root)
+        if recycle_root is not None
+        else Path(data_home).expanduser() / "Trash"
+    )
     info_dir = trash_root / "info"
     files_dir = trash_root / "files"
-
     target = _normalize(raw)
-    best: tuple[float, Path, str, Path] | None = None
+    candidates = []
+    entries = {}
     if info_dir.is_dir():
         for info in info_dir.glob("*.trashinfo"):
             original = _parse_trashinfo(info)
             if original is None or _normalize(original) != target:
                 continue
-            try:
-                mtime = info.stat().st_mtime
-            except OSError:
-                mtime = 0.0
             trashed = files_dir / info.stem
-            if best is None or mtime > best[0]:
-                best = (mtime, info, original, trashed)
-
-    if best is None:
+            if inspect_only or expected_entry:
+                identity = _recycle_entry_identity(info, trashed)
+                entries[identity] = str(trashed)
+                if expected_entry and identity != expected_entry:
+                    continue
+            candidates.append((info.stat().st_mtime, info, original, trashed))
+    if inspect_only:
+        return {"ok": True, "entries": entries}
+    if not candidates:
         return {
             "ok": False,
             "error": "回收站中未找到该路径的删除记录(可能已被清空或永久删除)",
         }
-    _, info, original, trashed = best
+    _, info, original, trashed = max(candidates, key=lambda item: item[0])
+    if expected_sha256 and (recycle_content_evidence(trashed) != expected_sha256):
+        return {"ok": False, "error": "Recycled content has changed"}
     return _move_back(trashed, info, original)
 
 
 # ── 入口 ──────────────────────────────────────────────
 
 
-def restore_from_recycle_bin(path: str, *, recycle_root: str | None = None) -> dict:
-    """把 ``path`` 对应的最新一条回收站记录恢复到原位。
+def get_recycle_entries(
+    path: str, *, recycle_root: str | None = None
+) -> dict[str, str] | None:
+    """Snapshot candidate identities before or after one tool deletion.
 
     Args:
-        path: 被删除时的绝对路径。
-        recycle_root: 回收站根目录;仅供测试注入,生产传 None。
+        path: Original absolute path.
+        recycle_root: Synthetic trash root for platform tests.
 
     Returns:
-        成功 → ``{"ok": True, "restored_path": ...}``;
-        失败 → ``{"ok": False, "error": ...}``。
+        Opaque identities mapped to recycled data paths, or None on scan failure.
+    """
+    try:
+        if sys.platform == "win32":
+            result = _restore_windows(path, recycle_root, inspect_only=True)
+        elif sys.platform.startswith("linux"):
+            result = _restore_linux(path, recycle_root, inspect_only=True)
+        else:
+            return None
+        return result["entries"]
+    except OSError:
+        return None
+
+
+def get_recycle_entry(
+    path: str,
+    previous: dict[str, str] | None,
+    expected_sha256: str | None,
+    *,
+    source_identity: tuple[int, int] | None = None,
+    recycle_root: str | None = None,
+) -> str | None:
+    """Prove the single new recycle entry contains this tool's original file.
+
+    Args:
+        path: Original path just deleted by the tool.
+        previous: Complete candidate snapshot taken before deletion.
+        expected_sha256: File digest or directory metadata evidence before deletion.
+        source_identity: Filesystem device and object ID observed before deletion.
+        recycle_root: Synthetic trash root for tests.
+
+    Returns:
+        Exact new identity; None on ambiguity, content mismatch or unsupported data.
+    """
+    if (
+        previous is None
+        or not expected_sha256
+        or not source_identity
+        or not source_identity[1]
+    ):
+        return None
+    current = get_recycle_entries(path, recycle_root=recycle_root)
+    if current is None:
+        return None
+    added = current.keys() - previous.keys()
+    if len(added) != 1:
+        return None
+    identity = added.pop()
+    try:
+        data = Path(current[identity])
+        stat = data.lstat()
+        if (stat.st_dev, stat.st_ino) == source_identity and recycle_content_evidence(
+            data
+        ) == expected_sha256:
+            return identity
+    except OSError:
+        pass
+    return None
+
+
+def restore_from_recycle_bin(
+    path: str,
+    *,
+    recycle_root: str | None = None,
+    expected_entry: str | None = None,
+    expected_sha256: str | None = None,
+) -> dict:
+    """Restore an exact recorded recycle object or the legacy latest match.
+
+    Args:
+        path: Absolute path of the original deleted object.
+        recycle_root: Synthetic recycle root for tests; None in production.
+        expected_entry: Exact trusted recycle record; None preserves legacy tool behavior.
+        expected_sha256: Original file digest or directory object evidence from the deletion tool.
+
+    Returns:
+        Restored path on success, or an error preserving the recycled object.
     """
     raw = str(path).strip()
     if not raw:
         return {"ok": False, "error": "路径为空"}
-    if sys.platform == "win32":
-        return _restore_windows(raw, recycle_root)
-    if sys.platform.startswith("linux"):
-        return _restore_linux(raw, recycle_root)
+    try:
+        if sys.platform == "win32":
+            return _restore_windows(
+                raw,
+                recycle_root,
+                expected_entry=expected_entry,
+                expected_sha256=expected_sha256,
+            )
+        if sys.platform.startswith("linux"):
+            return _restore_linux(
+                raw,
+                recycle_root,
+                expected_entry=expected_entry,
+                expected_sha256=expected_sha256,
+            )
+    except OSError:
+        return {"ok": False, "error": "Exact recycle record is unavailable"}
     return {"ok": False, "error": "当前平台不支持从回收站自动恢复,请从废纸篓手动恢复"}

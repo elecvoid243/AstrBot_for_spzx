@@ -1,3 +1,5 @@
+import { getActivePinia } from "pinia";
+import { useChatHeaderStore } from "@/stores/chatHeader";
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type {
   ShellSessionListItem,
@@ -850,6 +852,12 @@ export const backupApi = {
   },
 };
 
+export interface FileChangeSource {
+  session_id?: string;
+  message_id?: string | number;
+  run_id?: string;
+}
+
 export const chatApi = {
   listModels() {
     return typed<any>(openApiV1.listChatModels());
@@ -1057,10 +1065,10 @@ export const chatApi = {
   openLocalFolder(path: string) {
     return typed<any>(openApiV1.openChatLocalFolder({ body: { path } }));
   },
-  fileChangeDiff(path: string, backupId: string, expectSha256: string) {
+  fileChangeDiff(path: string, backupId: string, expectSha256: string, source: FileChangeSource = {}) {
     return typed<any>(
       openApiV1.chatFileChangeDiff({
-        body: {
+        body: { ...source,
           path,
           backup_id: backupId,
           expect_sha256: expectSha256,
@@ -1068,10 +1076,10 @@ export const chatApi = {
       }),
     );
   },
-  restoreFileChange(path: string, backupId: string, expectSha256: string) {
+  restoreFileChange(path: string, backupId: string, expectSha256: string, source: FileChangeSource = {}) {
     return typed<any>(
       openApiV1.chatFileChangeRestore({
-        body: {
+        body: { ...source,
           path,
           backup_id: backupId,
           expect_sha256: expectSha256,
@@ -1079,14 +1087,14 @@ export const chatApi = {
       }),
     );
   },
-  restoreRemovedFileChange(path: string) {
+  restoreRemovedFileChange(path: string, source: FileChangeSource = {}) {
     return typed<any>(
-      openApiV1.chatFileChangeRestoreRemoved({ body: { path } }),
+      openApiV1.chatFileChangeRestoreRemoved({ body: { ...source, path } }),
     );
   },
-  fileChangeStatus(files: { path: string; backup_id: string }[]) {
+  fileChangeStatus(files: { path: string; backup_id: string }[], source: FileChangeSource = {}) {
     return typed<any>(
-      openApiV1.chatFileChangeStatus({ body: { files } }),
+      openApiV1.chatFileChangeStatus({ body: { ...source, files } }),
     );
   },
   updateMessage(
@@ -1707,11 +1715,20 @@ export const fileAccessApi = {
     ),
 }
 
+function chatExtensionConfig(pluginPath: string, config?: AxiosRequestConfig, data?: unknown): AxiosRequestConfig | undefined {
+  if (!pluginPath.startsWith('spcode/') || !getActivePinia()) return config;
+  const sessionId = useChatHeaderStore().sessionId;
+  const owner = localStorage.getItem('resource_owner');
+  const body = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+  if (!sessionId || !owner || body.umo || config?.params?.umo) return config;
+  return { ...config, params: { ...config?.params, umo: `webchat:FriendMessage:webchat!${owner}!${sessionId}` } };
+}
+
 export const pluginExtensionApi = {
   get<T = any>(pluginPath: string, config?: AxiosRequestConfig) {
     return apiV1Client.get<ApiEnvelope<T>>(
       `/plugins/extensions/${pluginExtensionPath(pluginPath)}`,
-      config,
+      chatExtensionConfig(pluginPath, config),
     );
   },
   post<T = any>(
@@ -1722,27 +1739,27 @@ export const pluginExtensionApi = {
     return apiV1Client.post<ApiEnvelope<T>>(
       `/plugins/extensions/${pluginExtensionPath(pluginPath)}`,
       data,
-      config,
+      chatExtensionConfig(pluginPath, config, data),
     );
   },
   put<T = any>(pluginPath: string, data?: unknown, config?: AxiosRequestConfig) {
     return apiV1Client.put<ApiEnvelope<T>>(
       `/plugins/extensions/${pluginExtensionPath(pluginPath)}`,
       data,
-      config,
+      chatExtensionConfig(pluginPath, config, data),
     );
   },
   patch<T = any>(pluginPath: string, data?: unknown, config?: AxiosRequestConfig) {
     return apiV1Client.patch<ApiEnvelope<T>>(
       `/plugins/extensions/${pluginExtensionPath(pluginPath)}`,
       data,
-      config,
+      chatExtensionConfig(pluginPath, config, data),
     );
   },
   delete<T = any>(pluginPath: string, config?: AxiosRequestConfig) {
     return apiV1Client.delete<ApiEnvelope<T>>(
       `/plugins/extensions/${pluginExtensionPath(pluginPath)}`,
-      config,
+      chatExtensionConfig(pluginPath, config, config?.data),
     );
   },
 };
@@ -1941,6 +1958,9 @@ export const skillApi = {
 };
 
 export const skillGuideApi = {
+  inventory<T = any>(umo: string) {
+    return typed<T>(openApiV1.getSkillGuideInventory({ query: { umo } }));
+  },
   active<T = any>(umo: string) {
     return typed<T>(openApiV1.getSkillGuideActive({ query: { umo } }));
   },

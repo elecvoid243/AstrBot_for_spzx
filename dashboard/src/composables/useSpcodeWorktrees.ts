@@ -175,12 +175,10 @@ export function useSpcodeWorktrees(): UseSpcodeWorktrees {
   async function refresh(): Promise<void> {
     if (!isMounted) return
 
-    // umo is optional: the backend's /spcode/git-worktrees endpoint
-    // falls back to the most-recently-loaded project when umo is null.
-    // Sending umo=null avoids the timing gap where setLoaded() has
-    // already flipped `loaded=true` (showing the "查看工作区" button)
-    // but the authoritative umo hasn't arrived yet via onStreamEnd.
+    // Wait for this component's conversation instead of querying the
+    // plugin's legacy instance-wide fallback during initial rendering.
     const umo = session.umo.value ?? null
+    if (!umo) return
 
     abortController?.abort()
     abortController = new AbortController()

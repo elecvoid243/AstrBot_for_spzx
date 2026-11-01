@@ -194,7 +194,15 @@ class ChatSubagentFollowUpRequest(OpenModel):
     text: str
 
 
-class ChatFileChangeDiffRequest(OpenModel):
+class ChatFileChangeSource(OpenModel):
+    """Identify the owned conversation and server-produced change record."""
+
+    session_id: str = ""
+    message_id: int | str | None = None
+    run_id: str | None = None
+
+
+class ChatFileChangeDiffRequest(ChatFileChangeSource):
     """Request the net diff for one file changed during an agent turn."""
 
     path: str
@@ -202,7 +210,7 @@ class ChatFileChangeDiffRequest(OpenModel):
     expect_sha256: str = ""
 
 
-class ChatFileChangeRestoreRequest(OpenModel):
+class ChatFileChangeRestoreRequest(ChatFileChangeSource):
     """Request to undo one file changed during an agent turn."""
 
     path: str
@@ -210,7 +218,7 @@ class ChatFileChangeRestoreRequest(OpenModel):
     expect_sha256: str = ""
 
 
-class ChatFileChangeRestoreRemovedRequest(OpenModel):
+class ChatFileChangeRestoreRemovedRequest(ChatFileChangeSource):
     """Request to restore one file removed via the recycle bin."""
 
     path: str
@@ -223,7 +231,7 @@ class ChatFileChangeStatusItem(OpenModel):
     backup_id: str = ""
 
 
-class ChatFileChangeStatusRequest(OpenModel):
+class ChatFileChangeStatusRequest(ChatFileChangeSource):
     """Batch request checking which turn-changed files match their baseline."""
 
     files: list[ChatFileChangeStatusItem] = []

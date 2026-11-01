@@ -131,7 +131,7 @@ const props = defineProps<{
 
 const { tm } = useModuleI18n("features/chat");
 
-const SHELL_KEY = "astrbot.spcode.gitDiffSidebar.terminalShell";
+const SHELL_KEY = `astrbot.spcode.gitDiffSidebar.terminalShell:${localStorage.getItem("resource_owner") || "anonymous"}`;
 
 function loadShell(): "powershell" | "cmd" {
   try {

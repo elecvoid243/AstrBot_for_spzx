@@ -184,11 +184,57 @@ class PluginRequest:
         self.path_params: dict[str, Any] = path_params or {}
         self.plugin_name: str | None = plugin_name
         self.username: str | None = username
+        # Set by Dashboard authentication, never copied from request parameters.
+        request_state = getattr(request_, "state", None)
+        from astrbot.core.utils.webchat_access import DashboardPrincipal
+
+        account = getattr(request_state, "dashboard_account", None)
+        self.account = (
+            DashboardPrincipal(
+                account.account_id,
+                account.resource_owner,
+                account.role,
+                account.username,
+            )
+            if account is not None
+            else None
+        )
+        self.chat_session = getattr(request_state, "chat_session", None)
+        self.chat_origin = getattr(request_state, "chat_origin", None)
         self.query: PluginMultiDict[str] = PluginMultiDict[str](
             list(request_.query_params.multi_items())
         )
         self._form_cache: PluginMultiDict[str] | None = None
         self._files_cache: PluginMultiDict[PluginUploadFile] | None = None
+
+    async def require_chat_workspace(self, directory: str | None = None) -> Path:
+        """Resolve the authenticated chat's workspace for an extension consumer.
+
+        Args:
+            directory: Actual directory resolved by the extension, if any.
+
+        Returns:
+            Canonical workspace derived from the owned persisted resource.
+
+        Raises:
+            PermissionError: The request has no trusted chat or workspace.
+        """
+        if self.account is None or self.chat_origin is None:
+            raise PermissionError("An authenticated chat is required")
+        from astrbot.dashboard.services.chatui_project_service import (
+            ChatUIProjectServiceError,
+        )
+
+        try:
+            (
+                _,
+                root,
+            ) = await self._request.app.state.services.chat_projects.require_chat_workspace(
+                self.account.resource_owner, self.chat_origin, directory=directory
+            )
+        except ChatUIProjectServiceError as exc:
+            raise PermissionError("Workspace is unavailable") from exc
+        return root
 
     async def body(self) -> bytes:
         """Read the raw request body.
@@ -207,6 +253,9 @@ class PluginRequest:
         Returns:
             Parsed JSON data or default.
         """
+        validated = getattr(getattr(self._request, "state", None), "chat_payload", None)
+        if validated is not None:
+            return validated
         try:
             return await self._request.json()
         except Exception:

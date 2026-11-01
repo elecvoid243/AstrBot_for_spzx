@@ -37,6 +37,8 @@ import { useSpcodeVivadoStatus } from "@/composables/useSpcodeVivadoStatus";
 import { useSpcodeWorktrees } from "@/composables/useSpcodeWorktrees";
 import type { SpcodeGitWorktree } from "@/composables/parseSpcodeWorktrees";
 
+const props = withDefaults(defineProps<{ consumerOnly?: boolean }>(), { consumerOnly: false });
+
 const { status } = useSpcodeProjectStatus();
 const { tm } = useModuleI18n("features/chat");
 const { progress } = useSpcodeOperationProgress();
@@ -268,7 +270,7 @@ const tcMemoryState = computed(() => {
  */
 function openCodegraphManager(): void {
   menuOpen.value = false;
-  emit("open-codegraph-dialog");
+  if (!props.consumerOnly) emit("open-codegraph-dialog");
 }
 
 // ── Worktree 激活 (2026-08-20) ────────────────────────────────────────
@@ -489,7 +491,7 @@ onBeforeUnmount(() => {
 
 function openLoadDialog(): void {
   if (isLoading.value) return; // one silent operation at a time
-  emit("open-load-dialog");
+  if (!props.consumerOnly) emit("open-load-dialog");
 }
 
 /** Dropdown "切换或重新加载项目…" entry: close the menu first. */
@@ -570,7 +572,7 @@ function handleManageProject(): void {
               progress.messages.join("\n")
             }}</pre>
             <div class="sp-menu-divider"></div>
-            <button type="button" class="sp-menu-row" @click="handleManageProject">
+            <button v-if="!props.consumerOnly" type="button" class="sp-menu-row" @click="handleManageProject">
               <v-icon size="14" class="sp-menu-row__icon">mdi-refresh</v-icon>
               <span class="sp-menu-row__label">{{
                 tm("spcodeProjectLoad.indicator.manageProject")
@@ -595,7 +597,7 @@ function handleManageProject(): void {
                 >{{ status.directory }}</span
               >
             </div>
-            <button type="button" class="sp-menu-row" @click="handleManageProject">
+            <button v-if="!props.consumerOnly" type="button" class="sp-menu-row" @click="handleManageProject">
               <v-icon size="14" class="sp-menu-row__icon">
                 {{ status.loaded ? "mdi-folder-sync-outline" : "mdi-folder-plus-outline" }}
               </v-icon>
@@ -688,6 +690,7 @@ function handleManageProject(): void {
               </div>
             </template>
 
+            <template v-if="!props.consumerOnly">
             <!-- ── 服务 ── -->
             <div class="sp-menu-divider"></div>
             <div class="sp-menu-title">
@@ -749,6 +752,7 @@ function handleManageProject(): void {
             <div class="sp-svc-row__detail" :title="tcMemoryState.detail">
               {{ tcMemoryState.detail }}
             </div>
+            </template>
           </template>
         </v-card-text>
       </v-card>

@@ -38,6 +38,22 @@ describe("useSpcodeOperationProgress", () => {
     expect(progress.value.operation).toBeNull();
   });
 
+  it("drops an old response and stops polling when the account changes", async () => {
+    let finish!: (value: unknown) => void;
+    const get = pluginExtensionApi.get as ReturnType<typeof vi.fn>;
+    get.mockReset();
+    get.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { progress, startPolling } = useSpcodeOperationProgress();
+    startPolling("account-a-chat");
+    window.dispatchEvent(new Event("astrbot:account-changed"));
+    finish({ data: { data: { status: "running", messages: ["Private result"] } } });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(progress.value.status).toBe("idle");
+    expect(progress.value.messages).toEqual([]);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
   it("polls and mirrors running progress", async () => {
     mockGet("running", {
       operation: "project_load",

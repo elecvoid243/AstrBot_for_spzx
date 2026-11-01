@@ -87,7 +87,7 @@ const FILES: FileChangeSummaryFile[] = [
 
 function mountCard(files: FileChangeSummaryFile[] = FILES) {
   return mount(FileChangeSummaryCard, {
-    props: { files, isDark: false },
+    props: { files, isDark: false, sessionId: "owned-session", messageId: 42 },
     global: { stubs: STUBS },
   });
 }
@@ -105,6 +105,14 @@ describe("FileChangeSummaryCard collapse toggle", () => {
         data: { diff: "@@ -1 +1 @@", truncated: false, base_content: "old\n" },
       },
     });
+  });
+
+  it("keeps checksum-free legacy results display-only", async () => {
+    const wrapper = mountCard([{ ...FILES[0], sha256: "" }]);
+    await flushPromises();
+    expect(wrapper.find(".fcs-file").attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".fcs-undo").exists()).toBe(false);
+    expect(mocks.fileChangeDiff).not.toHaveBeenCalled();
   });
 
   it("starts expanded and offers the collapse action on the whole header", async () => {
@@ -289,4 +297,14 @@ describe("FileChangeSummaryCard no-stat labels", () => {
     expect(rows[0].text()).toContain("已移除或不可读");
     expect(rows[1].text()).toContain(zh.fileChanges.noStat);
   });
+});
+
+it("keeps imported file changes display-only", async () => {
+  const wrapper = mountCard();
+  await wrapper.setProps({ sourceUnavailable: true });
+  await flushPromises();
+  mocks.fileChangeDiff.mockClear();
+  await wrapper.find(".fcs-file").trigger("click");
+  expect(mocks.fileChangeDiff).not.toHaveBeenCalled();
+  expect(wrapper.findAll(".fcs-row")).toHaveLength(2);
 });

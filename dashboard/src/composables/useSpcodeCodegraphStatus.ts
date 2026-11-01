@@ -124,3 +124,5 @@ export function useSpcodeCodegraphStatus() {
     reset: resetCodegraphStatus,
   }
 }
+
+window.addEventListener?.("astrbot:account-changed", () => { resetCodegraphStatus(); });

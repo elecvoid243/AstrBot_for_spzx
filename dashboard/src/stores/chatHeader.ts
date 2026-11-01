@@ -11,6 +11,7 @@ export interface GoalBadge {
 export const useChatHeaderStore = defineStore("chatHeader", {
   state: () => ({
     title: "",
+    sessionId: "",
     subtitle: "",
     projectId: "",
     workspaceFilesOpen: false,
@@ -37,6 +38,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
   actions: {
     SET_CONTEXT(payload: {
       title?: string;
+      sessionId?: string;
       subtitle?: string;
       projectId?: string;
     }) {
@@ -45,6 +47,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
         this.workspaceFilesOpen = false;
       }
       this.title = payload.title || "";
+      this.sessionId = payload.sessionId || "";
       this.subtitle = payload.subtitle || "";
       this.projectId = nextProjectId;
     },
@@ -85,6 +88,7 @@ export const useChatHeaderStore = defineStore("chatHeader", {
     },
     CLEAR_CONTEXT() {
       this.title = "";
+      this.sessionId = "";
       this.subtitle = "";
       this.projectId = "";
       this.workspaceFilesOpen = false;

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import jwt
 from fastapi import APIRouter, Body, Depends, Query, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from astrbot.api.web import PluginRequest, bind_request_context
 from astrbot.core import logger
@@ -34,6 +36,12 @@ from astrbot.dashboard.schemas import (
     PluginValidateRepoRequest,
     PluginVersionSupportRequest,
 )
+from astrbot.dashboard.services.chat_service import (
+    ChatServiceError,
+    build_thread_unified_msg_origin,
+    build_webchat_unified_msg_origin,
+)
+from astrbot.dashboard.services.chatui_project_service import ChatUIProjectServiceError
 from astrbot.dashboard.services.config_service import (
     ConfigDisplayService,
     ConfigFileService,
@@ -233,11 +241,214 @@ def _plugin_extension_legacy_path(plugin_path: str, request: Request) -> str:
     return path
 
 
+SPCODE_CHAT_PATHS = {
+    "home-directory",
+    "drives",
+    "host-file-write",
+    "host-file-manage",
+    "project-status",
+    "project-load",
+    "project-unload",
+    "plan-mode",
+    "operation-progress",
+    "terminal/start",
+    "terminal/stream",
+    "terminal/input",
+    "terminal/interrupt",
+    "terminal/stop",
+    "terminal/status",
+    "file-browser",
+    "file-binary",
+    "file-write",
+    "file-rename",
+    "file-remove",
+    "file-restore",
+    "file-discard-hunk",
+    "file-search",
+    "file-name-search",
+    "docs",
+    "code-check",
+    "code-format",
+    "btw",
+    "git-repo-check",
+    "git-init",
+    "git-diff",
+    "git-diff/file",
+    "git-diff/full",
+    "git-status",
+    "git-log",
+    "git-show",
+    "git-file",
+    "git-file-diff",
+    "git-file-export",
+    "git-stats",
+    "git-branches",
+    "git-branch-create",
+    "git-branch-delete",
+    "git-branch-switch",
+    "git-stage",
+    "git-unstage",
+    "git-commit",
+    "git-commit-amend",
+    "git-revert",
+    "git-reset",
+    "git-squash",
+    "git-merge",
+    "git-cherry-pick",
+    "git-conflict-status",
+    "git-conflict-resolve",
+    "git-conflict-continue",
+    "git-conflict-abort",
+    "git-stash",
+    "git-stash-pop",
+    "git-stash-drop",
+    "git-tag-create",
+    "git-worktrees",
+    "git-worktree-add",
+    "git-worktree-remove",
+    "git-worktree-lock",
+    "git-worktree-unlock",
+    "worktree-activate",
+    "git-remotes",
+    "git-remote-set-url",
+    "git-remote-remove",
+    "git-pull",
+    "git-push",
+}
+
+
+async def _authorize_chat_extension(plugin_path, request, username, handler):
+    """Authorize audited consumer handlers before entering plugin code.
+
+    Args:
+        plugin_path: Exact registered extension path.
+        request: Authenticated Dashboard request.
+        username: Stable resource owner.
+        handler: Actually loaded handler, including its guard capability marker.
+
+    Raises:
+        ApiError: An operation, identity, field or owned resource is unavailable.
+    """
+    account = getattr(request.state, "dashboard_account", None)
+    if account is None:
+        return
+    browser = plugin_path in {
+        f"browser-use/{name}"
+        for name in ("status", "snapshot", "stream", "stop", "close")
+    }
+    spcode = plugin_path.startswith("spcode/") and plugin_path[7:] in SPCODE_CHAT_PATHS
+    if not browser and not spcode:
+        if account.role != "admin":
+            raise ApiError("Extension is unavailable", status_code=403)
+        return
+    expected = "browser-owned-chat-v1" if browser else "spcode-owned-workspace-v1"
+    if getattr(handler, "__astrbot_chat_guard__", None) != expected:
+        raise ApiError("Extension requires an ownership-aware update", status_code=403)
+    if browser:
+        operation = plugin_path.rsplit("/", 1)[-1]
+        if request.method != ("POST" if operation in {"stop", "close"} else "GET"):
+            raise ApiError("Extension is unavailable", status_code=403)
+        if (
+            set(request.query_params)
+            - {"chat_id", "generation", "browser_session_id", "action_cursor"}
+            or await request.body()
+        ):
+            raise ApiError("Unsupported extension fields", status_code=400)
+        session_id = request.query_params.get("chat_id", "")
+        try:
+            session = await request.app.state.services.chat.require_owned_chat_session(
+                username, session_id
+            )
+        except ChatServiceError as exc:
+            raise ApiError("Resource is unavailable", status_code=403) from exc
+        origin = build_webchat_unified_msg_origin(session)
+    else:
+        try:
+            payload = await request.json() if await request.body() else {}
+        except ValueError as exc:
+            raise ApiError("Invalid extension payload", status_code=400) from exc
+        if not isinstance(payload, dict):
+            raise ApiError("Unsupported extension fields", status_code=400)
+        umo = payload.get("umo") or request.query_params.get("umo")
+        if not isinstance(umo, str) or not umo:
+            raise ApiError("An owned chat origin is required", status_code=403)
+        if (
+            "umo" in payload
+            and "umo" in request.query_params
+            and payload["umo"] != request.query_params["umo"]
+        ):
+            raise ApiError("Conflicting chat origins", status_code=400)
+        try:
+            session_id = umo.rsplit("!", 1)[-1]
+            session = await request.app.state.services.chat.require_owned_chat_session(
+                username, session_id, allow_thread=True
+            )
+            origin = (
+                build_thread_unified_msg_origin(username, session_id)
+                if hasattr(session, "thread_id")
+                else build_webchat_unified_msg_origin(session)
+            )
+            if origin != umo:
+                raise ChatServiceError("Permission denied")
+            operation = plugin_path[7:]
+            if operation == "btw" and payload.get("provider_id"):
+                if not isinstance(payload["provider_id"], str):
+                    raise ChatServiceError("Chat model is unavailable")
+                await request.app.state.services.chat.validate_chat_selection(
+                    username, session_id, {"selected_provider": payload["provider_id"]}
+                )
+            if operation in {"project-load", "project-status", "project-unload"}:
+                request.state.chat_payload = await request.app.state.services.chat_projects.validate_project_operation(
+                    username, umo, operation, payload
+                )
+        except (ChatServiceError, ChatUIProjectServiceError) as exc:
+            raise ApiError("Resource is unavailable", status_code=403) from exc
+    config = request.app.state.core_lifecycle.star_context.get_config(umo=origin)
+    enabled_plugins = config.get("plugin_set", ["*"])
+    plugin_name = (
+        "astrbot_plugin_browser_use" if browser else "astrbot_plugin_spcode_toolkit"
+    )
+    if (
+        isinstance(enabled_plugins, list)
+        and "*" not in enabled_plugins
+        and plugin_name not in enabled_plugins
+    ):
+        raise ApiError("Extension is unavailable in this profile", status_code=403)
+    request.state.chat_session = session
+    request.state.chat_origin = origin
+
+
 async def _call_plugin_extension(
     plugin_path: str,
     request: Request,
     username: str,
 ):
+    account = getattr(request.state, "dashboard_account", None)
+    if account is not None and plugin_path == "spcode/file-remove/restore":
+        # Older bundles use this alias. Keep the action on the core's exact
+        # source-record boundary even when an old plugin is still installed.
+        from astrbot.dashboard.schemas import ChatFileChangeRestoreRemovedRequest
+
+        from .chat import chat_file_change_restore_removed
+
+        try:
+            payload = await request.json()
+            restore = ChatFileChangeRestoreRemovedRequest.model_validate(payload)
+        except ValueError as exc:
+            raise ApiError("Invalid extension payload", status_code=400) from exc
+        if (
+            request.method != "POST"
+            or not isinstance(payload, dict)
+            or set(payload) - {"session_id", "message_id", "run_id", "path"}
+        ):
+            raise ApiError("Unsupported extension fields", status_code=400)
+        return await chat_file_change_restore_removed(
+            restore,
+            AuthContext(
+                username=username, scopes=["chat"], account_id=account.account_id
+            ),
+            request.app.state.services.chat,
+        )
     registered_web_apis = (
         request.app.state.core_lifecycle.star_context.registered_web_apis
     )
@@ -250,6 +461,7 @@ async def _call_plugin_extension(
         return {"status": "error", "message": "未找到该路由", "data": {}}
 
     view_handler, path_values = matched_api
+    await _authorize_chat_extension(plugin_path, request, username, view_handler)
     plugin_name = plugin_path.strip("/").split("/", 1)[0].strip() or None
     plugin_request = PluginRequest(
         request,
@@ -260,19 +472,70 @@ async def _call_plugin_extension(
     app_adapter = getattr(request.app.state, "dashboard_app_adapter", None)
     if app_adapter is None:
         with bind_request_context(plugin_request):
-            return await run_maybe_async(lambda: view_handler(**path_values))
-
-    g_obj = DashboardRequestState()
-    g_obj.username = username
-    with bind_request_context(plugin_request):
-        return await call_request_view(
-            request,
-            app_adapter,
-            view_handler,
-            path_values,
-            g_obj=g_obj,
-            quart_compat_path=_plugin_extension_legacy_path(plugin_path, request),
+            result = await run_maybe_async(lambda: view_handler(**path_values))
+    else:
+        g_obj = DashboardRequestState()
+        g_obj.username = username
+        with bind_request_context(plugin_request):
+            result = await call_request_view(
+                request,
+                app_adapter,
+                view_handler,
+                path_values,
+                g_obj=g_obj,
+                quart_compat_path=_plugin_extension_legacy_path(plugin_path, request),
+            )
+    if getattr(request.state, "chat_origin", None):
+        if isinstance(result, Response) and result.status_code in {204, 304}:
+            return Response(
+                status_code=result.status_code,
+                headers={
+                    key: value
+                    for key, value in result.headers.items()
+                    if key != "content-length"
+                },
+            )
+        # Consumer status must not reveal instance-wide activity counts.
+        json_response = (
+            isinstance(result, Response) and result.media_type == "application/json"
         )
+        data = json.loads(result.body) if json_response else result
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            payload = data["data"]
+            for key in ("all_loaded_count", "all_active_count"):
+                payload.pop(key, None)
+            if (
+                plugin_path == "spcode/git-file-export"
+                and payload.get("success")
+                and payload.get("abs_path")
+            ):
+                from astrbot.core.platform.sources.webchat.message_parts_helper import (
+                    _copy_file_to_attachment_part,
+                )
+
+                service = request.app.state.services.chat
+                folder = Path(service.attachments_dir)
+                folder.mkdir(parents=True, exist_ok=True)
+                part = await _copy_file_to_attachment_part(
+                    file_path=payload["abs_path"],
+                    attach_type="file",
+                    insert_attachment=service.db.insert_attachment,
+                    attachments_dir=folder,
+                    display_name=Path(payload.get("path", "file")).name,
+                )
+                if part is not None:
+                    payload["attachment_id"] = part["attachment_id"]
+        if json_response:
+            return JSONResponse(
+                data,
+                status_code=result.status_code,
+                headers={
+                    key: value
+                    for key, value in result.headers.items()
+                    if key != "content-length"
+                },
+            )
+    return result
 
 
 def _get_request_locale(request: Request, default: str = "zh-CN") -> str:

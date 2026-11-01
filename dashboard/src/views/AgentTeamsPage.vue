@@ -8,16 +8,7 @@
           </div>
           <p class="dashboard-subtitle">{{ tm("workbench.intro") }}</p>
         </div>
-        <LegacyMigrationDialog
-          :teams="teams"
-          @migrated="
-            tab = 'assets';
-            assetTab = 'teams';
-            assetReload++;
-          "
-        />
       </div>
-      <LegacyRunCutover :teams="teams" @ready="cutoverReady = $event" />
       <nav
         class="workbench-navigation"
         :aria-label="tm('workbench.navigation')"
@@ -57,24 +48,13 @@
         <div class="workbench-panel">
           <WorkflowWorkspacePanel
             v-if="tab === 'assets' && assetTab !== 'roles'"
-            :key="`${assetTab}:${assetReload}`"
+            :key="assetTab"
             mode="assets"
             :asset-kind="assetTab === 'teams' ? 'teams' : 'workflows'"
-            :launch-asset="historyAsset"
-            :launch-disabled="!cutoverReady"
-            @located="historyAsset = null"
             @started="tab = 'runs'"
             @installed="assetTab = $event === 'teams' ? 'teams' : 'assets'"
           />
-          <WorkflowWorkspacePanel
-            v-else-if="tab === 'runs'"
-            mode="runs"
-            @locate-asset="
-              historyAsset = $event;
-              assetTab = $event.kind === 'autonomous' ? 'teams' : 'assets';
-              tab = 'assets';
-            "
-          />
+          <WorkflowWorkspacePanel v-else-if="tab === 'runs'" mode="runs" />
           <RoleTemplatesPanel
             v-else-if="tab === 'assets' && assetTab === 'roles'"
           />
@@ -85,27 +65,20 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { ref, watch } from "vue";
 import "@/styles/agent-teams-workbench.css";
 import { useRoute, useRouter } from "vue-router";
-import LegacyRunCutover from "@/components/agent_teams/LegacyRunCutover.vue";
 import RoleTemplatesPanel from "@/components/agent_teams/RoleTemplatesPanel.vue";
 import WorkflowWorkspacePanel from "@/components/agent_teams/WorkflowWorkspacePanel.vue";
-import LegacyMigrationDialog from "@/components/agent_teams/LegacyMigrationDialog.vue";
-import { useAgentTeams } from "@/composables/useAgentTeams";
 import { useModuleI18n } from "@/i18n/composables";
 
 const { tm } = useModuleI18n("features/agent-teams");
-const { teams, loadTeams } = useAgentTeams();
 const route = useRoute();
 const router = useRouter();
 const tab = ref<"assets" | "runs">(
   route.query.workflow_run ? "runs" : "assets",
 );
 const assetTab = ref("assets");
-const assetReload = ref(0);
-const cutoverReady = ref(false);
-const historyAsset = ref<{ asset_id: string; version: number } | null>(null);
 watch(
   () => route.query.workflow_run,
   (runId) => {
@@ -120,7 +93,6 @@ watch(tab, (selected, previous) => {
     void router.replace({ query });
   }
 });
-onMounted(() => void loadTeams());
 </script>
 
 <style scoped>

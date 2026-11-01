@@ -289,7 +289,6 @@ def create_dashboard_asgi_app(
         on_member_stop=_stop_member_turn,
         config_checker=lambda cid: cid in core_lifecycle.astrbot_config_mgr.confs,
     )
-    services.workflow_assets.legacy_runs = services.agent_team_runs
     services.run_history = RunHistoryService(
         db, services.workflow_assets, services.agent_team_runs
     )

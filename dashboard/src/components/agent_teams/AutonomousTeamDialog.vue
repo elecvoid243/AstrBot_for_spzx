@@ -14,10 +14,6 @@
           error
         }}</v-alert>
         <p class="text-body-2 mb-4">{{ tm("autonomous.explanation") }}</p>
-        <MigrationReview
-          v-model="migrationReviewed"
-          :issues="asset?.definition.migration?.issues"
-        />
         <v-text-field
           v-model="form.name"
           :label="tm('autonomous.name')"
@@ -128,8 +124,7 @@
             !form.coordinator.role_id ||
             !form.allowed_roles.length ||
             workflowInvalid ||
-            usageInvalid ||
-            !migrationReviewed
+            usageInvalid
           "
           data-testid="team-save"
           @click="save"
@@ -141,7 +136,6 @@
 </template>
 
 <script setup lang="ts">
-import MigrationReview from "./MigrationReview.vue";
 import RunLimitsForm from "./RunLimitsForm.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import AllowedWorkflowsPanel from "./AllowedWorkflowsPanel.vue";
@@ -166,7 +160,6 @@ onBeforeUnmount(() => {
 const approval = ref("");
 const contract = ref("");
 const usageInvalid = ref(false);
-const migrationReviewed = ref(true);
 const allowedIds = ref<string[]>([]);
 const form = ref<AutonomousDefinition>({
   kind: "autonomous",
@@ -195,8 +188,6 @@ watch(
     editGeneration++;
     saving.value = false;
     if (!open) return;
-    migrationReviewed.value =
-      !props.asset?.definition.migration?.issues?.length;
     form.value = props.asset
       ? JSON.parse(JSON.stringify(props.asset.definition))
       : {
@@ -235,7 +226,7 @@ function selectAllowed(identities: string[]) {
 }
 
 async function save() {
-  if (saving.value || usageInvalid.value || !migrationReviewed.value) return;
+  if (saving.value || usageInvalid.value) return;
   const generation = editGeneration;
   const asset = props.asset;
   const current = () =>
@@ -250,7 +241,6 @@ async function save() {
         ? JSON.parse(contract.value)
         : null,
     };
-    Reflect.deleteProperty(definition, "migration");
     await workflowAssetsApi.save(asset?.asset_id ?? null, {
       definition,
       expected_version: asset?.version,

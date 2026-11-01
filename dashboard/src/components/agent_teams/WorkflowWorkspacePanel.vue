@@ -88,13 +88,6 @@
           >{{ asset.definition.name }} · v{{ asset.version }}</v-card-title
         >
         <v-card-text class="text-wrap">
-          <v-alert
-            v-if="asset.definition.migration?.issues?.length"
-            type="warning"
-            variant="tonal"
-            class="mb-3"
-            >{{ tm("migration.pending") }}</v-alert
-          >
           <p v-if="asset.definition.kind === 'autonomous'">
             {{ tm("autonomous.title") }} · {{ tm("autonomous.allowedRoles") }}:
             {{ asset.definition.allowed_roles.length }}
@@ -134,13 +127,9 @@
             "
             >{{ tm("v2.edit") }}</v-btn
           >
-          <v-btn
-            variant="tonal"
-            color="primary"
-            :disabled="launchDisabled"
-            @click="prepareRun(asset)"
-            >{{ tm("v2.start") }}</v-btn
-          >
+          <v-btn variant="tonal" color="primary" @click="prepareRun(asset)">{{
+            tm("v2.start")
+          }}</v-btn>
         </v-card-actions>
       </v-card>
     </template>
@@ -167,7 +156,6 @@
           runView = 'all';
           openRun($event);
         "
-        @locate-asset="emit('locateAsset', $event)"
       />
       <v-alert
         v-if="runView !== 'history' && !runs.length && !loading"
@@ -543,10 +531,6 @@
           tm("graph.canvas")
         }}</v-card-title>
         <v-card-text>
-          <MigrationReview
-            v-model="migrationReviewed"
-            :issues="editingAsset?.definition.migration?.issues"
-          />
           <div class="d-flex flex-wrap ga-3 mb-3">
             <v-text-field
               v-model="graphForm.name"
@@ -616,7 +600,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="graphInvalid || graphUsageInvalid || !migrationReviewed"
+            :disabled="graphInvalid || graphUsageInvalid"
             @click="saveGraph"
             >{{ tm("v2.save") }}</v-btn
           ></v-card-actions
@@ -762,7 +746,7 @@
             variant="tonal"
             color="primary"
             :loading="saving"
-            :disabled="launchDisabled || checkingReadiness || !readiness?.ready"
+            :disabled="checkingReadiness || !readiness?.ready"
             @click="start"
             >{{ tm("v2.start") }}</v-btn
           >
@@ -854,7 +838,6 @@
 </template>
 
 <script setup lang="ts">
-import MigrationReview from "./MigrationReview.vue";
 import UnifiedRunHistory from "./UnifiedRunHistory.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -886,17 +869,10 @@ import type {
 const props = defineProps<{
   mode: "assets" | "runs";
   assetKind?: "teams" | "workflows";
-  launchAsset?: { asset_id: string; version: number } | null;
-  launchDisabled?: boolean;
 }>();
 const emit = defineEmits<{
   (event: "started", runId: string): void;
   (event: "installed", directory: "teams" | "workflows"): void;
-  (
-    event: "locateAsset",
-    asset: { asset_id: string; version: number; kind: string },
-  ): void;
-  (event: "located"): void;
 }>();
 const { tm } = useModuleI18n("features/agent-teams");
 const route = useRoute();
@@ -986,7 +962,6 @@ const detailRun = computed(
     selectedRun.value,
 );
 const graphEditing = ref(false);
-const migrationReviewed = ref(true);
 const teamEditing = ref(false);
 const graphInvalid = ref(false);
 const usageInvalid = ref(false);
@@ -1080,15 +1055,6 @@ async function refresh() {
       assets.value = assetData.assets;
       roles.value = roleData.roles;
       runs.value = runData.runs;
-      if (props.launchAsset) {
-        const asset = await workflowAssetsApi.get(
-          props.launchAsset.asset_id,
-          props.launchAsset.version,
-        );
-        if (disposed || read !== runRead) return;
-        await prepareRun(asset);
-        emit("located");
-      }
     } else {
       const runData = await workflowAssetsApi.runs();
       if (disposed || read !== runRead) return;
@@ -1158,7 +1124,6 @@ function edit(asset: any) {
 
 function editGraph(asset: any) {
   editingAsset.value = asset;
-  migrationReviewed.value = !asset?.definition.migration?.issues?.length;
   graphForm.value = asset
     ? JSON.parse(JSON.stringify(asset.definition))
     : {
@@ -1181,18 +1146,11 @@ function editTeam(asset: any) {
 }
 
 async function saveGraph() {
-  if (
-    saving.value ||
-    graphInvalid.value ||
-    graphUsageInvalid.value ||
-    !migrationReviewed.value
-  )
-    return;
+  if (saving.value || graphInvalid.value || graphUsageInvalid.value) return;
   saving.value = true;
   formError.value = "";
   try {
     const definition = JSON.parse(JSON.stringify(graphForm.value));
-    delete definition.migration;
     await workflowAssetsApi.save(editingAsset.value?.asset_id ?? null, {
       definition,
       expected_version: editingAsset.value?.version,
@@ -1307,7 +1265,7 @@ function prepareRun(asset: any) {
 }
 
 async function start() {
-  if (props.launchDisabled || saving.value || !runAsset.value) return;
+  if (saving.value || !runAsset.value) return;
   saving.value = true;
   formError.value = "";
   try {

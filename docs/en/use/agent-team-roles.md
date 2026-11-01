@@ -2,7 +2,7 @@
 
 Open **More Features → Agent Teams → Assets → Role templates**, then choose **New role**. A template stores responsibilities and capability requirements without creating a member chat session or starting a run.
 
-To convert previous members, use **Agent Teams → Migrate previous definitions** and review the [migration preview](./agent-team-workflows.md#preview-and-migrate-previous-definitions). Migrated roles contain their effective configuration without the previous member sessions. An unsupported legacy setting or an inherited configuration that cannot be reconstructed remains blocked. Review the retained issues, configure the role and acknowledge the review before saving a new version. Assets retain their pinned role versions until you explicitly edit those references; existing runs retain their frozen configuration.
+Assets retain their pinned role versions until you explicitly edit those references; existing runs retain their frozen configuration. Create and configure role templates directly, without migrating previous members.
 
 1. Enter a name and description. Under **Responsibility and prompt**, write an inline prompt or define a logical persona slot, bind a local persona and select **Inherit local persona prompt**.
 2. Under **Model**, select the profile that chooses the actual executor. The built-in executor uses a logical model slot and a local model binding; remote executors use the configured remote application and hide unused local model fields. Select `tool_use`, `image` or `audio` requirements as needed. Under **Required executor capabilities**, choose internal invocation checkpoints, original remote run query, local task/team tools or explicit task result submission.
@@ -29,13 +29,13 @@ Dify, Coze and DashScope Application receive the frozen role/persona framing as 
 
 | Existing entry | Current entry and purpose |
 | --- | --- |
-| Agent Teams → Members | Migrate previous definitions → Assets → Role templates; original long-lived conversations remain read-only under Runs → History. |
+| Agent Teams → Members | Assets → Role templates; create and configure roles directly. |
 | Creating a reusable role | Agent Teams → Assets → Role templates → New role; templates are independent of legacy teams and members. |
-| Workflow Editor, Run Monitor, History | Assets → Workflows references pinned roles; Runs inspects frozen runs and History preserves old records. The top legacy notice only finishes or stops original owned runs. |
+| Workflow Editor, Run Monitor, History | Assets → Workflows pins role versions; Runs and History display frozen snapshots. |
 
 See [Asset and run workspace](./agent-team-workflows.md) for scheduling, invocation recovery, human tasks and bounded loops. Role, readiness and launch checks use the same executor rules. Edits do not change existing runs' pinned roles and configuration; recovery still checks current access and remote binding compatibility.
 
-Previews use current local resources. Historical definitions never silently fall back to a default model. Deleting or disabling a resource produces a diagnostic on the next preview. The role page does not migrate previous definitions; see the workspace instructions for existing run and recovery behavior.
+Previews use current local resources. Historical definitions never silently fall back to a default model. Deleting or disabling a resource produces a diagnostic on the next preview. See the workspace instructions for existing run and recovery behavior.
 
 Previous entry: **Role templates → Assets → Role templates**. Template identity is separate from runtime member state; editing a template does not change the fixed configuration of an existing run.
 

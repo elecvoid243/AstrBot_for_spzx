@@ -2,7 +2,7 @@
 
 Open **More Features → Agent Teams → Assets**. **Teams** contains versioned autonomous teams, **Workflows** contains single-task and canvas workflows, and **Role templates** configures reusable responsibilities and local resources. Save a ready role before creating an asset. Import, export, chat access, editing and launch actions remain on the asset cards. After installation, the workspace opens the Teams or Workflows directory for the imported entry.
 
-![The actual asset workspace](/images/agent-teams-default-t25-en.jpg)
+![The actual asset workspace](/images/agent-teams-current-en.jpg)
 
 ## Navigation and previous entry points
 
@@ -12,47 +12,21 @@ Open **More Features → Agent Teams → Assets**. **Teams** contains versioned 
 | Single-task and canvas flows within Workflow Assets | Assets → Workflows |
 | Role templates | Assets → Role templates |
 | Independent Runs | Runs → All runs, In progress, Needs attention, History |
-| Previous team sidebar, Workflow Editor, Members, Run Monitor | Migrate previous definitions → Assets; handle already-owned runs in the active legacy run notice at the top |
-| Previous History tab / member long-term conversations | Runs → History → Legacy engine / Read-only history |
-| Previous team/member and workflow definitions | Migrate previous definitions → Assets → Teams / Workflows / Role templates |
+| Previous team sidebar, Workflow Editor, Members, Run Monitor | Assets → Teams / Workflows / Role templates; Runs → View Run |
+| Previous History tab | Runs → History (asset runs only) |
+| Migrate previous definitions / active legacy run check | Removed; configure assets and start runs directly |
 
-Versioned assets are now the default entry for new work. The previous creation, member editing and save-and-run workspace has been removed. Existing definitions remain available to **Migrate previous definitions**, and original results and conversations remain in **Runs → History**.
+The workspace uses versioned assets. Save a ready role template and a team or workflow, then start a run directly. Definition migration and legacy run checks are no longer part of the workflow.
 
-Before starting new work, resolve the active legacy run notice at the top. It lists the runs still owned by the original engine, including normal pauses. Let them finish, **Continue original run** for an owned pause, or choose **Stop original run** and confirm its run ID. Stopping preserves saved history and completed external effects. Until the list is empty, **Start Run** stays disabled and both WebUI and chat launches are rejected by the server. A failed list refresh also keeps launch disabled. Migration itself never stops a run.
+## Run history
 
-After the original owner process is lost, unfinished records are read as **Interrupted** with their original saved status and content preserved. They cannot be replayed by a new legacy runner or recovered as v2 runs. Prepare a separate run from the migrated asset when ready. The retired legacy start API and ownerless legacy resume API return HTTP 410; existing owner controls remain available only to finish or explicitly stop that original work.
+![The current asset run history](/images/agent-teams-history-current-en.jpg)
 
-## Preview and migrate previous definitions
+Screenshots use an isolated frontend preview with sample run records and the same components as the WebUI.
 
-![Actual migration preview with pending definitions and current legacy run guidance](/images/agent-teams-migration-t25-en.jpg)
+**Runs → In progress** includes unfinished runs and runs requiring intervention. **Needs attention** includes human waits, blocks, failures, interruptions and pauses. **All runs** returns to the recent run list, which retains its 50-record limit.
 
-1. Open **More Features → Agent Teams → Migrate previous definitions**, select a previous team and choose **Preview migration**. The preview lists its team and saved workflows, generated roles, final effective configuration, inheritance sources, local bindings and old-to-new identities. Expand **Review definitions, layout and identity mapping** to inspect the complete proposal. No assets or member sessions are created by previewing.
-2. Review the listed previous active runs. Use the active legacy run notice at the top of Agent Teams to let them finish, continue an owned pause or explicitly confirm stopping. Migration only copies definitions; it neither stops those runs nor continues them in the new engine. Read previous runs and member conversations in **Runs → History**.
-3. Resolve or retain the reported pending items. Member settings are applied before node overrides; custom member framing remains separate from persona instructions, which the new run freezes once. Existing session model selections, persona rules and conversation persona configuration precede profile defaults; inherited capability lists and numeric limits are made explicit. An unavailable model stays bound to its original identity. No replacement model, profile, tool or knowledge base is chosen. Missing or ambiguous profiles/personas also require explicit role review because their inherited configuration cannot be reconstructed safely. Legacy member, node and profile knowledge-base names resolve by name; stored session knowledge-base IDs resolve by ID. Unavailable or ambiguous names stay pending instead of binding another resource. Implicit WebChat persona behavior, disabled persona sentinels, session service/plugin rules and nonmatching retrieval settings stay pending for explicit configuration; conversation history is never copied.
-4. Mappable links, their predecessor result inputs, coordinates, output contracts and finite declarative loops are retained. Template references retain their positions and repeated sources, with generated aliases preserving explicit inputs. Declarative inline subflows, or saved workflow references within the same team, can be flattened when they share root inputs and have one terminal result. Nested call overrides, extra input contracts/limits, ambiguous results, arbitrary old conditions, unbounded cycles and missing references stay pending, with their original graph and edges retained. The previous editor only writes plain DAGs; recognized stored extensions do not imply that the previous engine supported every nested shape.
-5. The previous coordinator's round protocol and controls cannot be copied into the new coordinator. The preview reports these fields, including inherited defaults, for review. Customized workflow failure, timeout and truncation policies that cannot be represented are also reported. Choose **Save pending definitions and bindings; keep unresolved items blocked from execution** to retain such definitions, then **Confirm migration**. Otherwise confirmation is available only for a ready proposal. Confirmation saves all roles, asset versions and the identity receipt atomically; it does not start a run.
-6. In **Assets → Role templates**, restore missing resources or edit the migrated role's bindings and configuration. Review any retained migration issues and check **I have reviewed these issues and configured this definition for the new engine** before **Save new version**. In **Assets → Teams / Workflows → Edit Asset**, select the intended fixed role versions, correct the graph/limits and acknowledge its migration issues before saving a new asset version. Removing a cycle or choosing different members must be deliberate; migration never deletes dependencies. Launch readiness still validates current resources and capabilities.
-7. Choose **Start Run** on the configured asset and supply its declared inputs (`input` is the previous workflow input; autonomous teams use `goal`). The new run freezes the selected version and creates fresh member conversations. Previous long-term sessions and unfinished runs are never attached. Later template edits affect future runs only.
-
-Repeated confirmation reuses the saved migration receipt and its original fixed versions, including after a process restart. It does not duplicate assets or overwrite subsequent asset edits. Changes to a previous definition before first confirmation require a fresh preview. Once that source has been migrated, edit its new versioned assets; changing the previous source does not silently remigrate it over the existing receipt. A failed transaction or interrupted uncommitted transaction leaves no executable partial migration. Migration creates definitions; starting a separate new run remains an explicit action.
-
-**Runs → In progress** includes unfinished v2 runs and runs requiring intervention. **Needs attention** includes human waits, blocks, failures, interruptions and pauses. **All runs** returns to the recent v2 list, which retains its 50-record limit. **History** opens the paginated unified history described below, including active legacy records so they remain visible before the final engine switch.
-
-## Read original legacy history
-
-![Actual unified history with legacy and v2 source labels](/images/agent-teams-history-en.png)
-
-1. Open **More Features → Agent Teams → Runs → History**. Each card identifies **V2 engine** or **Legacy engine**. Old runs and old member conversations carry **Read-only history**; **Load more history** reads the next page. Only records accessible to the signed-in user appear. An account without accessible history sees the empty state.
-2. Choose **View Run** on a legacy run. The list collapses to prioritize its original goal, saved status, final result and task results. Expand the original graph/rounds or a task to inspect stored content. Select an original member ID under **Saved member process**, then **Load more** for older transcript rows. Run, member, node/round and turn IDs remain attached to the original text, parts and metadata. Existing thinking, tool calls and results are displayed as saved; no v2 task or attempt is invented.
-3. A **Long-term conversation** entry has its own source and member/session links. Its saved messages may span multiple runs and are not attributed to one particular run. **Load more saved messages** reads further messages in their original order, including available reasoning, tool call IDs and tool results.
-4. An executing legacy task displays the live-engine notice. Runs still owned by the original engine retain their saved status, including resumable pauses and normal completion transitions. A read may briefly show an earlier saved state; refresh to read the committed final result. Only an unfinished record without its original execution owner is shown as **Interrupted**, alongside its unchanged original saved status. Viewing history neither stops the run nor changes saved data. Legacy history has no v2 continue, retry, input or recovery controls. Use the top active legacy run notice to finish or stop owned work before starting a new run.
-5. If a migration receipt links an accessible definition, choose **Prepare a new run from migrated asset**. This opens that asset's current version and its normal input/readiness confirmation. Enter new inputs and choose **Start Run** deliberately. Pending or unavailable resources still block launch. New members receive fresh contexts; old conversations are never inherited. If no migrated definition is linked, use **Migrate previous definitions** first. V2 cards open the existing v2 run detail and its own supported controls.
-
-**Previous History tab / member long-term conversations → Runs → History** is the unified reading entry. **Previous workspace → active legacy run notice** retains only original-owner completion controls. Ownerless history cannot resume through either engine.
-
-**Refresh** reloads the history list and the open original detail, including the selected member's saved process or the long-term conversation's saved messages. It keeps the detail open while reading the update.
-
-![Actual editable canvas and selected task properties](/images/agent-teams-canvas-t25-en.jpg)
+Open **Runs → History** to browse asset runs accessible to the signed-in user by date. **Load more history** reads the next page; **Refresh** reloads from the first page while keeping the existing records visible. **View Run** opens the run's frozen snapshot, artifacts and saved member process. Legacy engine records, long-term member conversations and migration actions are no longer displayed.
 
 ## Inspect v2 runs
 
@@ -134,7 +108,7 @@ In **Runs → View Run**, inspect dynamically created tasks and **Members in thi
 
 Waiting releases active execution capacity, including at a concurrency limit of one. **Waiting for members** is a local wait. Pause, continue, cancel, same-Attempt recovery, explicit retry and unknown-tool decisions retain the shared workflow semantics below. Failed member tasks and unknown calls prevent success. Edited templates affect new runs; dynamic members in an existing run use the original frozen templates and settings. Required final approval uses the existing persistent human-request controls.
 
-For the versioned autonomous path, **team sidebar / Run Monitor → Assets → Teams → New Autonomous Team / Runs → View Run**. Older records and entry points remain separate until migration. Member communication and workflow calls to autonomous teams use the versioned paths described below.
+For the versioned autonomous path, **team sidebar / Run Monitor → Assets → Teams → New Autonomous Team / Runs → View Run**. Member communication and workflow calls to autonomous teams use the versioned paths described below.
 
 ## Coordinator calls to saved workflows
 
@@ -325,8 +299,8 @@ The report must use real provider/tool resources in your installation. The docum
 
 | Previous entry | Current purpose |
 | --- | --- |
-| Agent Teams → Members, Workflow Editor, Run Monitor | Migrate previous definitions → versioned Assets; the top active legacy run notice handles original owned work only. |
-| Previous History / member long-term conversations | Runs → History → Legacy engine / Read-only history; original records cannot resume in v2. |
+| Agent Teams → Members, Workflow Editor, Run Monitor | Assets → Teams / Workflows / Role templates; Runs → View Run / History. Migration and legacy run checks are removed. |
+| Previous History | Runs → History → asset run details. |
 | Saving a reusable single-task workflow | Agent Teams → Assets → Workflows → New Workflow; independent of a legacy team. |
 | Editing a reusable dependency workflow | Agent Teams → Assets → Workflows → New Canvas Workflow / Edit Asset; the previous execution editor is retired. |
 | Starting and inspecting a new workflow run | Assets → Workflows → Start Run, then Runs → View Run → Execution progress to select a task; the Inspect task selector remains available. |

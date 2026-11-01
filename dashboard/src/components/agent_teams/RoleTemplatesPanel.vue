@@ -87,10 +87,6 @@
           currentId ? tm("roles.edit") : tm("roles.create")
         }}</v-card-title>
         <v-card-text>
-          <MigrationReview
-            v-model="migrationReviewed"
-            :issues="definition.migration?.issues"
-          />
           <v-alert
             v-if="errorMessage"
             type="error"
@@ -398,7 +394,7 @@
             color="primary"
             variant="tonal"
             :loading="saving"
-            :disabled="loading || previewing || !migrationReviewed"
+            :disabled="loading || previewing"
             @click="save"
             >{{ currentId ? tm("roles.saveVersion") : tm("roles.save") }}</v-btn
           >
@@ -409,7 +405,6 @@
 </template>
 
 <script setup lang="ts">
-import MigrationReview from "./MigrationReview.vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useDisplay } from "vuetify";
 import { roleAssetsApi } from "@/api/roleAssets";
@@ -437,7 +432,6 @@ const latestVersion = ref<number | null>(null);
 const selectedVersion = ref<number | null>(null);
 const versions = ref<number[]>([]);
 const definition = ref<Record<string, any>>({});
-const migrationReviewed = ref(true);
 const installation = ref<{
   profile_id: string;
   bindings: Record<string, string | null>;
@@ -492,7 +486,7 @@ const saving = ref(false);
 const errorMessage = ref("");
 let editorRevision = 0;
 watch(
-  [definition, installation, modes, promptMode, migrationReviewed],
+  [definition, installation, modes, promptMode],
   () => {
     editorRevision++;
     previewStale.value = true;
@@ -523,7 +517,6 @@ async function load() {
 }
 
 function edit(role?: any) {
-  migrationReviewed.value = !role?.definition.migration?.issues?.length;
   currentId.value = role?.role_id ?? null;
   latestVersion.value = role?.versions?.[0] ?? role?.version ?? null;
   selectedVersion.value = role?.version ?? null;
@@ -573,7 +566,6 @@ function payload() {
     prompt: promptMode.value === "persona" ? null : definition.value.prompt,
   };
   content.persona_slot = content.persona_slot?.trim() || null;
-  if (migrationReviewed.value) delete content.migration;
   for (const field of resourceFields)
     content[field] =
       modes.value[field] === "inherit"
@@ -630,7 +622,7 @@ async function preview() {
 }
 
 async function save() {
-  if (!migrationReviewed.value || saving.value) return;
+  if (saving.value) return;
   saving.value = true;
   errorMessage.value = "";
   try {

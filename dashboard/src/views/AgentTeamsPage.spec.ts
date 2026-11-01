@@ -1,17 +1,11 @@
-// The formal workbench exposes versioned assets and original read-only history.
-import { flushPromises, mount } from "@vue/test-utils";
+// The workbench exposes versioned assets and their runs.
+import { mount } from "@vue/test-utils";
 import { defineComponent, h, inject, nextTick, provide } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentTeamsSidebar from "@/components/agent_teams/AgentTeamsSidebar.vue";
 import AgentTeamsPage from "./AgentTeamsPage.vue";
 
-const mocks = vi.hoisted(() => ({ loadTeams: vi.fn(), route: null as any }));
-vi.mock("@/composables/useAgentTeams", async () => {
-  const { ref } = await vi.importActual<typeof import("vue")>("vue");
-  return {
-    useAgentTeams: () => ({ teams: ref(TEAMS), loadTeams: mocks.loadTeams }),
-  };
-});
+const mocks = vi.hoisted(() => ({ route: null as any }));
 vi.mock("vue-router", async () => {
   const { reactive } = await vi.importActual<typeof import("vue")>("vue");
   mocks.route = reactive({ query: {} });
@@ -44,21 +38,9 @@ const TABS_KEY = Symbol("tabs-stub");
 const stubs = {
   WorkflowWorkspacePanel: {
     name: "WorkspaceStub",
-    props: ["mode", "launchDisabled", "assetKind", "launchAsset"],
-    emits: ["locateAsset", "started", "installed"],
+    props: ["mode", "assetKind"],
+    emits: ["started", "installed"],
     template: '<div class="workflow-workspace-stub" :mode="mode" />',
-  },
-  LegacyRunCutover: {
-    name: "CutoverStub",
-    props: ["teams"],
-    emits: ["ready"],
-    template: '<div class="cutover-stub" />',
-  },
-  LegacyMigrationDialog: {
-    name: "MigrationStub",
-    props: ["teams"],
-    emits: ["migrated"],
-    template: '<div class="migration-stub" />',
   },
   RoleTemplatesPanel: { template: '<div class="role-templates-panel-stub" />' },
   "v-container": { template: "<div><slot /></div>" },
@@ -117,11 +99,11 @@ beforeEach(() => {
 });
 
 describe("AgentTeamsPage", () => {
-  it("retires the previous execution workspace while retaining definition migration", () => {
+  it("opens versioned assets without legacy migration controls", () => {
     const wrapper = mountPage();
     expect(wrapper.find(".workbench-legacy").exists()).toBe(false);
     expect(wrapper.find(".workflow-workspace-stub").exists()).toBe(true);
-    expect(wrapper.find(".migration-stub").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("迁移旧定义");
     expect(wrapper.find(".dashboard-title").text()).toBe("Agent 团队");
   });
   it("opens an incoming chat run link while the assets panel is already mounted", async () => {
@@ -153,45 +135,27 @@ describe("AgentTeamsPage", () => {
     expect(wrapper.find(".role-templates-panel-stub").exists()).toBe(true);
     expect(wrapper.find(".agent-teams-panel-editor").exists()).toBe(false);
   });
-  it("blocks asset launches until the original owned runs are handled", async () => {
+
+  it("keeps the asset panel mounted without scheduling legacy polling", async () => {
+    vi.useFakeTimers();
+    const schedule = vi.spyOn(globalThis, "setInterval");
     const wrapper = mountPage();
-    expect(
-      wrapper.getComponent({ name: "WorkspaceStub" }).props("launchDisabled"),
-    ).toBe(true);
-    wrapper.getComponent({ name: "CutoverStub" }).vm.$emit("ready", true);
-    await nextTick();
-    expect(
-      wrapper.getComponent({ name: "WorkspaceStub" }).props("launchDisabled"),
-    ).toBe(false);
-    wrapper.getComponent({ name: "CutoverStub" }).vm.$emit("ready", false);
-    await nextTick();
-    expect(
-      wrapper.getComponent({ name: "WorkspaceStub" }).props("launchDisabled"),
-    ).toBe(true);
-  });
-  it("locates a migrated definition from history as a separate new asset", async () => {
-    const wrapper = mountPage();
-    mocks.route.query = { workflow_run: "current-run" };
-    await nextTick();
-    const asset = { asset_id: "migrated-team", version: 2, kind: "autonomous" };
-    wrapper
-      .getComponent({ name: "WorkspaceStub" })
-      .vm.$emit("locateAsset", asset);
-    await nextTick();
-    const workspace = wrapper.getComponent({ name: "WorkspaceStub" });
-    expect(workspace.props("mode")).toBe("assets");
-    expect(workspace.props("assetKind")).toBe("teams");
-    expect(workspace.props("launchAsset")).toEqual(asset);
-  });
-  it("opens migrated assets without exposing the original member editor", async () => {
-    const wrapper = mountPage();
-    wrapper.getComponent({ name: "MigrationStub" }).vm.$emit("migrated");
-    await flushPromises();
-    expect(
-      wrapper.getComponent({ name: "WorkspaceStub" }).props("assetKind"),
-    ).toBe("teams");
-    expect(wrapper.find(".agent-teams-panel-members").exists()).toBe(false);
-    expect(mocks.loadTeams).toHaveBeenCalledTimes(1);
+    try {
+      await wrapper
+        .findAll(".tab-stub")
+        .find((tab) => tab.text() === "团队")!
+        .trigger("click");
+      const workspace = wrapper.getComponent({ name: "WorkspaceStub" }).vm;
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(wrapper.getComponent({ name: "WorkspaceStub" }).vm).toBe(
+        workspace,
+      );
+      expect(schedule).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      schedule.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 describe("AgentTeamsSidebar", () => {

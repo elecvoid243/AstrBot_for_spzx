@@ -227,5 +227,12 @@
     "dispatched": "Dispatched",
     "name": "Team name",
     "coordinatorCount": "Includes the coordinator."
+  },
+  "runHistory": {
+    "title": "История запусков",
+    "intro": "Просматривайте запуски по дате и открывайте их снимки, артефакты и ход выполнения.",
+    "empty": "Нет доступной истории запусков.",
+    "moreRecords": "Загрузить ещё",
+    "recordList": "История запусков"
   }
 }

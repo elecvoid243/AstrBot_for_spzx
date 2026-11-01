@@ -30,6 +30,7 @@ from tests.test_multi_user_chat import (
 from tests.test_multi_user_chat import (
     ordinary_chat as ordinary_chat,
 )
+from tests.test_multi_user_runtime import ASGIStream
 
 NEW_PASSWORD = "ReplacementPassword123!"
 
@@ -125,6 +126,11 @@ async def test_account_control_revokes_all_credentials_and_persists(
     ]
     old_headers = {"Authorization": f"Bearer {users[0]['token']}"}
     for path in paths:
+        if path.endswith("/system-stream"):
+            # The authorized event stream stays open; observe its headers and disconnect.
+            async with ASGIStream(server.asgi_app, path, users[0]["token"]) as stream:
+                assert stream.status == 200
+            continue
         before = await client.get(path, headers=old_headers)
         assert before.status_code in {200, 403}, (path, before.text)
     admin_headers = {"Authorization": f"Bearer {admin['token']}"}

@@ -1,5 +1,6 @@
 {
   "agentBrowser": {
+    "switchMode": "Switch browser mode",
     "waitingUrl": "Waiting for the Agent to open a page",
     "readOnly": "Read-only observation",
     "emptyActions": "Browser actions will appear here when a task starts",

@@ -8,6 +8,7 @@
     }
   },
   "agentBrowser": {
+    "switchMode": "ブラウザーモードを切り替える",
     "waitingUrl": "Agent がページを開くのを待っています",
     "readOnly": "読み取り専用の観測",
     "emptyActions": "タスクが始まるとブラウザー操作がここに表示されます",

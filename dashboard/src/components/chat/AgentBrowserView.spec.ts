@@ -35,6 +35,60 @@ afterEach(() => {
 });
 
 describe("Agent browser snapshots", () => {
+  it("expands only the viewport without replacing its image or observation stream", async () => {
+    get.mockResolvedValueOnce(ok(current)).mockResolvedValueOnce(
+      ok({
+        ...current,
+        sequence: 1,
+        image: "frame",
+        mime_type: "image/jpeg",
+        width: 1280,
+        height: 720,
+      }),
+    );
+    const view = mount(AgentBrowserView, {
+      props: { chatId: "chat-1", visible: true },
+    });
+    document.body.appendChild(view.element);
+    await flushPromises();
+    const image = view.get("img").element;
+    const fullscreenButton = view.get(".agent-browser-fullscreen");
+    expect(view.get("details").attributes("open")).toBeUndefined();
+    await fullscreenButton.trigger("click");
+    await flushPromises();
+    expect(document.activeElement).toBe(fullscreenButton.element);
+    const tab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(
+      document.querySelector(".agent-browser-stage.is-fullscreen img"),
+    ).toBe(image);
+    expect(fetchStream).toHaveBeenCalledTimes(1);
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(escape);
+    await flushPromises();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(view.get("img").element).toBe(image);
+    expect(
+      document.querySelector(".agent-browser-stage.is-fullscreen"),
+    ).toBeNull();
+    await fullscreenButton.trigger("click");
+    await view.setProps({ visible: false });
+    expect(
+      document.querySelector(".agent-browser-stage.is-fullscreen"),
+    ).toBeNull();
+    view.unmount();
+    view.element.remove();
+  });
+
   it("finishes stop control without waiting for the observation stream to end", async () => {
     get
       .mockResolvedValueOnce(ok(current))

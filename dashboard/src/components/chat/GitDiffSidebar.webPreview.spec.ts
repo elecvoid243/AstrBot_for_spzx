@@ -127,6 +127,32 @@ beforeEach(() => {
 });
 
 describe("GitDiffSidebar web preview tab", () => {
+  it("switches browser modes from the Web Preview tab's attached menu", async () => {
+    const wrapper = mount(GitDiffSidebar, {
+      props: { modelValue: true, chatId: "chat-menu" },
+      global: { stubs: { ...STUBS, "v-menu": MenuStub } },
+    });
+    await flushPromises();
+    expect(wrapper.find(".browser-mode-switch").exists()).toBe(false);
+    expect(
+      wrapper
+        .get(".git-diff-sidebar-browser-tab .browser-mode-trigger")
+        .attributes("aria-label"),
+    ).toBe("切换浏览模式");
+    await wrapper.get(".browser-mode-agent").trigger("click");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(
+      true,
+    );
+    await tabButtons(wrapper)[0].trigger("click");
+    await wrapper.get(".browser-mode-preview").trigger("click");
+    await flushPromises();
+    expect(localStorage.getItem("astrbot.agentBrowser.mode")).toBe("preview");
+    expect(localStorage.getItem(VIEW_MODE_STORAGE_KEY)).toBe("browser");
+    expect(wrapper.findComponent(WebBrowserViewStub).exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("selects the Agent browser before automatic opening even when Files was persisted", async () => {
     localStorage.setItem(VIEW_MODE_STORAGE_KEY, "files");
     localStorage.setItem("astrbot.agentBrowser.mode", "preview");
@@ -140,7 +166,10 @@ describe("GitDiffSidebar web preview tab", () => {
     await flushPromises();
     const browser = wrapper.findComponent({ name: "AgentBrowserView" });
     expect(browser.exists()).toBe(true);
-    expect(browser.props()).toMatchObject({ chatId: "chat-auto", visible: true });
+    expect(browser.props()).toMatchObject({
+      chatId: "chat-auto",
+      visible: true,
+    });
     expect(localStorage.getItem(VIEW_MODE_STORAGE_KEY)).toBe("browser");
     wrapper.unmount();
   });
@@ -148,8 +177,12 @@ describe("GitDiffSidebar web preview tab", () => {
   it("does not replace an open Files view for an automatic browser request", async () => {
     const wrapper = await mountSidebar();
     expect(await wrapper.vm.prepareAgentBrowser()).toBe(false);
-    expect(wrapper.findComponent({ name: "FileBrowserView" }).exists()).toBe(true);
-    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "FileBrowserView" }).exists()).toBe(
+      true,
+    );
+    expect(wrapper.findComponent({ name: "AgentBrowserView" }).exists()).toBe(
+      false,
+    );
     wrapper.unmount();
   });
 

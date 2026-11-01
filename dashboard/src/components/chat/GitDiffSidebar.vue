@@ -5005,11 +5005,46 @@ watch(
                 )
               }}
             </span>
-            <!-- UI #5: directory path is now shown as a compact breadcrumb-style
-               strip directly under the title, with an inline folder icon.
-               This keeps the header row uncluttered (title + actions only)
-               while still giving the user a visible project root in all
-               three view modes (not just diff). -->
+          </div>
+          <div
+            v-if="isProjectLoaded && currentRoot"
+            class="git-diff-sidebar-path-strip"
+            :title="currentRoot"
+          >
+            <div class="git-diff-sidebar-path-line">
+              <v-icon size="12" class="git-diff-sidebar-path-icon"
+                >mdi-folder-outline</v-icon
+              >
+              <span class="git-diff-sidebar-path-text">{{ currentRoot }}</span>
+              <!-- 2026-09-12 open-folder: reveal the workspace root in the
+                   host file manager, same infra as the file rows'
+                   open-on-disk action. -->
+              <v-tooltip location="bottom" :open-delay="200">
+                <template #activator="{ props: tipProps }">
+                  <v-btn
+                    v-bind="tipProps"
+                    class="git-diff-sidebar-path-open"
+                    size="x-small"
+                    variant="text"
+                    :aria-label="tm('spcodeProjectLoad.fileBrowser.openFolder')"
+                    :loading="openingFolder"
+                    @click="openWorkspaceFolder"
+                  >
+                    <v-icon size="14">mdi-folder-open-outline</v-icon>
+                  </v-btn>
+                </template>
+                {{ tm("spcodeProjectLoad.fileBrowser.openFolder") }}
+              </v-tooltip>
+            </div>
+            <div
+              v-if="selectedWorktree && worktreeList.length > 0"
+              class="git-diff-sidebar-path-sub"
+            >
+              {{
+                worktreeList.find((w) => w.path === selectedWorktree)?.branch ??
+                tm("spcodeProjectLoad.diffSidebar.worktreeTabs.detachedBadge")
+              }}
+            </div>
           </div>
           <div class="git-diff-sidebar-actions">
             <!-- 2026-07-18: the .gitignore entry moved from this header
@@ -5069,55 +5104,6 @@ watch(
               :aria-label="tm('spcodeProjectLoad.fileBrowser.editor.closePane')"
               @click="closeSidebar"
             />
-          </div>
-        </div>
-
-        <!-- UI #5: a fixed path strip directly under the header. Visible in
-           all three view modes so the user always knows which project
-           (and which worktree) they are looking at. Two-line layout:
-             [folder] <project-root>           (top)
-             <worktree> · <branch>             (bottom, only when in a
-                                                non-main worktree)
-           The strip is muted (low-contrast) so it doesn't compete with
-           the title above or the diff content below. -->
-        <div
-          v-if="isProjectLoaded && currentRoot"
-          class="git-diff-sidebar-path-strip"
-          :title="currentRoot"
-        >
-          <div class="git-diff-sidebar-path-line">
-            <v-icon size="12" class="git-diff-sidebar-path-icon"
-              >mdi-folder-outline</v-icon
-            >
-            <span class="git-diff-sidebar-path-text">{{ currentRoot }}</span>
-            <!-- 2026-09-12 open-folder: reveal the workspace root in the
-                 host file manager, same infra as the file rows'
-                 open-on-disk action. -->
-            <v-tooltip location="bottom" :open-delay="200">
-              <template #activator="{ props: tipProps }">
-                <v-btn
-                  v-bind="tipProps"
-                  class="git-diff-sidebar-path-open"
-                  size="x-small"
-                  variant="text"
-                  :aria-label="tm('spcodeProjectLoad.fileBrowser.openFolder')"
-                  :loading="openingFolder"
-                  @click="openWorkspaceFolder"
-                >
-                  <v-icon size="14">mdi-folder-open-outline</v-icon>
-                </v-btn>
-              </template>
-              {{ tm("spcodeProjectLoad.fileBrowser.openFolder") }}
-            </v-tooltip>
-          </div>
-          <div
-            v-if="selectedWorktree && worktreeList.length > 0"
-            class="git-diff-sidebar-path-sub"
-          >
-            {{
-              worktreeList.find((w) => w.path === selectedWorktree)?.branch ??
-              tm("spcodeProjectLoad.diffSidebar.worktreeTabs.detachedBadge")
-            }}
           </div>
         </div>
 
@@ -5221,22 +5207,76 @@ watch(
             </button>
           </template>
           <!-- The browser entry also works without a code project. -->
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="viewMode === 'browser'"
-            :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.browser')"
-            :class="[
-              'git-diff-sidebar-view-tab',
-              { 'is-active': viewMode === 'browser' },
-            ]"
-            @click="viewMode = 'browser'"
+          <div
+            class="git-diff-sidebar-browser-tab"
+            :class="{ 'is-active': viewMode === 'browser' }"
           >
-            <v-icon size="14">mdi-web</v-icon>
-            <span>{{
-              tm("spcodeProjectLoad.gitDiffSidebar.tabs.browser")
-            }}</span>
-          </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === 'browser'"
+              :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.browser')"
+              :class="[
+                'git-diff-sidebar-view-tab',
+                { 'is-active': viewMode === 'browser' },
+              ]"
+              @click="viewMode = 'browser'"
+            >
+              <v-icon size="14">mdi-web</v-icon>
+              <span>{{
+                tm("spcodeProjectLoad.gitDiffSidebar.tabs.browser")
+              }}</span>
+            </button>
+            <v-menu location="bottom end">
+              <template #activator="{ props: modeProps }">
+                <button
+                  v-bind="modeProps"
+                  type="button"
+                  class="browser-mode-trigger"
+                  :title="tm('agentBrowser.switchMode')"
+                  :aria-label="tm('agentBrowser.switchMode')"
+                >
+                  <v-icon size="12">mdi-chevron-down</v-icon>
+                </button>
+              </template>
+              <v-list
+                density="compact"
+                class="browser-mode-menu"
+                :aria-label="tm('agentBrowser.switchMode')"
+              >
+                <v-list-item
+                  class="browser-mode-preview"
+                  :active="browserMode === 'preview'"
+                  @click="
+                    browserMode = 'preview';
+                    viewMode = 'browser';
+                  "
+                >
+                  <template #prepend
+                    ><Globe :size="15" aria-hidden="true"
+                  /></template>
+                  <v-list-item-title>{{
+                    tm("agentBrowser.preview")
+                  }}</v-list-item-title>
+                </v-list-item>
+                <v-list-item
+                  class="browser-mode-agent"
+                  :active="browserMode === 'agent'"
+                  @click="
+                    browserMode = 'agent';
+                    viewMode = 'browser';
+                  "
+                >
+                  <template #prepend
+                    ><Bot :size="15" aria-hidden="true"
+                  /></template>
+                  <v-list-item-title>{{
+                    tm("agentBrowser.title")
+                  }}</v-list-item-title>
+                </v-list-item>
+              </v-list>
+            </v-menu>
+          </div>
         </div>
 
         <!-- Branch and worktree controls share the project context. -->
@@ -5946,32 +5986,6 @@ watch(
           />
           <!-- 2026-10-22 web-preview: mount the browser body on first activation;
               v-show keeps it alive so switching tabs does not reload the page. -->
-          <div v-if="viewMode === 'browser'" class="browser-mode-switch" role="group" :aria-label="tm('spcodeProjectLoad.gitDiffSidebar.tabs.browser')">
-            <v-btn
-              class="browser-mode-button"
-              :class="{ 'is-active': browserMode === 'preview' }"
-              variant="text"
-              size="small"
-              :active="browserMode === 'preview'"
-              :aria-pressed="browserMode === 'preview'"
-              @click="browserMode = 'preview'"
-            >
-              <Globe :size="14" aria-hidden="true" />
-              {{ tm("agentBrowser.preview") }}
-            </v-btn>
-            <v-btn
-              class="browser-mode-button"
-              :class="{ 'is-active': browserMode === 'agent' }"
-              variant="text"
-              size="small"
-              :active="browserMode === 'agent'"
-              :aria-pressed="browserMode === 'agent'"
-              @click="browserMode = 'agent'"
-            >
-              <Bot :size="15" aria-hidden="true" />
-              {{ tm("agentBrowser.title") }}
-            </v-btn>
-          </div>
           <WebBrowserView
             v-if="browserMounted"
             v-show="viewMode === 'browser' && browserMode === 'preview'"
@@ -6724,34 +6738,58 @@ watch(
 </template>
 
 <style scoped>
-.browser-mode-switch {
+.git-diff-sidebar-browser-tab {
   display: inline-flex;
-  align-self: flex-start;
-  flex-shrink: 0;
-  gap: 3px;
-  margin: 12px 12px 0;
-  padding: 3px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
-  border-radius: 9px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: 7px;
 }
-.browser-mode-button {
-  min-width: 0;
-  padding-inline: 12px;
-  border-radius: 6px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  font-size: 11.5px;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.browser-mode-button :deep(.v-btn__content) { gap: 6px; }
-.browser-mode-button :deep(.v-btn__overlay) { opacity: 0; }
-.browser-mode-button.is-active {
+.git-diff-sidebar-browser-tab.is-active {
   background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-primary));
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
-.browser-mode-button:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 2px; }
+.git-diff-sidebar-browser-tab .git-diff-sidebar-view-tab {
+  border-radius: 7px 0 0 7px;
+  box-shadow: none;
+}
+.browser-mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: transparent;
+  cursor: pointer;
+  border-radius: 0 7px 7px 0;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.browser-mode-trigger:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgb(var(--v-theme-primary));
+}
+.browser-mode-trigger:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: -2px;
+}
+.browser-mode-menu {
+  min-width: 0;
+  width: max-content;
+  padding: 4px;
+}
+.browser-mode-menu :deep(.v-list-item) {
+  min-height: 32px;
+  padding-inline: 8px;
+  border-radius: 5px;
+}
+.browser-mode-menu :deep(.v-list-item__prepend > svg) {
+  margin-right: 8px;
+}
+.browser-mode-menu :deep(.v-list-item-title) {
+  font-size: 12px;
+}
 /* 2026-07-17 git-revert: secondary hint line inside the revert
    confirmation dialog (explains the new-commit behavior). */
 .git-diff-sidebar__revert-hint {
@@ -6837,7 +6875,7 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px 10px;
+  padding: 5px 10px;
   gap: 8px;
 }
 
@@ -6846,19 +6884,15 @@ watch(
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex-shrink: 0;
 }
 .git-diff-sidebar-title {
-  font-size: 15.5px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
   letter-spacing: 0.01em;
   color: rgb(var(--v-theme-on-surface));
 }
-/* UI #5: removed the inline folder icon + tooltip (`.git-diff-sidebar-dir*`)
-   selectors — the project path is now rendered as a dedicated strip
-   directly below the header (see .git-diff-sidebar-path-strip). Kept the
-   dir selectors as no-op so any external style override (e.g. user
-   CSS, devtools experiments) doesn't break the layout. */
 .git-diff-sidebar-dir-icon {
   color: var(--chat-section-label, rgba(var(--v-theme-on-surface), 0.54));
 }
@@ -6868,23 +6902,30 @@ watch(
 }
 .git-diff-sidebar-actions {
   display: flex;
-  gap: 4px;
+  gap: 0;
   flex-shrink: 0;
+}
+.git-diff-sidebar-actions :deep(.v-btn) {
+  width: 28px;
+  height: 28px;
 }
 
 /* ── Path strip (UI #5) ──────────────────────────────────────────── */
 
 .git-diff-sidebar-path-strip {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 0 14px 10px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  padding: 0;
   /* Use chat's main font (no monospace) so the strip reads like
      a breadcrumb / status row, not a code path. */
   user-select: text;
 }
 
 .git-diff-sidebar-path-line {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -6897,7 +6938,9 @@ watch(
 }
 
 .git-diff-sidebar-path-text {
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   font-weight: 500;
   color: var(--chat-muted, rgba(var(--v-theme-on-surface), 0.62));
   white-space: nowrap;
@@ -6922,7 +6965,7 @@ watch(
 .git-diff-sidebar-path-sub {
   font-size: 11px;
   color: var(--chat-section-label, rgba(var(--v-theme-on-surface), 0.48));
-  margin-left: 18px;
+  max-width: 80px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6935,13 +6978,14 @@ watch(
 .git-diff-sidebar-view-tabs {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin: 0 12px 8px;
-  padding: 4px;
+  flex-shrink: 0;
+  gap: 2px;
+  margin: 0 8px 5px;
+  padding: 2px;
   border-radius: 10px;
   /* Six tabs overflow the 320px minimum sidebar width: scroll the strip
      instead of shrinking the buttons. */
-  max-width: calc(100% - 24px);
+  max-width: calc(100% - 16px);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -6957,12 +7001,13 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  height: 28px;
+  padding: 3px 9px;
   border-radius: 7px;
   border: 0;
   background: transparent;
   color: var(--chat-muted, rgba(var(--v-theme-on-surface), 0.62));
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -7416,6 +7461,7 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0;
 }
 
 /* ── Snackbar stderr block (spec §6.8) ─────────────────────────── */
@@ -7510,12 +7556,15 @@ watch(
     display: none;
   }
   .git-diff-sidebar-header {
-    min-height: 52px;
-    padding: calc(10px + env(safe-area-inset-top)) 12px 8px;
+    min-height: 38px;
+    padding: calc(4px + env(safe-area-inset-top)) 8px 4px;
     border-bottom: 1px solid rgba(var(--v-border-color), 0.12);
   }
   .git-diff-sidebar-body {
     padding: 0 12px calc(12px + env(safe-area-inset-bottom));
+  }
+  .git-diff-sidebar-body--agent {
+    padding: 0;
   }
 }
 

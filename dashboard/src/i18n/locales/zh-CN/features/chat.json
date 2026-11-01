@@ -1,5 +1,6 @@
 {
   "agentBrowser": {
+    "switchMode": "切换浏览模式",
     "waitingUrl": "等待 Agent 打开网页",
     "readOnly": "只读观测",
     "emptyActions": "任务开始后，浏览器操作会显示在这里",

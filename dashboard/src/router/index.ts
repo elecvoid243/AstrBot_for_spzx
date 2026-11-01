@@ -46,6 +46,7 @@ router.beforeEach(async (to, from, next) => {
 
   // Redirect authenticated callers to their role's entry point.
   if (to.path === '/auth/login' && auth.has_token()) {
+    if (auth.role === 'admin' && sessionStorage.getItem('astrbot-full-restore')) return next('/settings#settings-maintenance');
     return next(auth.role === 'user' ? '/chat' : '/welcome');
   }
 

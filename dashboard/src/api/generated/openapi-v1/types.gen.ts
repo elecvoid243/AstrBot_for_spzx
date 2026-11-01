@@ -109,6 +109,10 @@ export type AuthSessionResponse = {
         change_pwd_hint?: boolean;
         md5_pwd_hint?: boolean;
         password_upgrade_required?: boolean;
+        /**
+         * Full restore receipt to reopen in Maintenance after administrator reauthentication.
+         */
+        restore_task_id?: (string) | null;
     } | null;
 };
 

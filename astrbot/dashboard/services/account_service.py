@@ -69,6 +69,21 @@ class AccountService:
                         ).scalar_one_or_none()
                         if account is None:
                             raise
+                if getattr(self.db, "restore_recovery_pending", False):
+                    # An interrupted restore may have committed config before its
+                    # DB transaction. In recovery only, the persisted bootstrap
+                    # identity supplies credentials instead of being overwritten.
+                    dashboard = self.config["dashboard"]
+                    dashboard["username"] = account.username
+                    upgraded = account.password_hash.startswith("pbkdf2_sha256$")
+                    dashboard["pbkdf2_password"] = (
+                        account.password_hash if upgraded else ""
+                    )
+                    if not upgraded:
+                        dashboard["password"] = account.password_hash
+                    dashboard["password_storage_upgraded"] = upgraded
+                    self.config.save_config()
+                    return account
                 if (
                     account.username != username
                     or account.password_hash != password_hash

@@ -944,6 +944,7 @@ commonStore.createEventSource(); // log
 commonStore.getStartTime();
 
 onUnmounted(() => {
+  commonStore.closeEventSourcet();
   stopUpdateProgressPolling();
   stopRestartPolling();
   stopRestartReloadTimer();

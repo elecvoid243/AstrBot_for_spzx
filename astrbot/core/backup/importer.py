@@ -8,13 +8,14 @@
 """
 
 import json
+import mimetypes
 import os
 import shutil
 import zipfile
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from astrbot.core import logger
 from astrbot.core.config.default import VERSION
 from astrbot.core.db import BaseDatabase
-from astrbot.core.db.po import DashboardAccount
+from astrbot.core.db.po import Attachment, DashboardAccount
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_data_path,
     get_astrbot_knowledge_base_path,
@@ -246,11 +247,14 @@ class AstrBotImporter:
         kb_manager: "KnowledgeBaseManager | None" = None,
         config_path: str = CMD_CONFIG_FILE_PATH,
         kb_root_dir: str = KB_PATH,
+        runtime_config: Any | None = None,
     ) -> None:
         self.main_db = main_db
         self.kb_manager = kb_manager
         self.config_path = config_path
         self.kb_root_dir = kb_root_dir
+        self.runtime_config = runtime_config
+        self.extracted_attachments: dict[str, str | None] = {}
 
     def pre_check(self, zip_path: str) -> ImportPreCheckResult:
         """预检查备份文件
@@ -369,6 +373,7 @@ class AstrBotImporter:
         zip_path: str,
         mode: str = "replace",  # "replace" 清空后导入
         progress_callback: Any | None = None,
+        jwt_secret: str | None = None,
     ) -> ImportResult:
         """从 ZIP 文件导入所有数据
 
@@ -376,11 +381,15 @@ class AstrBotImporter:
             zip_path: ZIP 备份文件路径
             mode: 导入模式，目前仅支持 "replace"（清空后导入）
             progress_callback: 进度回调函数，接收参数 (stage, current, total, message)
+            jwt_secret: Fresh full-restore signing key that replaces archived credentials.
 
         Returns:
             ImportResult: 导入结果
         """
         result = ImportResult()
+        previous_config = (
+            dict(self.runtime_config) if self.runtime_config is not None else None
+        )
 
         if not os.path.exists(zip_path):
             result.add_error(f"备份文件不存在: {zip_path}")
@@ -421,6 +430,8 @@ class AstrBotImporter:
                 try:
                     main_data_content = zf.read("databases/main_db.json")
                     main_data = json.loads(main_data_content)
+                    legacy_archive = "dashboard_accounts" not in main_data
+                    self.extracted_attachments.clear()
 
                     async with (
                         self.main_db.dashboard_account_lock,
@@ -494,11 +505,49 @@ class AstrBotImporter:
                         imported = await self._import_main_database(
                             main_data, session=restore_session
                         )
+                        # Publish matching recovery credentials while identity replacement
+                        # is still locked. A data-only modern archive includes accounts.
+                        if jwt_secret is not None:
+                            restored_config = json.loads(
+                                Path(self.config_path).read_text(encoding="utf-8-sig")
+                            )
+                            if "config/cmd_config.json" in zf.namelist():
+                                restored_config = json.loads(
+                                    zf.read("config/cmd_config.json")
+                                )
+                            bootstrap = next(
+                                row
+                                for row in main_data["dashboard_accounts"]
+                                if row.get("bootstrap_key") == "dashboard"
+                            )
+                            dashboard = restored_config["dashboard"]
+                            dashboard["username"] = bootstrap["username"]
+                            password_hash = bootstrap["password_hash"]
+                            upgraded = password_hash.startswith("pbkdf2_sha256$")
+                            dashboard["pbkdf2_password"] = (
+                                password_hash if upgraded else ""
+                            )
+                            if not upgraded:
+                                dashboard["password"] = password_hash
+                            dashboard["password_storage_upgraded"] = upgraded
+                            dashboard["jwt_secret"] = jwt_secret
+                            # AstrBotConfig saves via fsync + same-directory atomic replace.
+                            self.runtime_config.clear()
+                            self.runtime_config.update(restored_config)
+                            self.runtime_config.save_config()
                         result.imported_tables.update(imported)
                 except DatabaseClearError as e:
+                    if previous_config is not None:
+                        self.runtime_config.clear()
+                        self.runtime_config.update(previous_config)
+                        self.runtime_config.save_config()
                     result.add_error(f"清空主数据库失败: {e}")
                     return result
                 except Exception as e:
+                    if previous_config is not None:
+                        self.runtime_config.clear()
+                        self.runtime_config.update(previous_config)
+                        self.runtime_config.save_config()
                     result.add_error(f"导入主数据库失败: {e}")
                     return result
 
@@ -528,7 +577,7 @@ class AstrBotImporter:
                 if progress_callback:
                     await progress_callback("config", 0, 100, "正在导入配置文件...")
 
-                if "config/cmd_config.json" in zf.namelist():
+                if jwt_secret is None and "config/cmd_config.json" in zf.namelist():
                     try:
                         config_content = zf.read("config/cmd_config.json")
                         # 备份现有配置
@@ -565,7 +614,61 @@ class AstrBotImporter:
 
                 dir_stats = await self._import_directories(zf, manifest, result)
                 result.imported_directories = dir_stats
-
+                # Only successfully extracted archive members can acquire a legacy
+                # record. Never inventory pre-existing server files during restore.
+                if self.extracted_attachments:
+                    async with (
+                        self.main_db.get_db() as attachment_session,
+                        attachment_session.begin(),
+                    ):
+                        bootstrap = (
+                            await attachment_session.execute(
+                                select(DashboardAccount).where(
+                                    DashboardAccount.bootstrap_key == "dashboard"
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        for (
+                            extracted_path,
+                            attachment_id,
+                        ) in self.extracted_attachments.items():
+                            record = None
+                            if attachment_id is not None:
+                                record = (
+                                    await attachment_session.execute(
+                                        select(Attachment).where(
+                                            Attachment.attachment_id == attachment_id
+                                        )
+                                    )
+                                ).scalar_one_or_none()
+                            if record is not None:
+                                record.path = extracted_path
+                                attachment_session.add(record)
+                            elif legacy_archive and bootstrap is not None:
+                                existing = (
+                                    await attachment_session.execute(
+                                        select(Attachment).where(
+                                            Attachment.path == extracted_path
+                                        )
+                                    )
+                                ).scalar_one_or_none()
+                                if existing is None:
+                                    mime_type = (
+                                        mimetypes.guess_type(extracted_path)[0]
+                                        or "application/octet-stream"
+                                    )
+                                    attachment_session.add(
+                                        Attachment(
+                                            path=extracted_path,
+                                            owner=bootstrap.resource_owner,
+                                            type={
+                                                "image": "image",
+                                                "audio": "record",
+                                                "video": "video",
+                                            }.get(mime_type.partition("/")[0], "file"),
+                                            mime_type=mime_type,
+                                        )
+                                    )
                 if progress_callback:
                     await progress_callback("directories", 100, 100, "目录导入完成")
 
@@ -923,6 +1026,13 @@ class AstrBotImporter:
         attachment_prefix = "files/attachments/"
         for name in zf.namelist():
             if name.startswith(attachment_prefix) and name != attachment_prefix:
+                if (
+                    PurePosixPath(name).parent != PurePosixPath(attachment_prefix)
+                    or zf.getinfo(name).is_dir()
+                ):
+                    continue
+                if (zf.getinfo(name).external_attr >> 16) & 0o170000 == 0o120000:
+                    continue
                 try:
                     # 从附件记录中找到原始路径
                     attachment_id = os.path.splitext(os.path.basename(name))[0]
@@ -933,7 +1043,9 @@ class AstrBotImporter:
                             break
 
                     if original_path:
-                        target_path = Path(original_path)
+                        # An archive may come from another OS or data root.
+                        basename = original_path.replace("\\", "/").rsplit("/", 1)[-1]
+                        target_path = attachments_dir / basename
                     else:
                         target_path = attachments_dir / os.path.basename(name)
 
@@ -945,6 +1057,9 @@ class AstrBotImporter:
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(name) as src, open(target_path, "wb") as dst:
                         dst.write(src.read())
+                    self.extracted_attachments[str(target_path.resolve())] = (
+                        attachment_id if original_path else None
+                    )
                     count += 1
                 except Exception as e:
                     logger.warning(f"导入附件 {name} 失败: {e}")
@@ -1032,6 +1147,12 @@ class AstrBotImporter:
 
                         with zf.open(name) as src, open(target_path, "wb") as dst:
                             dst.write(src.read())
+                        if dir_name == "webchat" and Path(rel_path).parent == Path(
+                            "imgs"
+                        ):
+                            self.extracted_attachments[str(target_path.resolve())] = (
+                                None
+                            )
                         file_count += 1
                     except Exception as e:
                         result.add_warning(f"导入文件 {name} 失败: {e}")

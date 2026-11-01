@@ -146,7 +146,9 @@ async def test_legacy_restore_polling_cannot_bootstrap_from_renamed_runtime(
         responses = await asyncio.wait_for(asyncio.gather(*polls), timeout=10)
         assert all(response.status_code == 401 for response in responses)
         assert service.backup_tasks[task_id]["status"] == "completed"
-        assert core.astrbot_config["dashboard"]["username"] == "renamed-admin"
+        # Recovery authentication must use the restored credentials immediately,
+        # before the mandatory runtime restart (T11 full-restore semantics).
+        assert core.astrbot_config["dashboard"]["username"] == "original-admin"
         async with db.get_db() as connection:
             accounts = (
                 (await connection.execute(select(DashboardAccount))).scalars().all()

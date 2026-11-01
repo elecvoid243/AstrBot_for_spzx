@@ -121,7 +121,19 @@ class StatService:
         if is_desktop_managed_backend():
             raise StatServiceError(DESKTOP_MANAGED_RESTART_MESSAGE)
 
-        await self.core_lifecycle.restart()
+        backups = getattr(self.core_lifecycle, "restore_backup_service", None)
+        restoring = backups is not None and backups.restore_phase in {
+            "restart_required",
+            "failed",
+        }
+        if restoring:
+            backups.restore_phase = "restarting"
+        try:
+            await self.core_lifecycle.restart()
+        except BaseException:
+            if restoring:
+                backups.restore_phase = "failed"
+            raise
 
     @staticmethod
     def get_running_time_components(total_seconds: int):

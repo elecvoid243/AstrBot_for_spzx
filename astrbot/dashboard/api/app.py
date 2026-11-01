@@ -249,6 +249,12 @@ def create_dashboard_asgi_app(
         ),
     )
     app.state.services = services
+    core_lifecycle.restore_backup_service = services.backups
+    services.backups.services = services
+    services.restore_app = app
+    from astrbot.dashboard.restore import FullRestoreMiddleware
+
+    app.add_middleware(FullRestoreMiddleware, backups=services.backups)
 
     cron_manager = getattr(core_lifecycle, "cron_manager", None)
     if cron_manager is not None:
@@ -428,7 +434,9 @@ def create_dashboard_asgi_app(
                     "token"
                 )
                 try:
-                    claims = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+                    claims = jwt.decode(
+                        token, app.state.jwt_secret, algorithms=["HS256"]
+                    )
                 except jwt.InvalidTokenError as exc:
                     # Independent API keys may use Bearer authentication.
                     from astrbot.dashboard.services.api_key_service import ApiKeyService

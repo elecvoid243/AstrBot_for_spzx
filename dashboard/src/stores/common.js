@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { logApi, pluginApi, statsApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
+import { accountSessionRevision, accountSessionSignal } from "@/utils/accountSession";
 
 export const useCommonStore = defineStore("common", {
   state: () => ({
@@ -19,11 +20,18 @@ export const useCommonStore = defineStore("common", {
   }),
   actions: {
     async createEventSource() {
-      if (this.eventSource) {
+      if (this.eventSource || !localStorage.getItem("token") || localStorage.getItem("role") !== "admin") {
         return;
       }
       const controller = new AbortController();
       const { signal } = controller;
+      const revision = accountSessionRevision.value;
+      accountSessionSignal().addEventListener("abort", () => {
+        controller.abort();
+        if (this.eventSource === controller) this.eventSource = null;
+        this.sse_connected = false;
+        this.log_cache = [];
+      }, { once: true });
 
       // 注意：这里如果之前改过 Polyfill 的话，可能需要保持原样
       // 如果是用 fetch 的话，这里是支持 Authorization Header 的
@@ -41,6 +49,7 @@ export const useCommonStore = defineStore("common", {
           if (!response.ok) {
             throw new Error(`SSE connection failed: ${response.status}`);
           }
+          if (signal.aborted || revision !== accountSessionRevision.value) return;
           console.log("SSE stream opened");
           this.sse_connected = true;
 
@@ -49,9 +58,11 @@ export const useCommonStore = defineStore("common", {
           let bufferedText = "";
 
           const processStream = ({ done, value }) => {
+            if (signal.aborted || revision !== accountSessionRevision.value) return;
             if (done) {
               console.log("SSE stream closed");
               setTimeout(() => {
+                if (signal.aborted || revision !== accountSessionRevision.value) return;
                 this.eventSource = null;
                 this.createEventSource();
               }, 2000);
@@ -121,9 +132,10 @@ export const useCommonStore = defineStore("common", {
             return reader.read().then(processStream);
           };
 
-          reader.read().then(processStream);
+          return reader.read().then(processStream);
         })
         .catch((error) => {
+          if (signal.aborted || revision !== accountSessionRevision.value) return;
           console.error("SSE error:", error);
           // Attempt to reconnect after a delay
           this.log_cache.push({
@@ -134,6 +146,7 @@ export const useCommonStore = defineStore("common", {
             uuid: "error-" + Date.now(),
           });
           setTimeout(() => {
+            if (signal.aborted || revision !== accountSessionRevision.value) return;
             this.eventSource = null;
             this.createEventSource();
           }, 1000);

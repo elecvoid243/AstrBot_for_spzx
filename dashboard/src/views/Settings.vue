@@ -1342,6 +1342,11 @@ const resetThemeColors = () => {
 };
 
 onMounted(async () => {
+    if (sessionStorage.getItem('astrbot-full-restore')) {
+        activeSettingsSection.value = 'maintenance';
+        backupDialog.value?.open();
+        return;
+    }
     await Promise.all([loadApiKeys(), loadSystemConfig(), loadUpdateSources()]);
     serverClockTimer.value = window.setInterval(() => {
         serverClockTickMs.value = performance.now();

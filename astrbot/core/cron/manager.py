@@ -114,6 +114,8 @@ class CronJobManager:
         self._started = False
         # The scheduler may start early via _schedule_job; track DB sync separately.
         self._db_synced = False
+        self._schedule_updates: set[asyncio.Task] = set()
+        self._stopping_jobs: set[asyncio.Future] = set()
         # Dashboard seam for delivery_mode=webchat_user_turn (see
         # set_webchat_turn_injector); core never imports dashboard services.
         self._webchat_turn_injector: Callable[..., Awaitable[None]] | None = None
@@ -129,14 +131,33 @@ class CronJobManager:
             await self.sync_from_db()
             self._db_synced = True
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, *, wait_for_jobs: bool = False) -> None:
+        """Stop scheduling and optionally drain official job and metadata writes.
+
+        Args:
+            wait_for_jobs: Full restore must await cleanup before replacing data.
+                Normal shutdown retains its existing non-waiting behavior.
+        """
         async with self._lock:
-            if not self._started:
-                return
-            self.scheduler.shutdown(wait=False)
-            await asyncio.sleep(0)
-            self._started = False
-            self._db_synced = False
+            if self._started:
+                # AsyncIOExecutor clears these handles during shutdown and cannot
+                # honor wait=True. Retain them before cancellation loses them.
+                for executor in self.scheduler._executors.values():
+                    for future in getattr(executor, "_pending_futures", ()):
+                        self._stopping_jobs.add(future)
+                        future.add_done_callback(self._stopping_jobs.discard)
+                self.scheduler.shutdown(wait=False)
+                await asyncio.sleep(0)
+                self._started = False
+                self._db_synced = False
+            if wait_for_jobs:
+                pending = self._stopping_jobs | self._schedule_updates
+                if pending:
+                    # A restore timeout must not cancel cancellation cleanup a
+                    # second time; a later retry can still wait on these handles.
+                    await asyncio.shield(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
 
     async def sync_from_db(self) -> None:
         jobs = await self.db.list_cron_jobs()
@@ -323,11 +344,13 @@ class CronJobManager:
                 replace_existing=True,
                 misfire_grace_time=300,
             )
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self.db.update_cron_job(
                     job.job_id, next_run_time=self._get_next_run_time(job.job_id)
                 )
             )
+            self._schedule_updates.add(task)
+            task.add_done_callback(self._schedule_updates.discard)
         except (ValueError, TypeError) as e:
             logger.exception("Failed to schedule cron job %s", job.job_id)
             raise CronJobSchedulingError(str(e)) from e

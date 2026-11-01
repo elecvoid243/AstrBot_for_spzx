@@ -3460,6 +3460,7 @@ export const statusBackupUpload = <ThrowOnError extends boolean = false>(options
 
 /**
  * Get backup task progress
+ * Full restore reports its actual terminal outcome and restart_required. After key rotation, reauthenticate as the restored administrator to read this receipt. A 401 does not mean restoration succeeded.
  */
 export const getBackupProgress = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetBackupProgressData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetBackupProgressResponse, GetBackupProgressError, ThrowOnError>({
@@ -3510,6 +3511,7 @@ export const checkBackup = <ThrowOnError extends boolean = false>(options: Optio
 
 /**
  * Import a backup
+ * Full instance restore stops supported writers before replacement, retires every old JWT and file token, and keeps the runtime in maintenance until restart. Reauthenticate with the backup administrator to inspect the task, retry on failure, or restart. Modern identity IDs, resource owners and credential versions are preserved. Ordinary password reset and disable do not use this stop boundary.
  */
 export const importBackup = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ImportBackupData, ThrowOnError>) => {
     return (options?.client ?? client).post<ImportBackupResponse, ImportBackupError, ThrowOnError>({

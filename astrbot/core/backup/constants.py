@@ -11,6 +11,7 @@ from astrbot.core.db.po import (
     CommandConfig,
     CommandConflict,
     ConversationV2,
+    CronJob,
     DashboardAccount,
     Persona,
     PersonaFolder,
@@ -34,6 +35,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_t2i_templates_path,
     get_astrbot_temp_path,
     get_astrbot_webchat_path,
+    get_astrbot_workspaces_path,
 )
 
 # ============================================================
@@ -43,6 +45,7 @@ from astrbot.core.utils.astrbot_path import (
 # 主数据库模型类映射
 MAIN_DB_MODELS: dict[str, type[SQLModel]] = {
     "dashboard_accounts": DashboardAccount,
+    "cron_jobs": CronJob,
     "platform_stats": PlatformStat,
     "conversations": ConversationV2,
     "personas": Persona,
@@ -79,6 +82,7 @@ def get_backup_directories() -> dict[str, str]:
         "plugin_data": get_astrbot_plugin_data_path(),  # 插件数据
         "config": get_astrbot_config_path(),  # 配置目录
         "t2i_templates": get_astrbot_t2i_templates_path(),  # T2I 模板
+        "workspaces": get_astrbot_workspaces_path(),
         "webchat": get_astrbot_webchat_path(),  # WebChat 数据
         "temp": get_astrbot_temp_path(),  # 临时文件
         "skills": get_astrbot_skills_path(),  # Skills

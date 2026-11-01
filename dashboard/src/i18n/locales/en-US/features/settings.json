@@ -249,9 +249,10 @@
       "processing": "Importing...",
       "wait": "Please wait, restoring data...",
       "completed": "Import Completed!",
-      "restartRequired": "Data has been successfully imported. It is recommended to restart AstrBot immediately for all changes to take effect.",
+      "restartRequired": "Full restore has finished. The old runtime is stopped. Restart AstrBot now, then sign in again using the credentials restored from the backup.",
       "restartNow": "Restart Now",
       "failed": "Import Failed",
+      "failureRecovery": "If restoration failed or was interrupted after data replacement began, restarting only restarts the maintenance environment; it does not mean restoration succeeded. Sign in again as administrator and complete a retry with a valid backup before Chat can resume.",
       "retry": "Retry",
       "resumeUpload": "Resume Upload",
       "version": {

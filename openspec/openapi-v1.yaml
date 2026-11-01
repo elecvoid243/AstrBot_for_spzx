@@ -5744,6 +5744,7 @@ paths:
     get:
       tags: [Backups]
       summary: Get backup task progress
+      description: Full restore reports its actual terminal outcome and restart_required. After key rotation, reauthenticate as the restored administrator to read this receipt. A 401 does not mean restoration succeeded.
       operationId: getBackupProgress
       x-astrbot-scope: system
       parameters:
@@ -5810,6 +5811,7 @@ paths:
     post:
       tags: [Backups]
       summary: Import a backup
+      description: Full instance restore stops supported writers before replacement, retires every old JWT and file token, and keeps the runtime in maintenance until restart. Reauthenticate with the backup administrator to inspect the task, retry on failure, or restart. Modern identity IDs, resource owners and credential versions are preserved. Ordinary password reset and disable do not use this stop boundary.
       operationId: importBackup
       x-astrbot-scope: system
       parameters:
@@ -8359,6 +8361,10 @@ components:
             change_pwd_hint: { type: boolean }
             md5_pwd_hint: { type: boolean }
             password_upgrade_required: { type: boolean }
+            restore_task_id:
+              type: string
+              nullable: true
+              description: Full restore receipt to reopen in Maintenance after administrator reauthentication.
     MigrationState:
       additionalProperties: false
       description: Unresolved legacy semantics retained until a reviewed definition version.

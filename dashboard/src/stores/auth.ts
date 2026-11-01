@@ -52,6 +52,13 @@ export const useAuthStore = defineStore("auth", {
         localStorage.removeItem('password_upgrade_required');
       }
 
+      const restoreTask = data.restore_task_id || sessionStorage.getItem('astrbot-full-restore');
+      if (this.role === 'admin' && restoreTask) {
+        sessionStorage.setItem('astrbot-full-restore', restoreTask);
+        this.returnUrl = null;
+        await router.push('/settings#settings-maintenance');
+        return;
+      }
       if (this.role === 'user') {
         this.returnUrl = null;
         await router.push('/chat');

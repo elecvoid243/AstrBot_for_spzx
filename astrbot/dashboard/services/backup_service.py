@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import traceback
 import uuid
 import zipfile
@@ -14,7 +15,7 @@ from typing import Any
 
 import jwt
 
-from astrbot.core import logger
+from astrbot.core import file_token_service, logger
 from astrbot.core.backup.exporter import AstrBotExporter
 from astrbot.core.backup.importer import AstrBotImporter
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
@@ -34,6 +35,7 @@ CHUNK_SIZE = 1024 * 1024
 # than this, and the whole-file endpoint is only for small backups (large
 # ones must use the chunked flow).
 MAX_BACKUP_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
+RESTORE_STOP_TIMEOUT = 15
 MAX_DIRECT_UPLOAD_BYTES = 128 * 1024 * 1024
 
 
@@ -79,6 +81,58 @@ class BackupService:
         self.backup_tasks: dict[str, dict] = {}
         self.backup_progress: dict[str, dict] = {}
         self.chunked_uploads = ChunkedUploadService(self.chunks_dir)
+        self.last_restore_task_id: str | None = None
+        self.restore_phase = "ready"
+        self.restore_requests: set[asyncio.Task] = set()
+        self.restore_request_done = asyncio.Event()
+        self.restore_request_done.set()
+        self.restore_task: asyncio.Task | None = None
+        self.restore_quiesced = False
+        self.restore_mutated = False
+        self.services = None
+        receipt = Path(self.backup_dir) / ".restore-state.json"
+        if receipt.is_file():
+            try:
+                saved = json.loads(receipt.read_text(encoding="utf-8"))
+                if not isinstance(saved["task_id"], str) or not isinstance(
+                    saved["task"], dict
+                ):
+                    raise ValueError("Invalid restore receipt")
+                if saved["task"].get("type") != "import" or saved["task"].get(
+                    "status"
+                ) not in {"pending", "processing", "completed", "failed"}:
+                    raise ValueError("Invalid restore task")
+                if not {"result", "error"}.issubset(saved["task"]):
+                    raise ValueError("Incomplete restore task")
+            except (OSError, ValueError, KeyError, TypeError):
+                saved = {
+                    "task_id": str(uuid.uuid4()),
+                    "mutated": True,
+                    "task": {
+                        "type": "import",
+                        "status": "failed",
+                        "result": None,
+                        "error": "Unreadable restore receipt. Sign in as administrator and retry with a valid backup. Restarting only restarts maintenance; it does not complete restoration.",
+                    },
+                }
+                logger.error(
+                    "Invalid full restore receipt; recovery operations remain available"
+                )
+            task_id = saved["task_id"]
+            self.last_restore_task_id = task_id
+            self.backup_tasks[task_id] = saved["task"]
+            if saved["task"]["status"] != "completed" and (
+                saved.get("mutated") or saved["task"]["status"] != "failed"
+            ):
+                self.backup_tasks[task_id].update(
+                    status="failed",
+                    error="Restore interrupted. Sign in as administrator and retry with a valid backup from Maintenance. Restarting only restarts maintenance; it does not complete restoration.",
+                )
+                self.restore_phase = "failed"
+                self.restore_mutated = bool(saved.get("mutated"))
+                self.db.restore_recovery_pending = True
+                core_lifecycle.restore_recovery_pending = True
+                core_lifecycle.restore_recovery_handler = self.quiesce_for_restore
 
     @staticmethod
     def _payload(data: object) -> dict[str, Any]:
@@ -233,6 +287,9 @@ class BackupService:
     async def background_export_task(self, task_id: str) -> None:
         try:
             self._update_progress(task_id, status="processing", message="正在初始化...")
+            preferences = getattr(self.core_lifecycle.umop_config_router, "sp", None)
+            if preferences is not None:
+                await preferences.flush()
             kb_manager = getattr(self.core_lifecycle, "kb_manager", None)
             exporter = AstrBotExporter(
                 main_db=self.db,
@@ -457,42 +514,239 @@ class BackupService:
         if not os.path.exists(zip_path):
             raise BackupServiceError(f"备份文件不存在: {filename}")
 
+        if self.restore_task is not None and not self.restore_task.done():
+            raise BackupServiceError("A full restore is already running")
         task_id = str(uuid.uuid4())
+        self.last_restore_task_id = task_id
         self._init_task(task_id, "import", "pending")
-        asyncio.create_task(self.background_import_task(task_id, zip_path))
+        self.restore_previous_phase = self.restore_phase
+        self.restore_phase = "pending"
+        from astrbot.dashboard.restore import restore_response_done
+
+        self.restore_request_done = restore_response_done.get() or asyncio.Event()
+        if restore_response_done.get() is None:
+            self.restore_request_done.set()
+        self.restore_task = asyncio.create_task(
+            self.background_import_task(task_id, zip_path)
+        )
 
         return {
             "task_id": task_id,
             "message": "import task created, processing in background",
         }
 
+    def save_restore_receipt(self, task_id: str) -> None:
+        """Atomically retain the last restore outcome across login and restart.
+
+        Args:
+            task_id: Full restore operation whose non-credential state is saved.
+        """
+        receipt = Path(self.backup_dir) / ".restore-state.json"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        temporary = receipt.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(
+                {
+                    "task_id": task_id,
+                    "task": self.backup_tasks[task_id],
+                    "mutated": self.restore_mutated,
+                },
+                stream,
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(receipt)
+
+    async def quiesce_for_restore(self) -> None:
+        """Stop supported runtime writers and await their final cleanup before replacement.
+
+        This operation belongs only to full restore. Normal credential revocation
+        intentionally leaves already admitted turns running.
+
+        Raises:
+            BackupServiceError: Supported tasks did not finish within the stop deadline.
+        """
+        from astrbot.core.computer.computer_client import shutdown_local_booter
+        from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
+            orphan_run_registry,
+            webchat_queue_mgr,
+        )
+        from astrbot.core.utils.active_event_registry import active_event_registry
+
+        core = self.core_lifecycle
+        # Close input producers first. These are the official lifecycle hooks,
+        # not an attempt to control arbitrary third-party threads or processes.
+        for manager_name, hook in (
+            ("platform_manager", "terminate"),
+            ("cron_manager", "shutdown"),
+            ("workflow_service", "shutdown"),
+        ):
+            manager = getattr(core, manager_name, None)
+            if manager is not None and callable(
+                operation := getattr(manager, hook, None)
+            ):
+                if manager_name == "cron_manager":
+                    await operation(wait_for_jobs=True)
+                else:
+                    await operation()
+        tasks = set(getattr(core, "curr_tasks", []))
+        bus = getattr(core, "event_bus", None)
+        if bus is not None:
+            tasks.update(bus._pending_tasks)
+        for origin in set(active_event_registry._events) | set(
+            active_event_registry._background_tasks
+        ):
+            tasks.update(active_event_registry._background_tasks.get(origin, {}))
+            active_event_registry.stop_all(origin)
+        tasks.update(self.restore_requests)
+        if self.services is not None:
+            tasks.update(
+                run.task for run in self.services.chat.chat_runs.values() if run.task
+            )
+            for session in self.services.live_chat.sessions.values():
+                tasks.update(session.chat_request_tasks.values())
+                tasks.update(session.chat_subscription_tasks.values())
+                if session.live_request_task:
+                    tasks.add(session.live_request_task)
+        # Remove queue listeners before they can dispatch another admitted turn.
+        await webchat_queue_mgr.clear_listener()
+        tasks.discard(asyncio.current_task())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=RESTORE_STOP_TIMEOUT)
+            if pending:
+                raise BackupServiceError(
+                    "Runtime did not stop; no backup data was replaced. Retry or restart."
+                )
+            await asyncio.gather(*tasks, return_exceptions=True)
+        plugin_manager = getattr(core, "plugin_manager", None)
+        if plugin_manager is not None and callable(
+            terminate := getattr(plugin_manager, "_terminate_plugin", None)
+        ):
+            for plugin in plugin_manager.context.get_all_stars():
+                await terminate(plugin)
+        await shutdown_local_booter()
+        provider_manager = getattr(core, "provider_manager", None)
+        if provider_manager is not None and callable(
+            terminate := getattr(provider_manager, "terminate", None)
+        ):
+            await terminate()
+        preferences = getattr(core.umop_config_router, "sp", None)
+        if preferences is not None:
+            await preferences.close()
+        for conversation in list(webchat_queue_mgr.queues):
+            webchat_queue_mgr.remove_queues(conversation)
+        for run_id in list(orphan_run_registry._runs):
+            orphan_run_registry.finish(run_id)
+        webchat_queue_mgr.system_subscribers.clear()
+        if self.services is not None:
+            self.services.chat.chat_runs.clear()
+            self.services.chat.chat_runs_by_session.clear()
+            self.services.chat.running_convs.clear()
+            self.services.live_chat.sessions.clear()
+        self.restore_quiesced = True
+
     async def background_import_task(self, task_id: str, zip_path: str) -> None:
+        """Replace data only after supported writers and response lifetimes finish.
+
+        Args:
+            task_id: Administrator-visible full restore receipt identifier.
+            zip_path: Validated archive path in the instance's backup directory.
+        """
+        mutated = False
         try:
-            self._update_progress(task_id, status="processing", message="正在初始化...")
-            kb_manager = getattr(self.core_lifecycle, "kb_manager", None)
+            # Deliver task_id before retiring the initiating login/request.
+            await self.restore_request_done.wait()
+            self._update_progress(
+                task_id, status="processing", message="Preparing full restore"
+            )
+            self.backup_tasks[task_id]["status"] = "processing"
             importer = AstrBotImporter(
                 main_db=self.db,
-                kb_manager=kb_manager,
-                config_path=os.path.join(self.data_dir, "cmd_config.json"),
+                kb_manager=getattr(self.core_lifecycle, "kb_manager", None),
+                config_path=str(Path(self.data_dir) / "cmd_config.json"),
+                runtime_config=self.config,
             )
+            checked = importer.pre_check(zip_path)
+            if not checked.can_import:
+                raise BackupServiceError(checked.error or checked.confirm_message)
+            # Validate required JSON and identity shape before stopping the runtime.
+            with zipfile.ZipFile(zip_path) as archive:
+                tables = json.loads(archive.read("databases/main_db.json"))
+                if not isinstance(tables, dict):
+                    raise BackupServiceError("Invalid main database payload")
+                if "dashboard_accounts" in tables:
+                    bootstrap = [
+                        row
+                        for row in tables["dashboard_accounts"]
+                        if row.get("bootstrap_key") == "dashboard"
+                    ]
+                    if (
+                        len(bootstrap) != 1
+                        or bootstrap[0].get("role") != "admin"
+                        or not bootstrap[0].get("enabled", True)
+                    ):
+                        raise BackupServiceError(
+                            "Backup must contain one enabled bootstrap administrator"
+                        )
+            self.restore_phase = "stopping"
+            self.save_restore_receipt(task_id)
+            await asyncio.wait_for(
+                self.quiesce_for_restore(), timeout=RESTORE_STOP_TIMEOUT + 5
+            )
+            self.restore_phase = "restoring"
+            # Rotation precedes every replacement and is never sourced from an archive.
+            new_key = secrets.token_hex(32)
+            old_key = self.config["dashboard"]["jwt_secret"]
+            self.config["dashboard"]["jwt_secret"] = new_key
+            try:
+                self.config.save_config()
+            except BaseException:
+                self.config["dashboard"]["jwt_secret"] = old_key
+                raise
+            if self.services is not None:
+                self.services.restore_app.state.jwt_secret = new_key
+            async with file_token_service.lock:
+                file_token_service.staged_files.clear()
+                file_token_service.account_owners.clear()
+            mutated = True
+            self.restore_mutated = True
+            self.save_restore_receipt(task_id)
             result = await importer.import_all(
                 zip_path=zip_path,
                 mode="replace",
+                jwt_secret=new_key,
                 progress_callback=self._make_progress_callback(task_id),
             )
-
+            # Both ordinary and data-only archives restore the bootstrap credentials
+            # with their accounts. No admission is allowed while config is stale.
+            restored_config = json.loads(
+                Path(importer.config_path).read_text(encoding="utf-8-sig")
+            )
+            self.config.clear()
+            self.config.update(restored_config)
             if result.success:
                 self._set_task_result(task_id, "completed", result=result.to_dict())
+                self.restore_phase = "restart_required"
             else:
-                self._set_task_result(
-                    task_id,
-                    "failed",
-                    error="; ".join(result.errors),
-                )
-        except Exception as exc:
-            logger.error(f"后台导入任务 {task_id} 失败: {exc}")
-            logger.error(traceback.format_exc())
-            self._set_task_result(task_id, "failed", error=str(exc))
+                raise BackupServiceError("; ".join(result.errors))
+        except (Exception, asyncio.CancelledError) as exc:
+            if mutated:
+                self.db.restore_recovery_pending = True
+            logger.error("Full restore %s failed: %s", task_id, exc, exc_info=True)
+            self._set_task_result(
+                task_id, "failed", error=str(exc) or "Restore interrupted"
+            )
+            # Preflight never entered the stop boundary; a failed stop never clears DB.
+            self.restore_phase = (
+                "failed"
+                if mutated or self.restore_phase != "pending"
+                else getattr(self, "restore_previous_phase", "ready")
+            )
+        finally:
+            self.save_restore_receipt(task_id)
 
     def get_progress(self, task_id: str | None) -> dict:
         if not task_id:
@@ -506,6 +760,7 @@ class BackupService:
             "task_id": task_id,
             "type": task_info["type"],
             "status": status,
+            "restart_required": self.restore_phase in {"restart_required", "failed"},
         }
 
         if status == "processing" and task_id in self.backup_progress:

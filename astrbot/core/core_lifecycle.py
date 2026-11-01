@@ -394,6 +394,16 @@ class AstrBotCoreLifecycle:
 
         用load加载事件总线和任务并初始化, 执行启动完成事件钩子
         """
+        if getattr(self, "restore_recovery_pending", False):
+            self.restore_backup_service.restore_phase = "stopping"
+            try:
+                await self.restore_recovery_handler()
+            except Exception:
+                logger.exception("Interrupted full restore remains in recovery mode")
+            finally:
+                self.restore_backup_service.restore_phase = "failed"
+            await self.dashboard_shutdown_event.wait()
+            return
         self._load()
         logger.info("AstrBot started.")
 
@@ -474,7 +484,12 @@ class AstrBotCoreLifecycle:
         threading.Thread(
             target=restart_process,
             name="restart",
-            daemon=True,
+            # Full restore has already retired core tasks. Keep the process
+            # alive after dashboard shutdown until the restart thread replaces it.
+            daemon=getattr(
+                getattr(self, "restore_backup_service", None), "restore_phase", "ready"
+            )
+            not in {"restart_required", "failed", "restarting"},
         ).start()
 
     def load_platform(self) -> list[asyncio.Task]:

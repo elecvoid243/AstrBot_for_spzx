@@ -117,6 +117,26 @@ On narrow screens, use the sidebar button at the top left of Chat to open your c
 
 Select **Log out** before switching accounts in the same browser. Conversation lists, unsent text drafts, staged attachments, upload queues, media previews, and old requests are cleared or invalidated. Daily WebChat queries and operations enforce ownership for every account, including administrators. Administrators retain full backups and operational logs, so this feature does not promise confidentiality from trusted server maintainers.
 
+### Full-instance backup and recovery
+
+Administrators keep the existing **Bot → Settings → Maintenance → Backup Manager** entry. Ordinary accounts cannot use full backups, restoration or operational logs, including compatibility URLs. Personal conversation ZIP export/import remains in Chat and is separate from this full-instance operation.
+
+| Previous workflow | Multi-account workflow |
+| --- | --- |
+| Backup Manager → Export Backup | Same entry; includes stable account identities, password hashes, roles, enabled state, personal histories, attachments, projects, branches, side chats, saved choices and profile bindings |
+| Import Backup → confirm → restart | Same entry; stop supported runtime tasks, restore, sign in with the backup administrator to inspect the actual result, restart, then sign in again |
+
+1. Select **Export Backup → Start Export → Download Backup**. Keep the archive private: it includes all accounts and the instance's configuration and data. AstrBot-managed session/project workspaces are included. Absolute custom workspace directories outside the AstrBot data directory still require their own server backup.
+2. Select **Import Backup**, choose the ZIP, then **Upload & Check**. Review the version information and overwrite warning before **Confirm Import**. The existing format accepts old single-account archives and current multi-account archives. An old archive restores its original administrator ownership; a modern archive preserves each account's identity and resource ownership.
+3. Full restore puts the instance into maintenance. Supported model, Live, goal and streaming tasks stop and finish cleanup **before** data replacement; they cannot append an old reply to the restored history. A failure to stop them leaves the database untouched. This uses the official lifecycles of the core and audited plugins; it does not control arbitrary third-party threads or provide an execution sandbox. Ordinary password reset and account disable keep their existing task lifecycle.
+4. Every full restore creates a new signing key and retires previous JWTs and file-download tokens, including tokens issued when an older snapshot was created. A 401 is a request to sign in again, **not** proof of success. Wait until restoration finishes, then sign in using the administrator credentials contained in the backup. The Maintenance dialog reopens the actual task receipt. If it reports failure or interruption, use **Retry**, upload another valid archive or select one from **Backup List**; no hidden-file editing is required. If restoration failed or was interrupted after data replacement began, **Restart Now** only restarts the maintenance environment and does not mean restoration succeeded. Sign in again as administrator and complete a retry with a valid backup before Chat can resume.
+5. When the receipt says **Import Completed!**, select **Restart Now**. The old runtime remains stopped until restart. The existing self-hosted restart or Desktop restart bridge is used; readiness is checked without retaining the retired login. Sign in again when the login page returns.
+6. Each enabled account can reopen its own Chat, preview/download its restored attachments, select its administrator-provided profile and continue chatting. Disabled accounts remain disabled. Log out before switching accounts in the same browser. Administrators retain Bot and operational backup/log access, while daily Chat still cannot access another account's conversations.
+
+Imported histories remain marked as imported, and native file-change authority is preserved as recorded. A full backup does not turn an imported tool card into permission to inspect or undo a server file. Only valid extracted members of a legacy archive are registered as legacy attachments; unrelated files already on the server are never granted access by restoration or repeated startup.
+
+![Administrator checks the actual full-restore result before restarting](/images/multi-user-full-restore-en.png)
+
 ### Reset passwords and disable ordinary accounts
 
 As an administrator, open **Bot → Accounts**, find the ordinary account and select **Reset password**. Enter a new password that meets the displayed policy and confirm. The user must log in again with the new password; the old password and existing login credentials stop working immediately. Existing conversations stay with the same account. Resetting a password does not enable a disabled account.

@@ -249,9 +249,10 @@
       "processing": "正在导入...",
       "wait": "请稍候，正在恢复数据...",
       "completed": "导入完成！",
-      "restartRequired": "数据已成功导入。建议立即重启 AstrBot 以使所有更改生效。",
+      "restartRequired": "完整恢复已完成，旧运行时已停止。请立即重启 AstrBot，再使用备份恢复的账户凭证重新登录。",
       "restartNow": "立即重启",
       "failed": "导入失败",
+      "failureRecovery": "如果数据替换开始后恢复失败或中断，重启只会重新启动维护环境，不代表恢复成功。管理员重新登录后，仍需用有效备份完成重试，才能恢复使用 Chat。",
       "retry": "重试",
       "resumeUpload": "继续上传",
       "version": {

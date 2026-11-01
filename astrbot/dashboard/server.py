@@ -415,7 +415,9 @@ class AstrBotDashboard:
             present only when the token is valid for the current request path.
         """
         try:
-            payload = jwt.decode(token, self._jwt_secret, algorithms=["HS256"])
+            payload = jwt.decode(
+                token, self.asgi_app.state.jwt_secret, algorithms=["HS256"]
+            )
         except jwt.ExpiredSignatureError:
             return None, "Token 过期"
         except jwt.InvalidTokenError:

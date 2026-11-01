@@ -79,6 +79,7 @@ def _download_response(download) -> FileResponse:
         download.path,
         filename=download.filename,
         media_type="application/zip",
+        content_disposition_type="inline",
     )
 
 

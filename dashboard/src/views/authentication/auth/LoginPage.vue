@@ -9,6 +9,7 @@ import { useModuleI18n } from '@/i18n/composables';
 import { useTheme } from 'vuetify';
 import { authApi, publicApi, type PublicVersionData } from '@/api/v1';
 
+const restorePending = !!sessionStorage.getItem("astrbot-full-restore");
 const cardVisible = ref(false);
 const router = useRouter();
 const authStore = useAuthStore();
@@ -131,6 +132,14 @@ onMounted(async () => {
 
   // 检查用户是否已登录，如果已登录则重定向
   if (authStore.has_token()) {
+    if (authStore.role === 'admin' && sessionStorage.getItem('astrbot-full-restore')) {
+      router.replace('/settings#settings-maintenance');
+      return;
+    }
+    if (authStore.role === 'user') {
+      router.replace('/chat');
+      return;
+    }
     const onboardingCompleted = await authStore.checkOnboardingCompleted();
     if (onboardingCompleted) {
       router.push('/dashboard/default');
@@ -225,6 +234,7 @@ onMounted(async () => {
         <div v-if="authLoginRef?.stage !== 'totp' && authLoginRef?.stage !== 'recovery'" class="mt-2 ml-2" style="font-size: 14px; color: grey;">{{ t('logo.subtitle') }}</div>
       </v-card-title>
       <v-card-text>
+        <v-alert v-if="restorePending" type="info" variant="tonal" class="mb-4">{{ t('restoreLogin') }}</v-alert>
         <AuthLogin ref="authLoginRef" />
       </v-card-text>
       <div v-if="versionItems.length" class="login-version-info">

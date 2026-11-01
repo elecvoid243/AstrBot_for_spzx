@@ -329,6 +329,18 @@ def _auth_service_response(
     request: Request,
     result: AuthServiceResult,
 ) -> JSONResponse:
+    backups = request.app.state.services.backups
+    if result.jwt_token and backups.restore_phase in {"restart_required", "failed"}:
+        if (result.data or {}).get("role") != "admin":
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "message": "Full restore maintenance requires an administrator",
+                    "data": None,
+                },
+                status_code=503,
+            )
+        result.data["restore_task_id"] = backups.last_restore_task_id
     response = JSONResponse(
         _auth_result_payload(result),
         status_code=result.status_code,

@@ -216,10 +216,10 @@
                         <div v-else-if="importStatus === 'completed'" class="text-center py-8">
                             <v-icon size="64" color="success" class="mb-4">mdi-check-circle</v-icon>
                             <h3 class="mb-4">{{ t('features.settings.backup.import.completed') }}</h3>
-                            <v-alert type="info" variant="tonal" class="mb-4">
+                            <v-alert v-if="restartRequired" type="info" variant="tonal" class="mb-4">
                                 {{ t('features.settings.backup.import.restartRequired') }}
                             </v-alert>
-                            <v-btn color="primary" variant="tonal" @click="restartAstrBot" class="mr-2">
+                            <v-btn v-if="restartRequired" color="primary" variant="tonal" @click="restartAstrBot" class="mr-2">
                                 <v-icon class="mr-2">mdi-restart</v-icon>
                                 {{ t('features.settings.backup.import.restartNow') }}
                             </v-btn>
@@ -233,6 +233,9 @@
                             <h3 class="mb-4">{{ t('features.settings.backup.import.failed') }}</h3>
                             <v-alert type="error" variant="tonal" class="mb-4">
                                 {{ importError }}
+                                <p v-if="restartRequired" class="mt-3 mb-0">
+                                    {{ t('features.settings.backup.import.failureRecovery') }}
+                                </p>
                             </v-alert>
                             <v-btn
                                 v-if="canResume"
@@ -243,6 +246,9 @@
                             >
                                 <v-icon class="mr-2">mdi-play</v-icon>
                                 {{ t('features.settings.backup.import.resumeUpload') }}
+                            </v-btn>
+                            <v-btn v-if="restartRequired" color="primary" variant="tonal" @click="restartAstrBot" class="mr-2">
+                                {{ t('features.settings.backup.import.restartNow') }}
                             </v-btn>
                             <v-btn color="grey-darken-1" variant="text" @click="resetImport">
                                 {{ t('features.settings.backup.import.retry') }}
@@ -378,8 +384,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { backupApi } from '@/api/v1'
+import { expireAccountSession } from '@/utils/accountSession'
 import { useChunkedUpload } from '@/composables/useChunkedUpload'
 import { useI18n } from '@/i18n/composables'
 import { askForConfirmation, useConfirmDialog } from '@/utils/confirmDialog'
@@ -405,6 +412,8 @@ const exportError = ref('')
 const importStatus = ref('idle') // idle, uploading, confirm, processing, completed, failed
 const importFile = ref(null)
 const importTaskId = ref(null)
+const restartRequired = ref(false)
+let pollTimer = null
 const importProgress = ref({ current: 0, total: 100, message: '' })
 const importError = ref('')
 const uploadedFilename = ref('')  // 已上传的文件名
@@ -531,7 +540,6 @@ const pollExportProgress = async () => {
 
         if (response.data.status === 'ok') {
             const data = response.data.data
-            
             if (data.status === 'processing' && data.progress) {
                 exportProgress.value = {
                     current: data.progress.current || 0,
@@ -645,6 +653,7 @@ const confirmImport = async () => {
 
         if (response.data.status === 'ok') {
             importTaskId.value = response.data.data.task_id
+            sessionStorage.setItem('astrbot-full-restore', importTaskId.value)
             pollImportProgress()
         } else {
             throw new Error(response.data.message)
@@ -664,6 +673,7 @@ const pollImportProgress = async () => {
 
         if (response.data.status === 'ok') {
             const data = response.data.data
+            restartRequired.value = !!data.restart_required
             
             if (data.status === 'processing' && data.progress) {
                 importProgress.value = {
@@ -671,17 +681,27 @@ const pollImportProgress = async () => {
                     total: data.progress.total || 100,
                     message: data.progress.message || ''
                 }
-                setTimeout(pollImportProgress, 1000)
+                pollTimer = setTimeout(pollImportProgress, 1000)
             } else if (data.status === 'completed') {
                 importStatus.value = 'completed'
             } else if (data.status === 'failed') {
                 importStatus.value = 'failed'
                 importError.value = data.error || 'Import failed'
             } else {
-                setTimeout(pollImportProgress, 1000)
+                pollTimer = setTimeout(pollImportProgress, 1000)
             }
+        } else {
+            throw new Error(response.data.message || 'Restore receipt is unavailable. Sign in as administrator and retry with a valid backup.')
         }
     } catch (error) {
+        if (error.response?.status === 401) {
+            expireAccountSession()
+            return
+        }
+        if (error.response?.status === 503) {
+            pollTimer = setTimeout(pollImportProgress, 2000)
+            return
+        }
         importStatus.value = 'failed'
         importError.value = error.message || 'Failed to get import progress'
     }
@@ -689,6 +709,8 @@ const pollImportProgress = async () => {
 
 // 重置导入状态
 const resetImport = async () => {
+    clearTimeout(pollTimer)
+    sessionStorage.removeItem('astrbot-full-restore')
     // Cancel and clean up active or failed resumable sessions.
     await uploader.cancel()
 
@@ -857,7 +879,7 @@ const formatISODate = (isoString) => {
 // 重启 AstrBot
 const restartAstrBot = async () => {
     try {
-        await restartAstrBotRuntime(wfr.value)
+        await restartAstrBotRuntime(wfr.value, restartRequired.value)
     } catch (error) {
         console.error(error)
     }
@@ -879,8 +901,16 @@ const handleClose = () => {
 // 打开对话框
 const open = () => {
     isOpen.value = true
+    const task = sessionStorage.getItem('astrbot-full-restore')
+    if (task) {
+        importTaskId.value = task
+        activeTab.value = 'import'
+        importStatus.value = 'processing'
+        pollImportProgress()
+    }
 }
 
+onUnmounted(() => clearTimeout(pollTimer))
 defineExpose({ open })
 </script>
 

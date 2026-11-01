@@ -298,6 +298,9 @@ class WebChatAdapter(Platform):
                     isinstance(account, DashboardPrincipal)
                     and account.resource_owner == message.sender.user_id
                 ):
+                    # Keep the stable sender ID for ownership and expose the
+                    # authenticated login name to prompts and plugin events.
+                    message.sender.nickname = account.login_name
                     message_event.set_extra("_dashboard_account", account)
                 flags = resolve_webchat_request_flags(payload)
                 message_event.set_extra("flags", flags)

@@ -4449,7 +4449,7 @@ CONFIG_METADATA_3 = {
                     "provider_settings.identifier": {
                         "description": "用户识别",
                         "type": "bool",
-                        "hint": "启用后，会在提示词前包含用户 ID 信息。",
+                        "hint": "启用后，在提示词中包含用户 ID 与昵称；ChatUI 会注明当前登录账户名，帮助模型区分当前用户与其他用户的记忆。",
                     },
                     "provider_settings.group_name_display": {
                         "description": "显示群名称",

@@ -136,6 +136,7 @@ from astrbot.core.utils.quoted_message_parser import (
     extract_quoted_message_text,
 )
 from astrbot.core.utils.string_utils import normalize_and_dedupe_strings
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 from astrbot.core.workspace import (
     normalize_umo_for_workspace,
     resolve_workspace_root_for_umo,
@@ -1143,11 +1144,38 @@ def _append_system_reminders(
     cfg: dict,
     timezone: str | None,
 ) -> None:
+    """Attach configured identity, group and time context to the current turn.
+
+    Args:
+        event: Platform event with any authenticated ChatUI principal.
+        req: Provider request receiving the reminder content.
+        cfg: Effective profile's provider settings.
+        timezone: Optional configured timezone for the time reminder.
+    """
     system_parts: list[str] = []
     if cfg.get("identifier"):
         user_id = event.message_obj.sender.user_id
         user_nickname = event.message_obj.sender.nickname
-        system_parts.append(f"User ID: {user_id}, Nickname: {user_nickname}")
+        account = (
+            event.get_extra("_dashboard_account")
+            if event.get_platform_name() == "webchat"
+            else None
+        )
+        if (
+            isinstance(account, DashboardPrincipal)
+            and account.resource_owner == user_id
+        ):
+            identity = json.dumps(
+                {"user_id": user_id, "username": account.login_name}, ensure_ascii=False
+            )
+            system_parts.append(
+                f"Current authenticated ChatUI user: {identity}\n"
+                "The username is the login account name, not a verified real name. "
+                "Use this account as the current user's identity; do not substitute "
+                "an identity from another user's memories."
+            )
+        else:
+            system_parts.append(f"User ID: {user_id}, Nickname: {user_nickname}")
 
     if cfg.get("group_name_display") and event.message_obj.group_id:
         if not event.message_obj.group:

@@ -326,7 +326,9 @@ Whether to display the model's reasoning process in the reply. Default is `false
 
 #### `provider_settings.identifier`
 
-Whether to prepend the group member's name to the prompt so the model better understands the group chat state. Default is `false`. Enabling this slightly increases token usage.
+Whether to include the sender's user ID and nickname in the current message's prompt. Default is `false`. Enabling this slightly increases token usage.
+
+In ChatUI, the nickname comes from the server-authenticated login account. The prompt explicitly identifies that account, for example `username: johnmac`, and tells the model not to substitute an identity from another user's memories. This applies to administrators and ordinary users; stable user IDs and session ownership remain unchanged. A login name is not a verified real name. The setting follows the conversation's selected profile, and disabling it omits this identity reminder. It does not change memory plugins' storage or retrieval isolation.
 
 #### `provider_settings.group_name_display`
 

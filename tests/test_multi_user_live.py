@@ -77,6 +77,8 @@ async def test_websocket_media_and_public_selections(
 
         async def generate(current):
             assert not current.is_admin()
+            assert current.get_sender_id() == users[i]["resource_owner"]
+            assert current.get_sender_name() == users[i]["username"]
             assert (
                 core.umop_config_router.get_conf_id_for_umop(current.unified_msg_origin)
                 == ("research", "writing")[i]

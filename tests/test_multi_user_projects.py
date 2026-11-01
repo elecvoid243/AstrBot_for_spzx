@@ -51,6 +51,7 @@ async def send_reply(
         ).get()
         assert sender == account["resource_owner"] and target == session_id
         assert payload["_dashboard_account"].resource_owner == sender
+        assert payload["_dashboard_account"].login_name == account["username"]
         origin = f"webchat:FriendMessage:webchat!{sender}!{target}"
         effective.append(core.umop_config_router.get_conf_id_for_umop(origin))
         cid = await core.conversation_manager.get_curr_conversation_id(origin)

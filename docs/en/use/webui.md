@@ -588,6 +588,8 @@ In `Extensions → Skills`, click `Open Skill Store` to open the store in a new 
 
 Ordinary accounts use the same header model selector as administrators. Their username and **Log out** appear at the top right, where administrators retain the **Bot** button. All signed-in accounts can read the announcement bar and reopen it using the header announcement button after collapsing it.
 
+To tell the Agent which account is currently signed in, an administrator can enable **Message Handling → User Identification** in the profile selected for that conversation. The prompt includes the current login name, such as `johnmac`, and stable user ID, with a reminder not to substitute an identity from another user's memories. Disabling the option omits this identity reminder. It does not change the memory plugin's own user isolation.
+
 | Previous entry | Current entry |
 | --- | --- |
 | Ordinary account model selector in the composer | Model selector in the chat header |

@@ -326,7 +326,9 @@ Firecrawl 搜索引擎的 API Key 列表。使用 `firecrawl` 作为网页搜索
 
 #### `provider_settings.identifier`
 
-是否在 Prompt 前加上群成员的名字以让模型更好地了解群聊状态。默认为 `false`。启用将略微增加 token 开销。
+是否在当前消息的提示词中包含发送者的用户 ID 与昵称。默认为 `false`，启用将略微增加 token 开销。
+
+在 ChatUI 中，昵称来自服务端认证的登录账户名，提示词还会明确标注当前账户，例如 `username: johnmac`，提醒模型不要把其他用户记忆中的身份当作当前用户。管理员与普通用户均适用；稳定用户 ID 和会话归属保持不变，用户名不代表经过验证的真实姓名。此设置沿用当前会话所选配置文件，关闭后不注入身份提示；它不会修改记忆插件的数据存储或检索隔离方式。
 
 #### `provider_settings.group_name_display`
 

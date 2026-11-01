@@ -476,7 +476,7 @@
         },
         "identifier": {
           "description": "User Identification",
-          "hint": "When enabled, user ID information will be included in the prompt."
+          "hint": "Includes the user ID and nickname in the prompt. ChatUI identifies the current login account to distinguish it from identities in other users' memories."
         },
         "group_name_display": {
           "description": "Display Group Name",

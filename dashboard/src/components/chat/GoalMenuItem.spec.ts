@@ -2,7 +2,7 @@
 // Author: elecvoid243 @ 2026-10-25
 //
 // Unit tests for the "设定目标" entry in the chat input's "+" menu
-// (kernel /goal discovery). Covers: no-goal label + hint, active-goal
+// (kernel /goal discovery). Covers: compact no-goal label, active-goal
 // label + count trail, open-card flow, start-disabled validation,
 // budget stepper clamping + dirty flag, API error surfacing, and the
 // active-goal click routing to the GoalSidebar instead of the card.
@@ -72,12 +72,12 @@ beforeEach(() => {
 });
 
 describe("GoalMenuItem — labels", () => {
-  it("shows the set-goal label and discovery hint without a goal", () => {
+  it("shows only the set-goal label without a goal", () => {
     const wrapper = mountItem();
     const label = wrapper.find('[data-test="goal-menu-label"]');
     expect(label.text()).toBe("goal.menuSet");
     expect(wrapper.find('[data-test="goal-menu-trail"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("goal.menuHint");
+    expect(wrapper.text()).not.toContain("goal.menuHint");
   });
 
   it("shows the goal label with status and count trail when a goal exists", () => {

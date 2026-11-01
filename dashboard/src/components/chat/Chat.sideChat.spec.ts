@@ -15,6 +15,7 @@ import {
   assertCurrentAccount,
 } from "@/utils/accountSession";
 import { flushPromises, mount } from "@vue/test-utils";
+import type { SessionGoalState } from "@/api/v1";
 import type {
   FileReferenceTarget,
   FileReferenceNavigation,
@@ -54,6 +55,7 @@ const wanted = new Set([
   "closeTodoMenu",
   "openFileReference",
   "autoOpenAgentBrowser",
+  "onGoalStateChanged",
 ]);
 const variables = new Set([
   "threadPanelOpen",
@@ -134,6 +136,9 @@ function setup() {
     }),
   };
   const state = {
+    props: reactive({ active: true }),
+    currentGoal: ref<SessionGoalState | null>(null),
+    applyPushedGoal: vi.fn(),
     currSessionId: ref("session-a"),
     chatHeader: reactive({
       workspaceFilesOpen: false,
@@ -166,6 +171,9 @@ function setup() {
     isAxiosError: (error: unknown) =>
       Boolean((error as { isAxiosError?: boolean })?.isAxiosError),
   };
+  state.applyPushedGoal.mockImplementation((sessionId, goal) => {
+    if (sessionId === state.currSessionId.value) state.currentGoal.value = goal;
+  });
   // The real unmount callback also disposes unrelated viewport/media resources.
   const environment = {
     chatAccountRevision: accountSessionRevision.value,
@@ -216,6 +224,10 @@ function setup() {
       tool: { name: string },
       runId: string,
     ) => Promise<void>;
+    onGoalStateChanged: (
+      sessionId: string,
+      goal: SessionGoalState | null,
+    ) => void;
     closeThreadPanel: () => void;
     onThreadPanelToggle: (open: boolean) => void;
     openSideChat: () => Promise<void>;
@@ -247,6 +259,90 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   vi.restoreAllMocks();
+});
+
+const activeGoal: SessionGoalState = {
+  goal_id: "goal-a",
+  goal: "Finish the task",
+  status: "active",
+  turns_used: 0,
+  max_turns: 20,
+  subgoals: [],
+  last_verdict: null,
+  last_reason: null,
+  paused_reason: null,
+  created_at: null,
+};
+
+describe("goal activation sidebars", () => {
+  it("opens the goal sidebar for a new active goal", () => {
+    const ctx = setup();
+    ctx.onGoalStateChanged("session-a", activeGoal);
+    expect(ctx.goalSidebarOpen.value).toBe(true);
+    expect(ctx.currentGoal.value).toEqual(activeGoal);
+  });
+
+  it("does not reopen a dismissed sidebar on later turns", () => {
+    const ctx = setup();
+    ctx.onGoalStateChanged("session-a", activeGoal);
+    ctx.goalSidebarOpen.value = false;
+    ctx.onGoalStateChanged("session-a", { ...activeGoal, turns_used: 1 });
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+  });
+
+  it("opens for a replacement goal and for a resumed goal", () => {
+    const ctx = setup();
+    ctx.currentGoal.value = activeGoal;
+    ctx.onGoalStateChanged("session-a", { ...activeGoal, goal_id: "goal-b" });
+    expect(ctx.goalSidebarOpen.value).toBe(true);
+    ctx.goalSidebarOpen.value = false;
+    ctx.onGoalStateChanged("session-a", { ...activeGoal, status: "paused" });
+    ctx.onGoalStateChanged("session-a", activeGoal);
+    expect(ctx.goalSidebarOpen.value).toBe(true);
+  });
+
+  it.each([
+    "reasoning",
+    "workbench",
+    "workspace",
+    "refs",
+    "thread",
+    "pending-thread",
+  ])("preserves the existing %s sidebar selection", (panel) => {
+    const ctx = setup();
+    if (panel === "reasoning") ctx.reasoningPanelOpen.value = true;
+    if (panel === "workbench") ctx.gitDiffSidebarOpen.value = true;
+    if (panel === "workspace") ctx.chatHeader.workspaceFilesOpen = true;
+    if (panel === "refs") ctx.refsSidebarOpen.value = true;
+    if (panel === "thread") ctx.threadPanelOpen.value = true;
+    if (panel === "pending-thread") ctx.creatingSideChat.value = true;
+    ctx.onGoalStateChanged("session-a", activeGoal);
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+    expect(ctx.currentGoal.value).toEqual(activeGoal);
+  });
+
+  it("keeps background session pushes from opening the current sidebar", () => {
+    const ctx = setup();
+    ctx.onGoalStateChanged("session-b", activeGoal);
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+    expect(ctx.applyPushedGoal).toHaveBeenCalledWith("session-b", activeGoal);
+    expect(ctx.currentGoal.value).toBeNull();
+  });
+
+  it("does not reveal a sidebar while Chat is hidden", () => {
+    const ctx = setup();
+    ctx.props.active = false;
+    ctx.onGoalStateChanged("session-a", activeGoal);
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+  });
+
+  it("updates a completed goal without reopening the sidebar", () => {
+    const ctx = setup();
+    ctx.currentGoal.value = activeGoal;
+    ctx.onGoalStateChanged("session-a", { ...activeGoal, status: "done" });
+    expect(ctx.goalSidebarOpen.value).toBe(false);
+    expect(ctx.currentGoal.value?.status).toBe("done");
+  });
 });
 
 describe("Chat side-chat lifecycle", () => {

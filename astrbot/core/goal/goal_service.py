@@ -582,7 +582,12 @@ class GoalService:
             max_parse_failures=self._config().get("max_parse_failures"),
         )
 
-        if decision.get("message") and self._config().get("verbose", True):
+        # WebChat presents verdicts in the goal sidebar instead of chat messages.
+        if (
+            decision.get("message")
+            and self._config().get("verbose", True)
+            and not isinstance(event, WebChatMessageEvent)
+        ):
             await self._notify(event, decision["message"])
 
         if decision.get("should_continue") and decision.get("continuation_prompt"):

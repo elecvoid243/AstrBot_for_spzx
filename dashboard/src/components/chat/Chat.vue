@@ -1337,7 +1337,12 @@ import {
   Trash2,
   Upload,
 } from "@lucide/vue";
-import { chatApi, pluginExtensionApi, providerApi } from "@/api/v1";
+import {
+  chatApi,
+  pluginExtensionApi,
+  providerApi,
+  type SessionGoalState,
+} from "@/api/v1";
 import { useSessionGoal } from "@/composables/useSessionGoal";
 import { useShellSessions } from "@/composables/useShellSessions";
 import ShellSessionWindow from "@/components/chat/ShellSessionWindow.vue";
@@ -2348,6 +2353,33 @@ watch(reasoningPanelOpen, (open) => {
   }
 });
 
+/**
+ * Apply live goal state and reveal a new activation when no sidebar is open.
+ *
+ * Args:
+ *   sessionId: Session owning the pushed goal state.
+ *   goal: Current goal, or null after it has been cleared.
+ */
+function onGoalStateChanged(sessionId: string, goal: SessionGoalState | null) {
+  const previous = currentGoal.value;
+  applyPushedGoal(sessionId, goal);
+  if (
+    sessionId !== currSessionId.value ||
+    !props.active ||
+    goal?.status !== "active" ||
+    (previous?.goal_id === goal.goal_id && previous.status === "active") ||
+    goalSidebarOpen.value ||
+    reasoningPanelOpen.value ||
+    gitDiffSidebarOpen.value ||
+    chatHeader.workspaceFilesOpen ||
+    refsSidebarOpen.value ||
+    threadPanelOpen.value ||
+    creatingSideChat.value
+  )
+    return;
+  chatHeader.SET_GOAL_SIDEBAR_OPEN(true);
+}
+
 const {
   loadingMessages,
   sending,
@@ -2382,7 +2414,7 @@ const {
     void autoOpenAgentBrowser(sessionId, tool, runId);
   },
   onSessionsChanged: getSessions,
-  onGoalStateChanged: applyPushedGoal,
+  onGoalStateChanged,
   onShellSessionsChanged: applyPushedShellSessions,
   onInteractiveChoice: (sessionId) => {
     markChoiceAttention(

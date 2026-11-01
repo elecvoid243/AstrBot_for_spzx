@@ -531,6 +531,63 @@ async def test_on_turn_done_interrupted_goal_auto_pauses():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["webchat", "qq"])
+@pytest.mark.parametrize(
+    "verdict,max_turns,status",
+    [
+        ("continue", 20, "active"),
+        ("done", 20, "done"),
+        ("blocked", 20, "blocked"),
+        ("continue", 1, "paused"),
+    ],
+)
+async def test_goal_verdicts_update_webchat_state_without_chat_messages(
+    platform, verdict, max_turns, status
+):
+    from astrbot.core.platform.astr_message_event import AstrMessageEvent
+    from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+    from astrbot.core.platform.message_type import MessageType
+    from astrbot.core.platform.platform_metadata import PlatformMetadata
+    from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
+
+    message = AstrBotMessage()
+    message.type = MessageType.FRIEND_MESSAGE
+    message.self_id = "bot"
+    message.sender = MessageMember("alice", "Alice")
+    message.session_id = "webchat!alice!cid1" if platform == "webchat" else "alice"
+    message.message_id = "finished-goal-turn"
+    message.message_str = "work on the goal"
+    event_class = WebChatMessageEvent if platform == "webchat" else AstrMessageEvent
+    event = event_class(
+        message.message_str,
+        message,
+        PlatformMetadata(platform, platform, platform),
+        message.session_id,
+    )
+    service = _make_service()
+    service.goals = GoalManager(InMemoryKV(), on_change=service._emit_goal_change)
+    changes = []
+
+    async def listener(umo, state):
+        changes.append((umo, state.status, state.turns_used))
+
+    async def judge(umo, system_prompt, user_prompt):
+        return f'{{"status":"{verdict}","reason":"private judge reason"}}'
+
+    service.set_state_change_listener(listener)
+    service._judge_llm_caller = judge
+    await service.goals.set(event.unified_msg_origin, "g", max_turns=max_turns)
+    changes.clear()
+
+    await service.on_turn_done(event, SimpleNamespace(completion_text="agent output"))
+
+    assert changes[-1] == (event.unified_msg_origin, status, 1)
+    assert (await service.goals.get(event.unified_msg_origin)).status == status
+    assert bool(service._context.sent) is (platform != "webchat")
+    assert service._context.event_queue.qsize() == int(status == "active")
+
+
 # ---------------------------------------------------------------------------
 # restart sweep
 # ---------------------------------------------------------------------------

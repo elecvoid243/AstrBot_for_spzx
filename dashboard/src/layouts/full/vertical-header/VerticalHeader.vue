@@ -1201,15 +1201,21 @@ onMounted(async () => {
         class="chat-action-btn goal-sidebar-trigger"
         :class="{
           'goal-sidebar-trigger--active': chatHeader.goalSidebarOpen,
+          'goal-sidebar-trigger--done': chatHeader.goalBadge.status === 'done',
         }"
         variant="text"
         size="small"
         rounded="sm"
-        :title="tm('goal.summary')"
-        :aria-label="tm('goal.summary')"
+        :title="`${tm('goal.summary')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
+        :aria-label="`${tm('goal.summary')} · ${tm(`goal.status_${chatHeader.goalBadge.status}`)}`"
+        :aria-pressed="chatHeader.goalSidebarOpen"
         @click="chatHeader.TOGGLE_GOAL_SIDEBAR"
       >
-        <v-icon size="18" :color="goalStatusColor">mdi-target</v-icon>
+        <v-icon size="18" :color="goalStatusColor">{{
+          chatHeader.goalBadge.status === 'done'
+            ? 'mdi-check-circle-outline'
+            : 'mdi-target'
+        }}</v-icon>
         <span class="goal-trigger-count">
           {{ chatHeader.goalBadge.turnsUsed }}/{{ chatHeader.goalBadge.maxTurns }}
         </span>
@@ -2288,6 +2294,11 @@ onMounted(async () => {
 
 .goal-sidebar-trigger--active {
   background: rgba(var(--v-theme-on-surface), 0.08) !important;
+}
+
+.goal-sidebar-trigger--done {
+  background: rgba(var(--v-theme-success), 0.12) !important;
+  color: rgb(var(--v-theme-success));
 }
 
 .goal-trigger-count {

@@ -98,6 +98,10 @@ While a reply is running, the send button becomes **Stop** when the composer is 
 
 Use **+ → Set goal** in the existing composer to set a conversation goal. Its existing sidebar provides pause, resume, and clear actions for that conversation. Goals retain their meaning and persist after reconnecting. The previous administrator-only runtime controls now appear in the same Chat locations for each resource owner. Signing out clears pending cards, queued text, goal display, browser attention signals and subscriptions before the next account opens Chat.
 
+You can also send `/goal set <goal>`. When a new goal starts or a paused goal resumes, its sidebar opens automatically if no reasoning, workspace, or other sidebar is open. Existing sidebars stay open, and dismissing the goal sidebar keeps it closed during later turn updates. The composer menu's **Set goal** item shows only its label. ChatUI no longer appends judge verdicts as chat messages; the latest evaluation remains available in the goal sidebar. When the goal completes, the goal button beside **Bot** in the top toolbar gains a green highlight and a checkmark. It still opens the goal sidebar.
+
+![Completed goal toolbar button and sidebar](./images/goal-completed-toolbar.png)
+
 ![A paused goal in its owner's conversation](./images/multi-user-runtime-goal.png)
 
 Use **Settings → Transport Mode → WebSocket** to use the same text, attachment, profile, model and thinking-effort controls over WebSocket. The default remains SSE. WebSocket also supports quoting messages from your current conversation. Queued follow-ups wait for the current conversation's profile selection; follow-ups sent to a background conversation retain that conversation's binding.

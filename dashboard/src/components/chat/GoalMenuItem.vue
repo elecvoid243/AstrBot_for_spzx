@@ -41,9 +41,6 @@
               {{ badge.turnsUsed }}/{{ badge.maxTurns }}
             </span>
           </span>
-          <span v-else class="goal-menu-item-hint">
-            {{ tm("goal.menuHint") }}
-          </span>
         </template>
       </v-list-item>
     </template>
@@ -241,12 +238,6 @@ async function startGoal() {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: rgba(var(--v-theme-primary), 0.9);
-}
-
-.goal-menu-item-hint {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  white-space: nowrap;
 }
 
 .goal-menu-card {

@@ -519,6 +519,7 @@ if (_persistedWorktree !== null && _persistedWorktree !== "null") {
 }
 
 const worktreesComposable = useSpcodeWorktrees();
+const worktreeDropdownTarget = ref<HTMLElement | null>(null);
 const branchesComposable = useSpcodeGitBranches();
 const branchList = computed(() => {
   const s = branchesComposable.state.value;
@@ -5243,13 +5244,8 @@ watch(
           v-if="hasMultipleWorktrees && (isGitRepo || showNotGitRepoChip)"
           class="git-diff-sidebar-bw"
         >
-          <!-- Branch switcher (spec 2026-07-21 §3.3, layout revised 2026-07-21)
-             Sits ABOVE the worktree tabs (not inside the flex row) so its
-             dropdown anchors to the button instead of being squeezed by
-             the tab strip. The button is wrapped by v-menu's activator slot
-             so Vuetify's positioning pipeline has an HTMLElement to anchor
-             against; without it the menu falls back to the viewport's
-             top-left corner. -->
+          <!-- The compact worktree selector joins the branch row. Each menu
+               keeps its own activator so it anchors to the correct button. -->
           <div
             v-if="isGitRepo && hasMultipleWorktrees"
             class="git-diff-sidebar-branch-mgmt"
@@ -5457,6 +5453,10 @@ watch(
                 </v-list-item>
               </v-list>
             </v-menu>
+            <span
+              ref="worktreeDropdownTarget"
+              class="git-diff-sidebar-worktree-inline"
+            />
             <!-- Ahead/behind indicator for the current branch. Mirrors
                  the worktree tab badges ("主" / "游离" / "损坏") in
                  shape and palette; hidden when there's no upstream
@@ -5613,6 +5613,7 @@ watch(
           <GitWorktreeSwitcher
             :worktrees="worktreeList"
             :selected-path="selectedWorktree"
+            :dropdown-target="worktreeDropdownTarget"
             @change="onWorktreeChange"
             @create="openCreateDialog"
             @contextmenu="openContextMenu"
@@ -7082,8 +7083,37 @@ watch(
   flex-shrink: 0;
 }
 
+.git-diff-sidebar-bw {
+  container-type: inline-size;
+}
 .git-diff-sidebar-bw > .git-diff-sidebar-branch-mgmt {
   padding-left: 16px;
+}
+
+.git-diff-sidebar-worktree-inline {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  max-width: 280px;
+}
+.git-diff-sidebar-worktree-inline:empty {
+  display: none;
+}
+
+@container (max-width: 600px) {
+  .git-diff-sidebar-branch-mgmt:has(
+      .git-diff-sidebar-worktree-inline:not(:empty)
+    )
+    .git-diff-sidebar-branch-mgmt-label,
+  .git-diff-sidebar-branch-mgmt:has(
+      .git-diff-sidebar-worktree-inline:not(:empty)
+    )
+    .git-diff-sidebar-bw-refresh-text {
+    display: none;
+  }
+  .git-diff-sidebar-worktree-inline :deep(.worktree-switcher-label) {
+    display: none;
+  }
 }
 
 /* Refresh the branch and worktree lists from the end of the branch row. */
@@ -7188,8 +7218,8 @@ watch(
   opacity: 0.5;
 }
 
-/* Branch switcher (spec 2026-07-21 §3.3, layout revised 2026-07-21)
-   Lives ABOVE the worktree-tabs flex row. The dropdown list scrolls
+/* The branch row also hosts the worktree dropdown when the full strip folds.
+   The dropdown list scrolls
    internally instead of growing past the viewport when a project has
    many branches. Font-size matches the worktree tabs (12px) so a long
    branch name doesn't visually dominate the sidebar. */

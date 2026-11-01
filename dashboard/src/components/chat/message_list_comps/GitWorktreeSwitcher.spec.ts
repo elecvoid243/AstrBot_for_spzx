@@ -49,6 +49,7 @@ const mountOptions = {
         </div>`,
       },
       "v-list": { template: "<div><slot /></div>" },
+      "v-divider": true,
       "v-list-item": {
         props: ["title", "subtitle", "active", "prependIcon"],
         template:
@@ -121,7 +122,7 @@ describe("GitWorktreeSwitcher", () => {
     resize();
     await nextTick();
     await wrapper.get(".worktree-menu-button").trigger("click");
-    expect(wrapper.findAll(".menu-item")).toHaveLength(3);
+    expect(wrapper.findAll(".menu-item")).toHaveLength(4);
 
     stripHeight = 62;
     resize();
@@ -170,7 +171,7 @@ describe("GitWorktreeSwitcher", () => {
     await nextTick();
     expect(wrapper.get(".worktree-menu-button").text()).toContain("feature");
     await wrapper.get(".worktree-menu-button").trigger("click");
-    const options = wrapper.findAll(".menu-item");
+    const options = wrapper.findAll(".worktree-menu-item");
     expect(options[1].attributes("aria-selected")).toBe("true");
     expect(options[1].text()).toContain("mdi-lock");
     expect(options[2].text()).toContain("9876543");
@@ -181,8 +182,50 @@ describe("GitWorktreeSwitcher", () => {
     expect(wrapper.emitted("change")?.at(-1)).toEqual([null]);
     await options[2].trigger("click");
     expect(wrapper.emitted("change")?.at(-1)).toEqual(["/repo-detached"]);
-    await wrapper.get(".worktree-add").trigger("click");
+    expect(wrapper.get(".worktree-add").classes()).toContain(
+      "worktree-add--measuring",
+    );
+    expect(wrapper.get(".worktree-add").attributes("tabindex")).toBe("-1");
+    await wrapper.get(".worktree-create-menu-item").trigger("click");
     expect(wrapper.emitted("create")).toHaveLength(2);
+    expect(wrapper.find(".worktree-create-menu-item").exists()).toBe(false);
+  });
+
+  it("moves only the dropdown into the branch row and keeps full-width measurement", async () => {
+    const target = document.createElement("span");
+    document.body.appendChild(target);
+    const wrapper = mount(GitWorktreeSwitcher, {
+      ...mountOptions,
+      props: { ...mountOptions.props, dropdownTarget: target },
+    });
+    try {
+      await nextTick();
+      stripHeight = 96;
+      resize();
+      await nextTick();
+      expect(target.querySelector(".worktree-menu-button")).not.toBeNull();
+      expect(wrapper.get(".worktree-switcher").classes()).toContain(
+        "worktree-switcher--inline",
+      );
+      expect(wrapper.get(".worktree-switcher").attributes()).toHaveProperty(
+        "inert",
+      );
+      expect(wrapper.findAll('[role="tab"]')).toHaveLength(worktrees.length);
+
+      stripHeight = 28;
+      resize();
+      await nextTick();
+      expect(target.querySelector(".worktree-menu-button")).toBeNull();
+      expect(wrapper.get(".worktree-switcher").classes()).not.toContain(
+        "worktree-switcher--inline",
+      );
+      expect(wrapper.get(".worktree-switcher").attributes()).not.toHaveProperty(
+        "inert",
+      );
+    } finally {
+      wrapper.unmount();
+      target.remove();
+    }
   });
 
   it("disconnects layout observation on unmount", async () => {

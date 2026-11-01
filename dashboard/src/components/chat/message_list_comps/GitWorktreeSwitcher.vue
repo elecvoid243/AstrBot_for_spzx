@@ -6,6 +6,7 @@ import { useModuleI18n } from "@/i18n/composables";
 const props = defineProps<{
   worktrees: SpcodeGitWorktree[];
   selectedPath: string | null;
+  dropdownTarget?: HTMLElement | null;
 }>();
 const emit = defineEmits<{
   change: [path: string | null];
@@ -59,7 +60,12 @@ watch(tabs, (element, _, onCleanup) => {
 </script>
 
 <template>
-  <div class="worktree-switcher">
+  <div
+    class="worktree-switcher"
+    :class="{ 'worktree-switcher--inline': useDropdown && dropdownTarget }"
+    :aria-hidden="useDropdown && dropdownTarget ? true : undefined"
+    :inert="useDropdown && dropdownTarget ? '' : undefined"
+  >
     <span class="worktree-switcher-label">
       {{ tm("spcodeProjectLoad.diffSidebar.worktreeTabs.label") }}
     </span>
@@ -104,58 +110,86 @@ watch(tabs, (element, _, onCleanup) => {
           }}</span>
         </button>
       </div>
-      <v-menu
-        v-if="useDropdown"
-        v-model="menuOpen"
-        location="bottom start"
-        max-width="400"
-      >
-        <template #activator="{ props: menuProps }">
-          <button
-            v-bind="menuProps"
-            type="button"
-            class="worktree-menu-button"
-            :aria-label="
-              tm('spcodeProjectLoad.diffSidebar.worktreeTabs.ariaLabel')
-            "
-            :title="activeItem?.worktree.path"
+      <!-- Keep the measuring strip at full width while the selector joins the branch row. -->
+      <Teleport :to="dropdownTarget || 'body'" :disabled="!dropdownTarget">
+        <div v-if="useDropdown" class="worktree-dropdown">
+          <span v-if="dropdownTarget" class="worktree-switcher-label">
+            {{ tm("spcodeProjectLoad.diffSidebar.worktreeTabs.label") }}
+          </span>
+          <v-menu
+            v-model="menuOpen"
+            location="bottom start"
+            max-width="400"
           >
-            <v-icon size="14">{{
-              activeItem?.icon ?? "mdi-source-branch"
-            }}</v-icon>
-            <span class="worktree-tab-label">{{ activeItem?.label }}</span>
-            <span v-if="activeItem?.badge" class="worktree-tab-badge">{{
-              activeItem.badge
-            }}</span>
-            <v-icon size="12">mdi-menu-down</v-icon>
-          </button>
-        </template>
-        <v-list density="compact" class="worktree-menu">
-          <v-list-item
-            v-for="item in items"
-            :key="item.worktree.path"
-            :active="item.active"
-            :title="item.label"
-            :subtitle="item.worktree.path"
-            :prepend-icon="item.icon"
-            @click="
-              emit('change', item.worktree.isMain ? null : item.worktree.path)
-            "
-            @contextmenu.prevent="emit('contextmenu', $event, item.worktree)"
-          >
-            <template #append>
-              <span v-if="item.badge" class="worktree-tab-badge">{{
-                item.badge
-              }}</span>
-              <v-icon v-if="item.active" size="14">mdi-check</v-icon>
+            <template #activator="{ props: menuProps }">
+              <button
+                v-bind="menuProps"
+                type="button"
+                class="worktree-menu-button"
+                :aria-label="
+                  tm('spcodeProjectLoad.diffSidebar.worktreeTabs.ariaLabel')
+                "
+                :title="activeItem?.worktree.path"
+              >
+                <v-icon size="14">{{
+                  activeItem?.icon ?? "mdi-source-branch"
+                }}</v-icon>
+                <span class="worktree-tab-label">{{ activeItem?.label }}</span>
+                <span v-if="activeItem?.badge" class="worktree-tab-badge">{{
+                  activeItem.badge
+                }}</span>
+                <v-icon size="12">mdi-menu-down</v-icon>
+              </button>
             </template>
-          </v-list-item>
-        </v-list>
-      </v-menu>
+            <v-list density="compact" class="worktree-menu">
+              <v-list-item
+                class="worktree-create-menu-item"
+                prepend-icon="mdi-plus"
+                :title="
+                  tm('spcodeProjectLoad.diffSidebar.worktreeMgmt.addButton')
+                "
+                @click="
+                  menuOpen = false;
+                  emit('create');
+                "
+              />
+              <v-divider />
+              <v-list-item
+                v-for="item in items"
+                :key="item.worktree.path"
+                class="worktree-menu-item"
+                :active="item.active"
+                :title="item.label"
+                :subtitle="item.worktree.path"
+                :prepend-icon="item.icon"
+                @click="
+                  emit(
+                    'change',
+                    item.worktree.isMain ? null : item.worktree.path,
+                  )
+                "
+                @contextmenu.prevent="
+                  emit('contextmenu', $event, item.worktree)
+                "
+              >
+                <template #append>
+                  <span v-if="item.badge" class="worktree-tab-badge">{{
+                    item.badge
+                  }}</span>
+                  <v-icon v-if="item.active" size="14">mdi-check</v-icon>
+                </template>
+              </v-list-item>
+            </v-list>
+          </v-menu>
+        </div>
+      </Teleport>
     </div>
     <button
       type="button"
       class="worktree-add"
+      :class="{ 'worktree-add--measuring': useDropdown }"
+      :aria-hidden="useDropdown || undefined"
+      :tabindex="useDropdown ? -1 : 0"
       :aria-label="
         tm('spcodeProjectLoad.diffSidebar.worktreeMgmt.addButtonAria')
       "
@@ -175,6 +209,31 @@ watch(tabs, (element, _, onCleanup) => {
   padding: 6px 14px 8px 16px;
   border-bottom: 1px solid
     var(--chat-border, rgba(var(--v-theme-on-surface), 0.08));
+}
+.worktree-switcher--inline {
+  height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+  overflow: hidden;
+}
+.worktree-dropdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.worktree-dropdown .worktree-switcher-label {
+  margin-top: 0;
+}
+.worktree-dropdown .worktree-menu-button {
+  flex: 1;
+  min-width: 0;
+}
+.worktree-add--measuring {
+  visibility: hidden;
+  pointer-events: none;
 }
 .worktree-switcher-label {
   flex-shrink: 0;

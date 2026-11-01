@@ -343,10 +343,17 @@ export type ChatRequest = {
      */
     conversation_id?: string;
     message: (string | Array<MessagePart>);
+    /**
+     * Optional profile selection validated and bound to the caller's own session before sending.
+     */
     config_id?: string;
     config_name?: string;
     selected_provider?: string;
     selected_model?: string;
+    /**
+     * Per-message effort override; does not edit shared presets.
+     */
+    thinking_effort?: string;
     /**
      * Deprecated compatibility field. It is used only when flags.enable_streaming is absent; otherwise flags.enable_streaming takes priority.
      * @deprecated
@@ -373,6 +380,10 @@ export type ChatRequest = {
 
 export type ChatSessionBatchDeleteRequest = {
     session_ids: Array<(string)>;
+};
+
+export type ChatSessionConfigRequest = {
+    config_id: string;
 };
 
 export type ChatSessionImportConfirmRequest = {
@@ -2575,9 +2586,34 @@ export type BranchChatMessageResponse = (SuccessEnvelope);
 
 export type BranchChatMessageError = unknown;
 
+export type ListChatModelsResponse = (SuccessEnvelope);
+
+export type ListChatModelsError = unknown;
+
 export type ListChatConfigsResponse = (SuccessEnvelope);
 
 export type ListChatConfigsError = unknown;
+
+export type GetChatSessionConfigData = {
+    path: {
+        session_id: string;
+    };
+};
+
+export type GetChatSessionConfigResponse = (SuccessEnvelope);
+
+export type GetChatSessionConfigError = unknown;
+
+export type UpdateChatSessionConfigData = {
+    body: ChatSessionConfigRequest;
+    path: {
+        session_id: string;
+    };
+};
+
+export type UpdateChatSessionConfigResponse = (SuccessEnvelope);
+
+export type UpdateChatSessionConfigError = unknown;
 
 export type GetChatUiSettingsResponse = (SuccessEnvelope);
 
@@ -2589,6 +2625,10 @@ export type UpdateChatUiEffortValueData = {
          * Free-form effort value forwarded to the provider (e.g. `max`, `xhigh`, `72`).
          */
         value: string;
+        /**
+         * Optional existing preset ID selected only for this account.
+         */
+        active_preset?: string;
     };
 };
 

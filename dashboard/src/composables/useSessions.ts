@@ -1,9 +1,7 @@
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import { useAuthStore } from "@/stores/auth";
-import { chatApi, configRouteApi } from "@/api/v1";
+import { chatApi } from "@/api/v1";
 import {
-  buildWebchatUmoDetails,
   getStoredSelectedChatConfigId,
 } from "@/utils/chatConfigBinding";
 
@@ -93,27 +91,17 @@ export function useSessions(chatboxMode: boolean = false) {
 
     sessionCreationPromise = (async () => {
       try {
-        const selectedConfigId = useAuthStore().role === "user" ? "default" : getStoredSelectedChatConfigId();
+        const selectedConfigId = getStoredSelectedChatConfigId();
         const response = await chatApi.createSession();
         const sessionId = response.data.data.session_id;
         const platformId = response.data.data.platform_id;
 
-        currSessionId.value = sessionId;
-
-        if (
-          selectedConfigId &&
-          selectedConfigId !== "default" &&
-          platformId === "webchat"
-        ) {
-          try {
-            const umoDetails = buildWebchatUmoDetails(sessionId, false);
-            await configRouteApi.upsert(umoDetails.umo, {
-              config_id: selectedConfigId,
-            });
-          } catch (err) {
-            console.error("Failed to bind config to session", err);
-          }
+        if (platformId === "webchat") {
+          const binding = await chatApi.setSessionConfig(sessionId, selectedConfigId);
+          if (binding.data.status !== "ok") throw new Error(binding.data.message || "Configuration is unavailable");
         }
+        // Publish only after the selected configuration is ready for first send.
+        currSessionId.value = sessionId;
 
         // 更新 URL
         const basePath = chatboxMode ? "/chatbox" : "/chat";

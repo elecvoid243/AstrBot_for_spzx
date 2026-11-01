@@ -1,4 +1,10 @@
 import { ref, watch, type Ref } from "vue";
+import { accountSessionRevision } from "@/utils/accountSession";
+
+function storageKey(key: string): string {
+  const accountId = localStorage.getItem("account_id");
+  return accountId ? `${key}:${accountId}` : key;
+}
 
 const SELECTED_PROVIDER_KEY = "selectedProvider";
 const SELECTED_PROVIDER_MODEL_KEY = "selectedProviderModel";
@@ -9,15 +15,20 @@ const SESSION_PROVIDER_STORAGE_PREFIX = "chat.sessionProvider.";
 const selectedProviderId = ref("");
 const selectedModelName = ref("");
 let syncedFromStorage = false;
+window.addEventListener?.("astrbot:account-changed", () => {
+  syncedFromStorage = false;
+  selectedProviderId.value = "";
+  selectedModelName.value = "";
+});
 
 function syncFromStorage() {
   if (syncedFromStorage || typeof window === "undefined") return;
   syncedFromStorage = true;
   try {
     selectedProviderId.value =
-      localStorage.getItem(SELECTED_PROVIDER_KEY) || "";
+      localStorage.getItem(storageKey(SELECTED_PROVIDER_KEY)) || "";
     selectedModelName.value =
-      localStorage.getItem(SELECTED_PROVIDER_MODEL_KEY) || "";
+      localStorage.getItem(storageKey(SELECTED_PROVIDER_MODEL_KEY)) || "";
   } catch {
     // Storage restrictions must not prevent opening the chat.
   }
@@ -34,13 +45,14 @@ function syncFromStorage() {
  */
 export function useProviderModelSelection(sessionId?: Ref<string>) {
   syncFromStorage();
+  const revision = accountSessionRevision.value;
 
   function setSelection(providerId: string, modelName = "") {
     selectedProviderId.value = providerId;
     selectedModelName.value = modelName;
     try {
-      localStorage.setItem(SELECTED_PROVIDER_KEY, providerId);
-      localStorage.setItem(SELECTED_PROVIDER_MODEL_KEY, modelName);
+      localStorage.setItem(storageKey(SELECTED_PROVIDER_KEY), providerId);
+      localStorage.setItem(storageKey(SELECTED_PROVIDER_MODEL_KEY), modelName);
     } catch {
       // Selection persistence must not block the UI.
     }
@@ -50,10 +62,15 @@ export function useProviderModelSelection(sessionId?: Ref<string>) {
     targetSessionId: string,
     selection: { providerId?: string; modelName?: string } | null,
   ) {
-    if (!targetSessionId || !selection?.providerId) return;
+    if (
+      revision !== accountSessionRevision.value ||
+      !targetSessionId ||
+      !selection?.providerId
+    )
+      return;
     try {
       localStorage.setItem(
-        SESSION_PROVIDER_STORAGE_PREFIX + targetSessionId,
+        storageKey(SESSION_PROVIDER_STORAGE_PREFIX + targetSessionId),
         JSON.stringify({
           providerId: selection.providerId,
           modelName: selection.modelName || "",
@@ -71,7 +88,7 @@ export function useProviderModelSelection(sessionId?: Ref<string>) {
         if (!id) return;
         try {
           const raw = localStorage.getItem(
-            SESSION_PROVIDER_STORAGE_PREFIX + id,
+            storageKey(SESSION_PROVIDER_STORAGE_PREFIX + id),
           );
           if (!raw) return;
           const parsed = JSON.parse(raw);

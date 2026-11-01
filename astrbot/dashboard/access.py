@@ -27,6 +27,12 @@ USER_OPERATIONS = {
     "dashboard_get_session",
     "chat",
     "dashboard_send_chat",
+    "chat_configs",
+    "chat_models",
+    "get_chat_session_config",
+    "update_chat_session_config",
+    "chat_ui_settings",
+    "update_chat_ui_effort_value",
 }
 
 
@@ -115,6 +121,10 @@ async def validate_account_request(request: Request, account) -> None:
                 "conversation_id",
                 "message",
                 "message_id",
+                "config_id",
+                "thinking_effort",
+                "selected_provider",
+                "selected_model",
             }:
                 raise ApiError("Unsupported chat fields", status_code=400)
             message = payload.get("message")

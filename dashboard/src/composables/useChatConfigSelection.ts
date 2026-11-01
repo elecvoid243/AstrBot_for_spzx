@@ -15,10 +15,13 @@ import {
   type InjectionKey,
   type Ref,
 } from "vue";
-import { configProfileApi, configRouteApi } from "@/api/v1";
+import { chatApi } from "@/api/v1";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { useToast } from "@/utils/toast";
 import {
-  getStoredDashboardUsername,
   getStoredSelectedChatConfigId,
   setStoredSelectedChatConfigId,
 } from "@/utils/chatConfigBinding";
@@ -26,6 +29,7 @@ import {
 export interface ConfigInfo {
   id: string;
   name: string;
+  agent_runner_type?: string;
 }
 
 export interface ConfigChangedPayload {
@@ -45,232 +49,140 @@ export interface ConfigSelectionContext {
 export function createChatConfigSelection() {
   const configOptions = ref<ConfigInfo[]>([]);
   const loadingConfigs = ref(false);
-  const selectedConfigId = ref("default");
-  const agentRunnerType = ref("local");
+  const selectedConfigId = ref(getStoredSelectedChatConfigId());
   const saving = ref(false);
-  const pendingSync = ref(false);
-  const routingEntries = ref<Array<{ pattern: string; confId: string }>>([]);
-  const configCache: Record<string, string> = {};
   const context = ref<ConfigSelectionContext | null>(null);
   const listeners = new Set<(payload: ConfigChangedPayload) => void>();
+  let sequence = 0;
+  let initialized: Promise<void> | null = null;
+  let selectionWrite: Promise<void> = Promise.resolve();
+  let bindingReady = false;
 
-  const selectedConfigLabel = computed(() => {
-    const target = configOptions.value.find(
-      (item) => item.id === selectedConfigId.value,
+  const selectedConfigLabel = computed(
+    () =>
+      configOptions.value.find((item) => item.id === selectedConfigId.value)
+        ?.name || selectedConfigId.value,
+  );
+
+  function setSelection(configId: string) {
+    selectedConfigId.value = configId;
+    const option = configOptions.value.find((item) => item.id === configId);
+    listeners.forEach((cb) =>
+      cb({
+        configId,
+        agentRunnerType: option?.agent_runner_type || "local",
+      }),
     );
-    return target?.name || selectedConfigId.value || "default";
-  });
+  }
 
-  const sessionKey = computed(() => {
-    const ctx = context.value;
-    const id = ctx?.sessionId?.trim();
-    if (!ctx || !id) return null;
-    return `${ctx.platformId}!${getStoredDashboardUsername()}!${id}`;
-  });
-
-  const targetUmo = computed(() => {
-    const ctx = context.value;
-    if (!ctx || !sessionKey.value) return null;
-    const messageType = ctx.isGroup ? "GroupMessage" : "FriendMessage";
-    return `${ctx.platformId}:${messageType}:${sessionKey.value}`;
-  });
-
-  async function fetchConfigList() {
+  async function syncSession() {
+    const revision = accountSessionRevision.value;
+    const current = ++sequence;
+    const sessionId = context.value?.sessionId;
     loadingConfigs.value = true;
+    saving.value = false;
+    selectionWrite = Promise.resolve();
+    bindingReady = false;
+    selectedConfigId.value = "";
     try {
-      const res = await configProfileApi.list();
-      configOptions.value = (res.data.data?.info_list || []).map(
-        (item: any) => ({
-          id: String(item.id || ""),
-          name: String(item.name || item.id || "default"),
-        }),
-      );
-    } catch (error) {
-      console.error("加载配置文件列表失败", error);
-      configOptions.value = [];
-    } finally {
-      loadingConfigs.value = false;
-    }
-  }
-
-  async function fetchRoutingEntries() {
-    try {
-      const res = await configRouteApi.list();
-      const routing = res.data.data?.routing || {};
-      routingEntries.value = Object.entries(routing).map(([pattern, confId]) => ({
-        pattern,
-        confId: confId as string,
-      }));
-    } catch (error) {
-      console.error("获取配置路由失败", error);
-      routingEntries.value = [];
-    }
-  }
-
-  function matchesPattern(pattern: string, target: string): boolean {
-    const parts = pattern.split(":");
-    const targetParts = target.split(":");
-    if (parts.length !== 3 || targetParts.length !== 3) {
-      return false;
-    }
-    return parts.every(
-      (part, index) =>
-        part === "" || part === "*" || part === targetParts[index],
-    );
-  }
-
-  function resolveConfigId(umo: string | null): string {
-    if (!umo) {
-      return "default";
-    }
-    for (const entry of routingEntries.value) {
-      if (matchesPattern(entry.pattern, umo)) {
-        return entry.confId;
+      const response = await chatApi.listConfigs();
+      assertCurrentAccount(revision);
+      if (current !== sequence) return;
+      configOptions.value = response.data.data?.info_list || [];
+      if (!configOptions.value.length)
+        throw new Error("Configuration is unavailable");
+      let configId = getStoredSelectedChatConfigId();
+      if (sessionId) {
+        const binding = await chatApi.getSessionConfig(sessionId);
+        assertCurrentAccount(revision);
+        if (current !== sequence) return;
+        if (binding.data.status !== "ok")
+          throw new Error(
+            binding.data.message || "Configuration is unavailable",
+          );
+        configId = binding.data.data.config_id;
       }
-    }
-    return "default";
-  }
-
-  async function getAgentRunnerType(confId: string): Promise<string> {
-    if (configCache[confId]) {
-      return configCache[confId];
-    }
-    try {
-      const res = await configProfileApi.get(confId);
-      const config = ((res.data.data as any).config || {}) as any;
-      const type = config?.agent_runner?.runner_type || "local";
-      configCache[confId] = type;
-      return type;
-    } catch (error) {
-      console.error("获取配置文件详情失败", error);
-      return "local";
-    }
-  }
-
-  function notifyChanged() {
-    const payload: ConfigChangedPayload = {
-      configId: selectedConfigId.value,
-      agentRunnerType: agentRunnerType.value,
-    };
-    listeners.forEach((cb) => cb(payload));
-  }
-
-  async function setSelection(confId: string) {
-    const normalized = confId || "default";
-    selectedConfigId.value = normalized;
-    agentRunnerType.value = await getAgentRunnerType(normalized);
-    notifyChanged();
-  }
-
-  async function applySelectionToBackend(confId: string): Promise<boolean> {
-    if (!targetUmo.value) {
-      // No active session yet: remember to push the selection once one exists.
-      pendingSync.value = true;
-      return true;
-    }
-    saving.value = true;
-    try {
-      await configRouteApi.upsert(targetUmo.value, { config_id: confId });
-      const filtered = routingEntries.value.filter(
-        (entry) => entry.pattern !== targetUmo.value,
-      );
-      if (confId !== "default") {
-        filtered.push({ pattern: targetUmo.value, confId });
+      if (!configOptions.value.some((item) => item.id === configId)) {
+        if (sessionId) throw new Error("Configuration is unavailable");
+        configId = "default";
       }
-      routingEntries.value = filtered;
-      return true;
+      setSelection(configId);
+      bindingReady = true;
+      if (context.value?.persistGlobal !== false)
+        setStoredSelectedChatConfigId(configId);
     } catch (error) {
-      const err = error as any;
-      console.error("更新配置文件失败", err);
-      useToast().error(err?.response?.data?.message || "配置文件应用失败");
-      return false;
+      if (revision === accountSessionRevision.value && current === sequence)
+        console.error("Failed to load chat configuration:", error);
     } finally {
-      saving.value = false;
+      if (current === sequence) loadingConfigs.value = false;
     }
   }
 
-  async function syncSelectionForSession() {
-    if (!targetUmo.value) {
-      pendingSync.value = true;
-      return;
-    }
-    if (pendingSync.value) {
-      pendingSync.value = false;
-      await applySelectionToBackend(selectedConfigId.value);
-      return;
-    }
-    await fetchRoutingEntries();
-    const resolved = resolveConfigId(targetUmo.value);
-    await setSelection(resolved);
-    if (context.value?.persistGlobal !== false) {
-      setStoredSelectedChatConfigId(resolved);
-    }
-  }
-
-  let initPromise: Promise<void> | null = null;
-
-  function ensureInitialized(): Promise<void> {
-    if (!initPromise) {
-      initPromise = (async () => {
-        await fetchConfigList();
-        const stored =
-          context.value?.initialConfigId || getStoredSelectedChatConfigId();
-        selectedConfigId.value = stored;
-        await setSelection(stored);
-        await syncSelectionForSession();
-      })();
-    }
-    return initPromise;
-  }
-
-  let lastContextKey = "";
-
-  function contextKey(value: ConfigSelectionContext | null): string {
-    return value
-      ? `${value.sessionId}|${value.platformId}|${value.isGroup}`
-      : "";
-  }
-
-  /**
-   * Bind the session context (ChatInput owns this). The first bind performs
-   * one-time initialization; later context changes re-resolve the config
-   * profile from the routing table.
-   */
   function bindContext(ctx: Ref<ConfigSelectionContext>) {
     watch(
       ctx,
       (value) => {
         context.value = value;
-        const firstBind = !initPromise;
-        // Dedupe repeated binds of the same identity (StrictMode / HMR).
-        if (!firstBind && contextKey(value) === lastContextKey) return;
-        lastContextKey = contextKey(value);
-        if (firstBind) {
-          // ensureInitialized() already runs the initial session sync.
-          void ensureInitialized();
-        } else {
-          void ensureInitialized().then(() => syncSelectionForSession());
-        }
+        initialized = syncSession();
       },
-      { immediate: true },
+      { immediate: true, deep: true, flush: "sync" },
     );
   }
 
-  /** Apply a config profile immediately (chip one-click / dialog confirm). */
-  async function selectConfig(confId: string): Promise<void> {
-    if (!confId) return;
-    const previousId = selectedConfigId.value;
-    await setSelection(confId);
-    const persistGlobal = context.value?.persistGlobal !== false;
-    if (persistGlobal) setStoredSelectedChatConfigId(confId);
-    const applied = await applySelectionToBackend(confId);
-    if (!applied) {
-      if (persistGlobal) setStoredSelectedChatConfigId(previousId);
-      await setSelection(previousId);
+  async function selectConfig(configId: string): Promise<void> {
+    if (!configOptions.value.some((item) => item.id === configId)) return;
+    const revision = accountSessionRevision.value;
+    const current = ++sequence;
+    const sessionId = context.value?.sessionId;
+    const previous = getStoredSelectedChatConfigId();
+    bindingReady = false;
+    setSelection(configId);
+    if (context.value?.persistGlobal !== false)
+      setStoredSelectedChatConfigId(configId);
+    saving.value = true;
+    selectionWrite = selectionWrite
+      .catch(() => {})
+      .then(async () => {
+        assertCurrentAccount(revision);
+        if (sessionId) {
+          const response = await chatApi.setSessionConfig(sessionId, configId);
+          assertCurrentAccount(revision);
+          if (response.data.status !== "ok")
+            throw new Error(
+              response.data.message || "Configuration is unavailable",
+            );
+        }
+        if (current === sequence) {
+          bindingReady = true;
+          if (context.value?.persistGlobal !== false)
+            setStoredSelectedChatConfigId(configId);
+        }
+      });
+    try {
+      await selectionWrite;
+    } catch (error) {
+      if (revision === accountSessionRevision.value && current === sequence) {
+        setSelection("");
+        if (context.value?.persistGlobal !== false)
+          setStoredSelectedChatConfigId(previous);
+        useToast().error("Failed to apply chat configuration");
+      }
+    } finally {
+      if (current === sequence) saving.value = false;
     }
   }
 
-  /** Subscribe to selection changes; returns an unsubscribe function. */
+  async function prepareSend(): Promise<string> {
+    const revision = accountSessionRevision.value;
+    const initialization = initialized;
+    await initialization;
+    await selectionWrite;
+    assertCurrentAccount(revision);
+    if (initialization !== initialized) throw new Error("Chat session changed");
+    if (!bindingReady) throw new Error("Configuration is unavailable");
+    return selectedConfigId.value;
+  }
+
   function onConfigChanged(
     cb: (payload: ConfigChangedPayload) => void,
   ): () => void {
@@ -287,17 +199,19 @@ export function createChatConfigSelection() {
     bindContext,
     selectConfig,
     onConfigChanged,
+    prepareSend,
   };
 }
 
-export type ChatConfigSelection = ReturnType<
-  typeof createChatConfigSelection
->;
+export type ChatConfigSelection = ReturnType<typeof createChatConfigSelection>;
 
 const CHAT_CONFIG_SELECTION_KEY: InjectionKey<ChatConfigSelection> = Symbol(
   "chatConfigSelection",
 );
 let fallbackSelection: ChatConfigSelection | null = null;
+window.addEventListener?.("astrbot:account-changed", () => {
+  fallbackSelection = null;
+});
 
 /** Provide a per-composer config selection to the ConfigSelector descendants. */
 export function provideChatConfigSelection(): ChatConfigSelection {

@@ -503,8 +503,8 @@
           ></textarea>
         </div>
         <div class="composer-toolbar">
-          <div v-if="!isOrdinaryUser" class="composer-toolbar__left">
-            <input
+          <div class="composer-toolbar__left" :class="{ 'composer-toolbar__left--user': isOrdinaryUser }">
+            <input v-if="!isOrdinaryUser"
               type="file"
               ref="imageInputRef"
               @change="handleFileSelect"
@@ -512,7 +512,7 @@
               multiple
             />
             <!-- "+" ghost button: upload / skill / project / config / streaming -->
-            <StyledMenu
+            <StyledMenu v-if="!isOrdinaryUser"
               offset="8"
               location="top start"
               :close-on-content-click="false"
@@ -605,6 +605,7 @@
             <!-- Config profile quick-switch capsule: its label is the live
                  current config profile; switching is one click. -->
             <ConfigSelector variant="chip" />
+            <ProviderModelMenu v-if="isOrdinaryUser && providerSelectorAvailable" />
             <!-- Thinking effort capsule: renders the active preset (a level
                  list or a free numeric track). Presets live in
                  cmd_config.json; only config editors may rewrite them. -->
@@ -614,6 +615,9 @@
               :mode="effortMode"
               :slider="effortSlider"
               :preset-name="activeEffortPreset?.name ?? ''"
+              :presets="effortSettings.presets"
+              :active-preset="effortSettings.active_preset"
+              @select-preset="effortSettings.active_preset = $event"
               :can-edit="chatUiCanEdit"
               @edit="effortLevelsDialogOpen = true"
             />
@@ -842,6 +846,7 @@ import { useCustomizerStore } from "@/stores/customizer";
 import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import type { PendingFollowUp } from "@/composables/usePendingFollowUps";
 import { isComposingEnter } from "@/utils/imeInput.mjs";
+import ProviderModelMenu from "@/components/chat/ProviderModelMenu.vue";
 import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
 import { useAuthStore } from "@/stores/auth";
 import { chatApi, commandApi } from "@/api/v1";
@@ -1120,14 +1125,15 @@ const effortSlider = computed<ThinkingEffortSliderConfig>(
 );
 
 const thinkingEffort = ref<string>(DEFAULT_EFFORT_VALUE);
+const savedEffortPreset = ref("");
 
 /** Load the input-row settings once; a failure keeps the built-in defaults. */
 async function loadChatUiSettings() {
-  if (isOrdinaryUser.value) return;
   try {
     const response = await chatApi.getUiSettings();
     const data = response.data?.data ?? {};
     effortSettings.value = normalizeEffortSettings(data.thinking_effort);
+    savedEffortPreset.value = effortSettings.value.active_preset;
     quickMessageItems.value = normalizeQuickMessages(data.quick_messages);
     chatUiCanEdit.value = Boolean(data.can_edit);
     thinkingEffort.value = settleEffortValue(
@@ -1141,29 +1147,30 @@ async function loadChatUiSettings() {
 
 let effortValueTimer: number | null = null;
 
-async function persistEffortValue(value: string) {
-  if (isOrdinaryUser.value) return;
+async function persistEffortValue(value: string, activePreset: string) {
   try {
-    const response = await chatApi.updateThinkingEffortValue(value);
+    const response = await chatApi.updateThinkingEffortValue(value, activePreset);
     if (response.data?.status !== "ok") {
       throw new Error(response.data?.message || "update failed");
     }
+    savedEffortPreset.value = response.data?.data?.active_preset || "";
+    if (effortSettings.value.active_preset !== activePreset) return;
     effortSettings.value = normalizeEffortSettings(response.data?.data);
-    thinkingEffort.value = effortSettings.value.value;
+    if (thinkingEffort.value === value) thinkingEffort.value = effortSettings.value.value;
   } catch (error) {
     console.error("Failed to persist thinking-effort value:", error);
   }
 }
 
 // Dragging the slider emits one value per pixel, so selection changes are
-// debounced into a single config write. The equality guard swallows the echo
+// debounced into a single account preference write. The equality guard swallows the echo
 // from a fresh load and from the server-normalized value written back after
 // a save.
-watch(thinkingEffort, (value) => {
-  if (value === effortSettings.value.value) return;
+watch([thinkingEffort, () => effortSettings.value.active_preset], ([value, activePreset]) => {
+  if (value === effortSettings.value.value && activePreset === savedEffortPreset.value) return;
   if (effortValueTimer !== null) window.clearTimeout(effortValueTimer);
   effortValueTimer = window.setTimeout(() => {
-    void persistEffortValue(value);
+    void persistEffortValue(value, activePreset);
   }, 500);
 });
 
@@ -1958,6 +1965,7 @@ function handleCommandSelect(cmd: SuggestionCommand) {
 
 /** 获取指令列表 */
 async function fetchCommands() {
+  if (isOrdinaryUser.value) return;
   if (commandSuggestionLoading.value) return;
   commandSuggestionLoading.value = true;
   try {
@@ -2412,7 +2420,6 @@ function handleConfigChange(payload: {
 // pure renderers of the shared singleton; selection changes (including the
 // runner-type gate for the provider selector) arrive via this listener.
 const chatConfigSelection = provideChatConfigSelection();
-if (!isOrdinaryUser.value) {
 chatConfigSelection.bindContext(
   computed(() => ({
     sessionId: props.configSessionId ?? props.sessionId ?? null,
@@ -2422,16 +2429,15 @@ chatConfigSelection.bindContext(
     persistGlobal: props.persistConfigSelection !== false,
   })),
 );
-}
 onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
 
 const providerModelSelection = useProviderModelSelection();
 
 function getCurrentSelection() {
-  if (isOrdinaryUser.value || !props.showProviderSelector || !providerSelectorAvailable.value) {
+  if ((!isOrdinaryUser.value && !props.showProviderSelector) || !providerSelectorAvailable.value) {
     return null;
   }
-  // The header owns model switching; requests read the same reactive state.
+  // Header and composer selectors share the account's current model choice.
   return {
     providerId: providerModelSelection.selectedProviderId.value,
     modelName: providerModelSelection.selectedModelName.value,
@@ -2439,7 +2445,7 @@ function getCurrentSelection() {
 }
 
 function getThinkingEffort(): ThinkingEffort {
-  return isOrdinaryUser.value ? "auto" : thinkingEffort.value;
+  return thinkingEffort.value;
 }
 
 function focusInput() {
@@ -2597,6 +2603,7 @@ onMounted(() => {
   document.addEventListener("keyup", handleKeyUp);
   document.addEventListener("visibilitychange", onVisibilityChange);
   nextTick(autoResize);
+  void loadChatUiSettings();
   if (isOrdinaryUser.value) return;
   // Preload commands only for adapted accounts.
   fetchCommands();
@@ -2613,9 +2620,6 @@ onMounted(() => {
   // has data to render on first paint.
   void codegraphStatus.refresh();
   void tcMemoryStatus.refresh();
-  // Input-row settings are shared instance state now, so the row starts from
-  // the built-in defaults and re-renders once the config lands.
-  void loadChatUiSettings();
   // Live polling every 30 s so the chip stays in sync when codegraph
   // state changes externally (e.g. the user toggles it via another
   // client or the bot restarts its MCP server). The interval is gated
@@ -2646,6 +2650,7 @@ onBeforeUnmount(() => {
 defineExpose({
   getCurrentSelection,
   getThinkingEffort,
+  prepareConfig: chatConfigSelection.prepareSend,
   focusInput,
 });
 </script>
@@ -3030,6 +3035,15 @@ defineExpose({
   gap: 2px;
   min-width: 0;
   overflow: visible;
+}
+
+.composer-toolbar__left--user {
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.composer-toolbar__left--user > * {
+  flex-shrink: 0;
 }
 
 .composer-toolbar__divider {

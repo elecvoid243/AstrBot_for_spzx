@@ -264,8 +264,17 @@ class ChatThreadMessageRequest(OpenModel):
     flags: ChatFlags | None = None
 
 
-class ChatUiThinkingEffortValueRequest(OpenModel):
+class ChatSessionConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: str
+
+
+class ChatUiThinkingEffortValueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     value: str
+    active_preset: str | None = None
 
 
 class ChatUiThinkingEffortPresetsRequest(OpenModel):

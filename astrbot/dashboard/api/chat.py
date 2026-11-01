@@ -38,6 +38,7 @@ from astrbot.dashboard.schemas import (
     ChatMessageRegenerateRequest,
     ChatOpenFileRequest,
     ChatSessionBatchDeleteRequest,
+    ChatSessionConfigRequest,
     ChatSessionPatchRequest,
     ChatSubagentFollowUpRequest,
     ChatThreadCreateRequest,
@@ -58,6 +59,7 @@ from astrbot.dashboard.services.chat_service import (
     ChatService,
     ChatServiceError,
 )
+from astrbot.dashboard.services.chatui_settings import normalize_thinking_effort_value
 
 from .auth import AuthContext, ScopeDependency, require_dashboard_user
 from .multipart import single_upload
@@ -920,7 +922,63 @@ async def chat_configs(
     request: Request,
     _auth: AuthContext = Depends(require_chat_scope),
 ):
-    return ok(request.app.state.services.config_profiles.list_profiles())
+    manager = request.app.state.core_lifecycle.astrbot_config_mgr
+    return ok(
+        {
+            "info_list": [
+                {
+                    "id": info["id"],
+                    "name": info["name"],
+                    "agent_runner_type": manager.confs[info["id"]]
+                    .get("agent_runner", {})
+                    .get("runner_type", "local"),
+                }
+                for info in manager.get_conf_list()
+                if info["id"] in manager.confs
+            ]
+        }
+    )
+
+
+@router.get("/chat/models")
+async def chat_models(
+    request: Request,
+    _auth: AuthContext = Depends(require_chat_scope),
+):
+    providers = request.app.state.services.providers.list_providers(
+        capability="chat_completion", enabled=True
+    )["providers"]
+    return ok(
+        [
+            {
+                key: provider[key]
+                for key in ("id", "model", "provider_source_id")
+                if key in provider
+            }
+            for provider in providers
+        ]
+    )
+
+
+@router.get("/chat/sessions/{session_id}/config")
+async def get_chat_session_config(
+    session_id: str,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(lambda: service.session_config(auth.username, session_id))
+
+
+@router.put("/chat/sessions/{session_id}/config")
+async def update_chat_session_config(
+    session_id: str,
+    payload: ChatSessionConfigRequest,
+    auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
+):
+    return await _run(
+        lambda: service.session_config(auth.username, session_id, payload.config_id)
+    )
 
 
 @router.get("/chat/ui-settings")
@@ -935,6 +993,20 @@ async def chat_ui_settings(
         "quick_messages": service.get_chatui_quick_messages(),
         "can_edit": bool(set(auth.scopes or ()) & {"*", "config"}),
     }
+    preference = await request.app.state.db.get_preference(
+        "dashboard_account", auth.account_id or auth.username, "thinking_effort"
+    )
+    if preference is not None:
+        saved = preference.value["val"]
+        if isinstance(saved, str):
+            settings["thinking_effort"]["value"] = saved
+        elif isinstance(saved, dict):
+            settings["thinking_effort"]["value"] = saved["value"]
+            if any(
+                preset["id"] == saved.get("active_preset")
+                for preset in settings["thinking_effort"]["presets"]
+            ):
+                settings["thinking_effort"]["active_preset"] = saved["active_preset"]
     return ok(settings)
 
 
@@ -942,15 +1014,38 @@ async def chat_ui_settings(
 async def update_chat_ui_effort_value(
     payload: ChatUiThinkingEffortValueRequest,
     request: Request,
-    _auth: AuthContext = Depends(require_chat_scope),
+    auth: AuthContext = Depends(require_chat_scope),
 ):
-    """Store the selected effort value; every ChatUI user may change it.
+    """Store the selected effort value for the authenticated account.
 
     Preset definitions are admin territory, but *choosing* among them is a
     normal use of the input row, so it stays on the chat scope.
     """
     service = get_service(request)
-    return await _run(lambda: service.set_chatui_thinking_effort_value(payload.value))
+    value = normalize_thinking_effort_value(payload.value)
+    settings = service.get_chatui_thinking_effort()
+    preference = await request.app.state.db.get_preference(
+        "dashboard_account", auth.account_id or auth.username, "thinking_effort"
+    )
+    saved = preference.value["val"] if preference is not None else {}
+    active = payload.active_preset
+    if active is None:
+        active = (
+            saved.get("active_preset", settings["active_preset"])
+            if isinstance(saved, dict)
+            else settings["active_preset"]
+        )
+    if active and not any(preset["id"] == active for preset in settings["presets"]):
+        raise ApiError("Thinking-effort preset is unavailable", status_code=400)
+    await request.app.state.db.insert_preference_or_update(
+        "dashboard_account",
+        auth.account_id or auth.username,
+        "thinking_effort",
+        {"val": {"value": value, "active_preset": active}},
+    )
+    settings["value"] = value
+    settings["active_preset"] = active
+    return ok(settings)
 
 
 @router.put(

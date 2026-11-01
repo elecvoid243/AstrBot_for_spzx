@@ -851,11 +851,23 @@ export const backupApi = {
 };
 
 export const chatApi = {
+  listModels() {
+    return typed<any>(openApiV1.listChatModels());
+  },
+  listConfigs() {
+    return typed<any>(openApiV1.listChatConfigs());
+  },
+  getSessionConfig(sessionId: string) {
+    return typed<any>(openApiV1.getChatSessionConfig({ path: { session_id: sessionId } }));
+  },
+  setSessionConfig(sessionId: string, configId: string) {
+    return typed<any>(openApiV1.updateChatSessionConfig({ path: { session_id: sessionId }, body: { config_id: configId } }));
+  },
   getUiSettings() {
     return typed<any>(openApiV1.getChatUiSettings());
   },
-  updateThinkingEffortValue(value: string) {
-    return typed<any>(openApiV1.updateChatUiEffortValue({ body: { value } }));
+  updateThinkingEffortValue(value: string, activePreset?: string) {
+    return typed<any>(openApiV1.updateChatUiEffortValue({ body: { value, active_preset: activePreset } }));
   },
   updateThinkingEffortPresets(payload: ChatUiThinkingEffortPresetsRequest) {
     return typed<any>(openApiV1.updateChatUiEffortPresets({ body: payload }));

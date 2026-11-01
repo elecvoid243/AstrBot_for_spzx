@@ -11,8 +11,8 @@
   The slider is deliberately free-form — no snapping, so the handle never
   fights the pointer — while the aliases stay as labels and shortcuts.
 
-  The chip is a pure UI surface: the preset list and the selected value live
-  in cmd_config.json and stay owned by ChatInput, which forwards them via
+  The chip is a pure UI surface: administrators own the shared preset list,
+  while each account owns its selected value. ChatInput forwards them via
   v-model/:levels/:mode/:slider/presetName and opens the editor dialog when
   this chip emits "edit". Menu/row styling follows the FileAccessModeChip
   pattern (same --sp-* chip tokens).
@@ -38,6 +38,8 @@ const props = defineProps<{
   slider?: ThinkingEffortSliderConfig;
   /** Name of the preset being rendered; empty when none is configured. */
   presetName?: string;
+  presets?: Array<{ id: string; name: string }>;
+  activePreset?: string;
   /** Config editors only — without it the edit row stays hidden. */
   canEdit?: boolean;
 }>();
@@ -45,6 +47,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:modelValue", value: ThinkingEffort): void;
   (e: "edit"): void;
+  (e: "selectPreset", value: string): void;
 }>();
 
 const { tm } = useModuleI18n("features/chat");
@@ -158,7 +161,12 @@ function openEditor(): void {
     >
       <v-card-text>
         <div class="effort-chip-title">{{ tm("input.thinkingEffort") }}</div>
-        <div v-if="presetName" class="effort-chip-preset">{{ presetName }}</div>
+        <select v-if="presets && presets.length > 1" class="effort-chip-preset-select"
+          :value="activePreset" :aria-label="tm('input.presetLabel')"
+          @change="emit('selectPreset', ($event.target as HTMLSelectElement).value)">
+          <option v-for="preset in presets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
+        </select>
+        <div v-else-if="presetName" class="effort-chip-preset">{{ presetName }}</div>
 
         <!-- Slider mode: free numeric track (1-100 by default). The named
              aliases are labels + click-to-jump shortcuts, never magnetism —
@@ -269,6 +277,16 @@ function openEditor(): void {
 </template>
 
 <style scoped>
+.effort-chip-preset-select {
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  border-radius: 6px;
+  color: rgb(var(--v-theme-on-surface));
+  background: rgb(var(--v-theme-surface));
+}
+
 .effort-chip-btn {
   display: inline-flex;
   align-items: center;

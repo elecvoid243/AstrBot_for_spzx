@@ -297,6 +297,7 @@ interface ActiveConnection {
 }
 
 interface SendMessageStreamOptions {
+  configId?: string;
   sessionId: string;
   messageId: string;
   parts: MessagePart[];
@@ -1101,6 +1102,7 @@ export function useMessages(options: UseMessagesOptions) {
   }
 
   function sendMessageStream({
+    configId,
     sessionId,
     messageId,
     parts,
@@ -1125,6 +1127,7 @@ export function useMessages(options: UseMessagesOptions) {
         selectedProvider,
         selectedModel,
         thinkingEffort,
+        configId,
       );
       return;
     }
@@ -1140,6 +1143,7 @@ export function useMessages(options: UseMessagesOptions) {
       thinkingEffort,
       skipUserHistory,
       llmCheckpointId,
+      configId,
     );
   }
 
@@ -1389,6 +1393,7 @@ export function useMessages(options: UseMessagesOptions) {
     thinkingEffort = "auto",
     skipUserHistory = false,
     llmCheckpointId: string | null = null,
+    configId?: string,
   ) {
     const abort = new AbortController();
     const connection: ActiveConnection = {
@@ -1411,6 +1416,10 @@ export function useMessages(options: UseMessagesOptions) {
         session_id: sessionId,
         message: parts.filter((part) => part.type === "plain").map((part) => part.text || "").join(""),
         message_id: messageId,
+        config_id: configId,
+        thinking_effort: thinkingEffort,
+        selected_provider: selectedProvider,
+        selected_model: selectedModel,
       } : {
         session_id: sessionId,
         message: parts.map(partToPayload),
@@ -1418,6 +1427,7 @@ export function useMessages(options: UseMessagesOptions) {
         selected_provider: selectedProvider,
         selected_model: selectedModel,
         thinking_effort: thinkingEffort,
+        config_id: configId,
         _client_message_id: messageId,
         _skip_user_history: skipUserHistory,
         _llm_checkpoint_id: llmCheckpointId || undefined,
@@ -1641,6 +1651,7 @@ export function useMessages(options: UseMessagesOptions) {
     selectedProvider: string,
     selectedModel: string,
     thinkingEffort = "auto",
+    configId?: string,
   ) {
     const ws = getOrCreateChatWebSocket(sessionId);
 
@@ -1668,6 +1679,7 @@ export function useMessages(options: UseMessagesOptions) {
       selected_provider: selectedProvider,
       selected_model: selectedModel,
       thinking_effort: thinkingEffort,
+      config_id: configId,
     });
   }
 

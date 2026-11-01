@@ -1259,6 +1259,45 @@ class ChatService:
         # sharing the db instance sees the same relations — the project
         # session list (ChatUIProjectService) needs them too.
 
+    async def session_config(
+        self, owner: str, session_id: str, config_id: str | None = None
+    ) -> dict:
+        """Read or change the effective configuration of an owned chat session.
+
+        Args:
+            owner: Trusted resource owner from authentication.
+            session_id: Existing WebChat session, including a side conversation.
+            config_id: Valid profile to bind, or None to read the binding.
+
+        Returns:
+            The session's effective config ID without routes or config contents.
+
+        Raises:
+            ChatServiceError: The session or profile is unavailable.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if (
+            session is None
+            or session.creator != owner
+            or session.platform_id != "webchat"
+        ):
+            raise ChatServiceError("Resource is unavailable")
+        message_type = "GroupMessage" if session.is_group else "FriendMessage"
+        umo = f"webchat:{message_type}:webchat!{owner}!{session_id}"
+        router = self.umop_config_router
+        write_binding = config_id is not None
+        if config_id is None:
+            config_id = router.get_conf_id_for_umop(umo) or "default"
+        if (
+            not isinstance(config_id, str)
+            or config_id not in self.core_lifecycle.astrbot_config_mgr.confs
+        ):
+            raise ChatServiceError("Config profile is unavailable")
+        # Persist default too: deleting it would re-enable a wildcard route.
+        if write_binding:
+            await router.update_route(umo, config_id)
+        return {"config_id": config_id}
+
     def _default_config(self):
         conf = self.core_lifecycle.astrbot_config_mgr.confs.get("default")
         if conf is None:
@@ -1321,26 +1360,6 @@ class ChatService:
             raise ChatServiceError(str(exc)) from exc
         settings = {"items": items}
         self._write_chatui(quick_messages=settings)
-        return settings
-
-    def set_chatui_thinking_effort_value(self, raw_value: object) -> dict:
-        """Persist the selected effort value.
-
-        Args:
-            raw_value: Free-form effort value chosen in the input row.
-
-        Returns:
-            The normalized settings as persisted.
-
-        Raises:
-            ChatServiceError: If the value is unusable.
-        """
-        settings = self.get_chatui_thinking_effort()
-        try:
-            settings["value"] = normalize_thinking_effort_value(raw_value)
-        except ValueError as exc:
-            raise ChatServiceError(str(exc)) from exc
-        self._write_chatui(thinking_effort=settings)
         return settings
 
     def replace_chatui_thinking_effort(
@@ -2766,10 +2785,40 @@ class ChatService:
                         exc,
                     )
 
+        if thinking_effort is not None:
+            try:
+                thinking_effort = normalize_thinking_effort_value(thinking_effort)
+            except ValueError as exc:
+                raise ChatServiceError(str(exc)) from exc
+        if webchat_account_role.get() == "user" and (
+            selected_provider or selected_model
+        ):
+            sources = {
+                source["id"]: source.get("provider_type", "chat_completion")
+                for source in self.core_lifecycle.provider_manager.provider_sources_config
+            }
+            provider = next(
+                (
+                    config
+                    for config in self.core_lifecycle.provider_manager.providers_config
+                    if config.get("id") == selected_provider
+                    and config.get("enable", False)
+                    and config.get(
+                        "provider_type", sources.get(config.get("provider_source_id"))
+                    )
+                    == "chat_completion"
+                    and (not selected_model or config.get("model") == selected_model)
+                ),
+                None,
+            )
+            if provider is None:
+                raise ChatServiceError("Chat model is unavailable")
+        if dashboard_account_context.get() is not None:
+            await self.session_config(
+                username, webchat_conv_id, post_data.get("config_id")
+            )
         if webchat_account_role.get() == "user":
             post_data = {**post_data, "_api_key_allow_admin_role": False}
-            umo = f"webchat:FriendMessage:webchat!{username}!{webchat_conv_id}"
-            await self.core_lifecycle.umop_config_router.update_route(umo, "default")
 
         message_id = str(uuid.uuid4())
         llm_checkpoint_id = post_data.get("_llm_checkpoint_id") or str(uuid.uuid4())

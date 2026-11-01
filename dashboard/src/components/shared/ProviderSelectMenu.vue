@@ -284,7 +284,7 @@
                 </v-list-item-subtitle>
                 <template #append>
                   <div class="provider-menu-actions" @click.stop>
-                    <v-tooltip location="top">
+                    <v-tooltip v-if="canManage" location="top">
                       <template #activator="{ props: testTooltipProps }">
                         <v-btn
                           v-bind="testTooltipProps"
@@ -298,7 +298,7 @@
                       </template>
                       <span>{{ providerTm("models.testButton") }}</span>
                     </v-tooltip>
-                    <v-tooltip v-if="variant === 'config'" location="top">
+                    <v-tooltip v-if="canManage && variant === 'config'" location="top">
                       <template #activator="{ props: editTooltipProps }">
                         <v-btn
                           v-bind="editTooltipProps"
@@ -349,8 +349,8 @@
             {{ sharedTm("providerSelector.noProviders") }}
           </div>
 
-          <v-divider class="provider-menu-divider" />
-          <v-btn
+          <v-divider v-if="canManage" class="provider-menu-divider" />
+          <v-btn v-if="canManage"
             block
             prepend-icon="mdi-plus"
             variant="text"
@@ -364,7 +364,7 @@
     </v-menu>
     <v-tooltip
       v-if="
-        variant === 'config' &&
+        canManage && variant === 'config' &&
         !multiple &&
         typeof modelValue === 'string' &&
         modelValue
@@ -451,7 +451,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import { useDisplay } from "vuetify";
-import { providerApi } from "@/api/v1";
+import { chatApi, providerApi } from "@/api/v1";
+import { useAuthStore } from "@/stores/auth";
 import AstrBotConfig from "@/components/shared/AstrBotConfig.vue";
 import { useProviderModelConfigDialog } from "@/composables/useProviderModelConfigDialog";
 import ProviderChatCompletionPanel from "@/components/provider/ProviderChatCompletionPanel.vue";
@@ -486,6 +487,7 @@ const props = withDefaults(
     variant?: "config" | "input" | "header";
     allowEmpty?: boolean;
     multiple?: boolean;
+    chatConsumption?: boolean;
   }>(),
   {
     modelValue: "",
@@ -494,8 +496,11 @@ const props = withDefaults(
     variant: "config",
     allowEmpty: true,
     multiple: false,
+    chatConsumption: false,
   },
 );
+
+const canManage = computed(() => !props.chatConsumption || useAuthStore().role === "admin");
 
 const emit = defineEmits<{
   "update:modelValue": [value: string | string[]];
@@ -683,9 +688,10 @@ async function loadProviderConfigs(force = false) {
   if (loadingProviders.value || (providersLoaded.value && !force)) return;
   loadingProviders.value = true;
   try {
-    const response = await providerApi.listByProviderType(props.providerType);
+    const response = await (props.chatConsumption && !canManage.value
+      ? chatApi.listModels() : providerApi.listByProviderType(props.providerType));
     if (response.data.status === "ok") {
-      modelMetadata.value = (response.data.model_metadata || {}) as Record<
+      modelMetadata.value = ("model_metadata" in response.data ? response.data.model_metadata || {} : {}) as Record<
         string,
         ProviderModelMetadata
       >;

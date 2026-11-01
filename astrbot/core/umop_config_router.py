@@ -46,15 +46,33 @@ class UmopConfigRouter:
         return all(p == "" or fnmatch.fnmatchcase(t, p) for p, t in zip(p1_ls, p2_ls))
 
     def get_conf_id_for_umop(self, umo: str) -> str | None:
-        """根据 UMO 获取对应的配置文件 ID
+        """Resolve an origin while preserving ordered platform routing.
 
         Args:
-            umo (str): UMO 字符串
+            umo: Unified message origin constructed by its message platform.
 
         Returns:
-            str | None: 配置文件 ID，如果没有找到则返回 None
-
+            Matching configuration ID, or None when no route matches. Canonical
+            WebChat session bindings override broader routes; all other origins
+            keep the first matching route in the administrator's routing order.
         """
+        parts = self._split_umo(umo)
+        session_parts = parts[2].split("!") if parts else []
+        # Only server-constructed WebChat session origins use exact-first binding.
+        if (
+            parts
+            and parts[:2]
+            in {
+                ("webchat", "FriendMessage"),
+                ("webchat", "GroupMessage"),
+            }
+            and len(session_parts) == 3
+            and session_parts[0] == "webchat"
+            and all(session_parts[1:])
+            and not any(char in umo for char in "*?[]")
+            and umo in self.umop_to_conf_id
+        ):
+            return self.umop_to_conf_id[umo]
         for pattern, conf_id in self.umop_to_conf_id.items():
             if self._is_umo_match(pattern, umo):
                 return conf_id

@@ -61,21 +61,29 @@ def test_default_config_seeds_the_builtin_presets(tmp_path):
     assert _stored_effort(config_path)["active_preset"] == "deepseek-v4"
 
 
-def test_value_round_trip_writes_the_config_file(tmp_path):
+def test_admin_preset_default_round_trip_writes_the_config_file(tmp_path):
     service, config_path = _service(tmp_path)
 
-    settings = service.set_chatui_thinking_effort_value("  high  ")
+    settings = service.replace_chatui_thinking_effort(
+        service.get_chatui_thinking_effort()["presets"],
+        service.get_chatui_thinking_effort()["active_preset"],
+        "  high  ",
+    )
 
     assert settings["value"] == "high"
     assert _stored_effort(config_path)["value"] == "high"
 
 
-def test_value_rejects_blank_without_touching_the_file(tmp_path):
+def test_admin_preset_default_rejects_blank_without_touching_the_file(tmp_path):
     service, config_path = _service(tmp_path)
     before = _stored_effort(config_path)
 
     with pytest.raises(ChatServiceError):
-        service.set_chatui_thinking_effort_value("   ")
+        service.replace_chatui_thinking_effort(
+            service.get_chatui_thinking_effort()["presets"],
+            service.get_chatui_thinking_effort()["active_preset"],
+            "   ",
+        )
 
     assert _stored_effort(config_path) == before
 
@@ -112,7 +120,11 @@ def test_empty_preset_list_is_persisted(tmp_path):
 
 def test_omitted_value_keeps_the_stored_selection(tmp_path):
     service, _ = _service(tmp_path)
-    service.set_chatui_thinking_effort_value("37")
+    service.replace_chatui_thinking_effort(
+        service.get_chatui_thinking_effort()["presets"],
+        service.get_chatui_thinking_effort()["active_preset"],
+        "37",
+    )
 
     settings = service.replace_chatui_thinking_effort([], "", None)
 
@@ -156,7 +168,11 @@ def test_sibling_write_keeps_thinking_effort_intact(tmp_path):
     service, config_path = _service(tmp_path)
 
     service.replace_chatui_quick_messages([{"id": "qm-1", "content": "继续"}])
-    service.set_chatui_thinking_effort_value("42")
+    service.replace_chatui_thinking_effort(
+        service.get_chatui_thinking_effort()["presets"],
+        service.get_chatui_thinking_effort()["active_preset"],
+        "42",
+    )
 
     stored = json.loads(config_path.read_text(encoding="utf-8-sig"))["chatui"]
     assert stored["thinking_effort"]["value"] == "42"

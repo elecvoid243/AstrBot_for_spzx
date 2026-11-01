@@ -16,6 +16,22 @@ async function createSessionSelection(initialSessionId = "") {
 }
 
 describe("session provider model selection", () => {
+  it("resets shared choices and isolates saved models when accounts change", async () => {
+    localStorage.setItem("account_id", "alice");
+    const { store } = await createSessionSelection("a");
+    store.setSelection("alice-provider", "alice-model");
+    const { resetAccountSession } = await import("@/utils/accountSession");
+    resetAccountSession();
+    localStorage.setItem("account_id", "bob");
+    const bob = await createSessionSelection("b");
+    expect(bob.store.selectedProviderId.value).toBe("");
+    bob.store.setSelection("bob-provider", "bob-model");
+    resetAccountSession();
+    localStorage.setItem("account_id", "alice");
+    const alice = await createSessionSelection("a");
+    expect(alice.store.selectedModelName.value).toBe("alice-model");
+  });
+
   beforeEach(() => {
     vi.resetModules();
     localStorage.clear();

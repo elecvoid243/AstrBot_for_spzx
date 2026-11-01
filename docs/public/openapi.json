@@ -2965,14 +2965,90 @@
         "description": "**Required scope:** `chat`"
       }
     },
+    "/api/v1/chat/models": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "List enabled chat model choices",
+        "description": "Returns only configured id, model and provider_source_id. Provider credentials, endpoints and management actions are not exposed.\n\n**Required scope:** `chat`",
+        "operationId": "listChatModels",
+        "x-astrbot-scope": "chat",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
     "/api/v1/chat/configs": {
       "get": {
         "tags": [
           "Chat"
         ],
         "summary": "List chat-selectable configuration profiles",
+        "description": "Returns only id, name and agent_runner_type. No profile paths, credentials, configuration contents or routing table.\n\n**Required scope:** `chat`",
         "operationId": "listChatConfigs",
         "x-astrbot-scope": "chat",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/config": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Read the effective profile for an owned WebChat session",
+        "operationId": "getChatSessionConfig",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        },
+        "description": "**Required scope:** `chat`"
+      },
+      "put": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Bind an administrator profile to an owned WebChat session",
+        "operationId": "updateChatSessionConfig",
+        "x-astrbot-scope": "chat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionConfigRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "$ref": "#/components/responses/Ok"
@@ -2987,7 +3063,7 @@
           "Chat"
         ],
         "summary": "Get the ChatUI thinking-effort presets and the caller's edit permission",
-        "description": "Returns the presets persisted under `chatui.thinking_effort` in\n`cmd_config.json` plus `can_edit`, which tells the frontend whether the\ncaller may rewrite the preset list (it requires the `config` scope;\nevery chat caller may still select a value).\n\n**Required scope:** `chat`",
+        "description": "Returns the presets persisted under `chatui.thinking_effort` in\n`cmd_config.json` plus `can_edit`, which tells the frontend whether the\ncaller may rewrite the preset list (it requires the `config` scope).\nThe value is the caller's saved selection, falling back to the\nadministrator's default. It never exposes another account's selection.\n\n**Required scope:** `chat`",
         "operationId": "getChatUiSettings",
         "x-astrbot-scope": "chat",
         "responses": {
@@ -3003,7 +3079,7 @@
           "Chat"
         ],
         "summary": "Store the selected thinking-effort value",
-        "description": "Persists the current selection for every ChatUI user. Preset\ndefinitions stay admin-only; choosing among them does not.\n\n**Required scope:** `chat`",
+        "description": "Persists the current selection only for the authenticated account.\nPreset definitions and the instance default remain unchanged.\n\n**Required scope:** `chat`",
         "operationId": "updateChatUiEffortValue",
         "x-astrbot-scope": "chat",
         "requestBody": {
@@ -3019,8 +3095,13 @@
                   "value": {
                     "type": "string",
                     "description": "Free-form effort value forwarded to the provider (e.g. `max`, `xhigh`, `72`)."
+                  },
+                  "active_preset": {
+                    "type": "string",
+                    "description": "Optional existing preset ID selected only for this account."
                   }
-                }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -8684,7 +8765,8 @@
             ]
           },
           "config_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional profile selection validated and bound to the caller's own session before sending."
           },
           "config_name": {
             "type": "string"
@@ -8694,6 +8776,10 @@
           },
           "selected_model": {
             "type": "string"
+          },
+          "thinking_effort": {
+            "type": "string",
+            "description": "Per-message effort override; does not edit shared presets."
           },
           "enable_streaming": {
             "type": "boolean",
@@ -8722,6 +8808,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "ChatSessionConfigRequest": {
+        "type": "object",
+        "required": [
+          "config_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "config_id": {
+            "type": "string"
+          }
+        }
       },
       "ChatSessionBatchDeleteRequest": {
         "type": "object",

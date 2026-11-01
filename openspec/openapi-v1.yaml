@@ -2015,12 +2015,60 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/chat/models:
+    get:
+      tags: [Chat]
+      summary: List enabled chat model choices
+      description: Returns only configured id, model and provider_source_id. Provider credentials, endpoints and management actions are not exposed.
+      operationId: listChatModels
+      x-astrbot-scope: chat
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
   /api/v1/chat/configs:
     get:
       tags: [Chat]
       summary: List chat-selectable configuration profiles
+      description: Returns only id, name and agent_runner_type. No profile paths, credentials, configuration contents or routing table.
       operationId: listChatConfigs
       x-astrbot-scope: chat
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+
+  /api/v1/chat/sessions/{session_id}/config:
+    get:
+      tags: [Chat]
+      summary: Read the effective profile for an owned WebChat session
+      operationId: getChatSessionConfig
+      x-astrbot-scope: chat
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/Ok"
+    put:
+      tags: [Chat]
+      summary: Bind an administrator profile to an owned WebChat session
+      operationId: updateChatSessionConfig
+      x-astrbot-scope: chat
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatSessionConfigRequest"
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -2032,8 +2080,9 @@ paths:
       description: |
         Returns the presets persisted under `chatui.thinking_effort` in
         `cmd_config.json` plus `can_edit`, which tells the frontend whether the
-        caller may rewrite the preset list (it requires the `config` scope;
-        every chat caller may still select a value).
+        caller may rewrite the preset list (it requires the `config` scope).
+        The value is the caller's saved selection, falling back to the
+        administrator's default. It never exposes another account's selection.
       operationId: getChatUiSettings
       x-astrbot-scope: chat
       responses:
@@ -2045,8 +2094,8 @@ paths:
       tags: [Chat]
       summary: Store the selected thinking-effort value
       description: |
-        Persists the current selection for every ChatUI user. Preset
-        definitions stay admin-only; choosing among them does not.
+        Persists the current selection only for the authenticated account.
+        Preset definitions and the instance default remain unchanged.
       operationId: updateChatUiEffortValue
       x-astrbot-scope: chat
       requestBody:
@@ -2060,6 +2109,10 @@ paths:
                 value:
                   type: string
                   description: Free-form effort value forwarded to the provider (e.g. `max`, `xhigh`, `72`).
+                active_preset:
+                  type: string
+                  description: Optional existing preset ID selected only for this account.
+              additionalProperties: false
       responses:
         "200":
           $ref: "#/components/responses/Ok"
@@ -8655,12 +8708,16 @@ components:
                 $ref: "#/components/schemas/MessagePart"
         config_id:
           type: string
+          description: Optional profile selection validated and bound to the caller's own session before sending.
         config_name:
           type: string
         selected_provider:
           type: string
         selected_model:
           type: string
+        thinking_effort:
+          type: string
+          description: Per-message effort override; does not edit shared presets.
         enable_streaming:
           type: boolean
           default: true
@@ -8681,6 +8738,14 @@ components:
           type: string
           description: Internal WebUI side-thread context.
       additionalProperties: false
+
+    ChatSessionConfigRequest:
+      type: object
+      required: [config_id]
+      additionalProperties: false
+      properties:
+        config_id:
+          type: string
 
     ChatSessionBatchDeleteRequest:
       type: object

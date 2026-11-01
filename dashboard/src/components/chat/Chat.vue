@@ -2705,7 +2705,7 @@ function getSelectedProviderSelection() {
   if (inputSelection?.providerId) {
     return inputSelection;
   }
-  if (typeof window === "undefined") {
+  if (isOrdinaryUser.value || typeof window === "undefined") {
     return { providerId: "", modelName: "" };
   }
   return {
@@ -4300,6 +4300,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
 
   sending.value = true;
   try {
+    const configId = await inputRef.value?.prepareConfig?.();
     let sessionId = currSessionId.value;
     const targetProjectId = selectedProjectId.value;
     const targetProject = selectedProject.value;
@@ -4397,7 +4398,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     const outgoingParts: MessagePart[] = isOrdinaryUser.value ? [{ type: "plain", text: userText }] : buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
-    if (!isOrdinaryUser.value) writeSessionProviderSelection(sessionId, selection);
+    writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
       messageId,
@@ -4416,6 +4417,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     sendMessageStream({
       sessionId,
       messageId,
+      configId,
       parts: outgoingParts,
       transport: isOrdinaryUser.value ? "sse" : transportMode.value,
       enableStreaming: enableStreaming.value,

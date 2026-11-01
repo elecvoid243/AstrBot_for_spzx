@@ -54,7 +54,7 @@ The existing single-account login remains the original administrator's entry poi
 
 ![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
 
-Ordinary users see only chat navigation. Select **New Chat**, enter text, and select **Send** to receive a streamed reply using the default profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts currently support basic text conversations. Profile selection, attachments, projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+Ordinary users see only chat navigation. Select **New Chat**, enter text, and select **Send** to receive a streamed reply using the default profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts currently support basic text conversations. Attachments, projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
 
 ![An ordinary user's isolated text conversation](./images/multi-user-chat.png)
 
@@ -73,6 +73,21 @@ Select **Disable account** and review the target login name and consequences bef
 ![Administrator password reset and account disable controls](./images/multi-user-account-controls.png)
 
 When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Attachments and stream recovery remain unavailable to ordinary users at this stage. Revocation checks also protect these endpoints without opening those features.
+
+### Choose a profile and chat input parameters
+
+Use the configuration chip beside the input to select a profile created by an administrator. The selection belongs to the current conversation, including the first message; choosing `Default Configuration` explicitly overrides broader routing rules. A new conversation starts with your last profile choice. Reopening a conversation restores its own saved binding.
+
+For profiles using the local agent runner, the existing model menu lets you choose an enabled, administrator-configured chat model. The thinking-effort menu selects an existing preset and a value; your saved preset and value belong to your account and each message carries its own choice. Existing quick messages remain available. These choices do not change shared configuration. Changing accounts resets live model selection and uses that account's remembered choices.
+
+| Previous behavior | Current behavior |
+| --- | --- |
+| Configuration chip reads management configuration/routes | Same chip selects a profile through an owned-conversation API |
+| Thinking-effort selection changes the instance default | Selection is saved for the signed-in account; administrators separately edit shared preset definitions |
+
+Only administrators can create or edit profiles, providers, model definitions, thinking-effort presets, and quick-message definitions. Ordinary users see consumption controls without configuration editing, provider connection tests, or management pages. Profile metadata contains only its ID, name and runner type; model choices omit credentials and server endpoints.
+
+![An ordinary account selects a profile, model and thinking effort](./images/chat-profile-selection.png)
 
 ## Open Agent file references
 

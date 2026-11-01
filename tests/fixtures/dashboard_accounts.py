@@ -4,10 +4,13 @@ import asyncio
 
 import pytest_asyncio
 
+from astrbot.core.astrbot_config_mgr import AstrBotConfigManager
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
+from astrbot.core.umop_config_router import UmopConfigRouter
 from astrbot.core.utils.auth_password import hash_dashboard_password
+from astrbot.core.utils.shared_preferences import SharedPreferences
 from astrbot.dashboard.server import AstrBotDashboard
 from tests.test_fastapi_v1_dashboard import fake_core_lifecycle as fake_core_lifecycle
 
@@ -27,11 +30,15 @@ async def account_dashboard(fake_core_lifecycle, tmp_path):
     )
     config.save_config()
     core.astrbot_config = config
-    core.astrbot_config_mgr.confs["default"] = config
-    core.astrbot_config_mgr.default_conf = config
     db = SQLiteDatabase(str(tmp_path / "accounts.db"))
     await db.initialize()
     db.inited = True
+    preferences = SharedPreferences(db)
+    router = UmopConfigRouter(preferences)
+    await router.initialize()
+    core.umop_config_router = router
+    core.astrbot_config_mgr = AstrBotConfigManager(config, router, preferences)
+    await core.astrbot_config_mgr.initialize()
     core.platform_message_history_manager = PlatformMessageHistoryManager(db)
     server = AstrBotDashboard(core, db, asyncio.Event())
     server.app.testing = True
@@ -40,4 +47,5 @@ async def account_dashboard(fake_core_lifecycle, tmp_path):
         if run.task and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
+    await preferences.close()
     await db.engine.dispose()

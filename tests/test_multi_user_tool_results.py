@@ -322,11 +322,19 @@ async def test_actual_spcode_consumers_use_the_persisted_owned_workspace(
                 capture_output=True,
             )
             base = "/api/v1/plugins/extensions/spcode"
-            # Omit substep flags: the host forwards the stored safe values.
+            # Ordinary consumers inherit stored flags; administrators may choose.
             loaded = await client.post(
                 f"{base}/project-load",
                 headers=headers,
-                json={"umo": origin, "directory": str(workspace)},
+                json={
+                    "umo": origin,
+                    "directory": str(workspace),
+                    **(
+                        {"no_agentsmd": True, "no_codegraph": True}
+                        if account is admin
+                        else {}
+                    ),
+                },
             )
             assert loaded.json()["data"]["success"], loaded.text
             assert set(plugin.get_loaded_project(origin)["skipped_substeps"]) == {
@@ -353,6 +361,8 @@ async def test_actual_spcode_consumers_use_the_persisted_owned_workspace(
                 )
                 assert status.json()["data"]["loaded"] is True, status.text
                 assert "all_loaded_count" not in status.text
+                if account is admin:
+                    continue
                 forged = await client.post(
                     f"{route_base}/project-load",
                     headers=headers,
@@ -396,13 +406,20 @@ async def test_actual_spcode_consumers_use_the_persisted_owned_workspace(
                             "path": str(other_workspace / "result.txt"),
                         },
                     )
-                    assert denied.status_code == 403
+                    if account is admin and attempted_origin == origin:
+                        # Host filesystem administration is distinct from access
+                        # to another account's Chat session or attachments.
+                        assert denied.status_code == 200, denied.text
+                    else:
+                        assert denied.status_code == 403
                 denied = await client.get(
                     f"/api/v1/files/{attachment}/content",
                     headers={"Authorization": f"Bearer {other['token']}"},
                 )
                 assert denied.status_code >= 400 or denied.json()["status"] == "error"
-            # A stale or forged plugin runtime directory cannot replace the DB binding.
+            if account is admin:
+                continue
+            # Ordinary consumers cannot replace the DB binding with runtime state.
             info = state.get(origin)
             state.put(origin, {**info, "directory": str(tmp_path)})
             denied = await client.get(
@@ -1146,7 +1163,7 @@ async def test_actual_plugin_handlers_require_trusted_origins_and_new_guard_mark
     )
     assert disabled.status_code == 403
     core.astrbot_config["plugin_set"] = ["*"]
-    # A route name alone never admits an older installed implementation.
+    # Older SPCode remains admin-only; ordinary consumers require the marker.
     plan_handler = next(
         h
         for r, h, methods, _ in registered
@@ -1161,8 +1178,12 @@ async def test_actual_plugin_handlers_require_trusted_origins_and_new_guard_mark
             headers=headers,
             json={"umo": origin, "active": False},
         )
-        assert denied.status_code == 403
-        assert plugin._plan.is_active(origin)
+        if account is admin:
+            assert denied.status_code == 200, denied.text
+            assert not plugin._plan.is_active(origin)
+        else:
+            assert denied.status_code == 403
+            assert plugin._plan.is_active(origin)
         denied = await client.get(
             "/api/v1/plugins/extensions/browser-use/status",
             headers=headers,

@@ -3222,7 +3222,7 @@ async function tryAutoLoadSpcodeForSession(
       } else if (reason === "network_timeout") {
         msg = tm("project.spcode.errorNetwork");
       }
-      toast.error(msg);
+      toast.error(err.serverMessage || msg);
     } else {
       console.warn("[spcode auto-load] unexpected error:", err);
       toast.error(tm("project.spcode.errorNetwork"));

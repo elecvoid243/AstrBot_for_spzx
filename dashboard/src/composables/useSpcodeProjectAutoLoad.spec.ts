@@ -45,6 +45,20 @@ function envelope(extra: Record<string, unknown>) {
 describe("useSpcodeProjectAutoLoad silentLoad", () => {
   beforeEach(() => postMock().mockReset());
 
+  it("preserves the server authorization error for the auto-load toast", async () => {
+    const message = "Extension requires an ownership-aware update";
+    postMock().mockRejectedValueOnce(
+      Object.assign(new Error("Request failed with status code 403"), {
+        isAxiosError: true,
+        response: { status: 403, data: { status: "error", message } },
+      }),
+    );
+    const { silentLoad } = useSpcodeProjectAutoLoad();
+    await expect(
+      silentLoad({ project: makeProject(), umo: "owned-chat" }),
+    ).rejects.toMatchObject({ reason: "unknown", serverMessage: message, message });
+  });
+
   it("uses the server-resolved personal project directory", async () => {
     postMock().mockResolvedValueOnce(
       envelope({ success: true, loaded: true, directory: "/owned/workspace" }),

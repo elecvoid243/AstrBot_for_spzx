@@ -31,6 +31,20 @@ function mockPostFail(reason: string, messages: string[] = []) {
 describe("useSpcodeSilentOps", () => {
   beforeEach(() => postMock().mockReset());
 
+  it("shows an HTTP rejection instead of reporting a network timeout", async () => {
+    const message = "Resource is unavailable";
+    postMock().mockRejectedValueOnce(
+      Object.assign(new Error("Request failed with status code 403"), {
+        isAxiosError: true,
+        response: { status: 403, data: { status: "error", message } },
+      }),
+    );
+    const { silentLoadDirectory } = useSpcodeSilentOps();
+    await expect(
+      silentLoadDirectory({ umo: "u1", directory: "C:/p" }),
+    ).rejects.toMatchObject({ reason: "unknown", serverMessage: message, message });
+  });
+
   it("silentLoadDirectory posts full flag set", async () => {
     mockPostOk({ loaded: true, directory: "C:/p", umo: "u1" });
     const { silentLoadDirectory } = useSpcodeSilentOps();

@@ -22,6 +22,7 @@
 // Author: elecvoid243
 
 import { ref } from "vue";
+import { isAxiosError } from "axios";
 import {
   accountSessionRevision,
   assertCurrentAccount,
@@ -62,8 +63,9 @@ export class ProjectLoadError extends Error {
   constructor(
     public reason: ProjectLoadReason,
     public data: ProjectLoadData,
+    public serverMessage?: string,
   ) {
-    super(`Project load failed: ${reason}`);
+    super(serverMessage || `Project load failed: ${reason}`);
     this.name = "ProjectLoadError";
   }
 }
@@ -217,13 +219,18 @@ async function postLoad(
     const aborted =
       controller.signal.aborted ||
       (err as { name?: string })?.name === "AbortError";
-    throw new ProjectLoadError(aborted ? "network_timeout" : "unknown", {
-      loaded: false,
-      directory: req.project.workspace_path ?? "",
-      umo: req.umo,
-      skipped_substeps: [],
-      substep_messages: [String((err as Error)?.message ?? err)],
-    });
+    const message = isAxiosError(err) ? err.response?.data?.message : undefined;
+    throw new ProjectLoadError(
+      aborted ? "network_timeout" : "unknown",
+      {
+        loaded: false,
+        directory: req.project.workspace_path ?? "",
+        umo: req.umo,
+        skipped_substeps: [],
+        substep_messages: [String((err as Error)?.message ?? err)],
+      },
+      typeof message === "string" ? message : undefined,
+    );
   } finally {
     clearTimeout(timer);
     req.signal?.removeEventListener("abort", onExternalAbort);
@@ -327,13 +334,21 @@ async function postSilent(
     return ((res.data as { data?: Record<string, unknown> })?.data ??
       {}) as Record<string, unknown>;
   } catch (err) {
-    throw new ProjectLoadError("network_timeout", {
-      loaded: false,
-      directory: String(body.directory ?? ""),
-      umo: String(body.umo ?? ""),
-      skipped_substeps: [],
-      substep_messages: [String((err as Error)?.message ?? err)],
-    });
+    const aborted =
+      controller.signal.aborted ||
+      (err as { name?: string })?.name === "AbortError";
+    const message = isAxiosError(err) ? err.response?.data?.message : undefined;
+    throw new ProjectLoadError(
+      aborted ? "network_timeout" : "unknown",
+      {
+        loaded: false,
+        directory: String(body.directory ?? ""),
+        umo: String(body.umo ?? ""),
+        skipped_substeps: [],
+        substep_messages: [String((err as Error)?.message ?? err)],
+      },
+      typeof message === "string" ? message : undefined,
+    );
   } finally {
     clearTimeout(timer);
   }

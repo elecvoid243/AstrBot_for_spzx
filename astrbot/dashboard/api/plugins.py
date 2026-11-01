@@ -342,7 +342,11 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
             raise ApiError("Extension is unavailable", status_code=403)
         return
     expected = "browser-owned-chat-v1" if browser else "spcode-owned-workspace-v1"
-    if getattr(handler, "__astrbot_chat_guard__", None) != expected:
+    admin_spcode = spcode and account.role == "admin"
+    if (
+        not admin_spcode
+        and getattr(handler, "__astrbot_chat_guard__", None) != expected
+    ):
         raise ApiError("Extension requires an ownership-aware update", status_code=403)
     if browser:
         operation = plugin_path.rsplit("/", 1)[-1]
@@ -369,7 +373,24 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
             raise ApiError("Invalid extension payload", status_code=400) from exc
         if not isinstance(payload, dict):
             raise ApiError("Unsupported extension fields", status_code=400)
+        if (set(payload) | set(request.query_params)) & {
+            "role",
+            "account_id",
+            "resource_owner",
+            "chat_origin",
+        }:
+            raise ApiError("Unsupported extension fields", status_code=403)
         umo = payload.get("umo") or request.query_params.get("umo")
+        # Host directory pickers also open before a Chat session exists. These
+        # read-only admin operations do not resolve any per-session plugin state.
+        if (
+            admin_spcode
+            and plugin_path[7:] in {"home-directory", "drives", "file-browser"}
+            and request.method == "GET"
+            and not payload
+            and "umo" not in request.query_params
+        ):
+            return
         if not isinstance(umo, str) or not umo:
             raise ApiError("An owned chat origin is required", status_code=403)
         if (
@@ -397,7 +418,11 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
                 await request.app.state.services.chat.validate_chat_selection(
                     username, session_id, {"selected_provider": payload["provider_id"]}
                 )
-            if operation in {"project-load", "project-status", "project-unload"}:
+            if not admin_spcode and operation in {
+                "project-load",
+                "project-status",
+                "project-unload",
+            }:
                 request.state.chat_payload = await request.app.state.services.chat_projects.validate_project_operation(
                     username, umo, operation, payload
                 )
@@ -415,7 +440,11 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
     ):
         raise ApiError("Extension is unavailable in this profile", status_code=403)
     request.state.chat_session = session
-    request.state.chat_origin = origin
+    # Administrators retain host workspace management, including manual loading
+    # without a bound Chat project. Only ordinary SPCode consumers receive the
+    # restricted-workspace context; the session owner was verified above for both.
+    if not admin_spcode:
+        request.state.chat_origin = origin
 
 
 async def _call_plugin_extension(
@@ -485,7 +514,7 @@ async def _call_plugin_extension(
                 g_obj=g_obj,
                 quart_compat_path=_plugin_extension_legacy_path(plugin_path, request),
             )
-    if getattr(request.state, "chat_origin", None):
+    if getattr(request.state, "chat_session", None) is not None:
         if isinstance(result, Response) and result.status_code in {204, 304}:
             return Response(
                 status_code=result.status_code,

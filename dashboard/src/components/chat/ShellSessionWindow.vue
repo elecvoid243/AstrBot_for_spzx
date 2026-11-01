@@ -15,12 +15,14 @@
     class="shell-win"
     :style="{
       zIndex,
-      right: `${pos.x}px`,
-      bottom: `${pos.y}px`,
+      left: `${pos.x}px`,
+      top: `${pos.y}px`,
       width: `${chatHeader.shellWindowSize.width}px`,
       height: `${chatHeader.shellWindowSize.height}px`,
       maxWidth: `calc(100vw - ${pos.x}px)`,
       maxHeight: `calc(100vh - ${pos.y}px)`,
+      minWidth: `min(320px, calc(100vw - ${pos.x}px))`,
+      minHeight: `min(220px, calc(100vh - ${pos.y}px))`,
     }"
     @mousedown="chatHeader.FOCUS_SHELL_WINDOW(shellSessionId)"
   >
@@ -174,13 +176,13 @@ function close() {
 }
 
 // ── Dragging (header), same interaction as the todo summary bar ────
-// Position is stored as right/bottom offsets so the window stays anchored
-// to the composer corner across resizes; the nth window cascades inward.
+// Initial positions cascade from the composer corner. Left/top positioning
+// keeps the opposite corner stationary while the native resize handle moves.
 const idx = Math.max(
   chatHeader.openShellWindows.indexOf(props.shellSessionId),
   0,
 );
-const pos = ref({ x: 24 + idx * 28, y: 120 + idx * 28 });
+const pos = ref({ x: 0, y: 0 });
 
 function startDrag(e: MouseEvent) {
   if ((e.target as HTMLElement).closest("button")) return;
@@ -190,8 +192,6 @@ function startDrag(e: MouseEvent) {
   const startY = e.clientY;
   const origin = { ...pos.value };
   const onMove = (ev: MouseEvent) => {
-    // Clamp both directions: right/bottom offsets only grow when dragging
-    // left/up, so an unclamped window could leave the viewport entirely.
     const el = winEl.value;
     const maxX = el
       ? window.innerWidth - el.offsetWidth
@@ -201,11 +201,11 @@ function startDrag(e: MouseEvent) {
       : Number.MAX_SAFE_INTEGER;
     pos.value = {
       x: Math.min(
-        Math.max(0, origin.x - (ev.clientX - startX)),
+        Math.max(0, origin.x + (ev.clientX - startX)),
         Math.max(0, maxX),
       ),
       y: Math.min(
-        Math.max(0, origin.y - (ev.clientY - startY)),
+        Math.max(0, origin.y + (ev.clientY - startY)),
         Math.max(0, maxY),
       ),
     };
@@ -233,6 +233,17 @@ onMounted(() => {
   } catch {
     /* Ignore invalid or unavailable saved preferences. */
   }
+  pos.value = {
+    x: Math.max(
+      0,
+      window.innerWidth - chatHeader.shellWindowSize.width - 24 - idx * 28,
+    ),
+    y: Math.max(
+      0,
+      window.innerHeight - chatHeader.shellWindowSize.height - 120 - idx * 28,
+    ),
+  };
+  window.addEventListener("resize", onViewportResize);
   if (winEl.value) {
     resizeObserver = new ResizeObserver(() => {
       const el = winEl.value;
@@ -255,18 +266,30 @@ onMounted(() => {
   void start();
 });
 onUnmounted(() => {
+  window.removeEventListener("resize", onViewportResize);
   resizeObserver?.disconnect();
   stop();
   if (confirmTimer) clearTimeout(confirmTimer);
 });
+
+function onViewportResize() {
+  pos.value = {
+    x: Math.min(
+      pos.value.x,
+      Math.max(0, window.innerWidth - chatHeader.shellWindowSize.width),
+    ),
+    y: Math.min(
+      pos.value.y,
+      Math.max(0, window.innerHeight - chatHeader.shellWindowSize.height),
+    ),
+  };
+}
 </script>
 
 <style scoped>
 .shell-win {
   position: fixed;
   resize: both;
-  min-width: min(320px, calc(100vw - 24px));
-  min-height: min(220px, calc(100vh - 24px));
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 12px;

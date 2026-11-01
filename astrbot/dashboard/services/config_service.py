@@ -1109,6 +1109,7 @@ class ConfigDisplayService:
                 str(logo_file_path),
                 timeout=3600,
                 single_use=False,
+                public=True,
             )
             self._set_platform_logo_token(
                 platform_default_tmpl,

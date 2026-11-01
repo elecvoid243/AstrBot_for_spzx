@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
+from .accounts import router as accounts_router
 from .agent_teams import router as agent_teams_router
 from .api_keys import router as api_keys_router
 from .auth import ScopeDependency
@@ -46,6 +47,7 @@ def build_api_router() -> APIRouter:
         role_assets_router,
         workflow_assets_router,
         auth_router,
+        accounts_router,
         backups_router,
         config_profiles_router,
         api_keys_router,

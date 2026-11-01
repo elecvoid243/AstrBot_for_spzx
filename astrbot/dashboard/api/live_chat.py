@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import jwt
 from fastapi import APIRouter, WebSocket
 
+from astrbot.core.utils.webchat_access import (
+    DashboardPrincipal,
+    dashboard_account_context,
+    webchat_account_role,
+    webchat_resource_owner,
+)
 from astrbot.dashboard.services.live_chat_service import LiveChatService
 
 router = APIRouter(tags=["Live Chat"])
@@ -23,13 +30,42 @@ async def _run_live_chat_ws(
 ) -> None:
     await websocket.accept()
     service = get_service(websocket)
-    await service.run_websocket_session(
-        token=websocket.query_params.get("token"),
-        force_ct=force_ct,
-        receive_json=websocket.receive_json,
-        send_json=websocket.send_json,
-        close=websocket.close,
+    token = websocket.query_params.get("token")
+    try:
+        claims = jwt.decode(
+            token or "", websocket.app.state.jwt_secret, algorithms=["HS256"]
+        )
+        account = await websocket.app.state.services.auth.accounts.resolve(claims)
+        if (
+            account is None
+            or account.role != "admin"
+            or claims.get("token_type") is not None
+        ):
+            await websocket.close(
+                code=1008, reason="WebSocket chat is not available for this account"
+            )
+            return
+    except jwt.InvalidTokenError:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+    principal = DashboardPrincipal(
+        account.account_id, account.resource_owner, account.role, account.username
     )
+    account_token = dashboard_account_context.set(principal)
+    owner_token = webchat_resource_owner.set(principal.resource_owner)
+    role_token = webchat_account_role.set(principal.role)
+    try:
+        await service.run_websocket_session(
+            token=websocket.query_params.get("token"),
+            force_ct=force_ct,
+            receive_json=websocket.receive_json,
+            send_json=websocket.send_json,
+            close=websocket.close,
+        )
+    finally:
+        webchat_account_role.reset(role_token)
+        webchat_resource_owner.reset(owner_token)
+        dashboard_account_context.reset(account_token)
 
 
 @router.websocket("/live-chat/ws")

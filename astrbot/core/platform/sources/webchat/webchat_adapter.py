@@ -18,6 +18,7 @@ from astrbot.core.platform import (
 )
 from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 
 from ...register import register_platform_adapter
 from .message_parts_helper import (
@@ -283,6 +284,12 @@ class WebChatAdapter(Platform):
         if isinstance(raw_message, tuple) and len(raw_message) >= 3:
             payload = raw_message[2]
             if isinstance(payload, dict):
+                account = payload.get("_dashboard_account")
+                if (
+                    isinstance(account, DashboardPrincipal)
+                    and account.resource_owner == message.sender.user_id
+                ):
+                    message_event.set_extra("_dashboard_account", account)
                 flags = resolve_webchat_request_flags(payload)
                 message_event.set_extra("flags", flags)
                 for key, value in flags.items():

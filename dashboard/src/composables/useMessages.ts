@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, reactive, ref, watch, type Ref } from "vue";
 import { chatApi, fileApi } from "@/api/v1";
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import { fetchWithAuth } from "@/api/http";
 import {
   collectFileChanges,
@@ -326,6 +327,8 @@ interface CreateLocalExchangeOptions {
 }
 
 interface UseMessagesOptions {
+  accountRole?: string;
+  onError?: (message: string, sessionId: string) => void;
   currentSessionId: Ref<string>;
   onSessionsChanged?: () => Promise<void> | void;
   onStreamUpdate?: (sessionId: string) => void;
@@ -396,6 +399,7 @@ interface UseMessagesOptions {
 }
 
 export function useMessages(options: UseMessagesOptions) {
+  const accountRevision = accountSessionRevision.value;
   const loadingMessages = ref(false);
   const sending = ref(false);
   const messagesBySession = reactive<Record<string, ChatRecord[]>>({});
@@ -497,7 +501,7 @@ export function useMessages(options: UseMessagesOptions) {
       if (previousSessionId && previousSessionId !== sessionId) {
         stopSystemStream(previousSessionId);
       }
-      if (sessionId) {
+      if (sessionId && options.accountRole !== "user") {
         startSystemStream(sessionId);
       }
     },
@@ -591,10 +595,10 @@ export function useMessages(options: UseMessagesOptions) {
             if (consumed) options.onStreamUpdate?.(sessionId);
           });
         } catch (error) {
-          if (abort.signal.aborted) return;
+          if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
           console.error("System event stream failed:", error);
         }
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
         // Server closed the stream: back off briefly, then reconnect.
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -728,6 +732,7 @@ export function useMessages(options: UseMessagesOptions) {
       const response = await chatApi.getSession(sessionId, {
         limit: HISTORY_PAGE_SIZE,
       });
+      if (response.data.status !== "ok") throw new Error(response.data.message || "Session is unavailable");
       const payload = response.data?.data || {};
       const history = payload.history || [];
       const records: ChatRecord[] = history.map(normalizeHistoryRecord);
@@ -752,7 +757,7 @@ export function useMessages(options: UseMessagesOptions) {
       );
       // Marker index for the scroll strip — non-blocking, degrades to the
       // DOM-measured fallback on failure.
-      void loadSessionMarkers(sessionId);
+      if (options.accountRole !== "user") void loadSessionMarkers(sessionId);
       // Live records (system stream / run resume) may have arrived while the
       // history snapshot was in flight; the snapshot then overwrote them.
       // Re-append anything the snapshot cannot cover so no live message is
@@ -860,10 +865,11 @@ export function useMessages(options: UseMessagesOptions) {
           writeTodoSnapshot(sessionId, replayedTodoSnapshot);
         }
       }
-      if (resumeRuns && Array.isArray(payload.active_runs)) {
+      if (options.accountRole !== "user" && resumeRuns && Array.isArray(payload.active_runs)) {
         await restoreNextActiveRun(sessionId, payload.active_runs);
       }
     } catch (error) {
+      options.onError?.(String(error), sessionId);
       console.error("Failed to load session messages:", error);
       messagesBySession[sessionId] = messagesBySession[sessionId] || [];
     } finally {
@@ -1401,7 +1407,11 @@ export function useMessages(options: UseMessagesOptions) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
+      body: JSON.stringify(options.accountRole === "user" ? {
+        session_id: sessionId,
+        message: parts.filter((part) => part.type === "plain").map((part) => part.text || "").join(""),
+        message_id: messageId,
+      } : {
         session_id: sessionId,
         message: parts.map(partToPayload),
         flags: buildChatRequestFlags(enableStreaming),
@@ -1441,12 +1451,13 @@ export function useMessages(options: UseMessagesOptions) {
           );
         }
         await readSseStream(response.body, (payload) => {
+          assertCurrentAccount(accountRevision);
           processStreamPayload(botRecord, payload, userRecord, connection);
           options.onStreamUpdate?.(sessionId);
         });
       })
       .catch((error) => {
-        if (abort.signal.aborted) return;
+        if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
         ensureBotRecordVisible(connection);
         appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
         // The appended text is invisible while `isLoading` is still set: the
@@ -1457,6 +1468,7 @@ export function useMessages(options: UseMessagesOptions) {
         console.error("SSE chat failed:", error);
       })
       .finally(async () => {
+        if (accountRevision !== accountSessionRevision.value) return;
         if (activeConnections[messageId]?.abort === abort) {
           delete activeConnections[messageId];
           await options.onSessionsChanged?.();
@@ -1586,7 +1598,7 @@ export function useMessages(options: UseMessagesOptions) {
           if (receivedEnd) break;
           lastError = new Error("Resume stream closed before completion.");
         } catch (error) {
-          if (abort.signal.aborted) return;
+          if (abort.signal.aborted || accountRevision !== accountSessionRevision.value) return;
           lastError = error;
         }
 
@@ -1973,6 +1985,7 @@ export function useMessages(options: UseMessagesOptions) {
     userRecord?: ChatRecord,
     connection?: ActiveConnection,
   ) {
+    if (accountRevision !== accountSessionRevision.value) return;
     const sessionId = connection?.sessionId;
     const normalized =
       payload?.ct === "chat"

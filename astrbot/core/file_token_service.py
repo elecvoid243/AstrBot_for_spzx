@@ -3,6 +3,8 @@ import time
 import uuid
 from pathlib import Path
 
+from astrbot.core.utils.webchat_access import webchat_resource_owner
+
 
 class FileTokenService:
     """Serve token-authorized file downloads with expiration and lazy cleanup."""
@@ -11,6 +13,7 @@ class FileTokenService:
         self.lock = asyncio.Lock()
         self.staged_files = {}  # token: (file_path, expire_time, single_use)
         self.default_timeout = default_timeout
+        self.account_owners: dict[str, str] = {}
 
     async def _cleanup_expired_tokens(self) -> None:
         """Remove expired tokens."""
@@ -20,6 +23,7 @@ class FileTokenService:
         ]
         for token in expired_tokens:
             self.staged_files.pop(token, None)
+            self.account_owners.pop(token, None)
 
     async def check_token_expired(self, file_token: str) -> bool:
         """Check whether a token is expired, consumed, or missing.
@@ -40,12 +44,14 @@ class FileTokenService:
         timeout: float | None = None,
         *,
         single_use: bool = True,
+        public: bool = False,
     ) -> str:
         """Register a file for token-authorized access.
 
         Args:
             file_path: The local file path or file URI.
             timeout: The token lifetime in seconds, or the default lifetime.
+            public: Whether this is a public non-chat asset such as a logo.
             single_use: Whether to consume the token on its first file access.
                 Set to False for resources that need repeated access until expiry.
 
@@ -78,6 +84,9 @@ class FileTokenService:
                 timeout if timeout is not None else self.default_timeout
             )
             self.staged_files[file_token] = (local_path, expire_time, single_use)
+            owner = webchat_resource_owner.get()
+            if owner is not None and not public:
+                self.account_owners[file_token] = owner
             return file_token
 
     async def handle_file(self, file_token: str) -> str:
@@ -102,6 +111,7 @@ class FileTokenService:
             file_path, _, single_use = self.staged_files[file_token]
             if single_use:
                 self.staged_files.pop(file_token)
+                self.account_owners.pop(file_token, None)
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"File does not exist: {file_path}")
             return file_path

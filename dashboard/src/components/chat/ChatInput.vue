@@ -12,7 +12,7 @@
       capsule. The workspace entry was briefly folded into the mode menu and
       is independent again so the menu stays purely about permissions.
     -->
-    <div class="input-area__status-row">
+    <div v-if="!isOrdinaryUser" class="input-area__status-row">
       <div v-if="showSpcodeIndicator" class="input-area__status-row__left">
         <SpcodeProjectIndicator
           @open-load-dialog="openLoadDialog"
@@ -113,7 +113,7 @@
       Chat.vue (see flushPendingFollowUps).
     -->
     <transition-group
-      v-if="props.sessionId && pendingFollowUpItems.length"
+      v-if="!isOrdinaryUser && props.sessionId && pendingFollowUpItems.length"
       tag="div"
       name="followup"
       class="pending-follow-ups"
@@ -249,7 +249,7 @@
            message at send time and cleared on success (spec D3). -->
       <transition name="attachments">
         <div
-          v-if="fileReferences.totalCount.value > 0"
+          v-if="!isOrdinaryUser && fileReferences.totalCount.value > 0"
           class="references-preview"
         >
           <div
@@ -414,7 +414,7 @@
       -->
       <transition name="attachments">
         <div
-          v-if="skillGuide.queued.value.length > 0"
+          v-if="!isOrdinaryUser && skillGuide.queued.value.length > 0"
           class="skill-guide-preview"
         >
           <span class="skill-guide-preview__label">
@@ -503,7 +503,7 @@
           ></textarea>
         </div>
         <div class="composer-toolbar">
-          <div class="composer-toolbar__left">
+          <div v-if="!isOrdinaryUser" class="composer-toolbar__left">
             <input
               type="file"
               ref="imageInputRef"
@@ -628,7 +628,7 @@
           </div>
           <div class="composer-toolbar__right">
             <v-progress-circular
-              v-if="disabled && !mobile"
+              v-if="!isOrdinaryUser && disabled && !mobile"
               indeterminate
               size="16"
               class="mr-1"
@@ -719,6 +719,7 @@
               <span class="token-usage-tooltip">{{ tokenUsageTooltip }}</span>
             </v-tooltip>
             <v-btn
+              v-if="!isOrdinaryUser"
               @click="handleRecordClick"
               icon
               variant="text"
@@ -737,7 +738,7 @@
             </v-btn>
             <v-btn
               icon
-              v-if="isRunning && !canSend"
+              v-if="!isOrdinaryUser && isRunning && !canSend"
               @click="$emit('stop')"
               variant="tonal"
               class="send-btn input-action-btn"
@@ -751,8 +752,9 @@
               <template #activator="{ props: tipProps }">
                 <span v-bind="tipProps" class="send-btn-wrap">
                   <v-btn
-                    v-if="!(isRunning && !canSend)"
+                    v-if="isOrdinaryUser || !(isRunning && !canSend)"
                     @click="handleSendClick"
+                    :aria-label="tm('input.send')"
                     icon="mdi-arrow-up"
                     variant="tonal"
                     :disabled="!canSend || sendLocked"
@@ -775,7 +777,7 @@
       show the same UI. `v-dialog` teleports its content to <body>,
       so the DOM placement here is purely for component lifetime.
     -->
-    <ProjectLoadDialog
+    <ProjectLoadDialog v-if="!isOrdinaryUser"
       ref="projectLoadDialogRef"
       :wake-prefixes="wakePrefixes"
       @submit="handleProjectLoadSubmit"
@@ -841,6 +843,7 @@ import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import type { PendingFollowUp } from "@/composables/usePendingFollowUps";
 import { isComposingEnter } from "@/utils/imeInput.mjs";
 import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
+import { useAuthStore } from "@/stores/auth";
 import { chatApi, commandApi } from "@/api/v1";
 import type { CommandItem } from "@/components/extension/componentPanel/types";
 import ConfigSelector from "./ConfigSelector.vue";
@@ -1041,6 +1044,7 @@ const emit = defineEmits<{
 }>();
 
 const { tm } = useModuleI18n("features/chat");
+const isOrdinaryUser = computed(() => useAuthStore().role === "user");
 
 // ZCode-style pending follow-up queue (singleton store shared with
 // Chat.vue, which owns the flush triggers and dispatch path).
@@ -1119,6 +1123,7 @@ const thinkingEffort = ref<string>(DEFAULT_EFFORT_VALUE);
 
 /** Load the input-row settings once; a failure keeps the built-in defaults. */
 async function loadChatUiSettings() {
+  if (isOrdinaryUser.value) return;
   try {
     const response = await chatApi.getUiSettings();
     const data = response.data?.data ?? {};
@@ -1137,6 +1142,7 @@ async function loadChatUiSettings() {
 let effortValueTimer: number | null = null;
 
 async function persistEffortValue(value: string) {
+  if (isOrdinaryUser.value) return;
   try {
     const response = await chatApi.updateThinkingEffortValue(value);
     if (response.data?.status !== "ok") {
@@ -1340,7 +1346,7 @@ const codegraphLoadDialogRef = ref<{
 // See :func:`useSpcodeProjectLoad` for the full rationale.
 const { isProjectLoadAvailable, refreshPluginState } =
   useSpcodeProjectLoad(allCommands);
-const showSpcodeIndicator = isProjectLoadAvailable;
+const showSpcodeIndicator = computed(() => !isOrdinaryUser.value && isProjectLoadAvailable.value);
 
 // Singleton state for the file access mode chip (full / readonly /
 // workspace), keyed per-umo by AstrBot core. Exposed here so the
@@ -1495,6 +1501,7 @@ const skillCommands = computed<SuggestionCommand[]>(() => {
 watch(
   () => [props.sessionId, sessionIsGroup.value] as const,
   async ([sessionId, isGroup]) => {
+    if (isOrdinaryUser.value) { await skillGuide.setSession(null); return; }
     if (!sessionId) {
       await skillGuide.setSession(null);
       return;
@@ -1506,6 +1513,7 @@ watch(
 );
 
 const canSend = computed(() => {
+  if (isOrdinaryUser.value) return !props.disabled && Boolean(props.prompt?.trim());
   return (
     skillGuide.queued.value.length > 0 ||
     (props.prompt && props.prompt.trim()) ||
@@ -1722,6 +1730,14 @@ watch(inputIsMultiline, () => {
 });
 
 function handleKeyDown(e: KeyboardEvent) {
+  if (isOrdinaryUser.value) {
+    if (isComposingEnter(e, isComposing.value, lastCompositionEndAt.value)) return;
+    if (e.key === "Enter" && ((props.sendShortcut === "enter" && !e.shiftKey) || (props.sendShortcut === "shift_enter" && e.shiftKey))) {
+      e.preventDefault();
+      sendMessage();
+    }
+    return;
+  }
   // 命令提示激活时，拦截方向键和 Enter/Esc
   if (showCommandSuggestion.value && filteredCommands.value.length > 0) {
     if (e.key === "ArrowDown") {
@@ -1811,7 +1827,7 @@ function handleKeyDown(e: KeyboardEvent) {
       return;
     }
     if (canSend.value && !sendLocked.value) {
-      applyOptimisticCodegraphStatus(localPrompt.value);
+      if (!isOrdinaryUser.value) applyOptimisticCodegraphStatus(localPrompt.value);
       sendMessage();
     }
     return;
@@ -2032,6 +2048,10 @@ function handleSendClick(): void {
  * "[Requested skills]" block into the message text (visible in history).
  */
 function sendMessage(): void {
+  if (isOrdinaryUser.value) {
+    if (canSend.value) emit("send", []);
+    return;
+  }
   const skillNames = [...skillGuide.queued.value];
   skillGuide.consumeQueued();
   emit("send", skillNames);
@@ -2257,7 +2277,7 @@ function handleKeyUp(e: KeyboardEvent) {
 
 function handlePaste(e: ClipboardEvent) {
   const pastedText = e.clipboardData?.getData("text/plain") || "";
-  if (pastedText.length > longPasteThreshold) {
+  if (!isOrdinaryUser.value && pastedText.length > longPasteThreshold) {
     e.preventDefault();
     emit("fileSelect", [
       new File([pastedText], `pasted-text-${Date.now()}.txt`, {
@@ -2284,7 +2304,7 @@ function handlePaste(e: ClipboardEvent) {
       autoResize();
     });
   }
-  emit("pasteImage", e);
+  if (!isOrdinaryUser.value) emit("pasteImage", e);
 }
 
 // 2026-07-18 drag-to-chat (elecvoid243): custom MIME type used by
@@ -2297,6 +2317,7 @@ function handlePaste(e: ClipboardEvent) {
 const SIDEBAR_FILE_MIME = "application/x-astrbot-file-path";
 
 function handleDragOver(e: DragEvent) {
+  if (isOrdinaryUser.value) return;
   // 清除之前的 leave timeout
   if (dragLeaveTimeout) {
     clearTimeout(dragLeaveTimeout);
@@ -2324,6 +2345,7 @@ function handleDragLeave(e: DragEvent) {
 }
 
 function handleDrop(e: DragEvent) {
+  if (isOrdinaryUser.value) return;
   isDragging.value = false;
 
   // 优先处理 sidebar 文件拖入：自定义 MIME 携带的是远端文件路径，
@@ -2390,6 +2412,7 @@ function handleConfigChange(payload: {
 // pure renderers of the shared singleton; selection changes (including the
 // runner-type gate for the provider selector) arrive via this listener.
 const chatConfigSelection = provideChatConfigSelection();
+if (!isOrdinaryUser.value) {
 chatConfigSelection.bindContext(
   computed(() => ({
     sessionId: props.configSessionId ?? props.sessionId ?? null,
@@ -2399,12 +2422,13 @@ chatConfigSelection.bindContext(
     persistGlobal: props.persistConfigSelection !== false,
   })),
 );
+}
 onBeforeUnmount(chatConfigSelection.onConfigChanged(handleConfigChange));
 
 const providerModelSelection = useProviderModelSelection();
 
 function getCurrentSelection() {
-  if (!props.showProviderSelector || !providerSelectorAvailable.value) {
+  if (isOrdinaryUser.value || !props.showProviderSelector || !providerSelectorAvailable.value) {
     return null;
   }
   // The header owns model switching; requests read the same reactive state.
@@ -2415,7 +2439,7 @@ function getCurrentSelection() {
 }
 
 function getThinkingEffort(): ThinkingEffort {
-  return thinkingEffort.value;
+  return isOrdinaryUser.value ? "auto" : thinkingEffort.value;
 }
 
 function focusInput() {
@@ -2474,7 +2498,7 @@ const spcodeStatus = useSpcodeProjectStatus();
 const operationProgress = useSpcodeOperationProgress();
 // Send lock (2026-08-07): block sending while a project load/unload is
 // rewriting the system prompt, to keep prompt-cache continuity.
-const sendLocked = operationProgress.isProjectOpRunning;
+const sendLocked = computed(() => !isOrdinaryUser.value && operationProgress.isProjectOpRunning.value);
 const silentOps = useSpcodeSilentOps();
 const toastStore = useToastStore();
 watch(
@@ -2555,6 +2579,7 @@ watch(
 watch(
   () => props.currentSession?.session_id ?? null,
   async (sid) => {
+    if (isOrdinaryUser.value) return;
     if (!sid || !props.currentSession) {
       fileAccessMode.reset();
       return;
@@ -2571,7 +2596,9 @@ watch(
 onMounted(() => {
   document.addEventListener("keyup", handleKeyUp);
   document.addEventListener("visibilitychange", onVisibilityChange);
-  // 预加载指令列表
+  nextTick(autoResize);
+  if (isOrdinaryUser.value) return;
+  // Preload commands only for adapted accounts.
   fetchCommands();
   nextTick(autoResize);
   // 预加载 spcode 插件启用状态。`useSpcodeProjectLoad` 是单例,

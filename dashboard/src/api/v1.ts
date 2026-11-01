@@ -2316,3 +2316,9 @@ export const agentTeamsApi = {
     );
   },
 };
+
+export const accountApi = {
+  current() { return typed<openApiV1.AccountInfo>(openApiV1.currentAccount()); },
+  list() { return typed<openApiV1.AccountInfo[]>(openApiV1.listAccounts()); },
+  create(payload: { username: string; password: string }) { return typed<openApiV1.AccountInfo>(openApiV1.createAccount({ body: payload })); },
+};

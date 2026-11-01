@@ -47,6 +47,34 @@ from astrbot.core.db.po import (
     Stats as DeprecatedStats,
 )
 from astrbot.core.sentinels import NOT_GIVEN
+from astrbot.core.utils.webchat_access import webchat_resource_owner
+
+
+def _dashboard_conversation_visibility():
+    """Build the request's WebChat ownership filter.
+
+    Returns:
+        A SQL condition; kernel work and independent API keys are unrestricted.
+    """
+    owner = webchat_resource_owner.get()
+    if owner is None:
+        return literal(True)
+    owned = select(
+        literal("webchat:FriendMessage:webchat!")
+        + PlatformSession.creator
+        + literal("!")
+        + PlatformSession.session_id
+    ).where(PlatformSession.creator == owner, PlatformSession.platform_id == "webchat")
+    owned_short = select(
+        literal("webchat:FriendMessage:") + PlatformSession.session_id
+    ).where(PlatformSession.creator == owner, PlatformSession.platform_id == "webchat")
+    return or_(
+        (ConversationV2.platform_id != "webchat")
+        & ~col(ConversationV2.user_id).startswith("webchat:"),
+        col(ConversationV2.user_id).in_(owned),
+        col(ConversationV2.user_id).in_(owned_short),
+    )
+
 
 TxResult = T.TypeVar("TxResult")
 CRON_FIELD_NOT_SET = object()
@@ -473,7 +501,7 @@ class SQLiteDatabase(BaseDatabase):
     async def get_conversations(self, user_id=None, platform_id=None):
         async with self.get_db() as session:
             session: AsyncSession
-            query = select(ConversationV2)
+            query = select(ConversationV2).where(_dashboard_conversation_visibility())
 
             if user_id:
                 query = query.where(ConversationV2.user_id == user_id)
@@ -488,7 +516,10 @@ class SQLiteDatabase(BaseDatabase):
     async def get_conversation_by_id(self, cid):
         async with self.get_db() as session:
             session: AsyncSession
-            query = select(ConversationV2).where(ConversationV2.conversation_id == cid)
+            query = select(ConversationV2).where(
+                ConversationV2.conversation_id == cid,
+                _dashboard_conversation_visibility(),
+            )
             result = await session.execute(query)
             return result.scalar_one_or_none()
 
@@ -517,7 +548,7 @@ class SQLiteDatabase(BaseDatabase):
             session: AsyncSession
             # Build the base query with filters
             base_query = select(ConversationV2)
-            conditions = []
+            conditions = [_dashboard_conversation_visibility()]
 
             if platform_ids:
                 conditions.append(col(ConversationV2.platform_id).in_(platform_ids))
@@ -767,6 +798,7 @@ class SQLiteDatabase(BaseDatabase):
             async with session.begin():
                 query = update(ConversationV2).where(
                     col(ConversationV2.conversation_id) == cid,
+                    _dashboard_conversation_visibility(),
                 )
                 values = {}
                 if title is not None:
@@ -784,12 +816,18 @@ class SQLiteDatabase(BaseDatabase):
         return await self.get_conversation_by_id(cid)
 
     async def delete_conversation(self, cid) -> None:
+        if (
+            webchat_resource_owner.get() is not None
+            and await self.get_conversation_by_id(cid) is None
+        ):
+            raise PermissionError("Resource is unavailable")
         async with self.get_db() as session:
             session: AsyncSession
             async with session.begin():
                 await session.execute(
                     delete(ConversationV2).where(
                         col(ConversationV2.conversation_id) == cid,
+                        _dashboard_conversation_visibility(),
                     ),
                 )
 
@@ -799,7 +837,8 @@ class SQLiteDatabase(BaseDatabase):
             async with session.begin():
                 await session.execute(
                     delete(ConversationV2).where(
-                        col(ConversationV2.user_id) == user_id
+                        col(ConversationV2.user_id) == user_id,
+                        _dashboard_conversation_visibility(),
                     ),
                 )
 

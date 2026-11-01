@@ -71,5 +71,6 @@
     "failed": "Failed to submit feedback, please try again later",
     "versionInfo": "Version info will be attached automatically: {info}"
   },
-  "pluginViewType": "Plugin View"
+  "pluginViewType": "Plugin View",
+  "accounts": "Accounts"
 }

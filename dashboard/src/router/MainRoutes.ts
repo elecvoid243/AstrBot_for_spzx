@@ -18,6 +18,7 @@ const MainRoutes = {
   redirect: '/welcome',
   component: () => import('@/layouts/full/FullLayout.vue'),
   children: [
+    { path: "/accounts", component: () => import("@/views/AccountsPage.vue") },
     {
       name: 'MainPage',
       path: '/',

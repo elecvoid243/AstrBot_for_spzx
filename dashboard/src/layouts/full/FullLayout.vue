@@ -6,6 +6,8 @@ import VerticalHeaderVue from "./vertical-header/VerticalHeader.vue";
 import ReadmeDialog from "@/components/shared/ReadmeDialog.vue";
 import AnnouncementBar from "@/components/shared/AnnouncementBar.vue";
 import Chat from "@/components/chat/Chat.vue";
+import { useAuthStore } from "@/stores/auth";
+const auth = useAuthStore();
 import { useAnnouncement } from "@/composables/useAnnouncement";
 import { useCustomizerStore } from "@/stores/customizer";
 import { useRouterLoadingStore } from "@/stores/routerLoading";
@@ -39,7 +41,7 @@ const isFullScreenRoute = computed(
 );
 const shouldMountChat = ref(isCurrentChatRoute.value);
 
-const showSidebar = computed(() => !isCurrentChatRoute.value);
+const showSidebar = computed(() => auth.role === "admin" && !isCurrentChatRoute.value);
 
 // Expanded announcement bar: the v-system-bar layout item is rendered by
 // AnnouncementBar on every page. On chat pages v-main normally forces
@@ -47,7 +49,7 @@ const showSidebar = computed(() => !isCurrentChatRoute.value);
 // reserves its own 50px), so the 36px the layout system pushes down must
 // be re-applied explicitly to keep the chat sidebar/content below the bar.
 const { data: announcementData, collapsed: announcementCollapsed } =
-  useAnnouncement();
+  auth.role === "admin" ? useAnnouncement() : { data: ref(null), collapsed: ref(true) };
 const announcementActive = computed(
   () => !!announcementData.value && !announcementCollapsed.value,
 );
@@ -91,6 +93,7 @@ const onFirstNoticeDialogUpdate = (visible: boolean) => {
 };
 
 onMounted(() => {
+  if (auth.role !== "admin") return;
   setTimeout(async () => {
     try {
       const response = await statsApi.version();
@@ -127,7 +130,7 @@ onMounted(() => {
         top
         style="z-index: 9999; position: absolute; opacity: 0.3"
       />
-      <VerticalHeaderVue />
+      <VerticalHeaderVue v-if="auth.role === 'admin'" />
       <VerticalSidebarVue v-if="showSidebar" />
       <v-main
         :class="{
@@ -143,7 +146,7 @@ onMounted(() => {
              布局项 (order=-1), 固定在视口最顶端并把 v-app-bar 下推; bot 页面
              的 drawer / v-main padding 由布局系统自动让位, chat 页面的额外
              36px padding 由下方 chat-main-announcement 类补齐. -->
-        <AnnouncementBar />
+        <AnnouncementBar v-if="auth.role === 'admin'" />
         <v-container
           fluid
           class="page-wrapper"
@@ -177,7 +180,7 @@ onMounted(() => {
               v-show="isCurrentChatRoute"
               style="height: 100%; width: 100%; overflow: hidden"
             >
-              <Chat :active="isCurrentChatRoute" />
+              <Chat v-if="auth.role === 'admin' || auth.role === 'user'" :active="isCurrentChatRoute" />
             </div>
             <RouterView v-if="!isCurrentChatRoute" />
           </div>

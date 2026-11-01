@@ -4,6 +4,16 @@
     class="chat-ui"
     :class="{ 'is-dark': isDark, 'sidebar-collapsed': isSidebarCollapsed }"
   >
+    <v-btn
+      v-if="isOrdinaryUser && !lgAndUp && !customizer.chatSidebarOpen"
+      class="member-mobile-sidebar-toggle"
+      icon
+      variant="text"
+      aria-label="Toggle sidebar"
+      @click="customizer.TOGGLE_CHAT_SIDEBAR()"
+    >
+      <PanelLeft :size="20" />
+    </v-btn>
     <!-- 2026-07-21 chatui sidebar resize (elecvoid243): replaced the
          Vuetify v-navigation-drawer with a custom <aside> so the user
          can drag the right edge to resize. Mobile still behaves as a
@@ -70,6 +80,7 @@
           <v-btn
             v-else
             class="chat-sidebar-brand-toggle"
+            aria-label="Toggle sidebar"
             icon
             rounded="sm"
             variant="text"
@@ -80,7 +91,7 @@
         </div>
 
         <button
-          v-if="isSidebarCollapsed"
+          v-if="!isOrdinaryUser && isSidebarCollapsed"
           class="new-chat-btn sidebar-provider-btn icon-only chat-sidebar-rail-btn"
           :class="{ 'sidebar-workspace-btn--active': isProviderWorkspace }"
           type="button"
@@ -90,7 +101,7 @@
           <Box :size="18" class="sidebar-action-icon" />
         </button>
         <v-btn
-          v-else
+          v-else-if="!isOrdinaryUser"
           class="new-chat-btn sidebar-provider-btn"
           :class="{ 'sidebar-workspace-btn--active': isProviderWorkspace }"
           variant="text"
@@ -116,7 +127,7 @@
 
         <!-- 2026-08-13 (elecvoid243): batch-manage and message-search moved
              to the top of the sidebar (above the project section). -->
-        <div v-if="!isSidebarCollapsed" class="sidebar-top-actions">
+        <div v-if="!isOrdinaryUser && !isSidebarCollapsed" class="sidebar-top-actions">
           <button
             type="button"
             class="sidebar-top-action-btn"
@@ -197,6 +208,7 @@
         </div>
 
         <ProjectList
+          v-if="!isOrdinaryUser"
           :projects="projects"
           :project-sessions="projectSessionsById"
           :loading-project-ids="loadingProjectSessionIds"
@@ -278,7 +290,7 @@
             }"
             role="button"
             tabindex="0"
-            :draggable="!selectionMode"
+            :draggable="!isOrdinaryUser && !selectionMode"
             @click="handleSidebarSessionClick(session.session_id)"
             @contextmenu.prevent="openSessionContextMenu(session, $event)"
             @dragstart="onSidebarSessionDragStart(session.session_id, $event)"
@@ -375,7 +387,7 @@
                menu. Star / export / archive / delete / mark-unread already
                exist in sessionContextMenu, so the overflow button routes to
                that same state instead of duplicating the item list. -->
-            <div v-if="!selectionMode" class="session-actions" @click.stop>
+            <div v-if="!isOrdinaryUser && !selectionMode" class="session-actions" @click.stop>
               <v-btn
                 icon
                 size="x-small"
@@ -413,6 +425,7 @@
              session row; opened with pointer coordinates from
              openSessionContextMenu(). -->
           <StyledMenu
+            v-if="!isOrdinaryUser"
             v-model="sessionContextMenu.show"
             :target="sessionContextMenu.target"
             location="end"
@@ -515,7 +528,12 @@
       </div>
 
       <div class="sidebar-footer">
+        <span v-if="isOrdinaryUser" class="text-caption px-3">{{ auth.username }}</span>
+        <v-btn v-if="isOrdinaryUser" variant="text" prepend-icon="mdi-logout" @click="auth.logout()">
+          {{ accountText("accounts.logout") }}
+        </v-btn>
         <button
+          v-if="!isOrdinaryUser"
           type="button"
           class="archive-toggle-btn"
           :class="{
@@ -535,6 +553,7 @@
         </button>
 
         <StyledMenu
+          v-if="!isOrdinaryUser"
           location="top start"
           offset="10"
           :close-on-content-click="false"
@@ -693,7 +712,7 @@
     <main
       class="chat-main"
       :class="{ 'empty-chat': isEmptyChat }"
-      v-on="dragEvents"
+      v-on="isOrdinaryUser ? {} : dragEvents"
     >
       <transition name="drop-fade">
         <div
@@ -733,7 +752,7 @@
              The entry sits in the top-right margin, clear of the 28px
              scroll-marker rail; hovering it lists this session's side chats. -->
         <div
-          v-if="currSessionId && !isReadonlySession"
+          v-if="!isOrdinaryUser && currSessionId && !isReadonlySession"
           class="side-chat-entry"
           @mouseenter="openSideChatMenu"
           @mouseleave="sideChatMenuOpen = false"
@@ -941,6 +960,7 @@
           </transition>
 
           <!-- 加载中 / 消息流 / 欢迎区 主体内容 -->
+          <v-alert v-if="chatError" type="error" variant="tonal" class="ma-4">{{ chatError }}</v-alert>
           <div v-if="loadingMessages" class="center-state">
             <v-progress-circular indeterminate size="32" width="3" />
           </div>
@@ -962,8 +982,8 @@
               :history-offset="historyOffset"
               :reveal-work-index="revealWorkIndex"
               :reveal-work-query="revealWorkQuery"
-              :current-umo="currentUmo ?? undefined"
-              :session-id="currSessionId ?? undefined"
+              :current-umo="isOrdinaryUser ? undefined : currentUmo ?? undefined"
+              :session-id="isOrdinaryUser ? undefined : currSessionId ?? undefined"
               :is-dark="isDark"
               :is-streaming="
                 Boolean(
@@ -973,15 +993,15 @@
                 )
               "
               :enable-edit="
-                !Boolean(
+                !isOrdinaryUser && !Boolean(
                   currSessionId &&
                     (isSessionRunning(currSessionId) ||
                       hasLiveSystemRecord(currSessionId)),
                 )
               "
-              enable-regenerate
-              enable-branch
-              enable-thread-selection
+              :enable-regenerate="!isOrdinaryUser"
+              :enable-branch="!isOrdinaryUser"
+              :enable-thread-selection="!isOrdinaryUser"
               :manage-refs-sidebar="false"
               :editing-message-id="editingMessage?.id || null"
               :saving-edit="savingMessageEdit"
@@ -1053,7 +1073,7 @@
               :staged-files="stagedNonImageFiles"
               :failed-uploads="failedUploadViews"
               :active-uploads="activeUploadViews"
-              :disabled="sending"
+              :disabled="sending || (isOrdinaryUser && (!!chatError || isSessionRunning(currSessionId)))"
               :enable-streaming="enableStreaming"
               :is-recording="isRecording"
               :is-running="
@@ -1063,8 +1083,8 @@
                       hasLiveSystemRecord(currSessionId)),
                 )
               "
-              :token-usage="tokenUsageIndicator"
-              :compression-notice="compressionNoticeEntry"
+              :token-usage="isOrdinaryUser ? null : tokenUsageIndicator"
+              :compression-notice="isOrdinaryUser ? null : compressionNoticeEntry"
               :session-id="currSessionId || null"
               :current-session="currentSession"
               :reply-to="chatInputReplyTarget"
@@ -1144,7 +1164,7 @@
       </button>
     </div>
 
-    <ProjectDialog
+    <ProjectDialog v-if="!isOrdinaryUser"
       v-model="projectDialogOpen"
       :project="editingProject"
       :error-message="projectDialogError"
@@ -1183,7 +1203,7 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <ThreadPanel
+    <ThreadPanel v-if="!isOrdinaryUser"
       :model-value="threadPanelOpen"
       :thread="activeThread"
       :is-dark="isDark"
@@ -1201,17 +1221,17 @@
       :focus-call-id="activeReasoningTarget?.callId ?? null"
       :focus-query="activeReasoningTarget?.query ?? null"
     />
-    <RefsSidebar
+    <RefsSidebar v-if="!isOrdinaryUser"
       v-model="refsSidebarOpen"
       :refs="selectedRefs"
       @update:model-value="onRefsToggle"
     />
-    <GoalSidebar
+    <GoalSidebar v-if="!isOrdinaryUser"
       v-model="goalSidebarOpen"
       :goal="currentGoal"
       :session-id="currSessionId"
     />
-    <GitDiffSidebar
+    <GitDiffSidebar v-if="!isOrdinaryUser"
       ref="gitDiffSidebarRef"
       v-model="gitDiffSidebarOpen"
       :file-reference="fileReferenceNavigation"
@@ -1219,7 +1239,7 @@
       :chat-id="currSessionId"
       @fullscreen-change="gitDiffFullscreen = $event"
     />
-    <WorkspaceFilesPanel
+    <WorkspaceFilesPanel v-if="!isOrdinaryUser"
       :model-value="chatHeader.workspaceFilesOpen"
       :project-id="activeProject?.project_id || ''"
       :project-title="activeProject?.title || ''"
@@ -1227,14 +1247,14 @@
     />
   </div>
 
-  <ChatMessageSearchDialog v-model="searchDialogOpen" />
-  <ArchivedSessionsDialog
+  <ChatMessageSearchDialog v-if="!isOrdinaryUser" v-model="searchDialogOpen" />
+  <ArchivedSessionsDialog v-if="!isOrdinaryUser"
     v-model="archivedDialogOpen"
     @restore="onArchivedRestored"
     @delete="onArchivedDeleted"
     @open="openArchivedSession"
   />
-  <ImportSessionsDialog
+  <ImportSessionsDialog v-if="!isOrdinaryUser"
     v-model="importDialogOpen"
     @imported="onSessionsImported"
   />
@@ -1258,6 +1278,11 @@ import {
   onBeforeRouteUpdate,
 } from "vue-router";
 import { useDisplay } from "vuetify";
+import { useAuthStore } from "@/stores/auth";
+const auth = useAuthStore();
+const isOrdinaryUser = computed(() => auth.role === "user");
+const { tm: accountText } = useModuleI18n("features/auth");
+const chatError = ref("");
 import { isAxiosError } from "axios";
 import {
   Archive,
@@ -1511,14 +1536,15 @@ const {
 // ── goal 循环状态 (右上角 Goal 按钮 + GoalSidebar) ─────────────
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
-const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
+const managementSessionId = computed(() => isOrdinaryUser.value ? "" : currSessionId.value);
+const { currentGoal, applyPushedGoal } = useSessionGoal(managementSessionId);
 
 // ── Background shell session awareness (app-bar indicator) ──────
 // Push-first: the backend emits shell_sessions_changed over the system
 // stream on every session lifecycle transition; GET /shell-sessions is only
 // the cold-start path on session switch.
 const { currentSessions: shellSessions, applyPushedShellSessions } =
-  useShellSessions(currSessionId);
+  useShellSessions(managementSessionId);
 const goalSidebarOpen = computed({
   get: () => chatHeader.goalSidebarOpen,
   set: (open: boolean) => chatHeader.SET_GOAL_SIDEBAR_OPEN(open),
@@ -2313,13 +2339,16 @@ const {
   latestTodoSnapshotBySession,
 } = useMessages({
   currentSessionId: currSessionId,
+  accountRole: auth.role,
+  onError: (message, sessionId) => { if (sessionId === currSessionId.value) chatError.value = message; },
   onToolCall: (sessionId, tool, runId) => {
-    void autoOpenAgentBrowser(sessionId, tool, runId);
+    if (!isOrdinaryUser.value) void autoOpenAgentBrowser(sessionId, tool, runId);
   },
   onSessionsChanged: getSessions,
   onGoalStateChanged: applyPushedGoal,
   onShellSessionsChanged: applyPushedShellSessions,
   onInteractiveChoice: (sessionId) => {
+    if (isOrdinaryUser.value) return;
     markChoiceAttention(
       sessionId,
       {
@@ -2362,6 +2391,7 @@ const {
   // a stream is in flight, the new session's state is already covered
   // by the `currSessionId` watcher above.
   onStreamEnd: (sessionId) => {
+    if (isOrdinaryUser.value) return;
     // 2026-09-01 (elecvoid243): surface a bounded "reply finished" notice
     // (title flash + steady sidebar dot) when a session's run ends while
     // the user is viewing a different session. The inline message list is
@@ -2440,6 +2470,7 @@ onBeforeUnmount(stopCommentSend);
 const fileReferences = useFileReferences();
 const inlineAnnotations = useInlineAnnotations();
 watch(currSessionId, (newId, oldId) => {
+  chatError.value = "";
   if (oldId && newId !== oldId) {
     fileComments.resetForSession();
     fileReferences.resetForSession();
@@ -2780,9 +2811,7 @@ onMounted(async () => {
   try {
     await Promise.all([
       getSessions(),
-      getArchivedSessions(),
-      getProjects(),
-      loadTokenProviders(),
+      ...(isOrdinaryUser.value ? [] : [getArchivedSessions(), getProjects(), loadTokenProviders()]),
     ]);
     const routeSessionId = getRouteSessionId();
     if (routeSessionId === "models") {
@@ -2985,6 +3014,7 @@ watch(
 watch(
   currSessionId,
   async (next) => {
+    if (isOrdinaryUser.value) return;
     if (!next) {
       spcodeStatus.reset();
       // Plan/build is strictly per-umo; clearing the session wipes
@@ -3078,6 +3108,7 @@ async function tryAutoLoadSpcodeForSession(
   umo: string,
   sessionId: string,
 ): Promise<void> {
+  if (isOrdinaryUser.value) return;
   const project = resolveProjectForAutoLoad(sessionId);
   if (!project) return;
   if (project.workspace_type !== "custom") return;
@@ -3143,7 +3174,7 @@ async function tryAutoLoadSpcodeForSession(
 }
 
 watch(currSessionId, (next) => {
-  if (!next) return;
+  if (isOrdinaryUser.value || !next) return;
   const umo = resolveCurrentUmo(next);
   if (!umo) return;
   void tryAutoLoadSpcodeForSession(umo, next);
@@ -3285,6 +3316,7 @@ function formatUsagePercent(value: number) {
 }
 
 async function startNewChat() {
+  chatError.value = "";
   if (!(await confirmFileNavigation())) return;
   showChatWorkspace();
   selectedProjectId.value = null;
@@ -3403,6 +3435,7 @@ const movingSession = ref(false);
 /** ProjectList session rows carry their owning project so the drag knows
  * whether it is an in-project reorder (vs. a flat-session move). */
 function onSessionDragStart(sessionId: string, projectId: string): void {
+  if (isOrdinaryUser.value) return;
   draggingSessionId.value = sessionId;
   draggingSessionProjectId.value = projectId;
 }
@@ -3662,6 +3695,7 @@ const sessionContextMenu = reactive({
 });
 
 function openSessionContextMenu(session: Session, event: MouseEvent) {
+  if (isOrdinaryUser.value) return;
   // Keyboard activation reports (0, 0), which would pin the menu to the
   // viewport corner; anchor to the activator box instead.
   const hasPointerCoords = event.clientX !== 0 || event.clientY !== 0;
@@ -4095,7 +4129,7 @@ async function createProjectSession(projectId = selectedProjectId.value) {
       // newSession() before the sessions list / reverse map are populated,
       // so it misses. Explicit trigger mirrors the selectSession backstop.
       const umo = resolveCurrentUmo(sessionId);
-      if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+      if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
     }
     selectedProjectId.value = null;
     closeMobileSidebar();
@@ -4220,7 +4254,8 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // while the user was in another session — switching back showed a frozen
   // bubble plus everything from the switch moment onward. The merge inside
   // loadSessionMessages reconciles live records with the persisted snapshot.
-  await loadSessionMessages(sessionId, true, false);
+  chatError.value = "";
+  await loadSessionMessages(sessionId, !isOrdinaryUser.value, false);
   if (
     sessionToken !== viewportSessionToken ||
     interactionToken !== viewportInteractionToken
@@ -4234,7 +4269,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // the watcher already succeeded) is a harmless no-op on the server.
   {
     const umo = resolveCurrentUmo(sessionId);
-    if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+    if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
   }
   // Replaces the old unconditional scrollToBottom(): that call was gated by
   // the shared stick flag, so a session left scrolled-up blocked the snap and
@@ -4248,6 +4283,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
 }
 
 async function sendCurrentMessage(skillNames: string[] = []) {
+  if (isOrdinaryUser.value && (sending.value || !!chatError.value || isSessionRunning(currSessionId.value))) return;
   // D13 guard: allow sending when draft is empty if there are staged
   // files OR file-review comments OR queued skill nudges (2026-10-01:
   // ChatInput already consumed the queue before this runs, so blocking
@@ -4304,16 +4340,16 @@ async function sendCurrentMessage(skillNames: string[] = []) {
         // point both resolveCurrentUmo and resolveProjectForAutoLoad
         // have their inputs ready.
         const umo = resolveCurrentUmo(sessionId);
-        if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+        if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
       }
     }
 
     const userText = draft.value.trim();
-    const commentText = fileComments.formatForLLM();
+    const commentText = isOrdinaryUser.value ? "" : fileComments.formatForLLM();
     // 2026-08-09 drag-reference: references block goes last (after the
     // comments block) — UserPlainMessagePart parses them back in this
     // same order.
-    const referenceText = fileReferences.formatForLLM();
+    const referenceText = isOrdinaryUser.value ? "" : fileReferences.formatForLLM();
     // 2026-10-01 skill-guide: queued one-shot skill nudges (consumed by
     // ChatInput's send funnel) ride along as a final "[Requested skills]"
     // block so the history view shows what was queued — the plugin's
@@ -4321,7 +4357,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     // the dashboard history never renders. The block shape is the
     // contract parsed back by utils/parseSkillRequests.ts — keep the two
     // byte-for-byte aligned.
-    const skillText = skillNames.length
+    const skillText = !isOrdinaryUser.value && skillNames.length
       ? [
           "[Requested skills]",
           "The user explicitly queued the following skill(s) for this request.",
@@ -4359,15 +4395,15 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts = buildOutgoingParts(text);
+    const outgoingParts: MessagePart[] = isOrdinaryUser.value ? [{ type: "plain", text: userText }] : buildOutgoingParts(text);
     const selection = getSelectedProviderSelection();
-    writeSessionProviderSelection(sessionId, selection);
+    if (!isOrdinaryUser.value) writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
       sessionId,
       messageId,
       parts: outgoingParts,
     });
-    updateTitleFromText(sessionId, text);
+    if (!isOrdinaryUser.value) updateTitleFromText(sessionId, text);
 
     draft.value = "";
     replyTarget.value = null;
@@ -4381,7 +4417,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
       sessionId,
       messageId,
       parts: outgoingParts,
-      transport: transportMode.value,
+      transport: isOrdinaryUser.value ? "sse" : transportMode.value,
       enableStreaming: enableStreaming.value,
       selectedProvider: selection?.providerId || "",
       selectedModel: selection?.modelName || "",
@@ -6553,6 +6589,7 @@ async function focusChatInput() {
 }
 
 async function stopCurrentSession() {
+  if (isOrdinaryUser.value) return;
   if (!currSessionId.value) return;
   try {
     await stopSession(currSessionId.value);
@@ -6802,6 +6839,13 @@ function toggleTheme() {
   background: rgba(0, 0, 0, 0.42);
   z-index: 1099;
   animation: chat-sidebar-fade-in 0.18s ease;
+}
+
+.member-mobile-sidebar-toggle {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 12;
 }
 
 .chat-sidebar.is-mobile-drawer {

@@ -43,6 +43,27 @@ After starting AstrBot, you can access the admin panel by visiting `http://local
 
 For first-time login, AstrBot generates a random initial password and prints it in startup logs. Please read the startup log line containing the WebUI credential and use that password to log in (username is usually `astrbot`).
 
+## Multiple accounts and basic chat
+
+The existing single-account login remains the original administrator's entry point. Administrators retain the **Bot / Chat** switch and can open **Accounts → Create account** in the Bot sidebar to set an ordinary user's unique login name and initial password. This creates an ordinary account; there is no registration, role assignment, or cross-account sharing.
+
+| Previous entry point | Current entry point |
+| --- | --- |
+| Original WebUI administrator login | The same login page; administrators retain Bot and their own Chat |
+| Chat through a shared administrator login | An administrator creates ordinary accounts; each user signs in on the same page and goes directly to their own Chat |
+
+![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
+
+Ordinary users see only chat navigation. Select **New Chat**, enter text, and select **Send** to receive a streamed reply using the default profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts currently support basic text conversations. Profile selection, attachments, projects, archiving, message editing, and stream recovery are not yet available, and their controls are hidden. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+
+![An ordinary user's isolated text conversation](./images/multi-user-chat.png)
+
+On narrow screens, use the sidebar button at the top left of Chat to open your conversation list. **New Chat**, saved conversations, and **Log out** remain available in that drawer; Bot navigation stays hidden.
+
+![An ordinary user's mobile chat sidebar](./images/multi-user-chat-mobile.png)
+
+Select **Log out** before switching accounts in the same browser. Conversation lists, unsent text drafts, and old requests are cleared or invalidated. Daily WebChat queries and operations enforce ownership for every account, including administrators. Administrators retain full backups and operational logs, so this feature does not promise confidentiality from trusted server maintainers.
+
 ## Open Agent file references
 
 In the main chat, click an explicit file link in an Agent reply to open the

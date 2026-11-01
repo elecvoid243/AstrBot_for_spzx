@@ -8,6 +8,12 @@ from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
     WecomAIBotMessageEvent,
 )
 from astrbot.core.utils.active_event_registry import active_event_registry
+from astrbot.core.utils.webchat_access import (
+    DashboardPrincipal,
+    dashboard_account_context,
+    webchat_account_role,
+    webchat_resource_owner,
+)
 
 from .bootstrap import ensure_builtin_stages_registered
 from .context import PipelineContext
@@ -86,6 +92,24 @@ class PipelineScheduler:
             event (AstrMessageEvent): 事件对象
 
         """
+        # The HTTP-to-WebChat queue carries an immutable principal; external
+        # JSON fields cannot construct it. Propagate identity through the real
+        # pipeline so tool/API consumers and generated file tokens retain it.
+        account = (
+            event.get_extra("_dashboard_account")
+            if isinstance(event, WebChatMessageEvent)
+            else None
+        )
+        if (
+            not isinstance(account, DashboardPrincipal)
+            or account.resource_owner != event.get_sender_id()
+        ):
+            account = None
+        account_token = dashboard_account_context.set(account)
+        owner_token = webchat_resource_owner.set(
+            account.resource_owner if account else None
+        )
+        role_token = webchat_account_role.set(account.role if account else None)
         active_event_registry.register(event)
         try:
             await self._process_stages(event)
@@ -96,5 +120,10 @@ class PipelineScheduler:
 
             logger.debug("pipeline execution completed.")
         finally:
-            event.cleanup_temporary_local_files()
-            active_event_registry.unregister(event)
+            try:
+                event.cleanup_temporary_local_files()
+                active_event_registry.unregister(event)
+            finally:
+                webchat_account_role.reset(role_token)
+                webchat_resource_owner.reset(owner_token)
+                dashboard_account_context.reset(account_token)

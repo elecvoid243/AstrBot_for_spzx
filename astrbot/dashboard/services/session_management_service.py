@@ -12,6 +12,10 @@ from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import ConversationV2, Preference
 from astrbot.core.provider.entities import ProviderType
 from astrbot.core.umo_alias import build_umo_alias_map, parse_umo, serialize_umo_alias
+from astrbot.core.utils.webchat_access import (
+    require_visible_origins,
+    visible_webchat_origin,
+)
 
 AVAILABLE_SESSION_RULE_KEYS = [
     "session_service_config",
@@ -62,7 +66,9 @@ class SessionManagementService:
 
         aliases = await self.db_helper.get_umo_aliases()
         umos.update(str(alias.umo) for alias in aliases if alias.umo)
-        return sorted(umos)
+        return sorted(
+            [umo for umo in umos if await visible_webchat_origin(umo, self.db_helper)]
+        )
 
     async def get_umo_alias_map(self, umos: list[str]) -> dict:
         return build_umo_alias_map(await self.db_helper.get_umo_aliases(umos))
@@ -123,6 +129,8 @@ class SessionManagementService:
             prefs = result.scalars().all()
             for pref in prefs:
                 umo_id = pref.scope_id
+                if not await visible_webchat_origin(umo_id, self.db_helper):
+                    continue
                 if umo_id not in umo_rules:
                     umo_rules[umo_id] = {}
                 if pref.key == "session_plugin_config" and umo_id in pref.value["val"]:
@@ -243,6 +251,7 @@ class SessionManagementService:
 
     async def update_session_rule(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         umo = payload.get("umo")
         rule_key = payload.get("rule_key")
         rule_value = payload.get("rule_value")
@@ -262,6 +271,7 @@ class SessionManagementService:
 
     async def delete_session_rule(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         umo = payload.get("umo")
         rule_key = payload.get("rule_key")
 
@@ -279,12 +289,14 @@ class SessionManagementService:
 
     async def delete_session_rules(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         if payload.get("umo") and not payload.get("umos") and not payload.get("scope"):
             return await self.delete_session_rule(payload)
         return await self.batch_delete_session_rule(payload)
 
     async def batch_delete_session_rule(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         umos = payload.get("umos", [])
         scope = payload.get("scope", "")
         group_id = payload.get("group_id", "")
@@ -436,6 +448,7 @@ class SessionManagementService:
 
     async def batch_update_service(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         umos = payload.get("umos", [])
         scope = payload.get("scope", "")
         group_id = payload.get("group_id", "")
@@ -495,6 +508,7 @@ class SessionManagementService:
 
     async def batch_update_provider(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         umos = payload.get("umos", [])
         scope = payload.get("scope", "")
         provider_type = payload.get("provider_type")
@@ -552,10 +566,31 @@ class SessionManagementService:
             "session_groups",
             {},
         )
-        return groups if groups is not None else {}
+        groups = groups or {}
+        return {
+            key: value
+            for key, value in groups.items()
+            if all(
+                [
+                    await visible_webchat_origin(umo, self.db_helper)
+                    for umo in value.get("umos", [])
+                ]
+            )
+        }
 
     async def save_groups(self, groups: dict) -> None:
-        await sp.put_async("unknown", "unknown", "session_groups", groups)
+        existing = await sp.get_async("unknown", "unknown", "session_groups", {}) or {}
+        hidden = {
+            key: value
+            for key, value in existing.items()
+            if not all(
+                [
+                    await visible_webchat_origin(umo, self.db_helper)
+                    for umo in value.get("umos", [])
+                ]
+            )
+        }
+        await sp.put_async("unknown", "unknown", "session_groups", {**hidden, **groups})
 
     async def list_groups(self) -> dict:
         groups = await self.get_groups()
@@ -573,6 +608,7 @@ class SessionManagementService:
 
     async def create_group(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         name = str(payload.get("name", "")).strip()
         umos = payload.get("umos", [])
 
@@ -599,6 +635,7 @@ class SessionManagementService:
 
     async def update_group(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         group_id = payload.get("id") or payload.get("group_id")
         name = payload.get("name")
         umos = payload.get("umos")
@@ -640,6 +677,7 @@ class SessionManagementService:
 
     async def delete_group(self, data: object) -> dict:
         payload = self._payload(data)
+        await require_visible_origins(payload, self.db_helper)
         group_id = payload.get("id") or payload.get("group_id")
 
         if not group_id:

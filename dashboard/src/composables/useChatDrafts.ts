@@ -94,3 +94,9 @@ export function useChatDrafts() {
 
   return { draftFor, setDraft, clearDraft };
 }
+
+/** Clear both persisted and module-held drafts when authentication changes. */
+export function clearChatDrafts(): void {
+  for (const key of Object.keys(drafts)) delete drafts[key];
+  localStorage.removeItem(STORAGE_KEY);
+}

@@ -12,13 +12,14 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
+from astrbot.core import file_token_service
 from astrbot.dashboard.async_utils import run_maybe_async
-from astrbot.dashboard.responses import error, ok
+from astrbot.dashboard.responses import ApiError, error, ok
 from astrbot.dashboard.schemas import ChatUploadInitRequest, ChatUploadSessionRequest
 from astrbot.dashboard.services.chat_service import ChatService, ChatServiceError
 from astrbot.dashboard.services.file_service import FileService, FileServiceError
 
-from .auth import AuthContext, ScopeDependency
+from .auth import AuthContext, ScopeDependency, require_dashboard_user
 from .multipart import UploadFileAdapter
 
 router = APIRouter(tags=["Files"])
@@ -36,7 +37,12 @@ def get_chat_service(request: Request) -> ChatService:
 require_file_scope = ScopeDependency("file")
 
 
-async def _serve_token_file(file_token: str, service: FileService):
+async def _serve_token_file(request: Request, file_token: str, service: FileService):
+    owner = file_token_service.account_owners.get(file_token)
+    if owner is not None:
+        current_owner = await require_dashboard_user(request)
+        if current_owner != owner:
+            raise ApiError("Resource is unavailable", status_code=403)
     try:
         return FileResponse(await service.resolve_token_file(file_token))
     except FileServiceError as exc:
@@ -74,10 +80,11 @@ async def _upload_file(file: UploadFile, service: ChatService):
 
 @router.get("/files/tokens/{file_token}")
 async def get_token_file(
+    request: Request,
     file_token: str,
     service: FileService = Depends(get_service),
 ):
-    return await _serve_token_file(file_token, service)
+    return await _serve_token_file(request, file_token, service)
 
 
 @router.post("/files")
@@ -196,7 +203,8 @@ async def delete_file(
 
 @legacy_router.get("/file/{file_token}")
 async def get_dashboard_token_file(
+    request: Request,
     file_token: str,
     service: FileService = Depends(get_service),
 ):
-    return await _serve_token_file(file_token, service)
+    return await _serve_token_file(request, file_token, service)

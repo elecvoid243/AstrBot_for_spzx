@@ -21,6 +21,7 @@ export const MORE_GROUP_KEY = 'core.navigation.groups.more';
 // 在组件中使用时需要通过t()函数进行翻译
 // 所有键名都使用 core.navigation.* 格式
 const sidebarItem: menu[] = [
+  { title: "core.navigation.accounts", icon: "mdi-account-multiple-outline", to: "/accounts" },
   {
     title: 'core.navigation.welcome',
     icon: 'mdi-hand-wave-outline',

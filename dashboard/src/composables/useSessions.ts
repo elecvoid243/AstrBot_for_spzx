@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
 import { chatApi, configRouteApi } from "@/api/v1";
 import {
   buildWebchatUmoDetails,
@@ -92,7 +93,7 @@ export function useSessions(chatboxMode: boolean = false) {
 
     sessionCreationPromise = (async () => {
       try {
-        const selectedConfigId = getStoredSelectedChatConfigId();
+        const selectedConfigId = useAuthStore().role === "user" ? "default" : getStoredSelectedChatConfigId();
         const response = await chatApi.createSession();
         const sessionId = response.data.data.session_id;
         const platformId = response.data.data.platform_id;

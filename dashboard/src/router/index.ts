@@ -16,6 +16,8 @@ export const router = createRouter({
 
 interface AuthStore {
   username: string;
+  role: string;
+  refreshIdentity(): Promise<void>;
   returnUrl: string | null;
   login(
     username: string,
@@ -37,9 +39,14 @@ router.beforeEach(async (to, from, next) => {
   const authRequired = !publicPages.includes(to.path);
   const auth: AuthStore = useAuthStore();
 
-  // 如果用户已登录且试图访问登录页面，则重定向到首页
+  if (auth.has_token() && to.path !== '/auth/login') {
+    try { await auth.refreshIdentity(); } catch { return next('/auth/login'); }
+    if (auth.role === 'user' && (!/^\/chat(?:box)?(?:\/|$)/.test(to.path) || /^\/chat(?:box)?\/models(?:\/|$)/.test(to.path))) return next('/chat');
+  }
+
+  // Redirect authenticated callers to their role's entry point.
   if (to.path === '/auth/login' && auth.has_token()) {
-    return next('/welcome');
+    return next(auth.role === 'user' ? '/chat' : '/welcome');
   }
 
   if (to.matched.some((record) => record.meta.requiresAuth)) {

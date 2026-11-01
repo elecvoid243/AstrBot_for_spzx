@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from astrbot.core.workspace import API_KEY_USERNAME_PREFIX
+from astrbot.dashboard.access import require_account_operation
 from astrbot.dashboard.responses import ApiError
 from astrbot.dashboard.schemas import (
     AccountUpdateRequest,
@@ -69,15 +70,17 @@ class ScopeDependency:
 
 def _extract_raw_api_key(request: Request) -> str | None:
     auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header == "ApiKey":
+        return ""
     if auth_header.startswith("Bearer "):
         return None
     if auth_header.startswith("ApiKey "):
         return auth_header.removeprefix("ApiKey ").strip()
-    if key := request.query_params.get("api_key"):
+    if (key := request.query_params.get("api_key")) is not None:
         return key.strip()
-    if key := request.query_params.get("key"):
+    if (key := request.query_params.get("key")) is not None:
         return key.strip()
-    if key := request.headers.get("X-API-Key"):
+    if (key := request.headers.get("X-API-Key")) is not None:
         return key.strip()
     return None
 
@@ -120,8 +123,11 @@ async def require_dashboard_user(request: Request) -> str:
     Raises:
         ApiError: The credential is absent, invalid, expired or revoked.
     """
+    if _extract_raw_api_key(request) is not None:
+        raise ApiError("Dashboard session required", status_code=401)
     account = getattr(request.state, "dashboard_account", None)
     if account is not None:
+        require_account_operation(request, account)
         return account.resource_owner
     token = _extract_dashboard_jwt(request)
     if not token:
@@ -135,6 +141,7 @@ async def require_dashboard_user(request: Request) -> str:
     account = await request.app.state.services.auth.accounts.resolve(payload)
     if account is None:
         raise ApiError("Token 无效", status_code=401)
+    require_account_operation(request, account)
     request.state.dashboard_account = account
     return account.resource_owner
 
@@ -176,7 +183,7 @@ async def _require_api_key_scope(
 
 async def require_scope(request: Request, scope: str) -> AuthContext:
     raw_key = _extract_raw_api_key(request)
-    if raw_key:
+    if raw_key is not None:
         return await _require_api_key_scope(request, raw_key, scope)
 
     token = _extract_dashboard_jwt(request)
@@ -204,6 +211,7 @@ async def require_scope(request: Request, scope: str) -> AuthContext:
     account = await request.app.state.services.auth.accounts.resolve(payload)
     if account is None:
         raise ApiError("Invalid token", status_code=401)
+    require_account_operation(request, account)
     if account.role != "admin" and scope != "chat":
         raise ApiError("Insufficient account permission", status_code=403)
     request.state.dashboard_account = account

@@ -1,32 +1,38 @@
+import {
+  accountSessionRevision,
+  accountSessionSignal,
+  assertCurrentAccount,
+  expireAccountSession,
+} from "../utils/accountSession";
 import axios, {
   type AxiosError,
   type AxiosInstance,
   type InternalAxiosRequestConfig,
-} from 'axios';
+} from "axios";
 
-const AUTH_HEADER = 'Authorization';
-const LOCALE_HEADER = 'Accept-Language';
+const AUTH_HEADER = "Authorization";
+const LOCALE_HEADER = "Accept-Language";
 
 let configured = false;
 let originalFetch: typeof window.fetch | null = null;
 
 export const httpClient = axios;
-export const apiV1Client = axios.create({ baseURL: '/api/v1' });
+export const apiV1Client = axios.create({ baseURL: "/api/v1" });
 
 function getToken(): string | null {
-  return localStorage.getItem('token');
+  return localStorage.getItem("token");
 }
 
 function getLocale(): string | null {
-  return localStorage.getItem('astrbot-locale');
+  return localStorage.getItem("astrbot-locale");
 }
 
 function setAxiosHeader(
-  headers: InternalAxiosRequestConfig['headers'],
+  headers: InternalAxiosRequestConfig["headers"],
   key: string,
   value: string,
 ) {
-  if (typeof headers.set === 'function') {
+  if (typeof headers.set === "function") {
     headers.set(key, value);
     return;
   }
@@ -42,6 +48,8 @@ function attachAxiosHeaders(config: InternalAxiosRequestConfig) {
     return config;
   }
 
+  (config as any).accountRevision = accountSessionRevision.value;
+  config.signal ??= accountSessionSignal();
   const token = getToken();
   if (token) {
     setAxiosHeader(config.headers, AUTH_HEADER, `Bearer ${token}`);
@@ -56,31 +64,33 @@ function attachAxiosHeaders(config: InternalAxiosRequestConfig) {
 }
 
 function normalizeAxiosError(error: AxiosError) {
+  const revision = (error.config as any)?.accountRevision;
+  if (revision !== undefined) assertCurrentAccount(revision);
   if (error.response?.status === 401) {
-    let requestPath = '';
+    let requestPath = "";
     try {
-      const url = error.config?.url || '';
+      const url = error.config?.url || "";
       const baseURL = error.config?.baseURL;
       const resolvedUrl =
         url && baseURL && !/^([a-z][a-z\d+\-.]*:)?\/\//i.test(url)
-          ? `${baseURL.replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`
+          ? `${baseURL.replace(/\/+$/, "")}/${url.replace(/^\/+/, "")}`
           : url;
-      const requestUrl = new URL(resolvedUrl || '/', window.location.origin);
+      const requestUrl = new URL(resolvedUrl || "/", window.location.origin);
       if (requestUrl.origin === window.location.origin) {
         requestPath = requestUrl.pathname;
       }
     } catch {
-      requestPath = '';
+      requestPath = "";
     }
 
     const isAuthChallenge =
       [
-        '/api/auth/login',
-        '/api/auth/setup',
-        '/api/auth/setup-status',
-        '/api/v1/auth/login',
-        '/api/v1/auth/setup',
-        '/api/v1/auth/setup-status',
+        "/api/auth/login",
+        "/api/auth/setup",
+        "/api/auth/setup-status",
+        "/api/v1/auth/login",
+        "/api/v1/auth/setup",
+        "/api/v1/auth/setup-status",
       ].includes(requestPath) ||
       Boolean(
         (
@@ -90,18 +100,8 @@ function normalizeAxiosError(error: AxiosError) {
         )?.data?.totp_required,
       );
 
-    if (requestPath.startsWith('/api/') && !isAuthChallenge) {
-      [
-        'user',
-        'token',
-        'change_pwd_hint',
-        'md5_pwd_hint',
-        'password_upgrade_required',
-      ].forEach((key) => localStorage.removeItem(key));
-
-      if (!window.location.hash.startsWith('#/auth/login')) {
-        window.location.hash = '/auth/login';
-      }
+    if (requestPath.startsWith("/api/") && !isAuthChallenge) {
+      expireAccountSession();
     }
   }
 
@@ -116,10 +116,18 @@ function normalizeAxiosError(error: AxiosError) {
 
 function installAxiosInterceptors(instance: AxiosInstance) {
   instance.interceptors.request.use(attachAxiosHeaders);
-  instance.interceptors.response.use((response) => response, normalizeAxiosError);
+  instance.interceptors.response.use((response) => {
+    const revision = (response.config as any).accountRevision;
+    if (revision !== undefined) assertCurrentAccount(revision);
+    return response;
+  }, normalizeAxiosError);
 }
 
-export function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {
+export async function fetchWithAuth(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) {
+  const revision = accountSessionRevision.value;
   const fetchImpl = originalFetch ?? window.fetch.bind(window);
   // The global fetch wrapper also handles public, cross-origin resources.
   try {
@@ -142,7 +150,7 @@ export function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {
   }
 
   const requestHeaders =
-    typeof input !== 'string' && 'headers' in input
+    typeof input !== "string" && "headers" in input
       ? (input as Request).headers
       : undefined;
   const headers = new Headers(init?.headers || requestHeaders);
@@ -154,7 +162,32 @@ export function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {
     headers.set(LOCALE_HEADER, locale);
   }
 
-  return fetchImpl(input, { ...init, headers });
+  const abort = new AbortController();
+  const requestSignal =
+    init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  for (const signal of [accountSessionSignal(), requestSignal]) {
+    if (!signal) continue;
+    if (signal.aborted) abort.abort();
+    else signal.addEventListener("abort", () => abort.abort(), { once: true });
+  }
+  const response = await fetchImpl(input, {
+    ...init,
+    headers,
+    signal: abort.signal,
+  });
+  assertCurrentAccount(revision);
+  const path = new URL(
+    input instanceof Request ? input.url : input,
+    window.location.href,
+  ).pathname;
+  if (
+    response.status === 401 &&
+    path.startsWith("/api/") &&
+    !/\/auth\/(login|setup|setup-status)$/.test(path)
+  ) {
+    expireAccountSession();
+  }
+  return response;
 }
 
 export function setupHttpClient() {

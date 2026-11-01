@@ -32,7 +32,10 @@ from astrbot.dashboard.asgi_runtime import (
 )
 from astrbot.dashboard.responses import ok
 from astrbot.dashboard.services.api_key_service import ApiKeyService
-from astrbot.dashboard.services.auth_service import DASHBOARD_JWT_COOKIE_NAME, AuthService
+from astrbot.dashboard.services.auth_service import (
+    DASHBOARD_JWT_COOKIE_NAME,
+    AuthService,
+)
 from astrbot.dashboard.services.backup_service import BackupDownload
 from astrbot.dashboard.services.plugin_service import (
     PLUGIN_UPDATE_SOURCE_REQUIRED_MESSAGE,
@@ -1645,6 +1648,7 @@ async def test_v1_backup_path_rejects_traversal(asgi_client: httpx.AsyncClient):
     download_response = await asgi_client.get(
         "/api/v1/backups/%2E%2E/secret.zip",
         params={"token": "demo"},
+        headers=_jwt_headers(),
     )
     delete_response = await asgi_client.delete(
         "/api/v1/backups/%2E%2E/secret.zip",
@@ -1959,7 +1963,9 @@ async def test_v1_config_routes_can_replace_all_routes(
 @pytest.mark.asyncio
 async def test_v1_active_umos_uses_session_service(
     asgi_client: httpx.AsyncClient,
+    fake_db: FakeDb,
 ):
+    fake_db.umo_ids = ["webchat:FriendMessage:webchat!fastapi-v1-test!session-1"]
     response = await asgi_client.get(
         "/api/v1/sessions/active-umos",
         headers=_jwt_headers(),
@@ -1968,7 +1974,7 @@ async def test_v1_active_umos_uses_session_service(
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["data"]["umos"] == ["webchat:FriendMessage:webchat!user!session-1"]
+    assert data["data"]["umos"] == ["webchat:FriendMessage:webchat!fastapi-v1-test!session-1"]
     assert data["data"]["umo_infos"][0]["platform"] == "webchat"
 
 

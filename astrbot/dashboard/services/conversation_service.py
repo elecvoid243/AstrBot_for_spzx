@@ -10,6 +10,7 @@ from astrbot.core import logger
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.umo_alias import build_umo_alias_map, parse_umo, serialize_umo_alias
+from astrbot.core.utils.webchat_access import webchat_resource_owner
 
 
 class ConversationServiceError(Exception):
@@ -560,6 +561,16 @@ class ConversationService:
     async def _delete_conversations(self, conversations: object) -> dict:
         if not isinstance(conversations, list) or not conversations:
             raise ConversationServiceError("批量删除时conversations参数不能为空")
+
+        if webchat_resource_owner.get() is not None:
+            for item in conversations:
+                if not isinstance(item, dict):
+                    raise PermissionError("Resource is unavailable")
+                conversation = await self.db_helper.get_conversation_by_id(
+                    item.get("cid")
+                )
+                if conversation is None or conversation.user_id != item.get("user_id"):
+                    raise PermissionError("Resource is unavailable")
 
         deleted_count = 0
         failed_items = []

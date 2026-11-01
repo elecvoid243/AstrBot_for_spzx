@@ -47,6 +47,10 @@ from astrbot.core.utils.media_utils import (
     detect_image_mime_type_async,
 )
 from astrbot.core.utils.upload import UploadTooLargeError
+from astrbot.core.utils.webchat_access import (
+    dashboard_account_context,
+    webchat_account_role,
+)
 from astrbot.dashboard.services.chatui_settings import (
     normalize_quick_messages,
     normalize_thinking_effort_settings,
@@ -2762,12 +2766,58 @@ class ChatService:
                         exc,
                     )
 
+        if webchat_account_role.get() == "user":
+            post_data = {**post_data, "_api_key_allow_admin_role": False}
+            umo = f"webchat:FriendMessage:webchat!{username}!{webchat_conv_id}"
+            await self.core_lifecycle.umop_config_router.update_route(umo, "default")
+
         message_id = str(uuid.uuid4())
         llm_checkpoint_id = post_data.get("_llm_checkpoint_id") or str(uuid.uuid4())
         skip_user_history = bool(post_data.get("_skip_user_history"))
         saved_user_record = None
 
         message_parts_for_storage = strip_message_parts_path_fields(message_parts)
+        if dashboard_account_context.get() is not None and (
+            skip_user_history or post_data.get("_llm_checkpoint_id") is not None
+        ):
+            # An edited continuation reuses only the latest saved user turn;
+            # client flags cannot suppress arbitrary history or select another
+            # session's checkpoint. Regeneration also prepares this record.
+            session = await self.db.get_platform_session_by_id(webchat_conv_id)
+            if (
+                webchat_account_role.get() != "admin"
+                or post_data.get("_skip_user_history") is not True
+                or session is None
+                or session.creator != username
+                or session.platform_id != "webchat"
+            ):
+                raise ChatServiceError("Invalid edited continuation")
+            platform_history = await self.get_sorted_platform_history(session)
+            source = next(
+                (
+                    record
+                    for record in reversed(platform_history)
+                    if isinstance(record.content, dict)
+                    and record.content.get("type") == "user"
+                ),
+                None,
+            )
+            if (
+                source is None
+                or not source.llm_checkpoint_id
+                or source.llm_checkpoint_id != post_data.get("_llm_checkpoint_id")
+            ):
+                raise ChatServiceError("Invalid edited continuation")
+            saved_parts = await self.build_user_message_parts(
+                source.content.get("message", [])
+            )
+            if (
+                strip_message_parts_path_fields(saved_parts)
+                != message_parts_for_storage
+            ):
+                raise ChatServiceError("Invalid edited continuation")
+            message_parts = saved_parts
+            llm_checkpoint_id = source.llm_checkpoint_id
         if not skip_user_history:
             history = {
                 "platform_id": platform_history_id,
@@ -2853,6 +2903,7 @@ class ChatService:
                         "message_id": message_id,
                         "llm_checkpoint_id": llm_checkpoint_id,
                         "thread_selected_text": thread_selected_text,
+                        "_dashboard_account": dashboard_account_context.get(),
                         "_api_key_allow_admin_role": post_data.get(
                             "_api_key_allow_admin_role"
                         ),

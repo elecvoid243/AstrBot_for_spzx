@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia';
+import { resetAccountSession } from '@/utils/accountSession';
 import { router } from '@/router';
 import {
   authApi,
+  accountApi,
   providerApi,
   systemConfigApi,
   UPGRADE_RECOVERY_EVENT,
@@ -15,11 +17,15 @@ export const useAuthStore = defineStore("auth", {
   state: () => ({
     // @ts-ignore
     username: '',
+    role: localStorage.getItem('role') || '',
     returnUrl: null,
   }),
   actions: {
     async finishAuthenticatedSession(data: any): Promise<void> {
+      resetAccountSession();
       this.username = data.username;
+      this.role = data.role;
+      localStorage.setItem('role', data.role);
       localStorage.setItem('user', this.username);
       localStorage.setItem('resource_owner', data.resource_owner || data.username);
       localStorage.setItem('account_id', data.account_id || '');
@@ -46,6 +52,11 @@ export const useAuthStore = defineStore("auth", {
         localStorage.removeItem('password_upgrade_required');
       }
 
+      if (this.role === 'user') {
+        this.returnUrl = null;
+        await router.push('/chat');
+        return;
+      }
       const onboardingCompleted = await this.checkOnboardingCompleted();
       this.returnUrl = null;
       if (passwordWarning) {
@@ -173,17 +184,23 @@ export const useAuthStore = defineStore("auth", {
         return false;
       }
     },
-    logout() {
-      this.username = '';
-      localStorage.removeItem('user');
-      localStorage.removeItem('resource_owner');
-      localStorage.removeItem('account_id');
-      localStorage.removeItem('token');
-      localStorage.removeItem('change_pwd_hint');
-      localStorage.removeItem('md5_pwd_hint');
-      localStorage.removeItem('password_upgrade_required');
-      void authApi.logout().catch(() => undefined);
-      router.push('/auth/login');
+    async refreshIdentity() {
+      const response = await accountApi.current();
+      const account = response.data.data;
+      this.role = account.role;
+      this.username = account.username;
+      localStorage.setItem('role', account.role);
+      localStorage.setItem('account_id', account.account_id);
+      localStorage.setItem('resource_owner', account.resource_owner);
+    },
+    async logout() {
+      // Complete cookie revocation before a new login can install its cookie.
+      try { await authApi.logout(); } finally {
+        this.username = '';
+        this.role = '';
+        resetAccountSession();
+        await router.push('/auth/login');
+      }
     },
     has_token(): boolean {
       return !!localStorage.getItem('token');

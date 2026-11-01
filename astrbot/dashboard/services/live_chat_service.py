@@ -162,6 +162,10 @@ class LiveChatService:
             account = await AccountService(self.db, self.config).resolve(payload)
             if account is None:
                 raise LiveChatAuthError("Invalid token")
+            if account.role != "admin":
+                raise LiveChatAuthError(
+                    "WebSocket chat is not available for this account"
+                )
             return account.resource_owner
         except jwt.ExpiredSignatureError as exc:
             raise LiveChatAuthError("Token expired") from exc
@@ -485,6 +489,20 @@ class LiveChatService:
                 )
                 return
 
+            owned = await self.db.get_platform_session_by_id(chat_session_id)
+            if owned is None or owned.creator != session.username:
+                await self.send_chat_payload(
+                    session,
+                    {
+                        "ct": "chat",
+                        "t": "error",
+                        "data": "Resource is unavailable",
+                        "code": "PERMISSION_DENIED",
+                    },
+                    send_json,
+                )
+                return
+
             request_id = await self.ensure_chat_subscription(
                 session, chat_session_id, send_json
             )
@@ -555,7 +573,11 @@ class LiveChatService:
             stream = await self.chat_service.build_chat_stream(
                 session.username,
                 {
-                    **message,
+                    **{
+                        key: value
+                        for key, value in message.items()
+                        if not key.startswith("_")
+                    },
                     "session_id": message.get("session_id") or session.session_id,
                     "_client_message_id": message_id,
                 },

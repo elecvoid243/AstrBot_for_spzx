@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
+import jwt
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -16,6 +18,14 @@ from astrbot.core.agent_teams.workflows import WorkflowService
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
 from astrbot.core.log import LogManager
+from astrbot.core.utils.webchat_access import (
+    DashboardPrincipal,
+    dashboard_account_context,
+    webchat_account_role,
+    webchat_resource_owner,
+)
+from astrbot.dashboard.access import require_account_operation, validate_account_request
+from astrbot.dashboard.plugin_page_auth import PluginPageAuth
 from astrbot.dashboard.responses import ApiError, error
 from astrbot.dashboard.services.agent_collab_service import AgentCollabService
 from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
@@ -64,6 +74,7 @@ from astrbot.dashboard.static_encoding import DashboardGZipMiddleware
 from .agent_collab import legacy_router as legacy_agent_collab_router
 from .agent_teams import legacy_router as legacy_agent_teams_router
 from .api_keys import legacy_router as legacy_api_keys_router
+from .auth import _extract_dashboard_jwt, _extract_raw_api_key
 from .auth import legacy_router as legacy_auth_router
 from .backups import legacy_router as legacy_backups_router
 from .bots import legacy_router as legacy_bots_router
@@ -363,6 +374,103 @@ def create_dashboard_asgi_app(
             error("Internal server error"),
             status_code=500,
         )
+
+    @app.middleware("http")
+    async def account_access(request: Request, call_next):
+        # Scope dependencies alone do not cover compatibility extensions and
+        # bearer download capabilities. Apply account admission before dispatch.
+        # Production middleware can authenticate the shared plugin bridge via
+        # its scoped asset token even when a stale Dashboard cookie is present.
+        # Do not re-authenticate that already verified administrator cookie.
+        owner_token = None
+        role_token = None
+        account_token = None
+        try:
+            public_auth = request.url.path in {
+                "/api/auth/login",
+                "/api/v1/auth/login",
+                "/api/auth/logout",
+                "/api/v1/auth/logout",
+                "/api/auth/setup-status",
+                "/api/v1/auth/setup-status",
+            }
+            if (
+                request.url.path.startswith("/api")
+                and not public_auth
+                and (raw_key := _extract_raw_api_key(request)) is not None
+            ):
+                # Explicit independent credentials take precedence over ambient
+                # Dashboard cookies, including invalid/expired cookies. Invalid
+                # keys must fail rather than fall back to the cookie identity.
+                from astrbot.dashboard.services.api_key_service import ApiKeyService
+
+                if not await db.get_active_api_key_by_hash(
+                    ApiKeyService.hash_key(raw_key)
+                ):
+                    raise ApiError("Invalid API key", status_code=401)
+                return await call_next(request)
+            cached_account = getattr(request.state, "dashboard_account", None)
+            if (
+                cached_account is not None
+                and cached_account.role == "admin"
+                and PluginPageAuth.is_protected_path(request.url.path)
+                and request.query_params.get("asset_token")
+            ):
+                return await call_next(request)
+            if (
+                request.url.path.startswith("/api")
+                and not public_auth
+                and (
+                    _extract_dashboard_jwt(request) or request.query_params.get("token")
+                )
+            ):
+                token = _extract_dashboard_jwt(request) or request.query_params.get(
+                    "token"
+                )
+                try:
+                    claims = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+                except jwt.InvalidTokenError as exc:
+                    # Independent API keys may use Bearer authentication.
+                    from astrbot.dashboard.services.api_key_service import ApiKeyService
+
+                    if not await db.get_active_api_key_by_hash(
+                        ApiKeyService.hash_key(token)
+                    ):
+                        raise ApiError("Invalid token", status_code=401) from exc
+                    claims = None
+                if claims is not None:
+                    if claims.get("token_type") is not None:
+                        raise ApiError("Invalid token", status_code=401)
+                    account = await services.auth.accounts.resolve(claims)
+                    if account is None:
+                        raise ApiError("Invalid token", status_code=401)
+                    request.state.dashboard_account = account
+                    require_account_operation(request, account)
+                    owner_token = webchat_resource_owner.set(account.resource_owner)
+                    role_token = webchat_account_role.set(account.role)
+                    account_token = dashboard_account_context.set(
+                        DashboardPrincipal(
+                            account_id=account.account_id,
+                            resource_owner=account.resource_owner,
+                            role=account.role,
+                            login_name=account.username,
+                        )
+                    )
+                    await validate_account_request(request, account)
+            return await call_next(request)
+        except json.JSONDecodeError:
+            return JSONResponse(error("Invalid JSON payload"), status_code=400)
+        except ApiError as exc:
+            return JSONResponse(error(exc.message), status_code=exc.status_code)
+        except PermissionError:
+            return JSONResponse(error("Resource is unavailable"), status_code=403)
+        finally:
+            if account_token is not None:
+                dashboard_account_context.reset(account_token)
+            if role_token is not None:
+                webchat_account_role.reset(role_token)
+            if owner_token is not None:
+                webchat_resource_owner.reset(owner_token)
 
     # Legacy dashboard routes keep old /api/* callers working without entering OpenAPI.
     app.include_router(legacy_api_keys_router)

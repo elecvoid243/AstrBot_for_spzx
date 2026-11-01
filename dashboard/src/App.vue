@@ -1,5 +1,5 @@
 <template>
-  <RouterView></RouterView>
+  <RouterView :key="accountSessionRevision"></RouterView>
   <WaitingForRestart ref="globalWaitingRef" />
   <UpgradeRecoveryDialog />
 
@@ -22,6 +22,7 @@
 
 <script setup>
 import { RouterView } from 'vue-router';
+import { accountSessionRevision } from '@/utils/accountSession';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useToastStore } from '@/stores/toast'
 import WaitingForRestart from '@/components/shared/WaitingForRestart.vue'

@@ -577,4 +577,4 @@ Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, *
 
 ## Skill Store
 
-In `Extensions → Skills`, click `Open Skill Store` to navigate to the store in the current browser tab. Its address follows the Core release API in `Settings → Update Sources`. This link replaces the previous inline store; see [steps and screenshot](./skills.md#skill-store).
+In `Extensions → Skills`, click `Open Skill Store` to open the store in a new browser tab. Its address follows the Core release API in `Settings → Update Sources`. This link replaces the previous inline store; see [steps and screenshot](./skills.md#skill-store).

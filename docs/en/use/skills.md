@@ -22,11 +22,11 @@ You can upload Skills with the following requirements:
 
 ## Skill Store
 
-In `Extensions → Skills`, click `Open Skill Store` to navigate to your update server's store in the current browser tab. This link appears only when the store is reachable; installed skill management and uploads remain available when it is offline.
+In `Extensions → Skills`, click `Open Skill Store` to open your update server's store in a new browser tab. This link appears only when the store is reachable; installed skill management and uploads remain available when it is offline.
 
 The URL follows the Core release API address in `Settings → Update Sources`: the sibling `skills` path replaces `releases`. For example, `http://127.0.0.1:11000/releases` resolves to `http://127.0.0.1:11000/skills`. Save a changed source and reopen Skills to probe the new address.
 
-Entry mapping: the previous `Extensions → Skills → Skill Store` inline page → the `Open Skill Store` link on the Skills page. After downloading a skill ZIP, use the browser's Back button to return to Skills and upload it for installation.
+Entry mapping: the previous `Extensions → Skills → Skill Store` inline page → the `Open Skill Store` link on the Skills page. After downloading a skill ZIP, switch back to AstrBot's Skills page and upload it for installation.
 
 ![Skill Store link](./images/skill-store-link.png)
 

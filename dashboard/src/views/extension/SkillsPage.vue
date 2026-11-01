@@ -32,6 +32,8 @@ onMounted(async () => {
     <v-btn
       v-if="storeUrl"
       :href="storeUrl"
+      target="_blank"
+      rel="noopener noreferrer"
       variant="tonal"
       append-icon="mdi-arrow-right"
       class="mb-4"

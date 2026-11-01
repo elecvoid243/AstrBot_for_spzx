@@ -2321,4 +2321,6 @@ export const accountApi = {
   current() { return typed<openApiV1.AccountInfo>(openApiV1.currentAccount()); },
   list() { return typed<openApiV1.AccountInfo[]>(openApiV1.listAccounts()); },
   create(payload: { username: string; password: string }) { return typed<openApiV1.AccountInfo>(openApiV1.createAccount({ body: payload })); },
+  resetPassword(accountId: string, password: string) { return typed<openApiV1.AccountInfo>(openApiV1.resetAccountPassword({ path: { account_id: accountId }, body: { password } })); },
+  disable(accountId: string) { return typed<openApiV1.AccountInfo>(openApiV1.disableAccount({ path: { account_id: accountId } })); },
 };

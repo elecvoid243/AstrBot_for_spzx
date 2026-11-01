@@ -21,6 +21,10 @@ export type AccountListResponse = {
     data: Array<AccountInfo>;
 };
 
+export type AccountPasswordResetRequest = {
+    password: string;
+};
+
 export type AccountResponse = {
     status: string;
     message?: (string) | null;
@@ -1470,6 +1474,27 @@ export type CreateAccountData = {
 export type CreateAccountResponse = (AccountResponse);
 
 export type CreateAccountError = (ErrorEnvelope);
+
+export type ResetAccountPasswordData = {
+    body: AccountPasswordResetRequest;
+    path: {
+        account_id: string;
+    };
+};
+
+export type ResetAccountPasswordResponse = (AccountResponse);
+
+export type ResetAccountPasswordError = (ErrorEnvelope);
+
+export type DisableAccountData = {
+    path: {
+        account_id: string;
+    };
+};
+
+export type DisableAccountResponse = (AccountResponse);
+
+export type DisableAccountError = (ErrorEnvelope);
 
 export type LoginData = {
     body: LoginRequest;

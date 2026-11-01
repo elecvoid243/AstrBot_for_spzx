@@ -64,6 +64,16 @@ On narrow screens, use the sidebar button at the top left of Chat to open your c
 
 Select **Log out** before switching accounts in the same browser. Conversation lists, unsent text drafts, and old requests are cleared or invalidated. Daily WebChat queries and operations enforce ownership for every account, including administrators. Administrators retain full backups and operational logs, so this feature does not promise confidentiality from trusted server maintainers.
 
+### Reset passwords and disable ordinary accounts
+
+As an administrator, open **Bot → Accounts**, find the ordinary account and select **Reset password**. Enter a new password that meets the displayed policy and confirm. The user must log in again with the new password; the old password and existing login credentials stop working immediately. Existing conversations stay with the same account. Resetting a password does not enable a disabled account.
+
+Select **Disable account** and review the target login name and consequences before confirming. The status becomes **Disabled**. The account cannot log in, and its old credentials cannot send messages, download protected resources or subscribe to chat streams again. Running tasks keep their existing lifecycle. Other users and the administrator remain unaffected. These controls manage ordinary accounts only; they do not change roles, disable administrators or re-enable accounts.
+
+![Administrator password reset and account disable controls](./images/multi-user-account-controls.png)
+
+When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Attachments and stream recovery remain unavailable to ordinary users at this stage. Revocation checks also protect these endpoints without opening those features.
+
 ## Open Agent file references
 
 In the main chat, click an explicit file link in an Agent reply to open the

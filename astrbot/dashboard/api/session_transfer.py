@@ -68,6 +68,8 @@ def _zip_response(export: SessionExport) -> FileResponse:
         export.path,
         media_type=export.mimetype,
         filename=export.filename,
+        # ChatUI consumes the authenticated response before creating its download.
+        content_disposition_type="inline",
         background=BackgroundTask(_delete_export_file, export.path),
     )
 
@@ -93,7 +95,7 @@ async def import_chat_sessions(
     service: SessionTransferService = Depends(get_service),
 ):
     upload = await single_upload(request, field_name="file")
-    return await _run(lambda: service.stage_import(upload))
+    return await _run(lambda: service.stage_import(upload, owner=_auth.username))
 
 
 @router.post("/chat/sessions/import/confirm")

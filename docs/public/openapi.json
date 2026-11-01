@@ -2517,6 +2517,7 @@
         ],
         "summary": "Export a ChatUI session as a zip package",
         "operationId": "exportChatSession",
+        "description": "Exports only the authenticated account's WebChat session and accessible packaged resources. Administrator chat access follows the same ownership rule. Returns an inline ZIP response with a filename for authenticated clients; ChatUI creates the download after receiving its bytes.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2540,8 +2541,7 @@
               }
             }
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/import": {
@@ -2551,6 +2551,7 @@
         ],
         "summary": "Upload a ChatUI session package and pre-check it",
         "operationId": "importChatSessions",
+        "description": "Stages a format-version-1 archive for the authenticated resource owner only. Preview identifiers are not transferable and expire after 30 minutes or a service restart.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -2566,8 +2567,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/import/confirm": {
@@ -2577,6 +2577,7 @@
         ],
         "summary": "Confirm a staged ChatUI session import",
         "operationId": "confirmImportChatSessions",
+        "description": "Consumes the uploader's preview once and creates new owned resource identifiers. Imported history is display data, never server file authority. Global routes, project membership, filesystem grants and remote agent identities are not restored.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -2592,8 +2593,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/stop": {

@@ -106,6 +106,7 @@ async def test_export_route_serves_zip_file(tmp_path):
     assert Path(response.path) == archive
     assert response.media_type == "application/zip"
     assert "pkg.zip" in response.headers["content-disposition"]
+    assert response.headers["content-disposition"].startswith("inline;")
     service.export_session.assert_awaited_once_with("alice", "sess-1")
 
 

@@ -157,6 +157,9 @@ USER_OPERATIONS = (
         "get_pending_choices",
         "submit_interactive_choice",
         "cancel_interactive_choice",
+        "export_chat_session",
+        "import_chat_sessions",
+        "confirm_import_chat_sessions",
     }
 )
 
@@ -204,6 +207,14 @@ async def validate_account_request(request: Request, account) -> None:
         ApiError: The caller supplies internal fields or an unavailable resource.
     """
     operation = getattr(request.state, "dashboard_operation", None)
+    if operation in {
+        "export_chat_session",
+        "import_chat_sessions",
+        "confirm_import_chat_sessions",
+    }:
+        # Archive multipart parsing and confirmation schemas belong to the route;
+        # the service binds all staged data and restored resources to its owner.
+        return
     if account.role != "admin" and operation in PROJECT_THREAD_OPERATIONS:
         fields, query_fields = PROJECT_THREAD_OPERATIONS[operation]
         if set(request.query_params) - query_fields:

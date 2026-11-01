@@ -2,6 +2,18 @@
 
 The AstrBot admin panel features plugin management, log viewing, visual configuration, statistics viewing, and more.
 
+## Save and restore your Chat sessions
+
+Use a session's **Export** action to download its ZIP archive, then use **Import sessions** in the Chat sidebar to upload, review and confirm it. The existing entries remain in the same places for administrators and ordinary accounts. Only the owner can export a session; knowing another account's session or import identifier does not grant access, including for an administrator using Chat.
+
+The preview belongs to the account that uploaded it and can be confirmed once within 30 minutes. Restarting the service expires previews. Switching accounts clears the upload preview and cancels pending browser requests and downloads. Upload again under the intended account to restore a local archive.
+
+Import creates new sessions, messages, attachments and side conversations owned by the signed-in account. Packaged quotes point to the restored messages. You can open the session, preview its attachments, select an administrator-provided profile and continue chatting. The existing version-1 format contains history, LLM context, attachments, side conversations and per-origin preferences. It does not contain project membership or global profile routes; select your profile again in ChatInput. A branch's origin outside the package is not reconnected to a live session.
+
+Review the import warnings: non-UMO preferences, filesystem custom roots and Dify, Coze, DashScope or DeerFlow remote conversation identities are ignored. Missing packaged attachments and quote targets outside their imported message stream are skipped. Imported file-change and terminal text remains visible, but it does not authorize reading or restoring server files. Exporting, reimporting or branching imported history preserves that restriction.
+
+![Import preview for a personal Chat session](/images/chat-multi-user-transfer-en.png)
+
 ## Navigation and Previous Entry Points
 
 These paths use the current default sidebar. If you customized it, open `Settings → Appearance → Customize Sidebar` at the bottom of the sidebar to review or reset the layout.
@@ -54,7 +66,7 @@ The existing single-account login remains the original administrator's entry poi
 
 ![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
 
-Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Ordinary accounts can also rename, star, archive, restore and delete their own sessions, use batch operations, search messages, and browse older history pages and message markers. Edit and continue the latest user turn or retry the latest reply. Quoted messages must belong to the same owned session. Existing owned attachments and the selected profile, model and thinking effort are retained when editing and retrying. Projects, branches and side chats are available as described below. ZIP import/export remains unavailable until its corresponding slice is enabled. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Ordinary accounts can also rename, star, archive, restore and delete their own sessions, use batch operations, search messages, and browse older history pages and message markers. Edit and continue the latest user turn or retry the latest reply. Quoted messages must belong to the same owned session. Existing owned attachments and the selected profile, model and thinking effort are retained when editing and retrying. Projects, branches and side chats are available as described below. ZIP archives can be saved and restored as described in [Save and restore your Chat sessions](#save-and-restore-your-chat-sessions). Administrators maintain shared configuration; ordinary users do not edit instance configuration.
 
 Use **Upload files** (the paperclip), drag files into Chat, or paste an image to send images, audio, video, and files. The microphone retains the existing recorded-audio upload flow. Large files retain chunk progress, retry, and cancellation. Preview or remove staged attachments before sending; reopen your history to preview media or select **Download** for uploaded and model-generated files. Legacy administrator attachments remain with the original administrator. Knowing another account's attachment ID, upload task, stored filename, or download token does not grant access, message reuse, or cleanup permission.
 

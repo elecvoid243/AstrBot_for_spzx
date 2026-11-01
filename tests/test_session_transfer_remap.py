@@ -13,7 +13,6 @@ from astrbot.dashboard.services.session_transfer_service import (
     is_safe_attachment_zip_path,
     new_umo,
     resolve_parent_message_id,
-    rewrite_attachment_refs,
 )
 
 
@@ -42,13 +41,13 @@ def test_new_umo_group_message():
     )
 
 
-def test_attachment_map_keeps_free_ids_and_reissues_taken_ones():
+def test_attachment_map_reissues_all_ids():
     mapping = build_attachment_id_map(
         ["a1", "a2"],
         existing_ids={"a2"},
         uuid_factory=_FixedUuid(),
     )
-    assert mapping == {"a1": "a1", "a2": "uuid-0001"}
+    assert mapping == {"a1": "uuid-0001", "a2": "uuid-0002"}
 
 
 def test_attachment_map_ignores_blank_and_duplicate_ids():
@@ -57,31 +56,7 @@ def test_attachment_map_ignores_blank_and_duplicate_ids():
         existing_ids=set(),
         uuid_factory=_FixedUuid(),
     )
-    assert mapping == {"a1": "a1"}
-
-
-def test_rewrite_attachment_refs_replaces_only_mapped_parts():
-    content = {
-        "type": "user",
-        "message": [
-            {"type": "plain", "text": "hi"},
-            {"type": "image", "attachment_id": "a1", "filename": "x.png"},
-            {"type": "file", "attachment_id": "keep", "filename": "y.zip"},
-        ],
-    }
-    rewritten = rewrite_attachment_refs(content, {"a1": "new1"})
-    assert rewritten["message"][0] == {"type": "plain", "text": "hi"}
-    assert rewritten["message"][1]["attachment_id"] == "new1"
-    assert rewritten["message"][1]["filename"] == "x.png"
-    assert rewritten["message"][2]["attachment_id"] == "keep"
-    # The caller's payload must not be mutated in place.
-    assert content["message"][1]["attachment_id"] == "a1"
-
-
-def test_rewrite_attachment_refs_tolerates_missing_parts():
-    assert rewrite_attachment_refs({}, {"a1": "new1"}) == {}
-    assert rewrite_attachment_refs({"message": "bad"}, {}) == {"message": "bad"}
-    assert rewrite_attachment_refs(None, {}) is None
+    assert mapping == {"a1": "uuid-0001"}
 
 
 def test_resolve_parent_message_id():

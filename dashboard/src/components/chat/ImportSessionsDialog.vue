@@ -6,6 +6,10 @@
 import { computed, ref, watch } from "vue";
 import { useModuleI18n } from "@/i18n/composables";
 import { chatApi } from "@/api/v1";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{
@@ -21,6 +25,8 @@ const selectedFileName = ref("");
 const preview = ref<any | null>(null);
 const result = ref<any | null>(null);
 const errorMessage = ref("");
+const accountRevision = accountSessionRevision.value;
+let operation = 0;
 
 const dialogVisible = computed({
   get: () => props.modelValue,
@@ -32,12 +38,18 @@ const canConfirm = computed(
 );
 
 function reset() {
+  operation += 1;
   stage.value = "idle";
   selectedFileName.value = "";
   preview.value = null;
   result.value = null;
   errorMessage.value = "";
 }
+
+watch(accountSessionRevision, () => {
+  reset();
+  dialogVisible.value = false;
+});
 
 watch(
   () => props.modelValue,
@@ -50,6 +62,8 @@ async function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file) return;
+  assertCurrentAccount(accountRevision);
+  const currentOperation = ++operation;
   selectedFileName.value = file.name;
   errorMessage.value = "";
   stage.value = "uploading";
@@ -57,9 +71,16 @@ async function onFileSelected(event: Event) {
   formData.append("file", file);
   try {
     const response = await chatApi.importSessions(formData);
+    assertCurrentAccount(accountRevision);
+    if (currentOperation !== operation) return;
     preview.value = response.data?.data ?? null;
     stage.value = "preview";
   } catch (error: any) {
+    if (
+      accountRevision !== accountSessionRevision.value ||
+      currentOperation !== operation
+    )
+      return;
     errorMessage.value =
       error?.response?.data?.message || tm("import.uploadFailed");
     stage.value = "idle";
@@ -70,10 +91,16 @@ async function onFileSelected(event: Event) {
 
 async function confirmImport() {
   if (!preview.value?.import_id) return;
+  assertCurrentAccount(accountRevision);
+  const currentOperation = ++operation;
   stage.value = "importing";
   errorMessage.value = "";
   try {
-    const response = await chatApi.confirmImportSessions(preview.value.import_id);
+    const response = await chatApi.confirmImportSessions(
+      preview.value.import_id,
+    );
+    assertCurrentAccount(accountRevision);
+    if (currentOperation !== operation) return;
     result.value = response.data?.data ?? null;
     stage.value = "done";
     const newIds = (result.value?.created || [])
@@ -81,6 +108,11 @@ async function confirmImport() {
       .filter(Boolean);
     emit("imported", newIds);
   } catch (error: any) {
+    if (
+      accountRevision !== accountSessionRevision.value ||
+      currentOperation !== operation
+    )
+      return;
     errorMessage.value =
       error?.response?.data?.message || tm("import.confirmFailed");
     stage.value = "preview";
@@ -96,7 +128,9 @@ async function confirmImport() {
       </v-card-title>
       <v-card-text class="pt-4">
         <div v-if="stage === 'idle' || stage === 'uploading'">
-          <p class="mb-4 text-medium-emphasis">{{ tm("import.description") }}</p>
+          <p class="mb-4 text-medium-emphasis">
+            {{ tm("import.description") }}
+          </p>
           <v-file-input
             accept=".zip,application/zip"
             :label="tm('import.selectFile')"
@@ -119,9 +153,17 @@ async function confirmImport() {
               </v-list-item-title>
               <v-list-item-subtitle>
                 {{ item.original_creator }} ·
-                {{ tm("import.messageCount", { count: item.stats?.messages ?? 0 }) }}
+                {{
+                  tm("import.messageCount", {
+                    count: item.stats?.messages ?? 0,
+                  })
+                }}
                 ·
-                {{ tm("import.attachmentCount", { count: item.stats?.attachments ?? 0 }) }}
+                {{
+                  tm("import.attachmentCount", {
+                    count: item.stats?.attachments ?? 0,
+                  })
+                }}
               </v-list-item-subtitle>
             </v-list-item>
           </v-list>

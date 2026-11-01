@@ -183,7 +183,7 @@ async def test_stage_import_rejects_wrong_kind():
     upload = _FakeUpload(build_package_bytes(kind="something-else").getvalue())
 
     with pytest.raises(SessionTransferError, match="Unsupported package"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ async def test_stage_import_rejects_unknown_format_version():
     upload = _FakeUpload(build_package_bytes(format_version=99).getvalue())
 
     with pytest.raises(SessionTransferError, match="format_version"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -211,7 +211,7 @@ async def test_stage_import_accepts_other_version_with_warning():
         ).getvalue()
     )
 
-    preview = await service.stage_import(upload)
+    preview = await service.stage_import(upload, owner="bob")
 
     assert preview["can_import"] is True
     assert preview["version_status"]["compatible"] is True
@@ -228,7 +228,7 @@ async def test_stage_import_warns_when_version_is_absent():
         build_package_bytes(astrbot_version="", sessions=[_EXPORTED_SESSION]).getvalue()
     )
 
-    preview = await service.stage_import(upload)
+    preview = await service.stage_import(upload, owner="bob")
 
     assert preview["can_import"] is True
     assert preview["version_status"]["package_version"] == ""
@@ -242,7 +242,7 @@ async def test_stage_import_rejects_oversized_upload():
     upload = _FakeUpload(b"x", content_length=1024 * 1024 * 1024)
 
     with pytest.raises(SessionTransferError, match="too large"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -252,7 +252,7 @@ async def test_stage_import_rejects_too_many_entries():
     upload = _FakeUpload(build_package_bytes(extra_entries=entries).getvalue())
 
     with pytest.raises(SessionTransferError, match="entries"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -274,7 +274,7 @@ async def test_stage_import_rejects_oversized_upload_without_content_length(
     upload.content_length = None
 
     with pytest.raises(SessionTransferError, match="too large"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -284,7 +284,7 @@ async def test_stage_import_rejects_corrupt_zip():
     upload = _FakeUpload(b"not a zip at all")
 
     with pytest.raises(SessionTransferError, match="not a valid zip"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -309,7 +309,7 @@ async def test_read_package_converts_escaped_archive_errors(tmp_path):
         service = _make_service()
         service.temp_dir = tmp_path / f"corrupt-{offset}"
         try:
-            await service.stage_import(_FakeUpload(bytes(corrupted)))
+            await service.stage_import(_FakeUpload(bytes(corrupted)), owner="bob")
         except SessionTransferError:
             saw_a_failure = True
             assert service.pending_imports == {}, f"pending leak at {offset}"
@@ -401,7 +401,7 @@ async def test_confirm_import_remaps_ids_and_ownership(tmp_path):
         sessions=_seed_export_sessions(),
         extra_entries=[("files/attachments/att-1.png", b"PNGDATA")],
     )
-    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    preview = await service.stage_import(_FakeUpload(package.getvalue()), owner="bob")
 
     added = []
     _install_fake_db(service, added)
@@ -424,7 +424,7 @@ async def test_confirm_import_remaps_ids_and_ownership(tmp_path):
     assert sessions[0].creator == "bob"
     assert sessions[0].session_id == created["new_session_id"]
     assert histories[0].user_id == created["new_session_id"]
-    assert histories[0].content["message"][0]["attachment_id"] == "att-1"
+    assert histories[0].content["message"][0]["attachment_id"] != "att-1"
     assert threads[0].parent_session_id == created["new_session_id"]
     assert threads[0].parent_message_id == histories[0].id
     # The staged zip is always cleaned up.
@@ -439,7 +439,7 @@ async def test_confirm_import_reissues_colliding_attachment_id(tmp_path):
         sessions=_seed_export_sessions(),
         extra_entries=[("files/attachments/att-1.png", b"PNGDATA")],
     )
-    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    preview = await service.stage_import(_FakeUpload(package.getvalue()), owner="bob")
 
     service.db.get_attachments = AsyncMock(
         return_value=[SimpleNamespace(attachment_id="att-1")]
@@ -470,7 +470,7 @@ async def test_confirm_import_drops_thread_without_parent(tmp_path):
     sessions[0]["history"] = []
     sessions[0]["threads"][0]["thread"]["parent_message_id"] = 11
     package = build_package_bytes(sessions=sessions)
-    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    preview = await service.stage_import(_FakeUpload(package.getvalue()), owner="bob")
 
     added = []
     _install_fake_db(service, added)
@@ -494,7 +494,7 @@ async def test_confirm_import_ignores_a_session_whose_commit_fails(tmp_path):
     service = _make_service()
     service.attachments_dir = tmp_path
     package = build_package_bytes(sessions=_seed_export_sessions())
-    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    preview = await service.stage_import(_FakeUpload(package.getvalue()), owner="bob")
 
     added = []
     _install_fake_db(service, added, fail_commit=True)
@@ -519,7 +519,7 @@ async def test_confirm_import_reports_a_non_dict_session_entry(tmp_path):
     service = _make_service()
     service.attachments_dir = tmp_path
     package = build_package_bytes(sessions=[_EXPORTED_SESSION, "not-a-dict"])
-    preview = await service.stage_import(_FakeUpload(package.getvalue()))
+    preview = await service.stage_import(_FakeUpload(package.getvalue()), owner="bob")
     assert preview["can_import"] is True
 
     added = []
@@ -543,7 +543,7 @@ async def test_stage_import_rejects_package_missing_required_entries():
     upload = _FakeUpload(buffer.getvalue())
 
     with pytest.raises(SessionTransferError, match="missing required entries"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 @pytest.mark.asyncio
@@ -567,7 +567,7 @@ async def test_stage_import_rejects_malformed_payload():
     upload = _FakeUpload(buffer.getvalue())
 
     with pytest.raises(SessionTransferError, match="payload is malformed"):
-        await service.stage_import(upload)
+        await service.stage_import(upload, owner="bob")
 
 
 # ---------------------------------------------------------------
@@ -638,7 +638,7 @@ async def test_stage_import_returns_preview_and_can_import():
     service = _make_service()
     upload = _FakeUpload(build_package_bytes(sessions=[_EXPORTED_SESSION]).getvalue())
 
-    preview = await service.stage_import(upload)
+    preview = await service.stage_import(upload, owner="bob")
 
     assert preview["can_import"] is True
     assert preview["import_id"] in service.pending_imports
@@ -658,7 +658,7 @@ async def test_stage_import_marks_empty_package_not_importable():
     service = _make_service()
     upload = _FakeUpload(build_package_bytes(sessions=[]).getvalue())
 
-    preview = await service.stage_import(upload)
+    preview = await service.stage_import(upload, owner="bob")
 
     assert preview["can_import"] is False
     assert preview["import_id"] in service.pending_imports
@@ -667,11 +667,13 @@ async def test_stage_import_marks_empty_package_not_importable():
 @pytest.mark.asyncio
 async def test_pending_import_expires():
     service = _make_service()
-    preview = await service.stage_import(_FakeUpload(build_package_bytes().getvalue()))
+    preview = await service.stage_import(
+        _FakeUpload(build_package_bytes().getvalue()), owner="bob"
+    )
     service.pending_imports[preview["import_id"]].created_at -= 99999
 
     with pytest.raises(SessionTransferError, match="expired"):
-        service._pending(preview["import_id"])
+        service._pending(preview["import_id"], "bob")
 
 
 @pytest.mark.asyncio
@@ -684,7 +686,7 @@ async def test_stage_import_sweeps_expired_pending_and_orphaned_zips():
     """
     service = _make_service()
     stale_preview = await service.stage_import(
-        _FakeUpload(build_package_bytes().getvalue())
+        _FakeUpload(build_package_bytes().getvalue()), owner="bob"
     )
     stale_id = stale_preview["import_id"]
     stale_path = service.pending_imports[stale_id].zip_path
@@ -695,7 +697,9 @@ async def test_stage_import_sweeps_expired_pending_and_orphaned_zips():
     aged = time.time() - IMPORT_ID_TTL_SECONDS - 60
     os.utime(orphan, (aged, aged))
 
-    preview = await service.stage_import(_FakeUpload(build_package_bytes().getvalue()))
+    preview = await service.stage_import(
+        _FakeUpload(build_package_bytes().getvalue()), owner="bob"
+    )
 
     assert stale_id not in service.pending_imports
     assert not stale_path.exists()
@@ -715,7 +719,7 @@ async def test_sweep_keeps_fresh_orphans_and_live_pending():
     """
     service = _make_service()
     live_preview = await service.stage_import(
-        _FakeUpload(build_package_bytes().getvalue())
+        _FakeUpload(build_package_bytes().getvalue()), owner="bob"
     )
     live_path = service.pending_imports[live_preview["import_id"]].zip_path
     aged = time.time() - IMPORT_ID_TTL_SECONDS - 60
@@ -723,7 +727,9 @@ async def test_sweep_keeps_fresh_orphans_and_live_pending():
     fresh_orphan = service.temp_dir / "session_import_fresh.zip"
     fresh_orphan.write_bytes(b"mid-write")
 
-    preview = await service.stage_import(_FakeUpload(build_package_bytes().getvalue()))
+    preview = await service.stage_import(
+        _FakeUpload(build_package_bytes().getvalue()), owner="bob"
+    )
 
     assert live_preview["import_id"] in service.pending_imports
     assert live_path.exists()

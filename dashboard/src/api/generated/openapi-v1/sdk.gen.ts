@@ -1043,6 +1043,7 @@ export const discardChatShellSession = <ThrowOnError extends boolean = false>(op
 
 /**
  * Export a ChatUI session as a zip package
+ * Exports only the authenticated account's WebChat session and accessible packaged resources. Administrator chat access follows the same ownership rule. Returns an inline ZIP response with a filename for authenticated clients; ChatUI creates the download after receiving its bytes.
  */
 export const exportChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ExportChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).get<ExportChatSessionResponse, ExportChatSessionError, ThrowOnError>({
@@ -1053,6 +1054,7 @@ export const exportChatSession = <ThrowOnError extends boolean = false>(options:
 
 /**
  * Upload a ChatUI session package and pre-check it
+ * Stages a format-version-1 archive for the authenticated resource owner only. Preview identifiers are not transferable and expire after 30 minutes or a service restart.
  */
 export const importChatSessions = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ImportChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).post<ImportChatSessionsResponse, ImportChatSessionsError, ThrowOnError>({
@@ -1068,6 +1070,7 @@ export const importChatSessions = <ThrowOnError extends boolean = false>(options
 
 /**
  * Confirm a staged ChatUI session import
+ * Consumes the uploader's preview once and creates new owned resource identifiers. Imported history is display data, never server file authority. Global routes, project membership, filesystem grants and remote agent identities are not restored.
  */
 export const confirmImportChatSessions = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ConfirmImportChatSessionsData, ThrowOnError>) => {
     return (options?.client ?? client).post<ConfirmImportChatSessionsResponse, ConfirmImportChatSessionsError, ThrowOnError>({

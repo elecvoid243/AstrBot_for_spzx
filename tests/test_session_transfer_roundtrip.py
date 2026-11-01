@@ -16,6 +16,7 @@ import pytest
 from astrbot.core.conversation_mgr import ConversationManager
 from astrbot.core.db.sqlite import SQLiteDatabase
 from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
+from astrbot.core.utils.webchat_access import webchat_resource_owner
 from astrbot.dashboard.services.session_transfer_service import (
     EXPORT_DATA_NAME,
     SessionTransferService,
@@ -58,9 +59,13 @@ async def _seed(tmp_path):
     )
     attachment_path = service.attachments_dir / "src-image.png"
     attachment_path.write_bytes(b"PNGDATA")
-    attachment = await db.insert_attachment(
-        path=str(attachment_path), type="image", mime_type="image/png"
-    )
+    token = webchat_resource_owner.set("alice")
+    try:
+        attachment = await db.insert_attachment(
+            path=str(attachment_path), type="image", mime_type="image/png"
+        )
+    finally:
+        webchat_resource_owner.reset(token)
 
     parent_history = await history_mgr.insert(
         platform_id="webchat",
@@ -173,7 +178,7 @@ async def test_export_import_round_trip_migrates_session_to_another_user(tmp_pat
     ) = await _seed(tmp_path)
 
     export = await service.export_session("alice", session.session_id)
-    preview = await service.stage_import(_Upload(export.path.read_bytes()))
+    preview = await service.stage_import(_Upload(export.path.read_bytes()), owner="bob")
     assert preview["can_import"] is True
 
     result = await service.confirm_import("bob", preview["import_id"])
@@ -348,7 +353,7 @@ async def test_import_skips_preferences_for_a_dropped_thread(tmp_path):
                 preference["value"] = {"val": thread_conversation_id}
 
     blob = _rewrite_export(export.path.read_bytes(), mutate)
-    preview = await service.stage_import(_Upload(blob))
+    preview = await service.stage_import(_Upload(blob), owner="bob")
     result = await service.confirm_import("bob", preview["import_id"])
 
     # Skipping the rows is what keeps the session importable at all.

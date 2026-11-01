@@ -1,4 +1,4 @@
-"""ChatUI session export/import (cross-user migration).
+"""Account-owned ChatUI session export and import.
 
 Author: elecvoid243
 Date: 2026-09-17
@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 import zipfile
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from astrbot.core.utils.astrbot_path import (
 )
 from astrbot.core.utils.datetime_utils import to_utc_isoformat
 from astrbot.core.utils.version_comparator import VersionComparator
+from astrbot.core.utils.webchat_access import dashboard_account_context
 from astrbot.dashboard.services.chat_service import extract_attachment_ids
 
 EXPORT_KIND = "astrbot-chatui-export"
@@ -88,7 +90,7 @@ def build_attachment_id_map(
     existing_ids: set[str],
     uuid_factory=uuid.uuid4,
 ) -> dict[str, str]:
-    """Map exported attachment IDs onto IDs that are free in the target DB.
+    """Issue fresh server IDs for every packaged attachment.
 
     Args:
         old_ids: Attachment IDs referenced by the export package.
@@ -96,40 +98,17 @@ def build_attachment_id_map(
         uuid_factory: Callable returning a fresh unique id; injectable for tests.
 
     Returns:
-        Mapping from exported ID to the ID to use on import. Exported IDs
-        that are still free are reused verbatim; colliding ones get a new id.
+        Mapping from exported IDs to fresh IDs, never package-controlled paths.
     """
     mapping: dict[str, str] = {}
     for old_id in old_ids:
         if not old_id or old_id in mapping:
             continue
-        mapping[old_id] = old_id if old_id not in existing_ids else str(uuid_factory())
+        candidate = str(uuid_factory())
+        while candidate in existing_ids or candidate in mapping.values():
+            candidate = str(uuid_factory())
+        mapping[old_id] = candidate
     return mapping
-
-
-def rewrite_attachment_refs(content: dict, id_map: dict[str, str]) -> dict:
-    """Replace ``attachment_id`` fields inside a history content payload.
-
-    Args:
-        content: Stored platform history content (``{"type", "message"}``).
-        id_map: Mapping from exported attachment ID to the imported one.
-
-    Returns:
-        A copy of ``content`` with mapped attachment IDs. The input is never
-        mutated. Non-dict content and payloads without a parts list pass
-        through unchanged.
-    """
-    if not isinstance(content, dict):
-        return content
-    parts = content.get("message")
-    if not isinstance(parts, list):
-        return content
-    rewritten: list = []
-    for part in parts:
-        if isinstance(part, dict) and part.get("attachment_id") in id_map:
-            part = {**part, "attachment_id": id_map[part["attachment_id"]]}
-        rewritten.append(part)
-    return {**content, "message": rewritten}
 
 
 def resolve_parent_message_id(old_id: int, id_map: dict[int, int]) -> int | None:
@@ -199,6 +178,8 @@ class _PendingImport:
     payload: dict
     preview: dict
     created_at: float
+    owner: str
+    confirming: bool = False
 
 
 class SessionTransferService:
@@ -244,7 +225,7 @@ class SessionTransferService:
         """Load a webchat session owned by ``username``.
 
         Args:
-            username: Authenticated dashboard user.
+            username: Trusted resource owner resolved by authentication.
             session_id: ChatUI session identifier.
 
         Returns:
@@ -278,7 +259,7 @@ class SessionTransferService:
         collected: list[dict] = []
         for row in rows:
             full = await self.db.get_conversation_by_id(row.conversation_id)
-            if full is not None:
+            if full is not None and full.user_id == umo:
                 collected.append(self._serialize_row(full))
         return collected
 
@@ -286,7 +267,7 @@ class SessionTransferService:
         """Package one ChatUI session into a zip export.
 
         Args:
-            username: Authenticated dashboard user; must own the session.
+            username: Trusted resource owner; must own the session.
             session_id: ChatUI session identifier.
 
         Returns:
@@ -324,6 +305,8 @@ class SessionTransferService:
         thread_attachment_ids: list[str] = []
         umos = [session_umo]
         for thread in threads:
+            if thread.creator != username or thread.parent_session_id != session_id:
+                raise SessionTransferError("Resource is unavailable")
             thread_umo = new_umo(
                 session.platform_id, 0, session.creator, thread.thread_id
             )
@@ -357,11 +340,17 @@ class SessionTransferService:
         attachments: list[dict] = []
         attachment_sources: dict[str, str] = {}
         seen_ids: set[str] = set()
+        owned_attachments = {
+            row.attachment_id: row
+            # The database applies the authenticated Dashboard owner context.
+            # Independent API keys retain their existing file-scope semantics.
+            for row in await self.db.get_attachments(all_attachment_ids)
+        }
         for attachment_id in all_attachment_ids:
             if attachment_id in seen_ids:
                 continue
             seen_ids.add(attachment_id)
-            attachment = await self.db.get_attachment_by_id(attachment_id)
+            attachment = owned_attachments.get(attachment_id)
             if attachment is None:
                 warnings.append(f"Attachment {attachment_id} metadata missing")
                 continue
@@ -654,7 +643,8 @@ class SessionTransferService:
         for import_id in [
             key
             for key, pending in self.pending_imports.items()
-            if time.monotonic() - pending.created_at > IMPORT_ID_TTL_SECONDS
+            if not pending.confirming
+            and time.monotonic() - pending.created_at > IMPORT_ID_TTL_SECONDS
         ]:
             self._drop_pending(import_id)
 
@@ -683,11 +673,12 @@ class SessionTransferService:
                     f"Failed to remove orphaned staged archive {path}: {exc!s}"
                 )
 
-    def _pending(self, import_id: str) -> _PendingImport:
+    def _pending(self, import_id: str, owner: str) -> _PendingImport:
         """Look up a staged import, enforcing the TTL.
 
         Args:
             import_id: Identifier returned by ``stage_import``.
+            owner: Trusted resource owner of the uploader.
 
         Returns:
             The staged import record.
@@ -696,7 +687,7 @@ class SessionTransferService:
             SessionTransferError: If the id is unknown or has expired.
         """
         pending = self.pending_imports.get(import_id)
-        if pending is None:
+        if pending is None or pending.owner != owner or pending.confirming:
             raise SessionTransferError("Import preview expired, please upload again")
         if time.monotonic() - pending.created_at > IMPORT_ID_TTL_SECONDS:
             self._drop_pending(import_id)
@@ -784,11 +775,12 @@ class SessionTransferService:
             raise SessionTransferError("Package payload is malformed")
         return manifest, payload
 
-    async def stage_import(self, upload) -> dict:
+    async def stage_import(self, upload, *, owner: str) -> dict:
         """Persist an uploaded package and return its pre-check preview.
 
         Args:
             upload: UploadFileAdapter carrying the export zip.
+            owner: Trusted resource owner from authentication.
 
         Returns:
             Preview dict with ``import_id``, per-session stats, the version
@@ -868,6 +860,7 @@ class SessionTransferService:
             payload=payload,
             preview=preview,
             created_at=time.monotonic(),
+            owner=owner,
         )
         return preview
 
@@ -902,7 +895,7 @@ class SessionTransferService:
         Args:
             dbsession: AsyncSession already inside a ``begin()`` block.
             entry: One element of ``export.json["sessions"]``.
-            username: Importing dashboard user; becomes the new creator.
+            username: Trusted importing resource owner; becomes the new creator.
             warnings: Mutable list collecting user-visible warnings.
             created_files: Mutable list receiving every file written to disk,
                 so the caller can delete them when the transaction fails.
@@ -937,20 +930,20 @@ class SessionTransferService:
         )
         dbsession.add(new_session)
 
-        # Attachments: reissue colliding ids, then write files and rows.
+        # Dashboard files use the trusted owner; API keys keep legacy NULL ownership.
+        principal = dashboard_account_context.get()
         exported_attachments = entry.get("attachments") or []
         old_attachment_ids = [
             item.get("attachment_id")
             for item in exported_attachments
             if item.get("attachment_id")
         ]
-        existing = await self.db.get_attachments(old_attachment_ids)
-        attachment_map = build_attachment_id_map(
-            old_attachment_ids, {row.attachment_id for row in existing}
-        )
+        attachment_ids = build_attachment_id_map(old_attachment_ids, set())
+        attachment_map = {}
+        self.attachments_dir.mkdir(parents=True, exist_ok=True)
         for item in exported_attachments:
             old_id = item.get("attachment_id")
-            new_id = attachment_map.get(old_id)
+            new_id = attachment_ids.get(old_id)
             if not new_id:
                 continue
             ext = item.get("ext") or ""
@@ -971,28 +964,34 @@ class SessionTransferService:
             if blob is None:
                 warnings.append(f"Attachment {old_id}: file missing in package")
                 continue
-            await asyncio.to_thread(target.write_bytes, blob)
+            # Exclusive creation cannot overwrite a pre-existing server file.
+            with target.open("xb") as destination:
+                created_files.append(target)
+                await asyncio.to_thread(destination.write, blob)
+            attachment_map[old_id] = new_id
             dbsession.add(
                 db_po.Attachment(
                     attachment_id=new_id,
                     path=str(target),
                     type=item.get("type") or "file",
                     mime_type=item.get("mime_type") or "application/octet-stream",
+                    owner=principal.resource_owner if principal is not None else None,
                 )
             )
-            created_files.append(target)
 
         # LLM conversations (session + threads share the same shape). The
         # exported id -> new id map matters beyond the conversation rows:
         # the runtime's `sel_conv_id` preference still points at the exported
         # id and must be rewritten with it.
         conversation_id_map: dict[str, str] = {}
+        conversation_origins: dict[str, str] = {}
         exported_conversation_ids: set[str] = set()
         for conversation in entry.get("conversations") or []:
             old_conversation_id = conversation.get("conversation_id")
             new_conversation_id = str(uuid.uuid4())
             if old_conversation_id:
                 conversation_id_map[old_conversation_id] = new_conversation_id
+                conversation_origins[old_conversation_id] = session_umo
                 exported_conversation_ids.add(old_conversation_id)
             dbsession.add(
                 db_po.ConversationV2(
@@ -1012,9 +1011,7 @@ class SessionTransferService:
             row = db_po.PlatformMessageHistory(
                 platform_id=WEBCHAT_PLATFORM_ID,
                 user_id=new_session_id,
-                content=rewrite_attachment_refs(
-                    record.get("content") or {}, attachment_map
-                ),
+                content=deepcopy(record.get("content") or {}),
                 sender_id=record.get("sender_id"),
                 sender_name=record.get("sender_name"),
                 llm_checkpoint_id=record.get("llm_checkpoint_id"),
@@ -1025,6 +1022,7 @@ class SessionTransferService:
         history_id_map = {
             old_id: row.id for old_id, row in history_rows if old_id is not None
         }
+        imported_streams = [(history_rows, history_id_map)]
 
         # Threads: drop the ones whose parent message was not imported.
         for thread_entry in entry.get("threads") or []:
@@ -1039,6 +1037,8 @@ class SessionTransferService:
             parent_id = resolve_parent_message_id(
                 thread_data.get("parent_message_id"), history_id_map
             )
+            if thread_data.get("parent_message_id") == 0:
+                parent_id = 0
             if parent_id is None:
                 warnings.append(
                     f"Thread {thread_data.get('thread_id')}: parent message missing"
@@ -1069,6 +1069,7 @@ class SessionTransferService:
                 new_conversation_id = str(uuid.uuid4())
                 if old_conversation_id:
                     conversation_id_map[old_conversation_id] = new_conversation_id
+                    conversation_origins[old_conversation_id] = thread_umo
                 dbsession.add(
                     db_po.ConversationV2(
                         conversation_id=new_conversation_id,
@@ -1080,19 +1081,87 @@ class SessionTransferService:
                         token_usage=int(conversation.get("token_usage") or 0),
                     )
                 )
+            thread_history = []
             for record in thread_entry.get("history") or []:
-                dbsession.add(
-                    db_po.PlatformMessageHistory(
-                        platform_id=THREAD_PLATFORM_ID,
-                        user_id=new_thread_id,
-                        content=rewrite_attachment_refs(
-                            record.get("content") or {}, attachment_map
-                        ),
-                        sender_id=record.get("sender_id"),
-                        sender_name=record.get("sender_name"),
-                        llm_checkpoint_id=record.get("llm_checkpoint_id"),
-                    )
+                row = db_po.PlatformMessageHistory(
+                    platform_id=THREAD_PLATFORM_ID,
+                    user_id=new_thread_id,
+                    content=deepcopy(record.get("content") or {}),
+                    sender_id=record.get("sender_id"),
+                    sender_name=record.get("sender_name"),
+                    llm_checkpoint_id=record.get("llm_checkpoint_id"),
                 )
+                dbsession.add(row)
+                thread_history.append((record.get("id"), row))
+            await dbsession.flush()
+            imported_streams.append(
+                (
+                    thread_history,
+                    {
+                        old_id: row.id
+                        for old_id, row in thread_history
+                        if old_id is not None
+                    },
+                )
+            )
+
+        # A quote may only name a message actually imported into this stream.
+        # Imported display metadata never supplies server file authority.
+        for rows, message_ids in imported_streams:
+            for _, row in rows:
+                content = deepcopy(row.content) if isinstance(row.content, dict) else {}
+                if content.get("type") == "branch_info":
+                    content.pop("source_session_id", None)
+                    content.pop("source_message_id", None)
+                    warnings.append(
+                        "Branch origin outside this session package was not restored"
+                    )
+                parts = []
+                for part in (
+                    content.get("message", [])
+                    if isinstance(content.get("message"), list)
+                    else []
+                ):
+                    if not isinstance(part, dict):
+                        parts.append(part)
+                        continue
+                    part = dict(part)
+                    if part.get("type") == "reply":
+                        try:
+                            quoted_id = int(part.get("message_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if quoted_id not in message_ids:
+                            warnings.append(
+                                "Reply target outside its imported stream was ignored"
+                            )
+                            continue
+                        part["message_id"] = message_ids[quoted_id]
+                    if "attachment_id" in part:
+                        if part["attachment_id"] not in attachment_map:
+                            warnings.append(
+                                "Attachment reference without a packaged file was ignored"
+                            )
+                            continue
+                        part["attachment_id"] = attachment_map[part["attachment_id"]]
+                        part.pop("stored_filename", None)
+                        part.pop("url", None)
+                        part.pop("path", None)
+                    parts.append(part)
+                if isinstance(content.get("message"), list):
+                    content["message"] = parts
+                changes = content.get("file_changes")
+                if isinstance(changes, dict) and isinstance(changes.get("files"), list):
+                    for file in changes["files"]:
+                        if isinstance(file, dict):
+                            for field in (
+                                "_canonical_path",
+                                "_recycle_entry",
+                                "_removed_sha256",
+                            ):
+                                file.pop(field, None)
+                content["_imported"] = True
+                row.content = content
 
         # Preferences follow their original scope into the new account.
         # The exporter collects rows for the session UMO *and* every thread
@@ -1102,6 +1171,19 @@ class SessionTransferService:
         # (scope, scope_id, key), rolling back the whole session.
         for preference in entry.get("preferences") or []:
             exported_scope_id = preference.get("scope_id") or ""
+            # These existing keys carry authority outside the new local UMO.
+            # Other ordinary per-chat preferences retain their current semantics.
+            if preference.get("scope", "umo") != "umo" or preference.get("key") in {
+                "fs_access_custom_roots",
+                "dify_conversation_id",
+                "coze_conversation_id",
+                "dashscope_conversation_id",
+                "deerflow_thread_id",
+            }:
+                warnings.append(
+                    f"Preference {preference.get('key')!r}: not portable chat state"
+                )
+                continue
             # A scope the import did not reissue belongs to an entity that was
             # dropped (e.g. a thread whose parent message was missing).
             # Re-homing its rows onto the session UMO would collide on
@@ -1114,9 +1196,13 @@ class SessionTransferService:
                 continue
             key = preference.get("key") or ""
             value = preference.get("value") or {}
+            target_umo = umo_map.get(exported_scope_id, session_umo)
             if isinstance(value, dict) and isinstance(value.get("val"), str):
                 pointed_conversation_id = value["val"]
-                if pointed_conversation_id in conversation_id_map:
+                if (
+                    pointed_conversation_id in conversation_id_map
+                    and conversation_origins[pointed_conversation_id] == target_umo
+                ):
                     value = {
                         **value,
                         "val": conversation_id_map[pointed_conversation_id],
@@ -1136,8 +1222,8 @@ class SessionTransferService:
                     continue
             dbsession.add(
                 db_po.Preference(
-                    scope=preference.get("scope") or "umo",
-                    scope_id=umo_map.get(exported_scope_id, session_umo),
+                    scope="umo",
+                    scope_id=target_umo,
                     key=key,
                     value=value,
                 )
@@ -1152,7 +1238,7 @@ class SessionTransferService:
         """Import every session of a staged package into ``username``'s account.
 
         Args:
-            username: Authenticated dashboard user receiving the sessions.
+            username: Trusted resource owner receiving the sessions.
             import_id: Identifier returned by ``stage_import``.
 
         Returns:
@@ -1163,7 +1249,9 @@ class SessionTransferService:
             SessionTransferError: If the staged package expired, is no longer
                 importable, or its files changed since pre-check.
         """
-        pending = self._pending(import_id)
+        pending = self._pending(import_id, username)
+        # Claim before the first await so simultaneous confirms cannot replay it.
+        pending.confirming = True
         if not pending.preview.get("can_import"):
             self._drop_pending(import_id)
             raise SessionTransferError("Package contains no importable sessions")

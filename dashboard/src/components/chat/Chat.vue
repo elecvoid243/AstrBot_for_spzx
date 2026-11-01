@@ -150,7 +150,6 @@
           <button
             type="button"
             class="sidebar-top-action-btn"
-            v-if="!isOrdinaryUser"
             :title="tm('import.entry')"
             @click="importDialogOpen = true"
           >
@@ -445,7 +444,6 @@
                actions (rename / export / archive / delete) above, and the two
                lightweight markers (star / unread) below the divider. -->
             <SessionExportButton
-              v-if="!isOrdinaryUser"
               :session-id="sessionContextMenu.session!.session_id"
               variant="menu-item"
               :size="16"
@@ -1280,7 +1278,6 @@
     @open="openArchivedSession"
   />
   <ImportSessionsDialog
-    v-if="!isOrdinaryUser"
     v-model="importDialogOpen"
     @imported="onSessionsImported"
   />
@@ -4034,7 +4031,9 @@ async function onArchivedDeleted(session?: ArchivedSession) {
  * imported session so the user lands on the migrated conversation.
  */
 async function onSessionsImported(newSessionIds: string[]) {
+  assertCurrentAccount(chatAccountRevision);
   await getSessions();
+  assertCurrentAccount(chatAccountRevision);
   const first = newSessionIds[0];
   if (first) {
     await selectSession(first);
@@ -4122,7 +4121,10 @@ async function exportErrorMessage(error: any): Promise<string | null> {
  */
 async function exportSidebarSession(sessionId: string) {
   try {
+    assertCurrentAccount(chatAccountRevision);
     const response = await chatApi.exportSession(sessionId);
+    assertCurrentAccount(chatAccountRevision);
+    if (!response.data?.size) throw new Error(tm("conversation.exportFailed"));
     const url = URL.createObjectURL(response.data);
     const link = document.createElement("a");
     link.href = url;
@@ -4137,10 +4139,11 @@ async function exportSidebarSession(sessionId: string) {
     window.URL.revokeObjectURL(url);
     toast.success(tm("conversation.exportSuccess"));
   } catch (error: any) {
+    if (chatAccountRevision !== accountSessionRevision.value) return;
+    const message = await exportErrorMessage(error);
+    if (chatAccountRevision !== accountSessionRevision.value) return;
     console.error("Failed to export session:", error);
-    toast.error(
-      (await exportErrorMessage(error)) || tm("conversation.exportFailed"),
-    );
+    toast.error(message || tm("conversation.exportFailed"));
   }
 }
 

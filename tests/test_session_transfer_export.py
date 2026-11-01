@@ -81,6 +81,24 @@ def _make_service(attachment_dir=None):
     db.get_conversations = AsyncMock(return_value=[])
     db.get_preferences = AsyncMock(return_value=[])
     db.get_attachment_by_id = AsyncMock(return_value=None)
+
+    async def owned_attachments(ids, *, owner=None):
+        """Model the authorized attachment batch returned by the database.
+
+        Args:
+            ids: IDs referenced by the test session's history.
+            owner: Resource owner supplied by the service.
+
+        Returns:
+            Existing attachment rows for the fixture's owned history.
+        """
+        return [
+            row
+            for aid in ids
+            if (row := await db.get_attachment_by_id(aid)) is not None
+        ]
+
+    db.get_attachments = AsyncMock(side_effect=owned_attachments)
     core_lifecycle = SimpleNamespace(
         conversation_manager=Mock(),
         platform_message_history_manager=Mock(),

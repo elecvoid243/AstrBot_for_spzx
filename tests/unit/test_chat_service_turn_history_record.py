@@ -214,3 +214,85 @@ async def test_boundary_preserves_a_previously_saved_choice_segment() -> None:
     ])
     assert [row["type"] for row in manager.rows.values()] == ["bot", "user", "bot"]
     assert manager.rows[1]["message"][0]["request_id"] == "r1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("followup_count", [1, 2])
+async def test_pending_tool_survives_followups_in_stream_snapshot_and_history(
+    followup_count: int,
+) -> None:
+    """Keep tool identity while boundaries arrive before its result."""
+    service = ChatService.__new__(ChatService)
+    manager = _FakeHistoryManager()
+    service.platform_history_mgr = manager
+    service.running_convs = {}
+    service.chat_runs_by_session = {"session-1": {RUN_ID}}
+    run = ChatRunState(
+        run_id=RUN_ID,
+        username="user",
+        session_id="session-1",
+        llm_checkpoint_id="ckpt-1",
+        platform_history_id="webchat",
+        back_queue=asyncio.Queue(),
+    )
+    service.chat_runs = {RUN_ID: run}
+    subscriber = asyncio.Queue()
+    run.subscribers.add(subscriber)
+    tool = {
+        "id": "python-1",
+        "name": "astrbot_execute_python",
+        "args": {"code": "import time; time.sleep(20)"},
+        "ts": 1,
+    }
+    run.back_queue.put_nowait(_think("Run the first program."))
+    run.back_queue.put_nowait({
+        **_text(json.dumps(tool)), "chain_type": "tool_call",
+    })
+    run.task = asyncio.create_task(service._consume_chat_run(run))
+    segments = []
+    try:
+        for index in range(followup_count):
+            completion = asyncio.get_running_loop().create_future()
+            run.back_queue.put_nowait({
+                "type": "_user_message_boundary", "completion": completion,
+                "history": {
+                    "platform_id": "webchat", "user_id": "session-1",
+                    "content": {"type": "user", "message": [{"type": "plain", "text": f"follow-up {index}"}]},
+                },
+            })
+            await asyncio.wait_for(completion, timeout=1)
+            while True:
+                _, payload = await asyncio.wait_for(subscriber.get(), timeout=1)
+                if payload["type"] == "message_segment":
+                    break
+            segments.append(payload)
+            expected = [{"type": "tool_call", "tool_calls": [tool]}]
+            assert payload["data"]["content"]["message"] == expected
+            [snapshot] = service.get_active_chat_runs("user", "session-1")
+            assert snapshot["content"]["message"] == expected
+
+        run.back_queue.put_nowait({
+            **_text(json.dumps({"id": "python-1", "result": "slept", "ts": 2})),
+            "chain_type": "tool_call_result",
+        })
+        second = {**tool, "id": "python-2", "args": {"code": "print('Hello world')"}, "ts": 3}
+        run.back_queue.put_nowait({**_text(json.dumps(second)), "chain_type": "tool_call"})
+        run.back_queue.put_nowait({
+            **_text(json.dumps({"id": "python-2", "result": "Hello world", "ts": 4})),
+            "chain_type": "tool_call_result",
+        })
+        run.back_queue.put_nowait({"type": "end", "message_id": RUN_ID})
+        await asyncio.wait_for(run.task, timeout=1)
+        calls = [
+            call for row in manager.rows.values() for part in row["message"]
+            for call in part.get("tool_calls", [])
+        ]
+        assert calls == [
+            {**tool, "result": "slept", "finished_ts": 2},
+            {**second, "result": "Hello world", "finished_ts": 4},
+        ]
+        assert all("result" not in segment["data"]["content"]["message"][0]["tool_calls"][0] for segment in segments)
+    finally:
+        if not run.task.done():
+            run.task.cancel()
+        await asyncio.gather(run.task, return_exceptions=True)

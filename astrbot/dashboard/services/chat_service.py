@@ -2157,11 +2157,17 @@ class ChatService:
                             collect_plain_text_from_message_parts(run.history_parts)
                         )
                         run.history_parts = []
-                        run.message_parts = []
                         run.segment_id = str(uuid.uuid4())
                         display_accumulator = BotMessageAccumulator(
                             filtered_tool_call_ids=suppressed_tool_call_ids,
                             pending_tool_calls=pending_accumulator.pending_tool_calls.copy(),
+                        )
+                        # The result event carries only an id and result. Keep
+                        # pending call metadata in both live and resume state.
+                        run.message_parts = _sanitize_ask_user_choice_tool_call_parts(
+                            deepcopy(display_accumulator).build_message_parts(
+                                include_pending_tool_calls=True
+                            )
                         )
                         self._publish_chat_run(
                             run,
@@ -2171,6 +2177,9 @@ class ChatService:
                                     "previous": previous,
                                     "segment_id": run.segment_id,
                                     "preceding_plain_text": run.preceding_plain_text,
+                                    "content": build_bot_history_content(
+                                        deepcopy(run.message_parts)
+                                    ),
                                     "user": serialize_history_entry(user),
                                     "client_message_id": result.get(
                                         "client_message_id"

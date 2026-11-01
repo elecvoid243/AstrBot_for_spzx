@@ -2011,12 +2011,10 @@ export function useMessages(options: UseMessagesOptions) {
       connection.precedingPlainText = String(data.preceding_plain_text || "");
       botRecord.id = `active-segment-${data.segment_id}`;
       botRecord.created_at = savedUser?.created_at || new Date().toISOString();
-      botRecord.content = {
-        type: "bot",
-        message: [],
-        reasoning: "",
-        isLoading: true,
-      };
+      botRecord.content = normalizeHistoryRecord({
+        content: data.content || { type: "bot", message: [] },
+      }).content;
+      botRecord.content.isLoading = botRecord.content.message.length === 0;
       const userIndex = boundaryUser
         ? records.indexOf(boundaryUser)
         : records.length - 1;

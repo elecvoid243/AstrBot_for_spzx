@@ -72,5 +72,5 @@
     "versionInfo": "将自动附带版本信息：{info}"
   },
   "pluginViewType": "插件可视化视图",
-  "accounts": "账户管理"
+  "accounts": "多用户管理"
 }

@@ -78,6 +78,8 @@ describe("shared ChatInput for ordinary accounts", () => {
       false,
     );
     expect(wrapper.find(".composer-toolbar__left").exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "ProviderModelMenu" }).exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "QuickMessagesChip" }).props("canEdit")).toBe(true);
     expect(profileList).not.toHaveBeenCalled();
     expect(routes).not.toHaveBeenCalled();
     expect(settings).toHaveBeenCalledTimes(1);

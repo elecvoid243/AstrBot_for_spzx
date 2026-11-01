@@ -188,6 +188,65 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /api/v1/accounts/{account_id}/enable:
+    post:
+      tags: [Accounts]
+      summary: Re-enable an ordinary account without restoring old login sessions
+      operationId: enableAccount
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: account_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Enabled ordinary account without credentials
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/accounts/{account_id}:
+    delete:
+      tags: [Accounts]
+      summary: Permanently delete an ordinary account and its owned Chat data
+      description: |
+        Administrator-only. Revokes access and cleans owned chats, attachments,
+        projects and account preferences before removing the account.
+        External host directories are not deleted. A failed cleanup leaves the
+        account disabled so the administrator can retry.
+      operationId: deleteAccount
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: path
+          name: account_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/system/announcement:
+    get:
+      tags: [Updates]
+      summary: Read the shared announcement as an authenticated Dashboard account
+      description: |
+        Available to administrator and ordinary Dashboard accounts. Existing
+        system API keys retain access. This grants no system management access.
+        The compatibility URL is GET /api/system/announcement.
+      operationId: getSystemAnnouncement
+      x-astrbot-scope: system
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /api/v1/auth/login:
     post:
       tags: [Auth]
@@ -2155,6 +2214,10 @@ paths:
         caller may rewrite the preset list (it requires the `config` scope).
         The value is the caller's saved selection, falling back to the
         administrator's default. It never exposes another account's selection.
+        Quick messages are private to the authenticated account; the existing
+        instance list supplies initial content until that account saves its own.
+        All chat accounts may edit their own quick messages. `can_edit` applies
+        only to the shared thinking-effort preset definitions.
       operationId: getChatUiSettings
       x-astrbot-scope: chat
       responses:
@@ -2209,13 +2272,13 @@ paths:
   /api/v1/chat/ui-settings/quick-messages:
     put:
       tags: [Chat]
-      summary: Replace the click-to-send phrase list
+      summary: Replace the authenticated account's click-to-send phrase list
       description: |
-        Persists `chatui.quick_messages` in `cmd_config.json`. Items carry no
-        title: the input row truncates long content and reveals it on hover.
+        Stores a private list for the authenticated account, including administrators.
+        Other accounts and the legacy instance defaults remain unchanged.
+        An empty list is persisted and does not revert to the defaults.
       operationId: updateChatUiQuickMessages
-      x-astrbot-scope: config
-      x-astrbot-sensitive-scopes: [config:edit_admin]
+      x-astrbot-scope: chat
       requestBody:
         required: true
         content:

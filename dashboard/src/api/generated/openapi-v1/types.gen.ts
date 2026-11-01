@@ -1571,6 +1571,30 @@ export type DisableAccountResponse = (AccountResponse);
 
 export type DisableAccountError = (ErrorEnvelope);
 
+export type EnableAccountData = {
+    path: {
+        account_id: string;
+    };
+};
+
+export type EnableAccountResponse = (AccountResponse);
+
+export type EnableAccountError = (ErrorEnvelope);
+
+export type DeleteAccountData = {
+    path: {
+        account_id: string;
+    };
+};
+
+export type DeleteAccountResponse = (SuccessEnvelope);
+
+export type DeleteAccountError = (ErrorEnvelope);
+
+export type GetSystemAnnouncementResponse = (SuccessEnvelope);
+
+export type GetSystemAnnouncementError = (ErrorEnvelope);
+
 export type LoginData = {
     body: LoginRequest;
 };

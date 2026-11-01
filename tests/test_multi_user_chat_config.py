@@ -257,7 +257,6 @@ async def test_binding_ownership_defaults_and_forgery_leave_no_mutations(
         ),
         ("GET", "/api/v1/config-profiles/default", None),
         ("PUT", "/api/v1/chat/ui-settings/presets", {"presets": []}),
-        ("PUT", "/api/v1/chat/ui-settings/quick-messages", {"items": []}),
     ):
         response = await client.request(method, target, headers=headers, json=payload)
         assert response.status_code == 403, (target, response.text)

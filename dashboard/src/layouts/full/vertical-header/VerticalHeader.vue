@@ -30,6 +30,7 @@ enableMermaid();
 const customizer = useCustomizerStore();
 const commonStore = useCommonStore();
 const authStore = useAuthStore();
+const isAdmin = computed(() => authStore.role === "admin");
 const chatHeader = useChatHeaderStore();
 const theme = useTheme();
 const { lgAndUp } = useDisplay();
@@ -936,15 +937,16 @@ function handleLogoClick() {
   }
 }
 
-getVersion();
-checkUpdate();
-initPasswordWarningFromStorage();
-
-commonStore.createEventSource(); // log
-commonStore.getStartTime();
+if (isAdmin.value) {
+  getVersion();
+  checkUpdate();
+  initPasswordWarningFromStorage();
+  commonStore.createEventSource();
+  commonStore.getStartTime();
+}
 
 onUnmounted(() => {
-  commonStore.closeEventSourcet();
+  if (isAdmin.value) commonStore.closeEventSourcet();
   stopUpdateProgressPolling();
   stopRestartPolling();
   stopRestartReloadTimer();
@@ -1077,6 +1079,7 @@ const changeLanguage = async (langCode: string) => {
 };
 
 onMounted(async () => {
+  if (!isAdmin.value) return;
   const runtimeInfo = await getDesktopRuntimeInfo();
   isDesktopReleaseMode.value = runtimeInfo.isDesktopRuntime;
   if (isDesktopReleaseMode.value) {
@@ -1273,7 +1276,7 @@ onMounted(async () => {
 
       <!-- Bot/Chat mode switch - single button, hidden in chat mobile menu -->
       <v-btn
-        v-if="!isChatPath || !$vuetify.display.smAndDown"
+        v-if="isAdmin && (!isChatPath || !$vuetify.display.smAndDown)"
         class="mode-switch-btn"
         :class="{ 'mr-4 hidden-xs': !isChatPath }"
         variant="text"
@@ -1288,7 +1291,25 @@ onMounted(async () => {
       </v-btn>
 
       <!-- 功能菜单 -->
-      <StyledMenu v-model="mainMenuOpen" offset="12" location="bottom end">
+      <div v-if="!isAdmin" class="chat-account-actions">
+        <span class="chat-account-name" :title="authStore.username">{{
+          authStore.username
+        }}</span>
+        <v-btn
+          variant="text"
+          size="small"
+          prepend-icon="mdi-logout"
+          @click="authStore.logout()"
+        >
+          {{ t("core.header.buttons.logout") }}
+        </v-btn>
+      </div>
+      <StyledMenu
+        v-if="isAdmin"
+        v-model="mainMenuOpen"
+        offset="12"
+        location="bottom end"
+      >
         <template v-slot:activator="{ props: activatorProps }">
           <v-btn
             v-bind="activatorProps"
@@ -2277,6 +2298,21 @@ onMounted(async () => {
 .chat-header-actions {
   gap: 4px;
   margin-right: 0;
+}
+
+.chat-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+}
+
+.chat-account-name {
+  max-width: clamp(48px, 12vw, 160px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
 }
 
 .workspace-files-trigger {

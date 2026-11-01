@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+
 import jwt
 from fastapi import APIRouter, WebSocket
 
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.utils.webchat_access import (
     DashboardPrincipal,
     dashboard_account_context,
@@ -47,6 +50,23 @@ async def _run_live_chat_ws(
     principal = DashboardPrincipal(
         account.account_id, account.resource_owner, account.role, account.username
     )
+    requests = None
+    task = asyncio.current_task()
+    if account.role == "user":
+        state = websocket.app.state
+        async with state.db.dashboard_account_lock:
+            async with state.db.get_db() as session:
+                current = await session.get(DashboardAccount, account.account_id)
+            if (
+                current is None
+                or not current.enabled
+                or current.token_version != account.token_version
+                or account.account_id in state.deleting_accounts
+            ):
+                await websocket.close(code=1008, reason="Account is unavailable")
+                return
+            requests = state.account_requests.setdefault(account.account_id, set())
+            requests.add(task)
     account_token = dashboard_account_context.set(principal)
     owner_token = webchat_resource_owner.set(principal.resource_owner)
     role_token = webchat_account_role.set(principal.role)
@@ -58,7 +78,15 @@ async def _run_live_chat_ws(
             send_json=websocket.send_json,
             close=websocket.close,
         )
+    except asyncio.CancelledError:
+        if account.account_id not in websocket.app.state.deleting_accounts:
+            raise
+        await websocket.close(code=1008, reason="Account deleted")
     finally:
+        if requests is not None:
+            requests.discard(task)
+            if not requests:
+                websocket.app.state.account_requests.pop(account.account_id, None)
         webchat_account_role.reset(role_token)
         webchat_resource_owner.reset(owner_token)
         dashboard_account_context.reset(account_token)

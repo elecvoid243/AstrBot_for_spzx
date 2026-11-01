@@ -118,7 +118,7 @@
     "quickMessageContent": "消息内容",
     "quickMessageContentRequired": "内容不能为空",
     "quickMessageContentTooLong": "内容过长（最多 2000 字符）",
-    "quickMessagesHint": "点击菜单里的消息会直接发送；内容过长时菜单中会截断显示。",
+    "quickMessagesHint": "快捷消息仅保存到你的账户，不影响其他用户。点击菜单里的消息会直接发送；长内容会截断显示。",
     "quickMessageMoveUp": "上移",
     "quickMessageMoveDown": "下移",
     "quickMessageDelete": "删除",

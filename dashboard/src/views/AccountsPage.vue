@@ -12,6 +12,7 @@ const saving = ref(false);
 const error = ref("");
 const formAccount = ref<AccountInfo | null>(null);
 const disableTarget = ref<AccountInfo | null>(null);
+const deleteTarget = ref<AccountInfo | null>(null);
 const notice = ref("");
 onMounted(async () => {
   try {
@@ -62,6 +63,43 @@ async function disableAccount() {
     saving.value = false;
   }
 }
+async function enableAccount(account: AccountInfo) {
+  saving.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    await accountApi.enable(account.account_id);
+    accounts.value = (await accountApi.list()).data.data;
+    notice.value = tm("accounts.accountEnabled");
+  } catch (reason: any) {
+    error.value = reason.response?.data?.message || String(reason);
+  } finally {
+    saving.value = false;
+  }
+}
+async function deleteAccount() {
+  if (!deleteTarget.value) return;
+  saving.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    await accountApi.delete(deleteTarget.value.account_id);
+    deleteTarget.value = null;
+    accounts.value = (await accountApi.list()).data.data;
+    notice.value = tm("accounts.accountDeleted");
+  } catch (reason: any) {
+    error.value = reason.response?.data?.message || String(reason);
+    // Failed cleanup leaves the login disabled, so refresh its status even
+    // while retaining the confirmation and server error for a safe retry.
+    try {
+      accounts.value = (await accountApi.list()).data.data;
+    } catch {
+      // Keep the original cleanup error visible if the refresh also fails.
+    }
+  } finally {
+    saving.value = false;
+  }
+}
 </script>
 <template>
   <v-card class="pa-6">
@@ -79,11 +117,12 @@ async function disableAccount() {
         >{{ tm("accounts.create") }}</v-btn
       >
     </div>
+    <p class="text-body-1 mb-4">{{ tm("accounts.description") }}</p>
     <v-alert v-if="notice" type="success" variant="tonal" class="mb-4">{{
       notice
     }}</v-alert>
     <v-alert
-      v-if="error && !dialog && !disableTarget"
+      v-if="error && !dialog && !disableTarget && !deleteTarget"
       type="error"
       variant="tonal"
       >{{ error }}</v-alert
@@ -118,15 +157,36 @@ async function disableAccount() {
               {{ tm("accounts.resetPassword") }}
             </v-btn>
             <v-btn
+              v-if="account.enabled"
               variant="text"
               color="error"
-              :disabled="saving || !account.enabled"
+              :disabled="saving"
               @click="
                 disableTarget = account;
                 error = '';
               "
             >
               {{ tm("accounts.disable") }}
+            </v-btn>
+            <v-btn
+              v-else
+              variant="text"
+              :disabled="saving"
+              @click="enableAccount(account)"
+            >
+              {{ tm("accounts.enable") }}
+            </v-btn>
+            <v-btn
+              variant="text"
+              color="error"
+              :disabled="saving"
+              @click="
+                deleteTarget = account;
+                error = '';
+                notice = '';
+              "
+            >
+              {{ tm("accounts.delete") }}
             </v-btn>
           </td>
         </tr>
@@ -194,6 +254,43 @@ async function disableAccount() {
             ></v-card-actions
           >
         </v-form>
+      </v-card>
+    </v-dialog>
+    <v-dialog
+      :model-value="!!deleteTarget"
+      max-width="560"
+      :persistent="saving"
+      @update:model-value="!$event && (deleteTarget = null)"
+    >
+      <v-card>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+          tm("accounts.delete")
+        }}</v-card-title>
+        <v-card-text>
+          <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{
+            error
+          }}</v-alert>
+          <p>
+            {{ deleteTarget?.username }}: {{ tm("accounts.deleteWarning") }}
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn
+            variant="text"
+            :disabled="saving"
+            @click="deleteTarget = null"
+            >{{ tm("accounts.cancel") }}</v-btn
+          >
+          <v-btn
+            variant="tonal"
+            color="error"
+            :loading="saving"
+            :disabled="saving"
+            @click="deleteAccount"
+            >{{ tm("accounts.delete") }}</v-btn
+          >
+        </v-card-actions>
       </v-card>
     </v-dialog>
     <v-dialog

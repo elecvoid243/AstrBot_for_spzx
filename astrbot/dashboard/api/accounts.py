@@ -1,5 +1,7 @@
 """Administrator-managed ordinary accounts; no registration or role assignment."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +13,7 @@ from astrbot.core.utils.auth_password import (
     validate_dashboard_password,
 )
 from astrbot.dashboard.responses import ApiError, ok
+from astrbot.dashboard.services.account_cleanup import delete_account_data
 
 from .auth import require_dashboard_user
 
@@ -132,6 +135,105 @@ async def disable_account(
                 session.add(account)
                 await session.commit()
     return ok(AccountInfo.model_validate(account, from_attributes=True).model_dump())
+
+
+@router.post("/accounts/{account_id}/enable", response_model=AccountResponse)
+async def enable_account(
+    account_id: str, request: Request, _owner: str = Depends(require_dashboard_user)
+):
+    """Enable an ordinary account without reviving previously revoked credentials.
+
+    Args:
+        account_id: Stable identity of the ordinary account.
+        request: Authenticated Dashboard request.
+        _owner: Current trusted caller's resource identity.
+
+    Returns:
+        Updated account information retaining the original resource identity.
+
+    Raises:
+        ApiError: Caller is not an administrator, target is protected, or deletion
+            is currently running.
+    """
+    if request.state.dashboard_account.role != "admin":
+        raise ApiError("Administrator permission required", status_code=403)
+    db = request.app.state.db
+    async with db.dashboard_account_lock:
+        if account_id in request.app.state.deleting_accounts:
+            raise ApiError("Account deletion is in progress", status_code=409)
+        async with db.get_db() as session:
+            account = await session.get(DashboardAccount, account_id)
+            if (
+                account is None
+                or account.role != "user"
+                or account_id == request.state.dashboard_account.account_id
+            ):
+                raise ApiError("Ordinary account not found", status_code=404)
+            if not account.enabled:
+                account.enabled = True
+                account.token_version += 1
+                session.add(account)
+                await session.commit()
+    return ok(AccountInfo.model_validate(account, from_attributes=True).model_dump())
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(
+    account_id: str, request: Request, _owner: str = Depends(require_dashboard_user)
+):
+    """Permanently remove an ordinary account and its owned ChatUI data.
+
+    Args:
+        account_id: Stable identity of the ordinary account.
+        request: Authenticated Dashboard request.
+        _owner: Current trusted caller's resource identity.
+
+    Returns:
+        Success only after cleanup and login deletion have completed.
+
+    Raises:
+        ApiError: Caller or target is protected, deletion is already running,
+            or cleanup failed and must be retried with the account disabled.
+    """
+    if request.state.dashboard_account.role != "admin":
+        raise ApiError("Administrator permission required", status_code=403)
+    state = request.app.state
+    async with state.db.dashboard_account_lock:
+        if account_id in state.deleting_accounts:
+            raise ApiError("Account deletion is in progress", status_code=409)
+        async with state.db.get_db() as session:
+            account = await session.get(DashboardAccount, account_id)
+            if (
+                account is None
+                or account.role != "user"
+                or account_id == request.state.dashboard_account.account_id
+            ):
+                raise ApiError("Ordinary account not found", status_code=404)
+            account.enabled = False
+            account.token_version += 1
+            session.add(account)
+            await session.commit()
+        state.deleting_accounts.add(account_id)
+    cleanup = asyncio.create_task(delete_account_data(request.app, account))
+    try:
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            # A disconnected administrator must not release the deletion guard
+            # while a filesystem worker or cancellation finalizer still runs.
+            await cleanup
+            raise
+    except Exception as exc:
+        from astrbot import logger
+
+        logger.error("Failed to delete ordinary account %s: %s", account_id, exc)
+        raise ApiError(
+            "Account cleanup failed. The account remains disabled; retry deletion.",
+            status_code=500,
+        ) from exc
+    finally:
+        state.deleting_accounts.discard(account_id)
+    return ok()
 
 
 @router.get(

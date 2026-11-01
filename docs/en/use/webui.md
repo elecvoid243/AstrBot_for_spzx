@@ -57,7 +57,7 @@ For first-time login, AstrBot generates a random initial password and prints it 
 
 ## Multiple accounts and basic chat
 
-The existing single-account login remains the original administrator's entry point. Administrators retain the **Bot / Chat** switch and can open **Accounts → Create account** in the Bot sidebar to set an ordinary user's unique login name and initial password. This creates an ordinary account; there is no registration, role assignment, or cross-account sharing.
+The existing single-account login remains the original administrator's entry point. Administrators retain the **Bot / Chat** switch and can open **Multi-user management → Create account** in the Bot sidebar to set an ordinary user's unique login name and initial password. This creates an ordinary account; there is no registration, role assignment, or cross-account sharing.
 
 | Previous entry point | Current entry point |
 | --- | --- |
@@ -141,13 +141,13 @@ Imported histories remain marked as imported, and native file-change authority i
 
 ![Administrator checks the actual full-restore result before restarting](/images/multi-user-full-restore-en.png)
 
-### Reset passwords and disable ordinary accounts
+### Manage ordinary accounts
 
-As an administrator, open **Bot → Accounts**, find the ordinary account and select **Reset password**. Enter a new password that meets the displayed policy and confirm. The user must log in again with the new password; the old password and existing login credentials stop working immediately. Existing conversations stay with the same account. Resetting a password does not enable a disabled account.
+As an administrator, open **Bot → Multi-user management**, find the ordinary account and select **Reset password**. Enter a new password that meets the displayed policy and confirm. The user must log in again with the new password; the old password and existing login credentials stop working immediately. Existing conversations stay with the same account. Resetting a password does not enable a disabled account.
 
-Select **Disable account** and review the target login name and consequences before confirming. The status becomes **Disabled**. The account cannot log in, and its old credentials cannot send messages, download protected resources or subscribe to chat streams again. Running tasks keep their existing lifecycle. Other users and the administrator remain unaffected. These controls manage ordinary accounts only; they do not change roles, disable administrators or re-enable accounts.
+Select **Disable account** and review the target login name and consequences before confirming. The status becomes **Disabled**. The account cannot log in, and its old credentials cannot send messages, download protected resources or subscribe to chat streams again. Running tasks keep their existing lifecycle. Select **Enable account** to restore access with a fresh login, or **Delete account** to permanently remove the account and its owned data after confirmation. These controls manage ordinary accounts only; they do not change roles or disable administrators.
 
-![Administrator password reset and account disable controls](./images/multi-user-account-controls.png)
+![Administrator controls in Multi-user management](./images/multi-user-accounts.png)
 
 When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Revoked credentials also lose access to protected attachments. Reconnecting a chat stream validates the current account and credential version.
 
@@ -155,16 +155,16 @@ When a subsequent request reports an invalid credential, the user interface ends
 
 Use the configuration chip beside the input to select a profile created by an administrator. The selection belongs to the current conversation, including the first message; choosing `Default Configuration` explicitly overrides broader routing rules. A new conversation starts with your last profile choice. Reopening a conversation restores its own saved binding.
 
-For profiles using the local agent runner, the existing model menu lets you choose an enabled, administrator-configured chat model. The thinking-effort menu selects an existing preset and a value; your saved preset and value belong to your account and each message carries its own choice. Existing quick messages remain available. These choices do not change shared configuration. Changing accounts resets live model selection and uses that account's remembered choices.
+For profiles using the local agent runner, the existing model menu lets you choose an enabled, administrator-configured chat model. The thinking-effort menu selects an existing preset and a value; your saved preset and value belong to your account and each message carries its own choice. Quick messages can be added, edited, reordered or deleted through Quick messages → Edit quick messages; changes affect only the current account. These choices do not change shared configuration. Changing accounts resets live model selection and uses that account's remembered choices.
 
 | Previous behavior | Current behavior |
 | --- | --- |
 | Configuration chip reads management configuration/routes | Same chip selects a profile through an owned-conversation API |
 | Thinking-effort selection changes the instance default | Selection is saved for the signed-in account; administrators separately edit shared preset definitions |
 
-Only administrators can create or edit profiles, providers, model definitions, thinking-effort presets, and quick-message definitions. Ordinary users see consumption controls without configuration editing, provider connection tests, or management pages. Profile metadata contains only its ID, name and runner type; model choices omit credentials and server endpoints.
+Only administrators can create or edit profiles, providers, model definitions, and thinking-effort presets. Each account edits and saves its own quick messages. Ordinary users see consumption controls without configuration editing, provider connection tests, or management pages. Profile metadata contains only its ID, name and runner type; model choices omit credentials and server endpoints.
 
-![An ordinary account selects a profile, model and thinking effort](./images/chat-profile-selection.png)
+![An ordinary account selects a profile, model and thinking effort](./images/chat-account-header.png)
 
 ### Consume tools and their results in your own chat
 
@@ -582,3 +582,31 @@ Workspace entry mapping: **Workflow Assets → Assets → Teams / Workflows**, *
 ## Skill Store
 
 In `Extensions → Skills`, click `Open Skill Store` to open the store in a new browser tab. Its address follows the Core release API in `Settings → Update Sources`. This link replaces the previous inline store; see [steps and screenshot](./skills.md#skill-store).
+
+
+## Header and personal quick messages
+
+Ordinary accounts use the same header model selector as administrators. Their username and **Log out** appear at the top right, where administrators retain the **Bot** button. All signed-in accounts can read the announcement bar and reopen it using the header announcement button after collapsing it.
+
+| Previous entry | Current entry |
+| --- | --- |
+| Ordinary account model selector in the composer | Model selector in the chat header |
+| Identity and logout beside View archives | Username and Log out at the top right |
+| Administrator-only quick-message presets | Quick messages → Edit quick messages, saved per account |
+| Accounts | Multi-user management |
+
+Existing presets supply initial content until an account saves its own list. Administrators and ordinary users then have separate lists; editing one does not overwrite another. Deleting every phrase preserves an empty list. The server stores the list across logins. Shared thinking-effort preset editing remains administrator-only.
+
+![Ordinary account header, announcement and account controls](./images/chat-account-header.png)
+
+**Multi-user management** serves a single-instance, multi-user setup: separate accounts access the same AstrBot program through ChatUI with their own conversations. Administrators can re-enable disabled ordinary accounts; users must sign in again and their earlier credentials remain revoked.
+
+Deleting an account requires confirmation and permanently removes its chats and associated data, including history, attachments, project associations, personal settings and managed workspaces. Other accounts and the administrator remain intact. External host directories linked by users are not managed Chat data and are not recursively deleted. Recreating the same login creates a fresh identity without inheriting old data.
+
+![Personal quick-message editor](./images/chat-personal-quick-messages.png)
+
+![Confirmation before permanently deleting an account and its owned data](./images/multi-user-delete-confirmation.png)
+
+The mobile header also provides the model selector and account controls:
+
+![Ordinary account header on mobile](./images/chat-account-header-mobile.png)

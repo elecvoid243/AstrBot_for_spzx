@@ -4,16 +4,6 @@
     class="chat-ui"
     :class="{ 'is-dark': isDark, 'sidebar-collapsed': isSidebarCollapsed }"
   >
-    <v-btn
-      v-if="isOrdinaryUser && !lgAndUp && !customizer.chatSidebarOpen"
-      class="member-mobile-sidebar-toggle"
-      icon
-      variant="text"
-      aria-label="Toggle sidebar"
-      @click="customizer.TOGGLE_CHAT_SIDEBAR()"
-    >
-      <PanelLeft :size="20" />
-    </v-btn>
     <!-- 2026-07-21 chatui sidebar resize (elecvoid243): replaced the
          Vuetify v-navigation-drawer with a custom <aside> so the user
          can drag the right edge to resize. Mobile still behaves as a
@@ -529,17 +519,6 @@
       </div>
 
       <div class="sidebar-footer">
-        <span v-if="isOrdinaryUser" class="text-caption px-3">{{
-          auth.username
-        }}</span>
-        <v-btn
-          v-if="isOrdinaryUser"
-          variant="text"
-          prepend-icon="mdi-logout"
-          @click="auth.logout()"
-        >
-          {{ accountText("accounts.logout") }}
-        </v-btn>
         <button
           type="button"
           class="archive-toggle-btn"
@@ -1308,7 +1287,6 @@ import {
 const chatAccountRevision = accountSessionRevision.value;
 const auth = useAuthStore();
 const isOrdinaryUser = computed(() => auth.role === "user");
-const { tm: accountText } = useModuleI18n("features/auth");
 const chatError = ref("");
 import { isAxiosError } from "axios";
 import {
@@ -6996,13 +6974,6 @@ function toggleTheme() {
   background: rgba(0, 0, 0, 0.42);
   z-index: 1099;
   animation: chat-sidebar-fade-in 0.18s ease;
-}
-
-.member-mobile-sidebar-toggle {
-  position: fixed;
-  top: 8px;
-  left: 8px;
-  z-index: 12;
 }
 
 .chat-sidebar.is-mobile-drawer {

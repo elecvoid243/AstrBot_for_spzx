@@ -276,9 +276,13 @@ async def _get_announcement(service: UpdateService) -> JSONResponse:
 
 @router.get("/system/announcement")
 async def get_system_announcement(
-    _auth: AuthContext = Depends(require_system_scope),
+    request: Request,
     service: UpdateService = Depends(get_service),
 ):
+    account = getattr(request.state, "dashboard_account", None)
+    await require_scope(
+        request, "chat" if account and account.role == "user" else "system"
+    )
     return await _get_announcement(service)
 
 

@@ -54,7 +54,6 @@ function createAnnouncementState(): AnnouncementState {
   const collapsed = ref(false);
 
   async function load(): Promise<void> {
-    if (localStorage.getItem("role") === "user") { data.value = null; return; }
     loading.value = true;
     error.value = null;
     try {

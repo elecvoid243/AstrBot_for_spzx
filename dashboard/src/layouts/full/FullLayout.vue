@@ -49,7 +49,7 @@ const showSidebar = computed(() => auth.role === "admin" && !isCurrentChatRoute.
 // reserves its own 50px), so the 36px the layout system pushes down must
 // be re-applied explicitly to keep the chat sidebar/content below the bar.
 const { data: announcementData, collapsed: announcementCollapsed } =
-  auth.role === "admin" ? useAnnouncement() : { data: ref(null), collapsed: ref(true) };
+  useAnnouncement();
 const announcementActive = computed(
   () => !!announcementData.value && !announcementCollapsed.value,
 );
@@ -130,7 +130,7 @@ onMounted(() => {
         top
         style="z-index: 9999; position: absolute; opacity: 0.3"
       />
-      <VerticalHeaderVue v-if="auth.role === 'admin'" />
+      <VerticalHeaderVue />
       <VerticalSidebarVue v-if="showSidebar" />
       <v-main
         :class="{
@@ -146,7 +146,7 @@ onMounted(() => {
              布局项 (order=-1), 固定在视口最顶端并把 v-app-bar 下推; bot 页面
              的 drawer / v-main padding 由布局系统自动让位, chat 页面的额外
              36px padding 由下方 chat-main-announcement 类补齐. -->
-        <AnnouncementBar v-if="auth.role === 'admin'" />
+        <AnnouncementBar />
         <v-container
           fluid
           class="page-wrapper"

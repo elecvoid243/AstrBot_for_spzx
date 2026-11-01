@@ -307,6 +307,7 @@ class ChatUiQuickMessagesRequest(OpenModel):
     Validated in the service layer so rejections carry a precise message.
     """
 
+    model_config = ConfigDict(extra="forbid")
     items: list[Any] = Field(default_factory=list)
 
 

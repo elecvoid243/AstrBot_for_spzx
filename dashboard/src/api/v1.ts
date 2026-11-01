@@ -2355,4 +2355,6 @@ export const accountApi = {
   create(payload: { username: string; password: string }) { return typed<openApiV1.AccountInfo>(openApiV1.createAccount({ body: payload })); },
   resetPassword(accountId: string, password: string) { return typed<openApiV1.AccountInfo>(openApiV1.resetAccountPassword({ path: { account_id: accountId }, body: { password } })); },
   disable(accountId: string) { return typed<openApiV1.AccountInfo>(openApiV1.disableAccount({ path: { account_id: accountId } })); },
+  enable(accountId: string) { return typed<openApiV1.AccountInfo>(openApiV1.enableAccount({ path: { account_id: accountId } })); },
+  delete(accountId: string) { return typed<OpenConfig>(openApiV1.deleteAccount({ path: { account_id: accountId } })); },
 };

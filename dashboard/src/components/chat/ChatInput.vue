@@ -622,7 +622,6 @@
             <!-- Config profile quick-switch capsule: its label is the live
                  current config profile; switching is one click. -->
             <ConfigSelector variant="chip" />
-            <ProviderModelMenu v-if="isOrdinaryUser && providerSelectorAvailable" />
             <!-- Thinking effort capsule: renders the active preset (a level
                  list or a free numeric track). Presets live in
                  cmd_config.json; only config editors may rewrite them. -->
@@ -638,11 +637,10 @@
               :can-edit="chatUiCanEdit"
               @edit="effortLevelsDialogOpen = true"
             />
-            <!-- Click-to-send phrases. Same config section as the effort
-                 presets, same edit permission, same chip rhythm. -->
+            <!-- Click-to-send phrases are editable by their account owner. -->
             <QuickMessagesChip
               :items="quickMessageItems"
-              :can-edit="chatUiCanEdit"
+              :can-edit="true"
               @send="handleQuickMessageSend"
               @edit="quickMessagesDialogOpen = true"
             />
@@ -862,7 +860,6 @@ import { useCustomizerStore } from "@/stores/customizer";
 import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import type { PendingFollowUp } from "@/composables/usePendingFollowUps";
 import { isComposingEnter } from "@/utils/imeInput.mjs";
-import ProviderModelMenu from "@/components/chat/ProviderModelMenu.vue";
 import { buildWebchatUmoDetails } from "@/utils/chatConfigBinding";
 import { useAuthStore } from "@/stores/auth";
 import { chatApi, commandApi } from "@/api/v1";

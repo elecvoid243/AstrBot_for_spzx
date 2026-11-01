@@ -27,6 +27,7 @@ from astrbot.core.utils.webchat_access import (
 from astrbot.dashboard.access import require_account_operation, validate_account_request
 from astrbot.dashboard.plugin_page_auth import PluginPageAuth
 from astrbot.dashboard.responses import ApiError, error
+from astrbot.dashboard.services.account_cleanup import AccountRequestMiddleware
 from astrbot.dashboard.services.agent_collab_service import AgentCollabService
 from astrbot.dashboard.services.agent_team_run_service import AgentTeamRunService
 from astrbot.dashboard.services.agent_team_service import AgentTeamService
@@ -192,6 +193,11 @@ def create_dashboard_asgi_app(
     app.add_middleware(DashboardGZipMiddleware, minimum_size=1024)
     app.state.core_lifecycle = core_lifecycle
     app.state.db = db
+    app.state.account_requests = {}
+    app.state.deleting_accounts = set()
+    # Keep tracking inside account admission so complete streamed responses and
+    # endpoint cancellation cleanup remain visible to account deletion.
+    app.add_middleware(AccountRequestMiddleware, dashboard=app)
     app.state.jwt_secret = jwt_secret
     app.state.dashboard_static_folder = static_folder
     log_broker = getattr(core_lifecycle, "log_broker", None) or LogBroker()

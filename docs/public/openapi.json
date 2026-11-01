@@ -3063,7 +3063,7 @@
           "Chat"
         ],
         "summary": "Get the ChatUI thinking-effort presets and the caller's edit permission",
-        "description": "Returns the presets persisted under `chatui.thinking_effort` in\n`cmd_config.json` plus `can_edit`, which tells the frontend whether the\ncaller may rewrite the preset list (it requires the `config` scope).\nThe value is the caller's saved selection, falling back to the\nadministrator's default. It never exposes another account's selection.\n\n**Required scope:** `chat`",
+        "description": "Returns the presets persisted under `chatui.thinking_effort` in\n`cmd_config.json` plus `can_edit`, which tells the frontend whether the\ncaller may rewrite the preset list (it requires the `config` scope).\nThe value is the caller's saved selection, falling back to the\nadministrator's default. It never exposes another account's selection.\nQuick messages are private to the authenticated account; the existing\ninstance list supplies initial content until that account saves its own.\nAll chat accounts may edit their own quick messages. `can_edit` applies\nonly to the shared thinking-effort preset definitions.\n\n**Required scope:** `chat`",
         "operationId": "getChatUiSettings",
         "x-astrbot-scope": "chat",
         "responses": {
@@ -3147,13 +3147,10 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Replace the click-to-send phrase list",
-        "description": "Persists `chatui.quick_messages` in `cmd_config.json`. Items carry no\ntitle: the input row truncates long content and reveals it on hover.\n\n**Required scope:** `config`\n\n**Conditional sensitive scope:** `config:edit_admin`",
+        "summary": "Replace the authenticated account's click-to-send phrase list",
+        "description": "Stores a private list for the authenticated account, including administrators.\nOther accounts and the legacy instance defaults remain unchanged.\nAn empty list is persisted and does not revert to the defaults.\n\n**Required scope:** `chat`",
         "operationId": "updateChatUiQuickMessages",
-        "x-astrbot-scope": "config",
-        "x-astrbot-sensitive-scopes": [
-          "config:edit_admin"
-        ],
+        "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
           "content": {

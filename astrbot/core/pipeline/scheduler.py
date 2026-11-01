@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from typing import cast
 
 from astrbot.core import logger
+from astrbot.core.db.po import DashboardAccount
 from astrbot.core.platform import AstrMessageEvent
 from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.platform.sources.wecom_ai_bot.wecomai_event import (
@@ -109,6 +110,25 @@ class PipelineScheduler:
             or account.resource_owner != event.get_sender_id()
         ):
             account = None
+        if account is not None and account.role == "user":
+            # A turn may have waited in the platform/event queue while its
+            # account was disabled or deleted. Register under the same lock as
+            # revocation so deletion either sees this execution or rejects it.
+            from astrbot.core import db_helper
+
+            db = self.ctx.db_helper or db_helper
+            async with db.dashboard_account_lock:
+                async with db.get_db() as session:
+                    current = await session.get(DashboardAccount, account.account_id)
+                if (
+                    current is None
+                    or not current.enabled
+                    or current.resource_owner != account.resource_owner
+                ):
+                    event.stop_event()
+                    event.cleanup_temporary_local_files()
+                    return
+                active_event_registry.register(event)
         account_token = dashboard_account_context.set(account)
         owner_token = webchat_resource_owner.set(
             account.resource_owner if account else None

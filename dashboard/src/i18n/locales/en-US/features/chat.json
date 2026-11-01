@@ -118,7 +118,7 @@
     "quickMessageContent": "Message content",
     "quickMessageContentRequired": "Content is required",
     "quickMessageContentTooLong": "Content is too long (2000 characters max)",
-    "quickMessagesHint": "Clicking a message in the menu sends it right away; long text is truncated in the menu.",
+    "quickMessagesHint": "Quick messages are saved only to your account. Clicking one sends it immediately; long text is truncated in the menu.",
     "quickMessageMoveUp": "Move up",
     "quickMessageMoveDown": "Move down",
     "quickMessageDelete": "Delete",

@@ -59,7 +59,11 @@ from astrbot.dashboard.services.chat_service import (
     ChatService,
     ChatServiceError,
 )
-from astrbot.dashboard.services.chatui_settings import normalize_thinking_effort_value
+from astrbot.dashboard.services.chatui_settings import (
+    normalize_quick_messages,
+    normalize_thinking_effort_value,
+    validate_quick_messages,
+)
 
 from .auth import AuthContext, ScopeDependency, require_dashboard_user
 from .multipart import single_upload
@@ -1067,6 +1071,13 @@ async def chat_ui_settings(
         "quick_messages": service.get_chatui_quick_messages(),
         "can_edit": bool(set(auth.scopes or ()) & {"*", "config"}),
     }
+    quick_messages = await request.app.state.db.get_preference(
+        "dashboard_account", auth.account_id or auth.username, "quick_messages"
+    )
+    if quick_messages is not None:
+        settings["quick_messages"] = normalize_quick_messages(
+            quick_messages.value["val"]
+        )
     preference = await request.app.state.db.get_preference(
         "dashboard_account", auth.account_id or auth.username, "thinking_effort"
     )
@@ -1142,18 +1153,24 @@ async def update_chat_ui_effort_presets(
     )
 
 
-@router.put(
-    "/chat/ui-settings/quick-messages",
-    openapi_extra={"x-astrbot-sensitive-scopes": [CONFIG_EDIT_ADMIN_SCOPE]},
-)
+@router.put("/chat/ui-settings/quick-messages")
 async def update_chat_ui_quick_messages(
     payload: ChatUiQuickMessagesRequest,
     request: Request,
-    _auth: AuthContext = Depends(require_config_scope),
+    auth: AuthContext = Depends(require_chat_scope),
 ):
-    """Replace the click-to-send phrase list as one unit."""
-    service = get_service(request)
-    return await _run(lambda: service.replace_chatui_quick_messages(payload.items))
+    """Replace only the authenticated account's click-to-send phrase list."""
+    try:
+        settings = {"items": validate_quick_messages(payload.items)}
+    except ValueError as exc:
+        raise ApiError(str(exc), status_code=400) from exc
+    await request.app.state.db.insert_preference_or_update(
+        "dashboard_account",
+        auth.account_id or auth.username,
+        "quick_messages",
+        {"val": settings},
+    )
+    return ok(settings)
 
 
 @router.post("/chat/threads")

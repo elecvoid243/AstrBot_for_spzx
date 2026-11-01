@@ -108,7 +108,6 @@ outline: deep
 | --- | --- | --- |
 | `POST` | `/api/v1/bot-types/{bot_type}/registration` | — |
 | `PUT` | `/api/v1/chat/ui-settings/presets` | `config:edit_admin` |
-| `PUT` | `/api/v1/chat/ui-settings/quick-messages` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles` | — |
 | `POST` | `/api/v1/config-profiles` | `config:edit_admin` |
 | `GET` | `/api/v1/config-profiles/schema` | — |
@@ -206,6 +205,7 @@ outline: deep
 | `POST` | `/api/v1/chat/threads/{thread_id}/messages` | — |
 | `POST` | `/api/v1/chat/threads/{thread_id}/stop` | — |
 | `GET` | `/api/v1/chat/ui-settings` | — |
+| `PUT` | `/api/v1/chat/ui-settings/quick-messages` | — |
 | `PUT` | `/api/v1/chat/ui-settings/value` | — |
 | `GET` | `/api/v1/chat/ws` | `chat:admin` |
 

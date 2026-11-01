@@ -1,5 +1,9 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
+import { useInteractiveChoiceStore } from './stores/interactiveChoice';
+import { useInteractiveChoiceAttentionStore } from './stores/interactiveChoiceAttention';
+import { useChatHeaderStore } from './stores/chatHeader';
+import { useRunFinishedAttentionStore } from './stores/runFinishedAttention';
 import App from './App.vue';
 import { router } from './router';
 import vuetify from './plugins/vuetify';
@@ -71,6 +75,12 @@ setupI18n().then(async () => {
   const app = createApp(App);
   const pinia = createPinia();
   app.use(pinia);
+  window.addEventListener('astrbot:account-changed', () => {
+    useInteractiveChoiceStore(pinia).$reset();
+    useInteractiveChoiceAttentionStore(pinia).$reset();
+    useRunFinishedAttentionStore(pinia).$reset();
+    useChatHeaderStore(pinia).CLEAR_CONTEXT();
+  });
   app.use(router);
   app.use(print);
   app.use(vuetify);
@@ -86,6 +96,12 @@ setupI18n().then(async () => {
   const app = createApp(App);
   const pinia = createPinia();
   app.use(pinia);
+  window.addEventListener('astrbot:account-changed', () => {
+    useInteractiveChoiceStore(pinia).$reset();
+    useInteractiveChoiceAttentionStore(pinia).$reset();
+    useRunFinishedAttentionStore(pinia).$reset();
+    useChatHeaderStore(pinia).CLEAR_CONTEXT();
+  });
   app.use(router);
   app.use(print);
   app.use(vuetify);

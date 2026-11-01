@@ -31,6 +31,9 @@ export interface PendingFollowUp {
 }
 
 const pendingBySession = reactive<Record<string, PendingFollowUp[]>>({});
+window.addEventListener?.("astrbot:account-changed", () => {
+  for (const sessionId of Object.keys(pendingBySession)) delete pendingBySession[sessionId];
+});
 
 export function usePendingFollowUps() {
   function itemsFor(sessionId: string | null | undefined): PendingFollowUp[] {

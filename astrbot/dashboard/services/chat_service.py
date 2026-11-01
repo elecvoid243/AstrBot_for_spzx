@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -17,7 +18,7 @@ from astrbot.core import logger, sp
 from astrbot.core.agent.message import get_checkpoint_id, is_checkpoint_message
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db import BaseDatabase
-from astrbot.core.db.po import PlatformMessageHistory
+from astrbot.core.db.po import PlatformMessageHistory, PlatformSession, WebChatThread
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     build_webchat_message_parts,
@@ -126,8 +127,8 @@ class LocalUploadFile:
     """Adapt a merged local file to the upload contract save_uploaded_file() consumes.
 
     Mirrors UploadFileAdapter (api/multipart.py) but sources bytes from a
-    local path; save() moves the file so the chunked-upload merge result
-    lands in the attachments directory without a second full copy.
+    local path; save() uses a filesystem move when possible and copies across
+    devices before removing the source.
     """
 
     def __init__(self, path: Path, filename: str, content_type: str | None) -> None:
@@ -151,10 +152,11 @@ class LocalUploadFile:
 
         Raises:
             UploadTooLargeError: The assembled file exceeds the limit.
+            OSError: Moving or copying fails; copying leaves the source intact.
         """
         if max_bytes is not None and self.content_length > max_bytes:
             raise UploadTooLargeError(max_bytes)
-        await asyncio.to_thread(os.replace, self._path, destination)
+        await asyncio.to_thread(shutil.move, self._path, destination)
         return self.content_length
 
 
@@ -2013,6 +2015,40 @@ class ChatService:
 
         return stream()
 
+    async def require_owned_chat_session(
+        self, username: str, session_id: str, *, allow_thread: bool = False
+    ) -> PlatformSession | WebChatThread:
+        """Resolve a chat resource before subscribing or changing its runtime.
+
+        Args:
+            username: Trusted resource owner from authentication.
+            session_id: Persisted conversation or thread identifier.
+            allow_thread: Also accept a thread whose parent has the same owner.
+
+        Returns:
+            The owned WebChat session or thread.
+
+        Raises:
+            ChatServiceError: The resource or its parent is unavailable.
+        """
+        session = await self.db.get_platform_session_by_id(session_id)
+        if session is not None:
+            if session.creator == username and session.platform_id == "webchat":
+                return session
+        elif allow_thread:
+            thread = await self.db.get_webchat_thread_by_id(session_id)
+            if thread is not None and thread.creator == username:
+                parent = await self.db.get_platform_session_by_id(
+                    thread.parent_session_id
+                )
+                if (
+                    parent is not None
+                    and parent.creator == username
+                    and parent.platform_id == "webchat"
+                ):
+                    return thread
+        raise ChatServiceError("Permission denied")
+
     async def build_chat_run_stream(
         self,
         username: str,
@@ -2041,24 +2077,15 @@ class ChatService:
             orphan = orphan_run_registry.get(run_id)
             if orphan is None:
                 raise ChatServiceError(f"Chat run {run_id} not found")
+            await self.require_owned_chat_session(
+                username, orphan.conversation_id, allow_thread=True
+            )
             return self._subscribe_orphan_run(orphan_run_registry, orphan)
         if run.username != username:
-            # 2026-08-30: identity representations can drift between auth
-            # dependencies — run.username is recorded from
-            # require_dashboard_user (dashboard-state username first) while
-            # this endpoint authenticates via require_chat_scope (JWT
-            # username). Fall back to the canonical session-ownership check
-            # (the same convention get_session uses) before rejecting, so a
-            # same-user attach is not broken by the representation drift.
-            session = await self.db.get_platform_session_by_id(run.session_id)
-            if session is None or session.creator != username:
-                logger.warning(
-                    "chat run %s owner mismatch: run.username=%r requester=%r",
-                    run_id,
-                    run.username,
-                    username,
-                )
-                raise ChatServiceError("Permission denied")
+            raise ChatServiceError("Permission denied")
+        await self.require_owned_chat_session(
+            username, run.session_id, allow_thread=True
+        )
         return self._subscribe_chat_run(run, include_snapshot=True)
 
     def _subscribe_orphan_run(self, registry, orphan) -> AsyncIterator[str]:
@@ -2079,7 +2106,7 @@ class ChatService:
                 while True:
                     payload = await queue.get()
                     yield f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
-                    if payload.get("type") in ("end", "complete"):
+                    if payload.get("type") == "end":
                         return
             finally:
                 registry.unsubscribe(orphan.run_id, queue)
@@ -2520,6 +2547,7 @@ class ChatService:
         Returns:
             SSE iterator yielding ``data: {json}\\n\\n`` chunks.
         """
+        await self.require_owned_chat_session(username, session_id, allow_thread=True)
         queue = webchat_queue_mgr.subscribe_system(session_id)
         from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
             orphan_run_registry,
@@ -2538,7 +2566,10 @@ class ChatService:
                 orphan_run_registry,
             )
 
-            if orphan_run_registry.was_finished_orphan(str(message_id)):
+            # The live consumer or the core orphan fallback owns persistence.
+            if orphan_run_registry.get(
+                str(message_id)
+            ) is not None or orphan_run_registry.was_finished_orphan(str(message_id)):
                 return
             parts = acc.build_message_parts(include_pending_tool_calls=True)
             # Author: elecvoid243
@@ -2772,6 +2803,60 @@ class ChatService:
             )
         )
 
+    async def validate_chat_selection(
+        self, owner: str, session_id: str, payload: dict
+    ) -> str | None:
+        """Validate public choices and apply an explicit owned-session binding.
+
+        Args:
+            owner: Trusted account resource identity.
+            session_id: Persisted target conversation.
+            payload: Public config, model and effort selections.
+
+        Returns:
+            Normalized thinking effort, or None when omitted.
+
+        Raises:
+            ChatServiceError: A selection or target conversation is unavailable.
+        """
+        # Verify ownership before applying any explicit profile selection.
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(owner, session_id)
+        selected_provider = payload.get("selected_provider")
+        selected_model = payload.get("selected_model")
+        thinking_effort = payload.get("thinking_effort")
+        if thinking_effort is not None:
+            try:
+                thinking_effort = normalize_thinking_effort_value(thinking_effort)
+            except ValueError as exc:
+                raise ChatServiceError(str(exc)) from exc
+        if webchat_account_role.get() == "user" and (
+            selected_provider or selected_model
+        ):
+            sources = {
+                source["id"]: source.get("provider_type", "chat_completion")
+                for source in self.core_lifecycle.provider_manager.provider_sources_config
+            }
+            provider = next(
+                (
+                    config
+                    for config in self.core_lifecycle.provider_manager.providers_config
+                    if config.get("id") == selected_provider
+                    and config.get("enable", False)
+                    and config.get(
+                        "provider_type", sources.get(config.get("provider_source_id"))
+                    )
+                    == "chat_completion"
+                    and (not selected_model or config.get("model") == selected_model)
+                ),
+                None,
+            )
+            if provider is None:
+                raise ChatServiceError("Chat model is unavailable")
+        if dashboard_account_context.get() is not None:
+            await self.session_config(owner, session_id, payload.get("config_id"))
+        return thinking_effort
+
     async def build_chat_stream(
         self,
         username: str,
@@ -2838,38 +2923,9 @@ class ChatService:
                 ):
                     raise ChatServiceError("Message does not belong to the session")
 
-        if thinking_effort is not None:
-            try:
-                thinking_effort = normalize_thinking_effort_value(thinking_effort)
-            except ValueError as exc:
-                raise ChatServiceError(str(exc)) from exc
-        if webchat_account_role.get() == "user" and (
-            selected_provider or selected_model
-        ):
-            sources = {
-                source["id"]: source.get("provider_type", "chat_completion")
-                for source in self.core_lifecycle.provider_manager.provider_sources_config
-            }
-            provider = next(
-                (
-                    config
-                    for config in self.core_lifecycle.provider_manager.providers_config
-                    if config.get("id") == selected_provider
-                    and config.get("enable", False)
-                    and config.get(
-                        "provider_type", sources.get(config.get("provider_source_id"))
-                    )
-                    == "chat_completion"
-                    and (not selected_model or config.get("model") == selected_model)
-                ),
-                None,
-            )
-            if provider is None:
-                raise ChatServiceError("Chat model is unavailable")
-        if dashboard_account_context.get() is not None:
-            await self.session_config(
-                username, webchat_conv_id, post_data.get("config_id")
-            )
+        thinking_effort = await self.validate_chat_selection(
+            username, webchat_conv_id, post_data
+        )
         if webchat_account_role.get() == "user":
             post_data = {**post_data, "_api_key_allow_admin_role": False}
 
@@ -3019,11 +3075,7 @@ class ChatService:
         return stream
 
     async def stop_session(self, username: str, session_id: str) -> dict:
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        session = await self.require_owned_chat_session(username, session_id)
 
         unified_msg_origin = build_webchat_unified_msg_origin(session)
         stopped_count = active_event_registry.request_agent_stop_all(unified_msg_origin)
@@ -3681,11 +3733,7 @@ class ChatService:
             set, or removed via /goal clear); otherwise the serialized
             GoalState for the session's UMO.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        session = await self.require_owned_chat_session(username, session_id)
 
         # Function-local import matching app.py: the goal module binds the
         # kernel Context at star startup and is not needed at module load.
@@ -3916,11 +3964,7 @@ class ChatService:
         Raises:
             ChatServiceError: Session missing, not owned, or unknown action.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        session = await self.require_owned_chat_session(username, session_id)
 
         from astrbot.core.goal.goal_service import goal_service
 
@@ -3971,11 +4015,7 @@ class ChatService:
         Raises:
             ChatServiceError: Session missing, not owned, or empty goal text.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if not session:
-            raise ChatServiceError(f"Session {session_id} not found")
-        if session.creator != username:
-            raise ChatServiceError("Permission denied")
+        session = await self.require_owned_chat_session(username, session_id)
 
         goal_text = (goal_text or "").strip()
         if not goal_text:
@@ -4033,7 +4073,10 @@ class ChatService:
                     "message_id": message_id,
                     "llm_checkpoint_id": checkpoint,
                     "thread_selected_text": None,
-                    "_api_key_allow_admin_role": None,
+                    "_api_key_allow_admin_role": False
+                    if webchat_account_role.get() == "user"
+                    else None,
+                    "_dashboard_account": dashboard_account_context.get(),
                     "internal_turn": "goal",
                     "goal_id": goal_id,
                     "persist_user_history": True,
@@ -4783,37 +4826,7 @@ class ChatService:
                     )
         selected_provider = data.get("selected_provider")
         selected_model = data.get("selected_model")
-        thinking_effort = data.get("thinking_effort")
-        if thinking_effort is not None:
-            try:
-                thinking_effort = normalize_thinking_effort_value(thinking_effort)
-            except ValueError as exc:
-                raise ChatServiceError(str(exc)) from exc
-        if webchat_account_role.get() == "user" and (
-            selected_provider or selected_model
-        ):
-            sources = {
-                source["id"]: source.get("provider_type", "chat_completion")
-                for source in self.core_lifecycle.provider_manager.provider_sources_config
-            }
-            provider = next(
-                (
-                    config
-                    for config in self.core_lifecycle.provider_manager.providers_config
-                    if config.get("id") == selected_provider
-                    and config.get("enable", False)
-                    and config.get(
-                        "provider_type", sources.get(config.get("provider_source_id"))
-                    )
-                    == "chat_completion"
-                    and (not selected_model or config.get("model") == selected_model)
-                ),
-                None,
-            )
-            if provider is None:
-                raise ChatServiceError("Chat model is unavailable")
-        if dashboard_account_context.get() is not None:
-            await self.session_config(username, session_id, data.get("config_id"))
+        thinking_effort = await self.validate_chat_selection(username, session_id, data)
 
         new_checkpoint_id = str(uuid.uuid4())
         new_history = history[:start] + history[end + 1 :]

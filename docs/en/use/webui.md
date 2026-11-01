@@ -54,7 +54,7 @@ The existing single-account login remains the original administrator's entry poi
 
 ![Administrator-managed ordinary accounts](./images/multi-user-accounts.png)
 
-Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Ordinary accounts can also rename, star, archive, restore and delete their own sessions, use batch operations, search messages, and browse older history pages and message markers. Edit and continue the latest user turn or retry the latest reply. Quoted messages must belong to the same owned session. Existing owned attachments and the selected profile, model and thinking effort are retained when editing and retrying. Projects, branches, ZIP import/export and stream recovery remain unavailable until their corresponding slices are enabled. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
+Ordinary users see only chat navigation. Select **New Chat**, enter a message, and select **Send** to receive a streamed reply using the selected profile. Open one of your sidebar conversations to reopen its history. Ordinary accounts support text and multimedia conversations, profile selection, and the input parameters described below. Ordinary accounts can also rename, star, archive, restore and delete their own sessions, use batch operations, search messages, and browse older history pages and message markers. Edit and continue the latest user turn or retry the latest reply. Quoted messages must belong to the same owned session. Existing owned attachments and the selected profile, model and thinking effort are retained when editing and retrying. Projects, branches and ZIP import/export remain unavailable until their corresponding slices are enabled. Administrators maintain shared configuration; ordinary users do not edit instance configuration.
 
 Use **Upload files** (the paperclip), drag files into Chat, or paste an image to send images, audio, video, and files. The microphone retains the existing recorded-audio upload flow. Large files retain chunk progress, retry, and cancellation. Preview or remove staged attachments before sending; reopen your history to preview media or select **Download** for uploaded and model-generated files. Legacy administrator attachments remain with the original administrator. Knowing another account's attachment ID, upload task, stored filename, or download token does not grant access, message reuse, or cleanup permission.
 
@@ -65,6 +65,25 @@ Use **Upload files** (the paperclip), drag files into Chat, or paste an image to
 The previous basic Chat entry now exposes **Select conversations**, **Search messages**, the session **More actions** menu and **View Archive** in the same sidebar. These controls operate on the current account's data; administrators follow the same ownership rule in daily Chat. Mixed batches report unsuccessful items rather than treating them as deleted or archived. Signing out or switching accounts clears history pages, search results, unread markers and batch selections.
 
 ![Organizing an ordinary account's sessions and history](./images/multi-user-history.png)
+
+While a reply is running, the send button becomes **Stop** when the composer is empty. A queued text follow-up can be sent into your own running conversation or sent after interrupting it. Reopening or refreshing your conversation reconnects to its active reply; another account cannot subscribe to that run, stop it, or answer its questions, even if it knows the identifiers. Interactive choice cards belong to their actual conversation.
+
+![An ordinary user's own interactive question](./images/multi-user-runtime-choice.png)
+
+Use **+ → Set goal** in the existing composer to set a conversation goal. Its existing sidebar provides pause, resume, and clear actions for that conversation. Goals retain their meaning and persist after reconnecting. The previous administrator-only runtime controls now appear in the same Chat locations for each resource owner. Signing out clears pending cards, queued text, goal display, browser attention signals and subscriptions before the next account opens Chat.
+
+![A paused goal in its owner's conversation](./images/multi-user-runtime-goal.png)
+
+Use **Settings → Transport Mode → WebSocket** to use the same text, attachment, profile, model and thinking-effort controls over WebSocket. The default remains SSE. WebSocket also supports quoting messages from your current conversation. Queued follow-ups wait for the current conversation's profile selection; follow-ups sent to a background conversation retain that conversation's binding.
+
+Open **+ → Live Mode**, then select the orb to start voice chat in the current conversation. The profile and input choices are prepared before it opens. Live Mode preserves the original recording and recognized text in your history, plays streamed audio, and previews or downloads generated images, audio, video and files using your account's attachment access. Closing it stops local recording and playback and clears media previews. Reopen the conversation to recover an in-progress Live reply; its text and generated media continue saving under the original account until completion. Signing out or switching accounts clears its connections; running tasks keep their existing lifecycle.
+
+| Previous entry | Current entry |
+| --- | --- |
+| Administrator-only runtime controls | The same Chat stop, goal, question and follow-up controls for the owning account |
+| Live Mode could not be opened from Chat | **+ → Live Mode** opens the existing Live view for the current owned conversation |
+
+![Live voice and generated media in the owning account](./images/multi-user-runtime-live.png)
 
 On narrow screens, use the sidebar button at the top left of Chat to open your conversation list. **New Chat**, saved conversations, and **Log out** remain available in that drawer; Bot navigation stays hidden.
 
@@ -80,7 +99,7 @@ Select **Disable account** and review the target login name and consequences bef
 
 ![Administrator password reset and account disable controls](./images/multi-user-account-controls.png)
 
-When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Revoked credentials also lose access to protected attachments. Stream recovery remains unavailable to ordinary users at this stage.
+When a subsequent request reports an invalid credential, the user interface ends that identity's access, clears visible chat state and drafts, and returns to login. Revoked credentials also lose access to protected attachments. Reconnecting a chat stream validates the current account and credential version.
 
 ### Choose a profile and chat input parameters
 

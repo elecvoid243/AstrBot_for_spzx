@@ -113,7 +113,7 @@
       Chat.vue (see flushPendingFollowUps).
     -->
     <transition-group
-      v-if="!isOrdinaryUser && props.sessionId && pendingFollowUpItems.length"
+      v-if="props.sessionId && pendingFollowUpItems.length"
       tag="div"
       name="followup"
       class="pending-follow-ups"
@@ -504,6 +504,13 @@
         </div>
         <div class="composer-toolbar">
           <div class="composer-toolbar__left" :class="{ 'composer-toolbar__left--user': isOrdinaryUser }">
+            <StyledMenu v-if="isOrdinaryUser" offset="8" location="top start" :close-on-content-click="false">
+              <template #activator="{ props: activatorProps }">
+                <v-btn v-bind="activatorProps" icon="mdi-plus" variant="text" class="composer-ghost-btn" />
+              </template>
+              <GoalMenuItem :session-id="sessionId || null" :disabled="disabled" />
+              <v-list-item class="styled-menu-item" rounded="md" prepend-icon="mdi-microphone" :title="tm('voice.liveMode')" @click="emit('openLiveMode')" />
+            </StyledMenu>
             <input
               type="file"
               ref="imageInputRef"
@@ -572,6 +579,7 @@
                 useSessionGoal), never here.
               -->
               <GoalMenuItem :session-id="sessionId || null" :disabled="disabled" />
+              <v-list-item class="styled-menu-item" rounded="md" prepend-icon="mdi-microphone" :title="tm('voice.liveMode')" @click="emit('openLiveMode')" />
 
               <!--
                 spcode project load trigger (lives inside the + menu's
@@ -748,7 +756,7 @@
             </v-btn>
             <v-btn
               icon
-              v-if="!isOrdinaryUser && isRunning && !canSend"
+              v-if="isRunning && !canSend"
               @click="$emit('stop')"
               variant="tonal"
               class="send-btn input-action-btn"
@@ -762,7 +770,7 @@
               <template #activator="{ props: tipProps }">
                 <span v-bind="tipProps" class="send-btn-wrap">
                   <v-btn
-                    v-if="isOrdinaryUser || !(isRunning && !canSend)"
+                    v-if="!(isRunning && !canSend)"
                     @click="handleSendClick"
                     :aria-label="tm('input.send')"
                     icon="mdi-arrow-up"

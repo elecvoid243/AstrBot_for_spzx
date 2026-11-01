@@ -29,7 +29,7 @@ declare global {
     interface Window {
         vad: {
             MicVAD: {
-                new(options: VADOptions): Promise<VADInstance>;
+                "new": (options: VADOptions) => Promise<VADInstance>;
             };
         };
     }
@@ -48,17 +48,20 @@ export function useVADRecording() {
     const onSpeechStartCallback = ref<(() => void) | null>(null);
     const onSpeechEndCallback = ref<((audio: Float32Array) => void) | null>(null);
 
+    let recordingRevision = 0;
+    let disposed = false;
+
     // Live Mode 不需要上传音频，直接通过 WebSocket 实时发送
 
     // 初始化 VAD
-    async function initVAD() {
+    async function initVAD(revision: number) {
         if (!window.vad) {
             console.error('VAD library not loaded. Please ensure the scripts are included in index.html');
             return;
         }
 
         try {
-            vadInstance.value = await (window.vad.MicVAD as any).new({
+            const instance = await window.vad.MicVAD.new({
                 onSpeechStart: () => {
                     console.log('[VAD] Speech started');
                     isSpeaking.value = true;
@@ -106,6 +109,11 @@ export function useVADRecording() {
                 onnxWASMBasePath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
             });
 
+            if (disposed || revision !== recordingRevision) {
+                instance.pause();
+                return;
+            }
+            vadInstance.value = instance;
             isInitialized.value = true;
             console.log('VAD initialized successfully');
         } catch (error) {
@@ -119,14 +127,16 @@ export function useVADRecording() {
         onSpeechStart: () => void,
         onSpeechEnd: (audio: Float32Array) => void
     ) {
-        // 存储回调函数
+        const revision = ++recordingRevision;
+        // Store callbacks only for the current recording attempt.
         onSpeechStartCallback.value = onSpeechStart;
         onSpeechEndCallback.value = onSpeechEnd;
 
         if (!isInitialized.value) {
-            await initVAD();
+            await initVAD(revision);
         }
 
+        if (disposed || revision !== recordingRevision) return;
         if (vadInstance.value) {
             vadInstance.value.start();
             isRecording.value = true;
@@ -136,6 +146,9 @@ export function useVADRecording() {
 
     // 停止录音（暂停 VAD）
     function stopRecording() {
+        recordingRevision++;
+        onSpeechStartCallback.value = null;
+        onSpeechEndCallback.value = null;
         if (vadInstance.value) {
             vadInstance.value.pause();
             isRecording.value = false;
@@ -148,9 +161,8 @@ export function useVADRecording() {
 
     // 清理资源
     onBeforeUnmount(() => {
-        if (vadInstance.value && isRecording.value) {
-            stopRecording();
-        }
+        disposed = true;
+        stopRecording();
     });
 
     return {

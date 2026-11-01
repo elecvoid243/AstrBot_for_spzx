@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,9 +18,12 @@ from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
 from astrbot.dashboard.services.chat_service import ChatService
 
 
-def _make_service() -> ChatService:
+def _make_service(owner="tester") -> ChatService:
     service = ChatService.__new__(ChatService)
     service.db = MagicMock()
+    service.db.get_platform_session_by_id = AsyncMock(
+        return_value=SimpleNamespace(creator=owner, platform_id="webchat")
+    )
     service.core_lifecycle = MagicMock()
     service.conv_mgr = MagicMock()
     service.platform_history_mgr = MagicMock()
@@ -578,7 +582,7 @@ class TestRegisterSyntheticChatRun:
         with the injected checkpoint, and run_started is announced to the
         conversation's system mirror so an open page attaches to the run
         stream."""
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-reg"
         await service.register_synthetic_chat_run(
             session_id, "synth-run-1", "alice", "checkpoint-1"
@@ -613,7 +617,7 @@ class TestRegisterSyntheticChatRun:
         """Registered-run payloads must not leak into the system stream —
         the run stream owns their rendering — while the run_started
         announcement passes through so pages can attach."""
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-hide"
         await service.register_synthetic_chat_run(
             session_id, "synth-run-2", "alice", "checkpoint-2"
@@ -684,7 +688,7 @@ class TestSyntheticRunResumeStream:
         """A synthetic run registered via register_synthetic_chat_run must be
         fully served by the run stream: snapshot on attach, live chunks while
         streaming, and a terminal end — exactly like a user-initiated run."""
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-resume"
         await service.register_synthetic_chat_run(
             session_id, "synth-run-3", "alice", "checkpoint-3"
@@ -750,7 +754,7 @@ class TestPublishChatRun:
             webchat_queue_mgr,
         )
 
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-slow"
         await service.register_synthetic_chat_run(
             session_id, "slow-run-1", "alice", "checkpoint-slow"
@@ -791,50 +795,27 @@ class TestPublishChatRun:
 
 class TestRunStreamOwnershipFallback:
     @pytest.mark.asyncio
-    async def test_owner_mismatch_falls_back_to_session_creator(self):
-        """Identity drift between auth dependencies: run.username is recorded
-        from require_dashboard_user (dashboard-state username first) while
-        the resume endpoint authenticates via require_chat_scope (JWT
-        username). When the two differ, the attach must still succeed if the
-        run's session belongs to the requester (get_session's ownership
-        convention)."""
-        from fastapi import FastAPI  # noqa: F401  (import guard parity)
+    async def test_owner_mismatch_rejected_even_when_session_creator_matches(self):
+        """Stable run and persisted session identities must both agree."""
+        from astrbot.dashboard.services.chat_service import ChatServiceError
 
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-own"
         await service.register_synthetic_chat_run(
             session_id, "own-run-1", "Alice", "cp-own"
         )
-        # The chat-scope JWT resolves to "alice" while the run recorded the
-        # dashboard-state representation "Alice" — same person, drifted form.
-        session = MagicMock(creator="alice")
-        service.db.get_platform_session_by_id = AsyncMock(return_value=session)
-
-        stream = await service.build_chat_run_stream("alice", "own-run-1")
-        sink: list = []
-        pump = asyncio.create_task(_pump(stream, sink))
+        run = service.chat_runs["own-run-1"]
         try:
-            await _wait_until(
-                lambda: any(p.get("type") == "run_snapshot" for p in sink)
-            )
-            await webchat_queue_mgr.put_back_queue(
-                "own-run-1",
-                {
-                    "type": "end",
-                    "data": "",
-                    "streaming": False,
-                    "message_id": "own-run-1",
-                },
-            )
-            await _wait_until(lambda: any(p.get("type") == "end" for p in sink))
+            with pytest.raises(ChatServiceError, match="Permission denied"):
+                await service.build_chat_run_stream("alice", "own-run-1")
+            assert not run.subscribers
         finally:
-            pump.cancel()
-            await asyncio.gather(pump, return_exceptions=True)
-            await stream.aclose()
+            run.back_queue.put_nowait({"type": "end"})
+            await asyncio.wait_for(run.task, 2)
 
     @pytest.mark.asyncio
     async def test_owner_mismatch_rejected_when_session_owned_by_other(self):
-        service = _make_service()
+        service = _make_service("alice")
         session_id = f"conv-{id(service)}-deny"
         await service.register_synthetic_chat_run(
             session_id, "deny-run-1", "Alice", "cp-deny"

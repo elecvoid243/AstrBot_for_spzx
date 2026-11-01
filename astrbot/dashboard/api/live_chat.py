@@ -36,11 +36,7 @@ async def _run_live_chat_ws(
             token or "", websocket.app.state.jwt_secret, algorithms=["HS256"]
         )
         account = await websocket.app.state.services.auth.accounts.resolve(claims)
-        if (
-            account is None
-            or account.role != "admin"
-            or claims.get("token_type") is not None
-        ):
+        if account is None or claims.get("token_type") is not None:
             await websocket.close(
                 code=1008, reason="WebSocket chat is not available for this account"
             )

@@ -21,16 +21,21 @@ from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.platform.sources.webchat.message_parts_helper import (
     create_attachment_part_from_existing_file,
 )
-from astrbot.core.platform.sources.webchat.webchat_queue_mgr import webchat_queue_mgr
+from astrbot.core.platform.sources.webchat.webchat_queue_mgr import (
+    orphan_run_registry,
+    webchat_queue_mgr,
+)
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 from astrbot.core.utils.datetime_utils import generate_timestamp_id
 from astrbot.core.utils.webchat_access import (
     dashboard_account_context,
+    webchat_account_role,
     webchat_resource_owner,
 )
 from astrbot.dashboard.services.account_service import AccountService
 from astrbot.dashboard.services.chat_service import (
     ChatService,
+    ChatServiceError,
     LocalUploadFile,
     build_bot_history_content,
 )
@@ -50,8 +55,16 @@ class LiveChatSession:
     def __init__(self, session_id: str, username: str) -> None:
         self.session_id = session_id
         self.username = username
-        self.principal = dashboard_account_context.get()
+        principal = dashboard_account_context.get()
+        self.principal = (
+            principal
+            if principal is not None and principal.resource_owner == username
+            else None
+        )
         self.conversation_id = str(uuid.uuid4())
+        self.is_connected = True
+        self.live_request_task: asyncio.Task | None = None
+        self.live_selections: dict = {}
         self.is_speaking = False
         self.is_processing = False
         self.should_interrupt = False
@@ -168,10 +181,6 @@ class LiveChatService:
             account = await AccountService(self.db, self.config).resolve(payload)
             if account is None:
                 raise LiveChatAuthError("Invalid token")
-            if account.role != "admin":
-                raise LiveChatAuthError(
-                    "WebSocket chat is not available for this account"
-                )
             return account.resource_owner
         except jwt.ExpiredSignatureError as exc:
             raise LiveChatAuthError("Token expired") from exc
@@ -185,10 +194,18 @@ class LiveChatService:
         return session
 
     async def cleanup_session(self, session: LiveChatSession) -> None:
-        if session.session_id in self.sessions:
-            await self.cleanup_chat_subscriptions(session)
-            session.cleanup()
-            del self.sessions[session.session_id]
+        """Detach connection resources while an admitted voice turn finishes.
+
+        Args:
+            session: Connection state retained until its persistence task ends.
+        """
+        session.is_connected = False
+        await self.cleanup_chat_subscriptions(session)
+        if session.live_request_task is None or session.live_request_task.done():
+            if session.temp_audio_path is not None:
+                session.cleanup()
+            self.sessions.pop(session.session_id, None)
+        # An active voice turn retains its queue and persistence task until end.
 
     async def run_websocket_session(
         self,
@@ -207,6 +224,21 @@ class LiveChatService:
 
         live_session = self.create_session(username)
         logger.info(f"[Live Chat] WebSocket 连接建立: {username}")
+
+        async def send_live_json(payload: dict) -> None:
+            """Detach a closed output socket without ending the voice turn.
+
+            Args:
+                payload: Live response frame for this connection.
+            """
+            async with live_session.ws_send_lock:
+                if not live_session.is_connected:
+                    return
+                try:
+                    await send_json(payload)
+                except (WebSocketDisconnect, OSError, RuntimeError) as exc:
+                    live_session.is_connected = False
+                    logger.debug(f"[Live Chat] Live output detached: {exc}")
 
         def finish_chat_request(
             completed: asyncio.Task,
@@ -284,7 +316,7 @@ class LiveChatService:
                     await self.handle_live_message(
                         live_session,
                         message,
-                        send_json,
+                        send_live_json,
                     )
 
         except WebSocketDisconnect as exc:
@@ -502,6 +534,74 @@ class LiveChatService:
             else {}
         )
 
+        owned = None
+        if webchat_account_role.get() == "user":
+            allowed = {
+                "ct",
+                "t",
+                "message_id",
+                "session_id",
+                "message",
+                "config_id",
+                "thinking_effort",
+                "selected_provider",
+                "selected_model",
+            }
+            parts = message.get("message")
+            valid_parts = (
+                isinstance(parts, list)
+                and bool(parts)
+                and all(
+                    isinstance(part, dict)
+                    and (
+                        (
+                            part.get("type") == "reply"
+                            and set(part) <= {"type", "message_id", "selected_text"}
+                            and isinstance(part.get("message_id"), (int, str))
+                            and not isinstance(part.get("message_id"), bool)
+                            and isinstance(part.get("selected_text", ""), str)
+                        )
+                        or (
+                            part.get("type")
+                            in {"plain", "image", "record", "audio", "video", "file"}
+                            and not set(part)
+                            - {
+                                "type",
+                                "text",
+                                "attachment_id",
+                                "filename",
+                                "stored_filename",
+                            }
+                            and (
+                                isinstance(part.get("text"), str)
+                                if part["type"] == "plain"
+                                else isinstance(part.get("attachment_id"), str)
+                            )
+                        )
+                    )
+                    for part in parts
+                )
+            )
+            try:
+                if set(message) - allowed or (msg_type == "send" and not valid_parts):
+                    raise ChatServiceError("Resource is unavailable")
+                owned = await self.chat_service.require_owned_chat_session(
+                    session.username, message.get("session_id", "")
+                )
+            except ChatServiceError:
+                await self.send_chat_payload(
+                    session,
+                    {
+                        "ct": "chat",
+                        "t": "error",
+                        "code": "PERMISSION_DENIED",
+                        "data": "Resource is unavailable",
+                        **request_metadata,
+                    },
+                    send_json,
+                )
+                return
+
         if msg_type == "bind":
             chat_session_id = message.get("session_id")
             if not isinstance(chat_session_id, str) or not chat_session_id:
@@ -517,8 +617,12 @@ class LiveChatService:
                 )
                 return
 
-            owned = await self.db.get_platform_session_by_id(chat_session_id)
-            if owned is None or owned.creator != session.username:
+            try:
+                if owned is None:
+                    await self.chat_service.require_owned_chat_session(
+                        session.username, chat_session_id
+                    )
+            except ChatServiceError:
                 await self.send_chat_payload(
                     session,
                     {
@@ -665,7 +769,79 @@ class LiveChatService:
         message: dict,
         send_json: SendJson,
     ) -> None:
+        """Apply an authenticated voice message to its owned conversation.
+
+        Args:
+            session: Connection state containing the trusted account identity.
+            message: Public bind, recording or interrupt payload.
+            send_json: Callback for this connection's response frames.
+        """
         msg_type = message.get("t")
+        fields = {
+            "bind": {
+                "ct",
+                "t",
+                "session_id",
+                "config_id",
+                "thinking_effort",
+                "selected_provider",
+                "selected_model",
+            },
+            "start_speaking": {"ct", "t", "stamp"},
+            "speaking_part": {"ct", "t", "data"},
+            "end_speaking": {"ct", "t", "stamp"},
+            "interrupt": {"ct", "t"},
+        }
+        if msg_type not in fields or set(message) - fields[msg_type]:
+            await send_json(
+                {
+                    "t": "error",
+                    "code": "INVALID_MESSAGE_FORMAT",
+                    "data": "Unsupported live message",
+                }
+            )
+            return
+        if msg_type == "bind":
+            try:
+                if (
+                    session.live_request_task is not None
+                    and not session.live_request_task.done()
+                ):
+                    raise ChatServiceError("A live response is running")
+                sid = message.get("session_id")
+                if not isinstance(sid, str) or not sid:
+                    raise ChatServiceError("Resource is unavailable")
+                await self.chat_service.require_owned_chat_session(
+                    session.username, sid
+                )
+                selections = {
+                    key: value
+                    for key, value in message.items()
+                    if key
+                    in {
+                        "config_id",
+                        "thinking_effort",
+                        "selected_provider",
+                        "selected_model",
+                    }
+                }
+                effort = await self.chat_service.validate_chat_selection(
+                    session.username, sid, selections
+                )
+                if effort is not None:
+                    selections["thinking_effort"] = effort
+                session.live_selections = selections
+                session.conversation_id = sid
+                await send_json({"t": "session_bound", "session_id": sid})
+            except ChatServiceError:
+                await send_json(
+                    {
+                        "t": "error",
+                        "code": "PERMISSION_DENIED",
+                        "data": "Resource is unavailable",
+                    }
+                )
+            return
 
         if msg_type == "start_speaking":
             stamp = message.get("stamp")
@@ -692,16 +868,48 @@ class LiveChatService:
                 logger.warning("[Live Chat] end_speaking 缺少 stamp")
                 return
 
+            if (
+                session.live_request_task is not None
+                and not session.live_request_task.done()
+            ):
+                session.is_speaking = False
+                session.audio_frames.clear()
+                await send_json({"t": "error", "data": "A live response is running"})
+                return
             audio_path, assemble_duration = await session.end_speaking(stamp)
             if not audio_path:
-                await send_json({"t": "error", "data": "音频组装失败"})
+                await send_json({"t": "error", "data": "Audio assembly failed"})
                 return
 
-            await self.process_audio(session, audio_path, assemble_duration, send_json)
+            def finish_live_request(completed: asyncio.Task) -> None:
+                """Observe terminal errors from the independently consumed turn.
+
+                Args:
+                    completed: The completed voice persistence task.
+                """
+                try:
+                    completed.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error(f"[Live Chat] Voice task failed: {exc}", exc_info=True)
+
+            # Keep receiving authenticated controls while STT and generation run.
+            session.live_request_task = asyncio.create_task(
+                self.process_audio(session, audio_path, assemble_duration, send_json)
+            )
+            session.live_request_task.add_done_callback(finish_live_request)
             return
 
         if msg_type == "interrupt":
             session.should_interrupt = True
+            if (
+                await self.db.get_platform_session_by_id(session.conversation_id)
+                is not None
+            ):
+                await self.chat_service.stop_session(
+                    session.username, session.conversation_id
+                )
             logger.info(f"[Live Chat] 用户打断: {session.username}")
 
     async def process_audio(
@@ -711,7 +919,16 @@ class LiveChatService:
         assemble_duration: float,
         send_json: SendJson,
     ) -> None:
+        """Consume one voice turn while core execution keeps its own lifecycle.
+
+        Args:
+            session: Connection state with the trusted principal and target.
+            audio_path: Server-assembled WAV recording to recognize and save.
+            assemble_duration: Recording assembly time in seconds.
+            send_json: Callback for live text, media, audio and control frames.
+        """
         owner_token = webchat_resource_owner.set(session.username)
+        message_id = None
         try:
             await send_json(
                 {"t": "metrics", "data": {"wav_assemble_time": assemble_duration}}
@@ -758,6 +975,9 @@ class LiveChatService:
                     session_id=conversation_id,
                     is_group=0,
                 )
+            effort = await self.chat_service.validate_chat_selection(
+                session.username, conversation_id, session.live_selections
+            )
             audio = await self.chat_service.save_uploaded_file(
                 LocalUploadFile(Path(audio_path), "voice.wav", "audio/wav")
             )
@@ -785,15 +1005,24 @@ class LiveChatService:
                 "message_id": message_id,
                 "message": [{"type": "plain", "text": user_text}],
                 "action_type": "live",
+                "selected_provider": session.live_selections.get("selected_provider"),
+                "selected_model": session.live_selections.get("selected_model"),
+                "thinking_effort": effort,
+                "_api_key_allow_admin_role": False
+                if session.principal is not None and session.principal.role == "user"
+                else None,
                 "_dashboard_account": session.principal,
             }
 
+            orphan_run_registry.register(message_id, conversation_id)
             await queue.put((session.username, conversation_id, payload))
             back_queue = webchat_queue_mgr.get_or_create_back_queue(
                 message_id, conversation_id
             )
 
             bot_text = ""
+            audio_text = ""
+            output_parts = []
             audio_playing = False
 
             try:
@@ -801,8 +1030,15 @@ class LiveChatService:
                     if session.should_interrupt:
                         logger.info("[Live Chat] 检测到用户打断")
                         await send_json({"t": "stop_play"})
+                        if bot_text or audio_text:
+                            await self.save_bot_message(
+                                conversation_id,
+                                [{"type": "plain", "text": bot_text or audio_text}],
+                                {},
+                                {},
+                            )
                         await self.save_interrupted_message(
-                            session, user_text, bot_text
+                            session, user_text, bot_text or audio_text
                         )
                         while not back_queue.empty():
                             try:
@@ -862,6 +1098,10 @@ class LiveChatService:
 
                     if result_type == "plain":
                         bot_text += data
+                        orphan_run_registry.update(
+                            message_id,
+                            [{"type": "plain", "text": bot_text}, *output_parts],
+                        )
 
                     elif result_type in {"image", "record", "video", "file"}:
                         prefix = {
@@ -878,6 +1118,14 @@ class LiveChatService:
                             filename, result_type, display_name, owner=session.username
                         )
                         if part:
+                            output_parts.append(part)
+                            orphan_run_registry.update(
+                                message_id,
+                                [
+                                    {"type": "plain", "text": bot_text or audio_text},
+                                    *output_parts,
+                                ],
+                            )
                             await self.save_bot_message(
                                 session.conversation_id, [part], {}, {}
                             )
@@ -902,6 +1150,14 @@ class LiveChatService:
 
                         text = result.get("text")
                         if text:
+                            audio_text += text
+                            orphan_run_registry.update(
+                                message_id,
+                                [
+                                    {"type": "plain", "text": bot_text or audio_text},
+                                    *output_parts,
+                                ],
+                            )
                             await send_json(
                                 {
                                     "t": "bot_text_chunk",
@@ -916,7 +1172,14 @@ class LiveChatService:
                             }
                         )
 
-                    elif result_type in ["complete", "end"]:
+                    elif result_type == "end":
+                        if bot_text or audio_text:
+                            await self.save_bot_message(
+                                conversation_id,
+                                [{"type": "plain", "text": bot_text or audio_text}],
+                                {},
+                                {},
+                            )
                         logger.info(f"[Live Chat] Bot 回复完成: {bot_text}")
 
                         if not audio_playing:
@@ -950,7 +1213,12 @@ class LiveChatService:
         finally:
             session.is_processing = False
             session.should_interrupt = False
+            if message_id is not None:
+                orphan_run_registry.finish(message_id)
             webchat_resource_owner.reset(owner_token)
+            session.cleanup()
+            if not session.is_connected:
+                self.sessions.pop(session.session_id, None)
 
     @staticmethod
     async def save_interrupted_message(

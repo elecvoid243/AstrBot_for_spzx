@@ -777,6 +777,7 @@ export const openChatWebSocket = <ThrowOnError extends boolean = false>(options?
 
 /**
  * Open the live voice chat WebSocket
+ * Dashboard JWTs resolve to the current enabled account and are revalidated for every received message. Bind with t=bind, session_id and optional config_id, selected_provider, selected_model and thinking_effort before recording in an existing owned WebChat conversation. Live attachments arrive as t=attachment with ordinary attachment metadata; content requires the owning account. Audio chunks, STT text and original recordings retain their existing behavior. Closing the connection detaches its output socket without forcibly stopping the core run; the existing turn consumer keeps persisting output and exposing owned recovery until the core end event. Legacy /api/live_chat/ws uses the same rules.
  */
 export const openLiveChatWebSocket = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<OpenLiveChatWebSocketData, ThrowOnError>) => {
     return (options?.client ?? client).get<void, unknown, ThrowOnError>({
@@ -787,6 +788,7 @@ export const openLiveChatWebSocket = <ThrowOnError extends boolean = false>(opti
 
 /**
  * Open the unified live/chat WebSocket
+ * Uses the same current Dashboard-account identity and ownership checks as HTTP Chat and live voice. ct=chat accepts public message parts containing owned attachment_id and reply/message_id/selected_text references from the target conversation, plus config_id, selected_provider, selected_model and thinking_effort. ct=live uses the live bind and audio messages. Internal execution flags and shared configuration edits are not accepted from ordinary accounts. Legacy /api/unified_chat/ws follows the same contract. Independent API-key /api/v1/chat/ws retains its own flow.
  */
 export const openUnifiedChatWebSocket = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<OpenUnifiedChatWebSocketData, ThrowOnError>) => {
     return (options?.client ?? client).get<void, unknown, ThrowOnError>({
@@ -968,6 +970,7 @@ export const getChatSessionMarkers = <ThrowOnError extends boolean = false>(opti
 
 /**
  * Return the standing-goal state for a session (null when none)
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const getChatSessionGoal = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetChatSessionGoalData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetChatSessionGoalResponse, GetChatSessionGoalError, ThrowOnError>({
@@ -978,6 +981,7 @@ export const getChatSessionGoal = <ThrowOnError extends boolean = false>(options
 
 /**
  * Set (or replace) the session's standing goal and kick off the loop
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const setChatSessionGoal = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<SetChatSessionGoalData, ThrowOnError>) => {
     return (options?.client ?? client).post<SetChatSessionGoalResponse, SetChatSessionGoalError, ThrowOnError>({
@@ -988,6 +992,7 @@ export const setChatSessionGoal = <ThrowOnError extends boolean = false>(options
 
 /**
  * Apply a goal-loop control action (pause/resume/clear)
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const applyChatSessionGoalAction = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ApplyChatSessionGoalActionData, ThrowOnError>) => {
     return (options?.client ?? client).post<ApplyChatSessionGoalActionResponse, ApplyChatSessionGoalActionError, ThrowOnError>({
@@ -1073,6 +1078,7 @@ export const confirmImportChatSessions = <ThrowOnError extends boolean = false>(
 
 /**
  * Stop active webchat work for a session
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const stopChatSession = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<StopChatSessionData, ThrowOnError>) => {
     return (options?.client ?? client).post<StopChatSessionResponse, StopChatSessionError, ThrowOnError>({
@@ -1143,6 +1149,7 @@ export const chatFileChangeStatus = <ThrowOnError extends boolean = false>(optio
 
 /**
  * Deliver a user follow-up message into a running foreground subagent
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const postSubagentFollowUp = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<PostSubagentFollowUpData, ThrowOnError>) => {
     return (options?.client ?? client).post<PostSubagentFollowUpResponse, PostSubagentFollowUpError, ThrowOnError>({
@@ -1153,6 +1160,7 @@ export const postSubagentFollowUp = <ThrowOnError extends boolean = false>(optio
 
 /**
  * Resume an active webchat run as an SSE stream
+ * Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
  */
 export const resumeChatRun = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<ResumeChatRunData, ThrowOnError>) => {
     return (options?.client ?? client).get<ResumeChatRunResponse, ResumeChatRunError, ThrowOnError>({
@@ -1163,6 +1171,7 @@ export const resumeChatRun = <ThrowOnError extends boolean = false>(options: Opt
 
 /**
  * Stream session system events when enabled by dashboard configuration
+ * Requires current account ownership before subscribing to a persisted conversation or thread.
  */
 export const streamChatSessionSystemEvents = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<StreamChatSessionSystemEventsData, ThrowOnError>) => {
     return (options?.client ?? client).get<StreamChatSessionSystemEventsResponse, StreamChatSessionSystemEventsError, ThrowOnError>({

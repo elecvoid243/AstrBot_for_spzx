@@ -558,6 +558,7 @@ async def stop_chat_session(
 async def post_subagent_follow_up(
     payload: ChatSubagentFollowUpRequest,
     auth: AuthContext = Depends(require_chat_scope),
+    service: ChatService = Depends(get_service),
 ):
     """Deliver a user follow-up message into a running foreground subagent.
 
@@ -573,9 +574,22 @@ async def post_subagent_follow_up(
     text = payload.text.strip()
     if not text:
         return ok({"accepted": False, "reason": "empty_text"})
-    umo = f"webchat:FriendMessage:webchat!{auth.username}!{payload.session_id}"
+    try:
+        session = await service.require_owned_chat_session(
+            auth.username, payload.session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    message_type = (
+        "GroupMessage" if getattr(session, "is_group", False) else "FriendMessage"
+    )
+    umo = f"webchat:{message_type}:webchat!{auth.username}!{payload.session_id}"
     handle = SubAgentManager.get_subagent_run_handle(umo, payload.subagent_run_id)
-    if handle is None:
+    if (
+        handle is None
+        or handle.umo != umo
+        or handle.subagent_run_id != payload.subagent_run_id
+    ):
         return ok({"accepted": False, "reason": "not_found"})
     ticket = handle.runner.follow_up(message_text=text)
     if ticket is None:
@@ -848,7 +862,10 @@ async def system_event_stream(
     if not service.system_stream_enabled():
         return JSONResponse(error("System event stream is disabled"))
 
-    stream = await service.build_system_stream(auth.username, session_id)
+    try:
+        stream = await service.build_system_stream(auth.username, session_id)
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
     return StreamingResponse(
         stream,
         media_type="text/event-stream",
@@ -1406,21 +1423,36 @@ async def dashboard_post_file(
 # would be swallowed by the submit endpoint.
 
 
-def _extract_username_from_umo(umo: str) -> str:
-    """Extract the dashboard username from a webchat umo.
+async def _require_choice_origin(username: str, umo: str, service: ChatService) -> None:
+    """Validate a pending question against its persisted conversation.
 
-    Expected format: ``webchat:FriendMessage:webchat!alice!session_id``.
-    Returns the username, or ``""`` for non-webchat/malformed umos.
+    Args:
+        username: Trusted resource identity of the current account.
+        umo: Exact origin recorded by the server-side choice registry.
+        service: Chat service used to resolve the persisted resource.
+
+    Raises:
+        ApiError: The origin is malformed, forged or belongs to another account.
     """
-    if not umo.startswith("webchat:"):
-        return ""
     parts = umo.split(":", 2)
-    if len(parts) < 3:
-        return ""
-    chunks = parts[2].split("!")
-    if len(chunks) >= 3 and chunks[0] == "webchat":
-        return chunks[1]
-    return ""
+    if len(parts) != 3 or parts[0] != "webchat":
+        raise ApiError("session_id must be a webchat UMO", status_code=400)
+    origin = parts[2]
+    session_id = origin.split("!", 2)[-1] if origin.startswith("webchat!") else origin
+    try:
+        session = await service.require_owned_chat_session(
+            username, session_id, allow_thread=True
+        )
+    except ChatServiceError as exc:
+        raise ApiError("Resource is unavailable", status_code=403) from exc
+    message_type = (
+        "GroupMessage" if getattr(session, "is_group", False) else "FriendMessage"
+    )
+    if parts[1] != message_type or origin not in {
+        session_id,
+        f"webchat!{username}!{session_id}",
+    }:
+        raise ApiError("Resource is unavailable", status_code=403)
 
 
 @legacy_router.post("/interactive-choice/pending")
@@ -1428,6 +1460,7 @@ async def get_pending_choices(
     session_id: str | None = None,
     payload: dict | None = None,
     username: str = Depends(require_dashboard_user),
+    service: ChatService = Depends(get_service),
 ):
     """Return all pending choices for a given webchat UMO.
 
@@ -1440,6 +1473,7 @@ async def get_pending_choices(
         payload: POST body, optional. Fallback source for ``session_id``
             when the query param is absent.
         username: Injected by ``require_dashboard_user``.
+        service: Chat service resolving persisted session ownership.
 
     Returns:
         200: ``{status: "ok", data: {pending: [...]}}``.
@@ -1453,11 +1487,7 @@ async def get_pending_choices(
     if not session_id or not session_id.strip():
         raise ApiError("Missing session_id (query or body)", status_code=400)
 
-    expected = _extract_username_from_umo(session_id)
-    if not expected:
-        raise ApiError("session_id must be a webchat UMO", status_code=400)
-    if expected != username:
-        raise ApiError("Not authorized for this session", status_code=403)
+    await _require_choice_origin(username, session_id, service)
 
     pending_list = registry.list_pending_for_umo(session_id)
     parts = []
@@ -1474,6 +1504,7 @@ async def submit_interactive_choice(
     request_id: str,
     request: Request,
     username: str = Depends(require_dashboard_user),
+    service: ChatService = Depends(get_service),
 ):
     """Resolve the pending choice future with the user's selection.
 
@@ -1488,9 +1519,7 @@ async def submit_interactive_choice(
     if pending is None:
         raise ApiError("Interactive choice not found or expired", status_code=404)
 
-    expected = _extract_username_from_umo(pending.umo)
-    if not expected or expected != username:
-        raise ApiError("Not authorized to resolve this choice", status_code=403)
+    await _require_choice_origin(username, pending.umo, service)
 
     try:
         body = await request.json()
@@ -1517,6 +1546,7 @@ async def submit_interactive_choice(
 async def cancel_interactive_choice(
     request_id: str,
     username: str = Depends(require_dashboard_user),
+    service: ChatService = Depends(get_service),
 ):
     """Cancel a pending choice from the option box's cancel button.
 
@@ -1534,9 +1564,7 @@ async def cancel_interactive_choice(
     if pending is None:
         raise ApiError("Interactive choice not found or expired", status_code=404)
 
-    expected = _extract_username_from_umo(pending.umo)
-    if not expected or expected != username:
-        raise ApiError("Not authorized to cancel this choice", status_code=403)
+    await _require_choice_origin(username, pending.umo, service)
 
     umo = pending.umo
     sse_message_id = pending.sse_message_id

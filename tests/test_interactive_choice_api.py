@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -27,10 +29,20 @@ BOB_UMO = "webchat:FriendMessage:webchat!bob!sess-456"
 @pytest.fixture
 def client():
     from astrbot.dashboard.api.auth import require_dashboard_user
-    from astrbot.dashboard.api.chat import legacy_router
+    from astrbot.dashboard.api.chat import get_service, legacy_router
     from astrbot.dashboard.responses import ApiError, error
+    from astrbot.dashboard.services.chat_service import ChatService
 
+    service = ChatService.__new__(ChatService)
+    service.db = SimpleNamespace(
+        get_platform_session_by_id=AsyncMock(
+            side_effect=lambda sid: SimpleNamespace(
+                creator="alice" if sid == "sess-123" else "bob", platform_id="webchat"
+            )
+        )
+    )
     test_app = FastAPI()
+    test_app.dependency_overrides[get_service] = lambda: service
     test_app.include_router(legacy_router)
 
     @test_app.exception_handler(ApiError)

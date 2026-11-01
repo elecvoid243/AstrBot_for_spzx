@@ -353,8 +353,6 @@ async def test_unadapted_operations_default_deny_and_internal_fields_are_not_inp
         ("POST", "/api/auth/setup"),
         ("PATCH", "/api/v1/auth/account"),
         ("GET", "/api/v1/chat/projects"),
-        ("GET", f"/api/v1/chat/sessions/{session_id}/system-stream"),
-        ("GET", "/api/v1/chat/runs/fake/stream"),
         ("POST", "/api/v1/chat/import/stage"),
         ("POST", "/api/v1/chat/import/confirm"),
         ("GET", "/api/skill-guide/active"),
@@ -500,13 +498,7 @@ async def test_websocket_entry_points_deny_unadapted_users_and_admin_foreign_bin
     monkeypatch.setattr(
         core.astrbot_config_mgr, "get_conf_list", lambda: [], raising=False
     )
-    for path in (
-        "/api/v1/live-chat/ws",
-        "/api/v1/unified-chat/ws",
-        "/api/live_chat/ws",
-        "/api/unified_chat/ws",
-        "/api/v1/chat/ws",
-    ):
+    for path in ("/api/v1/chat/ws",):
         incoming = asyncio.Queue()
         outgoing = []
         await incoming.put({"type": "websocket.connect"})

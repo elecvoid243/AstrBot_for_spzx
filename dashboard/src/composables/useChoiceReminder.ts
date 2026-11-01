@@ -182,3 +182,10 @@ export function markRunFinishedAttention(
   bindVisibilityOnce();
   startNoticeFlash(noticeTitle);
 }
+
+// Account changes also stop module-held browser attention signals.
+window.addEventListener?.("astrbot:account-changed", () => {
+  stopTitleFlash();
+  stopNoticeFlash();
+  syncBadge(0);
+});

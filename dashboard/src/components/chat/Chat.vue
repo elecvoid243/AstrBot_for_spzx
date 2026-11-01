@@ -553,7 +553,6 @@
         </button>
 
         <StyledMenu
-          v-if="!isOrdinaryUser"
           location="top start"
           offset="10"
           :close-on-content-click="false"
@@ -982,8 +981,8 @@
               :history-offset="historyOffset"
               :reveal-work-index="revealWorkIndex"
               :reveal-work-query="revealWorkQuery"
-              :current-umo="isOrdinaryUser ? undefined : currentUmo ?? undefined"
-              :session-id="isOrdinaryUser ? undefined : currSessionId ?? undefined"
+              :current-umo="currentUmo ?? undefined"
+              :session-id="currSessionId ?? undefined"
               :is-dark="isDark"
               :is-streaming="
                 Boolean(
@@ -1073,7 +1072,7 @@
               :staged-files="stagedNonImageFiles"
               :failed-uploads="failedUploadViews"
               :active-uploads="activeUploadViews"
-              :disabled="sending || (isOrdinaryUser && (!!chatError || isSessionRunning(currSessionId)))"
+              :disabled="sending || (isOrdinaryUser && !!chatError)"
               :enable-streaming="enableStreaming"
               :is-recording="isRecording"
               :is-running="
@@ -1094,6 +1093,7 @@
               :placeholder="
                 activeProject ? tm('input.projectPlaceholder') : undefined
               "
+              @open-live-mode="openLiveMode"
               @send="sendCurrentMessage"
               @send-command="sendSystemCommand"
               @stop="stopCurrentSession"
@@ -1226,7 +1226,14 @@
       :refs="selectedRefs"
       @update:model-value="onRefsToggle"
     />
-    <GoalSidebar v-if="!isOrdinaryUser"
+    <v-dialog v-model="liveModeOpen" fullscreen>
+      <LiveMode
+        v-if="liveModeOpen && liveSelection"
+        v-bind="liveSelection"
+        @close="liveModeOpen = false; getSessions()"
+      />
+    </v-dialog>
+    <GoalSidebar
       v-model="goalSidebarOpen"
       :goal="currentGoal"
       :session-id="currSessionId"
@@ -1279,6 +1286,11 @@ import {
 } from "vue-router";
 import { useDisplay } from "vuetify";
 import { useAuthStore } from "@/stores/auth";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
+const chatAccountRevision = accountSessionRevision.value;
 const auth = useAuthStore();
 const isOrdinaryUser = computed(() => auth.role === "user");
 const { tm: accountText } = useModuleI18n("features/auth");
@@ -1346,6 +1358,15 @@ import ProjectList, { type Project } from "@/components/chat/ProjectList.vue";
 import SessionExportButton from "@/components/chat/SessionExportButton.vue";
 import ProjectView from "@/components/chat/ProjectView.vue";
 import ChatInput from "@/components/chat/ChatInput.vue";
+import LiveMode from "@/components/chat/LiveMode.vue";
+const liveModeOpen = ref(false);
+const liveSelection = ref<{
+  sessionId: string;
+  configId: string;
+  selectedProvider?: string;
+  selectedModel?: string;
+  thinkingEffort?: string;
+}>();
 import ChatMessageList from "@/components/chat/ChatMessageList.vue";
 import ChatScrollMarkers, {
   type ChatScrollMarker,
@@ -1537,7 +1558,7 @@ const {
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
 const managementSessionId = computed(() => isOrdinaryUser.value ? "" : currSessionId.value);
-const { currentGoal, applyPushedGoal } = useSessionGoal(managementSessionId);
+const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 
 // ── Background shell session awareness (app-bar indicator) ──────
 // Push-first: the backend emits shell_sessions_changed over the system
@@ -2348,7 +2369,6 @@ const {
   onGoalStateChanged: applyPushedGoal,
   onShellSessionsChanged: applyPushedShellSessions,
   onInteractiveChoice: (sessionId) => {
-    if (isOrdinaryUser.value) return;
     markChoiceAttention(
       sessionId,
       {
@@ -2391,7 +2411,6 @@ const {
   // a stream is in flight, the new session's state is already covered
   // by the `currSessionId` watcher above.
   onStreamEnd: (sessionId) => {
-    if (isOrdinaryUser.value) return;
     // 2026-09-01 (elecvoid243): surface a bounded "reply finished" notice
     // (title flash + steady sidebar dot) when a session's run ends while
     // the user is viewing a different session. The inline message list is
@@ -2407,7 +2426,7 @@ const {
     // follow-up tickets. Runs for any session, not just the visible
     // one.
     void flushPendingFollowUps(sessionId);
-    if (sessionId === currSessionId.value) {
+    if (!isOrdinaryUser.value && sessionId === currSessionId.value) {
       // Bug fix (2026-06-23, elecvoid243): spcodeStatus.refresh()
       // must receive the full umo (not be called bare). Without it,
       // backend's fallback branch returns the most-recently-loaded
@@ -2504,10 +2523,11 @@ watch(currSessionId, (sessionId) => {
   unreadAttention.markRead(sessionId);
 });
 
+const transportStorageKey = `chat.transportMode:${localStorage.getItem("account_id") || "legacy"}`;
+const storedTransportMode = localStorage.getItem(transportStorageKey) ??
+  (!isOrdinaryUser.value ? localStorage.getItem("chat.transportMode") : null);
 const transportMode = ref<TransportMode>(
-  (localStorage.getItem("chat.transportMode") as TransportMode) === "websocket"
-    ? "websocket"
-    : "sse",
+  storedTransportMode === "websocket" ? "websocket" : "sse",
 );
 
 const pointerMediaQuery = window.matchMedia("(pointer: coarse)");
@@ -2532,7 +2552,7 @@ const currentTransportLabel = computed(() =>
 );
 
 watch(transportMode, (mode) => {
-  localStorage.setItem("chat.transportMode", mode);
+  localStorage.setItem(transportStorageKey, mode);
 });
 
 const isDark = computed(() => customizer.uiTheme === "PurpleThemeDark");
@@ -4263,7 +4283,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // bubble plus everything from the switch moment onward. The merge inside
   // loadSessionMessages reconciles live records with the persisted snapshot.
   chatError.value = "";
-  await loadSessionMessages(sessionId, !isOrdinaryUser.value, false);
+  await loadSessionMessages(sessionId, true, false);
   if (
     sessionToken !== viewportSessionToken ||
     interactionToken !== viewportInteractionToken
@@ -4291,7 +4311,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
 }
 
 async function sendCurrentMessage(skillNames: string[] = []) {
-  if (isOrdinaryUser.value && (sending.value || !!chatError.value || isSessionRunning(currSessionId.value))) return;
+  if (isOrdinaryUser.value && (sending.value || !!chatError.value)) return;
   // D13 guard: allow sending when draft is empty if there are staged
   // files OR file-review comments OR queued skill nudges (2026-10-01:
   // ChatInput already consumed the queue before this runs, so blocking
@@ -4427,7 +4447,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
       messageId,
       configId,
       parts: outgoingParts,
-      transport: isOrdinaryUser.value ? "sse" : transportMode.value,
+      transport: transportMode.value,
       enableStreaming: enableStreaming.value,
       selectedProvider: selection?.providerId || "",
       selectedModel: selection?.modelName || "",
@@ -6605,8 +6625,31 @@ async function focusChatInput() {
   });
 }
 
+async function openLiveMode() {
+  try {
+    if (!currSessionId.value) await newSession();
+    await nextTick();
+    const sessionId = currSessionId.value;
+    const configId = await inputRef.value?.prepareConfig?.();
+    assertCurrentAccount(chatAccountRevision);
+    if (!configId || sessionId !== currSessionId.value) {
+      throw new Error("Chat session changed");
+    }
+    const selection = getSelectedProviderSelection();
+    liveSelection.value = {
+      sessionId,
+      configId,
+      selectedProvider: selection?.providerId,
+      selectedModel: selection?.modelName,
+      thinkingEffort: getCurrentThinkingEffort(),
+    };
+    liveModeOpen.value = true;
+  } catch (error) {
+    console.error("Failed to open live chat:", error);
+  }
+}
+
 async function stopCurrentSession() {
-  if (isOrdinaryUser.value) return;
   if (!currSessionId.value) return;
   try {
     await stopSession(currSessionId.value);
@@ -6638,13 +6681,16 @@ const flushingFollowUps = new Set<string>();
     tool call) when one is running, and starts fresh runs otherwise. */
 async function flushPendingFollowUps(sessionId: string) {
   if (!sessionId || flushingFollowUps.has(sessionId)) return;
-  const items = pendingFollowUps.takeAll(sessionId);
+  const items = [...pendingFollowUps.itemsFor(sessionId)];
   if (!items.length) return;
   flushingFollowUps.add(sessionId);
   try {
     for (const item of items) {
       await sendQueuedFollowUp(sessionId, item.text);
+      pendingFollowUps.remove(sessionId, item.id);
     }
+  } catch (error) {
+    console.error("Failed to send queued follow-up:", error);
   } finally {
     flushingFollowUps.delete(sessionId);
   }
@@ -6655,7 +6701,7 @@ async function flushPendingFollowUps(sessionId: string) {
     (equivalent to /stop + resend). */
 async function flushPendingFollowUpsNow(sessionId: string | null) {
   if (!sessionId) return;
-  const items = pendingFollowUps.takeAll(sessionId);
+  const items = [...pendingFollowUps.itemsFor(sessionId)];
   if (!items.length) return;
   flushingFollowUps.add(sessionId);
   try {
@@ -6675,33 +6721,44 @@ async function flushPendingFollowUpsNow(sessionId: string | null) {
     }
     for (const item of items) {
       await sendQueuedFollowUp(sessionId, item.text);
+      pendingFollowUps.remove(sessionId, item.id);
     }
+  } catch (error) {
+    console.error("Failed to send queued follow-up:", error);
   } finally {
     flushingFollowUps.delete(sessionId);
   }
 }
 
 async function sendQueuedFollowUp(sessionId: string, text: string) {
-  const trimmed = text.trim();
-  if (!trimmed) return;
+  if (chatAccountRevision !== accountSessionRevision.value || !text.trim()) return;
+  const currentTarget = sessionId === currSessionId.value;
+  const configId = currentTarget
+    ? await inputRef.value?.prepareConfig?.()
+    : undefined;
+  assertCurrentAccount(chatAccountRevision);
+  if (currentTarget && (sessionId !== currSessionId.value || !configId)) {
+    throw new Error("Chat session changed");
+  }
   const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-  const outgoingParts = buildOutgoingParts(text);
-  const selection = getSelectedProviderSelection();
+  const outgoingParts = isOrdinaryUser.value ? [{ type: "plain", text }] : buildOutgoingParts(text);
+  const selection = currentTarget ? getSelectedProviderSelection() : null;
   const { userRecord, botRecord } = createLocalExchange({
     sessionId,
     messageId,
     parts: outgoingParts,
   });
-  updateTitleFromText(sessionId, text);
+  if (!isOrdinaryUser.value) updateTitleFromText(sessionId, text);
   sendMessageStream({
     sessionId,
     messageId,
+    configId,
     parts: outgoingParts,
     transport: transportMode.value,
     enableStreaming: enableStreaming.value,
     selectedProvider: selection?.providerId || "",
     selectedModel: selection?.modelName || "",
-    thinkingEffort: getCurrentThinkingEffort(),
+    thinkingEffort: currentTarget ? getCurrentThinkingEffort() : "auto",
     userRecord,
     botRecord,
   });
@@ -6726,10 +6783,12 @@ async function flushOldestPendingFollowUp(sessionId: string | null) {
   // The store keeps items in arrival order, so index 0 is the oldest.
   const oldest = pendingFollowUps.itemsFor(sessionId)[0];
   if (!oldest) return;
-  pendingFollowUps.remove(sessionId, oldest.id);
   flushingFollowUps.add(sessionId);
   try {
     await sendQueuedFollowUp(sessionId, oldest.text);
+    pendingFollowUps.remove(sessionId, oldest.id);
+  } catch (error) {
+    console.error("Failed to send queued follow-up:", error);
   } finally {
     flushingFollowUps.delete(sessionId);
   }

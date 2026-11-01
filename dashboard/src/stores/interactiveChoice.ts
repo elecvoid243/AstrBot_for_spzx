@@ -34,6 +34,7 @@
 // Old flat-array persistence (pre-2026-07-04) is dropped on first
 // hydrate: any payload that is not a flat object keyed by umo is
 // treated as stale and removed from localStorage.
+import { accountSessionRevision, assertCurrentAccount } from "@/utils/accountSession";
 import { defineStore } from "pinia";
 
 import { httpClient } from "../api/http.ts";
@@ -542,6 +543,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
      * working offline.
      */
     async reconcile(umo: string): Promise<void> {
+      const accountRevision = accountSessionRevision.value;
       try {
         // Snapshot the local rids BEFORE the round trip. The orphan diff runs
         // when the response is applied, and a box that arrived meanwhile is
@@ -561,6 +563,7 @@ export const useInteractiveChoiceStore = defineStore("interactiveChoice", {
           "/api/chat/interactive-choice/pending",
           { session_id: umo },
         );
+        assertCurrentAccount(accountRevision);
         if (res.data?.status === "ok" && res.data.data) {
           const next: Record<string, InteractiveChoicePart> = {};
           for (const part of res.data.data.pending) {

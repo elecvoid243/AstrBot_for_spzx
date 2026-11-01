@@ -33,7 +33,17 @@ describe("shared ChatInput for ordinary accounts", () => {
   it("sends text through the existing composer and does not initialize management APIs", async () => {
     const profileList = vi.spyOn(configProfileApi, "list");
     const routes = vi.spyOn(configRouteApi, "list");
-    const settings = vi.spyOn(chatApi, "getUiSettings");
+    const settings = vi
+      .spyOn(chatApi, "getUiSettings")
+      .mockResolvedValue({
+        data: { status: "ok", data: { can_edit: false } },
+      } as never);
+    vi.spyOn(chatApi, "listModels").mockResolvedValue({
+      data: { status: "ok", data: [] },
+    } as never);
+    vi.spyOn(chatApi, "listConfigs").mockResolvedValue({
+      data: { status: "ok", data: { info_list: [] } },
+    } as never);
     const commands = vi.spyOn(commandApi, "list");
     const wrapper = mount(ChatInput, {
       props: {
@@ -66,10 +76,10 @@ describe("shared ChatInput for ordinary accounts", () => {
     await wrapper.get('button[aria-label="发送"]').trigger("click");
     expect(wrapper.emitted("send")).toEqual([[[]]]);
     expect(wrapper.find(".input-area__status-row").exists()).toBe(false);
-    expect(wrapper.find(".composer-toolbar__left").exists()).toBe(false);
+    expect(wrapper.find(".composer-toolbar__left").exists()).toBe(true);
     expect(profileList).not.toHaveBeenCalled();
     expect(routes).not.toHaveBeenCalled();
-    expect(settings).not.toHaveBeenCalled();
+    expect(settings).toHaveBeenCalledTimes(1);
     expect(commands).not.toHaveBeenCalled();
     wrapper.unmount();
     vi.restoreAllMocks();

@@ -524,7 +524,7 @@ export function useMessages(options: UseMessagesOptions) {
       if (previousSessionId && previousSessionId !== sessionId) {
         stopSystemStream(previousSessionId);
       }
-      if (sessionId && options.accountRole !== "user") {
+      if (sessionId) {
         startSystemStream(sessionId);
       }
     },
@@ -899,11 +899,7 @@ export function useMessages(options: UseMessagesOptions) {
           writeTodoSnapshot(sessionId, replayedTodoSnapshot);
         }
       }
-      if (
-        options.accountRole !== "user" &&
-        resumeRuns &&
-        Array.isArray(payload.active_runs)
-      ) {
+      if (resumeRuns && Array.isArray(payload.active_runs)) {
         await restoreNextActiveRun(sessionId, payload.active_runs);
       }
     } catch (error) {
@@ -1773,13 +1769,15 @@ export function useMessages(options: UseMessagesOptions) {
       t: "send",
       session_id: sessionId,
       message_id: messageId,
-      _client_message_id: messageId,
       message: parts.map(partToPayload),
-      flags: buildChatRequestFlags(enableStreaming),
+      config_id: configId,
       selected_provider: selectedProvider,
       selected_model: selectedModel,
       thinking_effort: thinkingEffort,
-      config_id: configId,
+      ...(options.accountRole === "user" ? {} : {
+        _client_message_id: messageId,
+        flags: buildChatRequestFlags(enableStreaming),
+      }),
     });
   }
 
@@ -1818,6 +1816,7 @@ export function useMessages(options: UseMessagesOptions) {
       }
     };
     ws.onclose = async () => {
+      if (accountRevision !== accountSessionRevision.value) return;
       if (chatWebSockets[sessionId] === ws) {
         delete chatWebSockets[sessionId];
       }
@@ -1883,6 +1882,7 @@ export function useMessages(options: UseMessagesOptions) {
   }
 
   function handleWebSocketMessage(sessionId: string, event: MessageEvent) {
+    if (accountRevision !== accountSessionRevision.value) return;
     try {
       const payload = JSON.parse(event.data);
       const payloadMessageId =

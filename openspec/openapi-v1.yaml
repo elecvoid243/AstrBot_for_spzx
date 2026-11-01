@@ -1288,6 +1288,17 @@ paths:
     get:
       tags: [Chat]
       summary: Open the live voice chat WebSocket
+      description: >-
+        Dashboard JWTs resolve to the current enabled account and are revalidated
+        for every received message. Bind with t=bind, session_id and optional
+        config_id, selected_provider, selected_model and thinking_effort before
+        recording in an existing owned WebChat conversation. Live attachments
+        arrive as t=attachment with ordinary attachment metadata; content requires
+        the owning account. Audio chunks, STT text and original recordings retain
+        their existing behavior. Closing the connection detaches its output socket
+        without forcibly stopping the core run; the existing turn consumer keeps
+        persisting output and exposing owned recovery until the core end event. Legacy
+        /api/live_chat/ws uses the same rules.
       operationId: openLiveChatWebSocket
       x-websocket: true
       x-astrbot-scope: chat
@@ -1305,6 +1316,15 @@ paths:
     get:
       tags: [Chat]
       summary: Open the unified live/chat WebSocket
+      description: >-
+        Uses the same current Dashboard-account identity and ownership checks as
+        HTTP Chat and live voice. ct=chat accepts public message parts containing
+        owned attachment_id and reply/message_id/selected_text references from
+        the target conversation, plus config_id, selected_provider,
+        selected_model and thinking_effort. ct=live uses the live bind and audio
+        messages. Internal execution flags and shared configuration edits are not
+        accepted from ordinary accounts. Legacy /api/unified_chat/ws follows the
+        same contract. Independent API-key /api/v1/chat/ws retains its own flow.
       operationId: openUnifiedChatWebSocket
       x-websocket: true
       x-astrbot-scope: chat
@@ -1644,6 +1664,7 @@ paths:
       tags: [Chat]
       summary: Return the standing-goal state for a session (null when none)
       operationId: getChatSessionGoal
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1654,6 +1675,7 @@ paths:
       tags: [Chat]
       summary: Set (or replace) the session's standing goal and kick off the loop
       operationId: setChatSessionGoal
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1680,6 +1702,7 @@ paths:
       tags: [Chat]
       summary: Apply a goal-loop control action (pause/resume/clear)
       operationId: applyChatSessionGoalAction
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1834,6 +1857,7 @@ paths:
       tags: [Chat]
       summary: Stop active webchat work for a session
       operationId: stopChatSession
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"
@@ -1942,6 +1966,7 @@ paths:
       tags: [Chat]
       summary: Deliver a user follow-up message into a running foreground subagent
       operationId: postSubagentFollowUp
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       requestBody:
         required: true
@@ -1958,6 +1983,7 @@ paths:
       tags: [Chat]
       summary: Resume an active webchat run as an SSE stream
       operationId: resumeChatRun
+      description: Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.
       x-astrbot-scope: chat
       parameters:
         - name: run_id
@@ -1974,6 +2000,7 @@ paths:
       tags: [Chat]
       summary: Stream session system events when enabled by dashboard configuration
       operationId: streamChatSessionSystemEvents
+      description: Requires current account ownership before subscribing to a persisted conversation or thread.
       x-astrbot-scope: chat
       parameters:
         - $ref: "#/components/parameters/SessionId"

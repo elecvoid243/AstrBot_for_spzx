@@ -707,3 +707,50 @@ async def test_service_state_change_listener_fires_on_control_ops():
     await service.clear_goal("umo1")
     statuses = [s.status if s else None for _, s in events]
     assert statuses == ["active", "paused", "active", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured_admin", [False, True])
+async def test_other_platform_goal_clones_keep_platform_roles(configured_admin):
+    """QQ continuations retain the original platform's sender-role behavior."""
+    from astrbot.core.message.components import Plain
+    from astrbot.core.pipeline.context import PipelineContext
+    from astrbot.core.pipeline.scheduler import PipelineScheduler
+    from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
+    from astrbot.core.platform.astr_message_event import AstrMessageEvent
+    from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+    from astrbot.core.platform.message_type import MessageType
+    from astrbot.core.platform.platform_metadata import PlatformMetadata
+
+    message = AstrBotMessage()
+    message.type = MessageType.FRIEND_MESSAGE
+    message.self_id = "bot"
+    message.sender = MessageMember("qq-sender", "QQ sender")
+    message.session_id = "qq-sender"
+    message.message_id = "initial-platform-turn"
+    message.message = [Plain("continue the goal")]
+    message.message_str = "continue the goal"
+    event = AstrMessageEvent(
+        message.message_str,
+        message,
+        PlatformMetadata("qq", "QQ", "qq"),
+        message.session_id,
+    )
+    context = PipelineContext(
+        {
+            "platform_settings": {},
+            "admins_id": ["qq-sender"] if configured_admin else [],
+            "wake_prefix": [],
+            "plugin_set": ["*"],
+        },
+        SimpleNamespace(),
+        "default",
+    )
+    waking = WakingCheckStage()
+    await waking.initialize(context)
+    pipeline = PipelineScheduler(context)
+    pipeline.stages = [waking]
+    for _ in range(4):
+        await pipeline.execute(event)
+        assert event.is_admin() is configured_admin
+        event = build_goal_turn_event(event, "next automatic turn", "platform-goal")

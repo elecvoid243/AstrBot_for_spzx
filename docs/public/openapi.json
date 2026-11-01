@@ -2278,6 +2278,7 @@
         ],
         "summary": "Return the standing-goal state for a session (null when none)",
         "operationId": "getChatSessionGoal",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2288,8 +2289,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       },
       "post": {
         "tags": [
@@ -2297,6 +2297,7 @@
         ],
         "summary": "Set (or replace) the session's standing goal and kick off the loop",
         "operationId": "setChatSessionGoal",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2330,8 +2331,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/goal/actions": {
@@ -2341,6 +2341,7 @@
         ],
         "summary": "Apply a goal-loop control action (pause/resume/clear)",
         "operationId": "applyChatSessionGoalAction",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2374,8 +2375,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/shell-sessions": {
@@ -2603,6 +2603,7 @@
         ],
         "summary": "Stop active webchat work for a session",
         "operationId": "stopChatSession",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2613,8 +2614,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/open-file": {
@@ -2780,6 +2780,7 @@
         ],
         "summary": "Deliver a user follow-up message into a running foreground subagent",
         "operationId": "postSubagentFollowUp",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "requestBody": {
           "required": true,
@@ -2795,8 +2796,7 @@
           "200": {
             "$ref": "#/components/responses/Ok"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/runs/{run_id}/stream": {
@@ -2806,6 +2806,7 @@
         ],
         "summary": "Resume an active webchat run as an SSE stream",
         "operationId": "resumeChatRun",
+        "description": "Requires current account ownership of the persisted WebChat session. Run and subagent identifiers do not grant access to another account.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2821,8 +2822,7 @@
           "200": {
             "description": "Resumed server-sent chat stream or an error envelope"
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/system-stream": {
@@ -2832,6 +2832,7 @@
         ],
         "summary": "Stream session system events when enabled by dashboard configuration",
         "operationId": "streamChatSessionSystemEvents",
+        "description": "Requires current account ownership before subscribing to a persisted conversation or thread.\n\n**Required scope:** `chat`",
         "x-astrbot-scope": "chat",
         "parameters": [
           {
@@ -2854,8 +2855,7 @@
               }
             }
           }
-        },
-        "description": "**Required scope:** `chat`"
+        }
       }
     },
     "/api/v1/chat/sessions/{session_id}/messages/{message_id}": {

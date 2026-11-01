@@ -21,9 +21,12 @@ def chat_service_instance(monkeypatch, tmp_path):
     platform_history_mgr = Mock()
     platform_history_mgr.insert = AsyncMock(
         return_value=PlatformMessageHistory(
-            id=1, platform_id="webchat", user_id="existing-session",
+            id=1,
+            platform_id="webchat",
+            user_id="existing-session",
             content={"type": "user", "message": [{"type": "plain", "text": "hello"}]},
-            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
     )
     core_lifecycle = SimpleNamespace(
@@ -36,6 +39,7 @@ def chat_service_instance(monkeypatch, tmp_path):
         return_value=SimpleNamespace(
             session_id="existing-session",
             creator="alice",
+            platform_id="webchat",
         )
     )
     db.create_platform_session = AsyncMock()
@@ -45,9 +49,12 @@ def chat_service_instance(monkeypatch, tmp_path):
     )
     service.save_bot_message = AsyncMock(
         return_value=PlatformMessageHistory(
-            id=2, platform_id="webchat", user_id="existing-session",
+            id=2,
+            platform_id="webchat",
+            user_id="existing-session",
             content={"type": "bot", "message": []},
-            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
     )
     return service
@@ -728,7 +735,9 @@ async def test_save_uploaded_file_rejects_oversized_saved_file(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pending_tool", [False, True])
-async def test_followup_timeline_survives_database_reopen(chat_service_instance, tmp_path, pending_tool):
+async def test_followup_timeline_survives_database_reopen(
+    chat_service_instance, tmp_path, pending_tool
+):
     """Recover chronological reply segments and follow-ups from real storage."""
     service = chat_service_instance
     db_path = tmp_path / "timeline.db"
@@ -740,7 +749,9 @@ async def test_followup_timeline_survives_database_reopen(chat_service_instance,
         side_effect=lambda text: [{"type": "plain", "text": text}]
     )
     session_id = "timeline-session"
-    first = await service.build_chat_stream("alice", {"message": "initial", "session_id": session_id})
+    first = await service.build_chat_stream(
+        "alice", {"message": "initial", "session_id": session_id}
+    )
     run = next(iter(service.chat_runs.values()))
     second = None
     tool = {
@@ -750,24 +761,35 @@ async def test_followup_timeline_survives_database_reopen(chat_service_instance,
         "ts": 1,
     }
     try:
-        run.back_queue.put_nowait({"type": "plain", "data": "before", "streaming": True})
+        run.back_queue.put_nowait(
+            {"type": "plain", "data": "before", "streaming": True}
+        )
         if pending_tool:
-            run.back_queue.put_nowait({
-                "type": "plain", "chain_type": "tool_call",
-                "data": json.dumps(tool), "streaming": True,
-            })
-        second = await service.build_chat_stream("alice", {"message": "follow-up", "session_id": session_id})
+            run.back_queue.put_nowait(
+                {
+                    "type": "plain",
+                    "chain_type": "tool_call",
+                    "data": json.dumps(tool),
+                    "streaming": True,
+                }
+            )
+        second = await service.build_chat_stream(
+            "alice", {"message": "follow-up", "session_id": session_id}
+        )
         resumed = service.get_active_chat_runs("alice", session_id)[0]
         assert resumed["content"]["message"] == (
             [{"type": "tool_call", "tool_calls": [tool]}] if pending_tool else []
         )
         assert resumed["preceding_plain_text"] == "before"
         if pending_tool:
-            run.back_queue.put_nowait({
-                "type": "plain", "chain_type": "tool_call_result",
-                "data": json.dumps({"id": tool["id"], "result": "slept", "ts": 2}),
-                "streaming": True,
-            })
+            run.back_queue.put_nowait(
+                {
+                    "type": "plain",
+                    "chain_type": "tool_call_result",
+                    "data": json.dumps({"id": tool["id"], "result": "slept", "ts": 2}),
+                    "streaming": True,
+                }
+            )
         run.back_queue.put_nowait({"type": "plain", "data": "after", "streaming": True})
         runs = list(service.chat_runs.values())
         for active in runs:
@@ -779,14 +801,21 @@ async def test_followup_timeline_survives_database_reopen(chat_service_instance,
         service.platform_history_mgr = PlatformMessageHistoryManager(service.db)
         restored = await service.get_session("alice", session_id)
         rows = restored["history"]
-        assert [row["content"]["type"] for row in rows] == ["user", "bot", "user", "bot"]
+        assert [row["content"]["type"] for row in rows] == [
+            "user",
+            "bot",
+            "user",
+            "bot",
+        ]
         assert [
             "".join(part.get("text", "") for part in row["content"]["message"])
             for row in rows
         ] == ["initial", "before", "follow-up", "after"]
         if pending_tool:
             calls = [
-                call for row in rows for part in row["content"]["message"]
+                call
+                for row in rows
+                for part in row["content"]["message"]
                 for call in part.get("tool_calls", [])
             ]
             assert calls == [{**tool, "result": "slept", "finished_ts": 2}]

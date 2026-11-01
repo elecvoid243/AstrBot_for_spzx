@@ -32,8 +32,10 @@ from astrbot.core.goal.goal_state import GoalState
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.sources.webchat.webchat_event import WebChatMessageEvent
 from astrbot.core.utils.active_event_registry import active_event_registry
 from astrbot.core.utils.trace import TraceSpan
+from astrbot.core.utils.webchat_access import DashboardPrincipal
 
 INTERNAL_TURN_EXTRA = "internal_turn"
 GOAL_ID_EXTRA = "goal_id"
@@ -110,6 +112,22 @@ def build_goal_turn_event(
     else:
         new_event.set_extra(INTERNAL_TURN_EXTRA, "goal")
         new_event.set_extra(GOAL_ID_EXTRA, goal_id)
+    # API-key restrictions remain effective across every automatic turn.
+    allow_admin = event.get_extra("_api_key_allow_admin_role")
+    if isinstance(allow_admin, bool):
+        new_event.set_extra("_api_key_allow_admin_role", allow_admin)
+    principal = event.get_extra("_dashboard_account")
+    if (
+        isinstance(event, WebChatMessageEvent)
+        and isinstance(principal, DashboardPrincipal)
+        and principal.resource_owner == event.get_sender_id()
+    ):
+        new_event.set_extra("_dashboard_account", principal)
+        # The trusted ordinary-account role overrides sender-ID matching,
+        # including a stale role copied from an already processed event.
+        if principal.role == "user":
+            new_event.set_extra("_api_key_allow_admin_role", False)
+            new_event.role = "member"
     # Fresh observability/lifecycle state: the turn is a new run, not a
     # continuation of the source event's trace.
     new_event.created_at = time.time()

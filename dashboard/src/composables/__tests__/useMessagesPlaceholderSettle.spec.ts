@@ -79,6 +79,7 @@ function jsonRejection(message: string) {
 function sessionPayload(history: unknown[]) {
   return {
     data: {
+      status: "ok",
       data: {
         history,
         threads: [],

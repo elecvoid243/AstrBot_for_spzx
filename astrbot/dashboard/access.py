@@ -67,6 +67,17 @@ USER_OPERATIONS = FILE_OPERATIONS | {
     "dashboard_update_session_display_name",
     "dashboard_update_message",
     "dashboard_regenerate_message",
+    "stop_chat_session",
+    "dashboard_stop_session",
+    "resume_chat_run",
+    "system_event_stream",
+    "get_chat_session_goal",
+    "set_chat_session_goal",
+    "apply_chat_session_goal_action",
+    "post_subagent_follow_up",
+    "get_pending_choices",
+    "submit_interactive_choice",
+    "cancel_interactive_choice",
 }
 
 
@@ -112,6 +123,37 @@ async def validate_account_request(request: Request, account) -> None:
     Raises:
         ApiError: The caller supplies internal fields or an unavailable resource.
     """
+    operation = getattr(request.state, "dashboard_operation", None)
+    runtime_fields = {
+        "stop_chat_session": set(),
+        "dashboard_stop_session": {"session_id"},
+        "resume_chat_run": set(),
+        "system_event_stream": set(),
+        "get_chat_session_goal": set(),
+        "set_chat_session_goal": {"goal", "max_turns"},
+        "apply_chat_session_goal_action": {"action"},
+        "post_subagent_follow_up": {"session_id", "subagent_run_id", "text"},
+        "get_pending_choices": {"session_id"},
+        "submit_interactive_choice": {"choice_id", "free_text"},
+        "cancel_interactive_choice": set(),
+    }
+    if account.role != "admin" and operation in runtime_fields:
+        if set(request.query_params) - (
+            {"session_id"} if operation == "get_pending_choices" else set()
+        ):
+            raise ApiError("Unsupported chat query", status_code=400)
+        body = await request.body()
+        if body:
+            try:
+                payload = await request.json()
+            except ValueError as exc:
+                raise ApiError("Invalid JSON body", status_code=400) from exc
+            if (
+                not isinstance(payload, dict)
+                or set(payload) - runtime_fields[operation]
+            ):
+                raise ApiError("Unsupported chat fields", status_code=400)
+        return
     if request.method == "POST" and getattr(
         request.state, "dashboard_operation", None
     ) in {"chat", "dashboard_send_chat"}:

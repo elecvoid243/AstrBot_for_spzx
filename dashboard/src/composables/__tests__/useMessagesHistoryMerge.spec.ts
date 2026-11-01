@@ -49,6 +49,7 @@ function record(id: number) {
 function sessionPayload(history: unknown[], totalMessages: number, hasMore: boolean) {
   return {
     data: {
+      status: "ok",
       data: {
         history,
         threads: [],

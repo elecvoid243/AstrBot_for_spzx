@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -86,11 +87,14 @@ class PipelineScheduler:
                     break
 
     async def execute(self, event: AstrMessageEvent) -> None:
-        """执行 pipeline
+        """Execute the event's stages and release its runtime identity.
 
         Args:
-            event (AstrMessageEvent): 事件对象
+            event: Platform event whose stages are executed.
 
+        Raises:
+            Exception: A stage or platform send fails; the original error propagates.
+            asyncio.CancelledError: Execution is cancelled by its existing lifecycle.
         """
         # The HTTP-to-WebChat queue carries an immutable principal; external
         # JSON fields cannot construct it. Propagate identity through the real
@@ -119,6 +123,17 @@ class PipelineScheduler:
                 await event.send(None)
 
             logger.debug("pipeline execution completed.")
+        except (Exception, asyncio.CancelledError):
+            if (
+                isinstance(event, WebChatMessageEvent)
+                and event.get_extra("action_type") == "live"
+            ):
+                # Release the admitted Live consumer after all queued output.
+                try:
+                    await event.send(None)
+                except (Exception, asyncio.CancelledError) as exc:
+                    logger.error(f"Failed to notify Live turn completion: {exc}")
+            raise
         finally:
             try:
                 event.cleanup_temporary_local_files()

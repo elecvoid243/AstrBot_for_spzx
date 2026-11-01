@@ -25,6 +25,12 @@
                 <div v-for="(msg, index) in messages" :key="index" class="message-item" :class="msg.type">
                     <div class="message-content">
                         {{ msg.text }}
+                        <template v-if="msg.attachment">
+                            <img v-if="msg.attachment.type === 'image'" :src="msg.attachment.url" :alt="msg.attachment.filename" style="max-width: 100%; max-height: 300px" />
+                            <audio v-else-if="msg.attachment.type === 'record'" controls :src="msg.attachment.url" />
+                            <video v-else-if="msg.attachment.type === 'video'" controls :src="msg.attachment.url" style="max-width: 100%; max-height: 300px" />
+                            <a :href="msg.attachment.url" :download="msg.attachment.filename">{{ msg.attachment.filename }}</a>
+                        </template>
                     </div>
                 </div>
             </div>
@@ -55,7 +61,21 @@
 <script setup lang="ts">
 import { ref, computed, onBeforeUnmount, watch } from 'vue';
 import { useTheme } from 'vuetify';
-import { chatApi } from '@/api/v1';
+import { chatApi, fileApi } from '@/api/v1';
+import { httpClient } from '@/api/http';
+import { accountSessionRevision, assertCurrentAccount, expireAccountSession } from '@/utils/accountSession';
+const props = defineProps<{
+    sessionId: string;
+    configId: string;
+    selectedProvider?: string;
+    selectedModel?: string;
+    thinkingEffort?: string;
+}>();
+const accountRevision = accountSessionRevision.value;
+const attachmentUrls = new Set<string>();
+let disposed = false;
+const attachmentRequests = new AbortController();
+let playbackRevision = 0;
 import { useVADRecording } from '@/composables/useVADRecording';
 import SiriOrb from './LiveOrb.vue';
 
@@ -98,7 +118,7 @@ let currentSource: AudioBufferSourceNode | null = null;
 
 
 // 消息历史
-const messages = ref<Array<{ type: 'user' | 'bot', text: string }>>([]);
+const messages = ref<Array<{ type: 'user' | 'bot', text?: string; attachment?: { type: string; filename: string; url: string } }>>([]);
 
 interface LiveMetrics {
     wav_assemble_time?: number;
@@ -170,6 +190,8 @@ async function startLiveMode() {
     try {
         // 1. 建立 WebSocket 连接
         await connectWebSocket();
+        assertCurrentAccount(accountRevision);
+        if (disposed) return;
 
         // 2. 初始化音频上下文（用于播放回复音频）
         audioContext = new AudioContext({ sampleRate: 16000 });
@@ -236,10 +258,16 @@ async function startLiveMode() {
             }
         );
 
+        assertCurrentAccount(accountRevision);
+        if (disposed) {
+            vadRecording.stopRecording();
+            return;
+        }
         isActive.value = true;
         isListening.value = true;
 
     } catch (error) {
+        if (disposed || accountRevision !== accountSessionRevision.value) return;
         console.error('启动 Live Mode 失败:', error);
         alert('启动失败，请检查麦克风权限或网络连接');
         await stopLiveMode();
@@ -284,35 +312,62 @@ function connectWebSocket(): Promise<void> {
         const wsUrl = chatApi.liveWebSocketUrl(token);
 
         ws = new WebSocket(wsUrl);
+        let bound = false;
+        const timeout = setTimeout(() => {
+            if (!bound) reject(new Error('Live chat binding timed out'));
+        }, 5000);
 
         ws.onopen = () => {
+            if (disposed || accountRevision !== accountSessionRevision.value) {
+                ws?.close();
+                reject(new DOMException('Account changed', 'AbortError'));
+                return;
+            }
             console.log('[Live Mode] WebSocket 连接成功');
-            resolve();
+            ws?.send(JSON.stringify({
+                t: 'bind',
+                session_id: props.sessionId,
+                config_id: props.configId,
+                selected_provider: props.selectedProvider,
+                selected_model: props.selectedModel,
+                thinking_effort: props.thinkingEffort,
+            }));
         };
 
         ws.onerror = (error) => {
-            console.error('[Live Mode] WebSocket 错误:', error);
+            clearTimeout(timeout);
+            console.error('[Live Mode] WebSocket error:', error);
             reject(error);
         };
 
-        ws.onmessage = handleWebSocketMessage;
+        ws.onmessage = (event) => {
+            if (disposed || accountRevision !== accountSessionRevision.value) return;
+            const message = JSON.parse(event.data);
+            if (message.t === 'session_bound') {
+                bound = true;
+                clearTimeout(timeout);
+                resolve();
+            } else if (message.t === 'error' && !isActive.value) {
+                clearTimeout(timeout);
+                reject(new Error(message.data));
+            }
+            else void handleWebSocketMessage(event);
+        };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
+            clearTimeout(timeout);
+            if (!bound) reject(new Error('Live chat connection closed'));
+            if (!disposed && event.code === 1008 && accountRevision === accountSessionRevision.value) expireAccountSession();
             console.log('[Live Mode] WebSocket 连接关闭');
         };
 
-        // 超时处理
-        setTimeout(() => {
-            if (ws?.readyState !== WebSocket.OPEN) {
-                reject(new Error('WebSocket 连接超时'));
-            }
-        }, 5000);
     });
 }
 
 // 这些函数不再需要，VAD 库会自动处理语音检测和音频上传
 
-function handleWebSocketMessage(event: MessageEvent) {
+async function handleWebSocketMessage(event: MessageEvent) {
+    if (disposed || accountRevision !== accountSessionRevision.value) return;
     try {
         const message = JSON.parse(event.data);
         const msgType = message.t;
@@ -341,6 +396,20 @@ function handleWebSocketMessage(event: MessageEvent) {
                 isListening.value = true;
                 break;
 
+            case 'attachment': {
+                const part = message.data;
+                if (!part || !['image', 'record', 'video', 'file'].includes(part.type) || typeof part.attachment_id !== 'string') break;
+                const response = await httpClient.get(fileApi.contentUrl(part.attachment_id), {
+                    responseType: 'blob',
+                    signal: attachmentRequests.signal,
+                });
+                assertCurrentAccount(accountRevision);
+                if (disposed) return;
+                const url = URL.createObjectURL(response.data);
+                attachmentUrls.add(url);
+                messages.value.push({ type: 'bot', attachment: { type: part.type, filename: part.filename || 'attachment', url } });
+                break;
+            }
             case 'response':
                 // 音频数据
                 playAudioChunk(message.data);
@@ -399,6 +468,7 @@ async function processRawAudioQueue() {
     if (isDecoding || rawAudioQueue.length === 0) return;
 
     isDecoding = true;
+    const revision = playbackRevision;
 
     try {
         while (rawAudioQueue.length > 0) {
@@ -408,6 +478,7 @@ async function processRawAudioQueue() {
             try {
                 // 解码
                 const audioBuffer = await audioContext.decodeAudioData(bytes.buffer as ArrayBuffer);
+                if (disposed || revision !== playbackRevision || accountRevision !== accountSessionRevision.value) return;
                 audioBufferQueue.push(audioBuffer);
 
                 // 如果当前没有播放，立即开始播放
@@ -419,9 +490,9 @@ async function processRawAudioQueue() {
             }
         }
     } finally {
-        isDecoding = false;
+        if (revision === playbackRevision) isDecoding = false;
         // 如果在解码过程中又有新数据进来，继续处理
-        if (rawAudioQueue.length > 0) {
+        if (!disposed && revision === playbackRevision && rawAudioQueue.length > 0) {
             processRawAudioQueue();
         }
     }
@@ -458,6 +529,7 @@ function playNextAudio() {
         source.start();
 
         source.onended = () => {
+            if (disposed || currentSource !== source) return;
             currentSource = null;
             playNextAudio();
         };
@@ -471,6 +543,7 @@ function playNextAudio() {
 }
 
 function stopAudioPlayback() {
+    playbackRevision++;
     // 停止当前播放源
     if (currentSource) {
         try {
@@ -545,6 +618,11 @@ watch(isSpeaking, (newVal) => {
 });
 
 onBeforeUnmount(() => {
+    disposed = true;
+    attachmentRequests.abort();
+    for (const url of attachmentUrls) URL.revokeObjectURL(url);
+    attachmentUrls.clear();
+    messages.value = [];
     stopLiveMode();
 });
 </script>
@@ -555,7 +633,8 @@ onBeforeUnmount(() => {
     flex-direction: column;
     height: 100%;
     width: 100%;
-    background: linear-gradient(135deg, rgba(103, 58, 183, 0.05) 0%, rgba(63, 81, 181, 0.05) 100%);
+    background-color: rgb(var(--v-theme-surface));
+    background-image: linear-gradient(135deg, rgba(103, 58, 183, 0.05) 0%, rgba(63, 81, 181, 0.05) 100%);
 }
 
 .header-controls {
@@ -665,6 +744,9 @@ onBeforeUnmount(() => {
 
 .message-content {
     flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     word-wrap: break-word;
 }
 

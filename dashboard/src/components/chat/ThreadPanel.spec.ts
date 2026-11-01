@@ -6,21 +6,25 @@ import { defineComponent, h, nextTick } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
-const { getThreadMock, fetchMock, stopMock } = vi.hoisted(() => ({
+const { getThreadMock, fetchMock, stopMock, uploadMock } = vi.hoisted(() => ({
   getThreadMock: vi.fn(),
   fetchMock: vi.fn(),
   stopMock: vi.fn(),
+  uploadMock: vi.fn(),
 }));
 
 vi.mock("@/api/v1", () => ({
+  fileApi: { upload: uploadMock },
   chatApi: {
     getThread: getThreadMock,
+    resumeRunStreamUrl: (runId: string) => `/runs/${runId}/stream`,
     stopThread: stopMock,
     sendThreadMessageUrl: (threadId: string) => `/threads/${threadId}/messages`,
   },
 }));
 vi.mock("@/api/http", () => ({ fetchWithAuth: fetchMock }));
 
+import { accountSessionRevision } from "@/utils/accountSession";
 import ThreadPanel from "./ThreadPanel.vue";
 import type { ChatThread } from "@/composables/useMessages";
 
@@ -69,10 +73,11 @@ function mountPanel(
         ChatMessageList: true,
         ChatInput: defineComponent({
           name: "ChatInput",
-          props: { disabled: Boolean },
-          emits: ["send-command", "stop"],
+          props: { disabled: Boolean, stagedFiles: Array },
+          emits: ["send-command", "stop", "send", "file-select"],
           setup(props, { expose }) {
             expose({
+              prepareConfig: async () => "profile-a",
               getCurrentSelection: () => ({}),
               getThinkingEffort: () => "",
             });
@@ -93,9 +98,11 @@ beforeEach(() => {
   getThreadMock.mockResolvedValue({ data: { data: { history: [] } } });
   fetchMock.mockReset();
   stopMock.mockReset();
+  uploadMock.mockReset();
   stopMock.mockResolvedValue({});
 });
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -320,5 +327,145 @@ describe("ThreadPanel", () => {
 
     await wrapper.get('[data-icon="mdi-delete-outline"]').trigger("click");
     expect(wrapper.emitted("delete")?.[0]).toEqual([THREAD]);
+  });
+});
+
+describe("ThreadPanel account isolation and recovery", () => {
+  it("discards history that arrives after the account changed", async () => {
+    let resolve!: (value: unknown) => void;
+    getThreadMock.mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const wrapper = mountPanel();
+    accountSessionRevision.value += 1;
+    resolve({
+      data: {
+        data: {
+          history: [
+            {
+              id: 1,
+              content: {
+                type: "bot",
+                message: [{ type: "plain", text: "previous account" }],
+              },
+            },
+          ],
+        },
+      },
+    });
+    await flushPromises();
+    expect(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    ).toEqual([]);
+    wrapper.unmount();
+  });
+
+  it("resumes an owned active run and clears its stream and cache on account switch", async () => {
+    getThreadMock.mockResolvedValueOnce({
+      data: {
+        data: {
+          history: [],
+          active_runs: [
+            {
+              run_id: "private-run",
+              status: "running",
+              content: { type: "bot", message: [] },
+            },
+          ],
+        },
+      },
+    });
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let signal!: AbortSignal;
+    fetchMock.mockImplementationOnce(
+      async (_url: string, options: RequestInit) => {
+        signal = options.signal!;
+        return {
+          ok: true,
+          body: new ReadableStream<Uint8Array>({
+            start(value) {
+              controller = value;
+            },
+          }),
+        };
+      },
+    );
+    const wrapper = mountPanel({ sideChat: true });
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/runs/private-run/stream",
+      expect.anything(),
+    );
+    const encode = new TextEncoder();
+    controller.enqueue(
+      encode.encode(
+        'data: {"type":"run_snapshot","data":{"history_record_id":9,"content":{"type":"bot","message":[{"type":"plain","text":"recovered"}]}}}\n\ndata: {"type":"plain","data":" delta","streaming":true}\n\n',
+      ),
+    );
+    await flushPromises();
+    expect(
+      JSON.stringify(
+        wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+      ),
+    ).toContain("recovered delta");
+    accountSessionRevision.value += 1;
+    expect(signal.aborted).toBe(true);
+    await nextTick();
+    expect(
+      wrapper.getComponent({ name: "ChatMessageList" }).props("messages"),
+    ).toEqual([]);
+    controller.close();
+    wrapper.unmount();
+  });
+});
+
+describe("ThreadPanel staged upload payload", () => {
+  it("keeps the local preview while serializing the public attachment fields", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "file-turn" });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:local-side-preview");
+    uploadMock.mockResolvedValue({
+      data: {
+        status: "ok",
+        data: {
+          attachment_id: "owned-side-file",
+          filename: "side.txt",
+          type: "file",
+        },
+      },
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+    });
+    const wrapper = mountPanel({ sideChat: true });
+    await flushPromises();
+    const input = wrapper.getComponent({ name: "ChatInput" });
+    input.vm.$emit("file-select", [
+      new File(["owned side bytes"], "side.txt", { type: "text/plain" }),
+    ]);
+    await flushPromises();
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+    expect(input.props("stagedFiles")).toHaveLength(1);
+    input.vm.$emit("send", []);
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(payload.message).toEqual([
+      { type: "file", attachment_id: "owned-side-file", filename: "side.txt" },
+    ]);
+    const local = wrapper
+      .getComponent({ name: "ChatMessageList" })
+      .props("messages");
+    expect(local[0].content.message[0].embedded_url).toBe(
+      "blob:local-side-preview",
+    );
+    expect(input.props("stagedFiles")).toEqual([]);
+    wrapper.unmount();
   });
 });

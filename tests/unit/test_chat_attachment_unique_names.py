@@ -41,7 +41,9 @@ class FakeDatabase:
         self.attachments[attachment_id] = attachment
         return attachment
 
-    async def get_attachments(self, attachment_ids, *, owner=None):
+    async def get_attachments(
+        self, attachment_ids, *, owner=None, unreferenced_only=False
+    ):
         return [self.attachments[i] for i in attachment_ids]
 
     async def delete_attachments(self, attachment_ids, *, owner=None):

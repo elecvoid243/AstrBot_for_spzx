@@ -421,6 +421,10 @@ export type ChatThreadCreateRequest = {
 };
 
 export type ChatThreadMessageRequest = {
+    /**
+     * Valid profile to bind to this owned thread before sending.
+     */
+    config_id?: string;
     message: (string | Array<MessagePart>);
     selected_provider?: string;
     selected_model?: string;

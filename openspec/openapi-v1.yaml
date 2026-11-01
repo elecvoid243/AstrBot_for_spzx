@@ -2109,7 +2109,7 @@ paths:
   /api/v1/chat/sessions/{session_id}/config:
     get:
       tags: [Chat]
-      summary: Read the effective profile for an owned WebChat session
+      summary: Read the effective profile for an owned WebChat session or thread
       operationId: getChatSessionConfig
       x-astrbot-scope: chat
       parameters:
@@ -2123,7 +2123,7 @@ paths:
           $ref: "#/components/responses/Ok"
     put:
       tags: [Chat]
-      summary: Bind an administrator profile to an owned WebChat session
+      summary: Bind an administrator profile to an owned WebChat session or thread
       operationId: updateChatSessionConfig
       x-astrbot-scope: chat
       parameters:
@@ -8994,6 +8994,9 @@ components:
       type: object
       required: [message]
       properties:
+        config_id:
+          type: string
+          description: Valid profile to bind to this owned thread before sending.
         message:
           oneOf:
             - type: string

@@ -13,6 +13,7 @@ vi.mock("@/api/v1", () => ({
   pluginExtensionApi: { get: vi.fn(), post: vi.fn() },
 }));
 
+import { accountSessionRevision } from "@/utils/accountSession";
 import { pluginExtensionApi } from "@/api/v1";
 import { useSpcodeProjectStatus } from "./useSpcodeProjectStatus";
 
@@ -316,4 +317,26 @@ describe("useSpcodeProjectStatus session scoping", () => {
 
     expect(statusFor(UMO_A).value.directory).toBeNull();
   });
+});
+
+it("clears per-account project state and rejects late status repopulation", async () => {
+  const state = useSpcodeProjectStatus();
+  state.setLoaded(UMO, "private-project");
+  let resolve!: (value: unknown) => void;
+  getMock.mockReturnValueOnce(
+    new Promise((r) => {
+      resolve = r;
+    }) as any,
+  );
+  const pending = state.refresh(UMO);
+  accountSessionRevision.value += 1;
+  window.dispatchEvent(new Event("astrbot:account-changed"));
+  resolve({
+    data: {
+      data: { loaded: true, directory: "late-private-project", umo: UMO },
+    },
+  });
+  await pending;
+  expect(state.status.value.directory).toBeNull();
+  expect(state.statusFor(UMO).value.directory).toBeNull();
 });

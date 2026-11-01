@@ -216,7 +216,7 @@
 
 <script setup lang="ts">
 import "@/components/chat/chatPanelTransition.css";
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { useTheme } from "vuetify";
 import {
   ChevronDown,
@@ -230,6 +230,10 @@ import {
   Search,
   X,
 } from "@lucide/vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { chatApi } from "@/api/v1";
 import { useModuleI18n } from "@/i18n/composables";
 
@@ -244,6 +248,7 @@ interface WorkspaceEntry {
   loading?: boolean;
 }
 
+const accountRevision = accountSessionRevision.value;
 const props = defineProps<{
   modelValue: boolean;
   projectId: string;
@@ -343,6 +348,9 @@ watch(
   },
 );
 
+watch(accountSessionRevision, resetPanel, { flush: "sync" });
+onBeforeUnmount(resetPanel);
+
 function close() {
   emit("update:modelValue", false);
 }
@@ -385,6 +393,7 @@ async function loadDirectory(path: string, parent?: WorkspaceEntry) {
   treeError.value = "";
   try {
     const response = await chatApi.listProjectWorkspaceFiles(projectId, path);
+    assertCurrentAccount(accountRevision);
     if (generation !== treeGeneration.value || projectId !== props.projectId) {
       return;
     }
@@ -451,6 +460,7 @@ async function openEntry(entry: WorkspaceEntry) {
       projectId,
       entry.path,
     );
+    assertCurrentAccount(accountRevision);
     if (generation !== fileGeneration.value || projectId !== props.projectId) {
       return;
     }
@@ -485,6 +495,7 @@ async function downloadSelectedFile() {
       props.projectId,
       selectedFilePath.value,
     );
+    assertCurrentAccount(accountRevision);
     const url = URL.createObjectURL(response.data);
     const anchor = document.createElement("a");
     anchor.href = url;

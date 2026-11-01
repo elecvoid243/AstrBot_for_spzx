@@ -2792,7 +2792,8 @@ export function splitAgentWork(content: ChatContent): AgentWorkSplit | null {
   };
 }
 
-function partToPayload(part: MessagePart) {
+/** Serialize public message fields while retaining previews only in local state. */
+export function partToPayload(part: MessagePart) {
   if (part.type === "plain") return { type: "plain", text: part.text || "" };
   if (part.type === "reply") {
     return {

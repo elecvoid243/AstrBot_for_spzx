@@ -1462,13 +1462,18 @@ class SQLiteDatabase(BaseDatabase):
             return result.scalars().first()
 
     async def get_attachments(
-        self, attachment_ids: list[str], *, owner: str | None = None
+        self,
+        attachment_ids: list[str],
+        *,
+        owner: str | None = None,
+        unreferenced_only: bool = False,
     ) -> list:
         """Get the authorized subset of candidate attachment references.
 
         Args:
             attachment_ids: Candidate IDs from chat history.
             owner: Explicit trusted owner, otherwise the current runtime owner.
+            unreferenced_only: Exclude attachments referenced by live owned chats.
 
         Returns:
             Accessible attachment records.
@@ -1481,6 +1486,57 @@ class SQLiteDatabase(BaseDatabase):
                 col(Attachment.attachment_id).in_(attachment_ids),
                 _dashboard_attachment_visibility(owner),
             )
+            if unreferenced_only:
+                owner = owner if owner is not None else webchat_resource_owner.get()
+                main_sessions = (
+                    select(PlatformSession.session_id)
+                    .where(
+                        PlatformSession.platform_id
+                        == PlatformMessageHistory.platform_id
+                    )
+                    .correlate(PlatformMessageHistory)
+                )
+                threads = (
+                    select(WebChatThread.thread_id)
+                    .join(
+                        PlatformSession,
+                        WebChatThread.parent_session_id == PlatformSession.session_id,
+                    )
+                    .where(PlatformSession.platform_id == "webchat")
+                )
+                if owner is not None:
+                    main_sessions = main_sessions.where(
+                        PlatformSession.creator == owner
+                    )
+                    threads = threads.where(
+                        WebChatThread.creator == owner, PlatformSession.creator == owner
+                    )
+                # Only persisted references in live resources of this owner count.
+                # A foreign or orphan history row must not pin another owner's file.
+                parts = func.json_each(
+                    PlatformMessageHistory.content, "$.message"
+                ).table_valued("value", "type", joins_implicitly=True)
+                retained = (
+                    select(1)
+                    .select_from(PlatformMessageHistory)
+                    .select_from(parts)
+                    .where(
+                        func.json_extract(
+                            case((parts.c.type == "object", parts.c.value), else_="{}"),
+                            "$.attachment_id",
+                        )
+                        == Attachment.attachment_id,
+                        or_(
+                            (PlatformMessageHistory.platform_id == "webchat_thread")
+                            & col(PlatformMessageHistory.user_id).in_(threads),
+                            (PlatformMessageHistory.platform_id != "webchat_thread")
+                            & col(PlatformMessageHistory.user_id).in_(main_sessions),
+                        ),
+                    )
+                    .correlate(Attachment)
+                    .exists()
+                )
+                query = query.where(~retained)
             result = await session.execute(query)
             return list(result.scalars().all())
 
@@ -3087,9 +3143,17 @@ class SQLiteDatabase(BaseDatabase):
             return list(result.scalars().all())
 
     async def get_project_by_session(
-        self, session_id: str, creator: str
+        self, session_id: str, creator: str | None
     ) -> ChatUIProject | None:
-        """Get the project that a session belongs to."""
+        """Get the project that a session belongs to.
+
+        Args:
+            session_id: Persisted parent session ID.
+            creator: Project owner filter, or None to inspect the actual association.
+
+        Returns:
+            The associated project, if it matches the optional owner filter.
+        """
         async with self.get_db() as session:
             session: AsyncSession
             result = await session.execute(
@@ -3101,7 +3165,9 @@ class SQLiteDatabase(BaseDatabase):
                 )
                 .where(
                     col(SessionProjectRelation.session_id) == session_id,
-                    col(ChatUIProject.creator) == creator,
+                    col(ChatUIProject.creator) == creator
+                    if creator is not None
+                    else True,
                 ),
             )
             return result.scalar_one_or_none()

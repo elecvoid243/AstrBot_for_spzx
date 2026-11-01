@@ -1278,15 +1278,14 @@ class ChatService:
         Raises:
             ChatServiceError: The session or profile is unavailable.
         """
-        session = await self.db.get_platform_session_by_id(session_id)
-        if (
-            session is None
-            or session.creator != owner
-            or session.platform_id != "webchat"
-        ):
-            raise ChatServiceError("Resource is unavailable")
-        message_type = "GroupMessage" if session.is_group else "FriendMessage"
-        umo = f"webchat:{message_type}:webchat!{owner}!{session_id}"
+        session = await self.require_owned_chat_session(
+            owner, session_id, allow_thread=True
+        )
+        umo = (
+            build_thread_unified_msg_origin(owner, session_id)
+            if isinstance(session, WebChatThread)
+            else build_webchat_unified_msg_origin(session)
+        )
         router = self.umop_config_router
         write_binding = config_id is not None
         if config_id is None:
@@ -1410,13 +1409,42 @@ class ChatService:
         self._write_chatui(thinking_effort=settings)
         return settings
 
-    async def get_branch_relations(self) -> dict[str, dict]:
+    async def get_branch_relations(
+        self, username: str | None = None
+    ) -> dict[str, dict]:
         """Return cached branch relations (see ``BaseDatabase``).
 
         The cache is updated incrementally by `branch_session`; stale entries
         (e.g. deleted sessions) are filtered out by callers at read time.
+
+        Args:
+            username: Optional trusted owner for account-backed relation filtering.
+
+        Returns:
+            Branch relations whose endpoints belong to the requesting account.
         """
-        return await self.db.get_branch_relations()
+        relations = await self.db.get_branch_relations()
+        if username is None or dashboard_account_context.get() is None:
+            return relations
+        sessions = await self.db.get_platform_sessions_by_ids(
+            list(
+                {
+                    sid
+                    for child, relation in relations.items()
+                    for sid in (child, relation["source_session_id"])
+                }
+            )
+        )
+        owned_ids = {
+            s.session_id
+            for s in sessions
+            if s.creator == username and s.platform_id == "webchat"
+        }
+        return {
+            child: relation
+            for child, relation in relations.items()
+            if child in owned_ids and relation["source_session_id"] in owned_ids
+        }
 
     async def build_user_message_parts(self, message: str | list) -> list[dict]:
         if isinstance(message, list) and webchat_resource_owner.get() is not None:
@@ -1751,11 +1779,24 @@ class ChatService:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             await self.conv_mgr.delete_conversations_by_user_id(unified_msg_origin)
+            history = await self.platform_history_mgr.get(
+                platform_id="webchat_thread",
+                user_id=thread_id,
+                page=1,
+                page_size=100000,
+            )
             await self.platform_history_mgr.delete(
                 platform_id="webchat_thread",
                 user_id=thread_id,
                 offset_sec=99999999,
             )
+            attachment_ids = extract_attachment_ids(history)
+            if attachment_ids:
+                principal = dashboard_account_context.get()
+                await self.delete_attachments(
+                    attachment_ids,
+                    owner=principal.resource_owner if principal is not None else None,
+                )
             webchat_queue_mgr.remove_queues(thread_id)
             self.running_convs.pop(thread_id, None)
 
@@ -2046,6 +2087,16 @@ class ChatService:
                     and parent.creator == username
                     and parent.platform_id == "webchat"
                 ):
+                    if thread.parent_message_id:
+                        message = await self.db.get_platform_message_history_by_id(
+                            thread.parent_message_id
+                        )
+                        if (
+                            message is None
+                            or message.user_id != parent.session_id
+                            or message.platform_id != parent.platform_id
+                        ):
+                            raise ChatServiceError("Permission denied")
                     return thread
         raise ChatServiceError("Permission denied")
 
@@ -2804,7 +2855,7 @@ class ChatService:
         )
 
     async def validate_chat_selection(
-        self, owner: str, session_id: str, payload: dict
+        self, owner: str, session_id: str, payload: dict, *, allow_thread: bool = False
     ) -> str | None:
         """Validate public choices and apply an explicit owned-session binding.
 
@@ -2812,6 +2863,7 @@ class ChatService:
             owner: Trusted account resource identity.
             session_id: Persisted target conversation.
             payload: Public config, model and effort selections.
+            allow_thread: Accept a validated thread send as well as a main session.
 
         Returns:
             Normalized thinking effort, or None when omitted.
@@ -2821,7 +2873,9 @@ class ChatService:
         """
         # Verify ownership before applying any explicit profile selection.
         if dashboard_account_context.get() is not None:
-            await self.require_owned_chat_session(owner, session_id)
+            await self.require_owned_chat_session(
+                owner, session_id, allow_thread=allow_thread
+            )
         selected_provider = payload.get("selected_provider")
         selected_model = payload.get("selected_model")
         thinking_effort = payload.get("thinking_effort")
@@ -2924,7 +2978,10 @@ class ChatService:
                     raise ChatServiceError("Message does not belong to the session")
 
         thinking_effort = await self.validate_chat_selection(
-            username, webchat_conv_id, post_data
+            username,
+            webchat_conv_id,
+            post_data,
+            allow_thread=platform_history_id == "webchat_thread",
         )
         if webchat_account_role.get() == "user":
             post_data = {**post_data, "_api_key_allow_admin_role": False}
@@ -3117,13 +3174,6 @@ class ChatService:
             page_size=100000,
         )
         attachment_ids = extract_attachment_ids(history_list)
-        if attachment_ids:
-            principal = dashboard_account_context.get()
-            await self.delete_attachments(
-                attachment_ids,
-                owner=principal.resource_owner if principal is not None else None,
-            )
-
         await self.platform_history_mgr.delete(
             platform_id=session.platform_id,
             user_id=session_id,
@@ -3133,6 +3183,13 @@ class ChatService:
             session_id, creator=username
         )
         await self.delete_threads_by_ids(thread_ids, username)
+
+        if attachment_ids:
+            principal = dashboard_account_context.get()
+            await self.delete_attachments(
+                attachment_ids,
+                owner=principal.resource_owner if principal is not None else None,
+            )
 
         try:
             await self.umop_config_router.delete_route(unified_msg_origin)
@@ -3298,14 +3355,16 @@ class ChatService:
     async def delete_attachments(
         self, attachment_ids: list[str], *, owner: str | None = None
     ) -> None:
-        """Remove only files and records authorized for the same trusted owner.
+        """Remove authorized files only after their last live chat reference is gone.
 
         Args:
             attachment_ids: Candidate references from chat history.
             owner: Explicit server-resolved owner, or the current runtime owner.
         """
         owner = owner if owner is not None else webchat_resource_owner.get()
-        attachments = await self.db.get_attachments(attachment_ids, owner=owner)
+        attachments = await self.db.get_attachments(
+            attachment_ids, owner=owner, unreferenced_only=True
+        )
         authorized_ids = [attachment.attachment_id for attachment in attachments]
         for attachment in attachments:
             path = Path(attachment.path).resolve()
@@ -3373,7 +3432,7 @@ class ChatService:
         name_by_id = {
             item["session_id"]: item["display_name"] for item in sessions_data
         }
-        relations = await self.get_branch_relations()
+        relations = await self.get_branch_relations(username)
         children: dict[str, list[str]] = {}
         for child_id, relation in relations.items():
             if child_id not in session_ids:
@@ -3464,7 +3523,7 @@ class ChatService:
             )
 
         session_ids = {item["session_id"] for item in items}
-        relations = await self.get_branch_relations()
+        relations = await self.get_branch_relations(username)
         for item in items:
             relation = relations.get(item["session_id"])
             item["branch_source"] = (
@@ -4305,6 +4364,8 @@ class ChatService:
             raise ChatServiceError(f"Session {session_id} not found")
         if session.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(username, session_id)
 
         # 2026-10-22 side-chat: a temporary thread with zero inherited
         # context. The table columns are NOT NULL, so 0 / "" are sentinels
@@ -4398,6 +4459,7 @@ class ChatService:
             platform_id="webchat",
             content=base_history,
         )
+        await self._inherit_side_chat_config(username, session_id, thread.thread_id)
         return serialize_thread(thread)
 
     async def create_thread_from_dashboard_payload(
@@ -4413,6 +4475,10 @@ class ChatService:
             raise ChatServiceError(f"Thread {thread_id} not found")
         if thread.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(
+                username, thread_id, allow_thread=True
+            )
 
         history_ls = await self.platform_history_mgr.get(
             platform_id="webchat_thread",
@@ -4460,6 +4526,10 @@ class ChatService:
             raise ChatServiceError(f"Thread {thread_id} not found")
         if thread.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(
+                username, thread_id, allow_thread=True
+            )
 
         # Side chats inherit the parent session's workspace/permissions at
         # send time, because the user may have changed the mode since the
@@ -4478,6 +4548,7 @@ class ChatService:
             "selected_provider": data.get("selected_provider"),
             "selected_model": data.get("selected_model"),
             "thinking_effort": data.get("thinking_effort"),
+            "config_id": data.get("config_id"),
             "_platform_history_id": "webchat_thread",
             "_thread_selected_text": thread.selected_text,
         }
@@ -4498,6 +4569,10 @@ class ChatService:
             raise ChatServiceError(f"Thread {thread_id} not found")
         if thread.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(
+                username, thread_id, allow_thread=True
+            )
 
         await self.db.delete_webchat_thread(thread_id)
         await self.delete_threads_by_ids([thread_id], username)
@@ -4540,6 +4615,10 @@ class ChatService:
             raise ChatServiceError(f"Thread {thread_id} not found")
         if thread.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(
+                username, thread_id, allow_thread=True
+            )
 
         umo = build_thread_unified_msg_origin(username, thread_id)
         stopped_count = active_event_registry.request_agent_stop_all(umo)
@@ -4561,6 +4640,8 @@ class ChatService:
             raise ChatServiceError(f"Session {session_id} not found")
         if session.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(username, session_id)
 
         threads = await self.db.get_webchat_threads_by_parent_session(
             parent_session_id=session_id,
@@ -4907,6 +4988,8 @@ class ChatService:
             raise ChatServiceError(f"Session {session_id} not found")
         if session.creator != username:
             raise ChatServiceError("Permission denied")
+        if dashboard_account_context.get() is not None:
+            await self.require_owned_chat_session(username, session_id)
 
         target_record = await self.db.get_platform_message_history_by_id(message_id)
         if not target_record:
@@ -4964,20 +5047,56 @@ class ChatService:
             persona_id=source_conversation.persona_id if source_conversation else None,
         )
 
+        await self._inherit_side_chat_config(
+            username, session_id, new_session.session_id
+        )
+
         platform_history = await self.get_sorted_platform_history(session)
         inherited_count = 0
+        copied_message_ids = {}
+        copied_quotes = []
         for item in platform_history:
             if item.id is None or item.id > target_record.id:
                 break
-            await self.platform_history_mgr.insert(
+            content = deepcopy(item.content)
+            copied = await self.platform_history_mgr.insert(
                 platform_id=session.platform_id,
                 user_id=new_session.session_id,
-                content=deepcopy(item.content),
+                content=content,
                 sender_id=item.sender_id,
                 sender_name=item.sender_name,
                 llm_checkpoint_id=item.llm_checkpoint_id,
             )
+            copied_message_ids[item.id] = copied.id
+            if (
+                isinstance(content, dict)
+                and isinstance(content.get("message"), list)
+                and any(
+                    isinstance(part, dict) and part.get("type") == "reply"
+                    for part in content["message"]
+                )
+            ):
+                copied_quotes.append((copied.id, content))
             inherited_count += 1
+
+        # Quotes must point at the copied records, never at another conversation
+        # or an uncopied source record. Other content and provenance stay intact.
+        for copied_id, content in copied_quotes:
+            parts = []
+            for part in content["message"]:
+                if not isinstance(part, dict) or part.get("type") != "reply":
+                    parts.append(part)
+                    continue
+                try:
+                    source_id = int(part.get("message_id"))
+                except (TypeError, ValueError):
+                    continue
+                if source_id in copied_message_ids:
+                    parts.append({**part, "message_id": copied_message_ids[source_id]})
+            content["message"] = parts
+            await self.platform_history_mgr.update(
+                message_id=copied_id, content=content
+            )
 
         await self.platform_history_mgr.insert(
             platform_id=session.platform_id,

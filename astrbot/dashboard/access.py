@@ -26,59 +26,139 @@ FILE_OPERATIONS = {
     "get_dashboard_token_file",
 }
 
-# Endpoint names, rather than URL prefixes or the broad API-key chat scope.
-USER_OPERATIONS = FILE_OPERATIONS | {
-    "login",
-    "dashboard_login",
-    "logout",
-    "dashboard_logout",
-    "setup_status",
-    "dashboard_setup_status",
-    "current_account",
-    "create_chat_session",
-    "dashboard_new_session",
-    "chat_sessions",
-    "dashboard_get_sessions",
-    "get_chat_session",
-    "get_chat_session_history",
-    "dashboard_get_session",
-    "chat",
-    "dashboard_send_chat",
-    "chat_configs",
-    "chat_models",
-    "get_chat_session_config",
-    "update_chat_session_config",
-    "chat_ui_settings",
-    "update_chat_ui_effort_value",
-    "batch_delete_chat_sessions",
-    "batch_archive_chat_sessions",
-    "batch_unarchive_chat_sessions",
-    "get_archived_chat_sessions",
-    "archive_chat_session",
-    "unarchive_chat_session",
-    "get_chat_session_markers",
-    "update_chat_session",
-    "delete_chat_session",
-    "update_chat_message",
-    "regenerate_chat_message",
-    "search_messages",
-    "dashboard_delete_session",
-    "dashboard_batch_delete_sessions",
-    "dashboard_update_session_display_name",
-    "dashboard_update_message",
-    "dashboard_regenerate_message",
-    "stop_chat_session",
-    "dashboard_stop_session",
-    "resume_chat_run",
-    "system_event_stream",
-    "get_chat_session_goal",
-    "set_chat_session_goal",
-    "apply_chat_session_goal_action",
-    "post_subagent_follow_up",
-    "get_pending_choices",
-    "submit_interactive_choice",
-    "cancel_interactive_choice",
+PROJECT_FIELDS = {
+    "title",
+    "emoji",
+    "description",
+    "workspace_type",
+    "workspace_path",
+    "spcode_auto_load",
+    "spcode_force",
+    "spcode_no_agentsmd",
+    "spcode_no_codegraph",
 }
+PROJECT_THREAD_OPERATIONS = {
+    "list_chat_projects": (set(), set()),
+    "list_dashboard_chat_projects": (set(), set()),
+    "create_chat_project": (PROJECT_FIELDS, set()),
+    "create_dashboard_chat_project": (PROJECT_FIELDS, set()),
+    "get_chat_project": (set(), set()),
+    "get_dashboard_chat_project": (set(), {"project_id"}),
+    "update_chat_project": (PROJECT_FIELDS, set()),
+    "update_dashboard_chat_project": (PROJECT_FIELDS | {"project_id"}, set()),
+    "delete_chat_project": (set(), set()),
+    "delete_dashboard_chat_project": (set(), {"project_id"}),
+    "list_chat_project_sessions": (set(), set()),
+    "list_dashboard_chat_project_sessions": (set(), {"project_id"}),
+    "list_chat_project_workspace_files": (set(), {"path"}),
+    "get_chat_project_workspace_file": (set(), {"path"}),
+    "download_chat_project_workspace_file": (set(), {"path"}),
+    "add_chat_project_session": (set(), {"position"}),
+    "add_dashboard_chat_project_session": (
+        {"project_id", "session_id", "position"},
+        set(),
+    ),
+    "remove_chat_project_session": (set(), set()),
+    "remove_dashboard_chat_project_session": ({"session_id"}, set()),
+    "branch_chat_message": (set(), set()),
+    "create_chat_thread": (
+        {"session_id", "parent_message_id", "selected_text", "side_chat"},
+        set(),
+    ),
+    "dashboard_create_thread": (
+        {"session_id", "parent_message_id", "selected_text", "side_chat"},
+        set(),
+    ),
+    "get_chat_thread": (set(), set()),
+    "dashboard_get_thread": (set(), {"thread_id"}),
+    "delete_chat_thread": (set(), set()),
+    "dashboard_delete_thread": ({"thread_id"}, set()),
+    "list_chat_side_threads": (set(), set()),
+    "stop_chat_thread": (set(), set()),
+    "send_chat_thread_message": (
+        {
+            "message",
+            "config_id",
+            "selected_provider",
+            "selected_model",
+            "thinking_effort",
+            "enable_streaming",
+            "flags",
+        },
+        set(),
+    ),
+    "dashboard_send_thread_message": (
+        {
+            "thread_id",
+            "message",
+            "config_id",
+            "selected_provider",
+            "selected_model",
+            "thinking_effort",
+            "enable_streaming",
+            "flags",
+        },
+        set(),
+    ),
+}
+
+# Endpoint names, rather than URL prefixes or the broad API-key chat scope.
+USER_OPERATIONS = (
+    FILE_OPERATIONS
+    | PROJECT_THREAD_OPERATIONS.keys()
+    | {
+        "login",
+        "dashboard_login",
+        "logout",
+        "dashboard_logout",
+        "setup_status",
+        "dashboard_setup_status",
+        "current_account",
+        "create_chat_session",
+        "dashboard_new_session",
+        "chat_sessions",
+        "dashboard_get_sessions",
+        "get_chat_session",
+        "get_chat_session_history",
+        "dashboard_get_session",
+        "chat",
+        "dashboard_send_chat",
+        "chat_configs",
+        "chat_models",
+        "get_chat_session_config",
+        "update_chat_session_config",
+        "chat_ui_settings",
+        "update_chat_ui_effort_value",
+        "batch_delete_chat_sessions",
+        "batch_archive_chat_sessions",
+        "batch_unarchive_chat_sessions",
+        "get_archived_chat_sessions",
+        "archive_chat_session",
+        "unarchive_chat_session",
+        "get_chat_session_markers",
+        "update_chat_session",
+        "delete_chat_session",
+        "update_chat_message",
+        "regenerate_chat_message",
+        "search_messages",
+        "dashboard_delete_session",
+        "dashboard_batch_delete_sessions",
+        "dashboard_update_session_display_name",
+        "dashboard_update_message",
+        "dashboard_regenerate_message",
+        "stop_chat_session",
+        "dashboard_stop_session",
+        "resume_chat_run",
+        "system_event_stream",
+        "get_chat_session_goal",
+        "set_chat_session_goal",
+        "apply_chat_session_goal_action",
+        "post_subagent_follow_up",
+        "get_pending_choices",
+        "submit_interactive_choice",
+        "cancel_interactive_choice",
+    }
+)
 
 
 def require_account_operation(request: Request, account) -> None:
@@ -124,6 +204,58 @@ async def validate_account_request(request: Request, account) -> None:
         ApiError: The caller supplies internal fields or an unavailable resource.
     """
     operation = getattr(request.state, "dashboard_operation", None)
+    if account.role != "admin" and operation in PROJECT_THREAD_OPERATIONS:
+        fields, query_fields = PROJECT_THREAD_OPERATIONS[operation]
+        if set(request.query_params) - query_fields:
+            raise ApiError("Unsupported chat query", status_code=400)
+        try:
+            payload = await request.json() if await request.body() else {}
+        except ValueError as exc:
+            raise ApiError("Invalid JSON body", status_code=400) from exc
+        if not isinstance(payload, dict) or set(payload) - fields:
+            raise ApiError("Unsupported chat fields", status_code=400)
+        if operation in {"send_chat_thread_message", "dashboard_send_thread_message"}:
+            message = payload.get("message")
+            if not isinstance(message, (str, list)) or not message:
+                raise ApiError("Invalid message", status_code=400)
+            for part in message if isinstance(message, list) else []:
+                if (
+                    not isinstance(part, dict)
+                    or part.get("type")
+                    not in {
+                        "plain",
+                        "reply",
+                        "image",
+                        "record",
+                        "audio",
+                        "video",
+                        "file",
+                    }
+                    or set(part)
+                    - {
+                        "type",
+                        "text",
+                        "attachment_id",
+                        "filename",
+                        "stored_filename",
+                        "message_id",
+                        "selected_text",
+                    }
+                ):
+                    raise ApiError("Unsupported message part", status_code=400)
+            flags = payload.get("flags")
+            if flags is not None and (
+                not isinstance(flags, dict)
+                or set(flags)
+                - {
+                    "enable_inline_genui",
+                    "enable_default_system_prompt",
+                    "enable_streaming",
+                }
+                or any(not isinstance(value, bool) for value in flags.values())
+            ):
+                raise ApiError("Unsupported chat flags", status_code=400)
+        return
     runtime_fields = {
         "stop_chat_session": set(),
         "dashboard_stop_session": {"session_id"},

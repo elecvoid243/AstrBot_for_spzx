@@ -121,6 +121,10 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { chatApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 import {
@@ -134,6 +138,7 @@ import {
   normalizeMessageParts,
   parseJsonSafe,
   payloadText,
+  partToPayload,
   upsertToolCall,
   type ChatRecord,
   type MessagePart,
@@ -148,6 +153,7 @@ import { useRecording } from "@/composables/useRecording";
 import { useToast } from "@/utils/toast";
 import type { Session } from "@/composables/useSessions";
 
+const accountRevision = accountSessionRevision.value;
 const props = defineProps<{
   modelValue: boolean;
   thread: ChatThread | null;
@@ -187,6 +193,17 @@ const threadStates = reactive(
     }
   >(),
 );
+function clearAccountThreads() {
+  for (const state of threadStates.values()) {
+    state.abort?.abort();
+    state.generation += 1;
+  }
+  threadStates.clear();
+  draft.value = "";
+}
+watch(accountSessionRevision, clearAccountThreads, { flush: "sync" });
+onBeforeUnmount(clearAccountThreads);
+
 const currentThreadState = computed(() =>
   props.thread ? threadStates.get(props.thread.thread_id) : undefined,
 );
@@ -308,11 +325,63 @@ async function loadThread(threadId: string) {
   const generation = ++state.generation;
   try {
     const response = await chatApi.getThread(threadId);
+    assertCurrentAccount(accountRevision);
     if (generation !== state.generation || state.sending) return;
     const history = response.data?.data?.history || [];
     state.messages = history.map(normalizeRecord);
+    const run = (response.data?.data?.active_runs || []).find(
+      (item: any) => item.status === "running",
+    );
+    if (run) {
+      const botRecord = normalizeRecord({
+        id: run.history_record_id || `resume-${run.run_id}`,
+        content: run.content,
+      });
+      const existing = state.messages.findIndex(
+        (record) => record.id === run.history_record_id,
+      );
+      if (existing >= 0) state.messages.splice(existing, 1, botRecord);
+      else state.messages.push(botRecord);
+      const resumedBot =
+        state.messages[existing >= 0 ? existing : state.messages.length - 1];
+      const userRecord =
+        [...state.messages]
+          .reverse()
+          .find((record) => record.content.type === "user") || resumedBot;
+      const abort = new AbortController();
+      state.abort = abort;
+      state.sending = true;
+      void (async () => {
+        try {
+          const stream = await fetchWithAuth(
+            chatApi.resumeRunStreamUrl(run.run_id),
+            { signal: abort.signal },
+          );
+          if (!stream.ok || !stream.body)
+            throw new Error("Thread stream is unavailable");
+          await readSseStream(stream.body, (payload) => {
+            assertCurrentAccount(accountRevision);
+            processPayload(resumedBot, userRecord, payload);
+            if (props.thread?.thread_id === threadId) scrollToBottom();
+          });
+        } catch (error) {
+          if (
+            !abort.signal.aborted &&
+            accountRevision === accountSessionRevision.value
+          )
+            console.error("Failed to resume thread:", error);
+        } finally {
+          if (state.abort === abort) {
+            state.sending = false;
+            state.abort = null;
+            resumedBot.content.isLoading = false;
+          }
+        }
+      })();
+    }
     if (props.thread?.thread_id === threadId) scrollToBottom();
   } catch (error) {
+    if (accountRevision !== accountSessionRevision.value) return;
     console.error("Failed to load thread:", error);
   }
 }
@@ -344,6 +413,7 @@ function buildOutgoingParts(text: string): MessagePart[] {
 async function sendThreadParts(
   parts: MessagePart[],
   options: {
+    configId?: string;
     selectedProvider?: string;
     selectedModel?: string;
     thinkingEffort?: string;
@@ -391,7 +461,8 @@ async function sendThreadParts(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: parts,
+          message: parts.map(partToPayload),
+          config_id: options.configId || undefined,
           flags: buildChatRequestFlags(enableStreaming.value),
           selected_provider: options.selectedProvider || undefined,
           selected_model: options.selectedModel || undefined,
@@ -400,15 +471,24 @@ async function sendThreadParts(
         signal: abort.signal,
       },
     );
+    if (response.headers?.get("content-type")?.includes("application/json")) {
+      const result = await response.json();
+      throw new Error(result.message || "Thread request failed");
+    }
     if (!response.ok || !response.body) {
       throw new Error(`Thread request failed: ${response.status}`);
     }
     await readSseStream(response.body, (payload) => {
+      assertCurrentAccount(accountRevision);
       processPayload(threadBotRecord, threadUserRecord, payload);
       if (props.thread?.thread_id === threadId) scrollToBottom();
     });
   } catch (error) {
-    if (abort.signal.aborted) return;
+    if (
+      abort.signal.aborted ||
+      accountRevision !== accountSessionRevision.value
+    )
+      return;
     appendPlain(
       threadBotRecord,
       `\n\n${String((error as Error)?.message || error)}`,
@@ -438,10 +518,13 @@ async function sendFromChatInput(skillNames: string[] = []) {
     .join("\n\n");
   const parts = buildOutgoingParts(text);
   if (!parts.length) return;
+  const configId = await chatInputRef.value?.prepareConfig();
+  assertCurrentAccount(accountRevision);
   draft.value = "";
   clearStaged({ revokeUrls: false });
   const selection = chatInputRef.value?.getCurrentSelection();
   await sendThreadParts(parts, {
+    configId,
     selectedProvider: selection?.providerId || "",
     selectedModel: selection?.modelName || "",
     thinkingEffort: chatInputRef.value?.getThinkingEffort() || "",
@@ -450,8 +533,11 @@ async function sendFromChatInput(skillNames: string[] = []) {
 
 async function sendCommand(command: string) {
   if (!props.thread || sending.value) return;
+  const configId = await chatInputRef.value?.prepareConfig();
+  assertCurrentAccount(accountRevision);
   const selection = chatInputRef.value?.getCurrentSelection();
   await sendThreadParts([{ type: "plain", text: command }], {
+    configId,
     selectedProvider: selection?.providerId || "",
     selectedModel: selection?.modelName || "",
     thinkingEffort: chatInputRef.value?.getThinkingEffort() || "",
@@ -568,6 +654,16 @@ function processPayload(
   const chainType = normalized?.chain_type;
   const data = normalized?.data ?? "";
 
+  if (type === "run_snapshot") {
+    const snapshot = normalizeRecord({
+      id: data.history_record_id || botRecord.id,
+      content: data.content,
+    });
+    botRecord.id = snapshot.id;
+    botRecord.content = snapshot.content;
+    botRecord.llm_checkpoint_id = data.llm_checkpoint_id;
+    return;
+  }
   if (type === "session_id" || type === "session_bound") return;
 
   if (type === "user_message_saved") {
@@ -661,6 +757,8 @@ function processPayload(
         : storedFilename;
     const filename = displayFilename || storedFilename;
     const mediaPart: MessagePart = { type, filename };
+    if (normalized.attachment_id)
+      mediaPart.attachment_id = normalized.attachment_id;
     if (storedFilename && storedFilename !== filename) {
       mediaPart.stored_filename = storedFilename;
     }

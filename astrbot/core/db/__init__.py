@@ -494,13 +494,18 @@ class BaseDatabase(abc.ABC):
 
     @abc.abstractmethod
     async def get_attachments(
-        self, attachment_ids: list[str], *, owner: str | None = None
+        self,
+        attachment_ids: list[str],
+        *,
+        owner: str | None = None,
+        unreferenced_only: bool = False,
     ) -> list[Attachment]:
         """Get the authorized subset of candidate attachment references.
 
         Args:
             attachment_ids: Candidate IDs from chat history.
             owner: Explicit trusted owner, otherwise the current runtime owner.
+            unreferenced_only: Exclude attachments referenced by live owned chats.
 
         Returns:
             Accessible attachment records.
@@ -1149,9 +1154,17 @@ class BaseDatabase(abc.ABC):
 
     @abc.abstractmethod
     async def get_project_by_session(
-        self, session_id: str, creator: str
+        self, session_id: str, creator: str | None
     ) -> ChatUIProject | None:
-        """Get the project that a session belongs to."""
+        """Get the project that a session belongs to.
+
+        Args:
+            session_id: Persisted parent session ID.
+            creator: Project owner filter, or None to inspect the actual association.
+
+        Returns:
+            The associated project, if it matches the optional owner filter.
+        """
         ...
 
     # ====

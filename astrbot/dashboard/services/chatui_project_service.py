@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 
 from astrbot.core.db import BaseDatabase
+from astrbot.core.db.po import PlatformSession, WebChatThread
 from astrbot.core.utils.datetime_utils import to_utc_isoformat
+from astrbot.core.utils.webchat_access import dashboard_account_context
 from astrbot.core.workspace import (
     API_KEY_USERNAME_PREFIX,
     WORKSPACE_TYPE_CUSTOM,
@@ -12,6 +14,7 @@ from astrbot.core.workspace import (
     WORKSPACE_TYPE_SESSION,
     normalize_project_workspace_type,
     normalize_workspace_path,
+    parse_webchat_umo,
     resolve_project_workspace_root,
     workspace_path_to_root,
 )
@@ -170,6 +173,10 @@ class ChatUIProjectService:
             raise ChatUIProjectServiceError("Missing key: session_id")
 
         await self._get_owned_session(username, session_id)
+        project = await self.db.get_project_by_session(session_id, username)
+        if project is None:
+            raise ChatUIProjectServiceError("Project is unavailable")
+        await self._get_owned_project(username, project.project_id)
         await self.db.remove_session_from_project(session_id)
 
     async def get_project_sessions(
@@ -184,7 +191,11 @@ class ChatUIProjectService:
         # 2026-08-13 session archive: archived sessions leave the project
         # list; they live in the archived section until restored.
         sessions = await self.db.get_project_sessions(project_id, exclude_archived=True)
-        sessions_data = [self._serialize_session(session) for session in sessions]
+        sessions_data = [
+            self._serialize_session(session)
+            for session in sessions
+            if session.creator == username and session.platform_id == "webchat"
+        ]
 
         # 2026-08-13: attach branch relations (same derivation as the flat
         # session list in ChatService.get_sessions) so project rows can
@@ -195,6 +206,16 @@ class ChatUIProjectService:
             item["session_id"]: item["display_name"] for item in sessions_data
         }
         relations = await self.db.get_branch_relations()
+        allowed_sources = None
+        if dashboard_account_context.get() is not None:
+            sources = await self.db.get_platform_sessions_by_ids(
+                list({relation["source_session_id"] for relation in relations.values()})
+            )
+            allowed_sources = {
+                source.session_id
+                for source in sources
+                if source.creator == username and source.platform_id == "webchat"
+            }
         children: dict[str, list[str]] = {}
         for child_id, relation in relations.items():
             if child_id not in session_ids:
@@ -212,6 +233,10 @@ class ChatUIProjectService:
                     "message_id": relation["source_message_id"],
                 }
                 if relation
+                and (
+                    allowed_sources is None
+                    or relation["source_session_id"] in allowed_sources
+                )
                 else None
             )
             item["branches"] = [
@@ -432,6 +457,136 @@ class ChatUIProjectService:
 
         return Path(workspace_root_path), target_file
 
+    async def require_chat_workspace(
+        self, owner: str, umo: str, *, directory: str | None = None
+    ) -> tuple[PlatformSession | WebChatThread, Path]:
+        """Resolve the workspace of a persisted, owned chat resource.
+
+        Args:
+            owner: Trusted principal's stable resource owner.
+            umo: Exact origin of a main WebChat session or side thread.
+            directory: Optional directory that must match the resolved root.
+
+        Returns:
+            The owned resource and its canonical workspace root.
+
+        Raises:
+            ChatUIProjectServiceError: A resource, association or path is invalid.
+        """
+        parsed = parse_webchat_umo(umo)
+        if parsed is None or parsed[0] != owner:
+            raise ChatUIProjectServiceError("Permission denied")
+        resource_id = parsed[1]
+        resource = await self.db.get_platform_session_by_id(resource_id)
+        if resource is None:
+            resource = await self.db.get_webchat_thread_by_id(resource_id)
+            if resource is None or resource.creator != owner:
+                raise ChatUIProjectServiceError("Permission denied")
+            session = await self._get_owned_session(owner, resource.parent_session_id)
+            if resource.parent_message_id:
+                message = await self.db.get_platform_message_history_by_id(
+                    resource.parent_message_id
+                )
+                if (
+                    message is None
+                    or message.user_id != session.session_id
+                    or message.platform_id != "webchat"
+                ):
+                    raise ChatUIProjectServiceError("Permission denied")
+            expected = f"webchat:FriendMessage:webchat!{owner}!{resource_id}"
+        else:
+            session = await self._get_owned_session(owner, resource_id)
+            message_type = "GroupMessage" if session.is_group else "FriendMessage"
+            expected = f"webchat:{message_type}:webchat!{owner}!{resource_id}"
+        if umo != expected or session.platform_id != "webchat":
+            raise ChatUIProjectServiceError("Permission denied")
+        project = await self.db.get_project_by_session(session.session_id, creator=None)
+        if project is not None:
+            await self._get_owned_project(owner, project.project_id)
+        try:
+            root = resolve_project_workspace_root(
+                project, fallback_umo=expected
+            ).resolve()
+            if directory is not None and (
+                not isinstance(directory, str) or Path(directory).resolve() != root
+            ):
+                raise ChatUIProjectServiceError(
+                    "Project directory does not match the session"
+                )
+        except (OSError, ValueError) as exc:
+            raise ChatUIProjectServiceError("Invalid workspace directory") from exc
+        return resource, root
+
+    async def validate_project_operation(
+        self, owner: str, umo: str, operation: str, payload: dict | None = None
+    ) -> dict:
+        """Prepare the audited project plugin's public operation fields.
+
+        Args:
+            owner: Authenticated principal's resource owner.
+            umo: Explicit origin of the target chat resource.
+            operation: project-status, project-load or project-unload.
+            payload: Public fields supplied to the plugin extension.
+
+        Returns:
+            Safe plugin fields derived from the owned session and project.
+
+        Raises:
+            ChatUIProjectServiceError: Fields or project association are invalid.
+        """
+        if operation not in {"project-status", "project-load", "project-unload"}:
+            raise ChatUIProjectServiceError("Project operation is unavailable")
+        if payload is not None and not isinstance(payload, dict):
+            raise ChatUIProjectServiceError("Invalid project payload")
+        payload = dict(payload or {})
+        fields = (
+            {"umo"}
+            if operation != "project-load"
+            else {
+                "umo",
+                "directory",
+                "force",
+                "no_agentsmd",
+                "no_codegraph",
+                "create",
+                "git_init",
+            }
+        )
+        if set(payload) - fields or payload.get("umo", umo) != umo:
+            raise ChatUIProjectServiceError("Unsupported project fields")
+        resource, root = await self.require_chat_workspace(
+            owner, umo, directory=payload.get("directory")
+        )
+        if operation != "project-load":
+            return {"umo": umo}
+        session_id = (
+            resource.parent_session_id
+            if isinstance(resource, WebChatThread)
+            else resource.session_id
+        )
+        project = await self.db.get_project_by_session(session_id, owner)
+        if project is None or not isinstance(payload.get("directory"), str):
+            raise ChatUIProjectServiceError("Project is unavailable")
+        for key in ("force", "no_agentsmd", "no_codegraph", "create", "git_init"):
+            if key in payload and not isinstance(payload[key], bool):
+                raise ChatUIProjectServiceError("Invalid project flag")
+        if payload.get("create") or payload.get("git_init"):
+            raise ChatUIProjectServiceError("Project directory must already exist")
+        for key in ("no_agentsmd", "no_codegraph"):
+            if key in payload and payload[key] != bool(
+                getattr(project, f"spcode_{key}", False)
+            ):
+                raise ChatUIProjectServiceError(
+                    "Project flags do not match the session"
+                )
+        return {
+            "umo": umo,
+            "directory": str(root),
+            "force": payload.get("force", False),
+            "no_agentsmd": bool(project.spcode_no_agentsmd),
+            "no_codegraph": bool(project.spcode_no_codegraph),
+        }
+
     async def _get_owned_project(self, username: str, project_id: str):
         project = await self.db.get_chatui_project_by_id(project_id)
         if not project:
@@ -444,7 +599,10 @@ class ChatUIProjectService:
         session = await self.db.get_platform_session_by_id(session_id)
         if not session:
             raise ChatUIProjectServiceError(f"Session {session_id} not found")
-        if session.creator != username:
+        if session.creator != username or (
+            dashboard_account_context.get() is not None
+            and session.platform_id != "webchat"
+        ):
             raise ChatUIProjectServiceError("Permission denied")
         return session
 

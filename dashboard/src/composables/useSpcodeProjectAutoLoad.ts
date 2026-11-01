@@ -22,6 +22,10 @@
 // Author: elecvoid243
 
 import { ref } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { pluginExtensionApi } from "@/api/v1";
 import type { Project } from "@/components/chat/ProjectList.vue";
 
@@ -98,6 +102,10 @@ interface SessionLoadTag {
 }
 
 const sessionLoadTags = new Map<string, SessionLoadTag>();
+window.addEventListener?.("astrbot:account-changed", () => {
+  sessionLoadTags.clear();
+  inflight.clear();
+});
 
 /** True when the session already loaded this exact project under this
  * backend process — callers may skip the silent project-load entirely.
@@ -161,6 +169,7 @@ async function postLoad(
   req: SilentLoadRequest,
   force: boolean,
 ): Promise<ProjectLoadResponse> {
+  const revision = accountSessionRevision.value;
   const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -184,6 +193,7 @@ async function postLoad(
     // directory, reason, ... } } — all fields are flat inside `data`, there is
     // no nested `data` sub-object.  We must reshape it into the
     // ProjectLoadResponse shape that silentLoad expects.
+    assertCurrentAccount(revision);
     const raw = res.data.data as unknown as Record<string, unknown>;
     return {
       success: Boolean(raw.success),
@@ -302,12 +312,14 @@ async function postSilent(
   body: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
+  const revision = accountSessionRevision.value;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await pluginExtensionApi.post(path, body, {
       signal: controller.signal,
     });
+    assertCurrentAccount(revision);
     return ((res.data as { data?: Record<string, unknown> })?.data ??
       {}) as Record<string, unknown>;
   } catch (err) {

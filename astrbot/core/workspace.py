@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.core.db import BaseDatabase
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
+from astrbot.core.utils.webchat_access import dashboard_account_context
 
 WORKSPACE_TYPE_SESSION = "session"
 WORKSPACE_TYPE_PROJECT = "project"
@@ -210,6 +211,37 @@ async def resolve_workspace_root_for_umo(
         from astrbot.core import db_helper
 
         db = db_helper
+
+    principal = dashboard_account_context.get()
+    if principal is not None:
+        if creator != principal.resource_owner:
+            raise ValueError("Permission denied")
+        session = await db.get_platform_session_by_id(session_id)
+        if session is None:
+            thread = await db.get_webchat_thread_by_id(session_id)
+            if thread is None or thread.creator != creator:
+                raise ValueError("Permission denied")
+            session = await db.get_platform_session_by_id(thread.parent_session_id)
+            if thread.parent_message_id:
+                message = await db.get_platform_message_history_by_id(
+                    thread.parent_message_id
+                )
+                if (
+                    message is None
+                    or message.user_id != thread.parent_session_id
+                    or message.platform_id != "webchat"
+                ):
+                    raise ValueError("Permission denied")
+        if (
+            session is None
+            or session.creator != creator
+            or session.platform_id != "webchat"
+        ):
+            raise ValueError("Permission denied")
+        project = await db.get_project_by_session(session.session_id, creator=None)
+        if project is not None and project.creator != creator:
+            raise ValueError("Permission denied")
+        return resolve_project_workspace_root(project, fallback_umo=umo)
 
     project = await db.get_project_by_session(session_id=session_id, creator=creator)
     if not project:

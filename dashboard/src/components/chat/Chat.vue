@@ -209,7 +209,6 @@
         </div>
 
         <ProjectList
-          v-if="!isOrdinaryUser"
           :projects="projects"
           :project-sessions="projectSessionsById"
           :loading-project-ids="loadingProjectSessionIds"
@@ -291,7 +290,7 @@
             }"
             role="button"
             tabindex="0"
-            :draggable="!isOrdinaryUser && !selectionMode"
+            :draggable="!selectionMode"
             @click="handleSidebarSessionClick(session.session_id)"
             @contextmenu.prevent="openSessionContextMenu(session, $event)"
             @dragstart="onSidebarSessionDragStart(session.session_id, $event)"
@@ -487,7 +486,10 @@
               @click="toggleSessionStarred(sessionContextMenu.session!)"
             >
               <template #prepend>
-                <StarOff v-if="sessionContextMenu.session!.starred" :size="16" />
+                <StarOff
+                  v-if="sessionContextMenu.session!.starred"
+                  :size="16"
+                />
                 <Star v-else :size="16" />
               </template>
               <v-list-item-title>
@@ -529,8 +531,15 @@
       </div>
 
       <div class="sidebar-footer">
-        <span v-if="isOrdinaryUser" class="text-caption px-3">{{ auth.username }}</span>
-        <v-btn v-if="isOrdinaryUser" variant="text" prepend-icon="mdi-logout" @click="auth.logout()">
+        <span v-if="isOrdinaryUser" class="text-caption px-3">{{
+          auth.username
+        }}</span>
+        <v-btn
+          v-if="isOrdinaryUser"
+          variant="text"
+          prepend-icon="mdi-logout"
+          @click="auth.logout()"
+        >
           {{ accountText("accounts.logout") }}
         </v-btn>
         <button
@@ -751,7 +760,7 @@
              The entry sits in the top-right margin, clear of the 28px
              scroll-marker rail; hovering it lists this session's side chats. -->
         <div
-          v-if="!isOrdinaryUser && currSessionId && !isReadonlySession"
+          v-if="currSessionId && !isReadonlySession"
           class="side-chat-entry"
           @mouseenter="openSideChatMenu"
           @mouseleave="sideChatMenuOpen = false"
@@ -959,7 +968,9 @@
           </transition>
 
           <!-- 加载中 / 消息流 / 欢迎区 主体内容 -->
-          <v-alert v-if="chatError" type="error" variant="tonal" class="ma-4">{{ chatError }}</v-alert>
+          <v-alert v-if="chatError" type="error" variant="tonal" class="ma-4">{{
+            chatError
+          }}</v-alert>
           <div v-if="loadingMessages" class="center-state">
             <v-progress-circular indeterminate size="32" width="3" />
           </div>
@@ -999,8 +1010,8 @@
                 )
               "
               :enable-regenerate="true"
-              :enable-branch="!isOrdinaryUser"
-              :enable-thread-selection="!isOrdinaryUser"
+              enable-branch
+              enable-thread-selection
               :manage-refs-sidebar="false"
               :editing-message-id="editingMessage?.id || null"
               :saving-edit="savingMessageEdit"
@@ -1083,7 +1094,9 @@
                 )
               "
               :token-usage="isOrdinaryUser ? null : tokenUsageIndicator"
-              :compression-notice="isOrdinaryUser ? null : compressionNoticeEntry"
+              :compression-notice="
+                isOrdinaryUser ? null : compressionNoticeEntry
+              "
               :session-id="currSessionId || null"
               :current-session="currentSession"
               :reply-to="chatInputReplyTarget"
@@ -1164,7 +1177,7 @@
       </button>
     </div>
 
-    <ProjectDialog v-if="!isOrdinaryUser"
+    <ProjectDialog
       v-model="projectDialogOpen"
       :project="editingProject"
       :error-message="projectDialogError"
@@ -1203,7 +1216,7 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-    <ThreadPanel v-if="!isOrdinaryUser"
+    <ThreadPanel
       :model-value="threadPanelOpen"
       :thread="activeThread"
       :is-dark="isDark"
@@ -1221,7 +1234,8 @@
       :focus-call-id="activeReasoningTarget?.callId ?? null"
       :focus-query="activeReasoningTarget?.query ?? null"
     />
-    <RefsSidebar v-if="!isOrdinaryUser"
+    <RefsSidebar
+      v-if="!isOrdinaryUser"
       v-model="refsSidebarOpen"
       :refs="selectedRefs"
       @update:model-value="onRefsToggle"
@@ -1230,7 +1244,10 @@
       <LiveMode
         v-if="liveModeOpen && liveSelection"
         v-bind="liveSelection"
-        @close="liveModeOpen = false; getSessions()"
+        @close="
+          liveModeOpen = false;
+          getSessions();
+        "
       />
     </v-dialog>
     <GoalSidebar
@@ -1238,7 +1255,8 @@
       :goal="currentGoal"
       :session-id="currSessionId"
     />
-    <GitDiffSidebar v-if="!isOrdinaryUser"
+    <GitDiffSidebar
+      v-if="!isOrdinaryUser"
       ref="gitDiffSidebarRef"
       v-model="gitDiffSidebarOpen"
       :file-reference="fileReferenceNavigation"
@@ -1246,7 +1264,7 @@
       :chat-id="currSessionId"
       @fullscreen-change="gitDiffFullscreen = $event"
     />
-    <WorkspaceFilesPanel v-if="!isOrdinaryUser"
+    <WorkspaceFilesPanel
       :model-value="chatHeader.workspaceFilesOpen"
       :project-id="activeProject?.project_id || ''"
       :project-title="activeProject?.title || ''"
@@ -1261,7 +1279,8 @@
     @delete="onArchivedDeleted"
     @open="openArchivedSession"
   />
-  <ImportSessionsDialog v-if="!isOrdinaryUser"
+  <ImportSessionsDialog
+    v-if="!isOrdinaryUser"
     v-model="importDialogOpen"
     @imported="onSessionsImported"
   />
@@ -1396,10 +1415,7 @@ import {
 import { useFileComments } from "@/composables/useFileComments";
 import { useFileReferences } from "@/composables/useFileReferences";
 import { useInlineAnnotations } from "@/composables/useInlineAnnotations";
-import {
-  NEW_CHAT_DRAFT_KEY,
-  useChatDrafts,
-} from "@/composables/useChatDrafts";
+import { NEW_CHAT_DRAFT_KEY, useChatDrafts } from "@/composables/useChatDrafts";
 import { usePendingFollowUps } from "@/composables/usePendingFollowUps";
 import { resolveSessionUmo } from "@/utils/resolveSessionUmo";
 import {
@@ -1557,7 +1573,9 @@ const {
 // ── goal 循环状态 (右上角 Goal 按钮 + GoalSidebar) ─────────────
 // Push-first: the backend emits goal_state_changed over the system stream
 // on every mutation; GET /goal is only the cold-start path on session switch.
-const managementSessionId = computed(() => isOrdinaryUser.value ? "" : currSessionId.value);
+const managementSessionId = computed(() =>
+  isOrdinaryUser.value ? "" : currSessionId.value,
+);
 const { currentGoal, applyPushedGoal } = useSessionGoal(currSessionId);
 
 // ── Background shell session awareness (app-bar indicator) ──────
@@ -1845,9 +1863,7 @@ const todoMenuStyle = computed(() => {
  */
 function placeTodoMenu() {
   if (!todoMenuOpen.value) return;
-  const bar = document.querySelector(
-    ".todo-summary-bar",
-  ) as HTMLElement | null;
+  const bar = document.querySelector(".todo-summary-bar") as HTMLElement | null;
   const main = document.querySelector(".chat-main") as HTMLElement | null;
   if (!bar || !main) return;
   const barRect = bar.getBoundingClientRect();
@@ -1991,8 +2007,11 @@ async function autoOpenAgentBrowser(
 ): Promise<void> {
   if (
     sessionId !== currSessionId.value ||
-    !/^browser_(navigate|click|type|get_state|get_html|screenshot|scroll|go_back|list_tabs|switch_tab|close_tab)$/.test(tool.name ?? "")
-  ) return;
+    !/^browser_(navigate|click|type|get_state|get_html|screenshot|scroll|go_back|list_tabs|switch_tab|close_tab)$/.test(
+      tool.name ?? "",
+    )
+  )
+    return;
   const runKey = JSON.stringify([sessionId, runId]);
   if (lastAgentBrowserRun === runKey) return;
   lastAgentBrowserRun = runKey;
@@ -2016,7 +2035,8 @@ async function autoOpenAgentBrowser(
       navigationGeneration !== sideChatGeneration ||
       runKey !== lastAgentBrowserRun ||
       gitDiffSidebarOpen.value
-    ) return;
+    )
+      return;
     chatHeader.SET_WORKSPACE_FILES_OPEN(false);
     closeThreadPanel();
     reasoningPanelOpen.value = false;
@@ -2361,9 +2381,12 @@ const {
 } = useMessages({
   currentSessionId: currSessionId,
   accountRole: auth.role,
-  onError: (message, sessionId) => { if (sessionId === currSessionId.value) chatError.value = message; },
+  onError: (message, sessionId) => {
+    if (sessionId === currSessionId.value) chatError.value = message;
+  },
   onToolCall: (sessionId, tool, runId) => {
-    if (!isOrdinaryUser.value) void autoOpenAgentBrowser(sessionId, tool, runId);
+    if (!isOrdinaryUser.value)
+      void autoOpenAgentBrowser(sessionId, tool, runId);
   },
   onSessionsChanged: getSessions,
   onGoalStateChanged: applyPushedGoal,
@@ -2523,8 +2546,11 @@ watch(currSessionId, (sessionId) => {
   unreadAttention.markRead(sessionId);
 });
 
-const transportStorageKey = `chat.transportMode:${localStorage.getItem("account_id") || "legacy"}`;
-const storedTransportMode = localStorage.getItem(transportStorageKey) ??
+const transportStorageKey = `chat.transportMode:${
+  localStorage.getItem("account_id") || "legacy"
+}`;
+const storedTransportMode =
+  localStorage.getItem(transportStorageKey) ??
   (!isOrdinaryUser.value ? localStorage.getItem("chat.transportMode") : null);
 const transportMode = ref<TransportMode>(
   storedTransportMode === "websocket" ? "websocket" : "sse",
@@ -2587,9 +2613,7 @@ const historyPaging = computed(() =>
     : null,
 );
 const historyOffset = computed(() =>
-  currSessionId.value
-    ? historyOffsetBySession[currSessionId.value] || 0
-    : 0,
+  currSessionId.value ? historyOffsetBySession[currSessionId.value] || 0 : 0,
 );
 // Return-to-tail button: visible once the reader is scrolled away from the
 // newest message. A small threshold keeps the one-frame follow lag and
@@ -2809,6 +2833,21 @@ watch(
   },
 );
 
+watch(
+  accountSessionRevision,
+  () => {
+    closeThreadPanel();
+    sideChats.value = [];
+    projectSessions.value = [];
+    projectSessionsById.value = {};
+    selectedProjectId.value = null;
+    projectDialogOpen.value = false;
+    editingProject.value = null;
+    onSessionDragEnd();
+  },
+  { flush: "sync" },
+);
+
 onMounted(async () => {
   window.addEventListener("pointerup", endMessagesScrollGesture);
   window.addEventListener("pointercancel", endMessagesScrollGesture);
@@ -2832,7 +2871,8 @@ onMounted(async () => {
     await Promise.all([
       getSessions(),
       getArchivedSessions().catch(() => undefined),
-      ...(isOrdinaryUser.value ? [] : [getProjects(), loadTokenProviders()]),
+      getProjects(),
+      ...(isOrdinaryUser.value ? [] : [loadTokenProviders()]),
     ]);
     const routeSessionId = getRouteSessionId();
     if (routeSessionId === "models") {
@@ -3017,9 +3057,7 @@ watch(
 // strip from the loaded-window fallback to the full-session positions.
 watch(
   () =>
-    currSessionId.value
-      ? sessionMarkersBySession[currSessionId.value]
-      : null,
+    currSessionId.value ? sessionMarkersBySession[currSessionId.value] : null,
   () => nextTick(() => updateScrollMarkers()),
   { deep: true },
 );
@@ -3129,7 +3167,7 @@ async function tryAutoLoadSpcodeForSession(
   umo: string,
   sessionId: string,
 ): Promise<void> {
-  if (isOrdinaryUser.value) return;
+  assertCurrentAccount(chatAccountRevision);
   const project = resolveProjectForAutoLoad(sessionId);
   if (!project) return;
   if (project.workspace_type !== "custom") return;
@@ -3147,12 +3185,9 @@ async function tryAutoLoadSpcodeForSession(
   // backend restarted between the two switches would keep the stale
   // boot id and wrongly skip the reload.
   const statusBeforeLoad = await spcodeStatus.refresh(umo);
+  assertCurrentAccount(chatAccountRevision);
   if (
-    isSessionLoadedTag(
-      sessionId,
-      project.project_id,
-      statusBeforeLoad.bootId,
-    )
+    isSessionLoadedTag(sessionId, project.project_id, statusBeforeLoad.bootId)
   ) {
     return;
   }
@@ -3160,8 +3195,10 @@ async function tryAutoLoadSpcodeForSession(
   try {
     operationProgress.startPolling(umo);
     const data = await silentLoad({ project, umo });
+    assertCurrentAccount(chatAccountRevision);
     if (data?.loaded) {
       const statusAfterLoad = await spcodeStatus.refresh(umo);
+      assertCurrentAccount(chatAccountRevision);
       markSessionLoadedTag(
         sessionId,
         project.project_id,
@@ -3169,6 +3206,7 @@ async function tryAutoLoadSpcodeForSession(
       );
     }
   } catch (err) {
+    if (chatAccountRevision !== accountSessionRevision.value) return;
     if (err instanceof ProjectLoadError) {
       const reason = err.reason;
       let msg = tm("project.spcode.errorGeneric", { reason });
@@ -3195,7 +3233,7 @@ async function tryAutoLoadSpcodeForSession(
 }
 
 watch(currSessionId, (next) => {
-  if (isOrdinaryUser.value || !next) return;
+  if (!next) return;
   const umo = resolveCurrentUmo(next);
   if (!umo) return;
   void tryAutoLoadSpcodeForSession(umo, next);
@@ -3258,9 +3296,7 @@ const currentUmo = computed(() => resolveCurrentUmo(currSessionId.value));
 // (which another session's late response could have written).
 provideSpcodeSession({
   umo: currentUmo,
-  directory: computed(
-    () => spcodeStatus.statusFor(currentUmo).value.directory,
-  ),
+  directory: computed(() => spcodeStatus.statusFor(currentUmo).value.directory),
 });
 
 function getRouteSessionId() {
@@ -3402,6 +3438,7 @@ async function loadProjectSessions(projectId = selectedProjectId.value) {
     return [];
   }
   const sessions = await getProjectSessions(projectId);
+  assertCurrentAccount(chatAccountRevision);
   projectSessionsById.value = {
     ...projectSessionsById.value,
     [projectId]: sessions,
@@ -4089,7 +4126,10 @@ async function exportSidebarSession(sessionId: string) {
     const url = URL.createObjectURL(response.data);
     const link = document.createElement("a");
     link.href = url;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .slice(0, -5);
     link.setAttribute("download", `astrbot_chatui_export_${timestamp}.zip`);
     document.body.appendChild(link);
     link.click();
@@ -4157,7 +4197,7 @@ async function createProjectSession(projectId = selectedProjectId.value) {
       // newSession() before the sessions list / reverse map are populated,
       // so it misses. Explicit trigger mirrors the selectSession backstop.
       const umo = resolveCurrentUmo(sessionId);
-      if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+      if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
     }
     selectedProjectId.value = null;
     closeMobileSidebar();
@@ -4297,7 +4337,7 @@ async function selectSession(sessionId: string, pushRoute = true) {
   // the watcher already succeeded) is a harmless no-op on the server.
   {
     const umo = resolveCurrentUmo(sessionId);
-    if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+    if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
   }
   // Replaces the old unconditional scrollToBottom(): that call was gated by
   // the shared stick flag, so a session left scrolled-up blocked the snap and
@@ -4369,7 +4409,7 @@ async function sendCurrentMessage(skillNames: string[] = []) {
         // point both resolveCurrentUmo and resolveProjectForAutoLoad
         // have their inputs ready.
         const umo = resolveCurrentUmo(sessionId);
-        if (!isOrdinaryUser.value && umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
+        if (umo) void tryAutoLoadSpcodeForSession(umo, sessionId);
       }
     }
 
@@ -4378,7 +4418,9 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     // 2026-08-09 drag-reference: references block goes last (after the
     // comments block) — UserPlainMessagePart parses them back in this
     // same order.
-    const referenceText = isOrdinaryUser.value ? "" : fileReferences.formatForLLM();
+    const referenceText = isOrdinaryUser.value
+      ? ""
+      : fileReferences.formatForLLM();
     // 2026-10-01 skill-guide: queued one-shot skill nudges (consumed by
     // ChatInput's send funnel) ride along as a final "[Requested skills]"
     // block so the history view shows what was queued — the plugin's
@@ -4386,13 +4428,14 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     // the dashboard history never renders. The block shape is the
     // contract parsed back by utils/parseSkillRequests.ts — keep the two
     // byte-for-byte aligned.
-    const skillText = !isOrdinaryUser.value && skillNames.length
-      ? [
-          "[Requested skills]",
-          "The user explicitly queued the following skill(s) for this request.",
-          ...skillNames.map((name) => `- \`${name}\``),
-        ].join("\n")
-      : "";
+    const skillText =
+      !isOrdinaryUser.value && skillNames.length
+        ? [
+            "[Requested skills]",
+            "The user explicitly queued the following skill(s) for this request.",
+            ...skillNames.map((name) => `- \`${name}\``),
+          ].join("\n")
+        : "";
     // Concatenate user text + comment block + references block + skills
     // block with blank lines. The bot's first message will show the block
     // headers even when userText is empty.
@@ -4424,7 +4467,9 @@ async function sendCurrentMessage(skillNames: string[] = []) {
     }
 
     const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-    const outgoingParts: MessagePart[] = buildOutgoingParts(isOrdinaryUser.value ? userText : text);
+    const outgoingParts: MessagePart[] = buildOutgoingParts(
+      isOrdinaryUser.value ? userText : text,
+    );
     const selection = getSelectedProviderSelection();
     writeSessionProviderSelection(sessionId, selection);
     const { userRecord, botRecord } = createLocalExchange({
@@ -4957,11 +5002,7 @@ function scrollRowToCenter(row: HTMLElement, animate = true) {
  * @param animate: Glide to the row; false lands on it immediately, which is
  *   what a restored viewport wants.
  */
-function scrollRowToAnchor(
-  row: HTMLElement,
-  offset: number,
-  animate = true,
-) {
+function scrollRowToAnchor(row: HTMLElement, offset: number, animate = true) {
   setStickToBottom(currSessionId.value, false);
   runJumpLanding(
     (container) =>
@@ -5350,7 +5391,8 @@ async function handleRegenerateMessage(
 ) {
   if (!currSessionId.value || isUserMessage(message)) return;
   const effectiveSelection = selection ?? getSelectedProviderSelection();
-  if (!isOrdinaryUser.value) writeSessionProviderSelection(currSessionId.value, effectiveSelection);
+  if (!isOrdinaryUser.value)
+    writeSessionProviderSelection(currSessionId.value, effectiveSelection);
   try {
     const configId = await inputRef.value?.prepareConfig?.();
     await regenerateMessage(
@@ -5372,6 +5414,7 @@ async function handleBranch(message: ChatRecord) {
   if (!sessionId || message.id == null) return;
   try {
     const response = await chatApi.branchMessage(sessionId, message.id);
+    assertCurrentAccount(chatAccountRevision);
     if (response.data?.status !== "ok") {
       toast.error(response.data?.message || tm("branch.failed"));
       return;
@@ -5448,6 +5491,7 @@ async function createThreadFromSelection() {
       parent_message_id: message.id,
       selected_text: threadSelection.selectedText,
     });
+    assertCurrentAccount(chatAccountRevision);
     if (response.data?.status !== "ok") {
       toast.error(response.data?.message || tm("thread.createFailed"));
       return;
@@ -5524,6 +5568,7 @@ async function loadSideChats(): Promise<void> {
   loadingSideChats.value = true;
   try {
     const response = await chatApi.listSideThreads(sessionId);
+    assertCurrentAccount(chatAccountRevision);
     if (currSessionId.value !== sessionId) return;
     sideChats.value = (response.data?.data?.threads || []) as SideChatEntry[];
   } catch (error) {
@@ -5571,6 +5616,7 @@ async function openSideChat(): Promise<void> {
       session_id: sessionId,
       side_chat: true,
     });
+    assertCurrentAccount(chatAccountRevision);
     const thread = response.data?.data as ChatThread | undefined;
     if (
       generation !== sideChatGeneration ||
@@ -6731,7 +6777,8 @@ async function flushPendingFollowUpsNow(sessionId: string | null) {
 }
 
 async function sendQueuedFollowUp(sessionId: string, text: string) {
-  if (chatAccountRevision !== accountSessionRevision.value || !text.trim()) return;
+  if (chatAccountRevision !== accountSessionRevision.value || !text.trim())
+    return;
   const currentTarget = sessionId === currSessionId.value;
   const configId = currentTarget
     ? await inputRef.value?.prepareConfig?.()
@@ -6741,7 +6788,9 @@ async function sendQueuedFollowUp(sessionId: string, text: string) {
     throw new Error("Chat session changed");
   }
   const messageId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-  const outgoingParts = isOrdinaryUser.value ? [{ type: "plain", text }] : buildOutgoingParts(text);
+  const outgoingParts = isOrdinaryUser.value
+    ? [{ type: "plain", text }]
+    : buildOutgoingParts(text);
   const selection = currentTarget ? getSelectedProviderSelection() : null;
   const { userRecord, botRecord } = createLocalExchange({
     sessionId,

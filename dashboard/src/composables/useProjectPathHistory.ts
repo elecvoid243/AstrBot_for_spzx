@@ -5,10 +5,21 @@
 // recent in the other.
 
 import { computed, ref } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 
 const HISTORY_KEY = "chatui.spcode.projectPathHistory";
 const HISTORY_CAP = 10;
 const RECENT_DROPDOWN_COUNT = 5;
+
+function historyKey(): string {
+  const owner =
+    localStorage.getItem("account_id") ||
+    localStorage.getItem("resource_owner");
+  return owner ? `${HISTORY_KEY}:${owner}` : HISTORY_KEY;
+}
 
 /**
  * Read the recent-project-path history from `localStorage`.
@@ -19,7 +30,11 @@ const RECENT_DROPDOWN_COUNT = 5;
  */
 function getPathHistory(): string[] {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY);
+    const raw =
+      localStorage.getItem(historyKey()) ||
+      (localStorage.getItem("role") === "user"
+        ? null
+        : localStorage.getItem(HISTORY_KEY));
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -32,6 +47,9 @@ function getPathHistory(): string[] {
 // Module-level singleton: every dialog instance shares one in-memory
 // mirror, matching the shared localStorage key on the backend of it.
 const pathHistory = ref<string[]>(getPathHistory());
+window.addEventListener?.("astrbot:account-changed", () => {
+  pathHistory.value = [];
+});
 
 /**
  * Shared recent-path state for project path pickers.
@@ -45,6 +63,8 @@ const pathHistory = ref<string[]>(getPathHistory());
  *     localStorage.
  */
 export function useProjectPathHistory() {
+  const revision = accountSessionRevision.value;
+  pathHistory.value = getPathHistory();
   const recentPaths = computed<string[]>(() =>
     pathHistory.value.slice(0, RECENT_DROPDOWN_COUNT),
   );
@@ -58,6 +78,7 @@ export function useProjectPathHistory() {
    *   path: Absolute project path to record.
    */
   function addToPathHistory(path: string): void {
+    assertCurrentAccount(revision);
     const trimmed = path.trim();
     if (!trimmed) return;
     const deduped = [
@@ -66,7 +87,7 @@ export function useProjectPathHistory() {
     ].slice(0, HISTORY_CAP);
     pathHistory.value = deduped;
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(deduped));
+      localStorage.setItem(historyKey(), JSON.stringify(deduped));
     } catch {
       // localStorage write failure (quota, private mode, etc.); silent.
     }
@@ -81,11 +102,12 @@ export function useProjectPathHistory() {
    *   path: Exact path entry to remove.
    */
   function removeFromPathHistory(path: string): void {
+    assertCurrentAccount(revision);
     const filtered = pathHistory.value.filter((p) => p !== path);
     if (filtered.length === pathHistory.value.length) return; // no-op
     pathHistory.value = filtered;
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(filtered));
+      localStorage.setItem(historyKey(), JSON.stringify(filtered));
     } catch {
       // localStorage write failure; silent.
     }

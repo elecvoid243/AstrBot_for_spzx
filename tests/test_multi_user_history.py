@@ -277,11 +277,9 @@ async def test_foreign_ids_formal_and_legacy_are_denied_without_mutation(
         await db.get_platform_session_by_id(platform_session.session_id)
     ).display_name != "wrong platform"
 
-    # Project, branch, side-thread and ZIP endpoints stay closed for ordinary accounts.
+    # ZIP transfer remains gated; project, branch and thread consumption is audited separately.
     headers = {"Authorization": f"Bearer {resources[0][0]['token']}"}
     for path in [
-        f"/api/v1/chat/sessions/{target}/messages/{records[1].id}/branch",
-        "/api/v1/chat/threads",
         "/api/v1/chat/import/stage",
     ]:
         assert (await client.post(path, headers=headers, json={})).status_code == 403

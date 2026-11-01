@@ -3002,7 +3002,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Read the effective profile for an owned WebChat session",
+        "summary": "Read the effective profile for an owned WebChat session or thread",
         "operationId": "getChatSessionConfig",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -3026,7 +3026,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Bind an administrator profile to an owned WebChat session",
+        "summary": "Bind an administrator profile to an owned WebChat session or thread",
         "operationId": "updateChatSessionConfig",
         "x-astrbot-scope": "chat",
         "parameters": [
@@ -9087,6 +9087,10 @@
           "message"
         ],
         "properties": {
+          "config_id": {
+            "type": "string",
+            "description": "Valid profile to bind to this owned thread before sending."
+          },
           "message": {
             "oneOf": [
               {

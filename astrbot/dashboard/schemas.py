@@ -259,6 +259,7 @@ class ChatThreadCreateRequest(OpenModel):
 
 class ChatThreadMessageRequest(OpenModel):
     message: Any
+    config_id: str | None = None
     selected_provider: str | None = None
     selected_model: str | None = None
     thinking_effort: str | None = None

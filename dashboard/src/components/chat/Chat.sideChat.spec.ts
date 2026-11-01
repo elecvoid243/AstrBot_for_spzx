@@ -10,6 +10,10 @@ import { resolve } from "node:path";
 import { parse } from "vue/compiler-sfc";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { flushPromises, mount } from "@vue/test-utils";
 import type {
   FileReferenceTarget,
@@ -152,11 +156,9 @@ function setup() {
       prepareAgentBrowser: vi.fn().mockResolvedValue(true),
     }),
     pluginExtensionApi: {
-      get: vi
-        .fn()
-        .mockResolvedValue({
-          data: { status: "ok", data: { available: false } },
-        }),
+      get: vi.fn().mockResolvedValue({
+        data: { status: "ok", data: { available: false } },
+      }),
     },
     threadSelection: { visible: false },
     toast: { error: vi.fn() },
@@ -166,6 +168,8 @@ function setup() {
   };
   // The real unmount callback also disposes unrelated viewport/media resources.
   const environment = {
+    chatAccountRevision: accountSessionRevision.value,
+    assertCurrentAccount,
     ...state,
     chatApi,
     ref,

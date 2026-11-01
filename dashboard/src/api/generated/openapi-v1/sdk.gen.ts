@@ -1235,7 +1235,7 @@ export const listChatConfigs = <ThrowOnError extends boolean = false>(options?: 
 };
 
 /**
- * Read the effective profile for an owned WebChat session
+ * Read the effective profile for an owned WebChat session or thread
  */
 export const getChatSessionConfig = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<GetChatSessionConfigData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetChatSessionConfigResponse, GetChatSessionConfigError, ThrowOnError>({
@@ -1245,7 +1245,7 @@ export const getChatSessionConfig = <ThrowOnError extends boolean = false>(optio
 };
 
 /**
- * Bind an administrator profile to an owned WebChat session
+ * Bind an administrator profile to an owned WebChat session or thread
  */
 export const updateChatSessionConfig = <ThrowOnError extends boolean = false>(options: OptionsLegacyParser<UpdateChatSessionConfigData, ThrowOnError>) => {
     return (options?.client ?? client).put<UpdateChatSessionConfigResponse, UpdateChatSessionConfigError, ThrowOnError>({

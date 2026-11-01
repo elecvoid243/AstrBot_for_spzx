@@ -6,6 +6,10 @@ import {
   type ComputedRef,
   type MaybeRefOrGetter,
 } from "vue";
+import {
+  accountSessionRevision,
+  assertCurrentAccount,
+} from "@/utils/accountSession";
 import { pluginExtensionApi } from "@/api/v1";
 import { EMPTY_STATUS, type SpcodeProjectStatus } from "./parseSpcodeStatus";
 
@@ -33,6 +37,13 @@ function shouldMirror(umo: string): boolean {
 // both call refresh(umo) for the same session at the same tick; sharing
 // the promise avoids a duplicate GET and keeps the boot id coherent.
 const inflightRefresh = new Map<string, Promise<SpcodeProjectStatus>>();
+window.addEventListener?.("astrbot:account-changed", () => {
+  entries.clear();
+  inflightRefresh.clear();
+  activeUmo = null;
+  pinned = false;
+  status.value = { ...EMPTY_STATUS };
+});
 
 /**
  * Shared state holder for the spcode "currently loaded project" chip.
@@ -78,6 +89,7 @@ export function useSpcodeProjectStatus() {
       status.value = { ...EMPTY_STATUS };
       return status.value;
     }
+    const revision = accountSessionRevision.value;
     // dedup: multiple callers in the same tick share one network request
     const existing = inflightRefresh.get(umo);
     if (existing) return existing;
@@ -93,6 +105,7 @@ export function useSpcodeProjectStatus() {
         }>("spcode/project-status", {
           params: { umo },
         });
+        assertCurrentAccount(revision);
         const data = res.data?.data;
         if (!data) {
           // Soft-fail: keep the last known state for this umo.
@@ -118,6 +131,8 @@ export function useSpcodeProjectStatus() {
         if (shouldMirror(umo)) status.value = { ...next };
         return next;
       } catch (err) {
+        if (revision !== accountSessionRevision.value)
+          return { ...EMPTY_STATUS };
         // Network or auth error: keep previous state, do not throw to callers.
         console.warn("[useSpcodeProjectStatus] refresh failed:", err);
         return entries.get(umo) ?? { ...EMPTY_STATUS };
@@ -159,7 +174,7 @@ export function useSpcodeProjectStatus() {
   /** Optimistically mark `umo` (default: the displayed session) as unloaded. */
   function setUnloaded(umo?: string | null) {
     const target = umo ?? (pinned ? activeUmo : status.value.umo);
-    const base = target ? (entries.get(target) ?? status.value) : status.value;
+    const base = target ? entries.get(target) ?? status.value : status.value;
     const next: SpcodeProjectStatus = {
       ...EMPTY_STATUS,
       umo: target,

@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -91,10 +90,6 @@ def test_workflow_child_scope_survives_real_process_loss(
                     }
 
                 if "team_manage" in payload["tools"]:
-                    role_id = re.search(
-                        r'Allowed roles: \{"([^"]+)"',
-                        payload["tool_descriptions"]["team_manage"],
-                    )[1]
                     if "child-create" not in results:
                         response = call(
                             "child-create",
@@ -102,7 +97,7 @@ def test_workflow_child_scope_survives_real_process_loss(
                             {
                                 "action": "create_member",
                                 "request_id": "child-member",
-                                "role_id": role_id,
+                                "preset_id": "writer",
                                 "name": "Independent child writer",
                             },
                         )

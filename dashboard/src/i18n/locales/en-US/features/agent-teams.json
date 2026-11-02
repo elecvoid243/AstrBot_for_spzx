@@ -624,8 +624,19 @@
       "answered": "Response saved, awaiting consumption",
       "approved": "Version approved",
       "completed": "Answer consumed",
-      "rejected": "Rejected with feedback"
-    }
+      "rejected": "Rejected with feedback",
+      "cancelled": "Cancelled"
+    },
+    "inbox": "Needs my attention",
+    "openProcess": "Open process",
+    "recommendation": "Recommended answer",
+    "recommendationSource": "Source",
+    "recommendationMissing": "Recommendation unavailable; you can still answer.",
+    "recommendationTask": "Recommendation source task",
+    "recommendationValueField": "Recommendation answer field",
+    "recommendationReasonField": "Recommendation reason field",
+    "run": "Run",
+    "task": "Task"
   },
   "loops": {
     "add": "Add bounded loop",

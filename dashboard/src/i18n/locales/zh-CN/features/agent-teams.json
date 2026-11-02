@@ -624,8 +624,19 @@
       "answered": "回答已保存，等待消费",
       "approved": "版本已批准",
       "completed": "回答已消费",
-      "rejected": "已拒绝并反馈"
-    }
+      "rejected": "已拒绝并反馈",
+      "cancelled": "已取消"
+    },
+    "inbox": "需我处理",
+    "openProcess": "查看过程",
+    "recommendation": "推荐答案",
+    "recommendationSource": "来源",
+    "recommendationMissing": "推荐不可用，仍可人工回答。",
+    "recommendationTask": "推荐来源任务",
+    "recommendationValueField": "推荐答案字段",
+    "recommendationReasonField": "推荐理由字段",
+    "run": "运行",
+    "task": "节点"
   },
   "loops": {
     "add": "添加有界循环",

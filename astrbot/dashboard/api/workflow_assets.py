@@ -597,6 +597,23 @@ async def start_run(
         )
 
 
+@router.get("/workflow_human_requests")
+async def list_human_requests(
+    username: str = Depends(require_dashboard_user),
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Return pending human requests visible to the authenticated owner.
+
+    Args:
+        username: Authenticated dashboard user.
+        service: Shared workflow service.
+
+    Returns:
+        Persisted pending requests.
+    """
+    return ok(await service.list_human_requests(username))
+
+
 @router.get("/workflow_runs")
 async def list_runs(
     limit: int = Query(default=50, ge=1, le=100),

@@ -45,6 +45,9 @@ class HumanTask(BaseModel):
     max_length: int = Field(default=10_000, ge=1, le=100_000)
     artifact_task_id: str | None = None
     artifact_version: int = Field(default=1, ge=1)
+    recommendation_task_id: str | None = None
+    recommendation_value_field: str | None = None
+    recommendation_reason_field: str | None = None
 
 
 class TeamCall(BaseModel):
@@ -578,6 +581,43 @@ def validate_graph(definition: GraphDefinition) -> None:
     for index, task in enumerate(definition.tasks):
         path = f"definition.tasks.{index}"
         if task.human is not None:
+            human = task.human
+            recommendation = (
+                human.recommendation_task_id,
+                human.recommendation_value_field,
+                human.recommendation_reason_field,
+            )
+            if any(recommendation):
+                try:
+                    if not all(recommendation) or human.kind != "question":
+                        raise ValueError(
+                            "Select an upstream task and both recommendation fields"
+                        )
+                    source = tasks.get(human.recommendation_task_id)
+                    if (
+                        source is None
+                        or source.id not in ancestors.get(task.id, set())
+                        or source.human
+                        or source.control
+                        or source.team
+                        or source.workflow
+                    ):
+                        raise ValueError(
+                            "Recommendation must come from an upstream agent result"
+                        )
+                    for field in recommendation[1:]:
+                        if set(field_schema(source.output_contract, field)["type"]) != {
+                            "string"
+                        }:
+                            raise ValueError("Recommendation fields must be strings")
+                except (ValueError, KeyError) as exc:
+                    fields.append(
+                        {
+                            "path": path + ".human.recommendation_task_id",
+                            "code": "REFERENCE",
+                            "message": str(exc),
+                        }
+                    )
             if task.human.kind == "approval" and (
                 task.human.artifact_task_id not in ancestors.get(task.id, set())
                 or tasks[task.human.artifact_task_id].human is not None

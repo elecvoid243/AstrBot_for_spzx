@@ -141,9 +141,28 @@
           :aria-pressed="runView === view"
           color="primary"
           @click="runView = view"
-          >{{ tm(`workbench.${view}`) }}</v-btn
+          >{{ tm(`workbench.${view}`) }}<span v-if="view === 'pending'">
+            · {{ humanRequests.length }}</span
+          ></v-btn
         >
       </nav>
+      <section
+        v-if="runView === 'pending'"
+        :aria-label="tm('human.inbox')"
+        data-testid="human-inbox"
+      >
+        <h3 class="text-h6">{{ tm("human.inbox") }} · {{ humanRequests.length }}</h3>
+        <div v-for="todo in humanRequests" :key="todo.todo_id">
+          <v-btn variant="text" @click="openRequest(todo)">{{ tm("human.openProcess") }}</v-btn>
+          <WorkflowHumanTodo
+            :todo="todo"
+            :paused="todo.control_status === 'paused'"
+            :cancelled="false"
+            :busy="inboxBusy"
+            @submit="(id, payload) => answerInbox(todo.root_run_id, id, payload)"
+          />
+        </div>
+      </section>
       <UnifiedRunHistory
         v-if="runView === 'history'"
         @open-run="
@@ -860,6 +879,30 @@ const catalog = ref<Record<string, any[]>>({
   knowledge_bases: [],
 });
 const runs = ref<any[]>([]);
+const humanRequests = ref<any[]>([]);
+const inboxBusy = ref(false);
+async function openRequest(todo: any) {
+  await openRun(todo.root_run_id);
+  selectedTaskNode.value = todo.recommendation_ref?.artifact_id ?? todo.task_run_id;
+}
+async function answerInbox(
+  rootId: string,
+  todoId: string,
+  payload: HumanAnswerRequest,
+) {
+  if (inboxBusy.value) return;
+  inboxBusy.value = true;
+  try {
+    const updated = await workflowAssetsApi.answer(rootId, todoId, payload);
+    if (selectedRun.value?.run_id === rootId) selectedRun.value = updated;
+    humanRequests.value = (await workflowAssetsApi.humanRequests()).requests;
+  } catch (err) {
+    error.value = extractApiError(err, tm("errors.operationFailed")).message;
+  } finally {
+    inboxBusy.value = false;
+  }
+}
+
 const runView = ref<"all" | "active" | "pending" | "history">("all");
 const visibleRuns = computed(() =>
   runs.value.filter((run) => {
@@ -1013,9 +1056,13 @@ async function refresh() {
       runs.value = runData.runs;
       if (resources) catalog.value = resources;
     } else {
-      const runData = await workflowAssetsApi.runs();
+      const [runData, inboxData] = await Promise.all([
+        workflowAssetsApi.runs(),
+        workflowAssetsApi.humanRequests(),
+      ]);
       if (disposed || read !== runRead) return;
       runs.value = runData.runs;
+      humanRequests.value = inboxData.requests;
       const id = route.query.workflow_run ?? selectedRun.value?.run_id;
       if (typeof id === "string" && id) {
         const artifactId = detailRun.value?.result_ref?.artifact_id;

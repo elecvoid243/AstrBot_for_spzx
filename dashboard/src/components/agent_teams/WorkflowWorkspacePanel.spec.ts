@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   readiness: vi.fn(),
   runs: vi.fn(),
+  humanRequests: vi.fn(),
   history: vi.fn(),
   run: vi.fn(),
   artifact: vi.fn(),
@@ -120,6 +121,28 @@ Object.assign(stubs, {
 });
 
 describe("single-task workflow workspace", () => {
+  it("answers a persisted request from the global inbox", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/", component: { template: "<div />" } }] });
+    await router.push("/");
+    const todo = { run_name: "Market research", task_name: "Select market", recommendation_source_name: "Forecast", todo_id: "todo-1", root_run_id: "run-1", task_run_id: "task-1", kind: "question", question: "Which region?", status: "pending", control_status: "active", constraints: { choices: [], max_length: 100 }, recommendation: {value: "Asia", reason: "Demand"}, recommendation_ref: { artifact_id: "source-1", version: 1 }, recommendation_fields: { value: "choice", reason: "reason" } };
+    api.humanRequests.mockResolvedValueOnce({ requests: [todo] }).mockResolvedValue({ requests: [] });
+    api.answer.mockResolvedValue(run);
+    const wrapper = mount(WorkflowWorkspacePanel, { props: { mode: "runs" }, global: { plugins: [router], stubs } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="runs-pending"]').text()).toContain("1");
+    await wrapper.get('[data-testid="runs-pending"]').trigger("click");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Demand");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Market research");
+    expect(wrapper.get('[data-testid="human-origin"]').text()).toContain("Select market");
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).toContain("Forecast");
+    await wrapper.get('[data-testid="human-answer"]').setValue("Europe");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    await flushPromises();
+    expect(api.answer).toHaveBeenCalledWith("run-1", "todo-1", expect.objectContaining({ action: "answer", answer: "Europe" }));
+    expect(wrapper.get('[data-testid="human-inbox"]').text()).not.toContain("Which region?");
+    wrapper.unmount();
+  });
+
   it("finds active, waiting and historical runs without editing their definitions", async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -1804,6 +1827,7 @@ describe("single-task workflow workspace", () => {
   });
   beforeEach(() => {
     vi.resetAllMocks();
+    api.humanRequests.mockResolvedValue({ requests: [] });
     api.readiness.mockResolvedValue({ ready: true, issues: [], roles: [] });
     api.list.mockResolvedValue({ assets: [asset] });
     roles.list.mockResolvedValue({

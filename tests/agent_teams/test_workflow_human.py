@@ -31,6 +31,7 @@ async def test_question_releases_capacity_and_consumes_once_after_continue(
         {
             "definition": {
                 "name": "Human input",
+                "result_task_id": "dependent",
                 "max_parallel": 1,
                 "tasks": [
                     {
@@ -118,6 +119,7 @@ async def test_approval_and_export_remain_bound_to_previewed_version(workflow_en
         {
             "definition": {
                 "name": "Report approval",
+                "result_task_id": "approval",
                 "tasks": [
                     {
                         "id": "report",
@@ -220,6 +222,7 @@ async def test_human_constraints_rejection_and_cancel_preserve_durable_history(
         {
             "definition": {
                 "name": "Question",
+                "result_task_id": "q",
                 "tasks": [
                     {
                         "id": "q",
@@ -278,6 +281,7 @@ async def test_duplicate_answer_and_root_control_compete_without_double_consumpt
         {
             "definition": {
                 "name": "Question",
+                "result_task_id": "q",
                 "tasks": [
                     {
                         "id": "q",
@@ -323,6 +327,7 @@ async def test_storage_failure_keeps_response_boundary_truthful(workflow_env, bo
         {
             "definition": {
                 "name": "Question",
+                "result_task_id": "q",
                 "tasks": [
                     {
                         "id": "q",
@@ -379,6 +384,7 @@ async def test_cancel_serializes_with_answer_without_erasing_requests(
         {
             "definition": {
                 "name": "Question",
+                "result_task_id": "q",
                 "tasks": [
                     {
                         "id": "q",
@@ -414,11 +420,12 @@ async def test_cancel_serializes_with_answer_without_erasing_requests(
     assert final["status"] == "cancelled"
     assert final["todos"][0]["question"] == "Answer?"
     assert final["todos"][0]["consumed_at"] is None
-    assert final["todos"][0]["status"] == ("answered" if answer_first else "pending")
+    assert final["todos"][0]["status"] == "cancelled"
+    assert (final["todos"][0]["response"] is not None) is answer_first
 
 
 @pytest.mark.asyncio
-async def test_review_task_reads_full_pinned_file_before_human_delivery_approval(
+async def test_review_task_cannot_read_unselected_file_before_human_delivery_approval(
     workflow_env,
 ):
     service, role = workflow_env.service, workflow_env.role
@@ -453,8 +460,8 @@ async def test_review_task_reads_full_pinned_file_before_human_delivery_approval
             content = await read.call(
                 None, **ref, file_id=artifact["files"][0]["file_id"]
             )
-            assert "Complete evidence for independent review" in content
-            await tools[0].call(None, text="Reviewed the complete pinned file")
+            assert "Graph inputs do not grant file access" in content
+            await tools[0].call(None, text="Reviewed the selected field")
         return "Done", []
 
     service.ports_factory = lambda _: replace(ports, collect=collect)
@@ -486,6 +493,7 @@ async def test_review_task_reads_full_pinned_file_before_human_delivery_approval
         {
             "definition": {
                 "name": "Review before delivery",
+                "result_task_id": "approve",
                 "tasks": [
                     {**agent, "output_contract": contract},
                     {
@@ -519,7 +527,7 @@ async def test_review_task_reads_full_pinned_file_before_human_delivery_approval
             break
         await asyncio.sleep(0.01)
     assert run["tasks"][1]["status"] == "completed", run
-    assert run["tasks"][1]["result"] == {"text": "Reviewed the complete pinned file"}
+    assert run["tasks"][1]["result"] == {"text": "Reviewed the selected field"}
     assert run["todos"][0]["status"] == "pending"
 
 
@@ -533,6 +541,7 @@ async def test_requested_revision_can_be_supplied_after_approval_wait_begins(
         {
             "definition": {
                 "name": "Approve v2",
+                "result_task_id": "approve",
                 "tasks": [
                     {
                         "id": "report",

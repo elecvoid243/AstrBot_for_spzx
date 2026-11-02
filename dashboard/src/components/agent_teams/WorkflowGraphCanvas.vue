@@ -698,6 +698,28 @@
                   checkpoint();
                 "
               />
+              <v-select
+                v-model="selectedTask.human.recommendation_task_id"
+                clearable
+                :items="draft.tasks.filter((task) => task.id !== selectedTask?.id && !task.human && !task.control && !task.team && !task.workflow).map((task) => ({ title: task.name, value: task.id }))"
+                :label="tm('human.recommendationTask')"
+                @update:model-value="
+                  !$event && (selectedTask.human.recommendation_value_field = null, selectedTask.human.recommendation_reason_field = null);
+                  checkpoint();
+                "
+              />
+              <template v-if="selectedTask.human.recommendation_task_id">
+                <v-text-field
+                  v-model="selectedTask.human.recommendation_value_field"
+                  :label="tm('human.recommendationValueField')"
+                  @update:model-value="checkpoint"
+                />
+                <v-text-field
+                  v-model="selectedTask.human.recommendation_reason_field"
+                  :label="tm('human.recommendationReasonField')"
+                  @update:model-value="checkpoint"
+                />
+              </template>
               <v-text-field
                 v-model.number="selectedTask.human.max_length"
                 type="number"

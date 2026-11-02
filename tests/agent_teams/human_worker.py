@@ -96,15 +96,11 @@ async def run_human_scenario(
                 "definition": {
                     "name": "Writer",
                     "prompt": "Use the verified answer.",
-                    "tools": ["evidence"],
+                    "provider_id": "model-original",
+                    "tools": ["external_evidence"],
                     "max_steps": 4,
                 },
-                "installation": {
-                    "bindings": {
-                        "model": "model-original",
-                        "evidence": "external_evidence",
-                    }
-                },
+                "installation": {"profile_id": "default"},
             },
         )
         asset = await service.save_asset(
@@ -112,6 +108,7 @@ async def run_human_scenario(
             {
                 "definition": {
                     "name": "Persistent human request",
+                    "result_task_id": "write",
                     "max_parallel": 1,
                     "tasks": [
                         {
@@ -145,6 +142,7 @@ async def run_human_scenario(
                 {
                     "definition": {
                         "name": "Exact version approval",
+                        "result_task_id": "approval",
                         "max_parallel": 1,
                         "tasks": [
                             {

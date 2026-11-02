@@ -7287,6 +7287,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workflow_human_requests:
+    get:
+      tags:
+      - Agent Teams workflows
+      summary: List Human Requests
+      description: Return persisted pending requests visible to the authenticated owner.
+      operationId: list_human_requests_api_v1_workflow_human_requests_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /api/v1/workflow_runs:
     get:
       tags:
@@ -11226,6 +11239,21 @@ components:
           minimum: 1.0
           title: Artifact Version
           default: 1
+        recommendation_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation Task Id
+        recommendation_value_field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation Value Field
+        recommendation_reason_field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation Reason Field
       additionalProperties: false
       type: object
       required:

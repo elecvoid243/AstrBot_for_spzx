@@ -150,6 +150,37 @@ class SQLiteDatabase(BaseDatabase):
             await conn.execute(text("PRAGMA temp_store=MEMORY"))
             await conn.execute(text("PRAGMA mmap_size=134217728"))
             await conn.execute(text("PRAGMA optimize"))
+            # Preserve existing requests while replacing the old one-request-per-task index.
+            indexes = (
+                await conn.execute(text("PRAGMA index_list(agent_workflow_todos)"))
+            ).all()
+            for index in indexes:
+                name, unique = index[1], bool(index[2])
+                if not unique:
+                    continue
+                escaped_name = name.replace('"', '""')
+                columns = (
+                    await conn.exec_driver_sql(f'PRAGMA index_info("{escaped_name}")')
+                ).all()
+                if [column[2] for column in columns] != ["task_run_id"]:
+                    continue
+                if (
+                    name != "ix_agent_workflow_todos_task_run_id"
+                    or index[3] != "c"
+                    or index[4]
+                ):
+                    raise RuntimeError(f"Unexpected unique todo task index: {name}")
+                raw_connection = await conn.get_raw_connection()
+                if not raw_connection.driver_connection.in_transaction:
+                    await conn.exec_driver_sql("BEGIN IMMEDIATE")
+                await conn.execute(
+                    text("DROP INDEX ix_agent_workflow_todos_task_run_id")
+                )
+                await conn.execute(
+                    text(
+                        "CREATE INDEX ix_agent_workflow_todos_task_run_id ON agent_workflow_todos (task_run_id)"
+                    )
+                )
             # 确保 personas 表有 folder_id、sort_order、skills 列（前向兼容）
             await self._ensure_persona_folder_columns(conn)
             await self._ensure_persona_skills_column(conn)

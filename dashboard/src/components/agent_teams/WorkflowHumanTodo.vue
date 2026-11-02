@@ -2,9 +2,22 @@
   <v-card variant="outlined" class="my-3" data-testid="human-todo">
     <v-card-text>
       <strong>{{ todo.question }}</strong>
+      <p v-if="!restricted && (todo.run_name || todo.task_name)" class="text-body-2 mt-2" data-testid="human-origin">
+        {{ tm("human.run") }}: {{ todo.run_name }} · {{ tm("human.task") }}: {{ todo.task_name }}
+      </p>
       <p class="text-caption mt-2">
         {{ tm(`human.status.${todo.status}`)
-        }}<span v-if="!restricted"> · {{ todo.task_run_id }}</span>
+        }}<span v-if="!restricted"> · {{ todo.root_run_id }} / {{ todo.task_run_id }}</span>
+      </p>
+      <div v-if="todo.recommendation" class="mt-2" data-testid="human-recommendation">
+        <strong>{{ tm("human.recommendation") }}: {{ todo.recommendation.value }}</strong>
+        <p>{{ todo.recommendation.reason }}</p>
+      </div>
+      <p v-else-if="todo.recommendation_error" class="text-caption mt-2">{{ tm("human.recommendationMissing") }}</p>
+      <p v-if="!restricted && todo.recommendation_ref" class="text-caption">
+        {{ tm("human.recommendationSource") }}: {{ todo.recommendation_source_name }} · {{ todo.recommendation_ref.artifact_id }} ·
+        v{{ todo.recommendation_ref.version }} · {{ todo.recommendation_fields?.value }} /
+        {{ todo.recommendation_fields?.reason }}
       </p>
       <p v-if="paused && todo.status === 'answered'" class="mt-2">
         {{ tm("human.savedWaiting") }}

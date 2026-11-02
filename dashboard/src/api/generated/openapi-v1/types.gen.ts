@@ -819,6 +819,9 @@ export type HumanTask = {
     max_length?: number;
     artifact_task_id?: (string | null);
     artifact_version?: number;
+    recommendation_task_id?: (string | null);
+    recommendation_value_field?: (string | null);
+    recommendation_reason_field?: (string | null);
 };
 
 export type kind = 'question' | 'approval';
@@ -5654,6 +5657,10 @@ export type StartRunApiV1WorkflowAssetsAssetIdRunsPostData = {
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostResponse = (unknown);
 
 export type StartRunApiV1WorkflowAssetsAssetIdRunsPostError = (HTTPValidationError);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetResponse = (unknown);
+
+export type ListHumanRequestsApiV1WorkflowHumanRequestsGetError = unknown;
 
 export type ListRunsApiV1WorkflowRunsGetData = {
     query?: {

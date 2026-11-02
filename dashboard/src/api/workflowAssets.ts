@@ -93,6 +93,9 @@ export const workflowAssetsApi = {
       )
     ).data.data;
   },
+  async humanRequests() {
+    return (await httpClient.get("/api/v1/workflow_human_requests")).data.data;
+  },
   async runs() {
     return (await httpClient.get("/api/v1/workflow_runs")).data.data;
   },

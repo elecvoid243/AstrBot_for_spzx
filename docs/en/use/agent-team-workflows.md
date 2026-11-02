@@ -22,10 +22,22 @@ Connect parallel paths to an **ALL join**. It waits for all entered paths to suc
 
 The screenshot shows the actual canvas with isolated example data, not an actual model run.
 
+## Answer human questions
+
+On the workflow canvas, add a **Human question**, enter the question and either list allowed answers or leave the list empty for free text. Optionally select an upstream Agent task and its required string fields for the recommended answer and reason. Connect that task as a dependency. The request records the exact source artifact version and selected fields; invalid or missing recommendations do not prevent a manual answer. No model is called to create a recommendation, and there is no default deadline.
+
+Open **Runs → Needs attention → Needs my attention** to see pending requests you can answer, including requests beyond the recent-run list. The same card appears in **View Run**. Use **Open process** to inspect the associated task and its saved process, then enter an answer. Pausing a run permits saving an answer, but execution consumes it only after continuing. Cancelling closes pending requests and prevents later progress. Independent branches continue while a question waits.
+
+
+![Human request inbox with an explicit recommendation](/images/agent-teams-human-inbox-en.jpg)
+
+The screenshot uses the production components with isolated sample data; it does not show a real backend run.
+
 ## Navigation and previous entry points
 
 | Previous entry | Current entry |
 | --- | --- |
+| Human questions only in a run detail | Runs → Needs attention → Needs my attention, or the same card in View Run |
 | Autonomous teams within Workflow Assets | Assets → Teams |
 | New Workflow / New Canvas Workflow | Assets → Workflows → New Workflow (one canvas entry) |
 | Role templates | Assets → Role templates |

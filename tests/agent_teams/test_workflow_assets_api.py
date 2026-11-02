@@ -150,6 +150,7 @@ def test_team_allowed_workflows_http_pin_and_owner_validation(tmp_path):
             json={
                 "definition": {
                     "name": "Saved workflow",
+                    "result_task_id": "result",
                     "required_inputs": ["topic"],
                     "tasks": [
                         {
@@ -168,8 +169,14 @@ def test_team_allowed_workflows_http_pin_and_owner_validation(tmp_path):
         team = {
             "kind": "autonomous",
             "name": "Coordinator",
-            "coordinator": {"role_id": role["role_id"], "role_version": 1},
-            "allowed_roles": [{"role_id": role["role_id"], "role_version": 1}],
+            "coordinator": {
+                "id": "coordinator",
+                "role_id": role["role_id"],
+                "role_version": 1,
+            },
+            "allowed_roles": [
+                {"id": "writer", "role_id": role["role_id"], "role_version": 1}
+            ],
             "allowed_workflows": [
                 {
                     "asset_id": workflow["asset_id"],
@@ -328,4 +335,62 @@ def test_human_http_uuid_answers_reconnect_and_owner_permissions(tmp_path):
             "data"
         ]
         assert events["snapshot"]["todos"] == after["todos"]
-        assert len([e for e in events["events"] if e["kind"] == "human.consumed"]) == 1
+        assert events["reset"] is True
+        assert (
+            len(
+                [
+                    e
+                    for e in events["snapshot"]["events"]
+                    if e["kind"] == "human.consumed"
+                ]
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_human_inbox_http_owner_and_answer(workflow_env):
+    env = workflow_env
+    asset = await env.service.save_asset(
+        "alice",
+        {
+            "definition": {
+                "name": "Question",
+                "result_task_id": "q",
+                "tasks": [
+                    {
+                        "id": "q",
+                        "name": "Question",
+                        "human": {"kind": "question", "question": "Where?"},
+                    }
+                ],
+                "edges": [],
+            }
+        },
+    )
+    run = await env.service.start_run("alice", asset["asset_id"], {"version": 1})
+    app = FastAPI()
+    app.state.services = SimpleNamespace(workflow_assets=env.service)
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        inbox = (await client.get("/api/v1/workflow_human_requests")).json()["data"][
+            "requests"
+        ]
+        assert len(inbox) == 1 and inbox[0]["todo_id"] == run["todos"][0]["todo_id"]
+        app.dependency_overrides[require_dashboard_user] = lambda: "bob"
+        assert (await client.get("/api/v1/workflow_human_requests")).json()["data"][
+            "requests"
+        ] == []
+        answer_path = (
+            f"/api/v1/workflow_runs/{run['run_id']}/todos/{inbox[0]['todo_id']}/answer"
+        )
+        payload = {"request_id": "answer", "action": "answer", "answer": "Asia"}
+        assert (await client.post(answer_path, json=payload)).status_code == 404
+        app.dependency_overrides[require_dashboard_user] = lambda: "alice"
+        assert (await client.post(answer_path, json=payload)).status_code == 200
+        assert (await client.get("/api/v1/workflow_human_requests")).json()["data"][
+            "requests"
+        ] == []

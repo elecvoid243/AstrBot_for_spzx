@@ -349,7 +349,7 @@ class AgentWorkflowTodo(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "agent_workflow_todos"  # pyright: ignore[reportIncompatibleVariableOverride]
     todo_id: str = Field(primary_key=True)
     root_run_id: str = Field(index=True)
-    task_run_id: str = Field(index=True, unique=True)
+    task_run_id: str = Field(index=True)
     data: dict = Field(sa_type=JSON)
 
 

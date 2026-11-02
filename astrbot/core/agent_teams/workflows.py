@@ -3777,6 +3777,7 @@ class WorkflowService:
                         }
                         for todo in todos
                         if todo.task_run_id == current.run_id
+                        and username in todo.data.get("answerable_by", [])
                     ]
                     if include_details
                     else [],
@@ -4933,6 +4934,21 @@ class WorkflowService:
                         row.state = {**row.state, "loops": loops}
                         session.add(row)
                     identities = [item.run_id for item in family]
+                    pending_todos = (
+                        (
+                            await session.execute(
+                                select(AgentWorkflowTodo).where(
+                                    col(AgentWorkflowTodo.task_run_id).in_(identities)
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for todo in pending_todos:
+                        if todo.data["status"] in {"pending", "answered"}:
+                            todo.data = {**todo.data, "status": "cancelled"}
+                            session.add(todo)
                     for identity in identities:
                         child = await session.get(AgentWorkflowRun, identity)
                         assert child is not None
@@ -5381,6 +5397,48 @@ class WorkflowService:
             "records": [],
             "snapshot": snapshot,
         }
+
+    async def list_human_requests(self, username: str) -> dict:
+        """List pending requests owned by the authenticated dashboard user.
+
+        Args:
+            username: Authenticated dashboard user.
+
+        Returns:
+            Persisted requests and their run control state.
+        """
+        async with self.db.get_db() as session:
+            rows = (
+                await session.execute(
+                    select(AgentWorkflowTodo, AgentWorkflowRun)
+                    .join(
+                        AgentWorkflowRun,
+                        AgentWorkflowTodo.root_run_id == AgentWorkflowRun.run_id,
+                    )
+                    .where(
+                        AgentWorkflowRun.owner_username == username,
+                        AgentWorkflowTodo.data["status"].as_string() == "pending",
+                    )
+                    .order_by(col(AgentWorkflowTodo.created_at).desc())
+                )
+            ).all()
+            requests = []
+            for todo, root in rows:
+                if username not in todo.data.get("answerable_by", []):
+                    continue
+                control = await session.get(AgentWorkflowControl, root.run_id)
+                if control and control.status == "cancelled":
+                    continue
+                requests.append(
+                    {
+                        "todo_id": todo.todo_id,
+                        "root_run_id": todo.root_run_id,
+                        "task_run_id": todo.task_run_id,
+                        **todo.data,
+                        "control_status": control.status if control else "active",
+                    }
+                )
+            return {"requests": requests}
 
     async def list_runs(self, username: str, limit: int = 50) -> dict:
         """List persisted runs, including inactive and interrupted executions.
@@ -7298,7 +7356,11 @@ class WorkflowService:
                     if row is None or row.status != "waiting_human":
                         continue
                     todo = await session.get(AgentWorkflowTodo, row.run_id)
-                    if todo is None or todo.data["status"] != "answered":
+                    if (
+                        todo is None
+                        or todo.data.get("source_kind") != "static_node"
+                        or todo.data["status"] != "answered"
+                    ):
                         continue
                     response = todo.data["response"]
                     rejected = response["action"] == "reject"
@@ -7550,12 +7612,89 @@ class WorkflowService:
                                     # A requested revision may arrive later through
                                     # an explicit edit. Keep its exact waiting
                                     # reference; never substitute the latest one.
+                                recommendation = None
+                                recommendation_error = None
+                                recommendation_ref = None
+                                source_id = human.get("recommendation_task_id")
+                                if source_id:
+                                    source = rows[source_id]
+                                    assert source is not None
+                                    recommendation_ref = {
+                                        "artifact_id": source.run_id,
+                                        "version": 1,
+                                    }
+                                    artifact = await session.get(
+                                        AgentWorkflowArtifact, (source.run_id, 1)
+                                    )
+                                    values = []
+                                    for field in (
+                                        human["recommendation_value_field"],
+                                        human["recommendation_reason_field"],
+                                    ):
+                                        value = artifact.content if artifact else None
+                                        for part in field.split("."):
+                                            value = (
+                                                value.get(part)
+                                                if isinstance(value, dict)
+                                                else None
+                                            )
+                                        values.append(value)
+                                    choice, reason = values
+                                    if (
+                                        isinstance(choice, str)
+                                        and choice.strip()
+                                        and isinstance(reason, str)
+                                        and reason.strip()
+                                        and len(choice) <= human["max_length"]
+                                        and (
+                                            not human["choices"]
+                                            or choice in human["choices"]
+                                        )
+                                    ):
+                                        recommendation = {
+                                            "value": choice,
+                                            "reason": reason,
+                                        }
+                                    else:
+                                        recommendation_error = "The selected upstream fields do not contain a valid recommendation and reason."
                                 todo = AgentWorkflowTodo(
                                     todo_id=row.run_id,
                                     root_run_id=_root_run_id(root),
                                     task_run_id=row.run_id,
                                     data={
                                         "kind": human["kind"],
+                                        "source_kind": "static_node",
+                                        "invocation_id": None,
+                                        "tool_record_id": None,
+                                        "recommendation": recommendation,
+                                        "recommendation_error": recommendation_error,
+                                        "recommendation_ref": recommendation_ref,
+                                        "recommendation_fields": {
+                                            "value": human.get(
+                                                "recommendation_value_field"
+                                            ),
+                                            "reason": human.get(
+                                                "recommendation_reason_field"
+                                            ),
+                                        }
+                                        if source_id
+                                        else None,
+                                        "scope_run_id": root.run_id,
+                                        "run_name": whole_root.snapshot["definition"][
+                                            "name"
+                                        ],
+                                        "task_name": task["name"],
+                                        "recommendation_source_name": next(
+                                            (
+                                                item["name"]
+                                                for item in definition["tasks"]
+                                                if item["id"] == source_id
+                                            ),
+                                            None,
+                                        ),
+                                        "node_id": task["id"],
+                                        "answerable_by": [username],
+                                        "deadline": None,
                                         "question": human["question"],
                                         "constraints": {
                                             "choices": human["choices"],
@@ -7960,10 +8099,15 @@ class WorkflowService:
             todo = await session.get(AgentWorkflowTodo, todo_id)
             if todo is None or todo.root_run_id != run_id:
                 raise RoleAssetError("Human request not found", status=404)
+            if username not in todo.data.get("answerable_by", []):
+                raise RoleAssetError("Human request not found", status=404)
             decision = request.model_dump()
             previous = todo.data["response"]
             if previous is not None:
-                if previous != decision:
+                if any(
+                    previous.get(key) != decision[key]
+                    for key in ("action", "answer", "feedback")
+                ):
                     raise RoleAssetError("Human request already answered", status=409)
             else:
                 if control.status == "cancelled":
@@ -7999,7 +8143,12 @@ class WorkflowService:
                         raise RoleAssetError(
                             "Answer does not satisfy the saved constraints"
                         )
-                todo.data = {**todo.data, "status": "answered", "response": decision}
+                todo.data = {
+                    **todo.data,
+                    "status": "answered",
+                    "response": decision,
+                    "decision_source": {"type": "human", "username": username},
+                }
                 session.add(todo)
                 session.add(
                     AgentWorkflowEvent(

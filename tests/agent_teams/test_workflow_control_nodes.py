@@ -130,7 +130,11 @@ async def test_all_waits_for_entered_branches_and_duplicate_wakes_do_not_claim_t
             event["kind"] == "task.waiting"
             and event["data"].get("node_id") == "join"
             and event["data"].get("waiting_on") == ["slow"]
-            for event in changes["events"]
+            for event in (
+                changes["snapshot"]["events"]
+                if changes["reset"]
+                else changes["events"]
+            )
         )
         assert not started["result"].is_set()
         releases["slow"].set()
@@ -456,7 +460,7 @@ async def test_condition_with_skipped_data_source_persists_skip_event(graph_scri
         event["kind"] == "task.skipped"
         and event["data"].get("node_id") == "inner"
         and "input was skipped" in event["data"]["reason"]
-        for event in changes["events"]
+        for event in changes["snapshot"]["events"]
     )
 
 

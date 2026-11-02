@@ -1221,7 +1221,6 @@ async def test_main_pipeline_applies_role_capabilities_and_hooks(
                     "knowledge": True,
                     "tools": [
                         "submit_task_result",
-                        "team_communicate",
                         "read_task_artifact",
                     ],
                     "correction_context": True,

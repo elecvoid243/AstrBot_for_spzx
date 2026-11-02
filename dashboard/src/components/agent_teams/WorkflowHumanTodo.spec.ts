@@ -12,6 +12,7 @@ vi.mock("@/i18n/composables", () => ({
   useModuleI18n: () => ({ tm: (key: string) => key }),
 }));
 const stubs = {
+  MarkdownView: { props: ["source"], template: "<div>{{ source }}</div>" },
   "v-card": { template: "<div><slot /></div>" },
   "v-card-text": { template: "<div><slot /></div>" },
   "v-alert": { template: "<div><slot /></div>" },
@@ -271,6 +272,107 @@ describe("persistent human request handling", () => {
       wrapper.unmount();
       vi.unstubAllGlobals();
     }
+  });
+
+  it("submits a labelled option and note idempotently and isolates requests", async () => {
+    const choice = {
+      ...todo,
+      kind: "question",
+      source_kind: "tool_call",
+      artifact_ref: null,
+      question: "Pick one",
+      choice_spec: {
+        title: "Decision",
+        extra_content: "**Details**",
+        options: [
+          { id: "a", label: "Option A", description: "First option" },
+          { id: "b", label: "Option B" },
+        ],
+      },
+      recommendation: { value: "a", reason: "Fits best" },
+    };
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo: choice, busy: false, paused: true, cancelled: false },
+      global: { stubs },
+    });
+    expect(wrapper.text()).toContain("Option A");
+    expect(wrapper.text()).toContain("First option");
+    expect(
+      wrapper.get('[data-testid="human-recommendation"]').text(),
+    ).toContain("Option A");
+    expect(wrapper.find('[data-testid="human-reject"]').exists()).toBe(false);
+    await wrapper.get('input[value="a"]').setValue();
+    await wrapper.get('[data-testid="human-choice-text"]').setValue("a note");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.[0]).toEqual(
+      wrapper.emitted("submit")?.[1],
+    );
+    expect(wrapper.emitted("submit")?.[0]?.[1]).toEqual({
+      request_id: expect.any(String),
+      action: "answer",
+      choice_id: "a",
+      free_text: "a note",
+    });
+    await wrapper.setProps({ todo: { ...choice, todo_id: "other" } });
+    expect(
+      (
+        wrapper.get('[data-testid="human-choice-text"]')
+          .element as HTMLTextAreaElement
+      ).value,
+    ).toBe("");
+    expect(
+      wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+    ).toBeDefined();
+    await wrapper.get('input[value="a"]').setValue();
+    await wrapper.get('[data-testid="human-choice-text"]').setValue("a note");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect((wrapper.emitted("submit")?.[2]?.[1] as any).request_id).not.toBe(
+      (wrapper.emitted("submit")?.[0]?.[1] as any).request_id,
+    );
+    await wrapper.setProps({
+      todo: {
+        ...choice,
+        status: "consumed",
+        response: { choice_id: "a", free_text: "a note" },
+      },
+    });
+    expect(
+      wrapper.get('[data-testid="human-choice-response"]').text(),
+    ).toContain("Option A");
+    expect(wrapper.text()).toContain("a note");
+    expect(wrapper.find('[data-testid="human-submit"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("requires text for a free choice and disables cancelled requests", async () => {
+    const choice = {
+      ...todo,
+      kind: "question",
+      source_kind: "tool_call",
+      artifact_ref: null,
+      choice_spec: { options: [] },
+    };
+    const wrapper = mount(WorkflowHumanTodo, {
+      props: { todo: choice, busy: false, paused: false, cancelled: false },
+      global: { stubs },
+    });
+    await wrapper.get('input[value="__free_text__"]').setValue();
+    expect(
+      wrapper.get('[data-testid="human-submit"]').attributes("disabled"),
+    ).toBeDefined();
+    await wrapper
+      .get('[data-testid="human-choice-text"]')
+      .setValue("My answer");
+    await wrapper.get('[data-testid="human-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.[0]?.[1]).toMatchObject({
+      action: "answer",
+      choice_id: "__free_text__",
+      free_text: "My answer",
+    });
+    await wrapper.setProps({ cancelled: true });
+    expect(wrapper.find('[data-testid="human-submit"]').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it("ignores a preview response after changing runs unmounts its request", async () => {

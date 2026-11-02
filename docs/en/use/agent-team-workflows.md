@@ -282,6 +282,8 @@ You can save a verified result, verified failure, explicit tool retry or reconci
 
 ## Human requests and version approval
 
+A running Agent may ask a dynamic choice in the same inbox. Read its context and recommendation, select an option and optionally add a note, or choose your own answer and enter text. Each question is answered separately. The selected label and note remain visible after the original tool consumes the answer.
+
 1. Open **Assets → Workflows → New Workflow / Edit Asset**. Add **Human question** or **Version approval** from **Role toolbox**. Human nodes require no model or role. Enter the question, allowed answers (one per line, or empty for free text) and maximum answer length.
 2. For approval, select the upstream **Artifact task** and exact **Artifact version**, and connect the artifact task as a dependency. Save a new asset version and start it; existing runs retain their definition.
 3. Open **Runs → View Run → Human requests**. Questions, constraints, task, Attempt and approval references persist. An optional recommendation and reason come from explicitly selected upstream Agent fields. Waiting releases capacity and blocks only dependent paths. Independent branches continue; select their progress entries to read results.

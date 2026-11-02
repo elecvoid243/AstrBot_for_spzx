@@ -17,8 +17,18 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--plugin-version", default="0.3.0")
+    parser.add_argument("--plugin-revision", required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
+    if len(args.plugin_revision) != 40 or any(
+        c not in "0123456789abcdef" for c in args.plugin_revision
+    ):
+        parser.error("--plugin-revision must be the matching 40-character Git SHA.")
+    if subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root
+    ).strip():
+        parser.error("Commit tracked changes before packaging the matching backend.")
     dist = root / "dashboard/dist"
     if not (dist / "index.html").is_file():
         raise FileNotFoundError("Run the Dashboard production build first.")
@@ -49,7 +59,11 @@ def main() -> None:
             {
                 "astrbot_version": version,
                 "astrbot_revision": revision,
-                "plugin_version": "0.2.0",
+                "plugin_version": args.plugin_version,
+                "plugin_revision": args.plugin_revision,
+                "manual_control_version": 1,
+                "keyboard_input_version": 1,
+                "pointer_input_version": 1,
                 "backend_source_file": backend.name,
                 "backend_source_sha256": backend_digest,
                 "pnpm_lock_sha256": hashlib.sha256(

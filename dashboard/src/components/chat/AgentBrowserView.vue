@@ -37,7 +37,7 @@ import {
   Minimize2,
 } from "@lucide/vue";
 import { useI18n } from "@/i18n/composables";
-import { pluginExtensionApi } from "@/api/v1";
+import { browserControlApi, pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 
 const props = defineProps<{ chatId?: string | null; visible: boolean }>();
@@ -72,7 +72,7 @@ watch(fullscreen, async () => {
   fullscreenButton.value?.focus({ preventScroll: true });
 });
 const onFullscreenKeyDown = (event: KeyboardEvent) => {
-  if (!fullscreen.value) return;
+  if (!fullscreen.value || event.target === keyboardSink.value) return;
   if (event.key === "Tab") {
     event.preventDefault();
     fullscreenButton.value?.focus({ preventScroll: true });
@@ -88,6 +88,13 @@ document.addEventListener("keydown", onFullscreenKeyDown, true);
 interface BrowserState {
   available: boolean;
   execution_state?: "active" | "stopped" | "closed" | "disabled";
+  manual_control_version?: number;
+  keyboard_input_version?: number;
+  pointer_input_version?: number;
+  applied_input_id?: number;
+  position_revision?: number;
+  control_mode?: "agent" | "acquiring" | "human" | "paused";
+  control_epoch?: number;
   generation?: string;
   browser_session_id?: string;
   tab_id?: string;
@@ -119,6 +126,7 @@ interface BrowserState {
 }
 
 interface BrowserAction {
+  actor?: "human";
   action_id: string;
   kind: "navigate" | "click" | "type" | "scroll" | "tab" | "close" | "inspect";
   status: "running" | "succeeded" | "failed" | "timed_out" | "cancelled";
@@ -128,6 +136,549 @@ const state = ref<BrowserState | null>(null);
 const loading = ref(false);
 const controlling = ref(false);
 const controlError = ref(false);
+const humanControl = ref(false);
+const manualPending = ref(false);
+const manualMessage = ref("");
+const keyboardSink = ref<HTMLTextAreaElement | null>(null);
+const keyboardFocused = ref(false);
+const composing = ref(false);
+let committedComposition: string | null = null;
+let compositionTimer: ReturnType<typeof setTimeout> | undefined;
+let inputQueue: Record<string, unknown>[] = [];
+let inputInFlight = false;
+const browserImage = ref<HTMLImageElement | null>(null);
+// Only a snapshot/frame owns these capture fields. Control-only events may
+// retain its pixels but cannot advance their input, epoch or capture sequence.
+const imageFrame = ref<BrowserState | null>(null);
+const displayedFrame = ref<BrowserState | null>(null);
+const inputCount = ref(0);
+const awaitingFrame = ref(false);
+const frameLatency = ref<number | null>(null);
+let awaitedInput = 0;
+let awaitedSequence = -1;
+let inputStarted = 0;
+let awaitedStarted = 0;
+let wheelTimer: ReturnType<typeof setTimeout> | undefined;
+let inFlightOperation = "";
+let releasing = false;
+const localKeys = new Set<string>();
+let controlSocket: WebSocket | null = null;
+let manualEpoch = 0;
+let inputNumber = 0;
+let controlAttempt = 0;
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
+
+function disconnectControl() {
+  if (humanControl.value || (manualPending.value && controlSocket))
+    manualMessage.value = t(
+      `${key}.${
+        inputInFlight && inFlightOperation !== "reset_keys"
+          ? "inputUnknown"
+          : "manualDisconnected"
+      }`,
+    );
+  inputQueue = [];
+  inputCount.value = 0;
+  awaitingFrame.value = false;
+  awaitedSequence = -1;
+  clearTimeout(wheelTimer);
+  inputInFlight = false;
+  releasing = false;
+  keyboardFocused.value = false;
+  composing.value = false;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  if (keyboardSink.value) keyboardSink.value.value = "";
+  keyboardSink.value?.blur();
+  controlAttempt += 1;
+  humanControl.value = false;
+  manualPending.value = false;
+  clearInterval(heartbeatTimer);
+  clearTimeout(acknowledgementTimer);
+  controlSocket?.close();
+  controlSocket = null;
+}
+
+async function acquireControl() {
+  const current = state.value;
+  const chatId = props.chatId;
+  if (
+    !current?.available ||
+    !current.generation ||
+    !current.browser_session_id ||
+    !chatId ||
+    manualPending.value
+  )
+    return;
+  disconnectControl();
+  const attempt = controlAttempt;
+  manualPending.value = true;
+  manualMessage.value = "";
+  try {
+    const response = await browserControlApi.createSession({
+      chat_id: chatId,
+      generation: current.generation!,
+      browser_session_id: current.browser_session_id!,
+    });
+    if (attempt !== controlAttempt) return;
+    if (props.chatId !== chatId || !props.visible || !pageVisible.value) {
+      manualPending.value = false;
+      return;
+    }
+    const url = new URL(response.data.websocket_path, location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(url);
+    controlSocket = socket;
+    socket.onopen = () =>
+      socket.send(JSON.stringify({ ticket: response.data.ticket }));
+    acknowledgementTimer = setTimeout(() => {
+      manualMessage.value = t(`${key}.manualDisconnected`);
+      disconnectControl();
+    }, 25000);
+    socket.onmessage = (message) => {
+      if (controlSocket !== socket) return;
+      const ack = JSON.parse(message.data);
+      if (ack.operation === "heartbeat" && ack.status === "applied") return;
+      const unconfirmed = inputInFlight && inFlightOperation !== "reset_keys";
+      clearTimeout(acknowledgementTimer);
+      manualPending.value = releasing;
+      inputInFlight = false;
+      inputCount.value = inputQueue.length;
+      if (
+        state.value?.pointer_input_version === 1 &&
+        ack.input_id &&
+        ack.status === "applied" &&
+        inFlightOperation !== "reset_keys"
+      ) {
+        awaitedInput = ack.input_id;
+        awaitedStarted = inputStarted;
+        awaitingFrame.value = true;
+      }
+      if (ack.status === "stale" && inFlightOperation === "wheel") {
+        displayedFrame.value = null;
+        awaitedInput = ack.state?.applied_input_id ?? 0;
+        awaitedSequence = ack.state?.sequence ?? -1;
+        awaitedStarted = inputStarted;
+        awaitingFrame.value = true;
+        manualMessage.value = t(`${key}.staleWheel`);
+        resetKeyboard();
+        keyboardSink.value?.blur();
+        return;
+      }
+      if (ack.status !== "applied") {
+        const message =
+          ack.status === "uncertain" ||
+          (unconfirmed && ack.input_id === undefined)
+            ? t(`${key}.inputUnknown`)
+            : ack.message || t(`${key}.manualFailed`);
+        disconnectControl();
+        manualMessage.value = message;
+        void refresh(true);
+        return;
+      }
+      manualEpoch = ack.control_epoch;
+      if (ack.state?.control_mode === "agent") {
+        humanControl.value = false;
+        manualPending.value = false;
+        manualMessage.value = t(`${key}.handedBack`);
+        disconnectControl();
+        return;
+      }
+      if (!humanControl.value) {
+        inputNumber = 0;
+        humanControl.value = true;
+        heartbeatTimer = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN)
+            socket.send(
+              JSON.stringify({
+                operation: "heartbeat",
+                control_epoch: manualEpoch,
+              }),
+            );
+        }, 5000);
+      }
+      if (ack.operation !== "reset_keys")
+        manualMessage.value = t(`${key}.humanActive`);
+      sendNextInput();
+    };
+    socket.onclose = () => {
+      if (controlSocket !== socket) return;
+      disconnectControl();
+      // Reauthorize observation too: a socket can fail because access was revoked.
+      void refresh(true);
+    };
+    socket.onerror = () => socket.close();
+  } catch (error: any) {
+    if (attempt !== controlAttempt) return;
+    manualMessage.value =
+      error.response?.data?.message || t(`${key}.manualFailed`);
+    disconnectControl();
+  }
+}
+
+function releaseControl() {
+  if (!humanControl.value || manualPending.value) return;
+  inputQueue = [];
+  resetKeyboard();
+  releasing = true;
+  manualPending.value = true;
+  clearInterval(heartbeatTimer);
+  inputQueue.push({ operation: "release" });
+  sendNextInput();
+}
+
+/** Send queued input only after the previous acknowledgement. */
+function sendNextInput() {
+  if (
+    inputInFlight ||
+    !humanControl.value ||
+    controlSocket?.readyState !== WebSocket.OPEN
+  )
+    return;
+  if (awaitingFrame.value && inputQueue[0]?.operation === "wheel") return;
+  const command = inputQueue.shift();
+  inputCount.value = inputQueue.length + (command ? 1 : 0);
+  if (!command) return;
+  inFlightOperation = String(command.operation);
+  const { queuedAt, ...payload } = command;
+  inputStarted = Number(queuedAt) || performance.now();
+  inputInFlight = true;
+  controlSocket.send(
+    JSON.stringify({
+      ...payload,
+      control_epoch: manualEpoch,
+      input_id: ++inputNumber,
+    }),
+  );
+  acknowledgementTimer = setTimeout(() => disconnectControl(), 25000);
+}
+
+/** Capture the displayed target when the user acts, never at delayed dispatch. */
+function enqueueInput(command: Record<string, unknown>) {
+  const current =
+    state.value?.pointer_input_version === 1
+      ? displayedFrame.value
+      : state.value;
+  if (
+    !humanControl.value ||
+    manualPending.value ||
+    (command.operation !== "reset_keys" && !current?.image)
+  )
+    return;
+  const target = Object.fromEntries(
+    [
+      "tab_id",
+      "document_id",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+      "position_revision",
+    ].map((name) => [name, current?.[name as keyof BrowserState]]),
+  );
+  const tail = inputQueue.at(-1);
+  // Only adjacent wheel deltas at the same displayed target are replaceable.
+  // Never merge across a click, key, text or reset boundary.
+  if (
+    command.operation === "wheel" &&
+    tail?.operation === "wheel" &&
+    tail.x === command.x &&
+    tail.y === command.y &&
+    JSON.stringify(tail.target) === JSON.stringify(target)
+  ) {
+    tail.delta_x = Math.max(
+      -2048,
+      Math.min(2048, Number(tail.delta_x) + Number(command.delta_x)),
+    );
+    tail.delta_y = Math.max(
+      -2048,
+      Math.min(2048, Number(tail.delta_y) + Number(command.delta_y)),
+    );
+    return;
+  }
+  if (inputQueue.length + Number(inputInFlight) >= 128) {
+    disconnectControl();
+    return;
+  }
+  inputQueue.push({
+    ...command,
+    queuedAt: performance.now(),
+    ...(command.operation === "reset_keys" ? {} : { target }),
+  });
+  inputCount.value = inputQueue.length + Number(inputInFlight);
+  if (command.operation === "wheel") {
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(sendNextInput, 16);
+  } else sendNextInput();
+}
+
+/** Confirm pixels have loaded before reporting feedback or mapping new input. */
+function frameLoaded(event: Event) {
+  const image = event.currentTarget as HTMLImageElement;
+  const current = imageFrame.value;
+  if (
+    !current?.image ||
+    image.currentSrc !== `data:${current.mime_type};base64,${current.image}` ||
+    (humanControl.value &&
+      current.pointer_input_version === 1 &&
+      current.control_epoch !== manualEpoch) ||
+    [
+      "generation",
+      "browser_session_id",
+      "tab_id",
+      "document_id",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+      "position_revision",
+      "control_epoch",
+    ].some(
+      (name) =>
+        current[name as keyof BrowserState] !==
+        state.value?.[name as keyof BrowserState],
+    )
+  )
+    return;
+  displayedFrame.value = { ...current };
+  if (
+    awaitingFrame.value &&
+    current.control_epoch === manualEpoch &&
+    (current.sequence ?? 0) > awaitedSequence &&
+    (current.applied_input_id ?? 0) >= awaitedInput
+  ) {
+    awaitingFrame.value = false;
+    frameLatency.value = Math.round(performance.now() - awaitedStarted);
+  }
+  // Old scroll samples are replaceable, but must never be rebound to a new page.
+  inputQueue = inputQueue.filter(
+    (command) =>
+      command.operation !== "wheel" ||
+      Object.entries(command.target as Record<string, unknown>).every(
+        ([name, value]) => value === current[name as keyof BrowserState],
+      ),
+  );
+  inputCount.value = inputQueue.length + Number(inputInFlight);
+  sendNextInput();
+}
+
+function resetKeyboard() {
+  keyboardFocused.value = false;
+  composing.value = false;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  if (keyboardSink.value) keyboardSink.value.value = "";
+  inputQueue = [];
+  if (humanControl.value && state.value?.keyboard_input_version === 1)
+    enqueueInput({ operation: "reset_keys" });
+}
+
+function clickPage(event: MouseEvent | WheelEvent) {
+  if (
+    event.type === "wheel" &&
+    humanControl.value &&
+    state.value?.pointer_input_version === 1
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  const current =
+    state.value?.pointer_input_version === 1
+      ? displayedFrame.value
+      : state.value;
+  if (!humanControl.value || manualPending.value || !current?.image) return;
+  const bounds = (
+    event.currentTarget as HTMLImageElement
+  ).getBoundingClientRect();
+  if (
+    !bounds.width ||
+    !bounds.height ||
+    event.clientX < bounds.left ||
+    event.clientX >= bounds.right ||
+    event.clientY < bounds.top ||
+    event.clientY >= bounds.bottom
+  )
+    return;
+  const x =
+    ((event.clientX - bounds.left) / bounds.width) * current.viewport_width!;
+  const y =
+    ((event.clientY - bounds.top) / bounds.height) * current.viewport_height!;
+  if (event.type === "wheel") {
+    if (state.value?.pointer_input_version !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const wheel = event as WheelEvent;
+    const line =
+      parseFloat(getComputedStyle(event.currentTarget as Element).lineHeight) ||
+      16;
+    enqueueInput({
+      operation: "wheel",
+      x,
+      y,
+      delta_x: Math.max(
+        -2048,
+        Math.min(
+          2048,
+          wheel.deltaX *
+            (wheel.deltaMode === 1
+              ? line
+              : wheel.deltaMode === 2
+              ? current.viewport_width!
+              : 1),
+        ),
+      ),
+      delta_y: Math.max(
+        -2048,
+        Math.min(
+          2048,
+          wheel.deltaY *
+            (wheel.deltaMode === 1
+              ? line
+              : wheel.deltaMode === 2
+              ? current.viewport_height!
+              : 1),
+        ),
+      ),
+    });
+    return;
+  }
+  keyboardSink.value?.focus({ preventScroll: true });
+  enqueueInput({
+    operation: "click",
+    x,
+    y,
+    ...(state.value?.pointer_input_version === 1
+      ? { click_count: event.detail >= 2 ? 2 : 1 }
+      : {}),
+  });
+}
+
+/** Keep composition local; only committed text crosses the authenticated channel. */
+function commitText(text: string, source: "typing" | "composition" | "paste") {
+  if (!keyboardFocused.value || !humanControl.value || !text) return;
+  if (
+    text.length > 2048 ||
+    new TextEncoder().encode(text).length > 4096 ||
+    text.includes("\0")
+  ) {
+    manualMessage.value = t(`${key}.textTooLarge`);
+    return;
+  }
+  enqueueInput({ operation: "text", text, source });
+}
+
+function beforeText(raw: Event) {
+  const event = raw as InputEvent;
+  if (composing.value || event.isComposing) return;
+  event.preventDefault();
+  if (
+    event.inputType === "insertFromComposition" ||
+    (committedComposition !== null && event.data === committedComposition)
+  ) {
+    committedComposition = null;
+    return;
+  }
+  committedComposition = null;
+  if (event.inputType === "insertText") commitText(event.data || "", "typing");
+}
+
+function startComposition() {
+  composing.value = true;
+  committedComposition = null;
+  clearTimeout(compositionTimer);
+  localKeys.clear();
+  enqueueInput({ operation: "reset_keys" });
+}
+
+function endComposition(event: CompositionEvent) {
+  if (!composing.value) return;
+  composing.value = false;
+  committedComposition = event.data;
+  clearTimeout(compositionTimer);
+  compositionTimer = setTimeout(() => {
+    committedComposition = null;
+  }, 0);
+  commitText(event.data, "composition");
+  if (keyboardSink.value) keyboardSink.value.value = "";
+}
+
+function pasteText(event: ClipboardEvent) {
+  event.preventDefault();
+  committedComposition = null;
+  if (!composing.value)
+    commitText(event.clipboardData?.getData("text/plain") || "", "paste");
+}
+
+function keyboardEvent(event: KeyboardEvent, phase: "down" | "up") {
+  if (!humanControl.value || !keyboardFocused.value) return;
+  event.stopPropagation();
+  if (composing.value || event.isComposing || event.keyCode === 229) return;
+  if (phase === "down") committedComposition = null;
+  // Let the browser deliver an explicit paste event; never read its clipboard API.
+  if ((event.ctrlKey || event.metaKey) && event.code === "KeyV") return;
+  const functional =
+    /^(Backspace|Tab|Enter|Escape|Delete|Home|End|PageUp|PageDown|Arrow(Left|Right|Up|Down)|(Shift|Control|Alt|Meta)(Left|Right))$/.test(
+      event.code,
+    );
+  const shortcut =
+    !event.getModifierState("AltGraph") &&
+    (event.ctrlKey || event.metaKey) &&
+    /^Key[A-Z]$/.test(event.code);
+  if (!functional && !shortcut && !localKeys.has(event.code)) return;
+  event.preventDefault();
+  if (phase === "up" && !localKeys.has(event.code)) return;
+  if (phase === "down") localKeys.add(event.code);
+  else localKeys.delete(event.code);
+  enqueueInput({
+    operation: "key",
+    phase,
+    key: event.key,
+    code: event.code,
+    modifiers:
+      (event.altKey ? 1 : 0) |
+      (event.ctrlKey ? 2 : 0) |
+      (event.metaKey ? 4 : 0) |
+      (event.shiftKey ? 8 : 0),
+    repeat: event.repeat,
+  });
+}
+
+watch(
+  () =>
+    JSON.stringify([
+      state.value?.generation,
+      state.value?.browser_session_id,
+      state.value?.tab_id,
+      state.value?.document_id,
+      state.value?.viewport_width,
+      state.value?.viewport_height,
+      state.value?.scroll_x,
+      state.value?.scroll_y,
+      state.value?.position_revision,
+    ]),
+  (identity, previous) => {
+    if (identity !== previous) displayedFrame.value = null;
+    if (identity !== previous && keyboardFocused.value) {
+      resetKeyboard();
+      keyboardSink.value?.blur();
+    }
+  },
+);
+watch(imageFrame, async () => {
+  await nextTick();
+  // Identical JPEGs may not fire load again. Only an actual capture can advance
+  // their provenance; metadata retaining old pixels must not run this path.
+  if (browserImage.value?.complete && browserImage.value.naturalWidth > 0)
+    frameLoaded({ currentTarget: browserImage.value } as unknown as Event);
+});
+const windowBlurred = () => {
+  resetKeyboard();
+  keyboardSink.value?.blur();
+};
+window.addEventListener("blur", windowBlurred);
 const connection = ref("loading");
 const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
@@ -168,6 +719,7 @@ const marker = computed(() => {
       "viewport_height",
       "scroll_x",
       "scroll_y",
+      "position_revision",
     ].some(
       (field) =>
         point[field as keyof BrowserState] !==
@@ -310,6 +862,12 @@ async function follow(
         )
           continue;
         if (
+          humanControl.value &&
+          (event.control_epoch ?? manualEpoch) > manualEpoch &&
+          !(releasing && event.execution_state === "active")
+        )
+          disconnectControl();
+        if (
           event.type === "frame" &&
           (event.mime_type !== "image/jpeg" ||
             !event.image ||
@@ -320,6 +878,13 @@ async function follow(
             event.height < 0 ||
             event.width > 1280 ||
             event.height > 720)
+        )
+          continue;
+        if (
+          event.type === "frame" &&
+          humanControl.value &&
+          event.pointer_input_version === 1 &&
+          event.control_epoch !== manualEpoch
         )
           continue;
         // Every event is self-contained; sequence ordering also rejects old tabs.
@@ -339,7 +904,8 @@ async function follow(
           previous?.viewport_width === event.viewport_width &&
           previous?.viewport_height === event.viewport_height &&
           previous?.scroll_x === event.scroll_x &&
-          previous?.scroll_y === event.scroll_y;
+          previous?.scroll_y === event.scroll_y &&
+          previous?.position_revision === event.position_revision;
         state.value =
           event.type === "frame"
             ? event
@@ -354,6 +920,7 @@ async function follow(
                     }
                   : {}),
               };
+        if (event.type === "frame") imageFrame.value = { ...event };
         if (event.action_reset) resynchronized.value = true;
         connection.value =
           event.execution_state === "stopped" ? "stopped" : "live";
@@ -386,9 +953,11 @@ async function follow(
  *   resuming: Show automatic reconnection instead of initial loading.
  */
 async function refresh(resuming = false): Promise<void> {
+  disconnectControl();
   clearTimeout(retryTimer);
   pending?.abort();
   state.value = null;
+  imageFrame.value = null;
   loading.value = false;
   if (!props.chatId || !props.visible || !pageVisible.value) return;
   if (!online.value) {
@@ -453,6 +1022,7 @@ async function refresh(resuming = false): Promise<void> {
       throw new Error(t(`${key}.expired`));
     }
     state.value = snapshot.data.data;
+    imageFrame.value = { ...snapshot.data.data };
     const identity = JSON.stringify([
       state.value.generation,
       state.value.browser_session_id,
@@ -463,8 +1033,10 @@ async function refresh(resuming = false): Promise<void> {
       state.value.execution_state === "stopped" ? "stopped" : "snapshot";
     loading.value = false;
     await follow(snapshot.data.data, controller, chatId);
+    disconnectControl();
   } catch (err: any) {
     if (!controller.signal.aborted && pending === controller) {
+      disconnectControl();
       // Do not leave stale pixels or a running action visible while disconnected.
       state.value = null;
       const status = err.response?.status;
@@ -501,6 +1073,8 @@ async function refresh(resuming = false): Promise<void> {
  *   Resolves after confirmed cleanup or a visible control error.
  */
 async function control(operation: "stop" | "close"): Promise<void> {
+  disconnectControl();
+  manualMessage.value = "";
   const current = state.value;
   const chatId = props.chatId;
   const attempt = pending;
@@ -577,7 +1151,11 @@ const networkChanged = () => {
 };
 window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
+window.addEventListener("pagehide", disconnectControl);
+window.addEventListener("astrbot:account-changed", disconnectControl);
 onBeforeUnmount(() => {
+  disconnectControl();
+  window.removeEventListener("blur", windowBlurred);
   document.removeEventListener("keydown", onFullscreenKeyDown, true);
   clearTimeout(retryTimer);
   clearTimeout(markerTimer);
@@ -585,6 +1163,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", visibilityChanged);
   window.removeEventListener("online", networkChanged);
   window.removeEventListener("offline", networkChanged);
+  window.removeEventListener("pagehide", disconnectControl);
+  window.removeEventListener("astrbot:account-changed", disconnectControl);
 });
 </script>
 
@@ -598,6 +1178,11 @@ onBeforeUnmount(() => {
     :data-tab-id="state?.tab_id"
     :data-sequence="state?.sequence"
     :data-connection="connection"
+    :data-human-control="humanControl"
+    :data-pending-input="inputCount"
+    :data-awaiting-frame="awaitingFrame"
+    :data-frame-input="displayedFrame?.applied_input_id"
+    :data-frame-latency="frameLatency"
   >
     <header class="agent-browser-toolbar">
       <div class="agent-browser-heading">
@@ -614,6 +1199,27 @@ onBeforeUnmount(() => {
           {{ t(`${key}.statusLabels.${connection}`) }}
         </span>
         <div class="agent-browser-controls">
+          <button
+            type="button"
+            class="agent-browser-takeover agent-browser-button"
+            :disabled="
+              !state?.available ||
+              state?.manual_control_version !== 1 ||
+              state?.execution_state === 'stopped' ||
+              (!humanControl &&
+                ['human', 'acquiring'].includes(state?.control_mode || '')) ||
+              manualPending ||
+              controlling
+            "
+            :title="
+              state?.manual_control_version === 1
+                ? undefined
+                : t(`${key}.upgradeControl`)
+            "
+            @click="humanControl ? releaseControl() : acquireControl()"
+          >
+            {{ t(`${key}.${humanControl ? "handBack" : "takeOver"}`) }}
+          </button>
           <button
             type="button"
             class="agent-browser-stop agent-browser-button"
@@ -672,6 +1278,31 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <div v-if="manualPending" role="status" class="agent-browser-notice">
+      {{ t(`${key}.changingControl`) }}
+    </div>
+    <div v-else-if="manualMessage" role="status" class="agent-browser-notice">
+      {{ manualMessage }}
+    </div>
+    <div
+      v-if="!humanControl && state?.control_mode === 'human'"
+      role="status"
+      class="agent-browser-notice agent-browser-occupied"
+    >
+      {{ t(`${key}.controlOccupied`) }}
+    </div>
+    <div
+      v-else-if="
+        !humanControl &&
+        state?.control_mode === 'paused' &&
+        state?.execution_state === 'active'
+      "
+      role="status"
+      class="agent-browser-notice agent-browser-paused"
+    >
+      {{ t(`${key}.controlPaused`) }}
+    </div>
+
     <div
       v-if="controlError"
       role="alert"
@@ -705,6 +1336,13 @@ onBeforeUnmount(() => {
         :aria-modal="fullscreen ? true : undefined"
         :aria-label="fullscreen ? t(`${key}.title`) : undefined"
       >
+        <div
+          v-if="fullscreen && manualMessage"
+          role="status"
+          class="agent-browser-notice"
+        >
+          {{ manualMessage }}
+        </div>
         <div v-if="!state?.image" role="status" class="agent-browser-empty">
           <span class="agent-browser-empty-icon">
             <component
@@ -730,7 +1368,7 @@ onBeforeUnmount(() => {
             :style="
               fullscreen && state?.width && state?.height
                 ? {
-                    width: `min(100%, calc((100dvh - 60px) * ${
+                    width: `min(100%, calc(100cqh * ${
                       state.width / state.height
                     }))`,
                   }
@@ -738,10 +1376,39 @@ onBeforeUnmount(() => {
             "
           >
             <img
+              ref="browserImage"
               :src="`data:${state.mime_type};base64,${state.image}`"
               :width="state.width"
               :height="state.height"
               :alt="state.title || t(`${key}.title`)"
+              :style="
+                humanControl
+                  ? { cursor: manualPending ? 'wait' : 'crosshair' }
+                  : undefined
+              "
+              draggable="false"
+              @click="clickPage"
+              @wheel="clickPage"
+              @load="frameLoaded"
+            />
+            <textarea
+              v-if="humanControl && state?.keyboard_input_version === 1"
+              ref="keyboardSink"
+              class="agent-browser-keyboard"
+              :class="{ 'is-composing': composing }"
+              :aria-label="t(`${key}.keyboardInput`)"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              @focus="keyboardFocused = true"
+              @blur="resetKeyboard"
+              @keydown="keyboardEvent($event, 'down')"
+              @keyup="keyboardEvent($event, 'up')"
+              @beforeinput="beforeText"
+              @input="if (!composing && keyboardSink) keyboardSink.value = '';"
+              @compositionstart="startComposition"
+              @compositionend="endComposition"
+              @paste="pasteText"
             />
             <span
               v-if="marker"
@@ -751,10 +1418,56 @@ onBeforeUnmount(() => {
             />
           </div>
         </div>
+        <p v-if="humanControl" class="agent-browser-input-hint">
+          {{
+            t(
+              `${key}.${
+                state?.keyboard_input_version === 1
+                  ? "keyboardHint"
+                  : "upgradeKeyboard"
+              }`,
+            )
+          }}
+        </p>
+        <button
+          v-if="humanControl"
+          type="button"
+          class="agent-browser-leave agent-browser-button"
+          @click="windowBlurred"
+        >
+          {{ t(`${key}.leaveKeyboard`) }}
+        </button>
+        <p v-if="humanControl" role="status" class="agent-browser-input-hint">
+          {{
+            t(
+              `${key}.${
+                inputCount
+                  ? "inputPending"
+                  : state?.pointer_input_version !== 1
+                  ? "humanActive"
+                  : awaitingFrame || !state?.image || !displayedFrame
+                  ? "waitingFrame"
+                  : "frameReady"
+              }`,
+            )
+          }}
+          <span v-if="state?.pointer_input_version !== 1">
+            · {{ t(`${key}.upgradePointer`) }}</span
+          >
+        </p>
         <footer class="agent-browser-caption">
+          <button
+            v-if="humanControl && fullscreen"
+            type="button"
+            class="agent-browser-handback agent-browser-button"
+            :disabled="manualPending"
+            @click="releaseControl"
+          >
+            {{ t(`${key}.handBack`) }}
+          </button>
           <span
             ><Eye :size="12" aria-hidden="true" />{{
-              t(`${key}.readOnly`)
+              t(`${key}.${humanControl ? "humanActive" : "readOnly"}`)
             }}</span
           >
           <span v-if="state?.width" class="agent-browser-capture-meta">
@@ -813,6 +1526,7 @@ onBeforeUnmount(() => {
               aria-hidden="true"
           /></span>
           <span class="agent-browser-action-label">{{
+            (action.actor === "human" ? t(`${key}.humanActor`) + " · " : "") +
             t(`${key}.actionKinds.${action.kind}`)
           }}</span>
           <span class="agent-browser-action-result">
@@ -1082,7 +1796,9 @@ onBeforeUnmount(() => {
   background: rgba(var(--browser-ink), 0.035);
   overscroll-behavior: contain;
 }
+/* Fit the image to the remaining flex area, including all visible controls. */
 .agent-browser-stage.is-fullscreen .agent-browser-image {
+  container-type: size;
   align-items: center;
   justify-content: center;
 }
@@ -1090,7 +1806,14 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: auto;
-  pointer-events: none;
+  pointer-events: auto;
+}
+.agent-browser-takeover {
+  width: auto;
+  min-width: 90px;
+  padding-inline: 8px;
+  white-space: nowrap;
+  font-size: 11px;
 }
 .agent-browser-viewport {
   position: relative;
@@ -1128,6 +1851,11 @@ onBeforeUnmount(() => {
   border-top: 1px solid rgba(var(--browser-ink), 0.06);
   color: rgba(var(--browser-ink), 0.46);
   font-size: 10px;
+}
+.agent-browser-handback {
+  width: auto;
+  padding: 0 10px;
+  white-space: nowrap;
 }
 .agent-browser-caption span {
   gap: 5px;
@@ -1337,5 +2065,41 @@ onBeforeUnmount(() => {
   .agent-browser-refresh {
     transition: none;
   }
+}
+</style>
+
+<style scoped>
+.agent-browser-keyboard {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 2px;
+  height: 2px;
+  padding: 0;
+  border: 0;
+  opacity: 0.02;
+  resize: none;
+}
+.agent-browser-keyboard.is-composing {
+  width: min(80%, 360px);
+  height: 40px;
+  opacity: 1;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+}
+.agent-browser-viewport:focus-within {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: -2px;
+}
+.agent-browser-input-hint {
+  font-size: 12px;
+  padding: 4px 12px;
+  margin: 0;
+}
+.agent-browser-leave {
+  width: auto;
+  padding: 4px 10px;
+  align-self: flex-start;
+  margin: 4px 12px;
 }
 </style>

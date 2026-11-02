@@ -2349,6 +2349,12 @@ export const agentTeamsApi = {
   },
 };
 
+export const browserControlApi = {
+  createSession(body: openApiV1.BrowserControlSessionRequest) {
+    return openApiV1.createBrowserControlSession({ body, throwOnError: true });
+  },
+};
+
 export const accountApi = {
   current() { return typed<openApiV1.AccountInfo>(openApiV1.currentAccount()); },
   list() { return typed<openApiV1.AccountInfo[]>(openApiV1.listAccounts()); },

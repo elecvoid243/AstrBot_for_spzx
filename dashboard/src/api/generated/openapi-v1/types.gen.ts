@@ -205,6 +205,54 @@ export type BotRegistrationRequest = {
 export type action = 'start' | 'poll';
 
 /**
+ * Closed input vocabulary; browser targets can only be validated, not chosen.
+ */
+export type BrowserControlCommand = {
+    operation: 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+    control_epoch: number;
+    input_id?: (number | null);
+    x?: (number | null);
+    y?: (number | null);
+    click_count?: 1 | 2;
+    delta_x?: (number | null);
+    delta_y?: (number | null);
+    target?: (BrowserControlTarget | null);
+    code?: (string | null);
+    key?: (string | null);
+    phase?: ('down' | 'up' | null);
+    modifiers?: number;
+    repeat?: boolean;
+    text?: (string | null);
+    source?: ('typing' | 'composition' | 'paste' | null);
+};
+
+export type operation = 'click' | 'wheel' | 'key' | 'text' | 'reset_keys' | 'heartbeat' | 'release';
+
+export type click_count = 1 | 2;
+
+export type BrowserControlSessionRequest = {
+    chat_id: string;
+    generation: string;
+    browser_session_id: string;
+};
+
+export type BrowserControlSessionResponse = {
+    ticket: string;
+    expires_in: number;
+    websocket_path: string;
+};
+
+export type BrowserControlTarget = {
+    tab_id: string;
+    document_id: string;
+    viewport_width: number;
+    viewport_height: number;
+    scroll_x: number;
+    scroll_y: number;
+    position_revision?: (number | null);
+};
+
+/**
  * A deliberate local grant; importing an asset never grants access.
  */
 export type ChatAccessRequest = {
@@ -1533,6 +1581,14 @@ export type WorkflowStartRequest = {
     source?: string;
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type CreateBrowserControlSessionData = {
+    body: BrowserControlSessionRequest;
+};
+
+export type CreateBrowserControlSessionResponse = (BrowserControlSessionResponse);
+
+export type CreateBrowserControlSessionError = (unknown);
 
 export type CurrentAccountResponse = (AccountResponse);
 

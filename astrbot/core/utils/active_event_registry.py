@@ -4,9 +4,38 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 if TYPE_CHECKING:
     from astrbot.core.platform import AstrMessageEvent
+
+
+class AgentManualPause:
+    """Share a reversible, chat-owned pause with current and starting runners."""
+
+    def __init__(self) -> None:
+        """Initialize an open admission gate with no human observation."""
+        self.revision = 0
+        self.requested = asyncio.Event()
+        self.resumed = asyncio.Event()
+        self.resumed.set()
+        self.observation = ""
+
+    def pause(self) -> None:
+        """Invalidate pending plans before allowing any asynchronous work."""
+        self.revision += 1
+        self.resumed.clear()
+        self.requested.set()
+
+    def resume(self, observation: str = "") -> None:
+        """Open the gate only after explicit handback or terminal cancellation.
+
+        Args:
+            observation: Fresh browser state obtained before renewing admission.
+        """
+        self.observation = observation
+        self.requested.clear()
+        self.resumed.set()
 
 
 class ActiveEventRegistry:
@@ -22,9 +51,65 @@ class ActiveEventRegistry:
             str, dict[asyncio.Task[None], AstrMessageEvent]
         ] = defaultdict(dict)
         self._background_cancel_requested: set[asyncio.Task[None]] = set()
+        self._manual_pauses: WeakKeyDictionary[
+            asyncio.AbstractEventLoop, WeakValueDictionary[str, AgentManualPause]
+        ] = WeakKeyDictionary()
+
+    def get_agent_manual_pause(self, umo: str) -> AgentManualPause:
+        """Get the shared gate without retaining completed chats indefinitely.
+
+        Args:
+            umo: Trusted chat identity from the event or owning browser plugin.
+
+        Returns:
+            The gate retained by its active runners and browser owner.
+        """
+        loop = asyncio.get_running_loop()
+        gates = self._manual_pauses.setdefault(loop, WeakValueDictionary())
+        gate = gates.get(umo)
+        if gate is None:
+            gate = AgentManualPause()
+            gates[umo] = gate
+        return gate
 
     def register(self, event: AstrMessageEvent) -> None:
-        self._events[event.unified_msg_origin].add(event)
+        """Admit an event before asynchronous request preparation can begin.
+
+        Args:
+            event: Trusted platform event whose current control boundary is retained.
+        """
+        events = self._events[event.unified_msg_origin]
+        if event in events:
+            return
+        events.add(event)
+        if not hasattr(event, "set_extra"):
+            return
+        try:
+            gate = self.get_agent_manual_pause(event.unified_msg_origin)
+        except RuntimeError:
+            # Synchronous registry clients do not prepare asynchronous Agent turns.
+            return
+        event.set_extra(
+            "_agent_manual_pause_boundary",
+            (gate, gate.revision - int(gate.requested.is_set())),
+        )
+
+    def has_active_agent(self, umo: str) -> bool:
+        """Check running foreground or background Agent executions.
+
+        Args:
+            umo: Trusted unified message origin owning the browser.
+
+        Returns:
+            Whether takeover must wait for an Agent execution to finish.
+        """
+        return (
+            bool(self._events.get(umo))
+            or any(
+                event.unified_msg_origin == umo for event in self._agent_stop_callbacks
+            )
+            or any(not task.done() for task in self._background_tasks.get(umo, {}))
+        )
 
     def unregister(self, event: AstrMessageEvent) -> None:
         umo = event.unified_msg_origin

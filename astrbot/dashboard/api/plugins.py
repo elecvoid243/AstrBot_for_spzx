@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from uuid import uuid4
 
 import jwt
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnect
 
 from astrbot.api.web import PluginRequest, bind_request_context
 from astrbot.core import logger
@@ -21,6 +27,9 @@ from astrbot.dashboard.asgi_runtime import (
 from astrbot.dashboard.async_utils import run_maybe_async
 from astrbot.dashboard.responses import ApiError, error, ok
 from astrbot.dashboard.schemas import (
+    BrowserControlCommand,
+    BrowserControlSessionRequest,
+    BrowserControlSessionResponse,
     EnabledPatch,
     PluginByIdRequest,
     PluginConfigFileDeleteRequest,
@@ -67,6 +76,213 @@ legacy_router = APIRouter(tags=["Dashboard Plugins"], include_in_schema=False)
 
 
 require_plugin_scope = ScopeDependency("plugin")
+
+
+async def _dispatch_browser_control(scope, account, identity, command):
+    """Apply the normal extension ownership checks to a host-owned command.
+
+    Args:
+        scope: Current HTTP or WebSocket ASGI scope.
+        account: Currently resolved, enabled Dashboard account.
+        identity: Signed chat, runtime, browser and connection identity.
+        command: Validated typed input, never arbitrary CDP or script text.
+
+    Returns:
+        The plugin acknowledgement without exposing its private bridge token.
+
+    Raises:
+        ApiError: Ownership, plugin capability or runtime admission is invalid.
+    """
+    proxy = Request(
+        {
+            **scope,
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/plugins/extensions/browser-use/manual",
+            "query_string": urlencode(
+                {
+                    key: identity[key]
+                    for key in ("chat_id", "generation", "browser_session_id")
+                }
+            ).encode(),
+            "state": {},
+        }
+    )
+    proxy._body = b""
+    proxy.state.dashboard_account = account
+    proxy.state.browser_control = {**command, "client_id": identity["client_id"]}
+    result = await _call_plugin_extension(
+        "browser-use/manual", proxy, account.resource_owner
+    )
+    if isinstance(result, Response):
+        payload = json.loads(result.body)
+        if result.status_code >= 400:
+            raise ApiError(
+                payload.get("message", "Browser control unavailable"),
+                result.status_code,
+            )
+    else:
+        payload = result
+    if payload.get("status") != "ok":
+        raise ApiError(
+            payload.get("message", "Upgrade Browser Use to enable manual control"), 409
+        )
+    return payload["data"]
+
+
+@router.post(
+    "/plugins/browser-control/session", response_model=BrowserControlSessionResponse
+)
+async def create_browser_control_session(
+    body: BrowserControlSessionRequest,
+    request: Request,
+    username: str = Depends(require_dashboard_user),
+):
+    """Issue a fifteen-second, connection-bound ticket after owned-chat checks.
+
+    Args:
+        body: Browser identity last observed by the authenticated client.
+        request: Current Dashboard request.
+        username: Authenticated stable resource owner.
+
+    Returns:
+        An expiring ticket submitted in the first WebSocket message, never a URL.
+    """
+    account = request.state.dashboard_account
+    identity = {**body.model_dump(), "client_id": uuid4().hex}
+    state = await _dispatch_browser_control(
+        request.scope, account, identity, {"operation": "inspect"}
+    )
+    if state.get("manual_control_version") != 1:
+        raise ApiError("Upgrade Browser Use to enable manual control", 409)
+    if (
+        not state.get("available")
+        or state.get("generation") != body.generation
+        or state.get("browser_session_id") != body.browser_session_id
+    ):
+        raise ApiError(
+            "Browser identity expired; start or observe the current browser", 409
+        )
+    ticket = jwt.encode(
+        {
+            **identity,
+            "sub": account.account_id,
+            "ver": account.token_version,
+            "token_type": "browser-control-v1",
+            "exp": int(time.time()) + 15,
+        },
+        request.app.state.jwt_secret,
+        algorithm="HS256",
+    )
+    tickets = getattr(request.app.state, "browser_control_tickets", {})
+    request.app.state.browser_control_tickets = {
+        key: expiry for key, expiry in tickets.items() if expiry > time.time()
+    }
+    request.app.state.browser_control_tickets[identity["client_id"]] = time.time() + 15
+    return BrowserControlSessionResponse(
+        ticket=ticket,
+        expires_in=15,
+        websocket_path="/api/v1/plugins/browser-control/ws",
+    )
+
+
+@router.websocket("/plugins/browser-control/ws")
+async def browser_control_ws(websocket: WebSocket):
+    """Acquire and acknowledge ordered input for exactly one authenticated socket.
+
+    The first message carries an expiring ticket. Every later message rechecks
+    persisted account, chat ownership and plugin availability. Disconnect revokes
+    input and leaves the runtime paused; only explicit release restores admission.
+
+    Args:
+        websocket: Same-origin socket; credentials never appear in its URL.
+    """
+    origin = websocket.headers.get("origin")
+    if origin and origin.rstrip("/") != str(websocket.base_url).rstrip("/").replace(
+        "ws://", "http://"
+    ).replace("wss://", "https://"):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    identity = None
+    account = None
+    epoch = None
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), 5)
+        if len(raw) > 8192:
+            raise ApiError("Browser authentication is too large", 400)
+        first = json.loads(raw)
+        if not isinstance(first, dict) or set(first) != {"ticket"}:
+            raise ApiError("A browser control ticket is required", 401)
+        identity = jwt.decode(
+            first["ticket"], websocket.app.state.jwt_secret, algorithms=["HS256"]
+        )
+        if identity.get("token_type") != "browser-control-v1":
+            raise ApiError("Invalid browser control ticket", 401)
+        expiry = getattr(websocket.app.state, "browser_control_tickets", {}).pop(
+            identity.get("client_id"), 0
+        )
+        if expiry < time.time():
+            raise ApiError("Browser control ticket expired or already used", 401)
+        account = await websocket.app.state.services.auth.accounts.resolve(identity)
+        if account is None:
+            raise ApiError("Account unavailable", 401)
+        ack = await _dispatch_browser_control(
+            websocket.scope, account, identity, {"operation": "acquire"}
+        )
+        epoch = ack["control_epoch"]
+        await websocket.send_json(ack)
+        while True:
+            raw = await asyncio.wait_for(websocket.receive_text(), 15)
+            if len(raw) > 8192:
+                raise ApiError("Browser input is too large", 400)
+            command = BrowserControlCommand.model_validate_json(raw).model_dump(
+                exclude_none=True
+            )
+            current_account = await websocket.app.state.services.auth.accounts.resolve(
+                identity
+            )
+            if current_account is None:
+                raise ApiError("Account unavailable", 401)
+            account = current_account
+            ack = await _dispatch_browser_control(
+                websocket.scope, account, identity, command
+            )
+            await websocket.send_json(ack)
+            if command["operation"] == "release":
+                epoch = None
+                await websocket.close(code=1000)
+                return
+    except (
+        ApiError,
+        ValidationError,
+        jwt.InvalidTokenError,
+        ValueError,
+        TypeError,
+        asyncio.TimeoutError,
+    ) as exc:
+        message = (
+            exc.message
+            if isinstance(exc, ApiError)
+            else "Browser control expired or invalid; reconnect explicitly."
+        )
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+            await websocket.send_json({"status": "rejected", "message": message})
+            await websocket.close(code=1008)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if epoch is not None and account is not None:
+            with contextlib.suppress(Exception):
+                await _dispatch_browser_control(
+                    websocket.scope,
+                    account,
+                    identity,
+                    {
+                        "operation": "disconnect",
+                        "control_epoch": epoch,
+                    },
+                )
 
 
 async def require_plugin_view_token(request: Request) -> str:
@@ -334,7 +550,7 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
         return
     browser = plugin_path in {
         f"browser-use/{name}"
-        for name in ("status", "snapshot", "stream", "stop", "close")
+        for name in ("status", "snapshot", "stream", "stop", "close", "manual")
     }
     spcode = plugin_path.startswith("spcode/") and plugin_path[7:] in SPCODE_CHAT_PATHS
     if not browser and not spcode:
@@ -342,6 +558,12 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
             raise ApiError("Extension is unavailable", status_code=403)
         return
     expected = "browser-owned-chat-v1" if browser else "spcode-owned-workspace-v1"
+    if plugin_path == "browser-use/manual":
+        expected = "browser-owned-chat-control-v1"
+        if getattr(request.state, "browser_control", None) is None:
+            raise ApiError(
+                "Use the authenticated browser control channel", status_code=403
+            )
     admin_spcode = spcode and account.role == "admin"
     if (
         not admin_spcode
@@ -350,7 +572,9 @@ async def _authorize_chat_extension(plugin_path, request, username, handler):
         raise ApiError("Extension requires an ownership-aware update", status_code=403)
     if browser:
         operation = plugin_path.rsplit("/", 1)[-1]
-        if request.method != ("POST" if operation in {"stop", "close"} else "GET"):
+        if request.method != (
+            "POST" if operation in {"stop", "close", "manual"} else "GET"
+        ):
             raise ApiError("Extension is unavailable", status_code=403)
         if (
             set(request.query_params)

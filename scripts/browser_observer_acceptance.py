@@ -458,9 +458,7 @@ async def main() -> None:
                         timeout=120000
                     )
                     opened_at = time.monotonic()
-                    await page.locator(
-                        'button.sp-ghost-btn[aria-label*="Agent"]'
-                    ).click()
+                    # The live tool call must open the production sidebar itself.
                     await page.locator(".agent-browser-image img").wait_for(
                         timeout=20000
                     )
@@ -478,6 +476,7 @@ async def main() -> None:
                             "Chinese input and submit",
                             "scroll and new tab",
                             "no-project entry",
+                            "live browser tool automatically opens Agent Browser",
                             "authenticated frame rendering",
                         ]
                     )
@@ -542,9 +541,12 @@ async def main() -> None:
                     await page.reload()
                     await page.locator(".chat-text-input, .chat-textarea").wait_for()
                     if not await page.locator(".agent-browser-image img").count():
-                        await page.locator(
-                            'button.sp-ghost-btn[aria-label*="Agent"]'
-                        ).click()
+                        tab = page.locator(".git-diff-sidebar-browser-tab")
+                        if not await tab.is_visible():
+                            await page.locator("button.sp-ghost-btn").click()
+                        await tab.get_by_role("tab").click()
+                        await page.locator(".browser-mode-trigger").click()
+                        await page.locator(".browser-mode-agent").click()
                     await page.locator(".agent-browser-image img").wait_for(
                         timeout=20000
                     )

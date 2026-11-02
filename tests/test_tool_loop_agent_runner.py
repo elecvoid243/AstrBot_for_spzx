@@ -446,6 +446,7 @@ class HandoffMockEvent(AstrMessageEvent):
     """
 
     def __init__(self, umo: str, sender_id: str):
+        self._extras = {}
         self.unified_msg_origin = umo
         self._sender_id = sender_id
 

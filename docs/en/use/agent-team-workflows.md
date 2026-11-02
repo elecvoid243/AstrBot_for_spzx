@@ -1,6 +1,8 @@
 # Agent Teams assets and run workbench
 
-Open **More → Agent Teams → Assets**:
+The canvas and workbench screenshots come from the real Dashboard, an isolated database and a controlled model service.
+
+Open **More Features → Agent Teams → Assets**:
 
 - **Teams** are autonomous teams whose coordinator assigns work toward a goal and creates members from presets.
 - **Workflows** arrange one or more Agents, control nodes and child assets on a canvas.
@@ -14,7 +16,7 @@ Alternatively, select a role template and its **fixed version** in the Agent pro
 
 Choose **Assets → Teams → New Autonomous Team**, enter a name and default model, and configure the coordinator and member presets. Each can be configured directly or use a fixed role version with overrides; the same template can be used more than once with different overrides. The coordinator can create only allowed presets. Set member limits (including the coordinator), concurrency and member task limits; enter the goal at launch. Final version approval and an output contract are optional.
 
-<!-- Insert real English canvas screenshot here. -->
+![Live workflow canvas](/images/agent-teams-live-canvas-en.png)
 
 ## Drafts, fixed versions and tests
 
@@ -52,7 +54,7 @@ Choose **Start Run** on the asset card and fill in declared inputs and the team 
 
 The desktop workbench organizes tasks, process, and todos and artifacts into columns. Select a task to read saved model responses, thinking actually supplied by the provider, tool activity and artifacts. Load earlier process records or expand actual model context and its assembly sources as needed. Context may be truncated or unavailable for a remote executor; sources precede plugin changes and may not all remain in the final request. Switch to the execution graph for the read-only run snapshot and task states; expand child scopes and loop rounds. On narrow screens, switch panels to see the same content. Background refresh preserves answers being entered.
 
-<!-- Insert real English run workbench screenshot here. -->
+![Live run workbench](/images/agent-teams-live-workbench-en.png)
 
 Waits for predecessors, capacity or people show their reasons; a human wait blocks only the affected path. Choose **Open process** on a todo to check the evidence, then answer. For approval, first preview the specified version and files, then approve or reject with feedback. If the specified version is unavailable, create that version first; the system will not substitute the latest. After approval, export that approved version and its files. Answers can be saved while paused and are consumed after the run continues; cancellation closes requests and prevents late advancement.
 
@@ -62,7 +64,7 @@ Closing or refreshing the page does not cancel execution. Reopen the run to read
 
 In run details, pause, continue or cancel the whole run. Pause stops new work from being admitted, but already dispatched external calls may finish; cancellation cannot undo effects already produced. After checking frozen inputs, **Retry failed task** creates a new attempt. An interrupted built-in executor task can **Continue same attempt** at supported checkpoints. Saved model responses and known tool results are reused; an unsaved model request may be sent again and incur charges.
 
-When a tool result is unknown, select the task and expand the call in **Saved member process**. Check its parameters, partial output and external evidence. Only a query or safe reconciliation explicitly supported by the tool can establish the outcome; an inconclusive query remains pending. If the complete result or failure has been verified externally, record the evidence and result. You can explicitly request a new execution, which may repeat external effects. An ordinary retry cannot bypass this decision. For a remote executor supporting **Query original remote run**, query the original identity first; an unavailable or unknown status does not prove nothing happened. Inspect the remote service before deciding on a new attempt.
+When a tool result is unknown, select the task and expand the call in **Agent process**. Check its parameters, partial output and external evidence. Only a query or safe reconciliation explicitly supported by the tool can establish the outcome; an inconclusive query remains pending. If the complete result or failure has been verified externally, record the evidence and result. You can explicitly request a new execution, which may repeat external effects. An ordinary retry cannot bypass this decision. For a remote executor supporting **Query original remote run**, query the original identity first; an unavailable or unknown status does not prove nothing happened. Inspect the remote service before deciding on a new attempt.
 
 In the asset's **Scope limits**, optionally set call steps, members, loop iterations and token limits; save a new version for new runs. **Runs → View Run → Usage and limits** shows root and child usage, including past attempts. Usage not reported by a provider is unknown, not free; unmetered charges inside plugins or tools are not hard limited here. Estimates and concurrent reservations cannot guarantee zero overspend. When a limit is reached, new calls stop and saved results and effects remain available.
 
@@ -96,3 +98,5 @@ This image uses the production component with isolated sample data; it is not a 
 | Previous History tab | Runs → History |
 | Human questions only in run details | Runs → Needs attention → Needs my attention, or the same todo in View Run |
 | Previous chat run link | Use `/asset status <run ID>` in the original conversation for the restricted chat run; the owner can still open full details after signing in |
+
+Legacy definition migration and legacy run checks have been removed. The new system does not automatically convert or delete old Agent Teams data.

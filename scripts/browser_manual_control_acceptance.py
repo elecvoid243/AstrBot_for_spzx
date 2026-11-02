@@ -968,6 +968,10 @@ addEventListener('focusin',report);
                 ).wait_for(timeout=20000)
                 await page.screenshot(path=str(evidence / "manual-en.png"))
                 await page.locator(".agent-browser-takeover").click()
+                # Wait for confirmed handback before querying the renewed host lease.
+                await page.locator(
+                    '.agent-browser-view[data-human-control="false"]'
+                ).wait_for()
                 for _ in range(40):
                     if (await status())["control_mode"] == "agent":
                         break

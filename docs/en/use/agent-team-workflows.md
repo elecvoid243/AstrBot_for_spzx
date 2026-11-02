@@ -403,3 +403,7 @@ Single-task assets remain compatible. Dependency assets provide acyclic scheduli
 Human questions and approvals wait indefinitely by default. Set a deadline on the human node and choose whether to keep waiting or automatically use the valid recommendation shown when the request was created. For dynamic choices, configure the asking role or Agent’s human wait policy. Template-based Agents can inherit the fixed template policy or override it, including resetting it to indefinite waiting. This setting is independent of ordinary chat timeouts.
 
 The todo displays the persisted deadline and decision source. Missing or invalid recommendations, or unavailable evidence, leave the request waiting for a person. No new model decision is requested at the deadline.
+
+The saved deadline survives restarts. While a run is paused, a valid decision may be recorded but is consumed only after continuing. Cancelling closes the request. Deadline processing runs even when no Dashboard page is open.
+
+![Human wait policy and persisted decision status](/images/agent-teams-human-deadlines-en.jpg)

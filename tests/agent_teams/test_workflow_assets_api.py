@@ -181,7 +181,6 @@ def test_team_allowed_workflows_http_pin_and_owner_validation(tmp_path):
                 {
                     "asset_id": workflow["asset_id"],
                     "version": 1,
-                    "result_task_id": "result",
                 }
             ],
         }

@@ -129,6 +129,7 @@ async def main() -> None:
 <style>body{margin:0;font:24px Arial;background:#eff6ff}button{position:absolute;left:60px;top:60px;width:200px;height:80px;font-size:24px}p{position:absolute;left:60px;top:180px}</style>
 <button id="increment" onclick="fetch('/increment').then(r=>r.text()).then(n=>{document.getElementById('count').textContent=n;this.style.backgroundColor='#b9f6ca';this.textContent='Human updated '+n})">Click counter</button>
 <button style="top:300px;width:260px" onclick="fetch('/continue').then(r=>r.text()).then(n=>this.textContent=n)">Continue on fresh page</button>
+<button style="left:950px;top:60px;width:220px" onclick="setTimeout(()=>location.href='/next-form',1500)">Navigate after delay</button>
 <form style="position:absolute;left:380px;top:60px;width:450px" onsubmit="event.preventDefault()">
 <input id="text" aria-label="English and Chinese" style="width:400px;height:50px;font-size:24px" autocomplete="off">
 <textarea id="multiline" aria-label="Multiline" style="display:block;margin-top:20px;width:400px;height:80px;font-size:24px"></textarea>
@@ -136,9 +137,10 @@ async def main() -> None:
 </form>
 <script>
 const held = new Set();
-const report = () => fetch('/form-report', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:document.getElementById('text').value,multiline:document.getElementById('multiline').value,password:document.getElementById('password').value,held:[...held],active:document.activeElement.id})});
+const released = [];
+const report = () => fetch('/form-report', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:document.getElementById('text').value,multiline:document.getElementById('multiline').value,password:document.getElementById('password').value,held:[...held],released,document:String(performance.timeOrigin),active:document.activeElement.id})});
 addEventListener('keydown',e=>{held.add(e.code);report()});
-addEventListener('keyup',e=>{held.delete(e.code);report()});
+addEventListener('keyup',e=>{held.delete(e.code);released.push(e.code);report()});
 addEventListener('input',report);
 addEventListener('focusin',report);
 </script>
@@ -954,6 +956,44 @@ addEventListener('focusin',report);
                     await form_matches(held=[], text=unchanged, password=private_text)
                     metrics["checks"].append(
                         "H03: actual host rejects stale text target and releases held key without inserting into the private form"
+                    )
+                if args.text_input:
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="true"]'
+                    ).wait_for()
+                    old_document = (await status())["document_id"]
+                    await click_form(1050, 85)
+                    await page.keyboard.down("ArrowRight")
+                    await form_matches(held=["ArrowRight"])
+                    for _ in range(150):
+                        if form_state.get(
+                            "document"
+                        ) != old_document and form_state.get("released") == [
+                            "ArrowRight"
+                        ]:
+                            break
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise AssertionError(
+                            "Actual navigation did not release the held key on the new document"
+                        )
+                    assert await page.locator(".agent-browser-keyboard").evaluate(
+                        "e=>e!==document.activeElement"
+                    )
+                    await page.keyboard.up("ArrowRight")
+                    await page.keyboard.insert_text("must stay local")
+                    await asyncio.sleep(0.3)
+                    assert form_state["text"] == "" and form_state["held"] == []
+                    await click_form(500, 85)
+                    await page.keyboard.insert_text("new page")
+                    await form_matches(text="new page", held=[])
+                    await page.locator(".agent-browser-takeover").click()
+                    await page.locator(
+                        '.agent-browser-view[data-human-control="false"]'
+                    ).wait_for()
+                    metrics["checks"].append(
+                        "H03: actual navigation releases held ArrowRight, clears local focus and blocks residual text until explicit refocus"
                     )
                 await page.evaluate("localStorage.setItem('astrbot-locale', 'en-US')")
                 await page.reload()

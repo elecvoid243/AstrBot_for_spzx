@@ -30,7 +30,7 @@
 
 审批目标和推荐依据必须选择真实产物。孤立的全部汇合、不完整循环或缺少并行前驱的局部范围不能启动；单独测试循环内 Agent 只执行一次，并须提供初始反馈。
 
-<!-- Insert real Chinese draft trial screenshot here. -->
+![真实单节点试运行](/images/agent-teams-live-trial-zh.png)
 
 ## 连接输入、输出和控制路径
 

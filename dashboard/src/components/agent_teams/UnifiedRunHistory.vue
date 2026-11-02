@@ -18,14 +18,14 @@
       >{{ error }}</v-alert
     >
     <v-alert
-      v-if="!loading && !records.length && !error"
+      v-if="!loading && !visibleRecords.length && !error"
       type="info"
       variant="tonal"
       >{{ tm("runHistory.empty") }}</v-alert
     >
     <details class="history-list workflow-run-list" open>
       <summary class="text-subtitle-1 mb-3">
-        {{ tm("runHistory.recordList") }} · {{ records.length }}
+        {{ tm("runHistory.recordList") }} · {{ visibleRecords.length }}
       </summary>
       <v-card
         v-for="record in visibleRecords"

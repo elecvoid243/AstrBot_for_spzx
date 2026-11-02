@@ -30,7 +30,7 @@ Tests make real model and tool calls and may incur costs or external effects. Th
 
 Approval targets and recommendations require real artifacts. An isolated ALL join, an incomplete loop, or a partial scope missing a parallel predecessor cannot start. Testing an Agent inside a loop on its own runs it once and requires explicit initial feedback.
 
-<!-- Insert real English draft trial screenshot here. -->
+![Live partial draft trial](/images/agent-teams-live-trial-en.png)
 
 ## Connect inputs, outputs and control paths
 

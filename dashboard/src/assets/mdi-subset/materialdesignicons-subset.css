@@ -1,4 +1,4 @@
-/* Auto-generated MDI subset – 389 icons */
+/* Auto-generated MDI subset – 390 icons */
 /* Do not edit manually. Run: pnpm run subset-icons */
 
 @font-face {
@@ -694,6 +694,10 @@
 
 .mdi-filter-remove::before {
   content: "\F0234";
+}
+
+.mdi-fit-to-screen-outline::before {
+  content: "\F18F5";
 }
 
 .mdi-flag-checkered::before {

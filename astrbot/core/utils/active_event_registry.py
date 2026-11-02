@@ -26,6 +26,23 @@ class ActiveEventRegistry:
     def register(self, event: AstrMessageEvent) -> None:
         self._events[event.unified_msg_origin].add(event)
 
+    def has_active_agent(self, umo: str) -> bool:
+        """Check running foreground or background Agent executions.
+
+        Args:
+            umo: Trusted unified message origin owning the browser.
+
+        Returns:
+            Whether takeover must wait for an Agent execution to finish.
+        """
+        return (
+            bool(self._events.get(umo))
+            or any(
+                event.unified_msg_origin == umo for event in self._agent_stop_callbacks
+            )
+            or any(not task.done() for task in self._background_tasks.get(umo, {}))
+        )
+
     def unregister(self, event: AstrMessageEvent) -> None:
         umo = event.unified_msg_origin
         self._agent_stop_callbacks.pop(event, None)

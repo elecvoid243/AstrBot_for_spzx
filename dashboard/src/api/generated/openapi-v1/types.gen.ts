@@ -204,6 +204,18 @@ export type BotRegistrationRequest = {
 
 export type action = 'start' | 'poll';
 
+export type BrowserControlSessionRequest = {
+    chat_id: string;
+    generation: string;
+    browser_session_id: string;
+};
+
+export type BrowserControlSessionResponse = {
+    ticket: string;
+    expires_in: number;
+    websocket_path: string;
+};
+
 /**
  * A deliberate local grant; importing an asset never grants access.
  */
@@ -1533,6 +1545,14 @@ export type WorkflowStartRequest = {
     source?: string;
     input_artifacts?: Array<ArtifactReference>;
 };
+
+export type CreateBrowserControlSessionData = {
+    body: BrowserControlSessionRequest;
+};
+
+export type CreateBrowserControlSessionResponse = (BrowserControlSessionResponse);
+
+export type CreateBrowserControlSessionError = (unknown);
 
 export type CurrentAccountResponse = (AccountResponse);
 

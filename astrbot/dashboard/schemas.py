@@ -9,6 +9,43 @@ class OpenModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class BrowserControlSessionRequest(BaseModel):
+    """Bind a short-lived browser control connection to an owned chat."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    chat_id: str = Field(min_length=1, max_length=256)
+    generation: str = Field(min_length=1, max_length=128)
+    browser_session_id: str = Field(min_length=1, max_length=128)
+
+
+class BrowserControlSessionResponse(BaseModel):
+    ticket: str
+    expires_in: int
+    websocket_path: str
+
+
+class BrowserControlTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tab_id: str = Field(min_length=1, max_length=128)
+    document_id: str = Field(min_length=1, max_length=128)
+    viewport_width: float = Field(gt=0, le=32768, allow_inf_nan=False)
+    viewport_height: float = Field(gt=0, le=32768, allow_inf_nan=False)
+    scroll_x: float = Field(allow_inf_nan=False)
+    scroll_y: float = Field(allow_inf_nan=False)
+
+
+class BrowserControlCommand(BaseModel):
+    """Closed input vocabulary; browser targets can only be validated, not chosen."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operation: Literal["click", "heartbeat", "release"]
+    control_epoch: int = Field(ge=1)
+    input_id: int | None = Field(default=None, ge=1)
+    x: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    y: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    target: BrowserControlTarget | None = None
+
+
 class ConfigProfileCreateRequest(BaseModel):
     name: str | None = None
     config: dict[str, Any] | None = None

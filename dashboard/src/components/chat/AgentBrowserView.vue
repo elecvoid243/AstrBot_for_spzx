@@ -37,7 +37,7 @@ import {
   Minimize2,
 } from "@lucide/vue";
 import { useI18n } from "@/i18n/composables";
-import { pluginExtensionApi } from "@/api/v1";
+import { browserControlApi, pluginExtensionApi } from "@/api/v1";
 import { fetchWithAuth } from "@/api/http";
 
 const props = defineProps<{ chatId?: string | null; visible: boolean }>();
@@ -88,6 +88,9 @@ document.addEventListener("keydown", onFullscreenKeyDown, true);
 interface BrowserState {
   available: boolean;
   execution_state?: "active" | "stopped" | "closed" | "disabled";
+  manual_control_version?: number;
+  control_mode?: "agent" | "acquiring" | "human" | "paused";
+  control_epoch?: number;
   generation?: string;
   browser_session_id?: string;
   tab_id?: string;
@@ -128,6 +131,157 @@ const state = ref<BrowserState | null>(null);
 const loading = ref(false);
 const controlling = ref(false);
 const controlError = ref(false);
+const humanControl = ref(false);
+const manualPending = ref(false);
+const manualMessage = ref("");
+let controlSocket: WebSocket | null = null;
+let manualEpoch = 0;
+let inputNumber = 0;
+let controlAttempt = 0;
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
+
+function disconnectControl() {
+  if (humanControl.value || (manualPending.value && controlSocket))
+    manualMessage.value = t(`${key}.manualDisconnected`);
+  controlAttempt += 1;
+  humanControl.value = false;
+  manualPending.value = false;
+  clearInterval(heartbeatTimer);
+  clearTimeout(acknowledgementTimer);
+  controlSocket?.close();
+  controlSocket = null;
+}
+
+async function acquireControl() {
+  const current = state.value;
+  const chatId = props.chatId;
+  if (!current?.image || !chatId || manualPending.value) return;
+  disconnectControl();
+  const attempt = controlAttempt;
+  manualPending.value = true;
+  manualMessage.value = "";
+  try {
+    const response = await browserControlApi.createSession({
+      chat_id: chatId,
+      generation: current.generation!,
+      browser_session_id: current.browser_session_id!,
+    });
+    if (attempt !== controlAttempt) return;
+    if (props.chatId !== chatId || !props.visible || !pageVisible.value) {
+      manualPending.value = false;
+      return;
+    }
+    const url = new URL(response.data.websocket_path, location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(url);
+    controlSocket = socket;
+    socket.onopen = () =>
+      socket.send(JSON.stringify({ ticket: response.data.ticket }));
+    acknowledgementTimer = setTimeout(() => {
+      manualMessage.value = t(`${key}.manualDisconnected`);
+      disconnectControl();
+    }, 12000);
+    socket.onmessage = (message) => {
+      if (controlSocket !== socket) return;
+      const ack = JSON.parse(message.data);
+      if (ack.operation === "heartbeat" && ack.status === "applied") return;
+      clearTimeout(acknowledgementTimer);
+      manualPending.value = false;
+      if (ack.status !== "applied") {
+        manualMessage.value = ack.message || t(`${key}.manualFailed`);
+        disconnectControl();
+        return;
+      }
+      manualEpoch = ack.control_epoch;
+      if (ack.state?.control_mode === "agent") {
+        manualMessage.value = t(`${key}.handedBack`);
+        disconnectControl();
+        return;
+      }
+      if (!humanControl.value) {
+        inputNumber = 0;
+        humanControl.value = true;
+        heartbeatTimer = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN)
+            socket.send(
+              JSON.stringify({
+                operation: "heartbeat",
+                control_epoch: manualEpoch,
+              }),
+            );
+        }, 5000);
+      }
+      manualMessage.value = t(`${key}.humanActive`);
+    };
+    socket.onclose = () => {
+      if (controlSocket !== socket) return;
+      manualMessage.value = t(`${key}.manualDisconnected`);
+      disconnectControl();
+    };
+    socket.onerror = () => socket.close();
+  } catch (error: any) {
+    if (attempt !== controlAttempt) return;
+    manualMessage.value =
+      error.response?.data?.message || t(`${key}.manualFailed`);
+    disconnectControl();
+  }
+}
+
+function releaseControl() {
+  if (!humanControl.value || manualPending.value) return;
+  manualPending.value = true;
+  humanControl.value = false;
+  clearInterval(heartbeatTimer);
+  controlSocket?.send(
+    JSON.stringify({ operation: "release", control_epoch: manualEpoch }),
+  );
+  acknowledgementTimer = setTimeout(() => disconnectControl(), 12000);
+}
+
+function clickPage(event: MouseEvent) {
+  const current = state.value;
+  if (
+    !humanControl.value ||
+    manualPending.value ||
+    !current?.image ||
+    controlSocket?.readyState !== WebSocket.OPEN
+  )
+    return;
+  const bounds = (
+    event.currentTarget as HTMLImageElement
+  ).getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  const target = Object.fromEntries(
+    [
+      "tab_id",
+      "document_id",
+      "viewport_width",
+      "viewport_height",
+      "scroll_x",
+      "scroll_y",
+    ].map((name) => [name, current[name as keyof BrowserState]]),
+  );
+  manualPending.value = true;
+  controlSocket.send(
+    JSON.stringify({
+      operation: "click",
+      control_epoch: manualEpoch,
+      input_id: ++inputNumber,
+      x:
+        ((event.clientX - bounds.left) / bounds.width) *
+        current.viewport_width!,
+      y:
+        ((event.clientY - bounds.top) / bounds.height) *
+        current.viewport_height!,
+      target,
+    }),
+  );
+  acknowledgementTimer = setTimeout(() => {
+    manualMessage.value = t(`${key}.manualDisconnected`);
+    disconnectControl();
+  }, 12000);
+}
 const connection = ref("loading");
 const resynchronized = ref(false);
 const pageVisible = ref(document.visibilityState !== "hidden");
@@ -386,6 +540,7 @@ async function follow(
  *   resuming: Show automatic reconnection instead of initial loading.
  */
 async function refresh(resuming = false): Promise<void> {
+  disconnectControl();
   clearTimeout(retryTimer);
   pending?.abort();
   state.value = null;
@@ -463,8 +618,10 @@ async function refresh(resuming = false): Promise<void> {
       state.value.execution_state === "stopped" ? "stopped" : "snapshot";
     loading.value = false;
     await follow(snapshot.data.data, controller, chatId);
+    disconnectControl();
   } catch (err: any) {
     if (!controller.signal.aborted && pending === controller) {
+      disconnectControl();
       // Do not leave stale pixels or a running action visible while disconnected.
       state.value = null;
       const status = err.response?.status;
@@ -501,6 +658,8 @@ async function refresh(resuming = false): Promise<void> {
  *   Resolves after confirmed cleanup or a visible control error.
  */
 async function control(operation: "stop" | "close"): Promise<void> {
+  disconnectControl();
+  manualMessage.value = "";
   const current = state.value;
   const chatId = props.chatId;
   const attempt = pending;
@@ -578,6 +737,7 @@ const networkChanged = () => {
 window.addEventListener("online", networkChanged);
 window.addEventListener("offline", networkChanged);
 onBeforeUnmount(() => {
+  disconnectControl();
   document.removeEventListener("keydown", onFullscreenKeyDown, true);
   clearTimeout(retryTimer);
   clearTimeout(markerTimer);
@@ -598,6 +758,7 @@ onBeforeUnmount(() => {
     :data-tab-id="state?.tab_id"
     :data-sequence="state?.sequence"
     :data-connection="connection"
+    :data-human-control="humanControl"
   >
     <header class="agent-browser-toolbar">
       <div class="agent-browser-heading">
@@ -614,6 +775,24 @@ onBeforeUnmount(() => {
           {{ t(`${key}.statusLabels.${connection}`) }}
         </span>
         <div class="agent-browser-controls">
+          <button
+            type="button"
+            class="agent-browser-takeover agent-browser-button"
+            :disabled="
+              !state?.image ||
+              state?.manual_control_version !== 1 ||
+              manualPending ||
+              controlling
+            "
+            :title="
+              state?.manual_control_version === 1
+                ? undefined
+                : t(`${key}.upgradeControl`)
+            "
+            @click="humanControl ? releaseControl() : acquireControl()"
+          >
+            {{ t(`${key}.${humanControl ? "handBack" : "takeOver"}`) }}
+          </button>
           <button
             type="button"
             class="agent-browser-stop agent-browser-button"
@@ -671,6 +850,10 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
+
+    <div v-if="manualMessage" role="status" class="agent-browser-notice">
+      {{ manualMessage }}
+    </div>
 
     <div
       v-if="controlError"
@@ -742,6 +925,13 @@ onBeforeUnmount(() => {
               :width="state.width"
               :height="state.height"
               :alt="state.title || t(`${key}.title`)"
+              :style="
+                humanControl
+                  ? { cursor: manualPending ? 'wait' : 'crosshair' }
+                  : undefined
+              "
+              draggable="false"
+              @click="clickPage"
             />
             <span
               v-if="marker"
@@ -754,7 +944,7 @@ onBeforeUnmount(() => {
         <footer class="agent-browser-caption">
           <span
             ><Eye :size="12" aria-hidden="true" />{{
-              t(`${key}.readOnly`)
+              t(`${key}.${humanControl ? "humanActive" : "readOnly"}`)
             }}</span
           >
           <span v-if="state?.width" class="agent-browser-capture-meta">
@@ -1090,7 +1280,14 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: auto;
-  pointer-events: none;
+  pointer-events: auto;
+}
+.agent-browser-takeover {
+  width: auto;
+  min-width: 90px;
+  padding-inline: 8px;
+  white-space: nowrap;
+  font-size: 11px;
 }
 .agent-browser-viewport {
   position: relative;

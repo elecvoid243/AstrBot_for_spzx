@@ -1,7 +1,8 @@
 # Agent Teams 重构规范
 
 日期：2026-11-02  
-状态：测试边界与 23 个任务的拆分已获用户批准，已发布到 GitHub；本次重构的产品实现尚未开始。  
+状态：测试边界与 23 个任务的拆分已获用户批准，已发布到 GitHub；用户已追加授权实施，进度由任务索引维护。
+
 GitHub Issue：[[Spec] Agent Teams 重构：直接资源、画布编排与可恢复的人机协作（#125）](https://github.com/elecvoid243/AstrBot_for_spzx/issues/125)  
 标签：ready-for-agent  
 [任务清单与依赖](../plans/agent-teams-rebuild/README.md)

@@ -183,7 +183,8 @@ async def run_worker(
                 "control_cancel",
                 "control_shutdown",
             }:
-                run_id = event.get_extra("agent_team_execution").run_id
+                child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
+                run_id = child["control"]["root_run_id"]
                 decision = {"request_id": "original-control", "action": "cancel" if scenario == "control_cancel" else "pause"}
                 await service.control_run("alice", run_id, decision)
                 await service.control_run("alice", run_id, decision)
@@ -433,7 +434,8 @@ async def run_worker(
             (folder / "kill-ready.json").write_text(json.dumps({"run_id": root_id}), encoding="utf-8")
             await asyncio.Future()
         if action != "start" and scenario == "control_request":
-            run_id = event.get_extra("agent_team_execution").run_id
+            child = await service.get_run("alice", event.get_extra("agent_team_execution").run_id)
+            run_id = child["control"]["root_run_id"]
             await service.control_run("alice", run_id, {"request_id": "pause-restored-request", "action": "pause"})
         if not guarded_case and not scenario.startswith("inline_"):
             request.func_tool.add_tool(providers.llm_tools.func_list[0])
@@ -610,7 +612,7 @@ async def run_worker(
         asset = await service.save_asset("alice", {"definition": definition})
         if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"}:
             asset = await service.save_asset("alice", {"definition": {"name": "Shared last reservation", "result_task_id": "b", "max_parallel": 2, "limits": limits, "tasks": [
-                {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario == "usage_shared_wait" else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
+                {"id": key, "name": key, "member": "shared" if scenario == "usage_compression" or scenario == "usage_shared_wait" and key.startswith("a") else key, "role_id": role["role_id"], "role_version": 1, "task": key + ": Read evidence and submit a report." if scenario in {"usage_shared_wait", "usage_compression"} else "Read evidence and submit a report.", "overrides": {"max_instances": 2, "max_parallel": 2}}
                 for key in (["b", "a", "a2"] if scenario == "usage_shared_wait" else ["a", "b"])
             ], "edges": [{"source": "a", "target": "b"}] if scenario == "usage_compression" else []}})
         if scenario == "manual_graph":
@@ -783,15 +785,21 @@ async def run_worker(
             before = await service.get_run("alice", run_id)
             if scenario in {"usage_parallel", "usage_compression", "usage_shared_wait"} or scenario.startswith("usage_native_"):
                 await service.boot_sweep()
-                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
+                after = await service.get_run("alice", run_id)
+                if scenario.startswith("usage_native_"):
+                    before, after = before["tasks"][0], after["tasks"][0]
+                (folder / "recovered.json").write_text(json.dumps({"before": before, "after": after}), encoding="utf-8")
                 return
+            if scenario.startswith("usage_") and before.get("tasks"):
+                before = before["tasks"][0]
+                run_id = before["run_id"]
             if scenario in {"usage_reservation_failure", "usage_report_failure"}:
                 async with db.engine.begin() as connection:
                     await connection.execute(text("DROP TRIGGER reject_usage"))
             if action == "pause_decision":
                 await service.control_run(
                     "alice",
-                    run_id,
+                    before["control"]["root_run_id"],
                     {"request_id": "pause-resolution", "action": "pause"},
                 )
                 return
@@ -849,7 +857,7 @@ async def run_worker(
                     "control_shutdown",
                 }:
                     if stopped["control"]["status"] == "paused":
-                        assert stopped["status"] == "interrupted"
+                        assert stopped["tasks"][0]["status"] == "interrupted"
                         try:
                             await service.recover_run("alice", run_id)
                         except RoleAssetError as exc:
@@ -895,7 +903,7 @@ async def run_worker(
                     assert stopped["control"]["status"] == "cancelled"
                     assert stopped["status"] == "cancelled"
                     await service.control_run("alice", run_id, {"request_id": "original-control", "action": "cancel"})
-                    for operation in [service.control_run("alice", run_id, {"request_id": "late-continue", "action": "continue"}), service.recover_run("alice", run_id), service.retry_task("alice", run_id, {"request_id": "unsafe-retry", "attempt_id": before["state"]["attempt_id"], "input_policy": "original"})]:
+                    for operation in [service.control_run("alice", run_id, {"request_id": "late-continue", "action": "continue"}), service.recover_run("alice", run_id), service.retry_task("alice", before["tasks"][0]["run_id"], {"request_id": "unsafe-retry", "attempt_id": before["tasks"][0]["state"]["attempt_id"], "input_policy": "original"})]:
                         try:
                             await operation
                         except RoleAssetError as exc:
@@ -905,8 +913,8 @@ async def run_worker(
                     (folder / "recovered.json").write_text(json.dumps({"before": before, "after": await service.get_run("alice", run_id)}), encoding="utf-8")
                     return
                 elif scenario == "control_retry":
-                    old = before["attempts"][0]
-                    await service.retry_task("alice", run_id, {"request_id": "retry-control", "attempt_id": old["attempt_id"], "input_policy": "original"})
+                    old = before["tasks"][0]["attempts"][0]
+                    await service.retry_task("alice", before["tasks"][0]["run_id"], {"request_id": "retry-control", "attempt_id": old["attempt_id"], "input_policy": "original"})
                 elif scenario == "control_unknown":
                     with contextlib.suppress(RoleAssetError):
                         await service.recover_run("alice", run_id)
@@ -1001,7 +1009,7 @@ async def run_worker(
                     if "paused" in scenario and scenario != "manual_paused_race":
                         await service.control_run(
                             "alice",
-                            run_id,
+                            before["control"]["root_run_id"],
                             {"request_id": "pause-resolution", "action": "pause"},
                         )
                     available_calls = (await service.get_run("alice", run_id))["tool_calls"]
@@ -1068,7 +1076,7 @@ async def run_worker(
                                 )
                         await service.control_run(
                             "alice",
-                            run_id,
+                            before["control"]["root_run_id"],
                             {"request_id": "continue-resolution", "action": "continue"},
                         )
                 elif scenario == "concurrent":
@@ -1094,10 +1102,10 @@ async def run_worker(
                     else current["control"]["status"] == "cancelled"
                     if scenario == "control_cancel"
                     else current["control"]["status"] == "paused"
-                    and current["recovery"]["boundary"] == "tool_result"
+                    and current["tasks"][0]["recovery"]["boundary"] == "tool_result"
                     if scenario
                     in {"control_pause", "control_continue", "control_shutdown"}
-                    else current["status"] == "awaiting_result"
+                    else current["tasks"][0]["status"] == "awaiting_result"
                 )
                 if ready:
                     break
@@ -1142,7 +1150,7 @@ async def run_worker(
 
                 sql_event.listen(Session, "after_flush", retry_decision_flush)
                 sql_event.listen(Session, "after_commit", retry_decision_commit)
-                await service.retry_task("alice", run["run_id"], {"request_id": "retry-control", "attempt_id": current["state"]["attempt_id"], "input_policy": "original"})
+                await service.retry_task("alice", current["tasks"][0]["run_id"], {"request_id": "retry-control", "attempt_id": current["tasks"][0]["state"]["attempt_id"], "input_policy": "original"})
             (folder / "kill-ready.json").write_text(
                 json.dumps({"run_id": run["run_id"]}), encoding="utf-8"
             )

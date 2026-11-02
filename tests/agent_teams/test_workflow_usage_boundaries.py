@@ -197,7 +197,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                 return
             if self.path == "/tool":
                 effects.append(payload)
-                response = {"text": "Verified evidence."}
+                response = {"text": "Verified evidence. " * 1000 if scenario == "usage_compression" else "Verified evidence."}
             else:
                 nonlocal active_models, peak_models
                 with recorder_lock:
@@ -281,7 +281,7 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
     server = ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     root = Path(__file__).resolve().parents[2]
-    environment = {**os.environ, "PYTHONUTF8": "1"}
+    environment = {**os.environ, "PYTHONUTF8": "1", "ASTRBOT_ROOT": str(tmp_path / "runtime")}
     limits = {
         "max_steps": 1
         if scenario
@@ -569,6 +569,10 @@ def test_real_usage_boundaries_retain_consumption_and_stop_uncommitted_work(
                     for request in requests
                 )
                 assert after["usage"]["tokens"]["estimated"] > 0
+                contexts = [json.dumps(request["contexts"]) for request in requests]
+                assert any("a: Read evidence" in context for context in contexts)
+                assert any("b: Read evidence" in context for context in contexts)
+                assert all(not ("a: Read evidence" in context and "b: Read evidence" in context) for context in contexts)
     finally:
         release_first_model.set()
         server.shutdown()

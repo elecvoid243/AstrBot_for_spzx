@@ -128,11 +128,12 @@ async def run_child_scenario(
                     "kind": "autonomous",
                     "name": "Pinned independent research team with a long name for narrow screens",
                     "coordinator": {
+                        "id": "coordinator",
                         "role_id": coordinator["role_id"],
                         "role_version": 1,
                     },
                     "allowed_roles": [
-                        {"role_id": writer["role_id"], "role_version": 1}
+                        {"id": "writer", "role_id": writer["role_id"], "role_version": 1}
                     ],
                     "required_inputs": ["goal", "notes"],
                     "max_parallel": 1,
@@ -149,6 +150,7 @@ async def run_child_scenario(
             {
                 "definition": {
                     "name": "Workflow calling a fixed team at root concurrency one",
+                    "result_task_id": "dependent",
                     "required_inputs": ["goal", "notes"],
                     "max_parallel": 1,
                     "tasks": [

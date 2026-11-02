@@ -122,6 +122,7 @@ def test_control_decision_survives_process_termination(
     environment = {
         **os.environ,
         "PYTHONUTF8": "1",
+        "ASTRBOT_ROOT": str(tmp_path / "runtime"),
         "TESTING": "true",
         "ASTRBOT_TEST_MODE": "true",
     }
@@ -239,7 +240,7 @@ def test_control_decision_survives_process_termination(
             assert len(effects) == len(requests) == 1
         else:
             assert after["status"] == "completed", evidence
-            assert after["state"]["attempt_id"] == before["state"]["attempt_id"]
+            assert after["tasks"][0]["state"]["attempt_id"] == before["tasks"][0]["state"]["attempt_id"]
             if scenario in {"control_pause", "control_continue", "control_shutdown"}:
                 assert len(effects) == 1
                 assert len(requests) == 3
@@ -251,11 +252,11 @@ def test_control_decision_survives_process_termination(
                         (tmp_path / "shutdown.json").read_text(encoding="utf-8")
                     )
                     assert shutdown["before"]["status"] == "running"
-                    assert shutdown["after"]["status"] == "interrupted"
+                    assert shutdown["after"]["tasks"][0]["status"] == "interrupted"
                     assert shutdown["after"]["control"]["status"] == "paused"
                     assert (
-                        shutdown["after"]["state"]["attempt_id"]
-                        == shutdown["before"]["state"]["attempt_id"]
+                        shutdown["after"]["tasks"][0]["state"]["attempt_id"]
+                        == shutdown["before"]["tasks"][0]["state"]["attempt_id"]
                     )
                 assert (
                     len(
@@ -268,6 +269,7 @@ def test_control_decision_survives_process_termination(
                     == 1
                 )
             else:
+                after = after["tasks"][0]
                 assert (
                     after["attempts"][0]["attempt_id"] != after["state"]["attempt_id"]
                 )

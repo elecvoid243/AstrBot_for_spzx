@@ -90,10 +90,12 @@ def test_chat_delivery_and_existing_todo_resume_after_process_death(tmp_path, bo
         )
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
         projection = json.loads((tmp_path / "resumed.json").read_text(encoding="utf-8"))
-        assert projection["result"] == {"tasks": {"question": {"text": "Asia"}}}
+        assert projection["result"] == {"text": "Asia"}
         assert len(messages) == 3
         assert "Accepted" in messages[0]["text"]
-        assert "needs human input" in messages[1]["text"]
+        assert "Question: Which region?" in messages[1]["text"]
+        assert "Asia" in messages[1]["text"]
+        assert "Europe" in messages[1]["text"]
         assert "Asia" in messages[2]["text"]
         assert all(m["caller"]["source"] == "qq:FriendMessage:12345" for m in messages)
     finally:

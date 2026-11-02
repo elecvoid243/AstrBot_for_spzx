@@ -576,6 +576,9 @@
   "loops": {
     "add": "添加有界循环",
     "edit": "编辑循环",
+    "structuredValue": "结构化内容；打开任务查看详情",
+    "openArtifact": "打开任务和产物",
+    "rawDetails": "原始诊断数据",
     "new": "审查与修订",
     "body": "循环体任务",
     "exitTask": "退出结果任务",

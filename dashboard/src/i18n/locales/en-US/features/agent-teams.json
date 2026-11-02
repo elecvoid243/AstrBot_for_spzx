@@ -576,6 +576,9 @@
   "loops": {
     "add": "Add bounded loop",
     "edit": "Edit loop",
+    "structuredValue": "Structured value; open the task for details",
+    "openArtifact": "Open task and artifact",
+    "rawDetails": "Raw diagnostic data",
     "new": "Review and revise",
     "body": "Loop body",
     "exitTask": "Exit result task",
